@@ -57,6 +57,7 @@ function safeSetJSON(key: string, value: unknown): void {
   }
 }
 import { getCurrentWindow } from '@tauri-apps/api/window';
+import { listen } from '@tauri-apps/api/event';
 import { openUrl } from '@tauri-apps/plugin-opener';
 import {
   DragDropProvider,
@@ -97,6 +98,12 @@ import {
   type GmailLabel,
   rsvpCalendarEvent,
   getCalendarRsvpStatus,
+  syncThreadsIncremental,
+  fetchContacts,
+  type Contact,
+  fetchCalendarEvents,
+  type GoogleCalendarEvent,
+  pullFromICloud,
 } from "./api/tauri";
 import { Menu, MenuItem, PredefinedMenuItem } from "@tauri-apps/api/menu";
 import {
@@ -413,7 +420,16 @@ const ComposeForm = (props: ComposeFormProps) => {
   const BodyTextarea = () => (
     <div class={props.inline ? "inline-compose-body" : "compose-content"}>
       <textarea
-        ref={(el) => setTimeout(() => { if (props.focusBody) el?.focus(); }, 50)}
+        ref={(el) => {
+          if (props.focusBody && el) {
+            // Use requestAnimationFrame to ensure the value is rendered first
+            requestAnimationFrame(() => {
+              el.focus();
+              el.setSelectionRange(0, 0);
+              el.scrollTop = 0;
+            });
+          }
+        }}
         value={props.body}
         onInput={(e) => { props.setBody(e.currentTarget.value); props.onInput?.(); }}
         onKeyDown={handleKeyDown}
@@ -1104,11 +1120,16 @@ const BG_COLORS = [
   { light: "rgba(94, 53, 177, 0.18)", dark: "rgba(94, 53, 177, 0.25)", hex: "#5E35B1" },
   { light: "rgba(216, 27, 96, 0.18)", dark: "rgba(216, 27, 96, 0.25)", hex: "#D81B60" },
 ];
-type GroupBy = "date" | "sender" | "label";
-const GROUP_BY_OPTIONS: { value: GroupBy; label: string }[] = [
+type GroupBy = "date" | "sender" | "label" | "organizer" | "calendar";
+const EMAIL_GROUP_BY_OPTIONS: { value: GroupBy; label: string }[] = [
   { value: "date", label: "Date" },
   { value: "sender", label: "Sender" },
   { value: "label", label: "Label" },
+];
+const CALENDAR_GROUP_BY_OPTIONS: { value: GroupBy; label: string }[] = [
+  { value: "date", label: "Date" },
+  { value: "organizer", label: "Organizer" },
+  { value: "calendar", label: "Calendar" },
 ];
 
 // Gmail search operators for autocomplete
@@ -1176,19 +1197,20 @@ function App() {
   const [cards, setCards] = createSignal<Card[]>([]);
   const [authLoading, setAuthLoading] = createSignal(false);
   const [cardThreads, setCardThreads] = createSignal<Record<string, ThreadGroup[]>>({});
+  const [cardCalendarEvents, setCardCalendarEvents] = createSignal<Record<string, GoogleCalendarEvent[]>>({});
   const [loadingThreads, setLoadingThreads] = createSignal<Record<string, boolean>>({});
   const [cardErrors, setCardErrors] = createSignal<Record<string, string | null>>({});
   const [collapsedCards, setCollapsedCards] = createSignal<Record<string, boolean>>({});
   const [cardPageTokens, setCardPageTokens] = createSignal<Record<string, string | null>>({});
   const [cardHasMore, setCardHasMore] = createSignal<Record<string, boolean>>({});
   const [loadingMore, setLoadingMore] = createSignal<Record<string, boolean>>({});
-  const [cardGroupBy, setCardGroupBy] = createSignal<Record<string, GroupBy>>(
-    safeGetJSON<Record<string, string>>("cardGroupBy", {})
-  );
 
   // Sync status tracking
   const [lastSyncTimes, setLastSyncTimes] = createSignal<Record<string, number>>({});
   const [syncErrors, setSyncErrors] = createSignal<Record<string, string | null>>({});
+
+  // Google Contacts from People API
+  const [googleContacts, setGoogleContacts] = createSignal<Contact[]>([]);
 
   // RSVP status tracking (thread ID -> "accepted" | "tentative" | "declined" | "needsAction")
   const [rsvpStatus, setRsvpStatus] = createSignal<Record<string, string>>({});
@@ -1387,6 +1409,7 @@ function App() {
   const [queryDropdownPos, setQueryDropdownPos] = createSignal<{ top: number; left: number; width: number } | null>(null);
   const [queryPreviewThreads, setQueryPreviewThreads] = createSignal<ThreadGroup[]>([]);
   const [queryPreviewLoading, setQueryPreviewLoading] = createSignal(false);
+  const [queryHelpOpen, setQueryHelpOpen] = createSignal(false);
   const [globalFilter, setGlobalFilter] = createSignal("");
   const [showGlobalFilter, setShowGlobalFilter] = createSignal(false);
   let filterInputRef: HTMLInputElement | undefined;
@@ -1412,6 +1435,14 @@ function App() {
       setQueryPreviewThreads([]);
       return;
     }
+
+    // Skip email preview for calendar queries
+    if (query.toLowerCase().includes("calendar:")) {
+      setQueryPreviewThreads([]);
+      setQueryPreviewLoading(false);
+      return;
+    }
+
     const account = selectedAccount();
     if (!account) return;
 
@@ -1669,11 +1700,6 @@ function App() {
     { email: "charlie@example.com", name: "Charlie Day", lastContacted: Date.now(), frequency: 5 },
   ]);
 
-  // Card colors (stored locally since not in backend yet)
-  const [cardColors, setCardColors] = createSignal<Record<string, CardColor>>(
-    safeGetJSON<Record<string, CardColor>>("cardColors", {})
-  );
-
   // Settings form
   const [clientId, setClientId] = createSignal("");
   const [clientSecret, setClientSecret] = createSignal("");
@@ -1724,9 +1750,95 @@ function App() {
     },
   };
 
-  // Auto-refresh interval
-  const AUTO_REFRESH_INTERVAL = 60000; // 1 minute
-  let refreshIntervalId: number | undefined;
+  // Enhanced polling with adaptive interval
+  const BASE_POLL_INTERVAL = 30000; // 30 seconds
+  const MAX_POLL_INTERVAL = 300000; // 5 minutes
+  const [pollInterval, setPollInterval] = createSignal(BASE_POLL_INTERVAL);
+  let pollTimeoutId: number | undefined;
+  let isPolling = false;
+
+  // Perform incremental sync and update UI
+  async function performIncrementalSync() {
+    const account = selectedAccount();
+    if (!account || isPolling) return;
+
+    isPolling = true;
+    try {
+      const result = await syncThreadsIncremental(account.id);
+
+      // Check if there were any changes
+      const hasChanges = result.modified_threads.length > 0 || result.deleted_thread_ids.length > 0;
+
+      if (hasChanges) {
+        // Reset to fast polling when changes detected
+        setPollInterval(BASE_POLL_INTERVAL);
+
+        // Apply changes to card threads
+        applyIncrementalChanges(result.modified_threads, result.deleted_thread_ids);
+      } else {
+        // Backoff when idle (multiply by 1.5, max 5 minutes)
+        setPollInterval(prev => Math.min(Math.floor(prev * 1.5), MAX_POLL_INTERVAL));
+      }
+    } catch (e) {
+      console.error("Incremental sync failed:", e);
+      // On error, backoff but don't stop polling
+      setPollInterval(prev => Math.min(prev * 2, MAX_POLL_INTERVAL));
+    } finally {
+      isPolling = false;
+    }
+  }
+
+  // Apply incremental changes to all cards
+  function applyIncrementalChanges(modifiedThreads: Thread[], deletedThreadIds: string[]) {
+    if (modifiedThreads.length === 0 && deletedThreadIds.length === 0) return;
+
+    const currentCardThreads = cardThreads();
+    const updatedCardThreads: Record<string, ThreadGroup[]> = {};
+
+    for (const cardId of Object.keys(currentCardThreads)) {
+      const groups = currentCardThreads[cardId];
+      if (!groups) continue;
+
+      const updatedGroups = groups.map(group => {
+        let threads = [...group.threads];
+
+        // Remove deleted threads
+        threads = threads.filter(t => !deletedThreadIds.includes(t.gmail_thread_id));
+
+        // Update modified threads
+        for (const modifiedThread of modifiedThreads) {
+          const existingIndex = threads.findIndex(t => t.gmail_thread_id === modifiedThread.gmail_thread_id);
+          if (existingIndex >= 0) {
+            threads[existingIndex] = modifiedThread;
+          }
+        }
+
+        return { ...group, threads };
+      });
+
+      // Filter out empty groups
+      updatedCardThreads[cardId] = updatedGroups.filter(g => g.threads.length > 0);
+    }
+
+    setCardThreads(prev => ({ ...prev, ...updatedCardThreads }));
+  }
+
+  // Schedule next poll
+  function schedulePoll() {
+    if (pollTimeoutId) {
+      clearTimeout(pollTimeoutId);
+    }
+    pollTimeoutId = window.setTimeout(async () => {
+      await performIncrementalSync();
+      schedulePoll(); // Schedule next poll after this one completes
+    }, pollInterval());
+  }
+
+  // Handle window focus - reset to fast polling and sync immediately
+  function handleWindowFocus() {
+    setPollInterval(BASE_POLL_INTERVAL);
+    performIncrementalSync();
+  }
 
   // Drag and drop
   const cardIds = () => cards().map(c => c.id);
@@ -1824,6 +1936,13 @@ function App() {
         });
       }
 
+      // Pull cards/accounts from iCloud if available (restores layout after re-login)
+      try {
+        await pullFromICloud();
+      } catch (e) {
+        console.warn("iCloud sync not available:", e);
+      }
+
       const accts = await getAccounts();
       setAccounts(accts);
       if (accts.length > 0) {
@@ -1843,11 +1962,47 @@ function App() {
           }
         }
 
-        // Set up auto-refresh
-        refreshIntervalId = window.setInterval(() => {
-          refreshAllCards();
-        }, AUTO_REFRESH_INTERVAL);
+        // Set up enhanced polling with adaptive interval
+        schedulePoll();
+
+        // Add window focus listener for immediate sync
+        window.addEventListener("focus", handleWindowFocus);
+
+        // Fetch Google contacts in background for autocomplete
+        fetchContacts(accts[0].id)
+          .then(contacts => setGoogleContacts(contacts))
+          .catch(e => console.warn("Failed to fetch contacts (user may need to re-auth):", e));
       }
+
+      // Listen for mailto: deep-link events
+      const unlistenMailto = await listen<{
+        to: string;
+        cc: string;
+        bcc: string;
+        subject: string;
+        body: string;
+      }>("mailto-received", (event) => {
+        const data = event.payload;
+        // Populate compose form with mailto data
+        setComposeTo(data.to);
+        setComposeCc(data.cc);
+        setComposeBcc(data.bcc);
+        setComposeSubject(data.subject);
+        setComposeBody(data.body);
+        // Show CC/BCC if they have values
+        if (data.cc || data.bcc) {
+          setShowCcBcc(true);
+        }
+        // Open compose panel
+        setReplyingToThread(null);
+        setForwardingThread(null);
+        setComposing(true);
+      });
+
+      // Store unlisten function for cleanup
+      onCleanup(() => {
+        unlistenMailto();
+      });
     } catch (e) {
       setError(String(e));
     } finally {
@@ -1861,12 +2016,13 @@ function App() {
   });
 
   onCleanup(() => {
-    if (refreshIntervalId) {
-      clearInterval(refreshIntervalId);
+    if (pollTimeoutId) {
+      clearTimeout(pollTimeoutId);
     }
     if (queryPreviewTimeout) {
       clearTimeout(queryPreviewTimeout);
     }
+    window.removeEventListener("focus", handleWindowFocus);
   });
 
   // Helper to get all threads from a card as a flat array
@@ -2138,10 +2294,18 @@ function App() {
       const account = await runOAuthFlow();
       setAccounts([...accounts(), account]);
       setSelectedAccount(account);
+
+      // Try to restore cards from iCloud (remaps orphaned cards to new account)
+      try {
+        await pullFromICloud();
+      } catch (e) {
+        console.warn("iCloud pull failed:", e);
+      }
+
       const cardList = await getCards(account.id);
       setCards(cardList);
 
-      // Show preset selection if no cards exist
+      // Show preset selection if no cards exist (iCloud restore didn't find any)
       if (cardList.length === 0) {
         setShowPresetSelection(true);
       }
@@ -2161,18 +2325,13 @@ function App() {
 
     try {
       const newCards: Card[] = [];
-      const newColors: Record<string, CardColor> = { ...cardColors() };
 
       for (const cardPreset of preset.cards) {
-        const card = await createCard(account.id, cardPreset.name, cardPreset.query);
+        const card = await createCard(account.id, cardPreset.name, cardPreset.query, cardPreset.color || null);
         newCards.push(card);
-        if (cardPreset.color) {
-          newColors[card.id] = cardPreset.color;
-        }
       }
 
       setCards(newCards);
-      saveCardColors(newColors);
 
       // Initialize collapsed state
       const collapsed: Record<string, boolean> = {};
@@ -2206,6 +2365,14 @@ function App() {
         const account = await runOAuthFlow();
         setAccounts([...accounts(), account]);
         setSelectedAccount(account);
+
+        // Try to restore cards from iCloud (remaps orphaned cards to new account)
+        try {
+          await pullFromICloud();
+        } catch (e) {
+          console.warn("iCloud pull failed:", e);
+        }
+
         const cardList = await getCards(account.id);
         setCards(cardList);
 
@@ -2258,19 +2425,19 @@ function App() {
     if (!account || !newCardName() || !newCardQuery()) return;
 
     try {
-      const card = await createCard(account.id, newCardName(), newCardQuery());
+      // Auto-detect card type from query: if contains "calendar:", it's a calendar card
+      const query = newCardQuery();
+      const cardType = query.toLowerCase().includes("calendar:") ? "calendar" : "email";
+
+      const card = await createCard(account.id, newCardName(), query, newCardColor() || null, newCardGroupBy(), cardType);
       setCards([...cards(), card]);
       setCollapsedCards({ ...collapsedCards(), [card.id]: false });
-      if (newCardColor()) {
-        saveCardColors({ ...cardColors(), [card.id]: newCardColor() });
-      }
-      setGroupByForCard(card.id, newCardGroupBy());
       setNewCardName("");
       setNewCardQuery("");
       setNewCardColor(null);
       setNewCardGroupBy("date");
       setAddingCard(false);
-      // Fetch threads for the new card
+      // Fetch threads/events for the new card
       loadCardThreads(card.id);
     } catch (e) {
       setError(String(e));
@@ -2852,15 +3019,12 @@ function App() {
     }
   }
 
-  function setCardColor(cardId: string, color: CardColor) {
-    const newColors = { ...cardColors(), [cardId]: color };
-    setCardColors(newColors);
-    safeSetJSON("cardColors", newColors);
-  }
-
-  function saveCardColors(colors: Record<string, CardColor>) {
-    setCardColors(colors);
-    safeSetJSON("cardColors", colors);
+  async function setCardColor(cardId: string, color: CardColor) {
+    const card = cards().find(c => c.id === cardId);
+    if (!card) return;
+    const updatedCard = { ...card, color: color || null };
+    await updateCard(updatedCard);
+    setCards(cards().map(c => c.id === cardId ? updatedCard : c));
   }
 
   function saveCollapsedState(collapsed: Record<string, boolean>) {
@@ -2880,7 +3044,7 @@ function App() {
     setEditingCardId(card.id);
     setEditCardName(card.name);
     setEditCardQuery(card.query);
-    setEditCardColor(cardColors()[card.id] || null);
+    setEditCardColor((card.color as CardColor) || null);
     setEditColorPickerOpen(false);
     // Fetch initial preview
     fetchQueryPreview(card.query);
@@ -2900,10 +3064,10 @@ function App() {
         ...card,
         name: editCardName(),
         query: editCardQuery(),
+        color: editCardColor() || null,
       };
       await updateCard(updatedCard);
       setCards(cards().map(c => c.id === cardId ? updatedCard : c));
-      saveCardColors({ ...cardColors(), [cardId]: editCardColor() });
       setEditingCardId(null);
 
       // If query changed, clear cache and refresh
@@ -2914,7 +3078,7 @@ function App() {
           delete updated[cardId];
           return updated;
         });
-        setCardNextPageToken(prev => {
+        setCardPageTokens(prev => {
           const updated = { ...prev };
           delete updated[cardId];
           return updated;
@@ -2937,13 +3101,9 @@ function App() {
       await deleteCard(cardId);
       setCards(cards().filter(c => c.id !== cardId));
       setEditingCardId(null);
-      // Clean up related state
-      const newColors = { ...cardColors() };
-      const { [cardId]: _, ...remainingColors } = newColors;
-      saveCardColors(remainingColors);
-
+      // Clean up collapsed state
       const newCollapsed = { ...collapsedCards() };
-      const { [cardId]: __, ...remainingCollapsed } = newCollapsed;
+      const { [cardId]: _, ...remainingCollapsed } = newCollapsed;
       saveCollapsedState(remainingCollapsed);
     } catch (err) {
       console.error("Failed to delete card:", err);
@@ -2967,9 +3127,21 @@ function App() {
     }
   }
 
+  function isCalendarCard(cardId: string): boolean {
+    const card = cards().find(c => c.id === cardId);
+    return card?.card_type === "calendar";
+  }
+
   async function loadCardThreads(cardId: string, append = false, forceRefresh = false) {
     const account = selectedAccount();
     if (!account) return;
+
+    // Check if this is a calendar card
+    const card = cards().find(c => c.id === cardId);
+    if (card?.card_type === "calendar") {
+      await loadCalendarEvents(cardId, forceRefresh);
+      return;
+    }
 
     // Prevent concurrent pagination requests for the same card
     if (append && loadingMore()[cardId]) return;
@@ -3045,8 +3217,47 @@ function App() {
     }
   }
 
+  // Load calendar events for calendar cards
+  async function loadCalendarEvents(cardId: string, forceRefresh = false) {
+    const account = selectedAccount();
+    if (!account) return;
+
+    const card = cards().find(c => c.id === cardId);
+    if (!card) return;
+
+    // Prevent concurrent loads (unless force refresh)
+    if (!forceRefresh && loadingThreads()[cardId]) return;
+
+    setLoadingThreads({ ...loadingThreads(), [cardId]: true });
+    setCardErrors({ ...cardErrors(), [cardId]: null });
+
+    try {
+      const events = await fetchCalendarEvents(account.id, card.query);
+      setCardCalendarEvents({ ...cardCalendarEvents(), [cardId]: events });
+      setLastSyncTimes({ ...lastSyncTimes(), [cardId]: Date.now() });
+      setSyncErrors({ ...syncErrors(), [cardId]: null });
+    } catch (e) {
+      const errorMsg = String(e);
+      if (errorMsg.includes("Keyring error") || errorMsg.includes("No auth token")) {
+        setError("Session expired");
+        setTimeout(async () => {
+          await handleSignOut();
+          setError(null);
+        }, 1500);
+      } else {
+        setCardErrors({ ...cardErrors(), [cardId]: errorMsg });
+        setSyncErrors({ ...syncErrors(), [cardId]: errorMsg });
+      }
+    } finally {
+      setLoadingThreads({ ...loadingThreads(), [cardId]: false });
+    }
+  }
+
   // Background fetch and cache update (no loading state shown)
   async function fetchAndCacheThreads(accountId: string, cardId: string) {
+    // Skip for calendar cards (they don't use thread caching)
+    if (isCalendarCard(cardId)) return;
+
     try {
       const result = await fetchThreadsPaginated(accountId, cardId, null);
       setCardThreads({ ...cardThreads(), [cardId]: result.groups });
@@ -3062,13 +3273,16 @@ function App() {
   }
 
   function getGroupByForCard(cardId: string): GroupBy {
-    return cardGroupBy()[cardId] || "date";
+    const card = cards().find(c => c.id === cardId);
+    return (card?.group_by as GroupBy) || "date";
   }
 
-  function setGroupByForCard(cardId: string, groupBy: GroupBy) {
-    const newGroupBy = { ...cardGroupBy(), [cardId]: groupBy };
-    setCardGroupBy(newGroupBy);
-    safeSetJSON("cardGroupBy", newGroupBy);
+  async function setGroupByForCard(cardId: string, groupBy: GroupBy) {
+    const card = cards().find(c => c.id === cardId);
+    if (!card) return;
+    const updatedCard = { ...card, group_by: groupBy };
+    await updateCard(updatedCard);
+    setCards(cards().map(c => c.id === cardId ? updatedCard : c));
   }
 
   function updateCardWidth(width: number) {
@@ -3122,6 +3336,90 @@ function App() {
       document.documentElement.style.setProperty("--accent", color.hex);
       document.documentElement.style.setProperty("--app-bg", bgColor);
     }
+  }
+
+  type CalendarEventGroup = { label: string; events: GoogleCalendarEvent[] };
+
+  function getSmartEventTime(event: GoogleCalendarEvent): string {
+    const now = Date.now();
+    const endTime = event.end_time || (event.start_time + 3600000);
+
+    // Currently happening
+    if (now >= event.start_time && now < endTime) {
+      return "Now";
+    }
+
+    // In the future
+    const startsIn = event.start_time - now;
+    if (startsIn > 0) {
+      const minutes = Math.floor(startsIn / 60000);
+      if (minutes < 1) return "Starting";
+      if (minutes < 60) return `in ${minutes} min`;
+      const hours = Math.floor(minutes / 60);
+      if (hours < 24) return `in ${hours}h`;
+    }
+
+    // Fall back to regular time format
+    return formatCalendarEventDate(event.start_time, event.end_time, event.all_day);
+  }
+
+  function groupCalendarEvents(events: GoogleCalendarEvent[], groupBy: GroupBy): CalendarEventGroup[] {
+    if (groupBy === "date") {
+      const groups: Record<string, GoogleCalendarEvent[]> = {};
+      for (const event of events) {
+        const date = new Date(event.start_time);
+        const today = new Date();
+        const tomorrow = new Date(today);
+        tomorrow.setDate(tomorrow.getDate() + 1);
+
+        let label: string;
+        if (date.toDateString() === today.toDateString()) {
+          label = "Today";
+        } else if (date.toDateString() === tomorrow.toDateString()) {
+          label = "Tomorrow";
+        } else {
+          label = date.toLocaleDateString(undefined, { weekday: 'long', month: 'short', day: 'numeric' });
+        }
+
+        if (!groups[label]) groups[label] = [];
+        groups[label].push(event);
+      }
+      // Sort by date (events are already sorted by start_time from API)
+      return Object.entries(groups).map(([label, events]) => ({ label, events }));
+    }
+
+    if (groupBy === "organizer") {
+      const groups: Record<string, GoogleCalendarEvent[]> = {};
+      for (const event of events) {
+        const organizer = event.organizer || "Unknown";
+        if (!groups[organizer]) groups[organizer] = [];
+        groups[organizer].push(event);
+      }
+      return Object.entries(groups)
+        .sort(([a], [b]) => a.localeCompare(b))
+        .map(([label, events]) => ({
+          label,
+          events: events.sort((a, b) => a.start_time - b.start_time),
+        }));
+    }
+
+    if (groupBy === "calendar") {
+      const groups: Record<string, GoogleCalendarEvent[]> = {};
+      for (const event of events) {
+        const label = event.calendar_name || event.calendar_id;
+        if (!groups[label]) groups[label] = [];
+        groups[label].push(event);
+      }
+      return Object.entries(groups)
+        .sort(([a], [b]) => a.localeCompare(b))
+        .map(([label, events]) => ({
+          label,
+          events: events.sort((a, b) => a.start_time - b.start_time),
+        }));
+    }
+
+    // Default: single group with all events
+    return [{ label: "Events", events }];
   }
 
   function regroupThreads(threads: ThreadGroup[], groupBy: GroupBy): ThreadGroup[] {
@@ -3186,6 +3484,29 @@ function App() {
           thread.participants.some(p => p.toLowerCase().includes(filter))
         )
       })).filter(group => group.threads.length > 0);
+    }
+
+    return groups;
+  }
+
+  function getCalendarEventGroups(cardId: string): CalendarEventGroup[] {
+    const events = cardCalendarEvents()[cardId];
+    if (!events) return [];
+    const groupBy = getGroupByForCard(cardId);
+    let groups = groupCalendarEvents(events, groupBy);
+
+    // Apply global filter
+    const filter = globalFilter().toLowerCase().trim();
+    if (filter) {
+      groups = groups.map(group => ({
+        ...group,
+        events: group.events.filter(event =>
+          event.title.toLowerCase().includes(filter) ||
+          (event.description?.toLowerCase().includes(filter)) ||
+          (event.location?.toLowerCase().includes(filter)) ||
+          (event.organizer?.toLowerCase().includes(filter))
+        )
+      })).filter(group => group.events.length > 0);
     }
 
     return groups;
@@ -3309,13 +3630,32 @@ function App() {
     setColorPickerOpen(false);
   }
 
-  // Get all unique participants from loaded threads as potential contacts
+  // Get all unique participants from loaded threads and Google contacts
   function getContactCandidates(): RecentContact[] {
     const threads = cardThreads();
     const account = selectedAccount();
     const myEmail = account?.email?.toLowerCase();
-    const contactMap = new Map<string, { email: string; name?: string; lastSeen: number; count: number }>();
+    const contactMap = new Map<string, { email: string; name?: string; lastSeen: number; count: number; fromGoogle: boolean }>();
 
+    // First, add Google contacts (they have verified names)
+    for (const contact of googleContacts()) {
+      for (const email of contact.email_addresses) {
+        const emailLower = email.toLowerCase();
+        if (emailLower === myEmail) continue;
+
+        if (!contactMap.has(emailLower)) {
+          contactMap.set(emailLower, {
+            email,
+            name: contact.display_name || undefined,
+            lastSeen: 0, // No recency info from contacts
+            count: 0, // No frequency info from contacts
+            fromGoogle: true,
+          });
+        }
+      }
+    }
+
+    // Then add thread-derived contacts (with recency/frequency)
     Object.values(threads).forEach(groups => {
       groups.forEach(group => {
         group.threads.forEach(thread => {
@@ -3330,7 +3670,7 @@ function App() {
             const existing = contactMap.get(emailLower);
             if (existing) {
               existing.count++;
-              // Keep the name if we found one (prefer named entries)
+              // Prefer Google contact name, but use thread name if Google doesn't have one
               if (name && !existing.name) {
                 existing.name = name;
               }
@@ -3343,6 +3683,7 @@ function App() {
                 name,
                 lastSeen: thread.last_message_date,
                 count: 1,
+                fromGoogle: false,
               });
             }
           });
@@ -3350,21 +3691,25 @@ function App() {
       });
     });
 
-    // Convert to array and sort by combined score (recency + frequency)
+    // Convert to array and sort by combined score
     const candidates = Array.from(contactMap.values())
       .map(c => ({
         email: c.email,
         name: c.name,
         lastContacted: c.lastSeen,
         frequency: c.count,
+        fromGoogle: c.fromGoogle,
       }))
       .sort((a, b) => {
         // Score: higher frequency = better, more recent = better
+        // Google contacts without thread history get a small boost
         const now = Date.now();
-        const recencyScoreA = 1 / (1 + (now - a.lastContacted) / (1000 * 60 * 60 * 24)); // decay over days
-        const recencyScoreB = 1 / (1 + (now - b.lastContacted) / (1000 * 60 * 60 * 24));
-        const scoreA = a.frequency * 0.4 + recencyScoreA * 100 * 0.6;
-        const scoreB = b.frequency * 0.4 + recencyScoreB * 100 * 0.6;
+        const recencyScoreA = a.lastContacted ? 1 / (1 + (now - a.lastContacted) / (1000 * 60 * 60 * 24)) : 0;
+        const recencyScoreB = b.lastContacted ? 1 / (1 + (now - b.lastContacted) / (1000 * 60 * 60 * 24)) : 0;
+        const googleBoostA = a.fromGoogle && a.frequency === 0 ? 0.1 : 0;
+        const googleBoostB = b.fromGoogle && b.frequency === 0 ? 0.1 : 0;
+        const scoreA = a.frequency * 0.4 + recencyScoreA * 100 * 0.6 + googleBoostA;
+        const scoreB = b.frequency * 0.4 + recencyScoreB * 100 * 0.6 + googleBoostB;
         return scoreB - scoreA;
       });
 
@@ -3905,7 +4250,17 @@ function App() {
           </div>
         </div>
         <div class="card-form-group">
-          <label>Query</label>
+          <label class="query-label">
+            Query
+            <button
+              type="button"
+              class="query-help-btn"
+              onClick={() => setQueryHelpOpen(true)}
+              title="Query operators help"
+            >
+              ?
+            </button>
+          </label>
           <input
             type="text"
             ref={setQueryInputRef}
@@ -3962,7 +4317,7 @@ function App() {
         <div class="card-form-group">
           <label>Group</label>
           <div class="group-by-buttons">
-            <For each={GROUP_BY_OPTIONS}>
+            <For each={props.query.toLowerCase().includes("calendar:") ? CALENDAR_GROUP_BY_OPTIONS : EMAIL_GROUP_BY_OPTIONS}>
               {(option) => (
                 <button
                   class={`group-by-btn ${props.groupBy === option.value ? 'active' : ''}`}
@@ -4056,48 +4411,60 @@ function App() {
           <Show when={!composing()}>
             <div
               class="compose-toolbar"
-              onMouseEnter={() => {
-                clearTimeout(fabHoverTimeout);
-                setComposeFabHovered(true);
-              }}
               onMouseLeave={() => {
                 fabHoverTimeout = window.setTimeout(() => setComposeFabHovered(false), 250);
               }}
             >
-              <button
-                class="compose-btn"
-                onClick={() => setComposing(true)}
-                title="Compose"
-                aria-label="Compose new email"
+              <div
+                class="compose-btn-wrapper"
+                onMouseEnter={() => {
+                  clearTimeout(fabHoverTimeout);
+                  setComposeFabHovered(true);
+                }}
               >
-                <ComposeIcon />
+                <button
+                  class="compose-btn"
+                  onClick={() => setComposing(true)}
+                  title="Compose"
+                  aria-label="Compose new email"
+                >
+                  <ComposeIcon />
+                </button>
+                <Show when={getContactCandidates().length > 0}>
+                  <div class={`compose-suggestions ${composeFabHovered() ? 'visible' : ''}`}>
+                    <For each={getContactCandidates().slice(0, 5)}>
+                      {(contact) => (
+                        <div
+                          class="compose-suggestion-avatar"
+                          style={{ background: getAvatarColor(contact.name || contact.email) }}
+                          title={contact.name ? `${contact.name} <${contact.email}>` : contact.email}
+                          onClick={() => {
+                            setComposeTo(contact.email);
+                            setComposing(true);
+                            setComposeFabHovered(false);
+                            // Focus body after compose panel opens
+                            setTimeout(() => {
+                              const bodyTextarea = document.querySelector('.compose-content textarea') as HTMLTextAreaElement;
+                              bodyTextarea?.focus();
+                            }, 100);
+                          }}
+                        >
+                          {(contact.name || contact.email).charAt(0).toUpperCase()}
+                          <span class="suggestion-label">{contact.name || contact.email}</span>
+                        </div>
+                      )}
+                    </For>
+                  </div>
+                </Show>
+              </div>
+              <button
+                class="new-event-btn"
+                onClick={() => openUrl('https://calendar.google.com/calendar/r/eventedit')}
+                title="New Event"
+                aria-label="Create new calendar event"
+              >
+                <CalendarIcon />
               </button>
-              <Show when={getContactCandidates().length > 0}>
-                <div class={`compose-suggestions ${composeFabHovered() ? 'visible' : ''}`}>
-                  <For each={getContactCandidates().slice(0, 5)}>
-                    {(contact) => (
-                      <div
-                        class="compose-suggestion-avatar"
-                        style={{ background: getAvatarColor(contact.name || contact.email) }}
-                        title={contact.name ? `${contact.name} <${contact.email}>` : contact.email}
-                        onClick={() => {
-                          setComposeTo(contact.email);
-                          setComposing(true);
-                          setComposeFabHovered(false);
-                          // Focus body after compose panel opens
-                          setTimeout(() => {
-                            const bodyTextarea = document.querySelector('.compose-content textarea') as HTMLTextAreaElement;
-                            bodyTextarea?.focus();
-                          }, 100);
-                        }}
-                      >
-                        {(contact.name || contact.email).charAt(0).toUpperCase()}
-                        <span class="suggestion-label">{contact.name || contact.email}</span>
-                      </div>
-                    )}
-                  </For>
-                </div>
-              </Show>
             </div>
           </Show>
 
@@ -4257,7 +4624,7 @@ function App() {
                         class={`card ${collapsedCards()[card.id] ? 'collapsed' : ''} ${editingCardId() === card.id ? 'editing' : ''}`}
                         classList={{ 'dragging': sortable.isActiveDraggable }}
                         data-id={card.id}
-                        data-color={editingCardId() === card.id ? (editCardColor() || undefined) : (cardColors()[card.id] || undefined)}
+                        data-color={editingCardId() === card.id ? (editCardColor() || undefined) : (card.color || undefined)}
                         role="region"
                         aria-label={`${card.name} email card`}
                       >
@@ -4403,18 +4770,73 @@ function App() {
                           {/* Normal view when not editing */}
                           <Show when={editingCardId() !== card.id}>
                             {/* Only show loading if no cached data */}
-                            <Show when={loadingThreads()[card.id] && !cardThreads()[card.id]}>
+                            <Show when={loadingThreads()[card.id] && !cardThreads()[card.id] && !cardCalendarEvents()[card.id]}>
                               <div class="loading">Loading...</div>
                             </Show>
-                            <Show when={!loadingThreads()[card.id] && cardErrors()[card.id] && !cardThreads()[card.id]}>
+                            <Show when={!loadingThreads()[card.id] && cardErrors()[card.id] && !cardThreads()[card.id] && !cardCalendarEvents()[card.id]}>
                               <div class="card-error">
                                 <span class="error-icon">⚠</span>
                                 <span class="error-text">{cardErrors()[card.id]}</span>
                                 <button class="retry-btn" onClick={(e) => refreshCard(card.id, e)}>Try again</button>
                               </div>
                             </Show>
-                            {/* Show cached threads even while refreshing */}
-                            <Show when={cardThreads()[card.id]}>
+
+                            {/* Calendar card: show calendar events */}
+                            <Show when={card.card_type === "calendar" && cardCalendarEvents()[card.id]}>
+                              <Show when={getCalendarEventGroups(card.id).length === 0}>
+                                <div class="empty">No events</div>
+                              </Show>
+                              <For each={getCalendarEventGroups(card.id)}>
+                                {(group) => (
+                                  <>
+                                    <div class="date-header">{group.label}</div>
+                                    <For each={group.events}>
+                                      {(event) => (
+                                        <div
+                                          class={`calendar-event-item ${event.response_status === "declined" ? "declined" : ""}`}
+                                          onClick={() => event.html_link && openUrl(event.html_link)}
+                                        >
+                                          <div class="calendar-event-row">
+                                            <span class="calendar-event-title">{event.title}</span>
+                                            <span class="calendar-event-time-compact">
+                                              {getSmartEventTime(event)}
+                                            </span>
+                                          </div>
+                                          <Show when={event.description}>
+                                            <div class="calendar-event-description">{event.description}</div>
+                                          </Show>
+                                          <Show when={event.location}>
+                                            <div class="calendar-event-location-compact">
+                                              <LocationIcon />
+                                              <span>{event.location}</span>
+                                            </div>
+                                          </Show>
+                                          <Show when={event.response_status}>
+                                            <div class={`calendar-event-response ${event.response_status}`}>
+                                              {event.response_status === "accepted" ? "Going" :
+                                               event.response_status === "tentative" ? "Maybe" :
+                                               event.response_status === "declined" ? "Declined" :
+                                               event.response_status === "needsAction" ? "Pending" : event.response_status}
+                                            </div>
+                                          </Show>
+                                          <Show when={event.hangout_link}>
+                                            <button
+                                              class="calendar-join-btn"
+                                              onClick={(e) => { e.stopPropagation(); event.hangout_link && openUrl(event.hangout_link); }}
+                                            >
+                                              Join meeting
+                                            </button>
+                                          </Show>
+                                        </div>
+                                      )}
+                                    </For>
+                                  </>
+                                )}
+                              </For>
+                            </Show>
+
+                            {/* Email card: show threads */}
+                            <Show when={card.card_type !== "calendar" && cardThreads()[card.id]}>
                               <Show when={getDisplayGroups(card.id).length === 0}>
                                 <div class="empty">All clear</div>
                               </Show>
@@ -4665,7 +5087,15 @@ function App() {
                     <div class="loading">Searching...</div>
                   </Show>
                   <Show when={!queryPreviewLoading() && queryPreviewThreads().length === 0 && newCardQuery().trim()}>
-                    <div class="empty">No matches</div>
+                    <Show when={newCardQuery().toLowerCase().includes("calendar:")}>
+                      <div class="empty calendar-hint">
+                        <CalendarIcon />
+                        <span>Calendar card</span>
+                      </div>
+                    </Show>
+                    <Show when={!newCardQuery().toLowerCase().includes("calendar:")}>
+                      <div class="empty">No matches</div>
+                    </Show>
                   </Show>
                   <Show when={!queryPreviewLoading() && queryPreviewThreads().length > 0}>
                     <For each={queryPreviewThreads()}>
@@ -4830,7 +5260,7 @@ function App() {
           error={threadError()}
           card={activeThreadCardId() ? (() => {
             const c = cards().find(c => c.id === activeThreadCardId());
-            return c ? { name: c.name, color: cardColors()[c.id] || null } : null;
+            return c ? { name: c.name, color: (c.color as CardColor) || null } : null;
           })() : null}
           focusColor={selectedBgColorIndex() !== null ? BG_COLORS[selectedBgColorIndex()!].hex : null}
           onClose={() => { setActiveThreadId(null); setActiveThreadCardId(null); setFocusedMessageIndex(0); setLabelDrawerOpen(false); closeCompose(); }}
@@ -5028,6 +5458,116 @@ function App() {
                     </div>
                 )}
               </For>
+            </div>
+          </div>
+        </div>
+      </Show>
+
+      {/* Query help sheet */}
+      <Show when={queryHelpOpen()}>
+        <div class="query-help-overlay" onClick={() => setQueryHelpOpen(false)}></div>
+        <div class="query-help-sheet">
+          <div class="query-help-header">
+            <h3>Query Operators</h3>
+            <CloseButton onClick={() => setQueryHelpOpen(false)} />
+          </div>
+          <div class="query-help-body">
+            <div class="query-help-section">
+              <h4>Email Operators</h4>
+              <div class="query-help-table">
+                <div class="query-help-row">
+                  <code>from:</code>
+                  <span>Sender email or name</span>
+                </div>
+                <div class="query-help-row">
+                  <code>to:</code>
+                  <span>Recipient email</span>
+                </div>
+                <div class="query-help-row">
+                  <code>subject:</code>
+                  <span>Words in subject</span>
+                </div>
+                <div class="query-help-row">
+                  <code>label:</code>
+                  <span>Gmail label (e.g., label:inbox)</span>
+                </div>
+                <div class="query-help-row">
+                  <code>is:unread</code>
+                  <span>Unread messages</span>
+                </div>
+                <div class="query-help-row">
+                  <code>is:starred</code>
+                  <span>Starred messages</span>
+                </div>
+                <div class="query-help-row">
+                  <code>has:attachment</code>
+                  <span>Has attachments</span>
+                </div>
+                <div class="query-help-row">
+                  <code>newer_than:7d</code>
+                  <span>Last 7 days (d/m/y)</span>
+                </div>
+                <div class="query-help-row">
+                  <code>older_than:1m</code>
+                  <span>Older than 1 month</span>
+                </div>
+                <div class="query-help-row">
+                  <code>-word</code>
+                  <span>Exclude word</span>
+                </div>
+              </div>
+            </div>
+            <div class="query-help-section">
+              <h4>Calendar Operators</h4>
+              <p class="query-help-note">Start query with <code>calendar:</code> to create a calendar card</p>
+              <div class="query-help-table">
+                <div class="query-help-row">
+                  <code>calendar:today</code>
+                  <span>Today's events</span>
+                </div>
+                <div class="query-help-row">
+                  <code>calendar:tomorrow</code>
+                  <span>Tomorrow's events</span>
+                </div>
+                <div class="query-help-row">
+                  <code>calendar:week</code>
+                  <span>This week</span>
+                </div>
+                <div class="query-help-row">
+                  <code>calendar:month</code>
+                  <span>This month</span>
+                </div>
+                <div class="query-help-row">
+                  <code>with:name</code>
+                  <span>Attendee name/email</span>
+                </div>
+                <div class="query-help-row">
+                  <code>organizer:email</code>
+                  <span>Event organizer</span>
+                </div>
+                <div class="query-help-row">
+                  <code>location:text</code>
+                  <span>Event location</span>
+                </div>
+                <div class="query-help-row">
+                  <code>response:needsAction</code>
+                  <span>Needs RSVP</span>
+                </div>
+                <div class="query-help-row">
+                  <code>-keyword</code>
+                  <span>Exclude events</span>
+                </div>
+              </div>
+            </div>
+            <div class="query-help-section">
+              <h4>Examples</h4>
+              <div class="query-help-examples">
+                <code>from:boss is:unread</code>
+                <code>label:inbox newer_than:1d</code>
+                <code>has:attachment -newsletter</code>
+                <code>calendar:week with:john</code>
+                <code>calendar:today response:needsAction</code>
+              </div>
             </div>
           </div>
         </div>

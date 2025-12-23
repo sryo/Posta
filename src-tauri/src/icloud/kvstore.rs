@@ -5,6 +5,7 @@ use objc2::rc::Retained;
 use objc2::runtime::AnyClass;
 use objc2::{class, msg_send, msg_send_id};
 use objc2_foundation::NSString;
+use std::collections::HashMap;
 
 pub struct ICloudKVStore {
     store: Retained<objc2::runtime::AnyObject>,
@@ -46,6 +47,41 @@ impl ICloudKVStore {
                     let cards: Vec<Card> =
                         serde_json::from_str(&json).map_err(|e| e.to_string())?;
                     Ok(Some(cards))
+                }
+                None => Ok(None),
+            }
+        }
+    }
+
+    /// Sync account mappings (account_id -> email) to iCloud
+    pub fn sync_account_mappings(&self, mappings: &HashMap<String, String>) -> Result<(), String> {
+        let json = serde_json::to_string(mappings).map_err(|e| e.to_string())?;
+        let key = NSString::from_str("posta_account_mappings");
+        let value = NSString::from_str(&json);
+
+        unsafe {
+            let _: () = msg_send![&*self.store, setString:&*value forKey:&*key];
+            let _: bool = msg_send![&*self.store, synchronize];
+        }
+        Ok(())
+    }
+
+    /// Load account mappings (account_id -> email) from iCloud
+    pub fn load_account_mappings(&self) -> Result<Option<HashMap<String, String>>, String> {
+        let key = NSString::from_str("posta_account_mappings");
+
+        unsafe {
+            let value: Option<Retained<NSString>> = msg_send_id![&*self.store, stringForKey:&*key];
+
+            match value {
+                Some(s) => {
+                    let json = s.to_string();
+                    if json.is_empty() {
+                        return Ok(None);
+                    }
+                    let mappings: HashMap<String, String> =
+                        serde_json::from_str(&json).map_err(|e| e.to_string())?;
+                    Ok(Some(mappings))
                 }
                 None => Ok(None),
             }

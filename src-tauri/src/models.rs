@@ -32,6 +32,20 @@ pub struct Card {
     pub query: String,
     pub position: i32,
     pub collapsed: bool,
+    #[serde(default)]
+    pub color: Option<String>,
+    #[serde(default = "default_group_by")]
+    pub group_by: String,
+    #[serde(default = "default_card_type")]
+    pub card_type: String, // "email" or "calendar"
+}
+
+fn default_group_by() -> String {
+    "date".to_string()
+}
+
+fn default_card_type() -> String {
+    "email".to_string()
 }
 
 impl Card {
@@ -43,6 +57,23 @@ impl Card {
             query,
             position,
             collapsed: false,
+            color: None,
+            group_by: "date".to_string(),
+            card_type: "email".to_string(),
+        }
+    }
+
+    pub fn new_calendar(account_id: String, name: String, query: String, position: i32) -> Self {
+        Self {
+            id: Uuid::new_v4().to_string(),
+            account_id,
+            name,
+            query,
+            position,
+            collapsed: false,
+            color: None,
+            group_by: "date".to_string(),
+            card_type: "calendar".to_string(),
         }
     }
 }

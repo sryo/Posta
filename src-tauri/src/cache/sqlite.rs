@@ -85,6 +85,13 @@ impl CacheDb {
                 cached_at INTEGER NOT NULL,
                 PRIMARY KEY (card_id)
             );
+
+            -- Sync state: stores history ID for incremental sync
+            CREATE TABLE IF NOT EXISTS sync_state (
+                account_id TEXT PRIMARY KEY,
+                history_id TEXT NOT NULL,
+                last_sync_at INTEGER NOT NULL
+            );
             "#,
         )?;
         Ok(())
@@ -94,6 +101,11 @@ impl CacheDb {
         let conn = self.conn.lock().map_err(|_| CacheError::Lock)?;
         // Add picture column if it doesn't exist (for existing databases)
         let _ = conn.execute("ALTER TABLE accounts ADD COLUMN picture TEXT", []);
+        // Add color and group_by columns to cards
+        let _ = conn.execute("ALTER TABLE cards ADD COLUMN color TEXT", []);
+        let _ = conn.execute("ALTER TABLE cards ADD COLUMN group_by TEXT NOT NULL DEFAULT 'date'", []);
+        // Add card_type column to cards
+        let _ = conn.execute("ALTER TABLE cards ADD COLUMN card_type TEXT NOT NULL DEFAULT 'email'", []);
         Ok(())
     }
 
@@ -135,7 +147,7 @@ impl CacheDb {
     pub fn get_cards(&self, account_id: &str) -> Result<Vec<Card>, CacheError> {
         let conn = self.conn.lock().map_err(|_| CacheError::Lock)?;
         let mut stmt = conn.prepare(
-            "SELECT id, account_id, name, query, position, collapsed FROM cards WHERE account_id = ?1 ORDER BY position",
+            "SELECT id, account_id, name, query, position, collapsed, color, group_by, card_type FROM cards WHERE account_id = ?1 ORDER BY position",
         )?;
         let rows = stmt.query_map(params![account_id], |row| {
             Ok(Card {
@@ -145,6 +157,9 @@ impl CacheDb {
                 query: row.get(3)?,
                 position: row.get(4)?,
                 collapsed: row.get::<_, i32>(5)? != 0,
+                color: row.get(6)?,
+                group_by: row.get::<_, Option<String>>(7)?.unwrap_or_else(|| "date".to_string()),
+                card_type: row.get::<_, Option<String>>(8)?.unwrap_or_else(|| "email".to_string()),
             })
         })?;
         rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
@@ -154,8 +169,8 @@ impl CacheDb {
         let conn = self.conn.lock().map_err(|_| CacheError::Lock)?;
         let collapsed: i32 = if card.collapsed { 1 } else { 0 };
         conn.execute(
-            "INSERT INTO cards (id, account_id, name, query, position, collapsed) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-            params![card.id, card.account_id, card.name, card.query, card.position, collapsed],
+            "INSERT INTO cards (id, account_id, name, query, position, collapsed, color, group_by, card_type) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+            params![card.id, card.account_id, card.name, card.query, card.position, collapsed, card.color, card.group_by, card.card_type],
         )?;
         Ok(())
     }
@@ -164,8 +179,8 @@ impl CacheDb {
         let conn = self.conn.lock().map_err(|_| CacheError::Lock)?;
         let collapsed: i32 = if card.collapsed { 1 } else { 0 };
         conn.execute(
-            "UPDATE cards SET name = ?1, query = ?2, position = ?3, collapsed = ?4 WHERE id = ?5",
-            params![card.name, card.query, card.position, collapsed, card.id],
+            "UPDATE cards SET name = ?1, query = ?2, position = ?3, collapsed = ?4, color = ?5, group_by = ?6, card_type = ?7 WHERE id = ?8",
+            params![card.name, card.query, card.position, collapsed, card.color, card.group_by, card.card_type, card.id],
         )?;
         Ok(())
     }
@@ -271,5 +286,35 @@ impl CacheDb {
         let conn = self.conn.lock().map_err(|_| CacheError::Lock)?;
         let count = conn.execute("DELETE FROM card_thread_cache", [])?;
         Ok(count)
+    }
+
+    // Sync state operations (for incremental sync via History API)
+
+    pub fn get_history_id(&self, account_id: &str) -> Result<Option<String>, CacheError> {
+        let conn = self.conn.lock().map_err(|_| CacheError::Lock)?;
+        let mut stmt = conn.prepare("SELECT history_id FROM sync_state WHERE account_id = ?1")?;
+        let result = stmt.query_row(params![account_id], |row| row.get(0));
+
+        match result {
+            Ok(history_id) => Ok(Some(history_id)),
+            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+            Err(e) => Err(e.into()),
+        }
+    }
+
+    pub fn set_history_id(&self, account_id: &str, history_id: &str) -> Result<(), CacheError> {
+        let conn = self.conn.lock().map_err(|_| CacheError::Lock)?;
+        let now = chrono::Utc::now().timestamp();
+        conn.execute(
+            "INSERT OR REPLACE INTO sync_state (account_id, history_id, last_sync_at) VALUES (?1, ?2, ?3)",
+            params![account_id, history_id, now],
+        )?;
+        Ok(())
+    }
+
+    pub fn clear_history_id(&self, account_id: &str) -> Result<(), CacheError> {
+        let conn = self.conn.lock().map_err(|_| CacheError::Lock)?;
+        conn.execute("DELETE FROM sync_state WHERE account_id = ?1", params![account_id])?;
+        Ok(())
     }
 }

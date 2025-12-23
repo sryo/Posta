@@ -1,6 +1,7 @@
 // iCloud sync for cards via NSUbiquitousKeyValueStore
 
 use crate::models::Card;
+use std::collections::HashMap;
 
 #[cfg(target_os = "ios")]
 mod kvstore;
@@ -24,6 +25,16 @@ impl ICloudKVStore {
     }
 
     pub fn load_cards(&self) -> Result<Option<Vec<Card>>, String> {
+        // No-op on non-iOS
+        Ok(None)
+    }
+
+    pub fn sync_account_mappings(&self, _mappings: &HashMap<String, String>) -> Result<(), String> {
+        // No-op on non-iOS
+        Ok(())
+    }
+
+    pub fn load_account_mappings(&self) -> Result<Option<HashMap<String, String>>, String> {
         // No-op on non-iOS
         Ok(None)
     }

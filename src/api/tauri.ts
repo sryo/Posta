@@ -15,6 +15,9 @@ export interface Card {
   query: string;
   position: number;
   collapsed: boolean;
+  color: string | null;
+  group_by: string;
+  card_type: string; // "email" or "calendar"
 }
 
 export interface AuthConfig {
@@ -108,9 +111,12 @@ export async function getCards(accountId: string): Promise<Card[]> {
 export async function createCard(
   accountId: string,
   name: string,
-  query: string
+  query: string,
+  color?: string | null,
+  groupBy?: string,
+  cardType?: string
 ): Promise<Card> {
-  return invoke("create_card", { accountId, name, query });
+  return invoke("create_card", { accountId, name, query, color, groupBy, cardType });
 }
 
 export async function updateCard(card: Card): Promise<void> {
@@ -134,6 +140,19 @@ export async function fetchThreadsPaginated(
   pageToken?: string | null
 ): Promise<SearchResult> {
   return invoke("fetch_threads_paginated", { accountId, cardId, pageToken });
+}
+
+export interface IncrementalSyncResult {
+  modified_threads: Thread[];
+  deleted_thread_ids: string[];
+  new_history_id: string;
+  is_full_sync: boolean;
+}
+
+export async function syncThreadsIncremental(
+  accountId: string
+): Promise<IncrementalSyncResult> {
+  return invoke("sync_threads_incremental", { accountId });
 }
 
 export async function searchThreadsPreview(
@@ -316,4 +335,66 @@ export async function pullFromICloud(): Promise<boolean> {
 
 export async function forceICloudSync(): Promise<void> {
   return invoke("force_icloud_sync");
+}
+
+// People API (Contacts)
+
+export interface Contact {
+  resource_name: string;
+  display_name: string | null;
+  email_addresses: string[];
+  photo_url: string | null;
+}
+
+export async function fetchContacts(accountId: string): Promise<Contact[]> {
+  return invoke("fetch_contacts", { accountId });
+}
+
+export async function searchContacts(accountId: string, query: string): Promise<Contact[]> {
+  return invoke("search_contacts", { accountId, query });
+}
+
+// Google Calendar API
+
+export interface GoogleCalendarEventAttendee {
+  email: string;
+  display_name: string | null;
+  response_status: string | null;
+  is_self: boolean;
+  is_organizer: boolean;
+}
+
+export interface GoogleCalendarEvent {
+  id: string;
+  calendar_id: string;
+  calendar_name: string;
+  title: string;
+  description: string | null;
+  location: string | null;
+  start_time: number; // Unix timestamp in milliseconds
+  end_time: number | null;
+  all_day: boolean;
+  status: string; // confirmed, tentative, cancelled
+  organizer: string | null;
+  attendees: GoogleCalendarEventAttendee[];
+  html_link: string | null;
+  hangout_link: string | null;
+  response_status: string | null; // accepted, declined, tentative, needsAction
+}
+
+export interface CalendarInfo {
+  id: string;
+  name: string;
+  is_primary: boolean;
+}
+
+export async function listCalendars(accountId: string): Promise<CalendarInfo[]> {
+  return invoke("list_calendars", { accountId });
+}
+
+export async function fetchCalendarEvents(
+  accountId: string,
+  query: string
+): Promise<GoogleCalendarEvent[]> {
+  return invoke("fetch_calendar_events", { accountId, query });
 }

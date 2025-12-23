@@ -7,7 +7,7 @@ use tokio::sync::Mutex;
 
 const GOOGLE_AUTH_URL: &str = "https://accounts.google.com/o/oauth2/v2/auth";
 const GOOGLE_TOKEN_URL: &str = "https://oauth2.googleapis.com/token";
-const SCOPES: &str = "https://mail.google.com/ https://www.googleapis.com/auth/calendar.events email profile";
+const SCOPES: &str = "https://mail.google.com/ https://www.googleapis.com/auth/calendar.readonly https://www.googleapis.com/auth/calendar.events https://www.googleapis.com/auth/contacts.readonly email profile";
 const REDIRECT_URI: &str = "http://localhost:8420/callback";
 
 #[derive(Error, Debug)]

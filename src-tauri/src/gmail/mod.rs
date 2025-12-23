@@ -6,7 +6,9 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
 const GMAIL_API_BASE: &str = "https://gmail.googleapis.com/gmail/v1";
+const BATCH_API_ENDPOINT: &str = "https://www.googleapis.com/batch/gmail/v1";
 const PAGE_SIZE: usize = 20;
+const MAX_BATCH_SIZE: usize = 50; // Gmail allows up to 100, but 50 is safer
 const MAX_INLINE_IMAGE_SIZE: i32 = 100_000; // 100KB max for inline images
 
 #[derive(Debug, Serialize)]
@@ -201,16 +203,9 @@ impl GmailClient {
             return Ok(Vec::new());
         }
 
-        // Fetch details for each thread
-        let mut threads = Vec::new();
-        for thread_ref in thread_refs.iter() {
-            match self.get_thread_detail(&thread_ref.id).await {
-                Ok(thread) => threads.push(thread),
-                Err(e) => {
-                    tracing::warn!("Failed to fetch thread {}: {}", thread_ref.id, e);
-                }
-            }
-        }
+        // Batch fetch thread details (much faster than sequential)
+        let thread_ids: Vec<String> = thread_refs.iter().map(|t| t.id.clone()).collect();
+        let threads = self.batch_get_thread_details(&thread_ids).await?;
 
         Ok(group_threads_by_date(threads))
     }
@@ -259,16 +254,9 @@ impl GmailClient {
             });
         }
 
-        // Fetch details for each thread
-        let mut threads = Vec::new();
-        for thread_ref in thread_refs.iter() {
-            match self.get_thread_detail(&thread_ref.id).await {
-                Ok(thread) => threads.push(thread),
-                Err(e) => {
-                    tracing::warn!("Failed to fetch thread {}: {}", thread_ref.id, e);
-                }
-            }
-        }
+        // Batch fetch thread details (much faster than sequential)
+        let thread_ids: Vec<String> = thread_refs.iter().map(|t| t.id.clone()).collect();
+        let threads = self.batch_get_thread_details(&thread_ids).await?;
 
         // Group by date
         Ok(SearchResult {
@@ -521,6 +509,275 @@ impl GmailClient {
         Ok(Thread {
             gmail_thread_id: detail.id,
             account_id: String::new(), // Will be set by caller
+            subject,
+            snippet,
+            last_message_date: last_date,
+            unread_count,
+            labels,
+            participants,
+            has_attachment,
+            attachments,
+            calendar_event,
+        })
+    }
+
+    /// Batch fetch thread details for multiple thread IDs
+    /// This is much more efficient than fetching one at a time
+    pub async fn batch_get_thread_details(&self, thread_ids: &[String]) -> Result<Vec<Thread>, String> {
+        if thread_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let mut all_threads = Vec::new();
+
+        // Process in chunks of MAX_BATCH_SIZE
+        for chunk in thread_ids.chunks(MAX_BATCH_SIZE) {
+            match self.execute_batch_thread_fetch(chunk).await {
+                Ok(threads) => all_threads.extend(threads),
+                Err(e) => {
+                    tracing::warn!("Batch fetch failed, falling back to sequential: {}", e);
+                    // Fallback to sequential fetch for this chunk
+                    for thread_id in chunk {
+                        if let Ok(thread) = self.get_thread_detail(thread_id).await {
+                            all_threads.push(thread);
+                        }
+                    }
+                }
+            }
+        }
+
+        Ok(all_threads)
+    }
+
+    /// Execute a single batch request for thread details
+    async fn execute_batch_thread_fetch(&self, thread_ids: &[String]) -> Result<Vec<Thread>, String> {
+        let boundary = format!("batch_{}", uuid::Uuid::new_v4().to_string().replace('-', ""));
+
+        // Build multipart request body
+        let mut body = String::new();
+        let fields = "id,historyId,messages(id,threadId,labelIds,snippet,internalDate,payload(headers,mimeType,parts(mimeType,filename,body(size,attachmentId),parts(mimeType,filename,body(size,attachmentId)))))";
+
+        for (i, thread_id) in thread_ids.iter().enumerate() {
+            body.push_str(&format!("--{}\r\n", boundary));
+            body.push_str("Content-Type: application/http\r\n");
+            body.push_str(&format!("Content-ID: <item{}>\r\n\r\n", i));
+            body.push_str(&format!(
+                "GET /gmail/v1/users/me/threads/{}?format=full&fields={} HTTP/1.1\r\n\r\n",
+                thread_id, fields
+            ));
+        }
+        body.push_str(&format!("--{}--\r\n", boundary));
+
+        let resp = self
+            .client
+            .post(BATCH_API_ENDPOINT)
+            .bearer_auth(&self.access_token)
+            .header("Content-Type", format!("multipart/mixed; boundary={}", boundary))
+            .body(body)
+            .send()
+            .await
+            .map_err(|e| format!("Batch request failed: {}", e))?;
+
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let body = resp.text().await.unwrap_or_default();
+            return Err(format!("Batch API error {}: {}", status, body));
+        }
+
+        // Get the response boundary from Content-Type header (must extract before consuming body)
+        let resp_boundary: String = resp
+            .headers()
+            .get("content-type")
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("")
+            .split("boundary=")
+            .nth(1)
+            .map(|b| b.trim_matches('"').to_string())
+            .ok_or("Missing boundary in response")?;
+
+        let resp_body = resp.text().await.map_err(|e| format!("Failed to read response: {}", e))?;
+
+        self.parse_batch_response(&resp_body, &resp_boundary).await
+    }
+
+    /// Parse a batch response and extract thread details
+    async fn parse_batch_response(&self, body: &str, boundary: &str) -> Result<Vec<Thread>, String> {
+        let mut threads = Vec::new();
+        let delimiter = format!("--{}", boundary);
+
+        // Split by boundary, skip first empty part and last closing boundary
+        let parts: Vec<&str> = body.split(&delimiter).collect();
+
+        for part in parts.iter().skip(1) {
+            // Skip the closing boundary marker
+            if part.trim() == "--" || part.trim().is_empty() {
+                continue;
+            }
+
+            // Find the JSON body (after double newline in HTTP response)
+            // Format: headers\r\n\r\nHTTP/1.1 200 OK\r\n...headers...\r\n\r\n{json}
+            if let Some(json_start) = part.find("\r\n\r\n{") {
+                let json_part = &part[json_start + 4..]; // Skip \r\n\r\n
+                if let Some(json_end) = json_part.rfind('}') {
+                    let json_str = &json_part[..=json_end];
+
+                    match serde_json::from_str::<ThreadDetail>(json_str) {
+                        Ok(detail) => {
+                            if let Ok(thread) = self.thread_detail_to_thread(detail).await {
+                                threads.push(thread);
+                            }
+                        }
+                        Err(e) => {
+                            tracing::warn!("Failed to parse thread from batch: {}", e);
+                        }
+                    }
+                }
+            } else if let Some(json_start) = part.find("\n\n{") {
+                // Try Unix-style line endings
+                let json_part = &part[json_start + 3..];
+                if let Some(json_end) = json_part.rfind('}') {
+                    let json_str = &json_part[..=json_end];
+
+                    match serde_json::from_str::<ThreadDetail>(json_str) {
+                        Ok(detail) => {
+                            if let Ok(thread) = self.thread_detail_to_thread(detail).await {
+                                threads.push(thread);
+                            }
+                        }
+                        Err(e) => {
+                            tracing::warn!("Failed to parse thread from batch: {}", e);
+                        }
+                    }
+                }
+            }
+        }
+
+        Ok(threads)
+    }
+
+    /// Convert ThreadDetail to Thread (extracted from get_thread_detail for reuse)
+    async fn thread_detail_to_thread(&self, detail: ThreadDetail) -> Result<Thread, String> {
+        let messages = detail.messages.unwrap_or_default();
+        let latest_msg = messages.last();
+
+        let subject = latest_msg
+            .and_then(|m| m.payload.as_ref())
+            .and_then(|p| p.headers.as_ref())
+            .and_then(|headers| {
+                headers
+                    .iter()
+                    .find(|h| h.name.eq_ignore_ascii_case("Subject"))
+                    .map(|h| h.value.clone())
+            })
+            .unwrap_or_else(|| "(No Subject)".to_string());
+
+        let snippet = latest_msg
+            .and_then(|m| m.snippet.clone())
+            .unwrap_or_default();
+
+        let last_date = latest_msg
+            .and_then(|m| m.internal_date.as_ref())
+            .and_then(|d| d.parse::<i64>().ok())
+            .map(|ms| DateTime::from_timestamp_millis(ms).unwrap_or_else(Utc::now))
+            .unwrap_or_else(Utc::now);
+
+        let unread_count = messages
+            .iter()
+            .filter(|m| {
+                m.label_ids
+                    .as_ref()
+                    .map(|labels| labels.contains(&"UNREAD".to_string()))
+                    .unwrap_or(false)
+            })
+            .count() as i32;
+
+        let mut participants: Vec<String> = messages
+            .iter()
+            .filter_map(|m| {
+                m.payload.as_ref().and_then(|p| {
+                    p.headers.as_ref().and_then(|headers| {
+                        headers
+                            .iter()
+                            .find(|h| h.name.eq_ignore_ascii_case("From"))
+                            .map(|h| extract_email_address(&h.value))
+                    })
+                })
+            })
+            .collect();
+        participants.dedup();
+
+        let labels: Vec<String> = latest_msg
+            .and_then(|m| m.label_ids.clone())
+            .unwrap_or_default();
+
+        // Extract attachments from all messages
+        let mut attachments: Vec<Attachment> = Vec::new();
+        for msg in &messages {
+            if let Some(payload) = &msg.payload {
+                let infos = extract_attachments_from_parts(&payload.parts);
+                for info in infos {
+                    attachments.push(Attachment {
+                        message_id: msg.id.clone(),
+                        attachment_id: info.attachment_id,
+                        filename: info.filename,
+                        mime_type: info.mime_type,
+                        size: info.size,
+                        inline_data: None,
+                    });
+                }
+            }
+        }
+
+        // Fetch small image attachments inline (limit to first 3 images, < 100KB each)
+        let image_indices: Vec<usize> = attachments
+            .iter()
+            .enumerate()
+            .filter(|(_, a)| a.mime_type.starts_with("image/") && a.size < MAX_INLINE_IMAGE_SIZE)
+            .take(3)
+            .map(|(i, _)| i)
+            .collect();
+
+        for idx in image_indices {
+            let attachment = &attachments[idx];
+            match self.get_attachment(&attachment.message_id, &attachment.attachment_id).await {
+                Ok(data) => {
+                    attachments[idx].inline_data = Some(data);
+                }
+                Err(e) => {
+                    tracing::warn!("Failed to fetch attachment {}: {}", attachment.filename, e);
+                }
+            }
+        }
+
+        // Parse calendar events from ICS attachments
+        let mut calendar_event: Option<CalendarEvent> = None;
+        for attachment in attachments.iter() {
+            if attachment.is_calendar() {
+                match self.get_attachment(&attachment.message_id, &attachment.attachment_id).await {
+                    Ok(data) => {
+                        use base64::Engine;
+                        let normalized = data.replace('-', "+").replace('_', "/");
+                        if let Ok(decoded_bytes) = base64::engine::general_purpose::STANDARD.decode(&normalized) {
+                            if let Ok(ics_content) = String::from_utf8(decoded_bytes) {
+                                if let Some(event) = parse_ics_content(&ics_content) {
+                                    calendar_event = Some(event);
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        tracing::warn!("Failed to fetch calendar attachment: {}", e);
+                    }
+                }
+            }
+        }
+
+        let has_attachment = !attachments.is_empty();
+
+        Ok(Thread {
+            gmail_thread_id: detail.id,
+            account_id: String::new(),
             subject,
             snippet,
             last_message_date: last_date,
@@ -844,6 +1101,195 @@ impl GmailClient {
 
         Ok(())
     }
+
+    // ============ History API for Incremental Sync ============
+
+    /// Get the current history ID from the user's profile
+    pub async fn get_current_history_id(&self) -> Result<String, String> {
+        let url = format!("{}/users/me/profile", GMAIL_API_BASE);
+
+        let resp = self
+            .client
+            .get(&url)
+            .bearer_auth(&self.access_token)
+            .send()
+            .await
+            .map_err(|e| format!("Request failed: {}", e))?;
+
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let body = resp.text().await.unwrap_or_default();
+            return Err(format!("API error {}: {}", status, body));
+        }
+
+        #[derive(Deserialize)]
+        struct Profile {
+            #[serde(rename = "historyId")]
+            history_id: String,
+        }
+
+        let profile: Profile = resp
+            .json()
+            .await
+            .map_err(|e| format!("Failed to parse profile: {}", e))?;
+
+        Ok(profile.history_id)
+    }
+
+    /// Get changes since a given history ID
+    /// Returns thread IDs that were modified or deleted
+    pub async fn get_history_changes(&self, start_history_id: &str) -> Result<HistoryChanges, String> {
+        let mut all_modified_thread_ids = std::collections::HashSet::new();
+        let mut all_deleted_message_ids = std::collections::HashSet::new();
+        let mut new_history_id = start_history_id.to_string();
+        let mut page_token: Option<String> = None;
+
+        loop {
+            let mut url = format!(
+                "{}/users/me/history?startHistoryId={}&historyTypes=messageAdded&historyTypes=messageDeleted&historyTypes=labelAdded&historyTypes=labelRemoved",
+                GMAIL_API_BASE,
+                start_history_id
+            );
+
+            if let Some(token) = &page_token {
+                url.push_str(&format!("&pageToken={}", urlencoding::encode(token)));
+            }
+
+            let resp = self
+                .client
+                .get(&url)
+                .bearer_auth(&self.access_token)
+                .send()
+                .await
+                .map_err(|e| format!("Request failed: {}", e))?;
+
+            if resp.status().as_u16() == 404 {
+                // History ID is too old or invalid - caller should do full sync
+                return Err("History ID expired".to_string());
+            }
+
+            if !resp.status().is_success() {
+                let status = resp.status();
+                let body = resp.text().await.unwrap_or_default();
+                return Err(format!("API error {}: {}", status, body));
+            }
+
+            let history_resp: HistoryListResponse = resp
+                .json()
+                .await
+                .map_err(|e| format!("Failed to parse history: {}", e))?;
+
+            new_history_id = history_resp.history_id;
+
+            if let Some(history_items) = history_resp.history {
+                for item in history_items {
+                    // Messages added - track their thread IDs
+                    if let Some(messages_added) = item.messages_added {
+                        for msg in messages_added {
+                            if let Some(thread_id) = msg.message.thread_id {
+                                all_modified_thread_ids.insert(thread_id);
+                            }
+                        }
+                    }
+
+                    // Messages deleted
+                    if let Some(messages_deleted) = item.messages_deleted {
+                        for msg in messages_deleted {
+                            all_deleted_message_ids.insert(msg.message.id);
+                            if let Some(thread_id) = msg.message.thread_id {
+                                all_modified_thread_ids.insert(thread_id);
+                            }
+                        }
+                    }
+
+                    // Labels added/removed - these affect thread state
+                    if let Some(labels_added) = item.labels_added {
+                        for event in labels_added {
+                            if let Some(thread_id) = event.message.thread_id {
+                                all_modified_thread_ids.insert(thread_id);
+                            }
+                        }
+                    }
+
+                    if let Some(labels_removed) = item.labels_removed {
+                        for event in labels_removed {
+                            if let Some(thread_id) = event.message.thread_id {
+                                all_modified_thread_ids.insert(thread_id);
+                            }
+                        }
+                    }
+                }
+            }
+
+            match history_resp.next_page_token {
+                Some(token) => page_token = Some(token),
+                None => break,
+            }
+        }
+
+        Ok(HistoryChanges {
+            modified_thread_ids: all_modified_thread_ids.into_iter().collect(),
+            deleted_message_ids: all_deleted_message_ids.into_iter().collect(),
+            new_history_id,
+        })
+    }
+}
+
+// History API response types
+#[derive(Debug, Deserialize)]
+struct HistoryListResponse {
+    history: Option<Vec<HistoryItem>>,
+    #[serde(rename = "nextPageToken")]
+    next_page_token: Option<String>,
+    #[serde(rename = "historyId")]
+    history_id: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct HistoryItem {
+    #[allow(dead_code)]
+    id: String,
+    #[serde(rename = "messagesAdded")]
+    messages_added: Option<Vec<MessageAddedEvent>>,
+    #[serde(rename = "messagesDeleted")]
+    messages_deleted: Option<Vec<MessageDeletedEvent>>,
+    #[serde(rename = "labelsAdded")]
+    labels_added: Option<Vec<LabelEvent>>,
+    #[serde(rename = "labelsRemoved")]
+    labels_removed: Option<Vec<LabelEvent>>,
+}
+
+#[derive(Debug, Deserialize)]
+struct MessageAddedEvent {
+    message: HistoryMessage,
+}
+
+#[derive(Debug, Deserialize)]
+struct MessageDeletedEvent {
+    message: HistoryMessage,
+}
+
+#[derive(Debug, Deserialize)]
+struct LabelEvent {
+    message: HistoryMessage,
+    #[allow(dead_code)]
+    #[serde(rename = "labelIds")]
+    label_ids: Option<Vec<String>>,
+}
+
+#[derive(Debug, Deserialize)]
+struct HistoryMessage {
+    id: String,
+    #[serde(rename = "threadId")]
+    thread_id: Option<String>,
+}
+
+/// Result of getting history changes
+#[derive(Debug, Serialize)]
+pub struct HistoryChanges {
+    pub modified_thread_ids: Vec<String>,
+    pub deleted_message_ids: Vec<String>,
+    pub new_history_id: String,
 }
 
 fn extract_email_address(from: &str) -> String {

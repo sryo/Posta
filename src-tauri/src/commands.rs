@@ -38,14 +38,19 @@ fn sync_cards_to_icloud(state: &AppState) {
         None => return,
     };
 
-    // Collect all cards from all accounts
+    // Collect all cards from all accounts and build account mappings
     let accounts = match db.get_accounts() {
         Ok(a) => a,
         Err(_) => return,
     };
 
     let mut all_cards = Vec::new();
-    for account in accounts {
+    let mut account_mappings = std::collections::HashMap::new();
+
+    for account in &accounts {
+        // Build account_id -> email mapping for iCloud restore
+        account_mappings.insert(account.id.clone(), account.email.clone());
+
         if let Ok(cards) = db.get_cards(&account.id) {
             all_cards.extend(cards);
         }
@@ -55,6 +60,7 @@ fn sync_cards_to_icloud(state: &AppState) {
     drop(db_guard); // Release db lock before acquiring icloud lock
     if let Ok(icloud) = state.icloud.lock() {
         let _ = icloud.sync_cards(&all_cards);
+        let _ = icloud.sync_account_mappings(&account_mappings);
     }
 }
 
@@ -286,6 +292,9 @@ pub fn create_card(
     account_id: String,
     name: String,
     query: String,
+    color: Option<String>,
+    group_by: Option<String>,
+    card_type: Option<String>,
     state: State<'_, AppState>,
 ) -> Result<Card, String> {
     let card = {
@@ -295,7 +304,14 @@ pub fn create_card(
         let cards = db.get_cards(&account_id).map_err(|e| e.to_string())?;
         let position = cards.len() as i32;
 
-        let card = Card::new(account_id, name, query, position);
+        let card_type_value = card_type.unwrap_or_else(|| "email".to_string());
+        let mut card = if card_type_value == "calendar" {
+            Card::new_calendar(account_id, name, query, position)
+        } else {
+            Card::new(account_id, name, query, position)
+        };
+        card.color = color;
+        card.group_by = group_by.unwrap_or_else(|| "date".to_string());
         db.insert_card(&card).map_err(|e| e.to_string())?;
         card
     };
@@ -403,6 +419,123 @@ pub async fn fetch_threads_paginated(
     tracing::info!("Found {} groups, has_more: {}", result.groups.len(), result.has_more);
 
     Ok(result)
+}
+
+/// Result of incremental sync
+#[derive(Debug, serde::Serialize)]
+pub struct IncrementalSyncResult {
+    pub modified_threads: Vec<crate::models::Thread>,
+    pub deleted_thread_ids: Vec<String>,
+    pub new_history_id: String,
+    pub is_full_sync: bool,
+}
+
+#[tauri::command]
+pub async fn sync_threads_incremental(
+    account_id: String,
+    state: State<'_, AppState>,
+) -> Result<IncrementalSyncResult, String> {
+    tracing::info!("sync_threads_incremental for account: {}", account_id);
+
+    // Get stored history ID
+    let stored_history_id = {
+        let db_guard = state.db.lock().map_err(|_| "Lock error")?;
+        let db = db_guard.as_ref().ok_or("Database not initialized")?;
+        db.get_history_id(&account_id).map_err(|e| e.to_string())?
+    };
+
+    let access_token = get_access_token(&state, &account_id).await?;
+    let gmail = GmailClient::new(access_token);
+
+    match stored_history_id {
+        Some(history_id) => {
+            // Incremental sync - get changes since last sync
+            match gmail.get_history_changes(&history_id).await {
+                Ok(changes) => {
+                    tracing::info!(
+                        "Incremental sync: {} modified threads, {} deleted messages",
+                        changes.modified_thread_ids.len(),
+                        changes.deleted_message_ids.len()
+                    );
+
+                    // Batch fetch the modified threads
+                    let mut modified_threads = Vec::new();
+                    if !changes.modified_thread_ids.is_empty() {
+                        modified_threads = gmail
+                            .batch_get_thread_details(&changes.modified_thread_ids)
+                            .await
+                            .unwrap_or_default();
+
+                        // Set account_id on all threads
+                        for thread in &mut modified_threads {
+                            thread.account_id = account_id.clone();
+                        }
+                    }
+
+                    // Update stored history ID
+                    {
+                        let db_guard = state.db.lock().map_err(|_| "Lock error")?;
+                        let db = db_guard.as_ref().ok_or("Database not initialized")?;
+                        db.set_history_id(&account_id, &changes.new_history_id)
+                            .map_err(|e| e.to_string())?;
+                    }
+
+                    Ok(IncrementalSyncResult {
+                        modified_threads,
+                        deleted_thread_ids: changes.modified_thread_ids, // Thread IDs that had messages deleted
+                        new_history_id: changes.new_history_id,
+                        is_full_sync: false,
+                    })
+                }
+                Err(e) if e.contains("expired") => {
+                    tracing::warn!("History ID expired, performing full sync");
+                    // Clear the stale history ID and do full sync
+                    {
+                        let db_guard = state.db.lock().map_err(|_| "Lock error")?;
+                        let db = db_guard.as_ref().ok_or("Database not initialized")?;
+                        db.clear_history_id(&account_id).map_err(|e| e.to_string())?;
+                    }
+                    perform_full_sync(&gmail, &account_id, &state).await
+                }
+                Err(e) => Err(e),
+            }
+        }
+        None => {
+            // No history ID stored - this is the first sync
+            tracing::info!("No history ID found, performing initial full sync");
+            perform_full_sync(&gmail, &account_id, &state).await
+        }
+    }
+}
+
+/// Perform a full sync and establish history ID for future incremental syncs
+async fn perform_full_sync(
+    gmail: &GmailClient,
+    account_id: &str,
+    state: &State<'_, AppState>,
+) -> Result<IncrementalSyncResult, String> {
+    // Get current history ID for future syncs
+    let history_id = gmail
+        .get_current_history_id()
+        .await
+        .map_err(|e| format!("Failed to get history ID: {}", e))?;
+
+    // Store the history ID
+    {
+        let db_guard = state.db.lock().map_err(|_| "Lock error")?;
+        let db = db_guard.as_ref().ok_or("Database not initialized")?;
+        db.set_history_id(account_id, &history_id)
+            .map_err(|e| e.to_string())?;
+    }
+
+    // Return empty result - frontend should do its normal fetch
+    // This avoids duplicating the card-specific query logic here
+    Ok(IncrementalSyncResult {
+        modified_threads: Vec::new(),
+        deleted_thread_ids: Vec::new(),
+        new_history_id: history_id,
+        is_full_sync: true,
+    })
 }
 
 #[tauri::command]
@@ -873,9 +1006,11 @@ pub async fn get_calendar_rsvp_status(
 /// Pull cards from iCloud and merge with local. Returns true if changes were made.
 #[tauri::command]
 pub fn pull_from_icloud(state: State<'_, AppState>) -> Result<bool, String> {
-    let icloud_cards = {
+    let (icloud_cards, account_mappings) = {
         let icloud = state.icloud.lock().map_err(|_| "Lock error")?;
-        icloud.load_cards().map_err(|e| e.to_string())?
+        let cards = icloud.load_cards().map_err(|e| e.to_string())?;
+        let mappings = icloud.load_account_mappings().map_err(|e| e.to_string())?;
+        (cards, mappings)
     };
 
     let Some(icloud_cards) = icloud_cards else {
@@ -886,10 +1021,13 @@ pub fn pull_from_icloud(state: State<'_, AppState>) -> Result<bool, String> {
         return Ok(false);
     }
 
+    // Account mappings: old_account_id -> email (from iCloud)
+    let account_mappings = account_mappings.unwrap_or_default();
+
     let db_guard = state.db.lock().map_err(|_| "Lock error")?;
     let db = db_guard.as_ref().ok_or("Database not initialized")?;
 
-    // Get existing local cards
+    // Get existing local accounts and cards
     let accounts = db.get_accounts().map_err(|e| e.to_string())?;
     let mut local_card_ids: std::collections::HashSet<String> = std::collections::HashSet::new();
     for account in &accounts {
@@ -899,13 +1037,32 @@ pub fn pull_from_icloud(state: State<'_, AppState>) -> Result<bool, String> {
         }
     }
 
+    // Build local account lookup by ID and by email
+    let local_account_ids: std::collections::HashSet<String> =
+        accounts.iter().map(|a| a.id.clone()).collect();
+    let local_account_by_email: std::collections::HashMap<String, &crate::models::Account> =
+        accounts.iter().map(|a| (a.email.to_lowercase(), a)).collect();
+
     let mut changes_made = false;
 
     // Merge: iCloud cards that don't exist locally get inserted
-    for card in icloud_cards {
-        // Only insert if account exists locally
-        if !accounts.iter().any(|a| a.id == card.account_id) {
-            continue;
+    for mut card in icloud_cards {
+        // Check if this card's account exists locally
+        if !local_account_ids.contains(&card.account_id) {
+            // Account doesn't exist by ID - try to match by email
+            if let Some(old_email) = account_mappings.get(&card.account_id) {
+                // Found the email for this old account_id, find local account with same email
+                if let Some(local_account) = local_account_by_email.get(&old_email.to_lowercase()) {
+                    // Remap the card to the new local account_id
+                    card.account_id = local_account.id.clone();
+                } else {
+                    // No local account with this email - skip card
+                    continue;
+                }
+            } else {
+                // No email mapping found - skip orphaned card
+                continue;
+            }
         }
 
         if !local_card_ids.contains(&card.id) {
@@ -926,4 +1083,100 @@ pub fn pull_from_icloud(state: State<'_, AppState>) -> Result<bool, String> {
 pub fn force_icloud_sync(state: State<'_, AppState>) -> Result<(), String> {
     sync_cards_to_icloud(&state);
     Ok(())
+}
+
+// People API commands (contacts)
+
+#[tauri::command]
+pub async fn fetch_contacts(
+    account_id: String,
+    state: State<'_, AppState>,
+) -> Result<Vec<crate::people::Contact>, String> {
+    // Verify account exists
+    {
+        let db_guard = state.db.lock().map_err(|_| "Lock error")?;
+        let db = db_guard.as_ref().ok_or("Database not initialized")?;
+        let accounts = db.get_accounts().map_err(|e| e.to_string())?;
+
+        if !accounts.iter().any(|a| a.id == account_id) {
+            return Err("Account not found".to_string());
+        }
+    }
+
+    let access_token = get_access_token(&state, &account_id).await?;
+    let people = crate::people::PeopleClient::new(access_token);
+
+    // Fetch up to 200 contacts
+    people.fetch_all_contacts(200).await
+}
+
+#[tauri::command]
+pub async fn search_contacts(
+    account_id: String,
+    query: String,
+    state: State<'_, AppState>,
+) -> Result<Vec<crate::people::Contact>, String> {
+    // Verify account exists
+    {
+        let db_guard = state.db.lock().map_err(|_| "Lock error")?;
+        let db = db_guard.as_ref().ok_or("Database not initialized")?;
+        let accounts = db.get_accounts().map_err(|e| e.to_string())?;
+
+        if !accounts.iter().any(|a| a.id == account_id) {
+            return Err("Account not found".to_string());
+        }
+    }
+
+    let access_token = get_access_token(&state, &account_id).await?;
+    let people = crate::people::PeopleClient::new(access_token);
+
+    people.search_contacts(&query).await
+}
+
+// Calendar API commands
+
+#[tauri::command]
+pub async fn list_calendars(
+    account_id: String,
+    state: State<'_, AppState>,
+) -> Result<Vec<(String, String, bool)>, String> {
+    // Verify account exists
+    {
+        let db_guard = state.db.lock().map_err(|_| "Lock error")?;
+        let db = db_guard.as_ref().ok_or("Database not initialized")?;
+        let accounts = db.get_accounts().map_err(|e| e.to_string())?;
+
+        if !accounts.iter().any(|a| a.id == account_id) {
+            return Err("Account not found".to_string());
+        }
+    }
+
+    let access_token = get_access_token(&state, &account_id).await?;
+    let calendar = crate::calendar::CalendarClient::new(access_token);
+
+    calendar.list_calendars().await
+}
+
+#[tauri::command]
+pub async fn fetch_calendar_events(
+    account_id: String,
+    query: String,
+    state: State<'_, AppState>,
+) -> Result<Vec<crate::calendar::CalendarEvent>, String> {
+    // Verify account exists
+    {
+        let db_guard = state.db.lock().map_err(|_| "Lock error")?;
+        let db = db_guard.as_ref().ok_or("Database not initialized")?;
+        let accounts = db.get_accounts().map_err(|e| e.to_string())?;
+
+        if !accounts.iter().any(|a| a.id == account_id) {
+            return Err("Account not found".to_string());
+        }
+    }
+
+    let access_token = get_access_token(&state, &account_id).await?;
+    let calendar = crate::calendar::CalendarClient::new(access_token);
+
+    let parsed_query = crate::calendar::CalendarQuery::parse(&query);
+    calendar.search_events(&parsed_query, 50).await
 }
