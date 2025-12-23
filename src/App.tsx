@@ -142,6 +142,7 @@ import {
   ReplyAllIcon,
   ForwardIcon,
   ArchiveIcon,
+  InboxIcon,
   StarIcon,
   StarFilledIcon,
   TrashIcon,
@@ -976,6 +977,7 @@ const ThreadView = (props: {
   isStarred: boolean,
   isRead: boolean,
   isImportant: boolean,
+  isInInbox: boolean,
   // Inline compose
   inlineCompose: InlineComposeProps | null,
   // Attachments from thread listing (with inline_data for thumbnails)
@@ -1093,7 +1095,7 @@ const ThreadView = (props: {
     // Toolbar action shortcuts (only when not in input)
     const isTyping = document.activeElement?.tagName === 'INPUT' || document.activeElement?.tagName === 'TEXTAREA';
     if (!isTyping && props.thread) {
-      if (e.key === 'a') { e.preventDefault(); props.onAction('archive'); return; }
+      if (e.key === 'a') { e.preventDefault(); props.onAction(props.isInInbox ? 'archive' : 'inbox'); return; }
       if (e.key === 's') { e.preventDefault(); props.onAction(props.isStarred ? 'unstar' : 'star'); return; }
       if (e.key === 'd') { e.preventDefault(); props.onAction('trash'); return; }
       if (e.key === 'l') { e.preventDefault(); props.onOpenLabels(); return; }
@@ -1152,9 +1154,9 @@ const ThreadView = (props: {
         {/* Row 2: Actions */}
         <Show when={props.thread}>
           <div class="thread-floating-bar-row thread-bar-actions">
-            <button class="thread-toolbar-btn" onClick={() => props.onAction('archive')} title="Archive">
-              <ArchiveIcon />
-              <span class="thread-toolbar-label">Archive</span>
+            <button class="thread-toolbar-btn" onClick={() => props.onAction(props.isInInbox ? 'archive' : 'inbox')} title={props.isInInbox ? 'Archive' : 'Move to Inbox'}>
+              {props.isInInbox ? <ArchiveIcon /> : <InboxIcon />}
+              <span class="thread-toolbar-label">{props.isInInbox ? 'Archive' : 'Inbox'}</span>
               <span class="shortcut-hint">A</span>
             </button>
 
@@ -2387,10 +2389,10 @@ function App() {
     // Listen for color scheme changes
     const colorSchemeQuery = window.matchMedia?.("(prefers-color-scheme: dark)");
     const handleColorSchemeChange = (e: MediaQueryListEvent) => {
-      const cardRow = document.querySelector(".card-row") as HTMLElement;
-      if (cardRow?.dataset.bgLight || cardRow?.dataset.bgDark) {
-        const bgColor = e.matches ? cardRow.dataset.bgDark! : cardRow.dataset.bgLight!;
-        cardRow.style.background = bgColor;
+      const deck = document.querySelector(".deck") as HTMLElement;
+      if (deck?.dataset.bgLight || deck?.dataset.bgDark) {
+        const bgColor = e.matches ? deck.dataset.bgDark! : deck.dataset.bgLight!;
+        deck.style.background = bgColor;
         document.documentElement.style.setProperty("--app-bg", bgColor);
       }
     };
@@ -2698,7 +2700,8 @@ function App() {
     if (thread && cardId) {
       if (e.key === 'a') {
         e.preventDefault();
-        handleThreadAction('archive', [thread.gmail_thread_id], cardId);
+        const isInInbox = thread.labels?.includes('INBOX') ?? true;
+        handleThreadAction(isInInbox ? 'archive' : 'inbox', [thread.gmail_thread_id], cardId);
         return;
       }
       if (e.key === 's') {
@@ -3324,6 +3327,10 @@ function App() {
     return getCurrentThreadLabels().includes('IMPORTANT');
   }
 
+  function isThreadInInbox(): boolean {
+    return getCurrentThreadLabels().includes('INBOX');
+  }
+
   async function handleThreadViewAction(action: string) {
     const thread = activeThread();
     const account = selectedAccount();
@@ -3331,7 +3338,7 @@ function App() {
     if (!thread || !account) return;
 
     // Close thread view after action (except for read/unread/important)
-    const shouldClose = ['archive', 'trash', 'spam'].includes(action);
+    const shouldClose = ['archive', 'inbox', 'trash', 'spam'].includes(action);
 
     await handleThreadAction(action, [thread.id], cardId || '');
 
@@ -3912,22 +3919,22 @@ function App() {
   }
 
   function applyBgColor(colorIndex: number | null) {
-    const cardRow = document.querySelector(".card-row") as HTMLElement;
-    if (!cardRow) return;
+    const deck = document.querySelector(".deck") as HTMLElement;
+    if (!deck) return;
 
     if (colorIndex === null) {
-      cardRow.style.background = "";
-      delete cardRow.dataset.bgLight;
-      delete cardRow.dataset.bgDark;
+      deck.style.background = "";
+      delete deck.dataset.bgLight;
+      delete deck.dataset.bgDark;
       document.documentElement.style.setProperty("--accent", "#4285f4");
       document.documentElement.style.removeProperty("--app-bg");
     } else {
       const color = BG_COLORS[colorIndex];
       const isDark = window.matchMedia?.("(prefers-color-scheme: dark)").matches;
       const bgColor = isDark ? color.dark : color.light;
-      cardRow.style.background = bgColor;
-      cardRow.dataset.bgLight = color.light;
-      cardRow.dataset.bgDark = color.dark;
+      deck.style.background = bgColor;
+      deck.dataset.bgLight = color.light;
+      deck.dataset.bgDark = color.dark;
       document.documentElement.style.setProperty("--accent", color.hex);
       document.documentElement.style.setProperty("--app-bg", bgColor);
     }
@@ -4505,6 +4512,7 @@ function App() {
     const plural = count > 1 ? 's' : '';
     switch (action) {
       case 'archive': return `Archived ${count} thread${plural}`;
+      case 'inbox': return `Moved ${count} thread${plural} to inbox`;
       case 'star': return `Starred ${count} thread${plural}`;
       case 'unstar': return `Removed star from ${count} thread${plural}`;
       case 'trash': return `Deleted ${count} thread${plural}`;
@@ -4535,6 +4543,9 @@ function App() {
     switch (action) {
       case 'archive':
         removeLabels.push("INBOX");
+        break;
+      case 'inbox':
+        addLabels.push("INBOX");
         break;
       case 'star':
         addLabels.push("STARRED");
@@ -4641,6 +4652,7 @@ function App() {
     const isStarred = props.thread?.labels?.includes("STARRED") ?? false;
     const isImportant = props.thread?.labels?.includes("IMPORTANT") ?? false;
     const isRead = (props.thread?.unread_count ?? 0) === 0;
+    const isInInbox = props.thread?.labels?.includes("INBOX") ?? true;
 
     const order = actionOrder();
 
@@ -4659,9 +4671,9 @@ function App() {
       onClick: (e) => { e.stopPropagation(); handleForward(tId, cId); }
     };
     actionDefs.archive = {
-      cls: 'bulk-archive', title: 'Archive', keyHint: 'a', icon: ArchiveIcon,
-      onClick: (e) => { e.stopPropagation(); handleThreadAction('archive', [tId], cId); },
-      bulkOnClick: (e) => { e.stopPropagation(); handleThreadAction('archive', Array.from(selection), cId); }
+      cls: 'bulk-archive', title: isInInbox ? 'Archive' : 'Move to Inbox', keyHint: 'a', icon: isInInbox ? ArchiveIcon : InboxIcon,
+      onClick: (e) => { e.stopPropagation(); handleThreadAction(isInInbox ? 'archive' : 'inbox', [tId], cId); },
+      bulkTitle: 'Archive', bulkIcon: ArchiveIcon, bulkOnClick: (e) => { e.stopPropagation(); handleThreadAction('archive', Array.from(selection), cId); }
     };
     actionDefs.star = {
       cls: 'bulk-star', title: isStarred ? 'Unstar' : 'Star', keyHint: 's', icon: isStarred ? StarFilledIcon : StarIcon,
@@ -5254,11 +5266,11 @@ function App() {
         </div>
       </Show>
 
-      {/* Main card view */}
+      {/* Deck */}
       <Show when={!loading() && selectedAccount()}>
         <DragDropProvider onDragStart={onDragStart} onDragEnd={onDragEnd} collisionDetector={closestCenter}>
           <DragDropSensors sensors={[createPointerSensor({ activationConstraint: { distance: 5 } })]} />
-          <div class={`card-row ${resizing() ? 'resizing' : ''}`}>
+          <div class={`deck ${resizing() ? 'resizing' : ''}`}>
             <SortableProvider ids={cardIds()}>
               <For each={cards()}>
                 {(card) => {
@@ -5960,6 +5972,7 @@ function App() {
           isStarred={isThreadStarred()}
           isRead={isThreadRead()}
           isImportant={isThreadImportant()}
+          isInInbox={isThreadInInbox()}
           // Inline compose props
           inlineCompose={composing() ? {
             replyToMessageId: replyingToThread()?.messageId || null,

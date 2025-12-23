@@ -96,7 +96,7 @@ body {
     margin: 0;
     font-family: system-ui, -apple-system, sans-serif;
     font-size: 13px;
-    background: transparent;
+    background: var(--bg-secondary);
     color: var(--text-primary);
     height: 100%;
     overscroll-behavior: none;
@@ -693,8 +693,8 @@ select:focus:not(:focus-visible) {
     object-fit: cover;
 }
 
-/* Card Row */
-.card-row {
+/* Deck */
+.deck {
     display: flex;
     padding: var(--app-edge-margin);
     padding-left: calc(var(--sidebar-width) + 16px);
@@ -1988,16 +1988,16 @@ button:disabled:hover {
 }
 
 .card-resize-handle:hover::after,
-.card-row.resizing .card-resize-handle::after {
+.deck.resizing .card-resize-handle::after {
     opacity: 1;
     background: var(--accent);
 }
 
-.card-row.resizing {
+.deck.resizing {
     cursor: ew-resize;
 }
 
-.card-row.resizing * {
+.deck.resizing * {
     cursor: ew-resize !important;
     user-select: none;
 }
@@ -4843,7 +4843,7 @@ button:disabled:hover {
         max-width: 240px;
     }
 
-    .card-row {
+    .deck {
         padding-left: calc(var(--sidebar-width) + 8px);
         padding-right: 8px;
     }
