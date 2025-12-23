@@ -279,6 +279,22 @@ export async function clearCardCache(cardId: string): Promise<void> {
   return invoke("clear_card_cache", { cardId });
 }
 
+export interface CachedCardEvents {
+  events: GoogleCalendarEvent[];
+  cached_at: number;
+}
+
+export async function getCachedCardEvents(cardId: string): Promise<CachedCardEvents | null> {
+  return invoke("get_cached_card_events", { cardId });
+}
+
+export async function saveCachedCardEvents(
+  cardId: string,
+  events: GoogleCalendarEvent[]
+): Promise<void> {
+  return invoke("save_cached_card_events", { cardId, events });
+}
+
 export async function downloadAttachment(
   accountId: string,
   messageId: string,
@@ -397,4 +413,38 @@ export async function fetchCalendarEvents(
   query: string
 ): Promise<GoogleCalendarEvent[]> {
   return invoke("fetch_calendar_events", { accountId, query });
+}
+
+export async function createCalendarEvent(
+  accountId: string,
+  calendarId: string | null,
+  summary: string,
+  description: string | null,
+  location: string | null,
+  startTime: number,
+  endTime: number,
+  allDay: boolean,
+  attendees: string[] | null,
+  recurrence: string[] | null
+): Promise<GoogleCalendarEvent> {
+  return invoke("create_calendar_event", {
+    accountId,
+    calendarId,
+    summary,
+    description,
+    location,
+    startTime: Math.round(startTime),
+    endTime: Math.round(endTime),
+    allDay,
+    attendees,
+    recurrence,
+  });
+}
+
+export async function suggestReplies(
+  accountId: string,
+  threadId: string,
+  projectId: string
+): Promise<string[]> {
+  return invoke("suggest_replies", { accountId, threadId, projectId });
 }

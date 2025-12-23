@@ -1,6 +1,7 @@
 // Tauri command handlers
 
 use crate::auth::{self, wait_for_callback, GmailAuth};
+use crate::ai::VertexAiClient;
 use crate::cache::CacheDb;
 use crate::gmail::{GmailClient, GmailDraft, GmailLabel, SearchResult};
 use crate::icloud::ICloudKVStore;
@@ -740,7 +741,45 @@ pub fn clear_card_cache(card_id: String, state: State<'_, AppState>) -> Result<(
     let db_guard = state.db.lock().map_err(|_| "Lock error")?;
     let db = db_guard.as_ref().ok_or("Database not initialized")?;
 
+
     db.clear_card_cache(&card_id).map_err(|e| e.to_string())
+}
+
+#[derive(Debug, Serialize)]
+pub struct CachedCardEvents {
+    pub events: Vec<crate::models::GoogleCalendarEvent>,
+    pub cached_at: i64,
+}
+
+#[tauri::command]
+pub fn get_cached_card_events(
+    card_id: String,
+    state: State<'_, AppState>,
+) -> Result<Option<CachedCardEvents>, String> {
+    let db_guard = state.db.lock().map_err(|_| "Lock error")?;
+    let db = db_guard.as_ref().ok_or("Database not initialized")?;
+
+    match db.get_card_events(&card_id) {
+        Ok(Some((events, cached_at))) => Ok(Some(CachedCardEvents {
+            events,
+            cached_at,
+        })),
+        Ok(None) => Ok(None),
+        Err(e) => Err(e.to_string()),
+    }
+}
+
+#[tauri::command]
+pub fn save_cached_card_events(
+    card_id: String,
+    events: Vec<crate::models::GoogleCalendarEvent>,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    let db_guard = state.db.lock().map_err(|_| "Lock error")?;
+    let db = db_guard.as_ref().ok_or("Database not initialized")?;
+
+    db.save_card_events(&card_id, &events)
+        .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -1060,8 +1099,16 @@ pub fn pull_from_icloud(state: State<'_, AppState>) -> Result<bool, String> {
                     continue;
                 }
             } else {
-                // No email mapping found - skip orphaned card
-                continue;
+                // No email mapping found.
+                // Fallback: If there is exactly one local account, assume these orphaned cards belong to it.
+                // This covers the case where account mappings are missing (e.g. older version or sync issue)
+                // and the user is setting up fresh with a single account.
+                if accounts.len() == 1 {
+                    card.account_id = accounts[0].id.clone();
+                } else {
+                    // No email mapping found and multiple/no local accounts - skip orphaned card
+                    continue;
+                }
             }
         }
 
@@ -1179,4 +1226,102 @@ pub async fn fetch_calendar_events(
 
     let parsed_query = crate::calendar::CalendarQuery::parse(&query);
     calendar.search_events(&parsed_query, 50).await
+}
+
+#[tauri::command]
+pub async fn create_calendar_event(
+    account_id: String,
+    calendar_id: Option<String>,
+    summary: String,
+    description: Option<String>,
+    location: Option<String>,
+    start_time: i64,
+    end_time: i64,
+    all_day: bool,
+    attendees: Option<Vec<String>>,
+    recurrence: Option<Vec<String>>,
+    state: State<'_, AppState>,
+) -> Result<crate::models::GoogleCalendarEvent, String> {
+    let access_token = get_access_token(&state, &account_id).await?;
+    let calendar = crate::calendar::CalendarClient::new(access_token);
+
+    calendar
+        .create_event(
+            calendar_id.as_deref().unwrap_or("primary"),
+            summary,
+            description,
+            start_time,
+            end_time,
+            all_day,
+            location,
+            attendees,
+            recurrence,
+        )
+        .await
+}
+
+#[tauri::command]
+pub async fn suggest_replies(
+    account_id: String,
+    thread_id: String,
+    project_id: String,
+    state: State<'_, AppState>,
+) -> Result<Vec<String>, String> {
+    if project_id.is_empty() {
+        return Err("Google Cloud Project ID is required for smart replies.".to_string());
+    }
+
+    // Verify account exists
+    {
+        let db_guard = state.db.lock().map_err(|_| "Lock error")?;
+        let db = db_guard.as_ref().ok_or("Database not initialized")?;
+        let accounts = db.get_accounts().map_err(|e| e.to_string())?;
+
+        if !accounts.iter().any(|a| a.id == account_id) {
+            return Err("Account not found".to_string());
+        }
+    }
+
+    let access_token = get_access_token(&state, &account_id).await?;
+
+    // 1. Get thread details to build context
+    let gmail = GmailClient::new(access_token.clone());
+    let thread = gmail
+        .get_thread(&thread_id)
+        .await
+        .map_err(|e| format!("Failed to fetch thread: {}", e))?;
+
+    // 2. Build email context from the last few messages
+    let mut context = String::new();
+    
+    // Attempt to find Subject
+    let subject = thread.messages.first()
+        .and_then(|m| m.payload.as_ref())
+        .and_then(|p| p.headers.as_ref())
+        .and_then(|h| h.iter().find(|x| x.name.eq_ignore_ascii_case("Subject")))
+        .map(|x| x.value.as_str())
+        .unwrap_or("(No Subject)");
+    
+    context.push_str(&format!("Subject: {}\n\n", subject));
+
+    // Take last 3 messages
+    // Gmail API generally returns messages in chronological order
+    let count = thread.messages.len();
+    let skip = if count > 3 { count - 3 } else { 0 };
+    
+    for msg in thread.messages.iter().skip(skip) {
+        let from = msg.payload.as_ref()
+            .and_then(|p| p.headers.as_ref())
+            .and_then(|h| h.iter().find(|x| x.name.eq_ignore_ascii_case("From")))
+            .map(|x| x.value.as_str())
+            .unwrap_or("Unknown");
+        
+        let snippet = msg.snippet.as_deref().unwrap_or("");
+        
+        context.push_str(&format!("From: {}\nMessage: {}\n\n", from, snippet));
+    }
+
+    // 3. Call Vertex AI
+    let vertex = VertexAiClient::new(access_token, project_id);
+    vertex.suggest_replies(&context).await
 }

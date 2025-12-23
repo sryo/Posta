@@ -4,6 +4,9 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+pub use crate::calendar::CalendarEvent as GoogleCalendarEvent;
+pub use crate::calendar::EventAttendee as GoogleCalendarEventAttendee;
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Account {
     pub id: String,

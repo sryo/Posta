@@ -200,7 +200,13 @@ export function formatCalendarEventDate(
   endTime: number | null,
   allDay: boolean
 ): string {
-  const start = new Date(startTime);
+  let start: Date;
+  if (allDay) {
+    const d = new Date(startTime);
+    start = new Date(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate());
+  } else {
+    start = new Date(startTime);
+  }
   const now = new Date();
   const isToday = start.toDateString() === now.toDateString();
   const tomorrow = new Date(now);

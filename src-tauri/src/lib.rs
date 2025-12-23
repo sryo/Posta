@@ -8,6 +8,7 @@ pub mod gmail;
 pub mod icloud;
 pub mod models;
 pub mod people;
+pub mod ai;
 
 use commands::AppState;
 use tauri::{Emitter, Listener, Manager, RunEvent, WindowEvent};
@@ -131,6 +132,8 @@ pub fn run() {
             commands::reply_to_thread,
             commands::get_cached_card_threads,
             commands::save_cached_card_threads,
+            commands::get_cached_card_events,
+            commands::save_cached_card_events,
             commands::clear_card_cache,
             commands::download_attachment,
             commands::open_attachment,
@@ -145,6 +148,8 @@ pub fn run() {
             commands::search_contacts,
             commands::list_calendars,
             commands::fetch_calendar_events,
+            commands::create_calendar_event,
+            commands::suggest_replies,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application");

@@ -92,6 +92,14 @@ impl CacheDb {
                 history_id TEXT NOT NULL,
                 last_sync_at INTEGER NOT NULL
             );
+
+            -- Card calendar cache: stores calendar event data per card
+            CREATE TABLE IF NOT EXISTS card_calendar_cache (
+                card_id TEXT NOT NULL,
+                events_data TEXT NOT NULL,
+                cached_at INTEGER NOT NULL,
+                PRIMARY KEY (card_id)
+            );
             "#,
         )?;
         Ok(())
@@ -279,13 +287,59 @@ impl CacheDb {
     pub fn clear_card_cache(&self, card_id: &str) -> Result<(), CacheError> {
         let conn = self.conn.lock().map_err(|_| CacheError::Lock)?;
         conn.execute("DELETE FROM card_thread_cache WHERE card_id = ?1", params![card_id])?;
+        conn.execute("DELETE FROM card_calendar_cache WHERE card_id = ?1", params![card_id])?;
         Ok(())
     }
 
     pub fn clear_all_card_caches(&self) -> Result<usize, CacheError> {
         let conn = self.conn.lock().map_err(|_| CacheError::Lock)?;
-        let count = conn.execute("DELETE FROM card_thread_cache", [])?;
-        Ok(count)
+        let count_threads = conn.execute("DELETE FROM card_thread_cache", [])?;
+        let count_calendar = conn.execute("DELETE FROM card_calendar_cache", [])?;
+        Ok(count_threads + count_calendar)
+    }
+
+    // Card calendar cache operations
+
+    pub fn save_card_events(
+        &self,
+        card_id: &str,
+        events: &[crate::models::GoogleCalendarEvent],
+    ) -> Result<(), CacheError> {
+        let conn = self.conn.lock().map_err(|_| CacheError::Lock)?;
+        let now = chrono::Utc::now().timestamp();
+        let events_data = serde_json::to_string(events).unwrap_or_default();
+
+        conn.execute(
+            "INSERT OR REPLACE INTO card_calendar_cache (card_id, events_data, cached_at) VALUES (?1, ?2, ?3)",
+            params![card_id, events_data, now],
+        )?;
+        Ok(())
+    }
+
+    pub fn get_card_events(
+        &self,
+        card_id: &str,
+    ) -> Result<Option<(Vec<crate::models::GoogleCalendarEvent>, i64)>, CacheError> {
+        let conn = self.conn.lock().map_err(|_| CacheError::Lock)?;
+        let mut stmt = conn.prepare(
+            "SELECT events_data, cached_at FROM card_calendar_cache WHERE card_id = ?1",
+        )?;
+
+        let result = stmt.query_row(params![card_id], |row| {
+            let events_data: String = row.get(0)?;
+            let cached_at: i64 = row.get(1)?;
+            Ok((events_data, cached_at))
+        });
+
+        match result {
+            Ok((events_data, cached_at)) => {
+                let events: Vec<crate::models::GoogleCalendarEvent> =
+                    serde_json::from_str(&events_data).unwrap_or_default();
+                Ok(Some((events, cached_at)))
+            }
+            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+            Err(e) => Err(e.into()),
+        }
     }
 
     // Sync state operations (for incremental sync via History API)

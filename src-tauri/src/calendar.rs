@@ -122,6 +122,29 @@ struct ApiAttendee {
     organizer: Option<bool>,
 }
 
+#[derive(Debug, Serialize)]
+struct CreateEventRequest {
+    summary: String,
+    description: Option<String>,
+    location: Option<String>,
+    start: EventDateTimeInput,
+    end: EventDateTimeInput,
+    attendees: Option<Vec<AttendeeInput>>,
+    recurrence: Option<Vec<String>>,
+}
+
+#[derive(Debug, Serialize)]
+struct EventDateTimeInput {
+    #[serde(rename = "dateTime")]
+    date_time: Option<String>,
+    date: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct AttendeeInput {
+    email: String,
+}
+
 pub struct CalendarClient {
     http_client: reqwest::Client,
     access_token: String,
@@ -224,6 +247,7 @@ impl CalendarClient {
 
         // Determine time range from query
         let (time_min, time_max) = query.get_time_range();
+        println!("DEBUG: Searching events with range: {} to {}", time_min, time_max);
 
         for (calendar_id, calendar_name, _primary) in calendars {
             let mut url = format!(
@@ -281,6 +305,93 @@ impl CalendarClient {
         sorted.truncate(max_results as usize);
 
         Ok(sorted)
+    }
+
+    /// Create a new event
+    pub async fn create_event(
+        &self,
+        calendar_id: &str,
+        summary: String,
+        description: Option<String>,
+        start_time: i64,
+        end_time: i64,
+        all_day: bool,
+        location: Option<String>,
+        attendees: Option<Vec<String>>,
+        recurrence: Option<Vec<String>>,
+    ) -> Result<CalendarEvent, String> {
+        let url = format!(
+            "{}/calendars/{}/events",
+            CALENDAR_API_BASE,
+            urlencoding::encode(calendar_id)
+        );
+
+        let start_dt = DateTime::<Utc>::from_timestamp(start_time / 1000, (start_time % 1000 * 1_000_000) as u32).ok_or("Invalid start time")?;
+        let end_dt = DateTime::<Utc>::from_timestamp(end_time / 1000, (end_time % 1000 * 1_000_000) as u32).ok_or("Invalid end time")?;
+
+        let (start, end) = if all_day {
+            (
+                EventDateTimeInput {
+                    date: Some(start_dt.format("%Y-%m-%d").to_string()),
+                    date_time: None,
+                },
+                EventDateTimeInput {
+                    date: Some(end_dt.format("%Y-%m-%d").to_string()),
+                    date_time: None,
+                },
+            )
+        } else {
+            (
+                EventDateTimeInput {
+                    date_time: Some(start_dt.to_rfc3339()),
+                    date: None,
+                },
+                EventDateTimeInput {
+                    date_time: Some(end_dt.to_rfc3339()),
+                    date: None,
+                },
+            )
+        };
+
+        let body = CreateEventRequest {
+            summary,
+            description,
+            location,
+            start,
+            end,
+            attendees: attendees.map(|emails| {
+                emails
+                    .into_iter()
+                    .map(|email| AttendeeInput { email })
+                    .collect()
+            }),
+            recurrence,
+        };
+
+        let resp = self
+            .http_client
+            .post(&url)
+            .bearer_auth(&self.access_token)
+            .json(&body)
+            .send()
+            .await
+            .map_err(|e| format!("Create event request failed: {}", e))?;
+
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let body = resp.text().await.unwrap_or_default();
+            return Err(friendly_calendar_error(status, &body));
+        }
+
+        let api_event: ApiEvent = resp
+            .json()
+            .await
+            .map_err(|e| format!("Failed to parse created event: {}", e))?;
+
+        // We can use "primary" as calendar name for the returned object since we don't have it easily here, 
+        // or just empty string. It's mostly for display.
+        self.api_event_to_calendar_event(api_event, calendar_id, "")
+            .ok_or_else(|| "Failed to convert created event".to_string())
     }
 
     fn api_event_to_calendar_event(&self, event: ApiEvent, calendar_id: &str, calendar_name: &str) -> Option<CalendarEvent> {
@@ -358,6 +469,22 @@ pub struct CalendarQuery {
     pub exclude: Vec<String>,   // Keywords to exclude
 }
 
+fn parse_duration(s: &str) -> Option<Duration> {
+    let len = s.len();
+    if len < 2 {
+        return None;
+    }
+    let (num_str, unit) = s.split_at(len - 1);
+    let num: i64 = num_str.parse().ok()?;
+    match unit {
+        "d" => Some(Duration::days(num)),
+        "w" => Some(Duration::weeks(num)),
+        "m" => Some(Duration::days(num * 30)),
+        "y" => Some(Duration::days(num * 365)),
+        _ => None,
+    }
+}
+
 #[derive(Debug, Default, Clone)]
 pub enum TimeRange {
     #[default]
@@ -365,6 +492,7 @@ pub enum TimeRange {
     Tomorrow,
     Week,
     Month,
+    Upcoming(Duration),
     Custom { start: DateTime<Utc>, end: DateTime<Utc> },
 }
 
@@ -383,7 +511,14 @@ impl CalendarQuery {
                     "tomorrow" => TimeRange::Tomorrow,
                     "week" => TimeRange::Week,
                     "month" => TimeRange::Month,
-                    _ => TimeRange::Today,
+                    other => {
+                        // Try to parse as duration (e.g. 3d, 2w)
+                        if let Some(duration) = parse_duration(other) {
+                            TimeRange::Upcoming(duration)
+                        } else {
+                            TimeRange::Today
+                        }
+                    }
                 };
             } else if token_lower.starts_with("with:") {
                 cq.with.push(token[5..].to_string());
@@ -405,19 +540,31 @@ impl CalendarQuery {
         if !remaining_text.is_empty() {
             cq.text = Some(remaining_text.join(" "));
         }
+        println!("DEBUG: Parsed query '{query}' -> TimeRange: {:?}, Text: {:?}", cq.time_range, cq.text);
 
         cq
     }
 
     pub fn get_time_range(&self) -> (DateTime<Utc>, DateTime<Utc>) {
         let now = Utc::now();
+        // Use yesterday as potential start buffer to handle Timezone offsets 
+        // ensuring we don't miss "today's" events in local time that are "yesterday" in UTC
+        // or just to be safe.
+        // Actually, let's just stick to strict Today unless upcoming.
+        
         let today_start = now.date_naive().and_hms_opt(0, 0, 0).unwrap().and_utc();
 
         match &self.time_range {
             TimeRange::Today => (today_start, today_start + Duration::days(1)),
-            TimeRange::Tomorrow => (today_start + Duration::days(1), today_start + Duration::days(2)),
+            TimeRange::Tomorrow => (
+                today_start + Duration::days(1),
+                today_start + Duration::days(2),
+            ),
             TimeRange::Week => (today_start, today_start + Duration::days(7)),
             TimeRange::Month => (today_start, today_start + Duration::days(30)),
+            // For upcoming, we start from NOW to avoid missing things that just started,
+            // also avoids showing events from "yesterday" due to timezone offsets if we used today_start (UTC 00:00)
+            TimeRange::Upcoming(duration) => (now, now + *duration),
             TimeRange::Custom { start, end } => (*start, *end),
         }
     }
@@ -498,5 +645,63 @@ impl CalendarQuery {
         }
 
         true
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_parse_duration() {
+        assert_eq!(parse_duration("7d"), Some(Duration::days(7)));
+        assert_eq!(parse_duration("1w"), Some(Duration::weeks(1)));
+        assert_eq!(parse_duration("2m"), Some(Duration::days(60)));
+        assert_eq!(parse_duration("1y"), Some(Duration::days(365)));
+        assert_eq!(parse_duration("invalid"), None);
+    }
+
+    #[test]
+    fn test_parse_query_upcoming() {
+        let cq = CalendarQuery::parse("calendar:7d");
+        match cq.time_range {
+            TimeRange::Upcoming(d) => assert_eq!(d, Duration::days(7)),
+            _ => panic!("Expected Upcoming(7d)"),
+        }
+        assert!(cq.text.is_none());
+    }
+
+    #[test]
+    fn test_parse_query_mixed() {
+        let cq = CalendarQuery::parse("calendar:2w meeting with:john");
+        match cq.time_range {
+            TimeRange::Upcoming(d) => assert_eq!(d, Duration::weeks(2)),
+            _ => panic!("Expected Upcoming(2w)"),
+        }
+        assert_eq!(cq.text, Some("meeting".to_string()));
+        assert_eq!(cq.with, vec!["john".to_string()]);
+    }
+
+    #[test]
+    fn test_get_time_range() {
+        let cq = CalendarQuery::parse("calendar:7d");
+        let (start, end) = cq.get_time_range();
+        
+        let now = Utc::now();
+        let today = now.date_naive().and_hms_opt(0, 0, 0).unwrap().and_utc();
+        
+        // Start should be today (midnight UTC)
+        assert_eq!(start, today);
+        // End should be today + 7 days
+        assert_eq!(end, today + Duration::days(7));
+    }
+}
+
+#[cfg(test)]
+mod tests_27d {
+    use super::*;
+    #[test]
+    fn test_27d() {
+         assert_eq!(parse_duration("27d"), Some(Duration::days(27)));
     }
 }

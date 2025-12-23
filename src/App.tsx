@@ -58,6 +58,7 @@ function safeSetJSON(key: string, value: unknown): void {
 }
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import { listen } from '@tauri-apps/api/event';
+import { invoke } from "@tauri-apps/api/core";
 import { openUrl } from '@tauri-apps/plugin-opener';
 import {
   DragDropProvider,
@@ -104,6 +105,10 @@ import {
   fetchCalendarEvents,
   type GoogleCalendarEvent,
   pullFromICloud,
+  getCachedCardEvents,
+  saveCachedCardEvents,
+  createCalendarEvent,
+  type Attachment,
 } from "./api/tauri";
 import { Menu, MenuItem, PredefinedMenuItem } from "@tauri-apps/api/menu";
 import {
@@ -155,6 +160,7 @@ import {
   LocationIcon,
   ClockIcon,
 } from "./components/Icons";
+import { SmartReplies } from "./components/SmartReplies";
 
 // Shared compose components
 const ComposeTextarea = (props: {
@@ -293,8 +299,8 @@ interface ComposeFormProps {
 const ComposeForm = (props: ComposeFormProps) => {
   const defaultTitle = props.mode === 'new' ? 'New message'
     : props.mode === 'forward' ? 'Forward'
-    : props.mode === 'batchReply' ? 'Reply'
-    : 'Reply';
+      : props.mode === 'batchReply' ? 'Reply'
+        : 'Reply';
 
   // Determine if send is enabled (for keyboard shortcut and button)
   const canSend = () => props.canSend !== undefined ? props.canSend : (props.to || '').trim().length > 0;
@@ -549,6 +555,362 @@ const ComposeForm = (props: ComposeFormProps) => {
   );
 };
 
+const CreateEventForm = (props: {
+  show: boolean;
+  closing?: boolean;
+  onClose: () => void;
+  summary: string;
+  setSummary: (v: string) => void;
+  description: string;
+  setDescription: (v: string) => void;
+  location: string;
+  setLocation: (v: string) => void;
+  startDate: string;
+  setStartDate: (v: string) => void;
+  startTime: string;
+  setStartTime: (v: string) => void;
+  endDate: string;
+  setEndDate: (v: string) => void;
+  endTime: string;
+  setEndTime: (v: string) => void;
+  allDay: boolean;
+  setAllDay: (v: boolean) => void;
+  attendees: string;
+  setAttendees: (v: string) => void;
+  recurrence: string | null;
+  setRecurrence: (v: string | null) => void;
+  saving: boolean;
+  onSave: () => void;
+  error: string | null;
+}) => {
+  if (!props.show) return null;
+
+  // Helpers for custom scheduler UI
+  const [viewDate, setViewDate] = createSignal(new Date(props.startDate)); // For navigating months
+
+  const getDaysInWindow = () => {
+    const days = [];
+    const start = new Date(viewDate());
+    for (let i = 0; i < 7; i++) {
+      const day = new Date(start);
+      day.setDate(start.getDate() + i);
+      days.push(day);
+    }
+    return days;
+  };
+
+  const shiftViewDate = (days: number) => {
+    const newDate = new Date(viewDate());
+    newDate.setDate(newDate.getDate() + days);
+    setViewDate(newDate);
+  }
+
+  // Recurrence options
+  const recurrenceOptions = [
+    { label: "No repeat", value: null },
+    { label: "Daily", value: "FREQ=DAILY" },
+    { label: "Weekly", value: "FREQ=WEEKLY" },
+    { label: "Monthly", value: "FREQ=MONTHLY" },
+    { label: "Yearly", value: "FREQ=YEARLY" },
+    { label: "Weekdays", value: "FREQ=WEEKLY;BYDAY=MO,TU,WE,TH,FR" }
+  ];
+
+
+  // Auto-scroll to selected times when form opens
+  createEffect(() => {
+    if (props.show) {
+      // Wait for DOM to be ready
+      setTimeout(() => {
+        const startContainer = document.querySelector('.time-picker-start') as HTMLDivElement;
+        const endContainer = document.querySelector('.time-picker-end') as HTMLDivElement;
+
+        if (startContainer) {
+          const selectedEl = startContainer.querySelector('[data-selected="true"]') as HTMLElement;
+          if (selectedEl) {
+            selectedEl.scrollIntoView({ block: 'center' });
+          }
+        }
+
+        if (endContainer) {
+          const selectedEl = endContainer.querySelector('[data-selected="true"]') as HTMLElement;
+          if (selectedEl) {
+            selectedEl.scrollIntoView({ block: 'center' });
+          }
+        }
+      }, 150);
+    }
+  });
+
+  // Validate end time isn't before start time
+  const handleStartTimeChange = (time: string) => {
+    props.setStartTime(time);
+    // If end time is now before start time, adjust it
+    const startIdx = timeSlots.indexOf(time);
+    const endIdx = timeSlots.indexOf(props.endTime);
+    if (endIdx <= startIdx) {
+      // Set end time to 30 mins after start
+      const newEndIdx = Math.min(startIdx + 1, timeSlots.length - 1);
+      props.setEndTime(timeSlots[newEndIdx]);
+    }
+  };
+
+  const handleEndTimeChange = (time: string) => {
+    const startIdx = timeSlots.indexOf(props.startTime);
+    const endIdx = timeSlots.indexOf(time);
+    // Only allow if end is after start
+    if (endIdx > startIdx) {
+      props.setEndTime(time);
+    }
+  };
+
+  const handleMonthSelect = (month: number) => {
+    const newDate = new Date(viewDate());
+    newDate.setMonth(month);
+    newDate.setDate(1);
+    setViewDate(newDate);
+  };
+
+  const handleYearSelect = (year: number) => {
+    const newDate = new Date(viewDate());
+    newDate.setFullYear(year);
+    newDate.setDate(1);
+    setViewDate(newDate);
+  };
+
+  const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+  const currentYear = new Date().getFullYear();
+  const years = Array.from({ length: 5 }, (_, i) => currentYear + i);
+
+  // Time Helpers
+  const timeSlots: string[] = [];
+  for (let h = 0; h < 24; h++) {
+    for (let m = 0; m < 60; m += 30) {
+      const hh = h.toString().padStart(2, '0');
+      const mm = m.toString().padStart(2, '0');
+      timeSlots.push(`${hh}:${mm}`);
+    }
+  }
+
+  const formatDateStr = (d: Date) => {
+    const year = d.getFullYear();
+    const month = String(d.getMonth() + 1).padStart(2, '0');
+    const day = String(d.getDate()).padStart(2, '0');
+    return `${year}-${month}-${day}`;
+  };
+
+  const isSelectedDate = (d: Date) => formatDateStr(d) === props.startDate;
+
+  const handleDateSelect = (d: Date) => {
+    const dateStr = formatDateStr(d);
+    props.setStartDate(dateStr);
+    props.setEndDate(dateStr); // Default to single day event
+  };
+
+  const formatDateDisplay = (d: Date) => {
+    const days = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+    return {
+      day: days[d.getDay()],
+      date: d.getDate()
+    };
+  };
+
+  return (
+    <div class={`compose-panel event-compose ${props.closing ? 'closing' : ''}`} style={{ height: "auto", "max-height": "90vh", display: "flex", "flex-direction": "column" }}>
+      <div class="compose-header">
+        <h3>New event</h3>
+        <CloseButton onClick={props.onClose} />
+      </div>
+      <div class="compose-body" style={{ flex: 1, "overflow-y": "auto" }}>
+        <div class="compose-field">
+          <input
+            type="text"
+            value={props.summary}
+            onInput={(e) => props.setSummary(e.currentTarget.value)}
+            placeholder="Event title"
+            autofocus
+          />
+        </div>
+
+        {/* Custom Scheduler UI */}
+        <div class="scheduler-ui" style={{ padding: "10px 0", "border-bottom": "1px solid var(--border)" }}>
+
+          {/* Month Header */}
+          <div class="scheduler-header" style={{ display: "flex", "justify-content": "space-between", "align-items": "center", padding: "0 15px 10px" }}>
+            <div style={{ display: "flex", gap: "5px", "align-items": "center" }}>
+              <select
+                value={viewDate().getMonth()}
+                onChange={(e) => handleMonthSelect(parseInt(e.currentTarget.value))}
+                style={{ "font-weight": "600", "font-size": "14px", background: "transparent", border: "none", color: "var(--text)", cursor: "pointer" }}
+              >
+                <For each={months}>
+                  {(m, i) => <option value={i()}>{m}</option>}
+                </For>
+              </select>
+              <select
+                value={viewDate().getFullYear()}
+                onChange={(e) => handleYearSelect(parseInt(e.currentTarget.value))}
+                style={{ "font-weight": "600", "font-size": "14px", background: "transparent", border: "none", color: "var(--text)", cursor: "pointer" }}
+              >
+                <For each={years}>
+                  {(y) => <option value={y}>{y}</option>}
+                </For>
+              </select>
+            </div>
+            <div style={{ display: "flex", gap: "5px" }}>
+              <button class="btn btn-sm btn-ghost" onClick={() => shiftViewDate(-7)} title="Previous Week">{"<"}</button>
+              <button class="btn btn-sm btn-ghost" onClick={() => shiftViewDate(7)} title="Next Week">{">"}</button>
+            </div>
+          </div>
+
+          {/* Horizontal Days */}
+          <div class="scheduler-days" style={{ display: "flex", gap: "10px", "overflow-x": "auto", padding: "0 15px 15px", "scrollbar-width": "none" }}>
+            <For each={getDaysInWindow()}>
+              {(day) => {
+                const info = formatDateDisplay(day);
+                const selected = () => isSelectedDate(day);
+                return (
+                  <div
+                    class={`scheduler-day-card ${selected() ? 'selected' : ''}`}
+                    onClick={() => handleDateSelect(day)}
+                    style={{
+                      display: "flex", "flex-direction": "column", "align-items": "center", "justify-content": "center",
+                      width: "60px", height: "70px",
+                      border: selected() ? "2px solid var(--accent)" : "1px solid var(--border)",
+                      "border-radius": "8px",
+                      "background-color": selected() ? "var(--accent)" : "var(--card-bg)",
+                      cursor: "pointer",
+                      "flex-shrink": 0
+                    }}
+                  >
+                    <span style={{ "font-size": "12px", color: selected() ? "#fff" : "var(--text-secondary)" }}>{info.day}</span>
+                    <span style={{ "font-size": "20px", "font-weight": "600", color: selected() ? "#fff" : "var(--text)" }}>{info.date}</span>
+                  </div>
+                );
+              }}
+            </For>
+          </div>
+
+
+          {/* Vertical Time Lists + Repeat */}
+          <Show when={!props.allDay}>
+            <div class="scheduler-times" style={{ display: "flex", gap: "15px", padding: "0 15px", height: "200px" }}>
+              <div style={{ flex: 1, display: "flex", "flex-direction": "column" }}>
+                <label style={{ "font-size": "12px", "margin-bottom": "5px", color: "var(--text-secondary)" }}>Start</label>
+                <div class="time-picker-start" style={{ flex: 1, "overflow-y": "auto", border: "1px solid var(--border)", "border-radius": "6px" }}>
+                  <For each={timeSlots}>
+                    {(t) => (
+                      <div
+                        onClick={() => handleStartTimeChange(t)}
+                        data-selected={props.startTime === t}
+                        style={{
+                          "padding": "6px 10px",
+                          "cursor": "pointer",
+                          "background-color": props.startTime === t ? "var(--accent)" : "transparent",
+                          "color": props.startTime === t ? "#fff" : "var(--text)",
+                          "border-radius": "6px",
+                          "font-size": "13px",
+                          "text-align": "center"
+                        }}
+                      >
+                        {t}
+                      </div>
+                    )}
+                  </For>
+                </div>
+              </div>
+              <div style={{ flex: 1, display: "flex", "flex-direction": "column" }}>
+                <div style={{ display: "flex", "align-items": "center", "justify-content": "space-between", "margin-bottom": "5px" }}>
+                  <label style={{ "font-size": "12px", color: "var(--text-secondary)" }}>End</label>
+                  <label style={{ display: "flex", "align-items": "center", gap: "5px", cursor: "pointer", "font-size": "12px", color: "var(--text-secondary)" }}>
+                    <input type="checkbox" checked={props.allDay} onChange={(e) => props.setAllDay(e.currentTarget.checked)} />
+                    All day
+                  </label>
+                </div>
+                <div class="time-picker-end" style={{ flex: 1, "overflow-y": "auto", border: "1px solid var(--border)", "border-radius": "6px" }}>
+                  <For each={timeSlots}>
+                    {(t) => (
+                      <div
+                        onClick={() => handleEndTimeChange(t)}
+                        data-selected={props.endTime === t}
+                        style={{
+                          "padding": "6px 10px",
+                          "cursor": "pointer",
+                          "background-color": props.endTime === t ? "var(--accent)" : "transparent",
+                          "color": props.endTime === t ? "#fff" : "var(--text)",
+                          "border-radius": "6px",
+                          "font-size": "13px",
+                          "text-align": "center"
+                        }}
+                      >
+                        {t}
+                      </div>
+                    )}
+                  </For>
+                </div>
+              </div>
+              <div style={{ flex: 1, display: "flex", "flex-direction": "column" }}>
+                <label style={{ "font-size": "12px", "margin-bottom": "5px", color: "var(--text-secondary)" }}>Repeat</label>
+                <div style={{ flex: 1, "overflow-y": "auto", border: "1px solid var(--border)", "border-radius": "6px" }}>
+                  <For each={recurrenceOptions}>
+                    {(opt) => (
+                      <div
+                        onClick={() => props.setRecurrence(opt.value)}
+                        style={{
+                          "padding": "6px 10px",
+                          "cursor": "pointer",
+                          "background-color": props.recurrence === opt.value ? "var(--accent)" : "transparent",
+                          "color": props.recurrence === opt.value ? "#fff" : "var(--text)",
+                          "border-radius": "6px",
+                          "font-size": "13px",
+                          "text-align": "center"
+                        }}
+                      >
+                        {opt.label}
+                      </div>
+                    )}
+                  </For>
+                </div>
+              </div>
+            </div>
+          </Show>
+        </div>
+
+        <div class="compose-field">
+          <input
+            type="text"
+            value={props.location}
+            onInput={(e) => props.setLocation(e.currentTarget.value)}
+            placeholder="Location"
+          />
+        </div>
+        <div class="compose-field">
+          <input
+            type="text"
+            value={props.attendees}
+            onInput={(e) => props.setAttendees(e.currentTarget.value)}
+            placeholder="Guests (comma separated emails)"
+          />
+        </div>
+        <div class="compose-content">
+          <textarea
+            value={props.description}
+            onInput={(e) => props.setDescription(e.currentTarget.value)}
+            placeholder="Description"
+            style={{ "min-height": "100px" }}
+          />
+        </div>
+      </div>
+      <div class="compose-footer">
+        <Show when={props.error}><div class="compose-error">{props.error}</div></Show>
+        <div class="inline-compose-spacer" />
+        <button class="btn btn-primary" disabled={props.saving || !props.summary} onClick={props.onSave}>
+          {props.saving ? "Saving..." : "Save event"}
+        </button>
+      </div>
+    </div>
+  );
+};
+
 const CARD_COLORS = ["red", "orange", "yellow", "green", "cyan", "blue", "purple", "pink"] as const;
 const COLOR_HEX: Record<string, string> = {
   red: "#E53935",
@@ -610,6 +972,7 @@ const ThreadView = (props: {
   // Toolbar action props
   onAction: (action: string) => void,
   onOpenLabels: () => void,
+  accountId: string,
   isStarred: boolean,
   isRead: boolean,
   isImportant: boolean,
@@ -839,31 +1202,31 @@ const ThreadView = (props: {
       </div>
 
       <div class="thread-content" ref={contentRef} onMouseOver={handleLinkHover} onMouseOut={() => setHoveredLinkUrl(null)}>
-          <Show when={props.loading}>
-            <div class="thread-skeleton">
-              <div class="skeleton-message">
-                <div class="skeleton-header">
-                  <div class="skeleton-avatar"></div>
-                  <div class="skeleton-meta">
-                    <div class="skeleton-line skeleton-name"></div>
-                    <div class="skeleton-line skeleton-date"></div>
-                  </div>
-                </div>
-                <div class="skeleton-body">
-                  <div class="skeleton-line"></div>
-                  <div class="skeleton-line"></div>
-                  <div class="skeleton-line skeleton-short"></div>
+        <Show when={props.loading}>
+          <div class="thread-skeleton">
+            <div class="skeleton-message">
+              <div class="skeleton-header">
+                <div class="skeleton-avatar"></div>
+                <div class="skeleton-meta">
+                  <div class="skeleton-line skeleton-name"></div>
+                  <div class="skeleton-line skeleton-date"></div>
                 </div>
               </div>
+              <div class="skeleton-body">
+                <div class="skeleton-line"></div>
+                <div class="skeleton-line"></div>
+                <div class="skeleton-line skeleton-short"></div>
+              </div>
             </div>
-          </Show>
+          </div>
+        </Show>
 
-          <Show when={props.error}>
-            <div class="error-message">{props.error}</div>
-          </Show>
+        <Show when={props.error}>
+          <div class="error-message">{props.error}</div>
+        </Show>
 
-          <Show when={props.thread}>
-            <div class="messages-list">
+        <Show when={props.thread}>
+          <div class="messages-list">
             <For each={props.thread!.messages}>
               {(msg, index) => {
                 const headers = msg.payload?.headers || [];
@@ -1095,6 +1458,60 @@ const ThreadView = (props: {
               }}
             </For>
           </div>
+          <SmartReplies
+            accountId={props.accountId}
+            threadId={props.thread!.id}
+            onSelect={(suggestion) => {
+              const lastMsg = props.thread!.messages[props.thread!.messages.length - 1];
+              if (!lastMsg) return;
+
+              const headers = lastMsg.payload?.headers || [];
+              const from = headers.find(h => h.name === 'From')?.value || 'Unknown';
+              const date = headers.find(h => h.name === 'Date')?.value || '';
+              const replyTo = extractEmail(from);
+
+              const getSubject = () => {
+                const subj = headers.find(h => h.name === 'Subject')?.value || '';
+                return subj.startsWith('Re:') ? subj : `Re: ${subj}`;
+              };
+
+              const getBody = () => {
+                const payload = lastMsg.payload;
+                if (payload?.body?.data) return decodeBase64Utf8(payload.body.data);
+
+                const findContent = (parts: any[] | undefined, mimeType: string): string | null => {
+                  if (!parts) return null;
+                  for (const part of parts) {
+                    if (part.mimeType === mimeType && part.body?.data) {
+                      return decodeBase64Utf8(part.body.data);
+                    }
+                    if (part.parts) {
+                      const found = findContent(part.parts, mimeType);
+                      if (found) return found;
+                    }
+                  }
+                  return null;
+                };
+
+                const htmlContent = findContent(payload?.parts, 'text/html');
+                if (htmlContent) return htmlContent;
+                const textContent = findContent(payload?.parts, 'text/plain');
+                if (textContent) return textContent;
+                if (lastMsg.snippet) return lastMsg.snippet;
+                return "";
+              };
+
+              const body = getBody();
+              const temp = document.createElement('div');
+              temp.innerHTML = DOMPurify.sanitize(body, DOMPURIFY_CONFIG);
+              const plainBody = temp.textContent || temp.innerText || '';
+
+              const quotedBody = `\n\nOn ${date}, ${from} wrote:\n> ${plainBody.split('\n').join('\n> ')}`;
+              const fullBody = `${suggestion}${quotedBody}`;
+
+              props.onReply(replyTo, "", getSubject(), fullBody, lastMsg.id);
+            }}
+          />
         </Show>
       </div>
 
@@ -1131,6 +1548,8 @@ const CALENDAR_GROUP_BY_OPTIONS: { value: GroupBy; label: string }[] = [
   { value: "organizer", label: "Organizer" },
   { value: "calendar", label: "Calendar" },
 ];
+
+type ActionSettings = Record<string, boolean>;
 
 // Gmail search operators for autocomplete
 const GMAIL_OPERATORS: { op: string; desc: string; values?: string[] }[] = [
@@ -1244,8 +1663,8 @@ function App() {
       // Update local state on success
       setRsvpStatus(prev => ({ ...prev, [threadId]: apiStatus }));
     } catch (e) {
-      console.error("Failed to send RSVP:", e);
-      showSimpleToast(`Failed to send RSVP: ${e}`);
+      console.error("Failed to update RSVP:", e);
+      showToast(`Failed to update RSVP: ${e}`);
     } finally {
       setRsvpLoading(prev => ({ ...prev, [threadId]: false }));
     }
@@ -1340,7 +1759,7 @@ function App() {
 
   // Thread action visibility settings
   const [actionSettings, setActionSettings] = createSignal<Record<string, boolean>>(
-    safeGetJSON<ActionSettings>("actionSettings", {"archive":false,"star":true,"trash":false,"markRead":true,"markUnread":false,"markImportant":true,"spam":false,"quickReply":true,"quickForward":false})
+    safeGetJSON<ActionSettings>("actionSettings", { "archive": false, "star": true, "trash": false, "markRead": true, "markUnread": false, "markImportant": true, "spam": false, "quickReply": true, "quickForward": false })
   );
   const DEFAULT_ACTION_ORDER = ["markImportant", "markRead", "star", "quickReply", "quickForward", "archive", "spam", "trash"];
   const [actionOrder, setActionOrder] = createSignal<string[]>(
@@ -1510,6 +1929,60 @@ function App() {
 
   // Compose
   const [composing, setComposing] = createSignal(false);
+  // Event creation state
+  const [creatingEvent, setCreatingEvent] = createSignal(false);
+  const [newEventSummary, setNewEventSummary] = createSignal("");
+  const [newEventDescription, setNewEventDescription] = createSignal("");
+  const [newEventLocation, setNewEventLocation] = createSignal("");
+  // Smart defaults: round up to next 30-min interval, end 30 mins later
+  const getSmartEventDefaults = () => {
+    const now = new Date();
+    const minutes = now.getMinutes();
+    const roundedMinutes = minutes <= 30 ? 30 : 60;
+    const startTime = new Date(now);
+    startTime.setMinutes(roundedMinutes, 0, 0);
+    if (roundedMinutes === 60) {
+      startTime.setHours(startTime.getHours() + 1);
+      startTime.setMinutes(0, 0, 0);
+    }
+    const endTime = new Date(startTime.getTime() + 30 * 60 * 1000);
+    return {
+      date: now.toISOString().split('T')[0],
+      startTime: `${String(startTime.getHours()).padStart(2, '0')}:${String(startTime.getMinutes()).padStart(2, '0')}`,
+      endTime: `${String(endTime.getHours()).padStart(2, '0')}:${String(endTime.getMinutes()).padStart(2, '0')}`
+    };
+  };
+  const eventDefaults = getSmartEventDefaults();
+  const [newEventStartDate, setNewEventStartDate] = createSignal(eventDefaults.date);
+  const [newEventStartTime, setNewEventStartTime] = createSignal(eventDefaults.startTime);
+  const [newEventEndDate, setNewEventEndDate] = createSignal(eventDefaults.date);
+  const [newEventEndTime, setNewEventEndTime] = createSignal(eventDefaults.endTime);
+  const [newEventAllDay, setNewEventAllDay] = createSignal(false);
+  const [newEventAttendees, setNewEventAttendees] = createSignal("");
+  const [newEventRecurrence, setNewEventRecurrence] = createSignal<string | null>(null);
+  const [newEventSaving, setNewEventSaving] = createSignal(false);
+  const [newEventError, setNewEventError] = createSignal<string | null>(null);
+  const resetEventFormToNow = () => {
+    const defaults = getSmartEventDefaults();
+    setNewEventStartDate(defaults.date);
+    setNewEventStartTime(defaults.startTime);
+    setNewEventEndDate(defaults.date);
+    setNewEventEndTime(defaults.endTime);
+  };
+  const [closingEvent, setClosingEvent] = createSignal(false);
+  const closeEventForm = () => {
+    setClosingEvent(true);
+    setTimeout(() => {
+      setCreatingEvent(false);
+      setClosingEvent(false);
+      setNewEventSummary("");
+      setNewEventDescription("");
+      setNewEventLocation("");
+      setNewEventAttendees("");
+      setNewEventRecurrence(null);
+      setNewEventError(null);
+    }, 200);
+  };
   const [closingCompose, setClosingCompose] = createSignal(false);
   const [composeTo, setComposeTo] = createSignal("");
   const [composeCc, setComposeCc] = createSignal("");
@@ -1703,6 +2176,8 @@ function App() {
   // Settings form
   const [clientId, setClientId] = createSignal("");
   const [clientSecret, setClientSecret] = createSignal("");
+  const [vertexProjectId, setVertexProjectId] = createSignal(localStorage.getItem("google_cloud_project_id") || "");
+  const [smartRepliesOpen, setSmartRepliesOpen] = createSignal(false);
 
   // Preset selection for new accounts
   const [showPresetSelection, setShowPresetSelection] = createSignal(false);
@@ -2082,6 +2557,14 @@ function App() {
       return;
     }
 
+    // e to create event
+    if (e.key === 'e') {
+      e.preventDefault();
+      resetEventFormToNow();
+      setCreatingEvent(true);
+      return;
+    }
+
     // z to undo last action (when toast is visible)
     if (e.key === 'z' && toastVisible() && lastAction()) {
       e.preventDefault();
@@ -2104,6 +2587,8 @@ function App() {
         closeBatchReply();
       } else if (composing()) {
         closeCompose();
+      } else if (creatingEvent()) {
+        closeEventForm();
       } else if (editingCardId()) {
         setEditingCardId(null);
       } else if (shortcutsHelpOpen()) {
@@ -2521,6 +3006,76 @@ function App() {
 
   function removeAttachment(index: number) {
     setComposeAttachments(composeAttachments().filter((_, i) => i !== index));
+  }
+
+  async function handleCreateEvent() {
+    const account = selectedAccount();
+    if (!account) return;
+
+    if (!newEventSummary()) {
+      setNewEventError("Title is required");
+      return;
+    }
+
+    setNewEventSaving(true);
+    setNewEventError(null);
+
+    try {
+      let start: number, end: number;
+      if (newEventAllDay()) {
+        const sParts = newEventStartDate().split('-');
+        start = Date.UTC(parseInt(sParts[0]), parseInt(sParts[1]) - 1, parseInt(sParts[2]), 12, 0, 0);
+
+        const eParts = newEventEndDate().split('-');
+        end = Date.UTC(parseInt(eParts[0]), parseInt(eParts[1]) - 1, parseInt(eParts[2]), 12, 0, 0);
+      } else {
+        const s = new Date(`${newEventStartDate()}T${newEventStartTime()}`);
+        start = s.getTime();
+        const e = new Date(`${newEventEndDate()}T${newEventEndTime()}`);
+        end = e.getTime();
+      }
+
+      const attendeesList = newEventAttendees()
+        .split(',')
+        .map(s => s.trim())
+        .filter(s => s.length > 0);
+
+      await createCalendarEvent(
+        account.id,
+        null,
+        newEventSummary(),
+        newEventDescription() || null,
+        newEventLocation() || null,
+        start,
+        end,
+        newEventAllDay(),
+        attendeesList.length > 0 ? attendeesList : null,
+        newEventRecurrence() ? [newEventRecurrence()!] : null
+      );
+
+      setCreatingEvent(false);
+      setNewEventSummary("");
+      setNewEventDescription("");
+      setNewEventLocation("");
+      setNewEventLocation("");
+      setNewEventAttendees("");
+      setNewEventRecurrence(null);
+
+      // Refresh calendar cards
+      cards().forEach(card => {
+        if (isCalendarCard(card.id)) {
+          fetchAndCacheCalendarEvents(account.id, card.id, card.query);
+        }
+      });
+
+      showToast("Event created successfully");
+
+    } catch (e) {
+      console.error(e);
+      setNewEventError("Failed to create event: " + String(e));
+    } finally {
+      setNewEventSaving(false);
+    }
   }
 
   function handleSendEmail() {
@@ -3232,10 +3787,24 @@ function App() {
     setCardErrors({ ...cardErrors(), [cardId]: null });
 
     try {
-      const events = await fetchCalendarEvents(account.id, card.query);
-      setCardCalendarEvents({ ...cardCalendarEvents(), [cardId]: events });
-      setLastSyncTimes({ ...lastSyncTimes(), [cardId]: Date.now() });
-      setSyncErrors({ ...syncErrors(), [cardId]: null });
+      // For initial load (not force refresh), try cache first
+      if (!forceRefresh) {
+        const cached = await getCachedCardEvents(cardId);
+        if (cached && cached.events.length > 0) {
+          // Show cached data immediately
+          setCardCalendarEvents({ ...cardCalendarEvents(), [cardId]: cached.events });
+          // cached_at is in seconds
+          setLastSyncTimes({ ...lastSyncTimes(), [cardId]: cached.cached_at * 1000 });
+          setLoadingThreads({ ...loadingThreads(), [cardId]: false });
+
+          // Fetch fresh data in background
+          fetchAndCacheCalendarEvents(account.id, cardId, card.query);
+          return;
+        }
+      }
+
+      // No cache or forced refresh - fetch and wait
+      await fetchAndCacheCalendarEvents(account.id, cardId, card.query);
     } catch (e) {
       const errorMsg = String(e);
       if (errorMsg.includes("Keyring error") || errorMsg.includes("No auth token")) {
@@ -3249,7 +3818,33 @@ function App() {
         setSyncErrors({ ...syncErrors(), [cardId]: errorMsg });
       }
     } finally {
-      setLoadingThreads({ ...loadingThreads(), [cardId]: false });
+      if (!cardCalendarEvents()[cardId]) {
+        // Only turn off loading if we didn't populate from cache (if we did, it's already off)
+        // or if we waited for fetch.
+        // Actually, if we populated from cache, we returned early.
+        // If we didn't, we are here.
+        setLoadingThreads({ ...loadingThreads(), [cardId]: false });
+      } else {
+        // If we have data (from await fetch), ensure loading is off
+        setLoadingThreads({ ...loadingThreads(), [cardId]: false });
+      }
+    }
+  }
+
+  async function fetchAndCacheCalendarEvents(accountId: string, cardId: string, query: string) {
+    try {
+      const events = await fetchCalendarEvents(accountId, query);
+      setCardCalendarEvents({ ...cardCalendarEvents(), [cardId]: events });
+      await saveCachedCardEvents(cardId, events);
+      setLastSyncTimes({ ...lastSyncTimes(), [cardId]: Date.now() });
+      setSyncErrors({ ...syncErrors(), [cardId]: null });
+    } catch (e) {
+      console.error("Failed to fetch calendar events:", e);
+      setSyncErrors({ ...syncErrors(), [cardId]: String(e) });
+      // If foreground load failed, rethrow to be caught by loadCalendarEvents
+      if (loadingThreads()[cardId]) {
+        throw e;
+      }
     }
   }
 
@@ -3366,17 +3961,39 @@ function App() {
   function groupCalendarEvents(events: GoogleCalendarEvent[], groupBy: GroupBy): CalendarEventGroup[] {
     if (groupBy === "date") {
       const groups: Record<string, GoogleCalendarEvent[]> = {};
+
+      // Setup date boundaries
+      const now = new Date();
+      const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+      const tomorrow = new Date(today);
+      tomorrow.setDate(tomorrow.getDate() + 1);
+      const yesterday = new Date(today);
+      yesterday.setDate(yesterday.getDate() - 1);
+
       for (const event of events) {
-        const date = new Date(event.start_time);
-        const today = new Date();
-        const tomorrow = new Date(today);
-        tomorrow.setDate(tomorrow.getDate() + 1);
+        let date: Date;
+        if (event.all_day) {
+          const d = new Date(event.start_time);
+          date = new Date(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate());
+        } else {
+          date = new Date(event.start_time);
+        }
+        const eventDay = new Date(date.getFullYear(), date.getMonth(), date.getDate());
+
+        // Check if event is currently happening (Ongoing)
+        // If an event spans multiple days and started in the past but is active now, 
+        // we might want to show it in "Today" or a special "Ongoing" section.
+        // For now, we stick to start date but handle "Yesterday" explicitly.
 
         let label: string;
-        if (date.toDateString() === today.toDateString()) {
+        const timeDiff = eventDay.getTime() - today.getTime();
+
+        if (timeDiff === 0) {
           label = "Today";
-        } else if (date.toDateString() === tomorrow.toDateString()) {
+        } else if (timeDiff === 86400000) { // +1 day
           label = "Tomorrow";
+        } else if (timeDiff === -86400000) { // -1 day
+          label = "Yesterday";
         } else {
           label = date.toLocaleDateString(undefined, { weekday: 'long', month: 'short', day: 'numeric' });
         }
@@ -3384,8 +4001,42 @@ function App() {
         if (!groups[label]) groups[label] = [];
         groups[label].push(event);
       }
-      // Sort by date (events are already sorted by start_time from API)
-      return Object.entries(groups).map(([label, events]) => ({ label, events }));
+
+      // Sort groups logically: Yesterday -> Today -> Tomorrow -> Dates
+      // But map returns array.
+      // We want chronological order of keys?
+      // Object.entries order is not guaranteed chronologically for arbitrary strings.
+      // We should sort by date of the first event in the group.
+
+      return Object.entries(groups)
+        .map(([label, events]) => ({ label, events }))
+        .sort((a, b) => {
+          // Special handling for key labels
+          const score = (lbl: string) => {
+            if (lbl === "Yesterday") return 1;
+            if (lbl === "Today") return 2;
+            if (lbl === "Tomorrow") return 3;
+            return 4; // Dates
+          };
+
+          const scoreA = score(a.label);
+          const scoreB = score(b.label);
+
+          if (scoreA !== scoreB) {
+            // If both are special, order fixed.
+            // If one is date and other special, special comes first usually?
+            // Wait, Yesterday (1) < Today (2) < Tomorrow (3). 
+            // Previous dates (older than yesterday) should be > or <?
+            // Usually we want chronological: Older dates -> Yesterday -> Today -> Tomorrow -> Future dates.
+            // Let's rely on event timestamps.
+            return 0; // Fallthrough
+          }
+
+          // Sort by start time of first event
+          const startA = a.events[0]?.start_time || 0;
+          const startB = b.events[0]?.start_time || 0;
+          return startA - startB;
+        });
     }
 
     if (groupBy === "organizer") {
@@ -4459,8 +5110,8 @@ function App() {
               </div>
               <button
                 class="new-event-btn"
-                onClick={() => openUrl('https://calendar.google.com/calendar/r/eventedit')}
-                title="New Event"
+                onClick={() => { resetEventFormToNow(); setCreatingEvent(true); }}
+                title="New event (E)"
                 aria-label="Create new calendar event"
               >
                 <CalendarIcon />
@@ -4814,9 +5465,9 @@ function App() {
                                           <Show when={event.response_status}>
                                             <div class={`calendar-event-response ${event.response_status}`}>
                                               {event.response_status === "accepted" ? "Going" :
-                                               event.response_status === "tentative" ? "Maybe" :
-                                               event.response_status === "declined" ? "Declined" :
-                                               event.response_status === "needsAction" ? "Pending" : event.response_status}
+                                                event.response_status === "tentative" ? "Maybe" :
+                                                  event.response_status === "declined" ? "Declined" :
+                                                    event.response_status === "needsAction" ? "Pending" : event.response_status}
                                             </div>
                                           </Show>
                                           <Show when={event.hangout_link}>
@@ -5201,7 +5852,39 @@ function App() {
             }}
           />
         </div>
-      </Show >
+      </Show>
+
+      {/* Create Event Panel */}
+      <Show when={creatingEvent()}>
+        <CreateEventForm
+          show={true}
+          closing={closingEvent()}
+          onClose={closeEventForm}
+          summary={newEventSummary()}
+          setSummary={setNewEventSummary}
+          description={newEventDescription()}
+          setDescription={setNewEventDescription}
+          location={newEventLocation()}
+          setLocation={setNewEventLocation}
+          startDate={newEventStartDate()}
+          setStartDate={setNewEventStartDate}
+          startTime={newEventStartTime()}
+          setStartTime={setNewEventStartTime}
+          endDate={newEventEndDate()}
+          setEndDate={setNewEventEndDate}
+          endTime={newEventEndTime()}
+          setEndTime={setNewEventEndTime}
+          allDay={newEventAllDay()}
+          setAllDay={setNewEventAllDay}
+          attendees={newEventAttendees()}
+          setAttendees={setNewEventAttendees}
+          recurrence={newEventRecurrence()}
+          setRecurrence={setNewEventRecurrence}
+          saving={newEventSaving()}
+          onSave={handleCreateEvent}
+          error={newEventError()}
+        />
+      </Show>
 
       {/* Preset selection modal */}
       <Show when={showPresetSelection()}>
@@ -5256,6 +5939,7 @@ function App() {
       <Show when={activeThreadId()}>
         <ThreadView
           thread={activeThread()}
+          accountId={selectedAccount()?.id || ''}
           loading={threadLoading()}
           error={threadError()}
           card={activeThreadCardId() ? (() => {
@@ -5421,41 +6105,41 @@ function App() {
             <div class="messages-list">
               <For each={batchReplyThreads()}>
                 {(thread) => (
-                    <div class={`message-row with-compose ${inlineResizing() ? 'resizing' : ''}`}>
-                      <div class="message-card">
-                        <div class="message-header">
-                          <div class="message-sender">{thread.from}</div>
-                          <div class="message-header-actions">
-                            <div class="message-date">{thread.date}</div>
-                          </div>
+                  <div class={`message-row with-compose ${inlineResizing() ? 'resizing' : ''}`}>
+                    <div class="message-card">
+                      <div class="message-header">
+                        <div class="message-sender">{thread.from}</div>
+                        <div class="message-header-actions">
+                          <div class="message-date">{thread.date}</div>
                         </div>
-                        <div class="batch-reply-subject">{thread.subject}</div>
-                        <div class="message-body" innerHTML={DOMPurify.sanitize(thread.body, DOMPURIFY_CONFIG)}></div>
                       </div>
-                      <div
-                        class="inline-resize-handle"
-                        onMouseDown={handleInlineResizeStart}
-                      />
-                      <div class="inline-compose">
-                        <ComposeForm
-                          mode="batchReply"
-                          inline={true}
-                          showFields={false}
-                          body={batchReplyMessages()[thread.threadId] || ''}
-                          setBody={(v) => updateBatchReplyMessage(thread.threadId, v)}
-                          placeholder={`Reply to ${extractEmail(thread.from)}...`}
-                          attachments={batchReplyAttachments()[thread.threadId] || []}
-                          onRemoveAttachment={(i) => removeBatchReplyAttachment(thread.threadId, i)}
-                          onFileSelect={(e) => handleBatchReplyFileSelect(thread.threadId, e)}
-                          fileInputId={`batch-reply-file-input-${thread.threadId}`}
-                          sending={batchReplySending()[thread.threadId]}
-                          onSend={() => sendBatchReply(thread.threadId)}
-                          onClose={closeBatchReply}
-                          onSkip={() => discardBatchReplyThread(thread.threadId)}
-                          canSend={!!batchReplyMessages()[thread.threadId]?.trim()}
-                        />
-                      </div>
+                      <div class="batch-reply-subject">{thread.subject}</div>
+                      <div class="message-body" innerHTML={DOMPurify.sanitize(thread.body, DOMPURIFY_CONFIG)}></div>
                     </div>
+                    <div
+                      class="inline-resize-handle"
+                      onMouseDown={handleInlineResizeStart}
+                    />
+                    <div class="inline-compose">
+                      <ComposeForm
+                        mode="batchReply"
+                        inline={true}
+                        showFields={false}
+                        body={batchReplyMessages()[thread.threadId] || ''}
+                        setBody={(v) => updateBatchReplyMessage(thread.threadId, v)}
+                        placeholder={`Reply to ${extractEmail(thread.from)}...`}
+                        attachments={batchReplyAttachments()[thread.threadId] || []}
+                        onRemoveAttachment={(i) => removeBatchReplyAttachment(thread.threadId, i)}
+                        onFileSelect={(e) => handleBatchReplyFileSelect(thread.threadId, e)}
+                        fileInputId={`batch-reply-file-input-${thread.threadId}`}
+                        sending={batchReplySending()[thread.threadId]}
+                        onSend={() => sendBatchReply(thread.threadId)}
+                        onClose={closeBatchReply}
+                        onSkip={() => discardBatchReplyThread(thread.threadId)}
+                        canSend={!!batchReplyMessages()[thread.threadId]?.trim()}
+                      />
+                    </div>
+                  </div>
                 )}
               </For>
             </div>
@@ -5530,8 +6214,12 @@ function App() {
                   <span>Tomorrow's events</span>
                 </div>
                 <div class="query-help-row">
-                  <code>calendar:week</code>
-                  <span>This week</span>
+                  <code>calendar:7d</code>
+                  <span>Next 7 days</span>
+                </div>
+                <div class="query-help-row">
+                  <code>calendar:2w</code>
+                  <span>Next 2 weeks</span>
                 </div>
                 <div class="query-help-row">
                   <code>calendar:month</code>
@@ -5625,6 +6313,29 @@ function App() {
             >
               Connect <span class="shortcut-hint">↵</span>
             </button>
+          </div>
+          <div class={`settings-section collapsible ${smartRepliesOpen() ? 'open' : ''}`}>
+            <div class="settings-section-title" onClick={() => setSmartRepliesOpen(!smartRepliesOpen())}>
+              <span>Smart Replies</span>
+              <span class="collapse-icon">{smartRepliesOpen() ? '−' : '+'}</span>
+            </div>
+            <Show when={smartRepliesOpen()}>
+              <p class="settings-hint" style="margin-bottom: 12px;">
+                AI-powered reply suggestions via Vertex AI.
+              </p>
+              <div class="settings-form-group">
+                <label>Project ID</label>
+                <input
+                  type="text"
+                  value={vertexProjectId()}
+                  onInput={(e) => {
+                    setVertexProjectId(e.currentTarget.value);
+                    localStorage.setItem("google_cloud_project_id", e.currentTarget.value);
+                  }}
+                  placeholder="my-gcp-project"
+                />
+              </div>
+            </Show>
           </div>
         </div>
         <div class="settings-footer">
