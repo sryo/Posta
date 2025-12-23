@@ -4660,11 +4660,12 @@ function App() {
     const actionDefs: Record<string, { cls: string; title: string; keyHint?: string; icon: () => JSX.Element; onClick: (e: MouseEvent) => void; bulkTitle?: string; bulkIcon?: () => JSX.Element; bulkOnClick?: (e: MouseEvent) => void }> = {};
     const cId = props.cardId!;
     const tId = props.threadId!;
+    const getSelection = () => Array.from(selectedThreads()[cId] || []);
 
     actionDefs.quickReply = {
       cls: 'bulk-reply', title: 'Reply', keyHint: 'r', icon: ReplyIcon,
       onClick: (e) => { e.stopPropagation(); setQuickReplyThreadId(props.threadId); setQuickReplyCardId(props.cardId); },
-      bulkTitle: 'Batch Reply', bulkOnClick: (e) => { e.stopPropagation(); startBatchReply(cId, Array.from(selection)); props.onClose(); }
+      bulkTitle: 'Batch Reply', bulkOnClick: (e) => { e.stopPropagation(); startBatchReply(cId, getSelection()); props.onClose(); }
     };
     actionDefs.quickForward = {
       cls: 'bulk-forward', title: 'Forward', keyHint: 'f', icon: ForwardIcon,
@@ -4673,32 +4674,32 @@ function App() {
     actionDefs.archive = {
       cls: 'bulk-archive', title: isInInbox ? 'Archive' : 'Move to Inbox', keyHint: 'a', icon: isInInbox ? ArchiveIcon : InboxIcon,
       onClick: (e) => { e.stopPropagation(); handleThreadAction(isInInbox ? 'archive' : 'inbox', [tId], cId); },
-      bulkTitle: 'Archive', bulkIcon: ArchiveIcon, bulkOnClick: (e) => { e.stopPropagation(); handleThreadAction('archive', Array.from(selection), cId); }
+      bulkTitle: 'Archive', bulkIcon: ArchiveIcon, bulkOnClick: (e) => { e.stopPropagation(); handleThreadAction('archive', getSelection(), cId); }
     };
     actionDefs.star = {
       cls: 'bulk-star', title: isStarred ? 'Unstar' : 'Star', keyHint: 's', icon: isStarred ? StarFilledIcon : StarIcon,
       onClick: (e) => { e.stopPropagation(); handleThreadAction(isStarred ? 'unstar' : 'star', [tId], cId); },
-      bulkTitle: 'Star', bulkIcon: StarIcon, bulkOnClick: (e) => { e.stopPropagation(); handleThreadAction('star', Array.from(selection), cId); }
+      bulkTitle: 'Star', bulkIcon: StarIcon, bulkOnClick: (e) => { e.stopPropagation(); handleThreadAction('star', getSelection(), cId); }
     };
     actionDefs.markRead = {
       cls: 'bulk-read', title: isRead ? 'Mark unread' : 'Mark read', keyHint: 'u', icon: isRead ? EyeClosedIcon : EyeOpenIcon,
       onClick: (e) => { e.stopPropagation(); handleThreadAction(isRead ? 'unread' : 'read', [tId], cId); },
-      bulkTitle: 'Mark read', bulkIcon: EyeOpenIcon, bulkOnClick: (e) => { e.stopPropagation(); handleThreadAction('read', Array.from(selection), cId); }
+      bulkTitle: 'Mark read', bulkIcon: EyeOpenIcon, bulkOnClick: (e) => { e.stopPropagation(); handleThreadAction('read', getSelection(), cId); }
     };
     actionDefs.markImportant = {
       cls: 'bulk-important', title: isImportant ? 'Unmark important' : 'Mark important', keyHint: 'i', icon: isImportant ? ThumbsUpFilledIcon : ThumbsUpIcon,
       onClick: (e) => { e.stopPropagation(); handleThreadAction(isImportant ? 'notImportant' : 'important', [tId], cId); },
-      bulkTitle: 'Mark important', bulkIcon: ThumbsUpIcon, bulkOnClick: (e) => { e.stopPropagation(); handleThreadAction('important', Array.from(selection), cId); }
+      bulkTitle: 'Mark important', bulkIcon: ThumbsUpIcon, bulkOnClick: (e) => { e.stopPropagation(); handleThreadAction('important', getSelection(), cId); }
     };
     actionDefs.spam = {
       cls: 'bulk-spam', title: 'Report spam', keyHint: 'x', icon: SpamIcon,
       onClick: (e) => { e.stopPropagation(); handleThreadAction('spam', [tId], cId); },
-      bulkOnClick: (e) => { e.stopPropagation(); handleThreadAction('spam', Array.from(selection), cId); }
+      bulkOnClick: (e) => { e.stopPropagation(); handleThreadAction('spam', getSelection(), cId); }
     };
     actionDefs.trash = {
       cls: 'bulk-danger', title: 'Delete', keyHint: 'd', icon: TrashIcon,
       onClick: (e) => { e.stopPropagation(); handleThreadAction('trash', [tId], cId); },
-      bulkOnClick: (e) => { e.stopPropagation(); handleThreadAction('trash', Array.from(selection), cId); }
+      bulkOnClick: (e) => { e.stopPropagation(); handleThreadAction('trash', getSelection(), cId); }
     };
 
     if (props.selectedCount > 0) {
@@ -4816,13 +4817,14 @@ function App() {
       }
     }
 
-    // Normal Toggle Logic
+    // If already selected, just show the action wheel without deselecting
     if (isSelected) {
-      currentMap.delete(threadId);
-    } else {
-      currentMap.add(threadId);
-      setLastSelectedThread({ ...lastSelectedThread(), [cardId]: threadId });
+      return;
     }
+
+    // Add to selection
+    currentMap.add(threadId);
+    setLastSelectedThread({ ...lastSelectedThread(), [cardId]: threadId });
     setSelectedThreads({ ...selectedThreads(), [cardId]: currentMap });
   }
 
