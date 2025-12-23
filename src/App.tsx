@@ -57,6 +57,7 @@ function safeSetJSON(key: string, value: unknown): void {
   }
 }
 import { getCurrentWindow } from '@tauri-apps/api/window';
+import { openUrl } from '@tauri-apps/plugin-opener';
 import {
   DragDropProvider,
   DragDropSensors,
@@ -89,6 +90,7 @@ import {
   replyToThread,
   getCachedCardThreads,
   saveCachedCardThreads,
+  clearCardCache,
   openAttachment as openAttachmentApi,
   type SendAttachment,
   listLabels,
@@ -2189,13 +2191,35 @@ function App() {
   async function handleSaveSettings() {
     if (!clientId() || !clientSecret()) return;
 
-    // configureAuth stores credentials securely on the backend
-    await configureAuth({
-      client_id: clientId(),
-      client_secret: clientSecret(),
-    });
-    setSettingsOpen(false);
-    handleSignIn();
+    try {
+      // configureAuth stores credentials securely on the backend
+      await configureAuth({
+        client_id: clientId(),
+        client_secret: clientSecret(),
+      });
+      setSettingsOpen(false);
+
+      // Directly run OAuth flow since we just configured auth
+      setAuthLoading(true);
+      setError(null);
+      try {
+        const account = await runOAuthFlow();
+        setAccounts([...accounts(), account]);
+        setSelectedAccount(account);
+        const cardList = await getCards(account.id);
+        setCards(cardList);
+
+        if (cardList.length === 0) {
+          setShowPresetSelection(true);
+        }
+      } catch (e) {
+        setError(String(e));
+      } finally {
+        setAuthLoading(false);
+      }
+    } catch (e) {
+      setError(`Failed to save credentials: ${e}`);
+    }
   }
 
   async function toggleSettings() {
@@ -5019,6 +5043,11 @@ function App() {
         <div class="settings-body">
           <div class="settings-section">
             <div class="settings-section-title">Google API</div>
+            <p class="settings-hint" style="margin-bottom: 12px;">
+              <a href="#" onClick={(e) => { e.preventDefault(); openUrl('https://console.cloud.google.com/apis/credentials'); }} class="settings-link">
+                Open Google Cloud Console
+              </a> to create OAuth credentials.
+            </p>
             <div class="settings-form-group">
               <label>Client ID</label>
               <input

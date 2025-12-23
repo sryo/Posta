@@ -8,8 +8,14 @@ use std::time::Duration;
 
 const CALLBACK_PORT: u16 = 8420;
 
-/// Start listening for OAuth callback and return the authorization code
-pub fn wait_for_callback(timeout_secs: u64) -> Result<String, String> {
+/// OAuth callback result with code and state
+pub struct CallbackResult {
+    pub code: String,
+    pub state: Option<String>,
+}
+
+/// Start listening for OAuth callback and return the authorization code and state
+pub fn wait_for_callback(timeout_secs: u64) -> Result<CallbackResult, String> {
     let listener = TcpListener::bind(format!("127.0.0.1:{}", CALLBACK_PORT))
         .map_err(|e| format!("Failed to bind to port {}: {}", CALLBACK_PORT, e))?;
 
@@ -38,8 +44,8 @@ pub fn wait_for_callback(timeout_secs: u64) -> Result<String, String> {
                         continue;
                     }
 
-                    // Parse the request to extract the code
-                    if let Some(code) = extract_code_from_request(&request_line) {
+                    // Parse the request to extract the code and state
+                    if let Some((code, state)) = extract_code_and_state(&request_line) {
                         // Send success response
                         let response = format!(
                             "HTTP/1.1 200 OK\r\n\
@@ -62,7 +68,7 @@ pub fn wait_for_callback(timeout_secs: u64) -> Result<String, String> {
                         );
                         let _ = stream.write_all(response.as_bytes());
                         let _ = stream.flush();
-                        let _ = tx.send(Ok(code));
+                        let _ = tx.send(Ok(CallbackResult { code, state }));
                         break;
                     } else if request_line.contains("error=") {
                         // Handle OAuth error
@@ -111,7 +117,7 @@ pub fn wait_for_callback(timeout_secs: u64) -> Result<String, String> {
         .map_err(|_| "Timeout waiting for OAuth callback".to_string())?
 }
 
-fn extract_code_from_request(request: &str) -> Option<String> {
+fn extract_code_and_state(request: &str) -> Option<(String, Option<String>)> {
     // Parse: GET /callback?code=xxx&state=yyy HTTP/1.1
     let parts: Vec<&str> = request.split_whitespace().collect();
     if parts.len() < 2 {
@@ -122,13 +128,21 @@ fn extract_code_from_request(request: &str) -> Option<String> {
     let query_start = path.find('?')?;
     let query = &path[query_start + 1..];
 
+    let mut code = None;
+    let mut state = None;
+
     for param in query.split('&') {
         let kv: Vec<&str> = param.splitn(2, '=').collect();
-        if kv.len() == 2 && kv[0] == "code" {
-            return Some(urlencoding::decode(kv[1]).ok()?.to_string());
+        if kv.len() == 2 {
+            match kv[0] {
+                "code" => code = urlencoding::decode(kv[1]).ok().map(|s| s.to_string()),
+                "state" => state = urlencoding::decode(kv[1]).ok().map(|s| s.to_string()),
+                _ => {}
+            }
         }
     }
-    None
+
+    code.map(|c| (c, state))
 }
 
 fn extract_error_from_request(request: &str) -> Option<String> {

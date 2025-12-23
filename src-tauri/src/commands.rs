@@ -143,13 +143,16 @@ pub async fn start_oauth_flow(state: State<'_, AppState>) -> Result<AuthUrl, Str
 #[tauri::command]
 pub async fn complete_oauth_flow(
     code: String,
+    received_state: Option<String>,
     state: State<'_, AppState>,
 ) -> Result<Account, String> {
-    // Exchange code for tokens
+    // Exchange code for tokens, verifying state to prevent CSRF
     let (access_token, refresh_token) = {
         let auth_guard = state.auth.lock().await;
         let auth = auth_guard.as_ref().ok_or("Auth not configured")?;
-        auth.exchange_code(code).await.map_err(|e| e.to_string())?
+        auth.exchange_code(code, received_state.as_deref())
+            .await
+            .map_err(|e| e.to_string())?
     };
 
     finalize_oauth(&access_token, &refresh_token, &state).await
@@ -176,16 +179,18 @@ pub async fn run_oauth_flow(state: State<'_, AppState>) -> Result<Account, Strin
     open::that(&auth_url).map_err(|e| format!("Failed to open browser: {}", e))?;
 
     // Wait for callback in a blocking thread
-    let code = tokio::task::spawn_blocking(move || wait_for_callback(120))
+    let callback_result = tokio::task::spawn_blocking(move || wait_for_callback(120))
         .await
         .map_err(|e| format!("Task error: {}", e))?
         .map_err(|e| format!("OAuth callback error: {}", e))?;
 
-    // Exchange code for tokens
+    // Exchange code for tokens, verifying state
     let (access_token, refresh_token) = {
         let auth_guard = state.auth.lock().await;
         let auth = auth_guard.as_ref().ok_or("Auth not configured")?;
-        auth.exchange_code(code).await.map_err(|e| e.to_string())?
+        auth.exchange_code(callback_result.code, callback_result.state.as_deref())
+            .await
+            .map_err(|e| e.to_string())?
     };
 
     finalize_oauth(&access_token, &refresh_token, &state).await
@@ -413,22 +418,36 @@ pub async fn modify_threads(
         let db_guard = state.db.lock().map_err(|_| "Lock error")?;
         let db = db_guard.as_ref().ok_or("Database not initialized")?;
         let accounts = db.get_accounts().map_err(|e| e.to_string())?;
-        
+
         if !accounts.iter().any(|a| a.id == account_id) {
              return Err("Account not found".to_string());
         }
     }
 
     let access_token = get_access_token(&state, &account_id).await?;
+    let gmail = std::sync::Arc::new(GmailClient::new(access_token));
 
-    let gmail = GmailClient::new(access_token);
-    
-    // Process sequentially for now. Parallelizing would be better but requires more boilerplate.
-    for thread_id in thread_ids {
-        gmail
-            .modify_thread(&thread_id, add_labels.clone(), remove_labels.clone())
-            .await
-            .map_err(|e| format!("Failed to modify thread {}: {}", thread_id, e))?;
+    // Process in parallel for better performance
+    let futures: Vec<_> = thread_ids
+        .into_iter()
+        .map(|thread_id| {
+            let gmail = gmail.clone();
+            let add = add_labels.clone();
+            let remove = remove_labels.clone();
+            async move {
+                gmail
+                    .modify_thread(&thread_id, add, remove)
+                    .await
+                    .map_err(|e| format!("Failed to modify thread {}: {}", thread_id, e))
+            }
+        })
+        .collect();
+
+    let results = futures::future::join_all(futures).await;
+
+    // Return first error if any
+    for result in results {
+        result?;
     }
 
     Ok(())

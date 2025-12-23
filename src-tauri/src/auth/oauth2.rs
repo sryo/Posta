@@ -35,7 +35,12 @@ struct TokenResponse {
 pub struct GmailAuth {
     client_id: String,
     client_secret: String,
-    pending_verifier: Arc<Mutex<Option<String>>>,
+    pending_auth: Arc<Mutex<Option<PendingAuth>>>,
+}
+
+struct PendingAuth {
+    verifier: String,
+    state: String,
 }
 
 impl GmailAuth {
@@ -43,7 +48,7 @@ impl GmailAuth {
         Self {
             client_id,
             client_secret,
-            pending_verifier: Arc::new(Mutex::new(None)),
+            pending_auth: Arc::new(Mutex::new(None)),
         }
     }
 
@@ -88,18 +93,30 @@ impl GmailAuth {
             urlencoding::encode(&state)
         );
 
-        *self.pending_verifier.lock().await = Some(verifier);
+        *self.pending_auth.lock().await = Some(PendingAuth {
+            verifier,
+            state: state.clone(),
+        });
 
         Ok((auth_url, state))
     }
 
-    pub async fn exchange_code(&self, code: String) -> Result<(String, String), AuthError> {
-        let verifier = self
-            .pending_verifier
+    pub async fn exchange_code(&self, code: String, received_state: Option<&str>) -> Result<(String, String), AuthError> {
+        let pending = self
+            .pending_auth
             .lock()
             .await
             .take()
-            .ok_or_else(|| AuthError::OAuth2("No pending verifier".to_string()))?;
+            .ok_or_else(|| AuthError::OAuth2("No pending auth flow".to_string()))?;
+
+        // Verify state to prevent CSRF attacks
+        if let Some(received) = received_state {
+            if received != pending.state {
+                return Err(AuthError::OAuth2("State mismatch - possible CSRF attack".to_string()));
+            }
+        }
+
+        let verifier = pending.verifier;
 
         tracing::info!("Exchanging code for tokens...");
         tracing::debug!("Code: {}...", &code[..20.min(code.len())]);
@@ -168,23 +185,45 @@ fn base64_url_encode(input: &[u8]) -> String {
     base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(input)
 }
 
-// File-based token storage (keyring has issues in dev mode)
+// Secure token storage - tries keychain first, falls back to file storage
+const KEYRING_SERVICE: &str = "com.posta.mail";
+
 use std::path::PathBuf;
 
-fn get_token_file_path(account_id: &str) -> PathBuf {
+fn get_token_dir() -> PathBuf {
     let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
-    PathBuf::from(home).join(".posta_tokens").join(format!("{}.token", account_id))
+    PathBuf::from(home).join(".posta_tokens")
+}
+
+fn get_token_file_path(account_id: &str) -> PathBuf {
+    get_token_dir().join(format!("{}.token", account_id))
+}
+
+fn get_credentials_file_path() -> PathBuf {
+    get_token_dir().join("oauth_credentials.json")
 }
 
 pub fn store_refresh_token(account_id: &str, token: &str) -> Result<(), AuthError> {
     tracing::info!("Storing refresh token for account: {}", account_id);
 
-    // Use file storage directly (keyring has issues with unsigned apps)
+    // Try keychain first
+    let keychain_ok = keyring::Entry::new(KEYRING_SERVICE, &format!("token:{}", account_id))
+        .ok()
+        .and_then(|entry| entry.set_password(token).ok())
+        .is_some();
+
+    if keychain_ok {
+        tracing::info!("Token stored in system keychain");
+    }
+
+    // Always write to file as backup (keychain can silently fail on unsigned apps)
     let path = get_token_file_path(account_id);
     if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent).map_err(|e| AuthError::Keyring(format!("Failed to create token dir: {}", e)))?;
+        std::fs::create_dir_all(parent)
+            .map_err(|e| AuthError::Keyring(format!("Failed to create token dir: {}", e)))?;
     }
-    std::fs::write(&path, token).map_err(|e| AuthError::Keyring(format!("Failed to write token: {}", e)))?;
+    std::fs::write(&path, token)
+        .map_err(|e| AuthError::Keyring(format!("Failed to write token: {}", e)))?;
     tracing::info!("Token stored at: {:?}", path);
     Ok(())
 }
@@ -192,30 +231,38 @@ pub fn store_refresh_token(account_id: &str, token: &str) -> Result<(), AuthErro
 pub fn get_refresh_token(account_id: &str) -> Result<String, AuthError> {
     tracing::info!("Getting refresh token for account: {}", account_id);
 
-    let path = get_token_file_path(account_id);
-    tracing::info!("Looking for token at: {:?}", path);
+    // Try keychain first
+    if let Ok(entry) = keyring::Entry::new(KEYRING_SERVICE, &format!("token:{}", account_id)) {
+        if let Ok(token) = entry.get_password() {
+            tracing::info!("Token found in keychain");
+            return Ok(token);
+        }
+    }
 
+    // Fall back to file storage
+    let path = get_token_file_path(account_id);
     if path.exists() {
         let token = std::fs::read_to_string(&path)
             .map_err(|e| AuthError::Keyring(format!("Failed to read token: {}", e)))?;
-        tracing::info!("Token found and loaded");
+        tracing::info!("Token found in file storage");
         return Ok(token);
     }
 
-    tracing::warn!("Token file not found at {:?}", path);
+    tracing::warn!("No token found for account: {}", account_id);
     Err(AuthError::Keyring("No matching entry found in secure storage".to_string()))
 }
 
 pub fn delete_refresh_token(account_id: &str) -> Result<(), AuthError> {
-    let path = get_token_file_path(account_id);
-    std::fs::remove_file(path).ok();
-    Ok(())
-}
+    // Delete from keychain if present
+    if let Ok(entry) = keyring::Entry::new(KEYRING_SERVICE, &format!("token:{}", account_id)) {
+        let _ = entry.delete_credential();
+    }
 
-// OAuth credentials storage (separate from per-account tokens)
-fn get_oauth_credentials_path() -> PathBuf {
-    let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
-    PathBuf::from(home).join(".posta_tokens").join("oauth_credentials.json")
+    // Delete from file storage if present
+    let path = get_token_file_path(account_id);
+    let _ = std::fs::remove_file(path);
+
+    Ok(())
 }
 
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
@@ -225,13 +272,7 @@ pub struct OAuthCredentials {
 }
 
 pub fn store_oauth_credentials(client_id: &str, client_secret: &str) -> Result<(), AuthError> {
-    tracing::info!("Storing OAuth credentials securely");
-
-    let path = get_oauth_credentials_path();
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)
-            .map_err(|e| AuthError::Keyring(format!("Failed to create credentials dir: {}", e)))?;
-    }
+    tracing::info!("Storing OAuth credentials");
 
     let credentials = OAuthCredentials {
         client_id: client_id.to_string(),
@@ -241,31 +282,60 @@ pub fn store_oauth_credentials(client_id: &str, client_secret: &str) -> Result<(
     let json = serde_json::to_string(&credentials)
         .map_err(|e| AuthError::Keyring(format!("Failed to serialize credentials: {}", e)))?;
 
-    std::fs::write(&path, json)
-        .map_err(|e| AuthError::Keyring(format!("Failed to write credentials: {}", e)))?;
+    // Try keychain first
+    let keychain_ok = keyring::Entry::new(KEYRING_SERVICE, "oauth:credentials")
+        .ok()
+        .and_then(|entry| entry.set_password(&json).ok())
+        .is_some();
 
+    if keychain_ok {
+        tracing::info!("OAuth credentials stored in keychain");
+    }
+
+    // Always write to file as backup (keychain can silently fail on unsigned apps)
+    let path = get_credentials_file_path();
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|e| AuthError::Keyring(format!("Failed to create credentials dir: {}", e)))?;
+    }
+    std::fs::write(&path, &json)
+        .map_err(|e| AuthError::Keyring(format!("Failed to write credentials: {}", e)))?;
     tracing::info!("OAuth credentials stored at: {:?}", path);
     Ok(())
 }
 
 pub fn get_oauth_credentials() -> Result<OAuthCredentials, AuthError> {
-    let path = get_oauth_credentials_path();
-
-    if !path.exists() {
-        return Err(AuthError::NoCredentials);
+    // Try keychain first
+    if let Ok(entry) = keyring::Entry::new(KEYRING_SERVICE, "oauth:credentials") {
+        if let Ok(json) = entry.get_password() {
+            let credentials: OAuthCredentials = serde_json::from_str(&json)
+                .map_err(|e| AuthError::Keyring(format!("Failed to parse credentials: {}", e)))?;
+            return Ok(credentials);
+        }
     }
 
-    let json = std::fs::read_to_string(&path)
-        .map_err(|e| AuthError::Keyring(format!("Failed to read credentials: {}", e)))?;
+    // Fall back to file storage
+    let path = get_credentials_file_path();
+    if path.exists() {
+        let json = std::fs::read_to_string(&path)
+            .map_err(|e| AuthError::Keyring(format!("Failed to read credentials: {}", e)))?;
+        let credentials: OAuthCredentials = serde_json::from_str(&json)
+            .map_err(|e| AuthError::Keyring(format!("Failed to parse credentials: {}", e)))?;
+        return Ok(credentials);
+    }
 
-    let credentials: OAuthCredentials = serde_json::from_str(&json)
-        .map_err(|e| AuthError::Keyring(format!("Failed to parse credentials: {}", e)))?;
-
-    Ok(credentials)
+    Err(AuthError::NoCredentials)
 }
 
 pub fn delete_oauth_credentials() -> Result<(), AuthError> {
-    let path = get_oauth_credentials_path();
-    std::fs::remove_file(path).ok();
+    // Delete from keychain if present
+    if let Ok(entry) = keyring::Entry::new(KEYRING_SERVICE, "oauth:credentials") {
+        let _ = entry.delete_credential();
+    }
+
+    // Delete from file storage if present
+    let path = get_credentials_file_path();
+    let _ = std::fs::remove_file(path);
+
     Ok(())
 }

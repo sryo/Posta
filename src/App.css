@@ -3056,6 +3056,16 @@ button:disabled:hover {
     font-size: 10px;
 }
 
+.settings-link {
+    color: var(--accent);
+    text-decoration: none;
+    cursor: pointer;
+}
+
+.settings-link:hover {
+    text-decoration: underline;
+}
+
 /* Settings checkbox */
 .settings-checkbox {
     display: flex;
