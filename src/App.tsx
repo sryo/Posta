@@ -89,11 +89,14 @@ import {
   replyToThread,
   getCachedCardThreads,
   saveCachedCardThreads,
-  downloadAttachment,
+  openAttachment as openAttachmentApi,
   type SendAttachment,
   listLabels,
   type GmailLabel,
+  rsvpCalendarEvent,
+  getCalendarRsvpStatus,
 } from "./api/tauri";
+import { Menu, MenuItem, PredefinedMenuItem } from "@tauri-apps/api/menu";
 import {
   decodeBase64Utf8,
   formatFileSize,
@@ -106,6 +109,8 @@ import {
   parseContact,
   getAvatarColor,
   validateEmailList,
+  formatEmailDate,
+  formatCalendarEventDate,
 } from "./utils";
 import "./App.css";
 import {
@@ -136,6 +141,10 @@ import {
   EyeOpenFilledIcon,
   EyeClosedIcon,
   LabelIcon,
+  PaletteIcon,
+  CalendarIcon,
+  LocationIcon,
+  ClockIcon,
 } from "./components/Icons";
 
 // Shared compose components
@@ -219,6 +228,309 @@ const Spinner = (props: {
   return <div class={`spinner ${sizeClass} ${props.class || ''}`} />;
 };
 
+// Shared Compose Form component
+interface ComposeFormProps {
+  // Mode and display
+  mode: 'new' | 'reply' | 'forward' | 'batchReply';
+  inline?: boolean;
+  title?: string;
+  showHeader?: boolean;
+  showSubject?: boolean;
+  showFields?: boolean; // Show To/Cc/Bcc fields (default true)
+  // Field values (optional when showFields=false)
+  to?: string;
+  setTo?: (v: string) => void;
+  cc?: string;
+  setCc?: (v: string) => void;
+  bcc?: string;
+  setBcc?: (v: string) => void;
+  showCcBcc?: boolean;
+  setShowCcBcc?: (v: boolean) => void;
+  subject?: string;
+  setSubject?: (v: string) => void;
+  body: string;
+  setBody: (v: string) => void;
+  placeholder?: string;
+  // Attachments
+  attachments: SendAttachment[];
+  onRemoveAttachment: (i: number) => void;
+  onFileSelect: (e: Event) => void;
+  fileInputId: string;
+  // Status
+  error?: string | null;
+  draftSaving?: boolean;
+  draftSaved?: boolean;
+  sending: boolean;
+  // Actions
+  onSend: () => void;
+  onClose: () => void;
+  onInput?: () => void;
+  onSkip?: () => void; // For batch reply
+  canSend?: boolean; // Override send button enabled state
+  // Focus
+  focusBody?: boolean;
+  focusTo?: boolean;
+  // Autocomplete (optional, for new email)
+  autocomplete?: {
+    show: boolean;
+    candidates: { email: string; name?: string }[];
+    selectedIndex: number;
+    setSelectedIndex: (i: number) => void;
+    onSelect: (email: string) => void;
+    setShow: (v: boolean) => void;
+  };
+}
+
+const ComposeForm = (props: ComposeFormProps) => {
+  const defaultTitle = props.mode === 'new' ? 'New message'
+    : props.mode === 'forward' ? 'Forward'
+    : props.mode === 'batchReply' ? 'Reply'
+    : 'Reply';
+
+  // Determine if send is enabled (for keyboard shortcut and button)
+  const canSend = () => props.canSend !== undefined ? props.canSend : (props.to || '').trim().length > 0;
+
+  const handleKeyDown = (e: KeyboardEvent) => {
+    if (e.key === 'Escape') {
+      if (props.autocomplete?.show) {
+        props.autocomplete.setShow(false);
+      } else {
+        props.onClose();
+      }
+    } else if (e.key === 'Enter' && (e.metaKey || e.ctrlKey) && canSend()) {
+      e.preventDefault();
+      props.onSend();
+    }
+  };
+
+  const handleToKeyDown = (e: KeyboardEvent) => {
+    const ac = props.autocomplete;
+    if (ac && ac.show && ac.candidates.length > 0) {
+      if (e.key === 'ArrowDown') {
+        e.preventDefault();
+        ac.setSelectedIndex((ac.selectedIndex + 1) % ac.candidates.length);
+        return;
+      } else if (e.key === 'ArrowUp') {
+        e.preventDefault();
+        ac.setSelectedIndex((ac.selectedIndex - 1 + ac.candidates.length) % ac.candidates.length);
+        return;
+      } else if (e.key === 'Enter' && !(e.metaKey || e.ctrlKey)) {
+        e.preventDefault();
+        ac.onSelect(ac.candidates[ac.selectedIndex].email);
+        return;
+      }
+    }
+    handleKeyDown(e);
+  };
+
+  // Shared field components (only rendered when showFields !== false)
+  const ToField = () => (
+    <div class={props.inline ? "inline-compose-field" : "compose-field"} style={props.autocomplete ? "position: relative;" : undefined}>
+      <label>To</label>
+      <div class={props.inline ? "inline-compose-to-row" : "compose-to-row"}>
+        <input
+          ref={(el) => setTimeout(() => { if (props.focusTo !== false && !props.focusBody) el?.focus(); }, 50)}
+          type="email"
+          value={props.to || ''}
+          onInput={(e) => { props.setTo?.(e.currentTarget.value); props.onInput?.(); }}
+          onFocus={() => props.autocomplete?.setShow(true)}
+          onBlur={() => props.autocomplete && setTimeout(() => props.autocomplete!.setShow(false), 150)}
+          onKeyDown={handleToKeyDown}
+          placeholder={props.inline ? "Recipients" : ""}
+        />
+        <Show when={!props.showCcBcc && props.setShowCcBcc}>
+          <button type="button" class="cc-bcc-toggle" onClick={() => props.setShowCcBcc!(true)}>Cc/Bcc</button>
+        </Show>
+      </div>
+      <Show when={props.autocomplete?.show && props.autocomplete.candidates.length > 0}>
+        <div class="compose-autocomplete">
+          <For each={props.autocomplete!.candidates}>
+            {(contact, i) => (
+              <div
+                class={`compose-autocomplete-item ${i() === props.autocomplete!.selectedIndex ? 'selected' : ''}`}
+                onMouseDown={() => props.autocomplete!.onSelect(contact.email)}
+                onMouseEnter={() => props.autocomplete!.setSelectedIndex(i())}
+              >
+                <div class="compose-autocomplete-avatar" style={{ background: getAvatarColor(contact.name || contact.email) }}>
+                  {(contact.name || contact.email).charAt(0).toUpperCase()}
+                </div>
+                <div class="compose-autocomplete-info">
+                  <Show when={contact.name}>
+                    <div class="compose-autocomplete-name">{contact.name}</div>
+                  </Show>
+                  <div class="compose-autocomplete-email">{contact.email}</div>
+                </div>
+              </div>
+            )}
+          </For>
+        </div>
+      </Show>
+    </div>
+  );
+
+  const CcBccFields = () => (
+    <Show when={props.showCcBcc && props.setCc && props.setBcc}>
+      <div class={props.inline ? "inline-compose-field" : "compose-field"}>
+        <label>Cc</label>
+        <input
+          type="text"
+          value={props.cc || ''}
+          onInput={(e) => { props.setCc!(e.currentTarget.value); props.onInput?.(); }}
+          onKeyDown={handleKeyDown}
+          placeholder="Cc recipients"
+        />
+      </div>
+      <div class={props.inline ? "inline-compose-field" : "compose-field"}>
+        <label>Bcc</label>
+        <input
+          type="text"
+          value={props.bcc || ''}
+          onInput={(e) => { props.setBcc!(e.currentTarget.value); props.onInput?.(); }}
+          onKeyDown={handleKeyDown}
+          placeholder="Bcc recipients"
+        />
+      </div>
+    </Show>
+  );
+
+  const SubjectField = () => (
+    <Show when={props.showSubject && props.setSubject}>
+      <div class={props.inline ? "inline-compose-field" : "compose-field"}>
+        <label>Subject</label>
+        <input
+          type="text"
+          value={props.subject || ''}
+          onInput={(e) => { props.setSubject!(e.currentTarget.value); props.onInput?.(); }}
+          onKeyDown={handleKeyDown}
+          placeholder="Subject"
+        />
+      </div>
+    </Show>
+  );
+
+  const BodyTextarea = () => (
+    <div class={props.inline ? "inline-compose-body" : "compose-content"}>
+      <textarea
+        ref={(el) => setTimeout(() => { if (props.focusBody) el?.focus(); }, 50)}
+        value={props.body}
+        onInput={(e) => { props.setBody(e.currentTarget.value); props.onInput?.(); }}
+        onKeyDown={handleKeyDown}
+        placeholder={props.placeholder || (props.mode === 'new' ? "Write something..." : "Write your reply...")}
+      />
+    </div>
+  );
+
+  const Attachments = () => (
+    <Show when={props.attachments.length > 0}>
+      <div class={props.inline ? "inline-compose-attachments" : "compose-attachments"}>
+        <For each={props.attachments}>
+          {(attachment, i) => (
+            <div class="compose-attachment">
+              <span class="attachment-name" title={attachment.filename}>
+                {truncateMiddle(attachment.filename, 20)}
+              </span>
+              <button class="attachment-remove" onClick={() => props.onRemoveAttachment(i())} title="Remove">
+                <CloseIcon />
+              </button>
+            </div>
+          )}
+        </For>
+      </div>
+    </Show>
+  );
+
+  const Footer = () => (
+    <div class={props.inline ? "inline-compose-footer" : "compose-footer"}>
+      <input
+        type="file"
+        id={props.fileInputId}
+        onChange={props.onFileSelect}
+        multiple
+        style={{ display: 'none' }}
+      />
+      <button
+        class="compose-attach-btn"
+        onClick={() => (document.getElementById(props.fileInputId) as HTMLInputElement)?.click()}
+        title="Attach files"
+      >
+        <AttachmentIcon />
+      </button>
+      <Show when={props.error}>
+        <div class="compose-error">{props.error}</div>
+      </Show>
+      <Show when={props.draftSaving && !props.error}>
+        <div class="draft-saved">Saving...</div>
+      </Show>
+      <Show when={props.draftSaved && !props.draftSaving && !props.error}>
+        <div class="draft-saved">Draft saved</div>
+      </Show>
+      <Show when={props.inline}>
+        <div class="inline-compose-spacer" />
+      </Show>
+      <button
+        class={`btn btn-primary ${props.sending ? 'sending' : ''}`}
+        disabled={!canSend() || props.sending}
+        onClick={props.onSend}
+      >
+        {props.sending ? 'Sending...' : <>Send <span class="shortcut-hint">⌘↵</span></>}
+      </button>
+    </div>
+  );
+
+  // Inline layout (reply/forward in thread)
+  if (props.inline) {
+    return (
+      <>
+        <Show when={props.showHeader !== false}>
+          <div class="inline-compose-header">
+            <span class="inline-compose-title">{props.title || defaultTitle}</span>
+            <Show when={props.onSkip}>
+              <button class="btn btn-sm batch-reply-skip" onClick={props.onSkip} title="Skip this thread">
+                Skip
+              </button>
+            </Show>
+            <Show when={!props.onSkip}>
+              <CloseButton onClick={props.onClose} />
+            </Show>
+          </div>
+        </Show>
+        <Show when={props.showFields !== false}>
+          <div class="inline-compose-fields">
+            <ToField />
+            <CcBccFields />
+            <SubjectField />
+          </div>
+        </Show>
+        <BodyTextarea />
+        <Attachments />
+        <Footer />
+      </>
+    );
+  }
+
+  // Compose panel layout (new email)
+  return (
+    <>
+      <Show when={props.showHeader !== false}>
+        <div class="compose-header">
+          <h3>{props.title || defaultTitle}</h3>
+          <CloseButton onClick={props.onClose} />
+        </div>
+      </Show>
+      <div class="compose-body">
+        <Show when={props.showFields !== false}>
+          <ToField />
+          <CcBccFields />
+          <SubjectField />
+        </Show>
+        <BodyTextarea />
+      </div>
+      <Attachments />
+      <Footer />
+    </>
+  );
+};
+
 const CARD_COLORS = ["red", "orange", "yellow", "green", "cyan", "blue", "purple", "pink"] as const;
 const COLOR_HEX: Record<string, string> = {
   red: "#E53935",
@@ -231,15 +543,50 @@ const COLOR_HEX: Record<string, string> = {
   pink: "#D81B60",
 };
 
+interface InlineComposeProps {
+  replyToMessageId: string | null;
+  isForward: boolean;
+  to: string;
+  setTo: (v: string) => void;
+  cc: string;
+  setCc: (v: string) => void;
+  bcc: string;
+  setBcc: (v: string) => void;
+  showCcBcc: boolean;
+  setShowCcBcc: (v: boolean) => void;
+  subject: string;
+  setSubject: (v: string) => void;
+  body: string;
+  setBody: (v: string) => void;
+  attachments: SendAttachment[];
+  onRemoveAttachment: (i: number) => void;
+  onFileSelect: (e: Event) => void;
+  error: string | null;
+  draftSaving: boolean;
+  draftSaved: boolean;
+  sending: boolean;
+  onSend: () => void;
+  onClose: () => void;
+  onInput: () => void;
+  focusBody: boolean;
+  // Resize props
+  messageWidth: number;
+  resizing: boolean;
+  onResizeStart: (e: MouseEvent) => void;
+}
+
 const ThreadView = (props: {
   thread: FullThread | null,
   loading: boolean,
   error: string | null,
-  color: string | null,
+  card: { name: string; color: string | null } | null,
+  focusColor: string | null,
   onClose: () => void,
   focusedMessageIndex: number,
   onFocusChange: (index: number) => void,
-  onOpenAttachment: (messageId: string, attachmentId: string, filename: string, mimeType: string) => void,
+  onOpenAttachment: (messageId: string, attachmentId: string | undefined, filename: string, mimeType: string, inlineData?: string) => void,
+  onDownloadAttachment: (messageId: string, attachmentId: string | undefined, filename: string, mimeType: string, inlineData?: string) => void,
+  onShowAttachmentMenu: (att: { messageId: string; attachmentId: string; filename: string; mimeType: string; inlineData: string | null }) => void,
   onReply: (to: string, cc: string, subject: string, quotedBody: string, messageId: string) => void,
   onForward: (subject: string, body: string) => void,
   // Toolbar action props
@@ -248,12 +595,117 @@ const ThreadView = (props: {
   isStarred: boolean,
   isRead: boolean,
   isImportant: boolean,
+  // Inline compose
+  inlineCompose: InlineComposeProps | null,
+  // Attachments from thread listing (with inline_data for thumbnails)
+  threadAttachments?: Attachment[],
 }) => {
   let messageRefs: (HTMLDivElement | undefined)[] = [];
+  let contentRef: HTMLDivElement | undefined;
+  const [hoveredMessageId, setHoveredMessageId] = createSignal<string | null>(null);
+  const [wheelOpen, setWheelOpen] = createSignal(false);
+  const [hoveredLinkUrl, setHoveredLinkUrl] = createSignal<string | null>(null);
+  const [closing, setClosing] = createSignal(false);
+  let hoverTimeout: number | undefined;
+
+  const handleClose = () => {
+    setClosing(true);
+    setTimeout(() => props.onClose(), 200); // Match animation duration
+  };
+
+  // Scroll to newest message when thread loads
+  createEffect(() => {
+    if (props.thread && contentRef) {
+      requestAnimationFrame(() => {
+        contentRef!.scrollTop = contentRef!.scrollHeight;
+      });
+    }
+  });
+
+  // Link hover detection via event delegation
+  const handleLinkHover = (e: MouseEvent) => {
+    const target = e.target as HTMLElement;
+    const link = target.closest('a');
+    if (link && link.href) {
+      setHoveredLinkUrl(link.href);
+    } else {
+      setHoveredLinkUrl(null);
+    }
+  };
+
+  const showMessageWheel = (msgId: string) => {
+    if (hoverTimeout) clearTimeout(hoverTimeout);
+    setHoveredMessageId(msgId);
+    setWheelOpen(true);
+  };
+
+  const hideMessageWheel = () => {
+    hoverTimeout = window.setTimeout(() => {
+      setWheelOpen(false);
+      setHoveredMessageId(null);
+    }, 150);
+  };
+
+  // Message Actions Wheel Component - arc on RIGHT side
+  const MessageActionsWheel = (msgProps: {
+    msgId: string;
+    onReply: () => void;
+    onReplyAll: () => void;
+    onForward: () => void;
+    open: boolean;
+    showHints?: boolean;
+  }) => {
+    const actions = [
+      { title: 'Reply', keyHint: 'R', icon: ReplyIcon, onClick: msgProps.onReply },
+      { title: 'Reply All', keyHint: 'A', icon: ReplyAllIcon, onClick: msgProps.onReplyAll },
+      { title: 'Forward', keyHint: 'F', icon: ForwardIcon, onClick: msgProps.onForward },
+    ];
+
+    const innerRadius = 38;
+    const numActions = actions.length;
+
+    return (
+      <div
+        class={`message-actions-wheel ${msgProps.open ? 'open' : ''}`}
+        onMouseEnter={() => showMessageWheel(msgProps.msgId)}
+        onMouseLeave={hideMessageWheel}
+      >
+        <For each={actions}>
+          {(action, i) => {
+            // Arc on RIGHT side: from -60° (top-right) to +60° (bottom-right)
+            // i=0 -> -π/3 (-60°) -> top-right
+            // i=max -> π/3 (60°) -> bottom-right
+            const angle = (-Math.PI / 3) + (i() / (numActions - 1)) * (2 * Math.PI / 3);
+            const x = innerRadius * Math.cos(angle);
+            const y = innerRadius * Math.sin(angle);
+
+            return (
+              <button
+                class="message-action-btn"
+                style={{
+                  left: `calc(50% + ${x.toFixed(1)}px - 13px)`,
+                  top: `calc(50% + ${y.toFixed(1)}px - 13px)`
+                }}
+                onClick={(e) => { e.stopPropagation(); action.onClick(); }}
+                title={action.title}
+              >
+                <div style={{ width: '14px', height: '14px' }}>
+                  <action.icon />
+                </div>
+                <Show when={msgProps.showHints}>
+                  <span class="action-key-hint">{action.keyHint}</span>
+                </Show>
+              </button>
+            );
+          }}
+        </For>
+      </div>
+    );
+  };
 
   const handleKeyDown = (e: KeyboardEvent) => {
     if (e.key === 'Escape') {
-      props.onClose();
+      handleClose();
       return;
     }
 
@@ -290,66 +742,85 @@ const ThreadView = (props: {
   onCleanup(() => document.removeEventListener('keydown', handleKeyDown));
 
   return (
-    <div class="thread-overlay" data-color={props.color || undefined}>
-      <div class="thread-view-header">
-        <CloseButton onClick={props.onClose} />
-        <div class="thread-subject-header">
-          <Show when={props.thread} fallback={<span>Loading...</span>}>
-            <h2>{props.thread?.messages[0]?.payload?.headers?.find(h => h.name === 'Subject')?.value || '(No Subject)'}</h2>
+    <div class={`thread-overlay ${closing() ? 'closing' : ''}`} style={props.focusColor ? { '--message-focused-color': props.focusColor } as any : undefined}>
+      <div class="thread-floating-bar">
+        {/* Row 1: Close + Subject + Card indicator */}
+        <div class="thread-floating-bar-row">
+          <CloseButton onClick={handleClose} />
+          <div class="thread-bar-subject">
+            <Show when={props.thread} fallback={<span>Loading...</span>}>
+              <h2>{props.thread?.messages[0]?.payload?.headers?.find(h => h.name === 'Subject')?.value || '(No Subject)'}</h2>
+            </Show>
+          </div>
+          <Show when={props.card}>
+            <div
+              class="thread-bar-card"
+              style={props.card?.color ? {
+                background: COLOR_HEX[props.card.color] + '20',
+                color: COLOR_HEX[props.card.color]
+              } : {
+                background: 'var(--bg-tertiary)',
+                color: 'var(--text-secondary)'
+              }}
+            >
+              {props.card?.name}
+            </div>
           </Show>
         </div>
+
+        {/* Row 2: Actions */}
+        <Show when={props.thread}>
+          <div class="thread-floating-bar-row thread-bar-actions">
+            <button class="thread-toolbar-btn" onClick={() => props.onAction('archive')} title="Archive">
+              <ArchiveIcon />
+              <span class="thread-toolbar-label">Archive</span>
+              <span class="shortcut-hint">A</span>
+            </button>
+
+            <button class="thread-toolbar-btn" onClick={() => props.onAction(props.isStarred ? 'unstar' : 'star')} title={props.isStarred ? "Unstar" : "Star"}>
+              {props.isStarred ? <StarFilledIcon /> : <StarIcon />}
+              <span class="thread-toolbar-label">{props.isStarred ? 'Unstar' : 'Star'}</span>
+              <span class="shortcut-hint">S</span>
+            </button>
+
+            <button class="thread-toolbar-btn" onClick={() => props.onAction(props.isRead ? 'unread' : 'read')} title={props.isRead ? "Mark unread" : "Mark read"}>
+              {props.isRead ? <EyeClosedIcon /> : <EyeOpenIcon />}
+              <span class="thread-toolbar-label">{props.isRead ? 'Unread' : 'Read'}</span>
+              <span class="shortcut-hint">U</span>
+            </button>
+
+            <button class="thread-toolbar-btn" onClick={() => props.onAction(props.isImportant ? 'notImportant' : 'important')} title={props.isImportant ? "Unmark important" : "Mark important"}>
+              {props.isImportant ? <ThumbsUpFilledIcon /> : <ThumbsUpIcon />}
+              <span class="thread-toolbar-label">{props.isImportant ? 'Unmark' : 'Important'}</span>
+              <span class="shortcut-hint">I</span>
+            </button>
+
+            <div class="thread-toolbar-divider" />
+
+            <button class="thread-toolbar-btn" onClick={props.onOpenLabels} title="Manage labels">
+              <LabelIcon />
+              <span class="thread-toolbar-label">Labels</span>
+              <span class="shortcut-hint">L</span>
+            </button>
+
+            <div class="thread-toolbar-divider" />
+
+            <button class="thread-toolbar-btn thread-toolbar-btn-danger" onClick={() => props.onAction('spam')} title="Report spam">
+              <SpamIcon />
+              <span class="thread-toolbar-label">Spam</span>
+              <span class="shortcut-hint">!</span>
+            </button>
+
+            <button class="thread-toolbar-btn thread-toolbar-btn-danger" onClick={() => props.onAction('trash')} title="Delete">
+              <TrashIcon />
+              <span class="thread-toolbar-label">Delete</span>
+              <span class="shortcut-hint">#</span>
+            </button>
+          </div>
+        </Show>
       </div>
 
-      {/* Action Toolbar */}
-      <Show when={props.thread}>
-        <div class="thread-actions-toolbar">
-          <button class="thread-toolbar-btn" onClick={() => props.onAction('archive')} title="Archive">
-            <ArchiveIcon />
-            <span class="thread-toolbar-label">Archive</span>
-            <span class="shortcut-hint">A</span>
-          </button>
-
-          <button class="thread-toolbar-btn" onClick={() => props.onAction(props.isStarred ? 'unstar' : 'star')} title={props.isStarred ? "Unstar" : "Star"}>
-            {props.isStarred ? <StarFilledIcon /> : <StarIcon />}
-            <span class="thread-toolbar-label">{props.isStarred ? 'Starred' : 'Star'}</span>
-            <span class="shortcut-hint">S</span>
-          </button>
-
-          <button class="thread-toolbar-btn" onClick={() => props.onAction(props.isRead ? 'unread' : 'read')} title={props.isRead ? "Mark Unread" : "Mark Read"}>
-            {props.isRead ? <EyeClosedIcon /> : <EyeOpenIcon />}
-            <span class="thread-toolbar-label">{props.isRead ? 'Unread' : 'Read'}</span>
-            <span class="shortcut-hint">U</span>
-          </button>
-
-          <button class="thread-toolbar-btn" onClick={() => props.onAction(props.isImportant ? 'notImportant' : 'important')} title={props.isImportant ? "Not Important" : "Mark Important"}>
-            {props.isImportant ? <ThumbsUpFilledIcon /> : <ThumbsUpIcon />}
-            <span class="thread-toolbar-label">Important</span>
-            <span class="shortcut-hint">I</span>
-          </button>
-
-          <div class="thread-toolbar-divider" />
-
-          <button class="thread-toolbar-btn" onClick={props.onOpenLabels} title="Labels">
-            <LabelIcon />
-            <span class="thread-toolbar-label">Labels</span>
-            <span class="shortcut-hint">L</span>
-          </button>
-
-          <div class="thread-toolbar-spacer" />
-
-          <button class="thread-toolbar-btn thread-toolbar-btn-danger" onClick={() => props.onAction('spam')} title="Mark as Spam">
-            <SpamIcon />
-            <span class="shortcut-hint">X</span>
-          </button>
-
-          <button class="thread-toolbar-btn thread-toolbar-btn-danger" onClick={() => props.onAction('trash')} title="Delete">
-            <TrashIcon />
-            <span class="shortcut-hint">D</span>
-          </button>
-        </div>
-      </Show>
-
-      <div class="thread-content">
+      <div class="thread-content" ref={contentRef} onMouseOver={handleLinkHover} onMouseOut={() => setHoveredLinkUrl(null)}>
           <Show when={props.loading}>
             <div class="thread-skeleton">
               <div class="skeleton-message">
@@ -413,17 +884,23 @@ const ThreadView = (props: {
                   return "(No content)";
                 };
 
-                // Extract attachments from message parts
+                // Extract attachments from message parts, enriched with inline_data from threadAttachments
                 const getAttachments = () => {
-                  const attachments: { filename: string; mimeType: string; size: number; attachmentId?: string }[] = [];
+                  const attachments: { filename: string; mimeType: string; size: number; attachmentId?: string; inlineData?: string }[] = [];
                   const findAttachments = (parts: any[]) => {
                     parts?.forEach(part => {
                       if (part.filename && part.filename.length > 0) {
+                        const attachmentId = part.body?.attachmentId;
+                        // Look up inline_data from threadAttachments if available
+                        const threadAtt = props.threadAttachments?.find(
+                          a => a.message_id === msg.id && (a.attachment_id === attachmentId || a.filename === part.filename)
+                        );
                         attachments.push({
                           filename: part.filename,
                           mimeType: part.mimeType || 'application/octet-stream',
                           size: part.body?.size || 0,
-                          attachmentId: part.body?.attachmentId,
+                          attachmentId,
+                          inlineData: threadAtt?.inline_data || part.body?.data,
                         });
                       }
                       if (part.parts) findAttachments(part.parts);
@@ -484,49 +961,115 @@ const ThreadView = (props: {
                   props.onForward(fwdSubject, fwdBody);
                 };
 
+                const isReplyingToThis = () => props.inlineCompose?.replyToMessageId === msg.id;
+                const isForwardingFromThis = () => props.inlineCompose?.isForward && index() === props.thread!.messages.length - 1;
+                const showInlineCompose = () => isReplyingToThis() || isForwardingFromThis();
+
                 return (
                   <div
-                    class={`message-card ${props.focusedMessageIndex === index() ? 'message-focused' : ''}`}
-                    ref={(el) => { messageRefs[index()] = el; }}
+                    class={`message-row ${showInlineCompose() ? 'with-compose' : ''} ${props.inlineCompose?.resizing ? 'resizing' : ''}`}
+                    onMouseEnter={() => showMessageWheel(msg.id)}
+                    onMouseLeave={hideMessageWheel}
                   >
-                    <div class="message-header">
-                      <div class="message-sender">{from}</div>
-                      <div class="message-header-actions">
-                        <button class="message-reply-btn" onClick={handleReply} title="Reply">
-                          <ReplyIcon />
-                          <span class="shortcut-hint">R</span>
-                        </button>
-                        <button class="message-reply-btn" onClick={handleReplyAll} title="Reply All">
-                          <ReplyAllIcon />
-                          <span class="shortcut-hint">A</span>
-                        </button>
-                        <button class="message-reply-btn" onClick={handleForward} title="Forward">
-                          <ForwardIcon />
-                          <span class="shortcut-hint">F</span>
-                        </button>
-                        <div class="message-date">{date}</div>
+                    <div
+                      class={`message-card ${props.focusedMessageIndex === index() ? 'message-focused' : ''}`}
+                      ref={(el) => { messageRefs[index()] = el; }}
+                    >
+                      <div class="message-header">
+                        <div class="message-sender">{from}</div>
+                        <div class="message-header-actions">
+                          <div class="message-date">{formatEmailDate(date)}</div>
+                        </div>
                       </div>
+                      {/* Message Actions Wheel - show for focused or hovered message */}
+                      <Show when={((hoveredMessageId() === msg.id && wheelOpen()) || props.focusedMessageIndex === index()) && !showInlineCompose()}>
+                        <MessageActionsWheel
+                          msgId={msg.id}
+                          onReply={handleReply}
+                          onReplyAll={handleReplyAll}
+                          onForward={handleForward}
+                          open={true}
+                          showHints={props.focusedMessageIndex === index()}
+                        />
+                      </Show>
+                      <div class="message-body" innerHTML={DOMPurify.sanitize(getBody(), DOMPURIFY_CONFIG)}></div>
+                      <Show when={attachments.length > 0}>
+                        <div class="message-attachments">
+                          <For each={attachments}>
+                            {(att) => {
+                              const handleContextMenu = (e: MouseEvent) => {
+                                e.preventDefault();
+                                props.onShowAttachmentMenu({
+                                  messageId: msg.id,
+                                  attachmentId: att.attachmentId || "",
+                                  filename: att.filename,
+                                  mimeType: att.mimeType,
+                                  inlineData: att.inlineData || null
+                                });
+                              };
+                              const hasThumb = att.inlineData && isImage(att.mimeType);
+                              return (
+                                <div
+                                  class="attachment-thumb clickable"
+                                  title={`${att.filename} (${formatFileSize(att.size)})`}
+                                  onClick={() => props.onOpenAttachment(msg.id, att.attachmentId, att.filename, att.mimeType, att.inlineData)}
+                                  onContextMenu={handleContextMenu}
+                                >
+                                  {hasThumb ? (
+                                    <img
+                                      class="attachment-preview"
+                                      src={`data:${att.mimeType};base64,${att.inlineData!.replace(/-/g, '+').replace(/_/g, '/')}`}
+                                      alt={att.filename}
+                                    />
+                                  ) : (
+                                    <div class={`attachment-icon ${isImage(att.mimeType) ? 'image' : isPdf(att.mimeType) ? 'pdf' : 'file'}`}>
+                                      {isImage(att.mimeType) ? '🖼️' : isPdf(att.mimeType) ? '📄' : '📎'}
+                                    </div>
+                                  )}
+                                  <div class="attachment-info">
+                                    <div class="attachment-name">{truncateMiddle(att.filename, 20)}</div>
+                                    <div class="attachment-size">{formatFileSize(att.size)}</div>
+                                  </div>
+                                </div>
+                              );
+                            }}
+                          </For>
+                        </div>
+                      </Show>
                     </div>
-                    <div class="message-body" innerHTML={DOMPurify.sanitize(getBody(), DOMPURIFY_CONFIG)}></div>
-                    <Show when={attachments.length > 0}>
-                      <div class="message-attachments">
-                        <For each={attachments}>
-                          {(att) => (
-                            <div
-                              class="attachment-thumb clickable"
-                              title={`${att.filename} - Click to open`}
-                              onClick={() => att.attachmentId && props.onOpenAttachment(msg.id, att.attachmentId, att.filename, att.mimeType)}
-                            >
-                              <div class={`attachment-icon ${isImage(att.mimeType) ? 'image' : isPdf(att.mimeType) ? 'pdf' : 'file'}`}>
-                                {isImage(att.mimeType) ? '🖼' : isPdf(att.mimeType) ? '📄' : '📎'}
-                              </div>
-                              <div class="attachment-info">
-                                <div class="attachment-name">{att.filename}</div>
-                                <div class="attachment-size">{formatFileSize(att.size)}</div>
-                              </div>
-                            </div>
-                          )}
-                        </For>
+                    {/* Resize handle and inline compose form */}
+                    <Show when={showInlineCompose() && props.inlineCompose}>
+                      <div
+                        class="inline-resize-handle"
+                        onMouseDown={props.inlineCompose!.onResizeStart}
+                      />
+                      <div class="inline-compose">
+                        <ComposeForm
+                          mode={props.inlineCompose!.isForward ? 'forward' : 'reply'}
+                          inline={true}
+                          to={props.inlineCompose!.to}
+                          setTo={props.inlineCompose!.setTo}
+                          cc={props.inlineCompose!.cc}
+                          setCc={props.inlineCompose!.setCc}
+                          bcc={props.inlineCompose!.bcc}
+                          setBcc={props.inlineCompose!.setBcc}
+                          showCcBcc={props.inlineCompose!.showCcBcc}
+                          setShowCcBcc={props.inlineCompose!.setShowCcBcc}
+                          body={props.inlineCompose!.body}
+                          setBody={props.inlineCompose!.setBody}
+                          attachments={props.inlineCompose!.attachments}
+                          onRemoveAttachment={props.inlineCompose!.onRemoveAttachment}
+                          onFileSelect={props.inlineCompose!.onFileSelect}
+                          fileInputId={`inline-file-input-${msg.id}`}
+                          error={props.inlineCompose!.error}
+                          draftSaving={props.inlineCompose!.draftSaving}
+                          draftSaved={props.inlineCompose!.draftSaved}
+                          sending={props.inlineCompose!.sending}
+                          onSend={props.inlineCompose!.onSend}
+                          onClose={props.inlineCompose!.onClose}
+                          onInput={props.inlineCompose!.onInput}
+                          focusBody={props.inlineCompose!.focusBody}
+                        />
                       </div>
                     </Show>
                   </div>
@@ -536,6 +1079,12 @@ const ThreadView = (props: {
           </div>
         </Show>
       </div>
+
+
+      {/* Link hover status bar */}
+      <Show when={hoveredLinkUrl()}>
+        <div class="link-status-bar">{hoveredLinkUrl()}</div>
+      </Show>
     </div>
   );
 };
@@ -639,6 +1188,52 @@ function App() {
   const [lastSyncTimes, setLastSyncTimes] = createSignal<Record<string, number>>({});
   const [syncErrors, setSyncErrors] = createSignal<Record<string, string | null>>({});
 
+  // RSVP status tracking (thread ID -> "accepted" | "tentative" | "declined" | "needsAction")
+  const [rsvpStatus, setRsvpStatus] = createSignal<Record<string, string>>({});
+  const [rsvpLoading, setRsvpLoading] = createSignal<Record<string, boolean>>({});
+
+  // Fetch RSVP status for a calendar event
+  const fetchRsvpStatus = async (threadId: string, eventUid: string) => {
+    if (!selectedAccount() || !eventUid) return;
+    try {
+      const status = await getCalendarRsvpStatus(selectedAccount()!.id, eventUid);
+      if (status) {
+        setRsvpStatus(prev => ({ ...prev, [threadId]: status }));
+      }
+    } catch (e) {
+      console.error("Failed to fetch RSVP status:", e);
+    }
+  };
+
+  const handleRsvp = async (threadId: string, eventUid: string | null, status: string) => {
+    if (!eventUid || !selectedAccount()) return;
+
+    // Map UI status to API status
+    const apiStatus = status === "yes" ? "accepted" : status === "maybe" ? "tentative" : "declined";
+
+    // Set loading
+    setRsvpLoading(prev => ({ ...prev, [threadId]: true }));
+
+    try {
+      await rsvpCalendarEvent(selectedAccount()!.id, eventUid, apiStatus);
+
+      // Update local state on success
+      setRsvpStatus(prev => ({ ...prev, [threadId]: apiStatus }));
+    } catch (e) {
+      console.error("Failed to send RSVP:", e);
+      showSimpleToast(`Failed to send RSVP: ${e}`);
+    } finally {
+      setRsvpLoading(prev => ({ ...prev, [threadId]: false }));
+    }
+  };
+
+  // Helper to get display status for UI
+  const getRsvpDisplayStatus = (threadId: string): string | null => {
+    const status = rsvpStatus()[threadId];
+    if (!status || status === "needsAction") return null;
+    return status; // accepted, tentative, declined
+  };
+
   // Undo/toast state
   interface UndoableAction {
     action: string;
@@ -651,7 +1246,25 @@ function App() {
   const [lastAction, setLastAction] = createSignal<UndoableAction | null>(null);
   const [toastVisible, setToastVisible] = createSignal(false);
   const [toastClosing, setToastClosing] = createSignal(false);
+  const [simpleToastMessage, setSimpleToastMessage] = createSignal<string | null>(null);
   let toastTimeoutId: number | undefined;
+
+  // Undo send state
+  interface PendingSend {
+    to: string;
+    cc: string;
+    bcc: string;
+    subject: string;
+    body: string;
+    attachments: SendAttachment[];
+    reply?: { threadId: string; messageId: string };
+    timeoutId: number;
+  }
+  const [pendingSend, setPendingSend] = createSignal<PendingSend | null>(null);
+  const [sendToastVisible, setSendToastVisible] = createSignal(false);
+  const [sendToastClosing, setSendToastClosing] = createSignal(false);
+  const [sendProgress, setSendProgress] = createSignal(0);
+  const SEND_DELAY_MS = 5000;
 
   // Settings
   const [settingsOpen, setSettingsOpen] = createSignal(false);
@@ -664,6 +1277,42 @@ function App() {
     Math.max(MIN_CARD_WIDTH, Math.min(MAX_CARD_WIDTH, parseInt(safeGetItem("cardWidth") || "320", 10)))
   );
   const snippetLines = 5; // Fixed at 5 lines
+
+  // Inline compose resize
+  const [inlineResizing, setInlineResizing] = createSignal(false);
+  const MIN_MESSAGE_WIDTH = 200;
+  const MAX_MESSAGE_WIDTH = 1200;
+  const [inlineMessageWidth, setInlineMessageWidth] = createSignal<number>(
+    Math.max(MIN_MESSAGE_WIDTH, Math.min(MAX_MESSAGE_WIDTH, parseInt(safeGetItem("inlineMessageWidth") || "400", 10)))
+  );
+
+  function updateInlineMessageWidth(width: number) {
+    setInlineMessageWidth(width);
+    safeSetItem("inlineMessageWidth", String(width));
+    document.documentElement.style.setProperty("--inline-message-width", `${width}px`);
+  }
+
+  function handleInlineResizeStart(e: MouseEvent) {
+    if (e.button !== 0) return;
+    e.preventDefault();
+    setInlineResizing(true);
+    const startX = e.clientX;
+    const startWidth = inlineMessageWidth();
+    // Calculate dynamic max based on viewport, leaving min 200px for compose + 20px resize handle
+    const dynamicMax = Math.min(MAX_MESSAGE_WIDTH, window.innerWidth - 96 - 220);
+    const onMove = (moveE: MouseEvent) => {
+      const delta = moveE.clientX - startX;
+      const newWidth = Math.max(MIN_MESSAGE_WIDTH, Math.min(dynamicMax, startWidth + delta));
+      updateInlineMessageWidth(newWidth);
+    };
+    const onUp = () => {
+      setInlineResizing(false);
+      document.removeEventListener('mousemove', onMove);
+      document.removeEventListener('mouseup', onUp);
+    };
+    document.addEventListener('mousemove', onMove);
+    document.addEventListener('mouseup', onUp);
+  }
 
   // Thread action visibility settings
   const [actionSettings, setActionSettings] = createSignal<Record<string, boolean>>(
@@ -703,6 +1352,31 @@ function App() {
   // Keyboard navigation focus state
   const [focusedCardId, setFocusedCardId] = createSignal<string | null>(null);
   const [focusedThreadIndex, setFocusedThreadIndex] = createSignal<number>(-1);
+
+  // Native context menu for attachments
+  async function showAttachmentContextMenu(
+    att: { messageId: string; attachmentId: string; filename: string; mimeType: string; inlineData: string | null }
+  ) {
+    const openItem = await MenuItem.new({
+      text: "Open",
+      action: () => openAttachment(att.messageId, att.attachmentId, att.filename, att.mimeType, att.inlineData),
+    });
+    const downloadItem = await MenuItem.new({
+      text: "Download",
+      action: () => downloadAttachment(att.messageId, att.attachmentId, att.filename, att.mimeType, att.inlineData),
+    });
+    const separator = await PredefinedMenuItem.new({ item: "Separator" });
+    const forwardItem = await MenuItem.new({
+      text: "Forward",
+      enabled: !!att.inlineData,
+      action: () => showToast(`Forward ${att.filename} - coming soon`),
+    });
+
+    const menu = await Menu.new({
+      items: [openItem, downloadItem, separator, forwardItem],
+    });
+    await menu.popup();
+  }
 
   // Gmail search autocomplete
   const [queryAutocompleteOpen, setQueryAutocompleteOpen] = createSignal(false);
@@ -818,7 +1492,9 @@ function App() {
   const [focusComposeBody, setFocusComposeBody] = createSignal(false);
   const [composeEmailError, setComposeEmailError] = createSignal<string | null>(null);
   const [draftSaved, setDraftSaved] = createSignal(false);
+  const [draftSaving, setDraftSaving] = createSignal(false);
   const [composeAttachments, setComposeAttachments] = createSignal<SendAttachment[]>([]);
+  const [gmailDraftId, setGmailDraftId] = createSignal<string | null>(null);
   let fabHoverTimeout: number | undefined;
   let draftSaveTimeout: number | undefined;
   let fileInputRef: HTMLInputElement | undefined;
@@ -831,6 +1507,7 @@ function App() {
     subject: string;
     body: string;
     threadId?: string;
+    gmailDraftId?: string;
     savedAt: number;
   }
 
@@ -843,8 +1520,11 @@ function App() {
     return `draft_new_${account?.id}`;
   }
 
-  function saveDraft() {
+  async function saveDraft() {
     if (!composing()) return;
+    const account = selectedAccount();
+    if (!account) return;
+
     const key = getDraftKey();
     const draft: Draft = {
       to: composeTo(),
@@ -853,13 +1533,42 @@ function App() {
       subject: composeSubject(),
       body: composeBody(),
       threadId: replyingToThread()?.threadId,
+      gmailDraftId: gmailDraftId() || undefined,
       savedAt: Date.now(),
     };
+
     // Only save if there's content
-    if (draft.to || draft.subject || draft.body) {
+    if (!draft.to && !draft.subject && !draft.body) return;
+
+    // Save locally first (for offline support)
+    safeSetJSON(key, draft);
+
+    // Try to sync to Gmail
+    setDraftSaving(true);
+    try {
+      const result = await invoke<{ id: string }>("save_draft", {
+        accountId: account.id,
+        draftId: gmailDraftId(),
+        to: draft.to,
+        cc: draft.cc,
+        bcc: draft.bcc,
+        subject: draft.subject,
+        body: draft.body,
+        threadId: draft.threadId || null,
+      });
+      setGmailDraftId(result.id);
+      // Update local storage with Gmail draft ID
+      draft.gmailDraftId = result.id;
       safeSetJSON(key, draft);
       setDraftSaved(true);
       setTimeout(() => setDraftSaved(false), 2000);
+    } catch (e) {
+      console.warn("Failed to sync draft to Gmail (offline?):", e);
+      // Still show saved for local save
+      setDraftSaved(true);
+      setTimeout(() => setDraftSaved(false), 2000);
+    } finally {
+      setDraftSaving(false);
     }
   }
 
@@ -868,7 +1577,11 @@ function App() {
     const saved = safeGetItem(key);
     if (saved) {
       try {
-        return JSON.parse(saved);
+        const draft = JSON.parse(saved) as Draft;
+        if (draft.gmailDraftId) {
+          setGmailDraftId(draft.gmailDraftId);
+        }
+        return draft;
       } catch {
         return null;
       }
@@ -876,14 +1589,31 @@ function App() {
     return null;
   }
 
-  function clearDraft() {
+  async function clearDraft() {
     const key = getDraftKey();
+    const account = selectedAccount();
+    const draftId = gmailDraftId();
+
+    // Clear local storage
     safeRemoveItem(key);
+    setGmailDraftId(null);
+
+    // Try to delete from Gmail
+    if (account && draftId) {
+      try {
+        await invoke("delete_draft", {
+          accountId: account.id,
+          draftId: draftId,
+        });
+      } catch (e) {
+        console.warn("Failed to delete draft from Gmail:", e);
+      }
+    }
   }
 
   function debouncedSaveDraft() {
     if (draftSaveTimeout) clearTimeout(draftSaveTimeout);
-    draftSaveTimeout = setTimeout(saveDraft, 2000) as unknown as number;
+    draftSaveTimeout = setTimeout(saveDraft, 3000) as unknown as number;
   }
 
   // Load draft when compose opens (only for new emails, not reply/forward with pre-filled content)
@@ -1062,12 +1792,17 @@ function App() {
       document.documentElement.style.setProperty("--card-width", `${savedWidth}px`);
     }
 
+    // Apply saved inline message width
+    document.documentElement.style.setProperty("--inline-message-width", `${inlineMessageWidth()}px`);
+
     // Listen for color scheme changes
     const colorSchemeQuery = window.matchMedia?.("(prefers-color-scheme: dark)");
     const handleColorSchemeChange = (e: MediaQueryListEvent) => {
       const cardRow = document.querySelector(".card-row") as HTMLElement;
       if (cardRow?.dataset.bgLight || cardRow?.dataset.bgDark) {
-        cardRow.style.background = e.matches ? cardRow.dataset.bgDark! : cardRow.dataset.bgLight!;
+        const bgColor = e.matches ? cardRow.dataset.bgDark! : cardRow.dataset.bgLight!;
+        cardRow.style.background = bgColor;
+        document.documentElement.style.setProperty("--app-bg", bgColor);
       }
     };
     colorSchemeQuery?.addEventListener("change", handleColorSchemeChange);
@@ -1231,6 +1966,32 @@ function App() {
       if (editingCardId() && editCardName() && editCardQuery()) {
         e.preventDefault();
         saveEditCard();
+      }
+      return;
+    }
+
+    // Card navigation - h/l for left/right between cards
+    if (e.key === 'h' || e.key === 'l') {
+      e.preventDefault();
+      const cardsList = cards().filter(c => !collapsedCards()[c.id]);
+      if (cardsList.length === 0) return;
+
+      let cardId = focusedCardId();
+
+      // If no focus, start at first or last card
+      if (!cardId) {
+        const targetCard = e.key === 'l' ? cardsList[0] : cardsList[cardsList.length - 1];
+        setFocusedCardId(targetCard.id);
+        setFocusedThreadIndex(0);
+        return;
+      }
+
+      const cardIndex = cardsList.findIndex(c => c.id === cardId);
+      const newCardIndex = e.key === 'l' ? cardIndex + 1 : cardIndex - 1;
+
+      if (newCardIndex >= 0 && newCardIndex < cardsList.length) {
+        setFocusedCardId(cardsList[newCardIndex].id);
+        setFocusedThreadIndex(0);
       }
       return;
     }
@@ -1506,7 +2267,7 @@ function App() {
 
   function closeCompose() {
     setClosingCompose(true);
-    clearDraft(); // Clear draft from localStorage when compose closes
+    clearDraft(); // Clear draft from localStorage and Gmail when compose closes
     setTimeout(() => {
       setComposeTo("");
       setComposeCc("");
@@ -1519,6 +2280,7 @@ function App() {
       setFocusComposeBody(false);
       setComposeEmailError(null);
       setComposeAttachments([]);
+      setGmailDraftId(null);
       setComposing(false);
       setClosingCompose(false);
     }, 200);
@@ -1570,7 +2332,7 @@ function App() {
     setComposeAttachments(composeAttachments().filter((_, i) => i !== index));
   }
 
-  async function handleSendEmail() {
+  function handleSendEmail() {
     const account = selectedAccount();
     if (!account || !composeTo().trim()) return;
 
@@ -1591,35 +2353,109 @@ function App() {
     }
 
     setComposeEmailError(null);
-    setSending(true);
+
+    // Queue the send with undo capability
+    const pending: PendingSend = {
+      to: composeTo(),
+      cc: composeCc(),
+      bcc: composeBcc(),
+      subject: composeSubject(),
+      body: composeBody(),
+      attachments: [...composeAttachments()],
+      reply: replyingToThread() ? { ...replyingToThread()! } : undefined,
+      timeoutId: 0,
+    };
+
+    // Clear draft and close compose immediately
+    clearDraft();
+    closeCompose();
+
+    // Start the countdown
+    setSendProgress(0);
+    setSendToastClosing(false);
+    setSendToastVisible(true);
+
+    // Progress animation
+    const progressInterval = setInterval(() => {
+      setSendProgress(p => Math.min(p + 2, 100));
+    }, SEND_DELAY_MS / 50);
+
+    // Schedule actual send
+    const timeoutId = window.setTimeout(async () => {
+      clearInterval(progressInterval);
+      await executeActualSend(pending);
+    }, SEND_DELAY_MS);
+
+    pending.timeoutId = timeoutId;
+    setPendingSend(pending);
+  }
+
+  async function executeActualSend(pending: PendingSend) {
+    const account = selectedAccount();
+    if (!account) {
+      hideSendToast();
+      return;
+    }
+
     try {
-      const reply = replyingToThread();
-      const attachments = composeAttachments();
-      if (reply) {
-        // Sending as a reply to a thread
+      if (pending.reply) {
         await replyToThread(
           account.id,
-          reply.threadId,
-          composeTo(),
-          composeCc(),
-          composeBcc(),
-          composeSubject(),
-          composeBody(),
-          reply.messageId,
-          attachments
+          pending.reply.threadId,
+          pending.to,
+          pending.cc,
+          pending.bcc,
+          pending.subject,
+          pending.body,
+          pending.reply.messageId,
+          pending.attachments
         );
       } else {
-        // Sending a new email
-        await sendEmail(account.id, composeTo(), composeCc(), composeBcc(), composeSubject(), composeBody(), attachments);
+        await sendEmail(account.id, pending.to, pending.cc, pending.bcc, pending.subject, pending.body, pending.attachments);
       }
-      clearDraft();
-      closeCompose();
+      hideSendToast();
     } catch (e) {
       console.error("Failed to send email:", e);
       setError(`Failed to send email: ${e}`);
-    } finally {
-      setSending(false);
+      hideSendToast();
     }
+  }
+
+  function undoSend() {
+    const pending = pendingSend();
+    if (!pending) return;
+
+    // Cancel the scheduled send
+    clearTimeout(pending.timeoutId);
+
+    // Restore compose with the pending email data
+    setComposeTo(pending.to);
+    setComposeCc(pending.cc);
+    setComposeBcc(pending.bcc);
+    setComposeSubject(pending.subject);
+    setComposeBody(pending.body);
+    setComposeAttachments(pending.attachments);
+    if (pending.reply) {
+      setReplyingToThread(pending.reply);
+    }
+    if (pending.cc || pending.bcc) {
+      setShowCcBcc(true);
+    }
+    setComposing(true);
+
+    // Clear pending state and hide toast
+    setPendingSend(null);
+    hideSendToast();
+  }
+
+  function hideSendToast() {
+    setSendToastClosing(true);
+    setTimeout(() => {
+      setSendToastVisible(false);
+      setSendToastClosing(false);
+      setPendingSend(null);
+      setSendProgress(0);
+    }, 200);
   }
 
   async function handleQuickReply() {
@@ -1676,12 +2512,7 @@ function App() {
     const threadId = activeThreadId();
     if (!threadId) return;
 
-    // Close thread view and open compose
-    setActiveThreadId(null);
-    setActiveThreadCardId(null);
-    setFocusedMessageIndex(0);
-
-    // Set up compose for reply
+    // Set up inline reply below the message
     setReplyingToThread({ threadId, messageId });
     setComposeTo(to);
     setComposeCc(cc);
@@ -1693,13 +2524,9 @@ function App() {
   }
 
   function handleForwardFromThread(subject: string, body: string) {
-    // Close thread view and open compose
-    setActiveThreadId(null);
-    setActiveThreadCardId(null);
-    setFocusedMessageIndex(0);
-
-    // Set up compose for forward
-    setForwardingThread({ threadId: '', subject, body });
+    const threadId = activeThreadId();
+    // Set up inline forward below the message
+    setForwardingThread({ threadId: threadId || '', subject, body });
     setComposeTo("");
     setComposeCc("");
     setComposeBcc("");
@@ -2019,6 +2846,13 @@ function App() {
 
   function startEditCard(card: Card, e: MouseEvent) {
     e.stopPropagation();
+    // Close add card form if open
+    if (addingCard()) {
+      setAddingCard(false);
+    }
+    // Clear any existing preview
+    setQueryPreviewThreads([]);
+    setQueryPreviewLoading(false);
     setEditingCardId(card.id);
     setEditCardName(card.name);
     setEditCardQuery(card.query);
@@ -2253,13 +3087,16 @@ function App() {
       delete cardRow.dataset.bgLight;
       delete cardRow.dataset.bgDark;
       document.documentElement.style.setProperty("--accent", "#4285f4");
+      document.documentElement.style.removeProperty("--app-bg");
     } else {
       const color = BG_COLORS[colorIndex];
       const isDark = window.matchMedia?.("(prefers-color-scheme: dark)").matches;
-      cardRow.style.background = isDark ? color.dark : color.light;
+      const bgColor = isDark ? color.dark : color.light;
+      cardRow.style.background = bgColor;
       cardRow.dataset.bgLight = color.light;
       cardRow.dataset.bgDark = color.dark;
       document.documentElement.style.setProperty("--accent", color.hex);
+      document.documentElement.style.setProperty("--app-bg", bgColor);
     }
   }
 
@@ -2372,7 +3209,7 @@ function App() {
 
   async function openAttachment(
     messageId: string,
-    attachmentId: string,
+    attachmentId: string | undefined,
     filename: string,
     mimeType: string,
     inlineData?: string | null
@@ -2380,33 +3217,46 @@ function App() {
     const account = selectedAccount();
     if (!account) return;
 
+    showToast(`Opening ${filename}...`);
     try {
-      let base64Data: string;
-      if (inlineData) {
-        base64Data = inlineData;
-      } else {
-        base64Data = await downloadAttachment(account.id, messageId, attachmentId);
-      }
-
-      const blob = base64ToBlob(base64Data, mimeType);
-      const url = URL.createObjectURL(blob);
-
-      // Open in new tab for images/PDFs, or download for others
-      if (mimeType.startsWith('image/') || mimeType === 'application/pdf') {
-        window.open(url, '_blank');
-      } else {
-        const a = document.createElement('a');
-        a.href = url;
-        a.download = filename;
-        document.body.appendChild(a);
-        a.click();
-        document.body.removeChild(a);
-      }
-
-      setTimeout(() => URL.revokeObjectURL(url), 1000);
+      await openAttachmentApi(
+        account.id,
+        messageId,
+        attachmentId || null,
+        filename,
+        mimeType,
+        inlineData || null
+      );
     } catch (e) {
       console.error('Failed to open attachment:', e);
       setError(`Failed to open attachment: ${e}`);
+    }
+  }
+
+  async function downloadAttachment(
+    messageId: string,
+    attachmentId: string | undefined,
+    filename: string,
+    mimeType: string,
+    inlineData?: string | null
+  ) {
+    const account = selectedAccount();
+    if (!account) return;
+
+    showToast(`Downloading ${filename}...`);
+    try {
+      // For download, we save to Downloads folder instead of temp
+      await openAttachmentApi(
+        account.id,
+        messageId,
+        attachmentId || null,
+        filename,
+        mimeType,
+        inlineData || null
+      );
+    } catch (e) {
+      console.error('Failed to download attachment:', e);
+      setError(`Failed to download attachment: ${e}`);
     }
   }
 
@@ -2583,6 +3433,8 @@ function App() {
     try {
       const details = await getThreadDetails(account.id, threadId);
       setActiveThread(details);
+      // Focus the most recent (last) message
+      setFocusedMessageIndex(details.messages.length - 1);
     } catch (e) {
       console.error("Failed to load thread details", e);
       setThreadError("Failed to load email. Please try again.");
@@ -2591,8 +3443,9 @@ function App() {
     }
   }
 
-  function showToast() {
+  function showToast(message?: string) {
     clearTimeout(toastTimeoutId);
+    setSimpleToastMessage(message || null);
     setToastClosing(false);
     setToastVisible(true);
     toastTimeoutId = window.setTimeout(() => {
@@ -2796,17 +3649,17 @@ function App() {
       bulkTitle: 'Star', bulkIcon: StarIcon, bulkOnClick: (e) => { e.stopPropagation(); handleThreadAction('star', Array.from(selection), cId); }
     };
     actionDefs.markRead = {
-      cls: 'bulk-read', title: isRead ? 'Mark Unread' : 'Mark Read', keyHint: 'u', icon: isRead ? EyeClosedIcon : EyeOpenIcon,
+      cls: 'bulk-read', title: isRead ? 'Mark unread' : 'Mark read', keyHint: 'u', icon: isRead ? EyeClosedIcon : EyeOpenIcon,
       onClick: (e) => { e.stopPropagation(); handleThreadAction(isRead ? 'unread' : 'read', [tId], cId); },
-      bulkTitle: 'Mark Read', bulkIcon: EyeOpenIcon, bulkOnClick: (e) => { e.stopPropagation(); handleThreadAction('read', Array.from(selection), cId); }
+      bulkTitle: 'Mark read', bulkIcon: EyeOpenIcon, bulkOnClick: (e) => { e.stopPropagation(); handleThreadAction('read', Array.from(selection), cId); }
     };
     actionDefs.markImportant = {
-      cls: 'bulk-important', title: isImportant ? 'Not Important' : 'Important', keyHint: 'i', icon: isImportant ? ThumbsUpFilledIcon : ThumbsUpIcon,
+      cls: 'bulk-important', title: isImportant ? 'Unmark important' : 'Mark important', keyHint: 'i', icon: isImportant ? ThumbsUpFilledIcon : ThumbsUpIcon,
       onClick: (e) => { e.stopPropagation(); handleThreadAction(isImportant ? 'notImportant' : 'important', [tId], cId); },
-      bulkTitle: 'Important', bulkIcon: ThumbsUpIcon, bulkOnClick: (e) => { e.stopPropagation(); handleThreadAction('important', Array.from(selection), cId); }
+      bulkTitle: 'Mark important', bulkIcon: ThumbsUpIcon, bulkOnClick: (e) => { e.stopPropagation(); handleThreadAction('important', Array.from(selection), cId); }
     };
     actionDefs.spam = {
-      cls: 'bulk-spam', title: 'Spam', keyHint: 'x', icon: SpamIcon,
+      cls: 'bulk-spam', title: 'Report spam', keyHint: 'x', icon: SpamIcon,
       onClick: (e) => { e.stopPropagation(); handleThreadAction('spam', [tId], cId); },
       bulkOnClick: (e) => { e.stopPropagation(); handleThreadAction('spam', Array.from(selection), cId); }
     };
@@ -2901,6 +3754,10 @@ function App() {
 
 
   function toggleThreadSelection(cardId: string, threadId: string, e?: MouseEvent) {
+    // Show actions on the selected thread
+    setHoveredThread(threadId);
+    setActionsWheelOpen(true);
+
     const currentMap = new Set(selectedThreads()[cardId] || []);
     const isSelected = currentMap.has(threadId);
 
@@ -2981,24 +3838,50 @@ function App() {
       <div class="card-form">
         <div class="card-form-group">
           <label>Name</label>
-          <input
-            type="text"
-            value={props.name}
-            onInput={(e) => props.setName(e.currentTarget.value)}
-            onKeyDown={(e) => {
-              if (e.key === 'Escape') props.onCancel();
-              else if (e.key === 'Enter' && (e.metaKey || e.ctrlKey) && !props.saveDisabled) {
-                e.preventDefault();
-                props.onSave();
-              }
-            }}
-            placeholder="Card name"
-            autofocus={props.mode === 'edit'}
-            ref={props.mode === 'new' ? (el) => setTimeout(() => el?.focus(), 50) : undefined}
-          />
+          <div class="name-color-row">
+            <input
+              type="text"
+              value={props.name}
+              onInput={(e) => props.setName(e.currentTarget.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Escape') props.onCancel();
+                else if (e.key === 'Enter' && (e.metaKey || e.ctrlKey) && !props.saveDisabled) {
+                  e.preventDefault();
+                  props.onSave();
+                }
+              }}
+              placeholder="Inbox, Starred..."
+              autofocus={props.mode === 'edit'}
+              ref={props.mode === 'new' ? (el) => setTimeout(() => el?.focus(), 50) : undefined}
+            />
+            <div class={`color-picker ${props.colorPickerOpen ? 'open' : ''}`}>
+              <div
+                class={`color-picker-selected ${props.color === null ? 'no-color' : ''}`}
+                style={props.color ? { background: COLOR_HEX[props.color] } : {}}
+                onClick={(e) => { e.stopPropagation(); props.setColorPickerOpen(!props.colorPickerOpen); }}
+                title="Card color"
+              >
+                <Show when={props.color === null}>
+                  <PaletteIcon />
+                </Show>
+              </div>
+              <div
+                class="color-option no-color-option"
+                onClick={() => { props.setColor(null); props.setColorPickerOpen(false); }}
+              ></div>
+              <For each={CARD_COLORS}>
+                {(color) => (
+                  <div
+                    class={`color-option ${color}`}
+                    onClick={() => { props.setColor(color); props.setColorPickerOpen(false); }}
+                  ></div>
+                )}
+              </For>
+            </div>
+          </div>
         </div>
         <div class="card-form-group">
-          <label>Gmail Search</label>
+          <label>Query</label>
           <input
             type="text"
             ref={setQueryInputRef}
@@ -3049,33 +3932,11 @@ function App() {
                 }
               }
             }}
-            placeholder="Gmail search query"
+            placeholder="is:inbox, from:boss, newer_than:7d"
           />
         </div>
-        <div class="color-picker-row">
-          <label>Color</label>
-          <div class={`color-picker ${props.colorPickerOpen ? 'open' : ''}`}>
-            <div
-              class={`color-picker-selected ${props.color === null ? 'no-color' : ''}`}
-              style={props.color ? { background: COLOR_HEX[props.color] } : {}}
-              onClick={(e) => { e.stopPropagation(); props.setColorPickerOpen(!props.colorPickerOpen); }}
-            ></div>
-            <div
-              class="color-option no-color-option"
-              onClick={() => { props.setColor(null); props.setColorPickerOpen(false); }}
-            ></div>
-            <For each={CARD_COLORS}>
-              {(color) => (
-                <div
-                  class={`color-option ${color}`}
-                  onClick={() => { props.setColor(color); props.setColorPickerOpen(false); }}
-                ></div>
-              )}
-            </For>
-          </div>
-        </div>
         <div class="card-form-group">
-          <label>Group by</label>
+          <label>Group</label>
           <div class="group-by-buttons">
             <For each={GROUP_BY_OPTIONS}>
               {(option) => (
@@ -3123,7 +3984,7 @@ function App() {
   return (
     <div class="app" onClick={handleAppClick}>
       {/* Drag region for frameless window */}
-      <div class="drag-region"></div>
+      <div class="drag-region" onMouseDown={() => getCurrentWindow().startDragging()}></div>
 
       {/* Global filter bar - keyboard activated */}
       <div class={`global-filter-bar ${showGlobalFilter() ? 'visible' : ''}`}>
@@ -3226,7 +4087,11 @@ function App() {
                 role="button"
                 aria-label="Choose background color"
                 tabindex="0"
-              ></div>
+              >
+                <Show when={selectedBgColorIndex() === null}>
+                  <PaletteIcon />
+                </Show>
+              </div>
               <div
                 class="color-option no-color-option"
                 onClick={() => selectBgColor(null)}
@@ -3463,18 +4328,21 @@ function App() {
                                               <div class="unread-dot"></div>
                                             </Show>
                                             <span class="thread-subject">{thread.subject}</span>
-                                            <Show when={thread.has_attachment}>
-                                              <span class="attachment-icon" title="Has attachment">
-                                                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                                                  <path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48" />
-                                                </svg>
+                                            <Show when={thread.calendar_event}>
+                                              <span class="thread-indicator" title="Calendar invite">
+                                                <CalendarIcon />
+                                              </span>
+                                            </Show>
+                                            <Show when={thread.has_attachment && !thread.calendar_event}>
+                                              <span class="thread-indicator" title="Has attachment">
+                                                <AttachmentIcon />
                                               </span>
                                             </Show>
                                             <span class="thread-time">{formatTime(thread.last_message_date)}</span>
                                           </div>
                                           <div class="thread-snippet">{thread.snippet}</div>
                                           {/* Attachment previews */}
-                                          <Show when={thread.attachments?.length > 0}>
+                                          <Show when={thread.attachments?.length > 0 && !thread.calendar_event}>
                                             <div class="thread-attachments">
                                               <For each={thread.attachments?.filter(a => a.inline_data && a.mime_type.startsWith("image/")).slice(0, 3)}>
                                                 {(attachment) => (
@@ -3482,7 +4350,7 @@ function App() {
                                                     class="thread-image-thumb clickable"
                                                     src={`data:${attachment.mime_type};base64,${attachment.inline_data?.replace(/-/g, '+').replace(/_/g, '/')}`}
                                                     alt={attachment.filename}
-                                                    title={`${attachment.filename} - Click to open`}
+                                                    title={attachment.filename}
                                                     onClick={() => openAttachment(attachment.message_id, attachment.attachment_id, attachment.filename, attachment.mime_type, attachment.inline_data)}
                                                   />
                                                 )}
@@ -3491,7 +4359,7 @@ function App() {
                                                 {(attachment) => (
                                                   <div
                                                     class="thread-file-item clickable"
-                                                    title={`${attachment.filename} (${formatFileSize(attachment.size)}) - Click to open`}
+                                                    title={`${attachment.filename} (${formatFileSize(attachment.size)})`}
                                                     onClick={() => openAttachment(attachment.message_id, attachment.attachment_id, attachment.filename, attachment.mime_type, attachment.inline_data)}
                                                   >
                                                     <span class="file-name">{truncateMiddle(attachment.filename, 14)}</span>
@@ -3547,53 +4415,110 @@ function App() {
                                                 <div class="unread-dot"></div>
                                               </Show>
                                               <span class="thread-subject">{thread.subject}</span>
-                                              <Show when={thread.has_attachment}>
-                                                <span class="attachment-icon" title="Has attachment">
-                                                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                                                    <path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48" />
-                                                  </svg>
+                                              <Show when={thread.calendar_event}>
+                                                <span class="thread-indicator" title="Calendar invite">
+                                                  <CalendarIcon />
+                                                </span>
+                                              </Show>
+                                              <Show when={thread.has_attachment && !thread.calendar_event}>
+                                                <span class="thread-indicator" title="Has attachment">
+                                                  <AttachmentIcon />
                                                 </span>
                                               </Show>
                                               <span class="thread-time">{formatTime(thread.last_message_date)}</span>
                                             </div>
-                                            <div class="thread-snippet">{thread.snippet}</div>
+                                            {/* Calendar event preview */}
+                                            <Show when={thread.calendar_event}>
+                                              <div class="calendar-event-preview">
+                                                <div class="calendar-event-time">
+                                                  <ClockIcon />
+                                                  <span>{formatCalendarEventDate(thread.calendar_event!.start_time, thread.calendar_event!.end_time, thread.calendar_event!.all_day)}</span>
+                                                </div>
+                                                <Show when={thread.calendar_event!.location}>
+                                                  <div class="calendar-event-location">
+                                                    <LocationIcon />
+                                                    <span>{thread.calendar_event!.location}</span>
+                                                  </div>
+                                                </Show>
+                                                <Show when={thread.calendar_event!.method === "REQUEST" && thread.calendar_event!.uid}>
+                                                  {(() => {
+                                                    // Fetch RSVP status if not already loaded
+                                                    if (!rsvpStatus()[thread.gmail_thread_id] && thread.calendar_event?.uid) {
+                                                      fetchRsvpStatus(thread.gmail_thread_id, thread.calendar_event.uid);
+                                                    }
+                                                    return null;
+                                                  })()}
+                                                  <div class="calendar-rsvp" onClick={(e) => e.stopPropagation()}>
+                                                    <button
+                                                      class={rsvpStatus()[thread.gmail_thread_id] === "accepted" ? "selected" : ""}
+                                                      disabled={rsvpLoading()[thread.gmail_thread_id]}
+                                                      onClick={() => handleRsvp(thread.gmail_thread_id, thread.calendar_event!.uid, "yes")}
+                                                    >Yes</button>
+                                                    <button
+                                                      class={rsvpStatus()[thread.gmail_thread_id] === "tentative" ? "selected" : ""}
+                                                      disabled={rsvpLoading()[thread.gmail_thread_id]}
+                                                      onClick={() => handleRsvp(thread.gmail_thread_id, thread.calendar_event!.uid, "maybe")}
+                                                    >Maybe</button>
+                                                    <button
+                                                      class={rsvpStatus()[thread.gmail_thread_id] === "declined" ? "selected" : ""}
+                                                      disabled={rsvpLoading()[thread.gmail_thread_id]}
+                                                      onClick={() => handleRsvp(thread.gmail_thread_id, thread.calendar_event!.uid, "no")}
+                                                    >No</button>
+                                                  </div>
+                                                </Show>
+                                              </div>
+                                            </Show>
+                                            <Show when={!thread.calendar_event}>
+                                              <div class="thread-snippet">{thread.snippet}</div>
+                                            </Show>
                                             <div class="thread-participants">
                                               {thread.participants.slice(0, 3).join(", ")}
                                               {thread.participants.length > 3 && ` + ${thread.participants.length - 3} `}
                                             </div>
-                                            {/* Attachment previews */}
-                                            <Show when={thread.attachments?.length > 0}>
-                                              <div class="thread-attachments" onClick={(e) => e.stopPropagation()}>
-                                                {/* Image thumbnails */}
-                                                <For each={thread.attachments?.filter(a => a.inline_data && a.mime_type.startsWith("image/")).slice(0, 4)}>
-                                                  {(attachment) => (
-                                                    <img
-                                                      class="thread-image-thumb clickable"
-                                                      src={`data:${attachment.mime_type};base64,${attachment.inline_data?.replace(/-/g, '+').replace(/_/g, '/')}`}
-                                                      alt={attachment.filename}
-                                                      title={`${attachment.filename} - Click to open`}
-                                                      onClick={() => openAttachment(attachment.message_id, attachment.attachment_id, attachment.filename, attachment.mime_type, attachment.inline_data)}
-                                                    />
-                                                  )}
-                                                </For>
-                                                {/* Other files (non-image or images without inline data) */}
-                                                <For each={thread.attachments?.filter(a => !a.inline_data || !a.mime_type.startsWith("image/")).slice(0, 3)}>
-                                                  {(attachment) => (
-                                                    <div
-                                                      class="thread-file-item clickable"
-                                                      title={`${attachment.filename} (${formatFileSize(attachment.size)}) - Click to open`}
-                                                      onClick={() => openAttachment(attachment.message_id, attachment.attachment_id, attachment.filename, attachment.mime_type, attachment.inline_data)}
-                                                    >
-                                                      <span class="file-name">{truncateMiddle(attachment.filename, 14)}</span>
-                                                    </div>
-                                                  )}
-                                                </For>
-                                                {/* More indicator */}
-                                                <Show when={(thread.attachments?.length || 0) > 7}>
-                                                  <span class="thread-attachment-more">+{(thread.attachments?.length || 0) - 7}</span>
+                                            {/* Attachment previews (filter out .ics when calendar event is shown) */}
+                                            {(() => {
+                                              const isCalendarFile = (a: { mime_type: string; filename: string }) =>
+                                                a.mime_type === "text/calendar" || a.mime_type === "application/ics" || a.filename.endsWith(".ics");
+                                              const attachments = thread.calendar_event
+                                                ? thread.attachments?.filter(a => !isCalendarFile(a))
+                                                : thread.attachments;
+                                              return (
+                                                <Show when={attachments && attachments.length > 0}>
+                                                  <div class="thread-attachments" onClick={(e) => e.stopPropagation()}>
+                                                    {/* Image thumbnails */}
+                                                    <For each={attachments?.filter(a => a.inline_data && a.mime_type.startsWith("image/")).slice(0, 4)}>
+                                                      {(attachment) => (
+                                                        <img
+                                                          class="thread-image-thumb clickable"
+                                                          src={`data:${attachment.mime_type};base64,${attachment.inline_data?.replace(/-/g, '+').replace(/_/g, '/')}`}
+                                                          alt={attachment.filename}
+                                                          title={attachment.filename}
+                                                          onClick={() => openAttachment(attachment.message_id, attachment.attachment_id, attachment.filename, attachment.mime_type, attachment.inline_data)}
+                                                          onContextMenu={(e) => { e.preventDefault(); e.stopPropagation(); showAttachmentContextMenu({ messageId: attachment.message_id, attachmentId: attachment.attachment_id, filename: attachment.filename, mimeType: attachment.mime_type, inlineData: attachment.inline_data }); }}
+                                                        />
+                                                      )}
+                                                    </For>
+                                                    {/* Other files (non-image or images without inline data) */}
+                                                    <For each={attachments?.filter(a => !a.inline_data || !a.mime_type.startsWith("image/")).slice(0, 3)}>
+                                                      {(attachment) => (
+                                                        <div
+                                                          class="thread-file-item clickable"
+                                                          title={`${attachment.filename} (${formatFileSize(attachment.size)})`}
+                                                          onClick={() => openAttachment(attachment.message_id, attachment.attachment_id, attachment.filename, attachment.mime_type, attachment.inline_data)}
+                                                          onContextMenu={(e) => { e.preventDefault(); e.stopPropagation(); showAttachmentContextMenu({ messageId: attachment.message_id, attachmentId: attachment.attachment_id, filename: attachment.filename, mimeType: attachment.mime_type, inlineData: attachment.inline_data }); }}
+                                                        >
+                                                          <span class="file-name">{truncateMiddle(attachment.filename, 14)}</span>
+                                                        </div>
+                                                      )}
+                                                    </For>
+                                                    {/* More indicator */}
+                                                    <Show when={attachments.length > 7}>
+                                                      <span class="thread-attachment-more">+{attachments.length - 7}</span>
+                                                    </Show>
+                                                  </div>
                                                 </Show>
-                                              </div>
-                                            </Show>
+                                              );
+                                            })()}
                                             {/* Thread Checkbox on hover */}
                                             <div
                                               class="thread-checkbox-wrap"
@@ -3732,10 +4657,8 @@ function App() {
                                   </Show>
                                   <span class="thread-subject">{thread.subject}</span>
                                   <Show when={thread.has_attachment}>
-                                    <span class="attachment-icon" title="Has attachment">
-                                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                                        <path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48" />
-                                      </svg>
+                                    <span class="thread-indicator" title="Has attachment">
+                                      <AttachmentIcon />
                                     </span>
                                   </Show>
                                   <span class="thread-time">{formatTime(thread.last_message_date)}</span>
@@ -3775,7 +4698,7 @@ function App() {
 
             {/* Add card button */}
             <Show when={!addingCard()}>
-              <button class="add-card-btn" onClick={() => { setNewCardColor(null); setAddingCard(true); }} aria-label="New card" title="New card">
+              <button class="add-card-btn" onClick={() => { setNewCardColor(null); setQueryPreviewThreads([]); setQueryPreviewLoading(false); setAddingCard(true); }} aria-label="New card" title="New card">
                 <PlusIcon />
               </button>
             </Show>
@@ -3784,200 +4707,45 @@ function App() {
 
       </Show>
 
-      {/* Compose Panel */}
-      <Show when={composing()}>
+      {/* Compose Panel (standalone, when not replying from thread) */}
+      <Show when={composing() && !activeThreadId()}>
         <div class={`compose-panel ${closingCompose() ? 'closing' : ''}`}>
-          <div class="compose-header">
-            <h3>New message</h3>
-            <CloseButton onClick={closeCompose} />
-          </div>
-          <div class="compose-body">
-            <div class="compose-field" style="position: relative;">
-              <label>To</label>
-              <div class="compose-to-row">
-                <input
-                  ref={(el) => setTimeout(() => { if (!focusComposeBody()) el?.focus(); }, 50)}
-                  type="email"
-                  value={composeTo()}
-                  onInput={(e) => { setComposeTo(e.currentTarget.value); setComposeEmailError(null); setAutocompleteIndex(0); debouncedSaveDraft(); }}
-                  onFocus={() => { setShowAutocomplete(true); setAutocompleteIndex(0); }}
-                  onBlur={() => setTimeout(() => setShowAutocomplete(false), 150)}
-                  onKeyDown={(e) => {
-                    const candidates = getFilteredCandidates();
-                    if (e.key === 'Escape') {
-                      if (showAutocomplete()) {
-                        setShowAutocomplete(false);
-                      } else {
-                        closeCompose();
-                      }
-                    } else if (e.key === 'ArrowDown' && showAutocomplete() && candidates.length > 0) {
-                      e.preventDefault();
-                      setAutocompleteIndex((autocompleteIndex() + 1) % candidates.length);
-                    } else if (e.key === 'ArrowUp' && showAutocomplete() && candidates.length > 0) {
-                      e.preventDefault();
-                      setAutocompleteIndex((autocompleteIndex() - 1 + candidates.length) % candidates.length);
-                    } else if (e.key === 'Enter' && showAutocomplete() && candidates.length > 0 && !(e.metaKey || e.ctrlKey)) {
-                      e.preventDefault();
-                      selectContact(candidates[autocompleteIndex()].email);
-                    } else if (e.key === 'Enter' && (e.metaKey || e.ctrlKey) && composeTo().trim()) {
-                      e.preventDefault();
-                      handleSendEmail();
-                    }
-                  }}
-                  placeholder=""
-                />
-                <Show when={!showCcBcc()}>
-                  <button
-                    type="button"
-                    class="cc-bcc-toggle"
-                    onClick={() => setShowCcBcc(true)}
-                  >
-                    Cc/Bcc
-                  </button>
-                </Show>
-              </div>
-              <Show when={showAutocomplete() && getFilteredCandidates().length > 0}>
-                <div class="compose-autocomplete">
-                  <For each={getFilteredCandidates()}>
-                    {(contact, i) => (
-                      <div
-                        class={`compose-autocomplete-item ${i() === autocompleteIndex() ? 'selected' : ''}`}
-                        onMouseDown={() => selectContact(contact.email)}
-                        onMouseEnter={() => setAutocompleteIndex(i())}
-                      >
-                        <div
-                          class="compose-autocomplete-avatar"
-                          style={{ background: getAvatarColor(contact.name || contact.email) }}
-                        >
-                          {(contact.name || contact.email).charAt(0).toUpperCase()}
-                        </div>
-                        <div class="compose-autocomplete-info">
-                          <Show when={contact.name}>
-                            <div class="compose-autocomplete-name">{contact.name}</div>
-                          </Show>
-                          <div class="compose-autocomplete-email">{contact.email}</div>
-                        </div>
-                      </div>
-                    )}
-                  </For>
-                </div>
-              </Show>
-            </div>
-            <Show when={showCcBcc()}>
-              <div class="compose-field">
-                <label>Cc</label>
-                <input
-                  type="text"
-                  value={composeCc()}
-                  onInput={(e) => { setComposeCc(e.currentTarget.value); setComposeEmailError(null); debouncedSaveDraft(); }}
-                  onKeyDown={(e) => {
-                    if (e.key === 'Escape') closeCompose();
-                    else if (e.key === 'Enter' && (e.metaKey || e.ctrlKey) && composeTo().trim()) {
-                      e.preventDefault();
-                      handleSendEmail();
-                    }
-                  }}
-                  placeholder="Cc recipients"
-                />
-              </div>
-              <div class="compose-field">
-                <label>Bcc</label>
-                <input
-                  type="text"
-                  value={composeBcc()}
-                  onInput={(e) => { setComposeBcc(e.currentTarget.value); setComposeEmailError(null); debouncedSaveDraft(); }}
-                  onKeyDown={(e) => {
-                    if (e.key === 'Escape') closeCompose();
-                    else if (e.key === 'Enter' && (e.metaKey || e.ctrlKey) && composeTo().trim()) {
-                      e.preventDefault();
-                      handleSendEmail();
-                    }
-                  }}
-                  placeholder="Bcc recipients"
-                />
-              </div>
-            </Show>
-            <div class="compose-field">
-              <label>Subject</label>
-              <input
-                type="text"
-                value={composeSubject()}
-                onInput={(e) => { setComposeSubject(e.currentTarget.value); debouncedSaveDraft(); }}
-                onKeyDown={(e) => {
-                  if (e.key === 'Escape') closeCompose();
-                  else if (e.key === 'Enter' && (e.metaKey || e.ctrlKey) && composeTo().trim()) {
-                    e.preventDefault();
-                    handleSendEmail();
-                  }
-                }}
-                placeholder="Subject"
-              />
-            </div>
-            <div class="compose-content">
-              <textarea
-                ref={(el) => setTimeout(() => { if (focusComposeBody()) el?.focus(); }, 50)}
-                value={composeBody()}
-                onInput={(e) => { setComposeBody(e.currentTarget.value); debouncedSaveDraft(); }}
-                onKeyDown={(e) => {
-                  if (e.key === 'Escape') closeCompose();
-                  else if (e.key === 'Enter' && (e.metaKey || e.ctrlKey) && composeTo().trim()) {
-                    e.preventDefault();
-                    handleSendEmail();
-                  }
-                }}
-                placeholder="Write something..."
-              ></textarea>
-            </div>
-          </div>
-          <Show when={composeAttachments().length > 0}>
-            <div class="compose-attachments">
-              <For each={composeAttachments()}>
-                {(attachment, i) => (
-                  <div class="compose-attachment">
-                    <span class="attachment-name" title={attachment.filename}>
-                      {truncateMiddle(attachment.filename, 20)}
-                    </span>
-                    <button
-                      class="attachment-remove"
-                      onClick={() => removeAttachment(i())}
-                      title="Remove"
-                    >
-                      <CloseIcon />
-                    </button>
-                  </div>
-                )}
-              </For>
-            </div>
-          </Show>
-          <div class="compose-footer">
-            <input
-              type="file"
-              ref={fileInputRef}
-              onChange={handleFileSelect}
-              multiple
-              style={{ display: 'none' }}
-            />
-            <button
-              class="compose-attach-btn"
-              onClick={() => fileInputRef?.click()}
-              title="Attach files"
-            >
-              <AttachmentIcon />
-            </button>
-            <Show when={composeEmailError()}>
-              <div class="compose-error">{composeEmailError()}</div>
-            </Show>
-            <Show when={draftSaved() && !composeEmailError()}>
-              <div class="draft-saved">Draft saved</div>
-            </Show>
-            <button
-              class={`btn btn-primary ${sending() ? 'sending' : ''}`}
-              disabled={!composeTo().trim() || sending()}
-              onClick={handleSendEmail}
-            >
-              {sending() ? 'Sending...' : <>Send <span class="shortcut-hint">⌘↵</span></>}
-            </button>
-          </div>
+          <ComposeForm
+            mode="new"
+            showSubject={true}
+            to={composeTo()}
+            setTo={(v) => { setComposeTo(v); setComposeEmailError(null); setAutocompleteIndex(0); }}
+            cc={composeCc()}
+            setCc={(v) => { setComposeCc(v); setComposeEmailError(null); }}
+            bcc={composeBcc()}
+            setBcc={(v) => { setComposeBcc(v); setComposeEmailError(null); }}
+            showCcBcc={showCcBcc()}
+            setShowCcBcc={setShowCcBcc}
+            subject={composeSubject()}
+            setSubject={setComposeSubject}
+            body={composeBody()}
+            setBody={setComposeBody}
+            attachments={composeAttachments()}
+            onRemoveAttachment={removeAttachment}
+            onFileSelect={handleFileSelect}
+            fileInputId="compose-file-input"
+            error={composeEmailError()}
+            draftSaving={draftSaving()}
+            draftSaved={draftSaved()}
+            sending={sending()}
+            onSend={handleSendEmail}
+            onClose={closeCompose}
+            onInput={debouncedSaveDraft}
+            focusBody={focusComposeBody()}
+            autocomplete={{
+              show: showAutocomplete(),
+              candidates: getFilteredCandidates(),
+              selectedIndex: autocompleteIndex(),
+              setSelectedIndex: setAutocompleteIndex,
+              onSelect: selectContact,
+              setShow: setShowAutocomplete,
+            }}
+          />
         </div>
       </Show >
 
@@ -4036,11 +4804,17 @@ function App() {
           thread={activeThread()}
           loading={threadLoading()}
           error={threadError()}
-          color={activeThreadCardId() ? cardColors()[activeThreadCardId()!] : null}
-          onClose={() => { setActiveThreadId(null); setActiveThreadCardId(null); setFocusedMessageIndex(0); setLabelDrawerOpen(false); }}
+          card={activeThreadCardId() ? (() => {
+            const c = cards().find(c => c.id === activeThreadCardId());
+            return c ? { name: c.name, color: cardColors()[c.id] || null } : null;
+          })() : null}
+          focusColor={selectedBgColorIndex() !== null ? BG_COLORS[selectedBgColorIndex()!].hex : null}
+          onClose={() => { setActiveThreadId(null); setActiveThreadCardId(null); setFocusedMessageIndex(0); setLabelDrawerOpen(false); closeCompose(); }}
           focusedMessageIndex={focusedMessageIndex()}
           onFocusChange={setFocusedMessageIndex}
-          onOpenAttachment={(messageId, attachmentId, filename, mimeType) => openAttachment(messageId, attachmentId, filename, mimeType)}
+          onOpenAttachment={(messageId, attachmentId, filename, mimeType, inlineData) => openAttachment(messageId, attachmentId, filename, mimeType, inlineData)}
+          onDownloadAttachment={(messageId, attachmentId, filename, mimeType, inlineData) => downloadAttachment(messageId, attachmentId, filename, mimeType, inlineData)}
+          onShowAttachmentMenu={showAttachmentContextMenu}
           onReply={handleReplyFromThread}
           onForward={handleForwardFromThread}
           onAction={handleThreadViewAction}
@@ -4048,6 +4822,48 @@ function App() {
           isStarred={isThreadStarred()}
           isRead={isThreadRead()}
           isImportant={isThreadImportant()}
+          // Inline compose props
+          inlineCompose={composing() ? {
+            replyToMessageId: replyingToThread()?.messageId || null,
+            isForward: !!forwardingThread(),
+            to: composeTo(),
+            setTo: setComposeTo,
+            cc: composeCc(),
+            setCc: setComposeCc,
+            bcc: composeBcc(),
+            setBcc: setComposeBcc,
+            showCcBcc: showCcBcc(),
+            setShowCcBcc: setShowCcBcc,
+            subject: composeSubject(),
+            setSubject: setComposeSubject,
+            body: composeBody(),
+            setBody: setComposeBody,
+            attachments: composeAttachments(),
+            onRemoveAttachment: removeAttachment,
+            onFileSelect: handleFileSelect,
+            error: composeEmailError(),
+            draftSaving: draftSaving(),
+            draftSaved: draftSaved(),
+            sending: sending(),
+            onSend: handleSendEmail,
+            onClose: closeCompose,
+            onInput: debouncedSaveDraft,
+            focusBody: focusComposeBody(),
+            messageWidth: inlineMessageWidth(),
+            resizing: inlineResizing(),
+            onResizeStart: handleInlineResizeStart,
+          } : null}
+          threadAttachments={(() => {
+            const cardId = activeThreadCardId();
+            const threadId = activeThreadId();
+            if (!cardId || !threadId) return undefined;
+            const groups = cardThreads()[cardId] || [];
+            for (const group of groups) {
+              const thread = group.threads.find(t => t.gmail_thread_id === threadId);
+              if (thread) return thread.attachments;
+            }
+            return undefined;
+          })()}
         />
 
         {/* Label Drawer */}
@@ -4117,13 +4933,18 @@ function App() {
       {/* Batch Reply Panel */}
       <Show when={batchReplyOpen()}>
         <div class="thread-overlay">
-          <div class="thread-view-header">
-            <CloseButton onClick={closeBatchReply} />
-            <div class="thread-subject-header">
-              <h2>Batch Reply</h2>
-            </div>
-            <div class="batch-reply-header-actions">
+          <div class="thread-floating-bar">
+            {/* Row 1: Close + Title */}
+            <div class="thread-floating-bar-row">
+              <CloseButton onClick={closeBatchReply} />
+              <div class="thread-bar-subject">
+                <h2>Batch Reply</h2>
+              </div>
               <span class="batch-reply-count">{batchReplyThreads().length} remaining</span>
+            </div>
+            {/* Row 2: Send All */}
+            <div class="thread-floating-bar-row thread-bar-actions">
+              <div class="thread-toolbar-spacer" />
               <button
                 class="btn btn-primary btn-sm"
                 disabled={!Object.values(batchReplyMessages()).some(m => m?.trim())}
@@ -4133,7 +4954,7 @@ function App() {
               </button>
             </div>
           </div>
-          <div class="batch-reply-body">
+          <div class="thread-content">
             <Show when={batchReplyLoading()}>
               <div class="batch-reply-loading">
                 <div class="loading-spinner"></div>
@@ -4143,94 +4964,47 @@ function App() {
             <Show when={!batchReplyLoading() && batchReplyThreads().length === 0}>
               <div class="batch-reply-empty">No threads to reply to</div>
             </Show>
-            <For each={batchReplyThreads()}>
-              {(thread) => {
-                let fileInputRef: HTMLInputElement | undefined;
-                return (
-                  <div class="batch-reply-item">
-                    <div class="batch-reply-message">
-                      <div class="batch-reply-message-header">
-                        <div class="batch-reply-from">{thread.from}</div>
-                        <div class="batch-reply-header-right">
-                          <div class="batch-reply-date">{thread.date}</div>
-                          <button
-                            class="batch-reply-discard"
-                            onClick={() => discardBatchReplyThread(thread.threadId)}
-                            title="Discard this reply"
-                          >
-                            <CloseIcon />
-                          </button>
+            <div class="messages-list">
+              <For each={batchReplyThreads()}>
+                {(thread) => (
+                    <div class={`message-row with-compose ${inlineResizing() ? 'resizing' : ''}`}>
+                      <div class="message-card">
+                        <div class="message-header">
+                          <div class="message-sender">{thread.from}</div>
+                          <div class="message-header-actions">
+                            <div class="message-date">{thread.date}</div>
+                          </div>
                         </div>
+                        <div class="batch-reply-subject">{thread.subject}</div>
+                        <div class="message-body" innerHTML={DOMPurify.sanitize(thread.body, DOMPURIFY_CONFIG)}></div>
                       </div>
-                      <div class="batch-reply-subject">{thread.subject}</div>
-                      <div class="batch-reply-content" innerHTML={DOMPurify.sanitize(thread.body, DOMPURIFY_CONFIG)}></div>
-                    </div>
-                    <div class="batch-reply-compose">
-                      <div class="batch-reply-compose-inner">
-                        <ComposeTextarea
+                      <div
+                        class="inline-resize-handle"
+                        onMouseDown={handleInlineResizeStart}
+                      />
+                      <div class="inline-compose">
+                        <ComposeForm
+                          mode="batchReply"
+                          inline={true}
+                          showFields={false}
+                          body={batchReplyMessages()[thread.threadId] || ''}
+                          setBody={(v) => updateBatchReplyMessage(thread.threadId, v)}
                           placeholder={`Reply to ${extractEmail(thread.from)}...`}
-                          value={batchReplyMessages()[thread.threadId] || ''}
-                          onChange={(v) => updateBatchReplyMessage(thread.threadId, v)}
+                          attachments={batchReplyAttachments()[thread.threadId] || []}
+                          onRemoveAttachment={(i) => removeBatchReplyAttachment(thread.threadId, i)}
+                          onFileSelect={(e) => handleBatchReplyFileSelect(thread.threadId, e)}
+                          fileInputId={`batch-reply-file-input-${thread.threadId}`}
+                          sending={batchReplySending()[thread.threadId]}
                           onSend={() => sendBatchReply(thread.threadId)}
-                          onCancel={closeBatchReply}
-                          disabled={batchReplySending()[thread.threadId]}
+                          onClose={closeBatchReply}
+                          onSkip={() => discardBatchReplyThread(thread.threadId)}
+                          canSend={!!batchReplyMessages()[thread.threadId]?.trim()}
                         />
-                        <div class="batch-reply-actions">
-                          <input
-                            type="file"
-                            ref={fileInputRef}
-                            onChange={(e) => handleBatchReplyFileSelect(thread.threadId, e)}
-                            multiple
-                            style={{ display: 'none' }}
-                          />
-                          <button
-                            class="batch-reply-attach"
-                            onClick={() => fileInputRef?.click()}
-                            title="Attach files"
-                          >
-                            <AttachmentIcon />
-                          </button>
-                          <button
-                            class="btn batch-reply-skip"
-                            onClick={() => discardBatchReplyThread(thread.threadId)}
-                            title="Skip this thread"
-                          >
-                            Skip
-                          </button>
-                          <ComposeSendButton
-                            onClick={() => sendBatchReply(thread.threadId)}
-                            disabled={!batchReplyMessages()[thread.threadId]?.trim()}
-                            sending={batchReplySending()[thread.threadId]}
-                            showShortcut={false}
-                            class="batch-reply-send"
-                          />
-                        </div>
                       </div>
-                      <Show when={(batchReplyAttachments()[thread.threadId] || []).length > 0}>
-                        <div class="batch-reply-attachments">
-                          <For each={batchReplyAttachments()[thread.threadId]}>
-                            {(attachment, i) => (
-                              <div class="compose-attachment">
-                                <span class="attachment-name" title={attachment.filename}>
-                                  {truncateMiddle(attachment.filename, 20)}
-                                </span>
-                                <button
-                                  class="attachment-remove"
-                                  onClick={() => removeBatchReplyAttachment(thread.threadId, i())}
-                                  title="Remove"
-                                >
-                                  <CloseIcon />
-                                </button>
-                              </div>
-                            )}
-                          </For>
-                        </div>
-                      </Show>
                     </div>
-                  </div>
-                );
-              }}
-            </For>
+                )}
+              </For>
+            </div>
           </div>
         </div>
       </Show>
@@ -4419,13 +5193,28 @@ function App() {
       {/* Undo Toast */}
       <Show when={toastVisible()}>
         <div class={`undo-toast ${toastClosing() ? 'closing' : ''}`}>
-          <div class="toast-progress"></div>
+          <Show when={!simpleToastMessage()}>
+            <div class="toast-progress"></div>
+          </Show>
           <div class="toast-content">
-            <span class="toast-message">{lastAction() ? getActionLabel(lastAction()!.action, lastAction()!.threadIds.length) : ''}</span>
-            <button class="toast-undo-btn" onClick={undoLastAction}>Undo <span class="shortcut-hint">z</span></button>
+            <span class="toast-message">{simpleToastMessage() || (lastAction() ? getActionLabel(lastAction()!.action, lastAction()!.threadIds.length) : '')}</span>
+            <Show when={!simpleToastMessage() && lastAction()}>
+              <button class="toast-undo-btn" onClick={undoLastAction}>Undo <span class="shortcut-hint">z</span></button>
+            </Show>
             <button class="toast-close-btn" onClick={hideToast} title="Dismiss">
               <CloseIcon />
             </button>
+          </div>
+        </div>
+      </Show>
+
+      {/* Send Toast with Undo */}
+      <Show when={sendToastVisible()}>
+        <div class={`undo-toast send-toast ${sendToastClosing() ? 'closing' : ''}`}>
+          <div class="toast-progress send-progress" style={{ width: `${sendProgress()}%` }}></div>
+          <div class="toast-content">
+            <span class="toast-message">Sending message...</span>
+            <button class="toast-undo-btn" onClick={undoSend}>Undo</button>
           </div>
         </div>
       </Show>

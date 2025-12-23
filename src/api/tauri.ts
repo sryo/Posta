@@ -32,6 +32,21 @@ export interface Attachment {
   inline_data: string | null; // Base64-encoded data for small images
 }
 
+export interface CalendarEvent {
+  uid: string | null;
+  title: string;
+  start_time: number; // Unix timestamp in milliseconds
+  end_time: number | null;
+  all_day: boolean;
+  location: string | null;
+  description: string | null;
+  organizer: string | null;
+  attendees: string[];
+  method: string | null; // REQUEST, REPLY, CANCEL
+  status: string | null; // CONFIRMED, TENTATIVE, CANCELLED
+  response_status: string | null; // accepted, tentative, declined, needsAction
+}
+
 export interface Thread {
   gmail_thread_id: string;
   account_id: string;
@@ -43,6 +58,7 @@ export interface Thread {
   participants: string[];
   has_attachment: boolean;
   attachments: Attachment[];
+  calendar_event: CalendarEvent | null;
 }
 
 export interface ThreadGroup {
@@ -252,6 +268,17 @@ export async function downloadAttachment(
   return invoke("download_attachment", { accountId, messageId, attachmentId });
 }
 
+export async function openAttachment(
+  accountId: string,
+  messageId: string,
+  attachmentId: string | null,
+  filename: string,
+  mimeType: string | null,
+  inlineData: string | null
+): Promise<void> {
+  return invoke("open_attachment", { accountId, messageId, attachmentId, filename, mimeType, inlineData });
+}
+
 // Gmail Labels
 
 export interface GmailLabel {
@@ -264,4 +291,29 @@ export interface GmailLabel {
 
 export async function listLabels(accountId: string): Promise<GmailLabel[]> {
   return invoke("list_labels", { accountId });
+}
+
+export async function rsvpCalendarEvent(
+  accountId: string,
+  eventUid: string,
+  status: "accepted" | "tentative" | "declined"
+): Promise<void> {
+  return invoke("rsvp_calendar_event", { accountId, eventUid, status });
+}
+
+export async function getCalendarRsvpStatus(
+  accountId: string,
+  eventUid: string
+): Promise<string | null> {
+  return invoke("get_calendar_rsvp_status", { accountId, eventUid });
+}
+
+// iCloud sync
+
+export async function pullFromICloud(): Promise<boolean> {
+  return invoke("pull_from_icloud");
+}
+
+export async function forceICloudSync(): Promise<void> {
+  return invoke("force_icloud_sync");
 }

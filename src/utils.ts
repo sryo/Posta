@@ -159,3 +159,94 @@ export function validateEmailList(emailStr: string): { valid: boolean; invalidEm
 
   return { valid: invalidEmails.length === 0, invalidEmails };
 }
+
+/**
+ * Format email header date string into a nice readable format
+ * e.g., "Mon, 23 Dec 2024 10:30:15 -0500" -> "Dec 23 at 10:30 AM" or "Today at 10:30 AM"
+ */
+export function formatEmailDate(dateStr: string): string {
+  if (!dateStr) return '';
+
+  const date = new Date(dateStr);
+  if (isNaN(date.getTime())) return dateStr; // Return original if parsing fails
+
+  const now = new Date();
+  const isToday = date.toDateString() === now.toDateString();
+  const yesterday = new Date(now);
+  yesterday.setDate(yesterday.getDate() - 1);
+  const isYesterday = date.toDateString() === yesterday.toDateString();
+  const isThisYear = date.getFullYear() === now.getFullYear();
+
+  const timeStr = date.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+
+  if (isToday) {
+    return `Today at ${timeStr}`;
+  }
+  if (isYesterday) {
+    return `Yesterday at ${timeStr}`;
+  }
+  if (isThisYear) {
+    return date.toLocaleDateString([], { month: 'short', day: 'numeric' }) + ` at ${timeStr}`;
+  }
+  return date.toLocaleDateString([], { month: 'short', day: 'numeric', year: 'numeric' }) + ` at ${timeStr}`;
+}
+
+/**
+ * Format calendar event date/time for display
+ * Shows date, time, and duration (e.g., "Today 2pm (1h)")
+ */
+export function formatCalendarEventDate(
+  startTime: number,
+  endTime: number | null,
+  allDay: boolean
+): string {
+  const start = new Date(startTime);
+  const now = new Date();
+  const isToday = start.toDateString() === now.toDateString();
+  const tomorrow = new Date(now);
+  tomorrow.setDate(tomorrow.getDate() + 1);
+  const isTomorrow = start.toDateString() === tomorrow.toDateString();
+  const isThisYear = start.getFullYear() === now.getFullYear();
+
+  // Format date part
+  let dateStr: string;
+  if (isToday) {
+    dateStr = 'Today';
+  } else if (isTomorrow) {
+    dateStr = 'Tomorrow';
+  } else if (isThisYear) {
+    dateStr = start.toLocaleDateString([], { weekday: 'short', month: 'short', day: 'numeric' });
+  } else {
+    dateStr = start.toLocaleDateString([], { weekday: 'short', month: 'short', day: 'numeric', year: 'numeric' });
+  }
+
+  // For all-day events, just show the date
+  if (allDay) {
+    return dateStr;
+  }
+
+  // Format time - compact format like "2pm" or "2:30pm"
+  const hours = start.getHours();
+  const minutes = start.getMinutes();
+  const ampm = hours >= 12 ? 'pm' : 'am';
+  const hour12 = hours % 12 || 12;
+  const timeStr = minutes === 0 ? `${hour12}${ampm}` : `${hour12}:${minutes.toString().padStart(2, '0')}${ampm}`;
+
+  if (endTime) {
+    const durationMs = endTime - startTime;
+    const durationMins = Math.round(durationMs / 60000);
+
+    let durationStr: string;
+    if (durationMins < 60) {
+      durationStr = `${durationMins}m`;
+    } else {
+      const hours = Math.floor(durationMins / 60);
+      const mins = durationMins % 60;
+      durationStr = mins > 0 ? `${hours}h${mins}m` : `${hours}h`;
+    }
+
+    return `${dateStr} ${timeStr} (${durationStr})`;
+  }
+
+  return `${dateStr} ${timeStr}`;
+}

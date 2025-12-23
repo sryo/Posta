@@ -2,8 +2,10 @@
 
 use crate::auth::{self, wait_for_callback, GmailAuth};
 use crate::cache::CacheDb;
-use crate::gmail::{GmailClient, GmailLabel, SearchResult};
+use crate::gmail::{GmailClient, GmailDraft, GmailLabel, SearchResult};
+use crate::icloud::ICloudKVStore;
 use crate::models::{Account, Card, SendAttachment, ThreadGroup};
+use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use tauri::{Manager, State};
@@ -12,6 +14,7 @@ use tokio::sync::Mutex;
 pub struct AppState {
     pub db: Arc<std::sync::Mutex<Option<CacheDb>>>,
     pub auth: Arc<Mutex<Option<GmailAuth>>>,
+    pub icloud: Arc<std::sync::Mutex<ICloudKVStore>>,
 }
 
 impl AppState {
@@ -19,7 +22,39 @@ impl AppState {
         Self {
             db: Arc::new(std::sync::Mutex::new(None)),
             auth: Arc::new(Mutex::new(None)),
+            icloud: Arc::new(std::sync::Mutex::new(ICloudKVStore::new())),
         }
+    }
+}
+
+// Sync all cards to iCloud after any card operation
+fn sync_cards_to_icloud(state: &AppState) {
+    let db_guard = match state.db.lock() {
+        Ok(g) => g,
+        Err(_) => return,
+    };
+    let db = match db_guard.as_ref() {
+        Some(d) => d,
+        None => return,
+    };
+
+    // Collect all cards from all accounts
+    let accounts = match db.get_accounts() {
+        Ok(a) => a,
+        Err(_) => return,
+    };
+
+    let mut all_cards = Vec::new();
+    for account in accounts {
+        if let Ok(cards) = db.get_cards(&account.id) {
+            all_cards.extend(cards);
+        }
+    }
+
+    // Sync to iCloud (no-op on non-iOS)
+    drop(db_guard); // Release db lock before acquiring icloud lock
+    if let Ok(icloud) = state.icloud.lock() {
+        let _ = icloud.sync_cards(&all_cards);
     }
 }
 
@@ -248,30 +283,44 @@ pub fn create_card(
     query: String,
     state: State<'_, AppState>,
 ) -> Result<Card, String> {
-    let db_guard = state.db.lock().map_err(|_| "Lock error")?;
-    let db = db_guard.as_ref().ok_or("Database not initialized")?;
+    let card = {
+        let db_guard = state.db.lock().map_err(|_| "Lock error")?;
+        let db = db_guard.as_ref().ok_or("Database not initialized")?;
 
-    let cards = db.get_cards(&account_id).map_err(|e| e.to_string())?;
-    let position = cards.len() as i32;
+        let cards = db.get_cards(&account_id).map_err(|e| e.to_string())?;
+        let position = cards.len() as i32;
 
-    let card = Card::new(account_id, name, query, position);
-    db.insert_card(&card).map_err(|e| e.to_string())?;
+        let card = Card::new(account_id, name, query, position);
+        db.insert_card(&card).map_err(|e| e.to_string())?;
+        card
+    };
 
+    sync_cards_to_icloud(&state);
     Ok(card)
 }
 
 #[tauri::command]
 pub fn update_card(card: Card, state: State<'_, AppState>) -> Result<(), String> {
-    let db_guard = state.db.lock().map_err(|_| "Lock error")?;
-    let db = db_guard.as_ref().ok_or("Database not initialized")?;
-    db.update_card(&card).map_err(|e| e.to_string())
+    {
+        let db_guard = state.db.lock().map_err(|_| "Lock error")?;
+        let db = db_guard.as_ref().ok_or("Database not initialized")?;
+        db.update_card(&card).map_err(|e| e.to_string())?;
+    }
+
+    sync_cards_to_icloud(&state);
+    Ok(())
 }
 
 #[tauri::command]
 pub fn delete_card(id: String, state: State<'_, AppState>) -> Result<(), String> {
-    let db_guard = state.db.lock().map_err(|_| "Lock error")?;
-    let db = db_guard.as_ref().ok_or("Database not initialized")?;
-    db.delete_card(&id).map_err(|e| e.to_string())
+    {
+        let db_guard = state.db.lock().map_err(|_| "Lock error")?;
+        let db = db_guard.as_ref().ok_or("Database not initialized")?;
+        db.delete_card(&id).map_err(|e| e.to_string())?;
+    }
+
+    sync_cards_to_icloud(&state);
+    Ok(())
 }
 
 /// Helper to get account and card from database
@@ -566,6 +615,100 @@ pub async fn download_attachment(
     gmail.get_attachment(&message_id, &attachment_id).await
 }
 
+fn get_extension_for_mime(mime_type: &str) -> Option<&'static str> {
+    match mime_type {
+        "image/jpeg" | "image/jpg" => Some("jpg"),
+        "image/png" => Some("png"),
+        "image/gif" => Some("gif"),
+        "image/webp" => Some("webp"),
+        "image/svg+xml" => Some("svg"),
+        "image/bmp" => Some("bmp"),
+        "image/tiff" => Some("tiff"),
+        "application/pdf" => Some("pdf"),
+        "text/plain" => Some("txt"),
+        "text/html" => Some("html"),
+        "text/css" => Some("css"),
+        "text/csv" => Some("csv"),
+        "application/json" => Some("json"),
+        "application/xml" => Some("xml"),
+        "application/zip" => Some("zip"),
+        "application/gzip" => Some("gz"),
+        "audio/mpeg" => Some("mp3"),
+        "audio/wav" => Some("wav"),
+        "video/mp4" => Some("mp4"),
+        "video/webm" => Some("webm"),
+        "application/msword" => Some("doc"),
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document" => Some("docx"),
+        "application/vnd.ms-excel" => Some("xls"),
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" => Some("xlsx"),
+        _ => None,
+    }
+}
+
+#[tauri::command]
+pub async fn open_attachment(
+    account_id: String,
+    message_id: String,
+    attachment_id: Option<String>,
+    filename: String,
+    mime_type: Option<String>,
+    inline_data: Option<String>,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    // Get base64 data either from inline or by downloading
+    let base64_data = if let Some(data) = inline_data {
+        data
+    } else {
+        let attachment_id = attachment_id.ok_or("No attachment ID or inline data")?;
+
+        // Verify account exists
+        {
+            let db_guard = state.db.lock().map_err(|_| "Lock error")?;
+            let db = db_guard.as_ref().ok_or("Database not initialized")?;
+            let accounts = db.get_accounts().map_err(|e| e.to_string())?;
+
+            if !accounts.iter().any(|a| a.id == account_id) {
+                return Err("Account not found".to_string());
+            }
+        }
+
+        let access_token = get_access_token(&state, &account_id).await?;
+        let gmail = GmailClient::new(access_token);
+        gmail.get_attachment(&message_id, &attachment_id).await?
+    };
+
+    // Decode base64 - Gmail uses URL-safe encoding, handle with/without padding
+    let cleaned = base64_data.trim_end_matches('=');
+    let bytes = URL_SAFE_NO_PAD
+        .decode(cleaned)
+        .map_err(|e| format!("Failed to decode base64: {}", e))?;
+
+    // Ensure filename has extension based on mime type
+    let final_filename = if !filename.contains('.') {
+        if let Some(ref mt) = mime_type {
+            if let Some(ext) = get_extension_for_mime(mt) {
+                format!("{}.{}", filename, ext)
+            } else {
+                filename.clone()
+            }
+        } else {
+            filename.clone()
+        }
+    } else {
+        filename.clone()
+    };
+
+    // Save to temp file
+    let temp_dir = std::env::temp_dir();
+    let temp_path = temp_dir.join(&final_filename);
+    std::fs::write(&temp_path, &bytes).map_err(|e| format!("Failed to write temp file: {}", e))?;
+
+    // Open with system default application
+    open::that(&temp_path).map_err(|e| format!("Failed to open file: {}", e))?;
+
+    Ok(())
+}
+
 #[tauri::command]
 pub async fn list_labels(
     account_id: String,
@@ -586,4 +729,182 @@ pub async fn list_labels(
     let gmail = GmailClient::new(access_token);
 
     gmail.list_labels().await
+}
+
+#[tauri::command]
+pub async fn save_draft(
+    account_id: String,
+    draft_id: Option<String>,
+    to: String,
+    cc: String,
+    bcc: String,
+    subject: String,
+    body: String,
+    thread_id: Option<String>,
+    state: State<'_, AppState>,
+) -> Result<GmailDraft, String> {
+    // Verify account exists
+    {
+        let db_guard = state.db.lock().map_err(|_| "Lock error")?;
+        let db = db_guard.as_ref().ok_or("Database not initialized")?;
+        let accounts = db.get_accounts().map_err(|e| e.to_string())?;
+
+        if !accounts.iter().any(|a| a.id == account_id) {
+            return Err("Account not found".to_string());
+        }
+    }
+
+    let access_token = get_access_token(&state, &account_id).await?;
+    let gmail = GmailClient::new(access_token);
+
+    match draft_id {
+        Some(id) => {
+            gmail
+                .update_draft(&id, &to, &cc, &bcc, &subject, &body, thread_id.as_deref())
+                .await
+        }
+        None => {
+            gmail
+                .create_draft(&to, &cc, &bcc, &subject, &body, thread_id.as_deref())
+                .await
+        }
+    }
+}
+
+#[tauri::command]
+pub async fn delete_draft(
+    account_id: String,
+    draft_id: String,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    // Verify account exists
+    {
+        let db_guard = state.db.lock().map_err(|_| "Lock error")?;
+        let db = db_guard.as_ref().ok_or("Database not initialized")?;
+        let accounts = db.get_accounts().map_err(|e| e.to_string())?;
+
+        if !accounts.iter().any(|a| a.id == account_id) {
+            return Err("Account not found".to_string());
+        }
+    }
+
+    let access_token = get_access_token(&state, &account_id).await?;
+    let gmail = GmailClient::new(access_token);
+
+    gmail.delete_draft(&draft_id).await
+}
+
+#[tauri::command]
+pub async fn rsvp_calendar_event(
+    account_id: String,
+    event_uid: String,
+    status: String, // "accepted", "tentative", or "declined"
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    // Validate status
+    let valid_statuses = ["accepted", "tentative", "declined"];
+    if !valid_statuses.contains(&status.as_str()) {
+        return Err(format!("Invalid status: {}. Must be one of: accepted, tentative, declined", status));
+    }
+
+    // Get account email
+    let user_email = {
+        let db_guard = state.db.lock().map_err(|_| "Lock error")?;
+        let db = db_guard.as_ref().ok_or("Database not initialized")?;
+        let accounts = db.get_accounts().map_err(|e| e.to_string())?;
+        accounts
+            .into_iter()
+            .find(|a| a.id == account_id)
+            .ok_or("Account not found")?
+            .email
+    };
+
+    let access_token = get_access_token(&state, &account_id).await?;
+    let gmail = GmailClient::new(access_token);
+
+    crate::gmail::rsvp_calendar_event(&gmail, &user_email, &event_uid, &status).await
+}
+
+#[tauri::command]
+pub async fn get_calendar_rsvp_status(
+    account_id: String,
+    event_uid: String,
+    state: State<'_, AppState>,
+) -> Result<Option<String>, String> {
+    // Get account email
+    let user_email = {
+        let db_guard = state.db.lock().map_err(|_| "Lock error")?;
+        let db = db_guard.as_ref().ok_or("Database not initialized")?;
+        let accounts = db.get_accounts().map_err(|e| e.to_string())?;
+        accounts
+            .into_iter()
+            .find(|a| a.id == account_id)
+            .ok_or("Account not found")?
+            .email
+    };
+
+    let access_token = get_access_token(&state, &account_id).await?;
+    let gmail = GmailClient::new(access_token);
+
+    Ok(crate::gmail::get_calendar_event_status(&gmail, &user_email, &event_uid).await)
+}
+
+// iCloud sync commands
+
+/// Pull cards from iCloud and merge with local. Returns true if changes were made.
+#[tauri::command]
+pub fn pull_from_icloud(state: State<'_, AppState>) -> Result<bool, String> {
+    let icloud_cards = {
+        let icloud = state.icloud.lock().map_err(|_| "Lock error")?;
+        icloud.load_cards().map_err(|e| e.to_string())?
+    };
+
+    let Some(icloud_cards) = icloud_cards else {
+        return Ok(false);
+    };
+
+    if icloud_cards.is_empty() {
+        return Ok(false);
+    }
+
+    let db_guard = state.db.lock().map_err(|_| "Lock error")?;
+    let db = db_guard.as_ref().ok_or("Database not initialized")?;
+
+    // Get existing local cards
+    let accounts = db.get_accounts().map_err(|e| e.to_string())?;
+    let mut local_card_ids: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for account in &accounts {
+        let cards = db.get_cards(&account.id).map_err(|e| e.to_string())?;
+        for card in cards {
+            local_card_ids.insert(card.id.clone());
+        }
+    }
+
+    let mut changes_made = false;
+
+    // Merge: iCloud cards that don't exist locally get inserted
+    for card in icloud_cards {
+        // Only insert if account exists locally
+        if !accounts.iter().any(|a| a.id == card.account_id) {
+            continue;
+        }
+
+        if !local_card_ids.contains(&card.id) {
+            db.insert_card(&card).map_err(|e| e.to_string())?;
+            changes_made = true;
+        } else {
+            // Update existing card with iCloud version
+            db.update_card(&card).map_err(|e| e.to_string())?;
+            changes_made = true;
+        }
+    }
+
+    Ok(changes_made)
+}
+
+/// Force sync all cards to iCloud
+#[tauri::command]
+pub fn force_icloud_sync(state: State<'_, AppState>) -> Result<(), String> {
+    sync_cards_to_icloud(&state);
+    Ok(())
 }

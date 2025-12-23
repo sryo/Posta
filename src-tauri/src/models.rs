@@ -62,6 +62,41 @@ impl Attachment {
     pub fn is_image(&self) -> bool {
         self.mime_type.starts_with("image/")
     }
+
+    pub fn is_calendar(&self) -> bool {
+        self.mime_type == "text/calendar"
+            || self.mime_type == "application/ics"
+            || self.filename.ends_with(".ics")
+    }
+}
+
+/// Calendar event extracted from ICS attachment
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CalendarEvent {
+    /// Event UID from ICS
+    pub uid: Option<String>,
+    /// Event title (SUMMARY)
+    pub title: String,
+    /// Start time as Unix timestamp in milliseconds
+    pub start_time: i64,
+    /// End time as Unix timestamp in milliseconds (optional for all-day events)
+    pub end_time: Option<i64>,
+    /// Whether this is an all-day event
+    pub all_day: bool,
+    /// Location (LOCATION)
+    pub location: Option<String>,
+    /// Description (DESCRIPTION)
+    pub description: Option<String>,
+    /// Organizer email
+    pub organizer: Option<String>,
+    /// Attendee emails
+    pub attendees: Vec<String>,
+    /// Event method: REQUEST (invite), REPLY, CANCEL
+    pub method: Option<String>,
+    /// Event status: CONFIRMED, TENTATIVE, CANCELLED
+    pub status: Option<String>,
+    /// User's response status: accepted, tentative, declined, needsAction
+    pub response_status: Option<String>,
 }
 
 /// Attachment for outgoing emails (compose/reply)
@@ -86,6 +121,8 @@ pub struct Thread {
     pub participants: Vec<String>,
     pub has_attachment: bool,
     pub attachments: Vec<Attachment>,
+    /// Calendar event if this thread contains a calendar invite
+    pub calendar_event: Option<CalendarEvent>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

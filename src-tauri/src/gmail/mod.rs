@@ -1,6 +1,6 @@
 // Gmail REST API client
 
-use crate::models::{Attachment, DateBucket, SendAttachment, Thread, ThreadGroup};
+use crate::models::{Attachment, CalendarEvent, DateBucket, SendAttachment, Thread, ThreadGroup};
 use chrono::{DateTime, Datelike, Duration, Local, Utc};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -139,6 +139,19 @@ pub struct GmailLabel {
 #[derive(Debug, Deserialize)]
 struct ListLabelsResponse {
     labels: Option<Vec<GmailLabel>>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct GmailDraft {
+    pub id: String,
+    pub message: Option<DraftMessage>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct DraftMessage {
+    pub id: String,
+    #[serde(rename = "threadId")]
+    pub thread_id: Option<String>,
 }
 
 impl GmailClient {
@@ -478,6 +491,31 @@ impl GmailClient {
             }
         }
 
+        // Parse calendar events from ICS attachments
+        let mut calendar_event: Option<CalendarEvent> = None;
+        for attachment in attachments.iter() {
+            if attachment.is_calendar() {
+                match self.get_attachment(&attachment.message_id, &attachment.attachment_id).await {
+                    Ok(data) => {
+                        // Decode base64 URL-safe to regular base64, then decode to string
+                        use base64::Engine;
+                        let normalized = data.replace('-', "+").replace('_', "/");
+                        if let Ok(decoded_bytes) = base64::engine::general_purpose::STANDARD.decode(&normalized) {
+                            if let Ok(ics_content) = String::from_utf8(decoded_bytes) {
+                                if let Some(event) = parse_ics_content(&ics_content) {
+                                    calendar_event = Some(event);
+                                    break; // Only use the first calendar event
+                                }
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        tracing::warn!("Failed to fetch calendar attachment {}: {}", attachment.filename, e);
+                    }
+                }
+            }
+        }
+
         let has_attachment = !attachments.is_empty();
 
         Ok(Thread {
@@ -491,6 +529,7 @@ impl GmailClient {
             participants,
             has_attachment,
             attachments,
+            calendar_event,
         })
     }
 
@@ -683,6 +722,128 @@ impl GmailClient {
 
         Ok(response.labels.unwrap_or_default())
     }
+
+    /// Create a new draft
+    pub async fn create_draft(
+        &self,
+        to: &str,
+        cc: &str,
+        bcc: &str,
+        subject: &str,
+        body: &str,
+        thread_id: Option<&str>,
+    ) -> Result<GmailDraft, String> {
+        let url = format!("{}/users/me/drafts", GMAIL_API_BASE);
+
+        let message = self.build_mime_message(to, cc, bcc, subject, body, &[], None)?;
+
+        use base64::Engine;
+        let encoded = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(message.as_bytes());
+
+        let mut request_body = serde_json::json!({
+            "message": {
+                "raw": encoded
+            }
+        });
+
+        if let Some(tid) = thread_id {
+            request_body["message"]["threadId"] = serde_json::json!(tid);
+        }
+
+        let resp = self
+            .client
+            .post(&url)
+            .bearer_auth(&self.access_token)
+            .json(&request_body)
+            .send()
+            .await
+            .map_err(|e| format!("Request failed: {}", e))?;
+
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let body = resp.text().await.unwrap_or_default();
+            return Err(format!("API error {}: {}", status, body));
+        }
+
+        let draft: GmailDraft = resp
+            .json()
+            .await
+            .map_err(|e| format!("Failed to parse draft: {}", e))?;
+
+        Ok(draft)
+    }
+
+    /// Update an existing draft
+    pub async fn update_draft(
+        &self,
+        draft_id: &str,
+        to: &str,
+        cc: &str,
+        bcc: &str,
+        subject: &str,
+        body: &str,
+        thread_id: Option<&str>,
+    ) -> Result<GmailDraft, String> {
+        let url = format!("{}/users/me/drafts/{}", GMAIL_API_BASE, draft_id);
+
+        let message = self.build_mime_message(to, cc, bcc, subject, body, &[], None)?;
+
+        use base64::Engine;
+        let encoded = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(message.as_bytes());
+
+        let mut request_body = serde_json::json!({
+            "message": {
+                "raw": encoded
+            }
+        });
+
+        if let Some(tid) = thread_id {
+            request_body["message"]["threadId"] = serde_json::json!(tid);
+        }
+
+        let resp = self
+            .client
+            .put(&url)
+            .bearer_auth(&self.access_token)
+            .json(&request_body)
+            .send()
+            .await
+            .map_err(|e| format!("Request failed: {}", e))?;
+
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let body = resp.text().await.unwrap_or_default();
+            return Err(format!("API error {}: {}", status, body));
+        }
+
+        let draft: GmailDraft = resp
+            .json()
+            .await
+            .map_err(|e| format!("Failed to parse draft: {}", e))?;
+
+        Ok(draft)
+    }
+
+    /// Delete a draft
+    pub async fn delete_draft(&self, draft_id: &str) -> Result<(), String> {
+        let url = format!("{}/users/me/drafts/{}", GMAIL_API_BASE, draft_id);
+
+        let resp = self
+            .client
+            .delete(&url)
+            .bearer_auth(&self.access_token)
+            .send()
+            .await
+            .map_err(|e| format!("Request failed: {}", e))?;
+
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let body = resp.text().await.unwrap_or_default();
+            return Err(format!("API error {}: {}", status, body));
+        }
+
+        Ok(())
+    }
 }
 
 fn extract_email_address(from: &str) -> String {
@@ -694,6 +855,147 @@ fn extract_email_address(from: &str) -> String {
     }
     // Already just an email address
     from.trim().to_string()
+}
+
+/// Parse ICS calendar data and extract the first event
+/// Uses simple text parsing since the icalendar crate has a complex API
+fn parse_ics_content(ics_data: &str) -> Option<CalendarEvent> {
+    // Check if this is a valid calendar
+    if !ics_data.contains("BEGIN:VCALENDAR") || !ics_data.contains("BEGIN:VEVENT") {
+        return None;
+    }
+
+    // Helper to extract a property value
+    let get_property = |name: &str| -> Option<String> {
+        for line in ics_data.lines() {
+            let line = line.trim();
+            // Handle properties with parameters like "DTSTART;TZID=..."
+            if line.starts_with(name) {
+                if let Some(colon_pos) = line.find(':') {
+                    return Some(line[colon_pos + 1..].to_string());
+                }
+            }
+        }
+        None
+    };
+
+    // Get METHOD from calendar level
+    let method = get_property("METHOD");
+
+    // Extract VEVENT block
+    let event_start = ics_data.find("BEGIN:VEVENT")?;
+    let event_end = ics_data.find("END:VEVENT")?;
+    let event_block = &ics_data[event_start..event_end];
+
+    // Helper to get property from event block
+    let get_event_property = |name: &str| -> Option<String> {
+        for line in event_block.lines() {
+            let line = line.trim();
+            if line.starts_with(name) {
+                if let Some(colon_pos) = line.find(':') {
+                    return Some(line[colon_pos + 1..].to_string());
+                }
+            }
+        }
+        None
+    };
+
+    let title = get_event_property("SUMMARY").unwrap_or_else(|| "(No title)".to_string());
+    let uid = get_event_property("UID");
+    let location = get_event_property("LOCATION");
+    let description = get_event_property("DESCRIPTION");
+    let status = get_event_property("STATUS");
+
+    // Parse DTSTART
+    let dtstart = get_event_property("DTSTART")?;
+    let (start_time, all_day) = parse_ics_datetime(&dtstart)?;
+
+    // Parse DTEND (optional)
+    let end_time = get_event_property("DTEND")
+        .and_then(|s| parse_ics_datetime(&s))
+        .map(|(ts, _)| ts);
+
+    // Parse ORGANIZER (remove mailto: prefix)
+    let organizer = get_event_property("ORGANIZER").map(|s| {
+        s.strip_prefix("mailto:").unwrap_or(&s).to_string()
+    });
+
+    // Parse ATTENDEE lines
+    let attendees: Vec<String> = event_block
+        .lines()
+        .filter(|line| line.trim().starts_with("ATTENDEE"))
+        .filter_map(|line| {
+            line.find(':').map(|pos| {
+                line[pos + 1..].strip_prefix("mailto:").unwrap_or(&line[pos + 1..]).to_string()
+            })
+        })
+        .collect();
+
+    Some(CalendarEvent {
+        uid,
+        title,
+        start_time,
+        end_time,
+        all_day,
+        location,
+        description,
+        organizer,
+        attendees,
+        method,
+        status,
+        response_status: None, // Will be fetched from Calendar API
+    })
+}
+
+/// Parse an ICS datetime string (e.g., "20240115T100000Z" or "20240115")
+/// Returns (timestamp_millis, is_all_day)
+fn parse_ics_datetime(s: &str) -> Option<(i64, bool)> {
+    let s = s.trim();
+
+    // All-day event (just date, no time)
+    if s.len() == 8 && !s.contains('T') {
+        // Format: YYYYMMDD
+        let year: i32 = s[0..4].parse().ok()?;
+        let month: u32 = s[4..6].parse().ok()?;
+        let day: u32 = s[6..8].parse().ok()?;
+        let date = chrono::NaiveDate::from_ymd_opt(year, month, day)?;
+        let datetime = date.and_hms_opt(0, 0, 0)?;
+        let utc = DateTime::<Utc>::from_naive_utc_and_offset(datetime, Utc);
+        return Some((utc.timestamp_millis(), true));
+    }
+
+    // Full datetime with T separator
+    if s.contains('T') {
+        // Format: YYYYMMDDTHHMMSS or YYYYMMDDTHHMMSSZ
+        let is_utc = s.ends_with('Z');
+        let s = s.trim_end_matches('Z');
+
+        if s.len() >= 15 {
+            let year: i32 = s[0..4].parse().ok()?;
+            let month: u32 = s[4..6].parse().ok()?;
+            let day: u32 = s[6..8].parse().ok()?;
+            let hour: u32 = s[9..11].parse().ok()?;
+            let min: u32 = s[11..13].parse().ok()?;
+            let sec: u32 = s[13..15].parse().ok()?;
+
+            let date = chrono::NaiveDate::from_ymd_opt(year, month, day)?;
+            let time = chrono::NaiveTime::from_hms_opt(hour, min, sec)?;
+            let datetime = chrono::NaiveDateTime::new(date, time);
+
+            let utc = if is_utc {
+                DateTime::<Utc>::from_naive_utc_and_offset(datetime, Utc)
+            } else {
+                // Assume local time, convert to UTC
+                let local = chrono::Local::now().timezone();
+                let local_dt = datetime.and_local_timezone(local).single()?;
+                local_dt.with_timezone(&Utc)
+            };
+
+            return Some((utc.timestamp_millis(), false));
+        }
+    }
+
+    None
 }
 
 /// Represents attachment metadata extracted from message parts
@@ -789,4 +1091,168 @@ fn group_threads_by_date(threads: Vec<Thread>) -> Vec<ThreadGroup> {
             })
         })
         .collect()
+}
+
+/// Get the user's RSVP status for a calendar event from Calendar API
+/// Returns the response status: "accepted", "tentative", "declined", "needsAction", or None
+pub async fn get_calendar_event_status(
+    client: &GmailClient,
+    user_email: &str,
+    event_uid: &str,
+) -> Option<String> {
+    let search_url = format!(
+        "https://www.googleapis.com/calendar/v3/calendars/primary/events?iCalUID={}",
+        urlencoding::encode(event_uid)
+    );
+
+    let response = client
+        .client
+        .get(&search_url)
+        .bearer_auth(&client.access_token)
+        .send()
+        .await
+        .ok()?;
+
+    if !response.status().is_success() {
+        return None;
+    }
+
+    #[derive(Deserialize)]
+    struct EventsResponse {
+        items: Option<Vec<CalendarEventItem>>,
+    }
+
+    #[derive(Deserialize)]
+    struct CalendarEventItem {
+        attendees: Option<Vec<Attendee>>,
+    }
+
+    #[derive(Deserialize)]
+    struct Attendee {
+        email: String,
+        #[serde(rename = "responseStatus")]
+        response_status: Option<String>,
+    }
+
+    let events_response: EventsResponse = response.json().await.ok()?;
+    let items = events_response.items?;
+    let event = items.first()?;
+    let attendees = event.attendees.as_ref()?;
+
+    // Find the current user's response status
+    for attendee in attendees {
+        if attendee.email.to_lowercase() == user_email.to_lowercase() {
+            return attendee.response_status.clone();
+        }
+    }
+
+    None
+}
+
+/// Send RSVP response to a calendar event via Google Calendar API
+/// status should be "accepted", "tentative", or "declined"
+pub async fn rsvp_calendar_event(
+    client: &GmailClient,
+    user_email: &str,
+    event_uid: &str,
+    status: &str,
+) -> Result<(), String> {
+    // First, find the event by iCalUID
+    let search_url = format!(
+        "https://www.googleapis.com/calendar/v3/calendars/primary/events?iCalUID={}",
+        urlencoding::encode(event_uid)
+    );
+
+    let response = client
+        .client
+        .get(&search_url)
+        .bearer_auth(&client.access_token)
+        .send()
+        .await
+        .map_err(|e| e.to_string())?;
+
+    if !response.status().is_success() {
+        let error_text = response.text().await.unwrap_or_default();
+        return Err(format!("Failed to find calendar event: {}", error_text));
+    }
+
+    #[derive(Deserialize)]
+    struct EventsResponse {
+        items: Option<Vec<CalendarEventItem>>,
+    }
+
+    #[derive(Deserialize)]
+    struct CalendarEventItem {
+        id: String,
+        attendees: Option<Vec<Attendee>>,
+    }
+
+    #[derive(Deserialize, Serialize, Clone)]
+    struct Attendee {
+        email: String,
+        #[serde(rename = "responseStatus", skip_serializing_if = "Option::is_none")]
+        response_status: Option<String>,
+        #[serde(rename = "self", skip_serializing_if = "Option::is_none")]
+        is_self: Option<bool>,
+    }
+
+    let events_response: EventsResponse = response.json().await.map_err(|e| e.to_string())?;
+    let items = events_response.items.unwrap_or_default();
+
+    if items.is_empty() {
+        return Err("Calendar event not found".to_string());
+    }
+
+    let event = &items[0];
+    let event_id = &event.id;
+
+    // Update attendee status
+    let mut attendees: Vec<Attendee> = event.attendees.clone().unwrap_or_default();
+    let mut found_self = false;
+
+    for attendee in attendees.iter_mut() {
+        if attendee.email.to_lowercase() == user_email.to_lowercase() {
+            attendee.response_status = Some(status.to_string());
+            found_self = true;
+            break;
+        }
+    }
+
+    if !found_self {
+        // Add ourselves as an attendee
+        attendees.push(Attendee {
+            email: user_email.to_string(),
+            response_status: Some(status.to_string()),
+            is_self: Some(true),
+        });
+    }
+
+    // Patch the event with updated attendees
+    let patch_url = format!(
+        "https://www.googleapis.com/calendar/v3/calendars/primary/events/{}?sendUpdates=all",
+        event_id
+    );
+
+    #[derive(Serialize)]
+    struct PatchRequest {
+        attendees: Vec<Attendee>,
+    }
+
+    let patch_body = PatchRequest { attendees };
+
+    let patch_response = client
+        .client
+        .patch(&patch_url)
+        .bearer_auth(&client.access_token)
+        .json(&patch_body)
+        .send()
+        .await
+        .map_err(|e| e.to_string())?;
+
+    if !patch_response.status().is_success() {
+        let error_text = patch_response.text().await.unwrap_or_default();
+        return Err(format!("Failed to update RSVP: {}", error_text));
+    }
+
+    Ok(())
 }

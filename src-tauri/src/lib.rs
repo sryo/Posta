@@ -4,9 +4,11 @@ pub mod auth;
 pub mod cache;
 pub mod commands;
 pub mod gmail;
+pub mod icloud;
 pub mod models;
 
 use commands::AppState;
+use tauri::{Manager, RunEvent, WindowEvent};
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -14,7 +16,7 @@ pub fn run() {
         .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
         .init();
 
-    tauri::Builder::default()
+    let app = tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .manage(AppState::new())
         .invoke_handler(tauri::generate_handler![
@@ -41,8 +43,50 @@ pub fn run() {
             commands::save_cached_card_threads,
             commands::clear_card_cache,
             commands::download_attachment,
+            commands::open_attachment,
             commands::list_labels,
+            commands::save_draft,
+            commands::delete_draft,
+            commands::rsvp_calendar_event,
+            commands::get_calendar_rsvp_status,
+            commands::pull_from_icloud,
+            commands::force_icloud_sync,
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application");
+
+    app.run(|app_handle, event| {
+        match event {
+            RunEvent::WindowEvent {
+                event: WindowEvent::CloseRequested { api, .. },
+                label,
+                ..
+            } => {
+                // On macOS, hide the window instead of closing it
+                #[cfg(target_os = "macos")]
+                {
+                    if let Some(window) = app_handle.get_webview_window(&label) {
+                        let _ = window.hide();
+                        api.prevent_close();
+                    }
+                }
+            }
+            RunEvent::ExitRequested { api, .. } => {
+                // Prevent the app from exiting when all windows are closed
+                #[cfg(target_os = "macos")]
+                api.prevent_exit();
+            }
+            RunEvent::Reopen { .. } => {
+                // Show the main window when clicking the dock icon
+                #[cfg(target_os = "macos")]
+                {
+                    if let Some(window) = app_handle.get_webview_window("main") {
+                        let _ = window.show();
+                        let _ = window.set_focus();
+                    }
+                }
+            }
+            _ => {}
+        }
+    });
 }
