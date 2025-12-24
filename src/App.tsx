@@ -248,7 +248,6 @@ const Spinner = (props: {
 interface ComposeFormProps {
   // Mode and display
   mode: 'new' | 'reply' | 'forward' | 'batchReply';
-  inline?: boolean;
   title?: string;
   showHeader?: boolean;
   showSubject?: boolean;
@@ -341,9 +340,9 @@ const ComposeForm = (props: ComposeFormProps) => {
 
   // Shared field components (only rendered when showFields !== false)
   const ToField = () => (
-    <div class={props.inline ? "inline-compose-field" : "compose-field"} style={props.autocomplete ? "position: relative;" : undefined}>
+    <div class="compose-field" style={props.autocomplete ? "position: relative;" : undefined}>
       <label>To</label>
-      <div class={props.inline ? "inline-compose-to-row" : "compose-to-row"}>
+      <div class="compose-to-row">
         <input
           ref={(el) => setTimeout(() => { if (props.focusTo !== false && !props.focusBody) el?.focus(); }, 50)}
           type="email"
@@ -352,7 +351,7 @@ const ComposeForm = (props: ComposeFormProps) => {
           onFocus={() => props.autocomplete?.setShow(true)}
           onBlur={() => props.autocomplete && setTimeout(() => props.autocomplete!.setShow(false), 150)}
           onKeyDown={handleToKeyDown}
-          placeholder={props.inline ? "Recipients" : ""}
+          placeholder="Recipients"
         />
         <Show when={!props.showCcBcc && props.setShowCcBcc}>
           <button type="button" class="cc-bcc-toggle" onClick={() => props.setShowCcBcc!(true)}>Cc/Bcc</button>
@@ -386,7 +385,7 @@ const ComposeForm = (props: ComposeFormProps) => {
 
   const CcBccFields = () => (
     <Show when={props.showCcBcc && props.setCc && props.setBcc}>
-      <div class={props.inline ? "inline-compose-field" : "compose-field"}>
+      <div class="compose-field">
         <label>Cc</label>
         <input
           type="text"
@@ -396,7 +395,7 @@ const ComposeForm = (props: ComposeFormProps) => {
           placeholder="Cc recipients"
         />
       </div>
-      <div class={props.inline ? "inline-compose-field" : "compose-field"}>
+      <div class="compose-field">
         <label>Bcc</label>
         <input
           type="text"
@@ -411,7 +410,7 @@ const ComposeForm = (props: ComposeFormProps) => {
 
   const SubjectField = () => (
     <Show when={props.showSubject && props.setSubject}>
-      <div class={props.inline ? "inline-compose-field" : "compose-field"}>
+      <div class="compose-field">
         <label>Subject</label>
         <input
           type="text"
@@ -425,7 +424,7 @@ const ComposeForm = (props: ComposeFormProps) => {
   );
 
   const BodyTextarea = () => (
-    <div class={props.inline ? "inline-compose-body" : "compose-content"}>
+    <div class="compose-content">
       <textarea
         ref={(el) => {
           if (props.focusBody && el) {
@@ -447,7 +446,7 @@ const ComposeForm = (props: ComposeFormProps) => {
 
   const Attachments = () => (
     <Show when={props.attachments.length > 0}>
-      <div class={props.inline ? "inline-compose-attachments" : "compose-attachments"}>
+      <div class="compose-attachments">
         <For each={props.attachments}>
           {(attachment, i) => (
             <div class="compose-attachment">
@@ -465,7 +464,7 @@ const ComposeForm = (props: ComposeFormProps) => {
   );
 
   const Footer = () => (
-    <div class={props.inline ? "inline-compose-footer" : "compose-footer"}>
+    <div class="compose-footer">
       <input
         type="file"
         id={props.fileInputId}
@@ -489,9 +488,7 @@ const ComposeForm = (props: ComposeFormProps) => {
       <Show when={props.draftSaved && !props.draftSaving && !props.error}>
         <div class="draft-saved">Draft saved</div>
       </Show>
-      <Show when={props.inline}>
-        <div class="inline-compose-spacer" />
-      </Show>
+      <div class="compose-spacer" />
       <button
         class={`btn btn-primary ${props.sending ? 'sending' : ''}`}
         disabled={!canSend() || props.sending}
@@ -502,44 +499,19 @@ const ComposeForm = (props: ComposeFormProps) => {
     </div>
   );
 
-  // Inline layout (reply/forward in thread)
-  if (props.inline) {
-    return (
-      <>
-        <Show when={props.showHeader !== false}>
-          <div class="inline-compose-header">
-            <span class="inline-compose-title">{props.title || defaultTitle}</span>
-            <Show when={props.onSkip}>
-              <button class="btn btn-sm batch-reply-skip" onClick={props.onSkip} title="Skip this thread">
-                Skip
-              </button>
-            </Show>
-            <Show when={!props.onSkip}>
-              <CloseButton onClick={props.onClose} />
-            </Show>
-          </div>
-        </Show>
-        <Show when={props.showFields !== false}>
-          <div class="inline-compose-fields">
-            <ToField />
-            <CcBccFields />
-            <SubjectField />
-          </div>
-        </Show>
-        <BodyTextarea />
-        <Attachments />
-        <Footer />
-      </>
-    );
-  }
-
-  // Compose panel layout (new email)
   return (
     <>
       <Show when={props.showHeader !== false}>
         <div class="compose-header">
           <h3>{props.title || defaultTitle}</h3>
-          <CloseButton onClick={props.onClose} />
+          <Show when={props.onSkip}>
+            <button class="btn btn-sm batch-reply-skip" onClick={props.onSkip} title="Skip this thread">
+              Skip
+            </button>
+          </Show>
+          <Show when={!props.onSkip}>
+            <CloseButton onClick={props.onClose} />
+          </Show>
         </div>
       </Show>
       <div class="compose-body">
@@ -903,7 +875,7 @@ const CreateEventForm = (props: {
       </div>
       <div class="compose-footer">
         <Show when={props.error}><div class="compose-error">{props.error}</div></Show>
-        <div class="inline-compose-spacer" />
+        <div class="compose-spacer" />
         <button class="btn btn-primary" disabled={props.saving || !props.summary} onClick={props.onSave}>
           {props.saving ? "Saving..." : "Save event"}
         </button>
@@ -1429,7 +1401,6 @@ const ThreadView = (props: {
                       <div class="inline-compose">
                         <ComposeForm
                           mode={props.inlineCompose!.isForward ? 'forward' : 'reply'}
-                          inline={true}
                           to={props.inlineCompose!.to}
                           setTo={props.inlineCompose!.setTo}
                           cc={props.inlineCompose!.cc}
@@ -3862,6 +3833,13 @@ function App() {
 
     try {
       const result = await fetchThreadsPaginated(accountId, cardId, null);
+      // Skip update if a recent action happened (prevents overwriting optimistic updates)
+      const recent = lastAction();
+      if (recent && Date.now() - recent.timestamp < 3000) {
+        // Just update cache, don't touch UI state
+        await saveCachedCardThreads(cardId, result.groups, result.next_page_token);
+        return;
+      }
       setCardThreads({ ...cardThreads(), [cardId]: result.groups });
       setCardPageTokens({ ...cardPageTokens(), [cardId]: result.next_page_token });
       setCardHasMore({ ...cardHasMore(), [cardId]: result.has_more });
@@ -4606,6 +4584,13 @@ function App() {
 
     setCardThreads(updatedCardThreads);
     setActionsWheelOpen(false);
+
+    // Update cache with optimistic changes
+    for (const [cId, groups] of Object.entries(updatedCardThreads)) {
+      if (groups) {
+        saveCachedCardThreads(cId, groups, cardPageTokens()[cId] || null);
+      }
+    }
 
     // Clear selection after bulk action
     if (threadIds.length > 1) {

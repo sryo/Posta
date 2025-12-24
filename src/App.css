@@ -572,7 +572,7 @@ select:focus:not(:focus-visible) {
     height: var(--toolbar-btn-size);
     border-radius: 8px;
     border: none;
-    background: #34a853;
+    background: var(--accent);
     color: white;
     cursor: pointer;
     display: flex;
@@ -2598,22 +2598,15 @@ button:disabled:hover {
 }
 
 /* Quick Reply */
-/* Thread with active quick reply - remove border to connect with reply box */
 .thread.replying {
     border-bottom: none;
     background: var(--bg-tertiary);
-    border-radius: 8px 8px 0 0;
-    margin: 0 4px;
-    padding-left: 6px;
-    padding-right: 6px;
 }
 
 .quick-reply-box {
-    margin: 0 4px 8px;
     padding: 12px;
     background: var(--bg-tertiary);
-    border-radius: 0 0 8px 8px;
-    border: none;
+    border-bottom: 1px solid var(--card-border-color, var(--border-light));
     cursor: default;
 }
 
@@ -4987,140 +4980,8 @@ button:disabled:hover {
     }
 }
 
-.inline-compose-header {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    padding: 10px 16px;
-    background: var(--bg-secondary);
-    border-bottom: 1px solid var(--border-color);
-}
-
-.inline-compose-title {
-    font-size: 13px;
-    font-weight: 600;
-    color: var(--text-primary);
-}
-
-.inline-compose-fields {
-    padding: 12px 16px;
-    display: flex;
-    flex-direction: column;
-    gap: 10px;
-    border-bottom: 1px solid var(--border-color);
-}
-
-.inline-compose-field {
-    display: flex;
-    align-items: center;
-    gap: 12px;
-}
-
-.inline-compose-field label {
-    font-size: 12px;
-    font-weight: 500;
-    color: var(--text-secondary);
-    min-width: 32px;
-}
-
-.inline-compose-field input {
+.compose-spacer {
     flex: 1;
-    padding: 8px 10px;
-    border: 1px solid var(--border-color);
-    border-radius: 6px;
-    background: var(--bg-secondary);
-    color: var(--text-primary);
-    font-size: 13px;
-}
-
-.inline-compose-field input:focus {
-    outline: none;
-    border-color: var(--accent);
-}
-
-.inline-compose-to-row {
-    flex: 1;
-    display: flex;
-    align-items: center;
-    gap: 8px;
-}
-
-.inline-compose-to-row input {
-    flex: 1;
-}
-
-.inline-compose-body {
-    padding: 0;
-}
-
-.inline-compose-body textarea {
-    width: 100%;
-    min-height: 150px;
-    padding: 12px 16px;
-    border: none;
-    background: transparent;
-    color: var(--text-primary);
-    font-size: 13px;
-    font-family: inherit;
-    resize: vertical;
-    line-height: 1.6;
-}
-
-.inline-compose-body textarea:focus {
-    outline: none;
-}
-
-.inline-compose-attachments {
-    padding: 8px 16px;
-    display: flex;
-    flex-wrap: wrap;
-    gap: 8px;
-    border-top: 1px solid var(--border-color);
-}
-
-.inline-compose-footer {
-    display: flex;
-    align-items: center;
-    gap: 12px;
-    padding: 10px 16px;
-    background: var(--bg-secondary);
-    border-top: 1px solid var(--border-color);
-}
-
-.inline-compose-spacer {
-    flex: 1;
-}
-
-.inline-compose-footer .btn-primary {
-    margin-left: auto;
-}
-
-.inline-compose-footer .compose-attach-btn {
-    padding: 6px 10px;
-    background: none;
-    border: 1px solid var(--border-color);
-    border-radius: 6px;
-    cursor: pointer;
-    color: var(--text-secondary);
-    display: flex;
-    align-items: center;
-    gap: 4px;
-    transition: all 0.15s;
-}
-
-.inline-compose-footer .compose-attach-btn:hover {
-    background: var(--bg-hover);
-    color: var(--text-primary);
-}
-
-.inline-compose-footer .draft-saved {
-    font-size: 12px;
-    color: var(--text-secondary);
-}
-
-.inline-compose-footer .compose-error {
-    font-size: 12px;
-    color: var(--error);
 }
 
 /* Smart Replies */
