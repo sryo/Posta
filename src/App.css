@@ -2552,51 +2552,6 @@ button:disabled:hover {
     opacity: 0;
 }
 
-/* Thread Actions Wheel - Vertical arc around checkbox on right */
-.thread-actions-wheel {
-    position: absolute;
-    right: 18px;
-    top: 18px;
-    pointer-events: none;
-    z-index: 50;
-    width: 0;
-    height: 0;
-}
-
-.thread-actions-wheel .action-btn {
-    position: absolute;
-    width: 26px;
-    height: 26px;
-    border: none;
-    background: var(--bg-primary);
-    cursor: pointer;
-    border-radius: 50%;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    color: var(--text-muted);
-    box-shadow: 0 2px 6px rgba(0, 0, 0, 0.2);
-    opacity: 0;
-    pointer-events: none;
-    left: -13px;
-    top: -13px;
-    transition: left 0.2s cubic-bezier(0.34, 1.56, 0.64, 1),
-        top 0.2s cubic-bezier(0.34, 1.56, 0.64, 1),
-        opacity 0.15s, transform 0.15s;
-    z-index: 10;
-}
-
-.thread-actions-wheel.open .action-btn {
-    opacity: 1;
-    pointer-events: auto;
-}
-
-.action-btn:hover {
-    transform: scale(1.15);
-    z-index: 20;
-    background: var(--bg-tertiary);
-}
-
 /* Quick Reply */
 .thread.replying {
     border-bottom: none;
@@ -2632,27 +2587,6 @@ button:disabled:hover {
     display: flex;
     justify-content: flex-end;
     gap: 8px;
-}
-
-/* Staggered animation */
-.thread-actions-wheel .action-btn:nth-child(1) {
-    transition-delay: 0ms;
-}
-
-.thread-actions-wheel .action-btn:nth-child(2) {
-    transition-delay: 30ms;
-}
-
-.thread-actions-wheel .action-btn:nth-child(3) {
-    transition-delay: 60ms;
-}
-
-.thread-actions-wheel .action-btn:nth-child(4) {
-    transition-delay: 90ms;
-}
-
-.thread-actions-wheel .action-btn:nth-child(5) {
-    transition-delay: 120ms;
 }
 
 /* Compose autocomplete dropdown */
@@ -3484,6 +3418,35 @@ button:disabled:hover {
     color: var(--text-muted);
 }
 
+/* Wheel button base */
+.bulk-btn,
+.message-action-btn {
+    position: absolute;
+    border: none;
+    background: var(--bg-primary);
+    cursor: pointer;
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: var(--text-muted);
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2);
+    opacity: 0;
+    pointer-events: none;
+    transition:
+        left 0.2s cubic-bezier(0.34, 1.56, 0.64, 1),
+        top 0.2s cubic-bezier(0.34, 1.56, 0.64, 1),
+        opacity 0.15s,
+        transform 0.15s;
+    z-index: 10;
+}
+
+.bulk-btn:hover,
+.message-action-btn:hover {
+    z-index: 20;
+    background: var(--bg-tertiary);
+}
+
 /* Bulk actions wheel */
 .bulk-actions-wheel {
     position: absolute;
@@ -3497,29 +3460,11 @@ button:disabled:hover {
 }
 
 .bulk-actions-wheel .bulk-btn {
-    position: absolute;
     width: 28px;
     height: 28px;
-    border: none;
-    background: var(--bg-primary);
-    cursor: pointer;
-    border-radius: 50%;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    color: var(--text-muted);
-    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.25);
-    opacity: 0;
-    pointer-events: none;
     left: calc(50% - 14px);
     top: calc(50% - 14px);
     overflow: visible;
-    transition:
-        left 0.2s cubic-bezier(0.34, 1.56, 0.64, 1),
-        top 0.2s cubic-bezier(0.34, 1.56, 0.64, 1),
-        opacity 0.15s,
-        transform 0.15s;
-    z-index: 10;
 }
 
 .bulk-actions-wheel.open .bulk-btn {
@@ -3529,8 +3474,6 @@ button:disabled:hover {
 
 .bulk-btn:hover {
     transform: scale(1.2);
-    z-index: 20;
-    background: var(--bg-tertiary);
 }
 
 .bulk-count {
@@ -4221,24 +4164,8 @@ button:disabled:hover {
 }
 
 .message-actions-wheel .message-action-btn {
-    position: absolute;
     width: 26px;
     height: 26px;
-    border: none;
-    background: var(--bg-primary);
-    cursor: pointer;
-    border-radius: 50%;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    color: var(--text-muted);
-    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
-    opacity: 0;
-    pointer-events: none;
-    transition: left 0.2s cubic-bezier(0.34, 1.56, 0.64, 1),
-        top 0.2s cubic-bezier(0.34, 1.56, 0.64, 1),
-        opacity 0.15s, transform 0.15s;
-    z-index: 10;
 }
 
 .message-actions-wheel.open .message-action-btn {
@@ -4248,8 +4175,6 @@ button:disabled:hover {
 
 .message-action-btn:hover {
     transform: scale(1.15);
-    z-index: 20;
-    background: var(--bg-tertiary);
 }
 
 .message-action-btn .action-key-hint {
@@ -4768,10 +4693,6 @@ button:disabled:hover {
         display: none;
     }
 
-    .thread-toolbar-label {
-        display: none;
-    }
-
     .card {
         min-width: 280px;
         max-width: 280px;
@@ -4796,6 +4717,10 @@ button:disabled:hover {
     .toolbar-avatar {
         width: 36px;
         height: 36px;
+    }
+
+    .thread-toolbar-label {
+        display: none;
     }
 
     .card {
