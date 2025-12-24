@@ -175,7 +175,6 @@
             font-size: 3.5rem;
             font-weight: 900;
             line-height: 1.1;
-            margin-bottom: 1.5rem;
             color: var(--text-primary);
             letter-spacing: -0.04em;
             animation: fadeInUp 0.8s ease;
@@ -378,6 +377,7 @@
             align-items: flex-start;
             background: transparent;
             border-radius: 12px;
+            scroll-snap-type: x mandatory;
         }
 
         /* Card Wrapper (holds card + resize handle) */
@@ -387,6 +387,7 @@
             flex-shrink: 0;
             max-height: 100%;
             background: transparent;
+            scroll-snap-align: center;
         }
 
         /* Card Resize Handle */
@@ -1833,7 +1834,7 @@
     <section class="hero" id="hero">
         <div class="hero__content">
             <h1>posta.</h1>
-            <h2>email, organized.</h2>
+            <h2>Email, sorted.</h2>
             <a href="https://github.com/sryo/posta" class="download-link">Get from GitHub</a>
         </div>
     </section>
@@ -1897,10 +1898,10 @@
                                 </div>
                                 <div class="card-form-group">
                                     <label>Group</label>
-                                    <div class="group-by-buttons" data-group-by="date">
-                                        <button type="button" class="group-by-btn active" data-value="date">Date</button>
+                                    <div class="group-by-buttons" data-group-by="label">
+                                        <button type="button" class="group-by-btn" data-value="date">Date</button>
                                         <button type="button" class="group-by-btn" data-value="sender">Sender</button>
-                                        <button type="button" class="group-by-btn" data-value="label">Label</button>
+                                        <button type="button" class="group-by-btn active" data-value="label">Label</button>
                                     </div>
                                 </div>
                                 <div class="card-form-actions">
@@ -2596,7 +2597,7 @@
 
             // Default Posta preset - resets on every page load
             const defaultCards = [
-                { id: 'hot', name: 'Hot', query: 'is:important newer_than:1d', color: 'blue', groupBy: 'date' },
+                { id: 'hot', name: 'Hot', query: 'is:important newer_than:1d', color: 'blue', groupBy: 'label' },
                 { id: 'meh', name: 'Meh', query: 'category:promotions OR category:updates', color: 'red', groupBy: 'date' },
                 { id: 'files', name: 'Files', query: 'has:attachment newer_than:1d', color: 'purple', groupBy: 'date' }
             ];
