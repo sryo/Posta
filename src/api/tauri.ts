@@ -93,7 +93,11 @@ export async function getStoredCredentials(): Promise<StoredCredentials | null> 
 }
 
 export async function runOAuthFlow(): Promise<Account> {
-  return invoke("run_oauth_flow");
+  return await invoke('run_oauth_flow');
+}
+
+export async function completeOAuthFlow(code: string, state: string | null): Promise<Account> {
+  return invoke("complete_oauth_flow", { code, receivedState: state });
 }
 
 export async function getAccounts(): Promise<Account[]> {
@@ -101,7 +105,7 @@ export async function getAccounts(): Promise<Account[]> {
 }
 
 export async function deleteAccount(id: string): Promise<void> {
-  return invoke("delete_account", { id });
+  return invoke("delete_account", { accountId: id });
 }
 
 export async function getCards(accountId: string): Promise<Card[]> {

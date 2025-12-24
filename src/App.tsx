@@ -60,6 +60,7 @@ import { getCurrentWindow } from '@tauri-apps/api/window';
 import { listen } from '@tauri-apps/api/event';
 import { invoke } from "@tauri-apps/api/core";
 import { openUrl } from '@tauri-apps/plugin-opener';
+
 import {
   DragDropProvider,
   DragDropSensors,
@@ -109,6 +110,7 @@ import {
   saveCachedCardEvents,
   createCalendarEvent,
   type Attachment,
+  completeOAuthFlow,
 } from "./api/tauri";
 import { Menu, MenuItem, PredefinedMenuItem } from "@tauri-apps/api/menu";
 import {
@@ -1566,6 +1568,8 @@ const GMAIL_OPERATORS: { op: string; desc: string; values?: string[] }[] = [
   { op: "list:", desc: "Mailing list" },
 ];
 
+
+
 function App() {
   const [loading, setLoading] = createSignal(true);
 
@@ -1576,6 +1580,10 @@ function App() {
   const [threadLoading, setThreadLoading] = createSignal(false);
   const [threadError, setThreadError] = createSignal<string | null>(null);
   const [focusedMessageIndex, setFocusedMessageIndex] = createSignal(0);
+
+  const [activeDragId, setActiveDragId] = createSignal<string | null>(null);
+  const [activeDragItem, setActiveDragItem] = createSignal<Thread | null>(null);
+
 
   // Label drawer state
   const [labelDrawerOpen, setLabelDrawerOpen] = createSignal(false);
@@ -2154,6 +2162,7 @@ function App() {
 
   // Preset selection for new accounts
   const [showPresetSelection, setShowPresetSelection] = createSignal(false);
+  const [showRestorePrompt, setShowRestorePrompt] = createSignal(false);
 
   interface CardPreset {
     name: string;
@@ -2168,7 +2177,8 @@ function App() {
       cards: [
         { name: "Hot", query: "is:important newer_than:1d", color: "blue" },
         { name: "Meh", query: "category:promotions OR category:updates OR category:social -is:important -is:starred", color: "red" },
-        { name: "Files", query: "has:attachment newer_than:1d", color: "purple" },
+        { name: "Files", query: "has:attachment", color: "purple" },
+        { name: "Today", query: "calendar:today" },
       ],
     },
     traditional: {
@@ -2214,6 +2224,19 @@ function App() {
     try {
       const result = await syncThreadsIncremental(account.id);
 
+      // Update sync times for all non-collapsed cards (sync was successful)
+      const now = Date.now();
+      const nonCollapsedCardIds = cards()
+        .filter(c => !c.collapsed && c.account_id === account.id)
+        .map(c => c.id);
+      if (nonCollapsedCardIds.length > 0) {
+        const updatedTimes = { ...lastSyncTimes() };
+        for (const cardId of nonCollapsedCardIds) {
+          updatedTimes[cardId] = now;
+        }
+        setLastSyncTimes(updatedTimes);
+      }
+
       // Check if there were any changes
       const hasChanges = result.modified_threads.length > 0 || result.deleted_thread_ids.length > 0;
 
@@ -2242,6 +2265,7 @@ function App() {
 
     const currentCardThreads = cardThreads();
     const updatedCardThreads: Record<string, ThreadGroup[]> = {};
+    const matchedThreadIds = new Set<string>();
 
     for (const cardId of Object.keys(currentCardThreads)) {
       const groups = currentCardThreads[cardId];
@@ -2258,6 +2282,7 @@ function App() {
           const existingIndex = threads.findIndex(t => t.gmail_thread_id === modifiedThread.gmail_thread_id);
           if (existingIndex >= 0) {
             threads[existingIndex] = modifiedThread;
+            matchedThreadIds.add(modifiedThread.gmail_thread_id);
           }
         }
 
@@ -2269,6 +2294,19 @@ function App() {
     }
 
     setCardThreads(prev => ({ ...prev, ...updatedCardThreads }));
+
+    // Check for new threads that weren't in any card
+    const unmatchedThreads = modifiedThreads.filter(t => !matchedThreadIds.has(t.gmail_thread_id));
+    if (unmatchedThreads.length > 0) {
+      // New threads detected - refresh non-collapsed cards in background
+      const account = selectedAccount();
+      if (account) {
+        const nonCollapsedCards = cards().filter(c => !c.collapsed && c.card_type !== "calendar");
+        for (const card of nonCollapsedCards) {
+          fetchAndCacheThreads(account.id, card.id);
+        }
+      }
+    }
   }
 
   // Schedule next poll
@@ -2750,7 +2788,15 @@ function App() {
         client_secret: storedCreds.client_secret,
       });
 
-      const account = await runOAuthFlow();
+      const result = await runOAuthFlow();
+
+      if (typeof result === 'string') {
+        // iOS flow: result is the auth URL
+        await openUrl(result);
+        return;
+      }
+
+      const account = result;
       setAccounts([...accounts(), account]);
       setSelectedAccount(account);
 
@@ -2764,10 +2810,55 @@ function App() {
       const cardList = await getCards(account.id);
       setCards(cardList);
 
-      // Show preset selection if no cards exist (iCloud restore didn't find any)
-      if (cardList.length === 0) {
+      // Show restore prompt if cards exist (restored from iCloud)
+      // Otherwise show preset selection for new users
+      if (cardList.length > 0) {
+        setShowRestorePrompt(true);
+      } else {
         setShowPresetSelection(true);
       }
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setAuthLoading(false);
+    }
+  }
+
+  async function handleAddAccount() {
+    const storedCreds = await getStoredCredentials();
+
+    if (!storedCreds) {
+      setSettingsOpen(true);
+      setError("Connect your Google account in Settings");
+      return;
+    }
+
+    setAuthLoading(true);
+    setError(null);
+    try {
+      await configureAuth({
+        client_id: storedCreds.client_id,
+        client_secret: storedCreds.client_secret,
+      });
+
+      const account = await runOAuthFlow();
+
+      const exists = accounts().find(a => a.id === account.id);
+      if (!exists) {
+        setAccounts([...accounts(), account]);
+      }
+      setSelectedAccount(account);
+
+      try {
+        await pullFromICloud();
+      } catch (e) {
+        console.warn("iCloud pull failed:", e);
+      }
+
+      const cardList = await getCards(account.id);
+      setCards(cardList);
+
+      setSettingsOpen(false);
     } catch (e) {
       setError(String(e));
     } finally {
@@ -2806,6 +2897,24 @@ function App() {
     }
   }
 
+  async function handleStartFresh() {
+    try {
+      // Delete all existing cards
+      const currentCards = cards();
+      for (const card of currentCards) {
+        await deleteCard(card.id);
+      }
+      setCards([]);
+      setCollapsedCards({});
+
+      // Close restore prompt and show preset selection
+      setShowRestorePrompt(false);
+      setShowPresetSelection(true);
+    } catch (e) {
+      setError(`Failed to reset layout: ${e}`);
+    }
+  }
+
   async function handleSaveSettings() {
     if (!clientId() || !clientSecret()) return;
 
@@ -2822,6 +2931,8 @@ function App() {
       setError(null);
       try {
         const account = await runOAuthFlow();
+
+
         setAccounts([...accounts(), account]);
         setSelectedAccount(account);
 
@@ -2835,7 +2946,9 @@ function App() {
         const cardList = await getCards(account.id);
         setCards(cardList);
 
-        if (cardList.length === 0) {
+        if (cardList.length > 0) {
+          setShowRestorePrompt(true);
+        } else {
           setShowPresetSelection(true);
         }
       } catch (e) {
@@ -5195,7 +5308,7 @@ function App() {
                     <div class="account-chooser-divider"></div>
                     <button
                       class="account-chooser-action"
-                      onClick={() => { setAccountChooserOpen(false); handleSignIn(); }}
+                      onClick={() => { setAccountChooserOpen(false); handleAddAccount(); }}
                     >
                       <PlusIcon />
                       <span>Add account</span>
@@ -5714,88 +5827,90 @@ function App() {
 
             {/* Add card form (inline) */}
             <Show when={addingCard()}>
-              <div class={`card form-mode ${closingAddCard() ? 'closing' : ''}`} data-color={newCardColor() || undefined}>
-                <CardForm
-                  mode="new"
-                  name={newCardName()}
-                  setName={setNewCardName}
-                  query={newCardQuery()}
-                  setQuery={setNewCardQuery}
-                  color={newCardColor()}
-                  setColor={setNewCardColor}
-                  groupBy={newCardGroupBy()}
-                  setGroupBy={setNewCardGroupBy}
-                  colorPickerOpen={colorPickerOpen()}
-                  setColorPickerOpen={setColorPickerOpen}
-                  onSave={handleAddCard}
-                  onCancel={cancelAddCard}
-                  saveDisabled={!newCardName() || !newCardQuery()}
-                />
-                {/* Query preview for new card */}
-                <div class="card-body">
-                  <Show when={queryPreviewLoading()}>
-                    <div class="loading">Searching...</div>
-                  </Show>
-                  <Show when={!queryPreviewLoading() && queryPreviewThreads().length === 0 && newCardQuery().trim()}>
-                    <Show when={newCardQuery().toLowerCase().includes("calendar:")}>
-                      <div class="empty calendar-hint">
-                        <CalendarIcon />
-                        <span>Calendar card</span>
-                      </div>
+              <div class="card-wrapper">
+                <div class={`card form-mode ${closingAddCard() ? 'closing' : ''}`} data-color={newCardColor() || undefined}>
+                  <CardForm
+                    mode="new"
+                    name={newCardName()}
+                    setName={setNewCardName}
+                    query={newCardQuery()}
+                    setQuery={setNewCardQuery}
+                    color={newCardColor()}
+                    setColor={setNewCardColor}
+                    groupBy={newCardGroupBy()}
+                    setGroupBy={setNewCardGroupBy}
+                    colorPickerOpen={colorPickerOpen()}
+                    setColorPickerOpen={setColorPickerOpen}
+                    onSave={handleAddCard}
+                    onCancel={cancelAddCard}
+                    saveDisabled={!newCardName() || !newCardQuery()}
+                  />
+                  {/* Query preview for new card */}
+                  <div class="card-body">
+                    <Show when={queryPreviewLoading()}>
+                      <div class="loading">Searching...</div>
                     </Show>
-                    <Show when={!newCardQuery().toLowerCase().includes("calendar:")}>
-                      <div class="empty">No matches</div>
+                    <Show when={!queryPreviewLoading() && queryPreviewThreads().length === 0 && newCardQuery().trim()}>
+                      <Show when={newCardQuery().toLowerCase().includes("calendar:")}>
+                        <div class="empty calendar-hint">
+                          <CalendarIcon />
+                          <span>Calendar card</span>
+                        </div>
+                      </Show>
+                      <Show when={!newCardQuery().toLowerCase().includes("calendar:")}>
+                        <div class="empty">No matches</div>
+                      </Show>
                     </Show>
-                  </Show>
-                  <Show when={!queryPreviewLoading() && queryPreviewThreads().length > 0}>
-                    <For each={queryPreviewThreads()}>
-                      {(group) => (
-                        <>
-                          <div class="date-header">{group.label}</div>
-                          <For each={group.threads}>
-                            {(thread) => (
-                              <div class="thread">
-                                <div class="thread-row">
-                                  <Show when={thread.unread_count > 0}>
-                                    <div class="unread-dot"></div>
-                                  </Show>
-                                  <span class="thread-subject">{thread.subject}</span>
-                                  <Show when={thread.has_attachment}>
-                                    <span class="thread-indicator" title="Has attachment">
-                                      <AttachmentIcon />
-                                    </span>
-                                  </Show>
-                                  <span class="thread-time">{formatTime(thread.last_message_date)}</span>
-                                </div>
-                                <div class="thread-snippet">{thread.snippet}</div>
-                                <Show when={thread.attachments?.length > 0}>
-                                  <div class="thread-attachments">
-                                    <For each={thread.attachments?.filter(a => a.inline_data && a.mime_type.startsWith("image/")).slice(0, 3)}>
-                                      {(attachment) => (
-                                        <img
-                                          class="thread-image-thumb"
-                                          src={`data:${attachment.mime_type};base64,${attachment.inline_data?.replace(/-/g, '+').replace(/_/g, '/')}`}
-                                          alt={attachment.filename}
-                                          title={attachment.filename}
-                                        />
-                                      )}
-                                    </For>
-                                    <For each={thread.attachments?.filter(a => !a.inline_data || !a.mime_type.startsWith("image/")).slice(0, 2)}>
-                                      {(attachment) => (
-                                        <div class="thread-file-item" title={`${attachment.filename} (${formatFileSize(attachment.size)})`}>
-                                          <span class="file-name">{truncateMiddle(attachment.filename, 14)}</span>
-                                        </div>
-                                      )}
-                                    </For>
+                    <Show when={!queryPreviewLoading() && queryPreviewThreads().length > 0}>
+                      <For each={queryPreviewThreads()}>
+                        {(group) => (
+                          <>
+                            <div class="date-header">{group.label}</div>
+                            <For each={group.threads}>
+                              {(thread) => (
+                                <div class="thread">
+                                  <div class="thread-row">
+                                    <Show when={thread.unread_count > 0}>
+                                      <div class="unread-dot"></div>
+                                    </Show>
+                                    <span class="thread-subject">{thread.subject}</span>
+                                    <Show when={thread.has_attachment}>
+                                      <span class="thread-indicator" title="Has attachment">
+                                        <AttachmentIcon />
+                                      </span>
+                                    </Show>
+                                    <span class="thread-time">{formatTime(thread.last_message_date)}</span>
                                   </div>
-                                </Show>
-                              </div>
-                            )}
-                          </For>
-                        </>
-                      )}
-                    </For>
-                  </Show>
+                                  <div class="thread-snippet">{thread.snippet}</div>
+                                  <Show when={thread.attachments?.length > 0}>
+                                    <div class="thread-attachments">
+                                      <For each={thread.attachments?.filter(a => a.inline_data && a.mime_type.startsWith("image/")).slice(0, 3)}>
+                                        {(attachment) => (
+                                          <img
+                                            class="thread-image-thumb"
+                                            src={`data:${attachment.mime_type};base64,${attachment.inline_data?.replace(/-/g, '+').replace(/_/g, '/')}`}
+                                            alt={attachment.filename}
+                                            title={attachment.filename}
+                                          />
+                                        )}
+                                      </For>
+                                      <For each={thread.attachments?.filter(a => !a.inline_data || !a.mime_type.startsWith("image/")).slice(0, 2)}>
+                                        {(attachment) => (
+                                          <div class="thread-file-item" title={`${attachment.filename} (${formatFileSize(attachment.size)})`}>
+                                            <span class="file-name">{truncateMiddle(attachment.filename, 14)}</span>
+                                          </div>
+                                        )}
+                                      </For>
+                                    </div>
+                                  </Show>
+                                </div>
+                              )}
+                            </For>
+                          </>
+                        )}
+                      </For>
+                    </Show>
+                  </div>
                 </div>
               </div>
             </Show>
@@ -5933,6 +6048,23 @@ function App() {
         </div>
       </Show>
 
+      {/* Restore Found Prompt */}
+      <Show when={showRestorePrompt()}>
+        <div class="preset-overlay">
+          <div class="preset-modal restore-modal">
+            <h2>Welcome Back</h2>
+            <p>We found a layout from iCloud.</p>
+            <div class="restore-actions">
+              <button class="btn btn-primary btn-lg" onClick={() => setShowRestorePrompt(false)}>
+                Continue
+              </button>
+              <button class="btn btn-ghost" onClick={handleStartFresh}>
+                Start from scratch
+              </button>
+            </div>
+          </div>
+        </div>
+      </Show>
 
       {/* Thread View Overlay */}
       <Show when={activeThreadId()}>
@@ -6501,5 +6633,7 @@ function App() {
     </div >
   );
 }
+
+
 
 export default App;

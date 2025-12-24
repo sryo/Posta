@@ -49,8 +49,8 @@ once_cell = "1"
 parking_lot = "0.12"
 open = "5"
 
-# iOS iCloud sync
-[target.'cfg(target_os = "ios")'.dependencies]
-objc2 = "0.5"
-objc2-foundation = { version = "0.2", features = ["NSString", "NSData"] }
+# iCloud sync (iOS and macOS)
+[target.'cfg(any(target_os = "ios", target_os = "macos"))'.dependencies]
+objc2 = "0.6"
+objc2-foundation = { version = "0.3", features = ["NSString", "NSData"] }
 

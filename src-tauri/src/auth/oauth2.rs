@@ -190,20 +190,15 @@ const KEYRING_SERVICE: &str = "com.posta.mail";
 
 use std::path::PathBuf;
 
-fn get_token_dir() -> PathBuf {
-    let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
-    PathBuf::from(home).join(".posta_tokens")
+fn get_token_file_path(app_data_dir: &PathBuf, account_id: &str) -> PathBuf {
+    app_data_dir.join("tokens").join(format!("{}.token", account_id))
 }
 
-fn get_token_file_path(account_id: &str) -> PathBuf {
-    get_token_dir().join(format!("{}.token", account_id))
+fn get_credentials_file_path(app_data_dir: &PathBuf) -> PathBuf {
+    app_data_dir.join("tokens").join("oauth_credentials.json")
 }
 
-fn get_credentials_file_path() -> PathBuf {
-    get_token_dir().join("oauth_credentials.json")
-}
-
-pub fn store_refresh_token(account_id: &str, token: &str) -> Result<(), AuthError> {
+pub fn store_refresh_token(account_id: &str, token: &str, app_data_dir: &PathBuf) -> Result<(), AuthError> {
     tracing::info!("Storing refresh token for account: {}", account_id);
 
     // Try keychain first
@@ -217,7 +212,7 @@ pub fn store_refresh_token(account_id: &str, token: &str) -> Result<(), AuthErro
     }
 
     // Always write to file as backup (keychain can silently fail on unsigned apps)
-    let path = get_token_file_path(account_id);
+    let path = get_token_file_path(app_data_dir, account_id);
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)
             .map_err(|e| AuthError::Keyring(format!("Failed to create token dir: {}", e)))?;
@@ -228,7 +223,7 @@ pub fn store_refresh_token(account_id: &str, token: &str) -> Result<(), AuthErro
     Ok(())
 }
 
-pub fn get_refresh_token(account_id: &str) -> Result<String, AuthError> {
+pub fn get_refresh_token(account_id: &str, app_data_dir: &PathBuf) -> Result<String, AuthError> {
     tracing::info!("Getting refresh token for account: {}", account_id);
 
     // Try keychain first
@@ -240,7 +235,7 @@ pub fn get_refresh_token(account_id: &str) -> Result<String, AuthError> {
     }
 
     // Fall back to file storage
-    let path = get_token_file_path(account_id);
+    let path = get_token_file_path(app_data_dir, account_id);
     if path.exists() {
         let token = std::fs::read_to_string(&path)
             .map_err(|e| AuthError::Keyring(format!("Failed to read token: {}", e)))?;
@@ -252,14 +247,14 @@ pub fn get_refresh_token(account_id: &str) -> Result<String, AuthError> {
     Err(AuthError::Keyring("No matching entry found in secure storage".to_string()))
 }
 
-pub fn delete_refresh_token(account_id: &str) -> Result<(), AuthError> {
+pub fn delete_refresh_token(account_id: &str, app_data_dir: &PathBuf) -> Result<(), AuthError> {
     // Delete from keychain if present
     if let Ok(entry) = keyring::Entry::new(KEYRING_SERVICE, &format!("token:{}", account_id)) {
         let _ = entry.delete_credential();
     }
 
     // Delete from file storage if present
-    let path = get_token_file_path(account_id);
+    let path = get_token_file_path(app_data_dir, account_id);
     let _ = std::fs::remove_file(path);
 
     Ok(())
@@ -271,7 +266,7 @@ pub struct OAuthCredentials {
     pub client_secret: String,
 }
 
-pub fn store_oauth_credentials(client_id: &str, client_secret: &str) -> Result<(), AuthError> {
+pub fn store_oauth_credentials(client_id: &str, client_secret: &str, app_data_dir: &PathBuf) -> Result<(), AuthError> {
     tracing::info!("Storing OAuth credentials");
 
     let credentials = OAuthCredentials {
@@ -293,7 +288,7 @@ pub fn store_oauth_credentials(client_id: &str, client_secret: &str) -> Result<(
     }
 
     // Always write to file as backup (keychain can silently fail on unsigned apps)
-    let path = get_credentials_file_path();
+    let path = get_credentials_file_path(app_data_dir);
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)
             .map_err(|e| AuthError::Keyring(format!("Failed to create credentials dir: {}", e)))?;
@@ -304,7 +299,7 @@ pub fn store_oauth_credentials(client_id: &str, client_secret: &str) -> Result<(
     Ok(())
 }
 
-pub fn get_oauth_credentials() -> Result<OAuthCredentials, AuthError> {
+pub fn get_oauth_credentials(app_data_dir: &PathBuf) -> Result<OAuthCredentials, AuthError> {
     // Try keychain first
     if let Ok(entry) = keyring::Entry::new(KEYRING_SERVICE, "oauth:credentials") {
         if let Ok(json) = entry.get_password() {
@@ -315,7 +310,7 @@ pub fn get_oauth_credentials() -> Result<OAuthCredentials, AuthError> {
     }
 
     // Fall back to file storage
-    let path = get_credentials_file_path();
+    let path = get_credentials_file_path(app_data_dir);
     if path.exists() {
         let json = std::fs::read_to_string(&path)
             .map_err(|e| AuthError::Keyring(format!("Failed to read credentials: {}", e)))?;
@@ -327,14 +322,14 @@ pub fn get_oauth_credentials() -> Result<OAuthCredentials, AuthError> {
     Err(AuthError::NoCredentials)
 }
 
-pub fn delete_oauth_credentials() -> Result<(), AuthError> {
+pub fn delete_oauth_credentials(app_data_dir: &PathBuf) -> Result<(), AuthError> {
     // Delete from keychain if present
     if let Ok(entry) = keyring::Entry::new(KEYRING_SERVICE, "oauth:credentials") {
         let _ = entry.delete_credential();
     }
 
     // Delete from file storage if present
-    let path = get_credentials_file_path();
+    let path = get_credentials_file_path(app_data_dir);
     let _ = std::fs::remove_file(path);
 
     Ok(())

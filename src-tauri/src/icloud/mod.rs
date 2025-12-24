@@ -3,17 +3,17 @@
 use crate::models::Card;
 use std::collections::HashMap;
 
-#[cfg(target_os = "ios")]
+#[cfg(any(target_os = "ios", target_os = "macos"))]
 mod kvstore;
 
-#[cfg(target_os = "ios")]
+#[cfg(any(target_os = "ios", target_os = "macos"))]
 pub use kvstore::ICloudKVStore;
 
-// No-op stub for non-iOS platforms
-#[cfg(not(target_os = "ios"))]
+// No-op stub for non-Apple platforms
+#[cfg(not(any(target_os = "ios", target_os = "macos")))]
 pub struct ICloudKVStore;
 
-#[cfg(not(target_os = "ios"))]
+#[cfg(not(any(target_os = "ios", target_os = "macos")))]
 impl ICloudKVStore {
     pub fn new() -> Self {
         Self

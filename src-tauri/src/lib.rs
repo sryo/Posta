@@ -175,14 +175,12 @@ pub fn run() {
                 #[cfg(target_os = "macos")]
                 api.prevent_exit();
             }
+            #[cfg(target_os = "macos")]
             RunEvent::Reopen { .. } => {
                 // Show the main window when clicking the dock icon
-                #[cfg(target_os = "macos")]
-                {
-                    if let Some(window) = app_handle.get_webview_window("main") {
-                        let _ = window.show();
-                        let _ = window.set_focus();
-                    }
+                if let Some(window) = app_handle.get_webview_window("main") {
+                    let _ = window.show();
+                    let _ = window.set_focus();
                 }
             }
             _ => {}

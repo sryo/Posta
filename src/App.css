@@ -100,6 +100,11 @@ body {
     color: var(--text-primary);
     height: 100%;
     overscroll-behavior: none;
+    /* Support for iPhone notch and safe areas */
+    padding-top: env(safe-area-inset-top);
+    padding-bottom: env(safe-area-inset-bottom);
+    padding-left: env(safe-area-inset-left);
+    padding-right: env(safe-area-inset-right);
 }
 
 .app {
@@ -705,6 +710,7 @@ select:focus:not(:focus-visible) {
     height: 100vh;
     align-items: flex-start;
     background: transparent;
+    scroll-snap-type: x mandatory;
 }
 
 /* Card Wrapper (holds card + resize handle) */
@@ -714,6 +720,7 @@ select:focus:not(:focus-visible) {
     flex-shrink: 0;
     max-height: 100%;
     background: transparent;
+    scroll-snap-align: center;
 }
 
 /* Cards */
@@ -2253,6 +2260,7 @@ button:disabled:hover {
         opacity: 0.9;
         transform: scale(0.9);
     }
+
     to {
         width: 480px;
         height: auto;
@@ -2274,6 +2282,7 @@ button:disabled:hover {
         border-radius: 8px;
         transform: scale(1);
     }
+
     to {
         width: var(--toolbar-btn-size);
         max-height: var(--toolbar-btn-size);

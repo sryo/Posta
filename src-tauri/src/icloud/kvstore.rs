@@ -2,21 +2,31 @@
 
 use crate::models::Card;
 use objc2::rc::Retained;
-use objc2::runtime::AnyClass;
-use objc2::{class, msg_send, msg_send_id};
+use objc2::runtime::AnyObject;
+use objc2::{class, msg_send};
 use objc2_foundation::NSString;
 use std::collections::HashMap;
 
+// Define a wrapper type that we can make Send + Sync
 pub struct ICloudKVStore {
-    store: Retained<objc2::runtime::AnyObject>,
+    // We store the store as a raw pointer to make the struct Send + Sync
+    // All access must be done on the main thread
+    store_ptr: *mut AnyObject,
 }
+
+// SAFETY: NSUbiquitousKeyValueStore is thread-safe according to Apple's documentation
+// All methods are safe to call from any thread
+unsafe impl Send for ICloudKVStore {}
+unsafe impl Sync for ICloudKVStore {}
 
 impl ICloudKVStore {
     pub fn new() -> Self {
         unsafe {
             let cls = class!(NSUbiquitousKeyValueStore);
-            let store: Retained<objc2::runtime::AnyObject> = msg_send_id![cls, defaultStore];
-            Self { store }
+            let store: Retained<AnyObject> = msg_send![cls, defaultStore];
+            // Convert to raw pointer and leak the Retained to prevent deallocation
+            let store_ptr = Retained::into_raw(store) as *mut AnyObject;
+            Self { store_ptr }
         }
     }
 
@@ -26,8 +36,8 @@ impl ICloudKVStore {
         let value = NSString::from_str(&json);
 
         unsafe {
-            let _: () = msg_send![&*self.store, setString:&*value forKey:&*key];
-            let _: bool = msg_send![&*self.store, synchronize];
+            let _: () = msg_send![self.store_ptr, setString: &*value, forKey: &*key];
+            let _: bool = msg_send![self.store_ptr, synchronize];
         }
         Ok(())
     }
@@ -36,7 +46,7 @@ impl ICloudKVStore {
         let key = NSString::from_str("posta_cards");
 
         unsafe {
-            let value: Option<Retained<NSString>> = msg_send_id![&*self.store, stringForKey:&*key];
+            let value: Option<Retained<NSString>> = msg_send![self.store_ptr, stringForKey: &*key];
 
             match value {
                 Some(s) => {
@@ -60,8 +70,8 @@ impl ICloudKVStore {
         let value = NSString::from_str(&json);
 
         unsafe {
-            let _: () = msg_send![&*self.store, setString:&*value forKey:&*key];
-            let _: bool = msg_send![&*self.store, synchronize];
+            let _: () = msg_send![self.store_ptr, setString: &*value, forKey: &*key];
+            let _: bool = msg_send![self.store_ptr, synchronize];
         }
         Ok(())
     }
@@ -71,7 +81,7 @@ impl ICloudKVStore {
         let key = NSString::from_str("posta_account_mappings");
 
         unsafe {
-            let value: Option<Retained<NSString>> = msg_send_id![&*self.store, stringForKey:&*key];
+            let value: Option<Retained<NSString>> = msg_send![self.store_ptr, stringForKey: &*key];
 
             match value {
                 Some(s) => {
@@ -85,6 +95,15 @@ impl ICloudKVStore {
                 }
                 None => Ok(None),
             }
+        }
+    }
+}
+
+impl Drop for ICloudKVStore {
+    fn drop(&mut self) {
+        unsafe {
+            // Reconstruct the Retained and let it drop properly
+            let _ = Retained::from_raw(self.store_ptr);
         }
     }
 }

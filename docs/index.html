@@ -1,0 +1,3532 @@
+<!doctype html>
+<html lang="en">
+
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="description"
+        content="A card-based Gmail and Calendar client. Organize your inbox into custom cards, batch reply to emails, and manage your calendar with powerful queries.">
+    <meta name="robots" content="index, follow">
+
+    <meta property="og:title" content="Posta - Your inbox, organized into cards">
+    <meta property="og:description"
+        content="A card-based Gmail and Calendar client. Organize your inbox into custom cards, batch reply to emails, and manage your calendar with powerful queries.">
+    <meta property="og:type" content="website">
+
+    <title>Posta — Your inbox, organized into cards</title>
+
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&display=swap"
+        rel="stylesheet">
+
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        :root {
+            --bg-primary: #fff;
+            --bg-secondary: #f5f5f5;
+            --bg-tertiary: #fafafa;
+            --bg-hover: rgba(0, 0, 0, 0.05);
+            --text-primary: #222;
+            --text-secondary: rgba(0, 0, 0, 0.6);
+            --text-muted: rgba(0, 0, 0, 0.45);
+            --border-color: rgba(0, 0, 0, 0.15);
+            --border-light: rgba(0, 0, 0, 0.08);
+            --accent: #4285f4;
+            --shadow: rgba(0, 0, 0, 0.1);
+            --danger: #e53935;
+            --danger-bg: rgba(229, 57, 53, 0.1);
+            --success: #43a047;
+            --success-bg: rgba(67, 160, 71, 0.12);
+            --warning: #fb8c00;
+            --warning-bg: rgba(251, 140, 0, 0.12);
+            --info: #00acc1;
+            --info-bg: rgba(0, 172, 193, 0.12);
+
+            --primary: #4285f4;
+            --primary-light: #5a95f5;
+            --primary-dark: #3367d6;
+            --secondary: #34a853;
+            --bg-light: #fafafa;
+            --bg-white: #ffffff;
+            --border: rgba(0, 0, 0, 0.15);
+            --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.1);
+            --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.1);
+            --shadow-lg: 0 10px 40px rgba(0, 0, 0, 0.15);
+        }
+
+        /* Dark mode */
+        @media (prefers-color-scheme: dark) {
+            :root {
+                --bg-primary: #1e1e1e;
+                --bg-secondary: #121212;
+                --bg-tertiary: #2a2a2a;
+                --bg-hover: rgba(255, 255, 255, 0.08);
+                --text-primary: #e0e0e0;
+                --text-secondary: rgba(255, 255, 255, 0.7);
+                --text-muted: rgba(255, 255, 255, 0.5);
+                --border-color: rgba(255, 255, 255, 0.15);
+                --border-light: rgba(255, 255, 255, 0.08);
+                --shadow: rgba(0, 0, 0, 0.3);
+                --danger: #ff6b6b;
+                --danger-bg: rgba(255, 107, 107, 0.15);
+                --success: #66bb6a;
+                --success-bg: rgba(102, 187, 106, 0.15);
+                --warning: #ffa726;
+                --warning-bg: rgba(255, 167, 38, 0.15);
+                --info: #26c6da;
+                --info-bg: rgba(38, 198, 218, 0.15);
+
+                /* Extended vars */
+                --primary: #4285f4;
+                --primary-light: #5a95f5;
+                --primary-dark: #3367d6;
+                --secondary: #34a853;
+                --bg-light: #2a2a2a;
+                --bg-white: #1e1e1e;
+                --border: rgba(255, 255, 255, 0.15);
+                --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.3);
+                --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.3);
+                --shadow-lg: 0 10px 40px rgba(0, 0, 0, 0.4);
+            }
+        }
+
+        body {
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+            color: var(--text-primary);
+            background: var(--bg-white);
+            line-height: 1.6;
+            overflow-x: hidden;
+        }
+
+        /* Buttons */
+        .button {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            padding: 0.65rem 1.5rem;
+            border-radius: 10px;
+            font-weight: 600;
+            font-size: 0.9rem;
+            text-decoration: none;
+            border: none;
+            cursor: pointer;
+            transition: all 0.2s ease;
+            position: relative;
+        }
+
+        .button--primary {
+            background: var(--accent);
+            color: white;
+            border: none;
+        }
+
+        .button--primary:hover {
+            opacity: 0.85;
+        }
+
+        .button--secondary {
+            background: transparent;
+            color: var(--text-primary);
+            border: 2px solid var(--border);
+        }
+
+        .button--secondary:hover {
+            border-color: var(--primary);
+            color: var(--primary);
+            background: rgba(99, 102, 241, 0.05);
+        }
+
+        /* Hero Section */
+        .hero {
+            padding: 140px 2rem 40px;
+            text-align: center;
+            position: relative;
+            overflow: hidden;
+        }
+
+        @keyframes pulse {
+
+            0%,
+            100% {
+                transform: translateX(-50%) scale(1);
+                opacity: 0.5;
+            }
+
+            50% {
+                transform: translateX(-50%) scale(1.1);
+                opacity: 0.8;
+            }
+        }
+
+        .hero__content {
+            max-width: 800px;
+            margin: 0 auto;
+            position: relative;
+            z-index: 1;
+        }
+
+        .hero h1 {
+            font-size: 3.5rem;
+            font-weight: 900;
+            line-height: 1.1;
+            margin-bottom: 1.5rem;
+            color: var(--text-primary);
+            letter-spacing: -0.04em;
+            animation: fadeInUp 0.8s ease;
+        }
+
+        .hero h2 {
+            font-size: 1.35rem;
+            font-weight: 500;
+            color: var(--text-secondary);
+            margin-bottom: 1.5rem;
+            line-height: 1.7;
+        }
+
+        .download-link {
+            font-size: 1rem;
+            color: var(--accent);
+            text-decoration: none;
+            border-bottom: 1px solid transparent;
+            transition: border-color 0.2s;
+        }
+
+        .download-link:hover {
+            border-bottom-color: var(--accent);
+        }
+
+        .hero__cta {
+            display: flex;
+            gap: 1rem;
+            justify-content: center;
+            animation: fadeInUp 0.8s ease 0.4s backwards;
+        }
+
+        @keyframes fadeInUp {
+            from {
+                opacity: 0;
+                transform: translateY(30px);
+            }
+
+            to {
+                opacity: 1;
+                transform: translateY(0);
+            }
+        }
+
+        /* Features Section */
+        .features {
+            padding: 100px 2rem;
+            max-width: 1200px;
+            margin: 0 auto;
+        }
+
+        .features__header {
+            text-align: center;
+            margin-bottom: 70px;
+        }
+
+        .features__header h2 {
+            font-size: 2.5rem;
+            font-weight: 900;
+            margin-bottom: 1rem;
+            letter-spacing: -0.03em;
+            color: var(--text-primary);
+        }
+
+        .features__header p {
+            font-size: 1.2rem;
+            color: var(--text-secondary);
+            max-width: 600px;
+            margin: 0 auto;
+        }
+
+        .features__grid {
+            display: grid;
+            grid-template-columns: repeat(2, 1fr);
+            gap: 2rem;
+        }
+
+        .feature-card--hero {
+            grid-column: 1 / -1;
+            background: rgba(66, 133, 244, 0.05);
+            border: 2px solid var(--primary);
+            padding: 2.5rem;
+        }
+
+        .feature-card--hero::before {
+            background: var(--primary);
+            transform: scaleX(1);
+            height: 4px;
+        }
+
+        .feature-card--hero .feature-card__icon {
+            font-size: 3rem;
+        }
+
+        .feature-card--hero h3 {
+            font-size: 1.6rem;
+        }
+
+        .feature-card--hero p {
+            font-size: 1.1rem;
+        }
+
+        .feature-card {
+            background: var(--bg-white);
+            border: 2px solid var(--border);
+            border-radius: 16px;
+            padding: 2rem;
+            transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+            position: relative;
+            overflow: hidden;
+        }
+
+        .feature-card::before {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            height: 3px;
+            background: var(--primary);
+            transform: scaleX(0);
+            transform-origin: left;
+            transition: transform 0.4s cubic-bezier(0.4, 0, 0.2, 1);
+        }
+
+        .feature-card:hover {
+            transform: translateY(-6px);
+            box-shadow: var(--shadow-lg);
+            border-color: rgba(66, 133, 244, 0.3);
+        }
+
+        .feature-card:hover::before {
+            transform: scaleX(1);
+        }
+
+        .feature-card__icon {
+            font-size: 2.5rem;
+            margin-bottom: 1.25rem;
+            display: block;
+        }
+
+        .feature-card h3 {
+            font-size: 1.35rem;
+            font-weight: 700;
+            margin-bottom: 0.75rem;
+            color: var(--text-primary);
+        }
+
+        .feature-card p {
+            color: var(--text-secondary);
+            line-height: 1.7;
+            font-size: 1rem;
+        }
+
+        .feature-card code {
+            background: var(--bg-light);
+            padding: 0.2rem 0.5rem;
+            border-radius: 4px;
+            font-size: 0.9em;
+            color: var(--primary);
+            font-family: 'SF Mono', Monaco, 'Cascadia Code', monospace;
+        }
+
+        /* Demo Section - Interactive App Preview */
+        .demo {
+            padding: 0;
+        }
+
+        .demo__content {
+            max-width: 1400px;
+            margin: 0 auto;
+        }
+
+        .demo__header {
+            text-align: center;
+            margin-bottom: 3rem;
+        }
+
+        .demo h2 {
+            font-size: 2.5rem;
+            font-weight: 900;
+            margin-bottom: 1rem;
+            letter-spacing: -0.03em;
+        }
+
+        .demo__header p {
+            font-size: 1.2rem;
+            color: var(--text-secondary);
+        }
+
+        /* ========== DECK & CARD STYLES (from App.css) ========== */
+
+        /* Deck Container */
+        .deck {
+            display: flex;
+            padding: 24px;
+            overflow-x: auto;
+            overflow-y: hidden;
+            height: 550px;
+            align-items: flex-start;
+            background: transparent;
+            border-radius: 12px;
+        }
+
+        /* Card Wrapper (holds card + resize handle) */
+        .card-wrapper {
+            position: relative;
+            display: flex;
+            flex-shrink: 0;
+            max-height: 100%;
+            background: transparent;
+        }
+
+        /* Card Resize Handle */
+        .card-resize-handle {
+            width: 20px;
+            cursor: ew-resize;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            flex-shrink: 0;
+            align-self: stretch;
+            background: transparent;
+        }
+
+        .card-resize-handle::after {
+            content: '';
+            width: 3px;
+            height: 100%;
+            background: var(--border-color);
+            border-radius: 2px;
+            opacity: 0;
+            transition: opacity 0.15s;
+        }
+
+        .card-resize-handle:hover::after,
+        .deck.resizing .card-resize-handle::after {
+            opacity: 1;
+            background: var(--accent);
+        }
+
+        .deck.resizing {
+            cursor: ew-resize;
+        }
+
+        .deck.resizing * {
+            cursor: ew-resize !important;
+            user-select: none;
+        }
+
+        /* Add Card Button */
+        .add-card-btn {
+            min-width: 40px;
+            height: 40px;
+            flex-shrink: 0;
+            background: var(--bg-primary);
+            border: none;
+            box-shadow: 0 0 0 3px var(--border-color);
+            border-radius: 12px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            cursor: pointer;
+            color: var(--text-muted);
+            transition: background 0.2s, color 0.2s, box-shadow 0.2s;
+        }
+
+        .add-card-btn:hover {
+            color: var(--text-secondary);
+            box-shadow: 0 0 0 3px var(--text-secondary);
+        }
+
+        /* Group By Buttons */
+        .group-by-buttons {
+            display: flex;
+            gap: 0;
+            isolation: isolate;
+        }
+
+        .group-by-btn {
+            flex: 1;
+            padding: 6px 8px;
+            border: 1px solid var(--border-color);
+            background: var(--bg-primary);
+            color: var(--text-secondary);
+            border-radius: 0;
+            font-size: 12px;
+            cursor: pointer;
+            transition: all 0.15s ease;
+            margin-left: -1px;
+            position: relative;
+        }
+
+        .group-by-btn:first-child {
+            border-top-left-radius: 4px;
+            border-bottom-left-radius: 4px;
+            margin-left: 0;
+        }
+
+        .group-by-btn:last-child {
+            border-top-right-radius: 4px;
+            border-bottom-right-radius: 4px;
+        }
+
+        .group-by-btn:hover {
+            background: var(--bg-hover);
+            color: var(--text-primary);
+            z-index: 1;
+        }
+
+        .group-by-btn.active {
+            background: var(--accent);
+            color: white;
+            border-color: var(--accent);
+            z-index: 2;
+        }
+
+        /* Radial Color Picker */
+        .color-picker {
+            --picker-radius: 32px;
+            --picker-option-size: 22px;
+            --picker-button-size: 24px;
+            position: relative;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+
+        .color-picker-selected {
+            width: var(--picker-button-size);
+            height: var(--picker-button-size);
+            border-radius: 50%;
+            border: 2px solid var(--border-color);
+            cursor: pointer;
+            background: var(--bg-primary);
+            transition: transform 0.15s, border-color 0.15s;
+            z-index: 10;
+            position: relative;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: var(--text-muted);
+        }
+
+        .color-picker-selected:not(.no-color) svg {
+            display: none;
+        }
+
+        .color-picker-selected:hover {
+            border-color: var(--text-muted);
+        }
+
+        .color-picker-selected.no-color {
+            background: var(--bg-primary);
+        }
+
+        .color-option {
+            position: absolute;
+            width: var(--picker-option-size);
+            height: var(--picker-option-size);
+            border-radius: 50%;
+            border: 2px solid var(--border-light);
+            cursor: pointer;
+            box-shadow: 0 1px 3px var(--shadow);
+            opacity: 0;
+            pointer-events: none;
+            transition: left 0.25s cubic-bezier(0.34, 1.56, 0.64, 1),
+                top 0.25s cubic-bezier(0.34, 1.56, 0.64, 1),
+                opacity 0.15s, transform 0.15s;
+            left: calc((var(--picker-button-size) - var(--picker-option-size)) / 2);
+            top: calc((var(--picker-button-size) - var(--picker-option-size)) / 2);
+        }
+
+        .color-picker.open .color-option {
+            opacity: 1;
+            pointer-events: auto;
+        }
+
+        .color-option:hover {
+            transform: scale(1.2);
+            z-index: 20;
+        }
+
+        .color-option.no-color-option {
+            background: var(--bg-primary);
+            border: 2px solid var(--border-color);
+        }
+
+        /* Color option radial layout using CSS trig functions */
+        .color-picker.open .color-option {
+            --angle: calc(180deg + (var(--i, 0) * 40deg));
+            --center-offset: calc((var(--picker-button-size) - var(--picker-option-size)) / 2);
+            left: calc(var(--center-offset) + cos(var(--angle)) * var(--picker-radius));
+            top: calc(var(--center-offset) + sin(var(--angle)) * var(--picker-radius));
+            transition-delay: calc(var(--i, 0) * 15ms);
+        }
+
+        .color-option:nth-child(1) { --i: 0; }
+        .color-option:nth-child(2) { --i: 1; }
+        .color-option:nth-child(3) { --i: 2; }
+        .color-option:nth-child(4) { --i: 3; }
+        .color-option:nth-child(5) { --i: 4; }
+        .color-option:nth-child(6) { --i: 5; }
+        .color-option:nth-child(7) { --i: 6; }
+        .color-option:nth-child(8) { --i: 7; }
+        .color-option:nth-child(9) { --i: 8; }
+
+        /* Color backgrounds */
+        .color-option.red { background: #E53935; }
+        .color-option.orange { background: #FB8C00; }
+        .color-option.yellow { background: #FDD835; }
+        .color-option.green { background: #43A047; }
+        .color-option.cyan { background: #00ACC1; }
+        .color-option.blue { background: #1E88E5; }
+        .color-option.purple { background: #5E35B1; }
+        .color-option.pink { background: #D81B60; }
+
+        /* Demo Toolbar */
+        .demo-toolbar {
+            display: flex;
+            justify-content: flex-start;
+            margin-bottom: 16px;
+            padding: 24px 24px 0 24px;
+        }
+
+        .color-picker-row {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .color-picker-row label {
+            font-size: 11px;
+            color: var(--text-secondary);
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+
+        /* Demo Instructions */
+        .demo-instructions {
+            text-align: center;
+            color: var(--text-secondary);
+            font-size: 13px;
+            margin-bottom: 16px;
+        }
+
+        /* Query Autocomplete */
+        .query-autocomplete-wrap {
+            position: relative;
+        }
+
+        .query-label {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+        }
+
+        .query-help-btn {
+            width: 16px;
+            height: 16px;
+            padding: 0;
+            background: transparent;
+            border: 1px solid var(--border-color);
+            border-radius: 50%;
+            font-size: 10px;
+            font-weight: 600;
+            color: var(--text-muted);
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            transition: all 0.15s ease;
+        }
+
+        .query-help-btn:hover {
+            background: var(--bg-hover);
+            color: var(--text-primary);
+            border-color: var(--text-muted);
+        }
+
+        .query-help-overlay {
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: rgba(0, 0, 0, 0.5);
+            z-index: 200;
+            display: none;
+        }
+
+        .query-help-overlay.open {
+            display: block;
+        }
+
+        .query-help-sheet {
+            position: fixed;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            width: 90%;
+            max-width: 640px;
+            max-height: 80vh;
+            background: var(--bg-primary);
+            border-radius: 12px;
+            box-shadow: 0 8px 32px rgba(0, 0, 0, 0.2);
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+        }
+
+        .query-help-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 16px 20px;
+            border-bottom: 1px solid var(--border-color);
+        }
+
+        .query-help-header h3 {
+            margin: 0;
+            font-size: 16px;
+            font-weight: 600;
+        }
+
+        .query-help-close {
+            background: none;
+            border: none;
+            font-size: 20px;
+            color: var(--text-muted);
+            cursor: pointer;
+            padding: 0;
+            line-height: 1;
+        }
+
+        .query-help-close:hover {
+            color: var(--text-primary);
+        }
+
+        .query-help-body {
+            padding: 16px 20px;
+            overflow-y: auto;
+            display: flex;
+            flex-wrap: wrap;
+            gap: 20px;
+        }
+
+        .query-help-section {
+            flex: 1;
+            min-width: 200px;
+        }
+
+        .query-help-section h4 {
+            margin: 0 0 8px 0;
+            font-size: 13px;
+            font-weight: 600;
+            color: var(--text-primary);
+        }
+
+        .query-help-table {
+            display: flex;
+            flex-direction: column;
+            gap: 4px;
+        }
+
+        .query-help-row {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            padding: 4px 0;
+        }
+
+        .query-help-row code {
+            flex-shrink: 0;
+            min-width: 140px;
+            font-size: 12px;
+            font-family: 'SF Mono', 'Menlo', 'Monaco', monospace;
+            color: var(--accent);
+        }
+
+        .query-help-row span {
+            font-size: 12px;
+            color: var(--text-secondary);
+        }
+
+        .query-help-examples {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 6px;
+        }
+
+        .query-help-examples code {
+            font-size: 11px;
+            font-family: 'SF Mono', 'Menlo', 'Monaco', monospace;
+            background: var(--bg-secondary);
+            padding: 4px 8px;
+            border-radius: 4px;
+            color: var(--text-secondary);
+        }
+
+        .query-autocomplete {
+            position: absolute;
+            top: 100%;
+            left: 0;
+            right: 0;
+            background: var(--bg-primary);
+            border: 1px solid var(--border-color);
+            border-radius: 6px;
+            box-shadow: 0 4px 12px var(--shadow);
+            max-height: 200px;
+            overflow-y: auto;
+            z-index: 100;
+            display: none;
+        }
+
+        .query-autocomplete.open {
+            display: block;
+        }
+
+        .query-autocomplete-item {
+            padding: 8px 10px;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        .query-autocomplete-item:hover,
+        .query-autocomplete-item.selected {
+            background: var(--bg-hover);
+        }
+
+        .query-autocomplete-op {
+            font-family: ui-monospace, monospace;
+            font-size: 12px;
+            color: var(--accent);
+            font-weight: 500;
+        }
+
+        .query-autocomplete-desc {
+            font-size: 11px;
+            color: var(--text-muted);
+            margin-left: auto;
+        }
+
+        /* CTA Section */
+        .cta {
+            padding: 100px 2rem;
+            background: var(--primary);
+            text-align: center;
+            position: relative;
+            overflow: hidden;
+        }
+
+        .cta::before {
+            content: '';
+            position: absolute;
+            top: -50%;
+            left: -50%;
+            width: 200%;
+            height: 200%;
+            background: radial-gradient(circle, rgba(255, 255, 255, 0.15) 0%, transparent 70%);
+            animation: rotate 25s linear infinite;
+        }
+
+        @keyframes rotate {
+            from {
+                transform: rotate(0deg);
+            }
+
+            to {
+                transform: rotate(360deg);
+            }
+        }
+
+        .cta__content {
+            max-width: 700px;
+            margin: 0 auto;
+            position: relative;
+            z-index: 1;
+        }
+
+        .cta h2 {
+            font-size: 3rem;
+            font-weight: 900;
+            color: white;
+            margin-bottom: 1.25rem;
+            letter-spacing: -0.03em;
+        }
+
+        .cta p {
+            font-size: 1.2rem;
+            color: rgba(255, 255, 255, 0.95);
+            margin-bottom: 2.5rem;
+            line-height: 1.6;
+        }
+
+        .cta .button {
+            background: white;
+            color: var(--primary);
+            font-size: 1.05rem;
+            padding: 0.9rem 2rem;
+            box-shadow: 0 4px 20px rgba(0, 0, 0, 0.2);
+        }
+
+        .cta .button:hover {
+            transform: translateY(-3px);
+            box-shadow: 0 6px 30px rgba(0, 0, 0, 0.3);
+        }
+
+        /* FAQ */
+        .faq {
+            max-width: 640px;
+            margin: 0 auto;
+            padding: 60px 24px;
+        }
+
+        .faq h3 {
+            font-size: 1.25rem;
+            font-weight: 600;
+            margin-bottom: 24px;
+            color: var(--text-primary);
+        }
+
+        .faq-list {
+            display: flex;
+            flex-direction: column;
+            gap: 1px;
+            background: var(--border-color);
+            border-radius: 8px;
+            overflow: hidden;
+        }
+
+        .faq details {
+            background: var(--bg-primary);
+        }
+
+        .faq summary {
+            padding: 16px;
+            font-size: 14px;
+            font-weight: 500;
+            cursor: pointer;
+            color: var(--text-primary);
+            list-style: none;
+        }
+
+        .faq summary::-webkit-details-marker {
+            display: none;
+        }
+
+        .faq summary::before {
+            content: '+';
+            float: right;
+            font-weight: 400;
+            color: var(--text-muted);
+        }
+
+        .faq details[open] summary::before {
+            content: '-';
+        }
+
+        .faq details p {
+            padding: 0 16px 16px;
+            font-size: 14px;
+            color: var(--text-secondary);
+            line-height: 1.6;
+            margin: 0;
+        }
+
+        /* Footer */
+        .footer {
+            padding: 60px 2rem 40px;
+            text-align: center;
+        }
+
+        .footer__tech {
+            display: flex;
+            justify-content: center;
+            gap: 2rem;
+            margin-bottom: 2rem;
+            flex-wrap: wrap;
+        }
+
+        .footer__tech-item {
+            font-size: 0.9rem;
+            color: var(--text-muted);
+        }
+
+        .footer__bottom {
+            padding-top: 2rem;
+            border-top: 1px solid var(--border-color);
+            font-size: 0.9rem;
+            color: var(--text-muted);
+        }
+
+        /* Responsive */
+        @media (max-width: 768px) {
+            .hero h1 {
+                font-size: 2.5rem;
+            }
+
+            .hero h2 {
+                font-size: 1.1rem;
+            }
+
+            .features__grid {
+                grid-template-columns: 1fr;
+            }
+
+            .feature-card--hero {
+                grid-column: 1;
+            }
+
+            .hero__cta {
+                flex-direction: column;
+                align-items: center;
+            }
+
+            .cta h2 {
+                font-size: 2rem;
+            }
+
+            .demo__keyboard {
+                padding: 1.5rem;
+            }
+        }
+
+        /* Smooth scroll */
+        html {
+            scroll-behavior: smooth;
+        }
+
+        /* Selection */
+        ::selection {
+            background: var(--primary);
+            color: white;
+        }
+
+        /* --- START OF EXACT APP COMPONENTS CSS --- */
+        /* Extracted from App.css */
+
+        .card {
+            position: relative;
+            min-width: var(--card-width, 320px);
+            max-width: var(--card-width, 320px);
+            flex-shrink: 0;
+            background: var(--bg-primary);
+            border-radius: 12px;
+            border: none;
+            box-shadow: 0 0 0 3px var(--card-border-color, var(--border-color));
+            overflow: clip;
+            display: flex;
+            flex-direction: column;
+            max-height: 100%;
+        }
+
+        .card:not(.editing) {
+            transition: min-width 0.25s cubic-bezier(0.34, 1.56, 0.64, 1),
+                max-width 0.25s cubic-bezier(0.34, 1.56, 0.64, 1),
+                opacity 0.2s ease,
+                transform 0.2s ease;
+        }
+
+        .card.editing {
+            transition: opacity 0.2s ease, transform 0.2s ease;
+        }
+
+        .card.dragging {
+            opacity: 0.8;
+            z-index: 100;
+            box-shadow: 0 8px 24px rgba(0, 0, 0, 0.2);
+        }
+
+        /* Card colors */
+        .card[data-color="red"] {
+            --card-border-color: rgba(229, 57, 53, 0.5);
+            background: rgba(229, 57, 53, 0.2);
+        }
+        .card[data-color="orange"] {
+            --card-border-color: rgba(251, 140, 0, 0.5);
+            background: rgba(251, 140, 0, 0.2);
+        }
+        .card[data-color="yellow"] {
+            --card-border-color: rgba(253, 216, 53, 0.5);
+            background: rgba(253, 216, 53, 0.2);
+        }
+        .card[data-color="green"] {
+            --card-border-color: rgba(67, 160, 71, 0.5);
+            background: rgba(67, 160, 71, 0.2);
+        }
+        .card[data-color="cyan"] {
+            --card-border-color: rgba(0, 172, 193, 0.5);
+            background: rgba(0, 172, 193, 0.2);
+        }
+        .card[data-color="blue"] {
+            --card-border-color: rgba(30, 136, 229, 0.5);
+            background: rgba(30, 136, 229, 0.2);
+        }
+        .card[data-color="purple"] {
+            --card-border-color: rgba(94, 53, 177, 0.5);
+            background: rgba(94, 53, 177, 0.2);
+        }
+        .card[data-color="pink"] {
+            --card-border-color: rgba(216, 27, 96, 0.5);
+            background: rgba(216, 27, 96, 0.2);
+        }
+
+        .card.collapsed {
+            min-width: 36px;
+            max-width: 36px;
+            cursor: pointer;
+        }
+
+        .cardui-header,
+        /* Alias for landing page to avoid conflicts if any */
+        .card-header {
+            display: flex;
+            align-items: center;
+            padding: 8px;
+            gap: 6px;
+            border-bottom: 1px solid var(--border-light);
+            cursor: grab;
+        }
+
+        .card.collapsed .card-header {
+            flex-direction: column;
+            padding: 8px 6px;
+            border-bottom: none;
+            min-height: 150px;
+            position: relative;
+        }
+
+        .collapse-btn {
+            width: 32px;
+            height: 32px;
+            border: none;
+            background: none;
+            color: var(--text-muted);
+            cursor: pointer;
+            border-radius: 8px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            flex-shrink: 0;
+        }
+
+        .collapse-btn:hover {
+            background: var(--bg-hover);
+            color: var(--text-secondary);
+        }
+
+        .collapse-btn svg {
+            transition: transform 150ms;
+        }
+
+        .card.collapsed .collapse-btn svg {
+            transform: rotate(-90deg);
+        }
+
+        .card-title {
+            flex-grow: 1;
+            font-weight: 500;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+
+        .card-unread-badge {
+            color: var(--text-muted);
+            font-size: 11px;
+            font-weight: 500;
+            margin-left: 6px;
+            flex-shrink: 0;
+        }
+
+        .card.collapsed .card-unread-badge {
+            order: 1;
+            margin-top: auto;
+            margin-bottom: 4px;
+            margin-left: 0;
+        }
+
+        .card.collapsed .card-title {
+            order: 2;
+            margin-top: auto;
+            flex-grow: 0;
+            writing-mode: vertical-rl;
+            transform: rotate(180deg);
+            white-space: nowrap;
+            overflow: visible;
+            padding: 4px 0 0 0;
+            font-size: 12px;
+        }
+
+        .card-actions {
+            display: flex;
+            gap: 2px;
+        }
+
+        .card.collapsed .card-actions {
+            display: none;
+        }
+
+        .icon-btn {
+            width: 32px;
+            height: 32px;
+            border: none;
+            background: none;
+            color: var(--text-muted);
+            cursor: pointer;
+            border-radius: 8px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+
+        .icon-btn:hover {
+            background: var(--bg-hover);
+            color: var(--text-secondary);
+        }
+
+        .card-body {
+            flex: 1;
+            overflow-y: auto;
+            overflow-x: hidden;
+            position: relative;
+        }
+
+        .card.collapsed .card-body {
+            max-height: 0;
+            opacity: 0;
+            overflow: hidden;
+        }
+
+        .date-header {
+            padding: 6px 10px;
+            font-size: 10px;
+            font-weight: 500;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            color: var(--text-primary);
+            background: var(--card-border-color, var(--bg-tertiary));
+        }
+
+        .thread {
+            position: relative;
+            padding: 8px 10px;
+            border-bottom: 1px solid var(--card-border-color, var(--border-light));
+            cursor: pointer;
+            display: flex;
+            flex-direction: column;
+            gap: 2px;
+        }
+
+        .thread:hover,
+        .thread.selected {
+            background: var(--bg-hover);
+        }
+
+        .thread:last-child {
+            border-bottom: none;
+        }
+
+        .thread.unread {
+            background: rgba(255, 255, 255, 0.5);
+        }
+
+        .thread.unread:hover {
+            background: rgba(255, 255, 255, 0.7);
+        }
+
+        .thread.unread .thread-subject {
+            font-weight: 600;
+        }
+
+        .thread.selected {
+            background: color-mix(in srgb, var(--accent) 8%, transparent);
+        }
+
+        .thread.focused {
+            background: color-mix(in srgb, var(--accent) 12%, transparent);
+            outline: 2px solid color-mix(in srgb, var(--accent) 50%, transparent);
+            outline-offset: -2px;
+        }
+
+        .thread:hover {
+            background: var(--bg-hover);
+        }
+
+        /* Hide time when showing checkbox */
+        .thread:hover .thread-time,
+        .thread.selected .thread-time {
+            opacity: 0;
+        }
+
+        /* Wheel button base - matches App.css exactly */
+        .bulk-btn {
+            position: absolute;
+            border: none;
+            background: var(--bg-primary);
+            cursor: pointer;
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: var(--text-muted);
+            box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2);
+            opacity: 0;
+            pointer-events: none;
+            transition:
+                left 0.2s cubic-bezier(0.34, 1.56, 0.64, 1),
+                top 0.2s cubic-bezier(0.34, 1.56, 0.64, 1),
+                opacity 0.15s,
+                transform 0.15s;
+            z-index: 10;
+        }
+
+        .bulk-btn:hover {
+            z-index: 20;
+            background: var(--bg-tertiary);
+            transform: scale(1.2);
+        }
+
+        /* Bulk actions wheel */
+        .bulk-actions-wheel {
+            position: absolute;
+            left: 50%;
+            top: 50%;
+            transform: translate(-50%, -50%);
+            pointer-events: none;
+            z-index: 50;
+            width: 0;
+            height: 0;
+        }
+
+        .bulk-actions-wheel .bulk-btn {
+            width: 28px;
+            height: 28px;
+            left: calc(50% - 14px);
+            top: calc(50% - 14px);
+            overflow: visible;
+        }
+
+        .bulk-actions-wheel.open .bulk-btn {
+            opacity: 1;
+            pointer-events: auto;
+        }
+
+        .bulk-count {
+            position: absolute;
+            left: 50%;
+            top: 50%;
+            transform: translate(-50%, -50%);
+            font-size: 9px;
+            font-weight: 700;
+            color: #fff;
+            background: var(--accent);
+            width: 18px;
+            height: 18px;
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            pointer-events: none;
+            z-index: 30;
+        }
+
+        .bulk-btn.starred {
+            color: #FDD835;
+        }
+
+        .bulk-btn.starred svg {
+            fill: currentColor;
+        }
+
+        /* Staggered animation for bulk actions */
+        .bulk-actions-wheel .bulk-btn:nth-child(2) { transition-delay: 0ms; }
+        .bulk-actions-wheel .bulk-btn:nth-child(3) { transition-delay: 30ms; }
+        .bulk-actions-wheel .bulk-btn:nth-child(4) { transition-delay: 60ms; }
+        .bulk-actions-wheel .bulk-btn:nth-child(5) { transition-delay: 90ms; }
+
+        .thread-attachments {
+            display: flex;
+            gap: 6px;
+            margin-top: 6px;
+            flex-wrap: wrap;
+            align-items: center;
+        }
+
+        .thread-image-thumb {
+            width: 40px;
+            height: 40px;
+            object-fit: cover;
+            border-radius: 4px;
+            box-shadow: inset 0 0 0 1px var(--border-color);
+            cursor: pointer;
+        }
+
+        .thread-file-item {
+            display: flex;
+            align-items: center;
+            gap: 4px;
+            padding: 4px 8px;
+            background: var(--bg-secondary);
+            box-shadow: inset 0 0 0 1px var(--border-color);
+            border-radius: 4px;
+            font-size: 11px;
+            cursor: pointer;
+            max-width: 120px;
+        }
+
+        .thread-file-item:hover {
+            background: var(--bg-tertiary);
+        }
+
+        .file-name {
+            color: var(--text-secondary);
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+
+        /* Calendar Event Items */
+        .calendar-event-item {
+            padding: 10px 12px;
+            border-bottom: 1px solid var(--border-color);
+            cursor: pointer;
+            transition: background 0.15s ease;
+        }
+
+        .calendar-event-item:hover {
+            background: var(--bg-hover);
+        }
+
+        .calendar-event-row {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 8px;
+        }
+
+        .calendar-event-item .calendar-event-title {
+            flex: 1;
+            font-size: 13px;
+            font-weight: 500;
+            color: var(--text-primary);
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+
+        .calendar-event-time-compact {
+            font-size: 11px;
+            color: var(--text-muted);
+            flex-shrink: 0;
+        }
+
+        .calendar-event-description {
+            font-size: 12px;
+            color: var(--text-secondary);
+            margin-top: 4px;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+
+        .calendar-event-location-compact {
+            display: flex;
+            align-items: center;
+            gap: 4px;
+            font-size: 11px;
+            color: var(--text-muted);
+            margin-top: 4px;
+        }
+
+        .calendar-event-location-compact svg {
+            flex-shrink: 0;
+            width: 12px;
+            height: 12px;
+        }
+
+        .calendar-event-location-compact span {
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+
+        .calendar-event-response {
+            font-size: 11px;
+            font-weight: 500;
+            padding: 2px 6px;
+            border-radius: 4px;
+            width: fit-content;
+            margin-top: 6px;
+        }
+
+        .calendar-event-response.accepted {
+            background: rgba(34, 197, 94, 0.15);
+            color: #22c55e;
+        }
+
+        .calendar-event-response.tentative {
+            background: rgba(234, 179, 8, 0.15);
+            color: #eab308;
+        }
+
+        .calendar-event-response.needsAction {
+            background: rgba(150, 150, 150, 0.15);
+            color: var(--text-muted);
+        }
+
+        /* Quick Reply */
+        .thread.replying {
+            background: var(--bg-tertiary);
+            border-bottom: none;
+        }
+
+        .quick-reply-box {
+            padding: 12px;
+            background: var(--bg-tertiary);
+            border-bottom: 1px solid var(--border-color);
+            cursor: default;
+        }
+
+        .quick-reply-input {
+            width: 100%;
+            min-height: 60px;
+            padding: 8px;
+            background: var(--bg-primary);
+            border: 1px solid var(--border-color);
+            border-radius: 6px;
+            font-size: 13px;
+            color: var(--text-primary);
+            resize: vertical;
+            font-family: inherit;
+        }
+
+        .quick-reply-input:focus {
+            outline: none;
+            border-color: var(--accent);
+        }
+
+        .quick-reply-actions {
+            display: flex;
+            justify-content: flex-end;
+            gap: 8px;
+            margin-top: 8px;
+        }
+
+        /* Undo Toast */
+        .undo-toast {
+            position: fixed;
+            bottom: 24px;
+            left: 50%;
+            transform: translateX(-50%);
+            background: var(--bg-tertiary);
+            border-radius: 12px;
+            box-shadow: 0 4px 24px rgba(0, 0, 0, 0.2);
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            padding: 12px 16px;
+            z-index: 1000;
+            overflow: hidden;
+        }
+
+        .toast-progress {
+            position: absolute;
+            bottom: 0;
+            left: 0;
+            height: 3px;
+            background: var(--accent);
+            animation: toast-progress 5s linear forwards;
+        }
+
+        @keyframes toast-progress {
+            from { width: 100%; }
+            to { width: 0%; }
+        }
+
+        .toast-message {
+            font-size: 14px;
+            color: var(--text-primary);
+        }
+
+        .toast-undo-btn {
+            background: transparent;
+            border: none;
+            color: var(--accent);
+            font-size: 14px;
+            font-weight: 600;
+            cursor: pointer;
+            padding: 4px 8px;
+            border-radius: 4px;
+            transition: background 0.15s;
+        }
+
+        .toast-undo-btn:hover {
+            background: rgba(30, 136, 229, 0.15);
+        }
+
+        .file-icon {
+            color: var(--text-muted);
+            flex-shrink: 0;
+        }
+
+        .thread-row {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+        }
+
+        .unread-dot {
+            width: 8px;
+            height: 8px;
+            background: var(--accent);
+            border-radius: 50%;
+            flex-shrink: 0;
+        }
+
+        .thread-subject {
+            flex-grow: 1;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+
+        .thread-time {
+            font-size: 11px;
+            color: var(--text-muted);
+            flex-shrink: 0;
+        }
+
+        .thread-snippet {
+            font-size: 12px;
+            color: var(--text-secondary);
+            overflow: hidden;
+            text-overflow: ellipsis;
+            display: -webkit-box;
+            -webkit-line-clamp: 2;
+            -webkit-box-orient: vertical;
+            line-height: 1.4;
+        }
+
+        .thread-participants {
+            font-size: 11px;
+            color: var(--text-muted);
+            margin-top: 2px;
+        }
+
+        /* Thread checkbox on hover */
+        .thread-checkbox-wrap {
+            position: absolute;
+            right: 8px;
+            top: 8px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            width: 20px;
+            height: 20px;
+            opacity: 0;
+            transition: opacity 100ms;
+        }
+
+        .thread:hover .thread-checkbox-wrap,
+        .thread.selected .thread-checkbox-wrap {
+            opacity: 1;
+        }
+
+        .thread-checkbox {
+            margin: 0;
+            cursor: pointer;
+            width: 16px;
+            height: 16px;
+            accent-color: var(--accent);
+        }
+
+        .thread-actions-wheel-placeholder {
+            width: 20px;
+            height: 20px;
+            flex-shrink: 0;
+        }
+
+        /* Card Form - hidden by default, shown when editing */
+        .card-form {
+            padding: 12px;
+            display: none;
+            flex-direction: column;
+            gap: 12px;
+            width: 100%;
+        }
+
+        .card.editing .card-form {
+            display: flex;
+        }
+
+        .card.editing .card-header {
+            display: none;
+        }
+
+        .card.editing .card-body {
+            border-top: 1px solid var(--card-border-color, var(--border-light));
+        }
+
+        .card.editing {
+            min-width: var(--card-width, 320px);
+            max-width: var(--card-width, 320px);
+            overflow: visible;
+        }
+
+        .card-form-group {
+            display: flex;
+            flex-direction: column;
+            gap: 3px;
+        }
+
+        .card-form-group label {
+            font-size: 11px;
+            color: var(--text-secondary);
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+
+        .card-form-group input,
+        .card-form-group select {
+            width: 100%;
+            padding: 6px 8px;
+            border: 1px solid var(--border-color);
+            border-radius: 6px;
+            font-size: 13px;
+            background: var(--bg-primary);
+            color: var(--text-primary);
+            box-sizing: border-box;
+        }
+
+        .card-form-group input:focus {
+            outline: none;
+            border-color: var(--accent);
+        }
+
+        .name-color-row {
+            display: flex;
+            gap: 8px;
+            align-items: center;
+        }
+
+        .name-color-row input {
+            flex: 1;
+            min-width: 0;
+        }
+
+        .card-form-actions {
+            display: flex;
+            gap: 6px;
+            justify-content: flex-end;
+            padding-top: 8px;
+            border-top: 1px solid var(--border-light);
+        }
+
+        .btn {
+            padding: 6px 12px;
+            border: 1px solid var(--border-color);
+            border-radius: 8px;
+            cursor: pointer;
+            font-size: 13px;
+            background: var(--bg-tertiary);
+            color: var(--text-primary);
+        }
+
+        .btn:hover {
+            background: var(--bg-hover);
+        }
+
+        .btn-primary {
+            background: var(--accent);
+            color: white;
+            border-color: var(--accent);
+        }
+
+        .btn-primary:hover {
+            opacity: 0.85;
+        }
+
+        .btn-danger {
+            background: transparent;
+            color: var(--danger);
+            border-color: var(--danger);
+            display: flex;
+            align-items: center;
+            gap: 4px;
+        }
+
+        .btn-danger:hover {
+            background: var(--danger-bg);
+        }
+
+        .form-input {
+            width: 100%;
+            padding: 8px 10px;
+            border: 1px solid var(--border-color);
+            border-radius: 6px;
+            font-size: 13px;
+            background: var(--bg-primary);
+            color: var(--text-primary);
+        }
+
+        .form-actions {
+            display: flex;
+            justify-content: flex-end;
+            gap: 8px;
+            margin-top: 8px;
+        }
+
+        .btn-sm {
+            padding: 6px 12px;
+            border-radius: 6px;
+            font-size: 12px;
+            font-weight: 500;
+            cursor: pointer;
+            border: 1px solid var(--border-color);
+            background: var(--bg-primary);
+            color: var(--text-primary);
+        }
+
+        .btn-sm.primary {
+            background: var(--primary);
+            color: white;
+            border-color: var(--primary);
+        }
+
+        /* --- END OF EXACT APP COMPONENTS CSS --- */
+    </style>
+</head>
+
+<body>
+    <!-- Hero -->
+    <section class="hero" id="hero">
+        <div class="hero__content">
+            <h1>posta.</h1>
+            <h2>email, organized.</h2>
+            <a href="https://github.com/sryo/posta" class="download-link">Get from GitHub</a>
+        </div>
+    </section>
+
+    <!-- Demo Section -->
+    <section class="demo" id="demo">
+        <!-- Background Color Picker -->
+        <div class="demo-toolbar">
+                    <div class="color-picker-row">
+                        <label>Background</label>
+                        <div class="color-picker bg-color-picker" id="bg-color-picker">
+                            <div class="color-picker-selected no-color" id="bg-color-selected">
+                                <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M12 22C6.49 22 2 17.51 2 12S6.49 2 12 2s10 4.04 10 9c0 3.31-2.69 6-6 6h-1.77c-.28 0-.5.22-.5.5 0 .12.05.23.13.33.41.47.64 1.06.64 1.67A2.5 2.5 0 0 1 12 22zm0-18c-4.41 0-8 3.59-8 8s3.59 8 8 8c.28 0 .5-.22.5-.5a.54.54 0 0 0-.14-.35c-.41-.46-.63-1.05-.63-1.65a2.5 2.5 0 0 1 2.5-2.5H16c2.21 0 4-1.79 4-4 0-3.86-3.59-7-8-7z"/></svg>
+                            </div>
+                            <div class="color-option no-color-option" data-bg-color="none"></div>
+                            <div class="color-option red" data-bg-color="red"></div>
+                            <div class="color-option orange" data-bg-color="orange"></div>
+                            <div class="color-option yellow" data-bg-color="yellow"></div>
+                            <div class="color-option green" data-bg-color="green"></div>
+                            <div class="color-option cyan" data-bg-color="cyan"></div>
+                            <div class="color-option blue" data-bg-color="blue"></div>
+                            <div class="color-option purple" data-bg-color="purple"></div>
+                            <div class="color-option pink" data-bg-color="pink"></div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Deck Container - matches App.tsx structure -->
+                <div class="deck" id="demo-deck">
+                    <!-- Hot Card (Blue) -->
+                    <div class="card-wrapper" draggable="false">
+                        <div class="card" data-color="blue" data-card-id="hot">
+                            <!-- Card Form (hidden by default) -->
+                            <div class="card-form">
+                                <div class="card-form-group">
+                                    <label>Name</label>
+                                    <div class="name-color-row">
+                                        <input type="text" value="Hot" data-field="name">
+                                        <div class="color-picker">
+                                            <div class="color-picker-selected" style="background: #1E88E5;">
+                                                <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M12 22C6.49 22 2 17.51 2 12S6.49 2 12 2s10 4.04 10 9c0 3.31-2.69 6-6 6h-1.77c-.28 0-.5.22-.5.5 0 .12.05.23.13.33.41.47.64 1.06.64 1.67A2.5 2.5 0 0 1 12 22zm0-18c-4.41 0-8 3.59-8 8s3.59 8 8 8c.28 0 .5-.22.5-.5a.54.54 0 0 0-.14-.35c-.41-.46-.63-1.05-.63-1.65a2.5 2.5 0 0 1 2.5-2.5H16c2.21 0 4-1.79 4-4 0-3.86-3.59-7-8-7z"/></svg>
+                                            </div>
+                                            <div class="color-option no-color-option"></div>
+                                            <div class="color-option red"></div>
+                                            <div class="color-option orange"></div>
+                                            <div class="color-option yellow"></div>
+                                            <div class="color-option green"></div>
+                                            <div class="color-option cyan"></div>
+                                            <div class="color-option blue"></div>
+                                            <div class="color-option purple"></div>
+                                            <div class="color-option pink"></div>
+                                        </div>
+                                    </div>
+                                </div>
+                                <div class="card-form-group">
+                                    <label class="query-label">Query <button type="button" class="query-help-btn" title="Query operators help">?</button></label>
+                                    <div class="query-autocomplete-wrap">
+                                        <input type="text" value="is:important newer_than:1d" data-field="query" class="query-input">
+                                        <div class="query-autocomplete"></div>
+                                    </div>
+                                </div>
+                                <div class="card-form-group">
+                                    <label>Group</label>
+                                    <div class="group-by-buttons" data-group-by="date">
+                                        <button type="button" class="group-by-btn active" data-value="date">Date</button>
+                                        <button type="button" class="group-by-btn" data-value="sender">Sender</button>
+                                        <button type="button" class="group-by-btn" data-value="label">Label</button>
+                                    </div>
+                                </div>
+                                <div class="card-form-actions">
+                                    <button class="btn btn-danger" data-action="delete">
+                                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path></svg>
+                                        Delete
+                                    </button>
+                                    <div style="flex: 1"></div>
+                                    <button class="btn" data-action="cancel">Cancel</button>
+                                    <button class="btn btn-primary" data-action="save">Save</button>
+                                </div>
+                            </div>
+
+                            <!-- Card Header -->
+                            <div class="card-header" draggable="true">
+                                <button class="collapse-btn">
+                                    <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
+                                        <path d="M7.41 8.59L12 13.17l4.59-4.58L18 10l-6 6-6-6 1.41-1.41z"/>
+                                    </svg>
+                                </button>
+                                <span class="card-title">Hot</span>
+                                <span class="card-unread-badge">1</span>
+                                <div class="card-actions">
+                                    <button class="icon-btn" title="Refresh" data-action="refresh">
+                                        <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
+                                            <path d="M17.65 6.35A7.958 7.958 0 0012 4c-4.42 0-7.99 3.58-7.99 8s3.57 8 7.99 8c3.73 0 6.84-2.55 7.73-6h-2.08A5.99 5.99 0 0112 18c-3.31 0-6-2.69-6-6s2.69-6 6-6c1.66 0 3.14.69 4.22 1.78L13 11h7V4l-2.35 2.35z"/>
+                                        </svg>
+                                    </button>
+                                    <button class="icon-btn" title="Edit" data-action="edit">
+                                        <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
+                                            <path d="M15.5 14h-.79l-.28-.27A6.471 6.471 0 0016 9.5 6.5 6.5 0 109.5 16c1.61 0 3.09-.59 4.23-1.57l.27.28v.79l5 4.99L20.49 19l-4.99-5zm-6 0C7.01 14 5 11.99 5 9.5S7.01 5 9.5 5 14 7.01 14 9.5 11.99 14 9.5 14z"/>
+                                        </svg>
+                                    </button>
+                                </div>
+                            </div>
+
+                            <!-- Card Body -->
+                            <div class="card-body">
+                                <div class="date-header">Features</div>
+                                <div class="thread unread" data-thread-id="hot-1">
+                                    <div class="thread-checkbox-wrap">
+                                        <input type="checkbox" class="thread-checkbox">
+                                        <div class="bulk-actions-wheel">
+                                            <button class="bulk-btn" title="Archive" data-action="archive"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="21 8 21 21 3 21 3 8"></polyline><rect x="1" y="3" width="22" height="5"></rect><line x1="10" y1="12" x2="14" y2="12"></line></svg></button>
+                                            <button class="bulk-btn" title="Star" data-action="star"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"></polygon></svg></button>
+                                            <button class="bulk-btn" title="Reply" data-action="reply"><svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M10 9V5l-7 7 7 7v-4.1c5 0 8.5 1.6 11 5.1-1-5-4-10-11-11z" /></svg></button>
+                                            <button class="bulk-btn" title="Delete" data-action="delete"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path></svg></button>
+                                        </div>
+                                    </div>
+                                    <div class="thread-row">
+                                        <div class="unread-dot"></div>
+                                        <span class="thread-subject">Card-based organization</span>
+                                        <span class="thread-time">Now</span>
+                                    </div>
+                                    <div class="thread-snippet">Organize your inbox into columns using search queries. Each card is a saved search that updates in real time.</div>
+                                    <div class="thread-participants">Posta</div>
+                                </div>
+                                <div class="thread" data-thread-id="hot-2">
+                                    <div class="thread-checkbox-wrap">
+                                        <input type="checkbox" class="thread-checkbox">
+                                        <div class="bulk-actions-wheel">
+                                            <button class="bulk-btn" title="Archive" data-action="archive"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="21 8 21 21 3 21 3 8"></polyline><rect x="1" y="3" width="22" height="5"></rect><line x1="10" y1="12" x2="14" y2="12"></line></svg></button>
+                                            <button class="bulk-btn" title="Star" data-action="star"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"></polygon></svg></button>
+                                            <button class="bulk-btn" title="Reply" data-action="reply"><svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M10 9V5l-7 7 7 7v-4.1c5 0 8.5 1.6 11 5.1-1-5-4-10-11-11z" /></svg></button>
+                                            <button class="bulk-btn" title="Delete" data-action="delete"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path></svg></button>
+                                        </div>
+                                    </div>
+                                    <div class="thread-row">
+                                        <span class="thread-subject">Powerful search</span>
+                                        <span class="thread-time">Now</span>
+                                    </div>
+                                    <div class="thread-snippet">Use Gmail's full search syntax to create cards from any query. from:boss is:unread, has:attachment — if Gmail can search it, you can make a card for it.</div>
+                                    <div class="thread-participants">Posta</div>
+                                </div>
+                                <div class="thread" data-thread-id="hot-3">
+                                    <div class="thread-checkbox-wrap">
+                                        <input type="checkbox" class="thread-checkbox">
+                                        <div class="bulk-actions-wheel">
+                                            <button class="bulk-btn" title="Archive" data-action="archive"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="21 8 21 21 3 21 3 8"></polyline><rect x="1" y="3" width="22" height="5"></rect><line x1="10" y1="12" x2="14" y2="12"></line></svg></button>
+                                            <button class="bulk-btn" title="Star" data-action="star"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"></polygon></svg></button>
+                                            <button class="bulk-btn" title="Reply" data-action="reply"><svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M10 9V5l-7 7 7 7v-4.1c5 0 8.5 1.6 11 5.1-1-5-4-10-11-11z" /></svg></button>
+                                            <button class="bulk-btn" title="Delete" data-action="delete"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path></svg></button>
+                                        </div>
+                                    </div>
+                                    <div class="thread-row">
+                                        <span class="thread-subject">Calendar cards</span>
+                                        <span class="thread-time">Now</span>
+                                    </div>
+                                    <div class="thread-snippet">Create calendar cards to see your events alongside your emails. Use calendar:today or calendar:week to filter.</div>
+                                    <div class="thread-participants">Posta</div>
+                                </div>
+                                <div class="thread" data-thread-id="hot-4">
+                                    <div class="thread-checkbox-wrap">
+                                        <input type="checkbox" class="thread-checkbox">
+                                        <div class="bulk-actions-wheel">
+                                            <button class="bulk-btn" title="Archive" data-action="archive"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="21 8 21 21 3 21 3 8"></polyline><rect x="1" y="3" width="22" height="5"></rect><line x1="10" y1="12" x2="14" y2="12"></line></svg></button>
+                                            <button class="bulk-btn" title="Star" data-action="star"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"></polygon></svg></button>
+                                            <button class="bulk-btn" title="Reply" data-action="reply"><svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M10 9V5l-7 7 7 7v-4.1c5 0 8.5 1.6 11 5.1-1-5-4-10-11-11z" /></svg></button>
+                                            <button class="bulk-btn" title="Delete" data-action="delete"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path></svg></button>
+                                        </div>
+                                    </div>
+                                    <div class="thread-row">
+                                        <span class="thread-subject">Quick actions</span>
+                                        <span class="thread-time">Now</span>
+                                    </div>
+                                    <div class="thread-snippet">Archive, star, reply, or delete with one click. Hover on any thread to reveal the action wheel.</div>
+                                    <div class="thread-participants">Posta</div>
+                                </div>
+                                <div class="thread" data-thread-id="hot-5">
+                                    <div class="thread-checkbox-wrap">
+                                        <input type="checkbox" class="thread-checkbox">
+                                        <div class="bulk-actions-wheel">
+                                            <button class="bulk-btn" title="Archive" data-action="archive"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="21 8 21 21 3 21 3 8"></polyline><rect x="1" y="3" width="22" height="5"></rect><line x1="10" y1="12" x2="14" y2="12"></line></svg></button>
+                                            <button class="bulk-btn starred" title="Star" data-action="star"><svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"></polygon></svg></button>
+                                            <button class="bulk-btn" title="Reply" data-action="reply"><svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M10 9V5l-7 7 7 7v-4.1c5 0 8.5 1.6 11 5.1-1-5-4-10-11-11z" /></svg></button>
+                                            <button class="bulk-btn" title="Delete" data-action="delete"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path></svg></button>
+                                        </div>
+                                    </div>
+                                    <div class="thread-row">
+                                        <span class="thread-subject">Batch reply</span>
+                                        <span class="thread-time">Now</span>
+                                    </div>
+                                    <div class="thread-snippet">Select multiple threads, hit Batch Reply, and power through your inbox. No more clicking in and out of individual emails.</div>
+                                    <div class="thread-participants">Posta</div>
+                                </div>
+                                <div class="thread" data-thread-id="hot-6">
+                                    <div class="thread-checkbox-wrap">
+                                        <input type="checkbox" class="thread-checkbox">
+                                        <div class="bulk-actions-wheel">
+                                            <button class="bulk-btn" title="Archive" data-action="archive"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="21 8 21 21 3 21 3 8"></polyline><rect x="1" y="3" width="22" height="5"></rect><line x1="10" y1="12" x2="14" y2="12"></line></svg></button>
+                                            <button class="bulk-btn" title="Star" data-action="star"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"></polygon></svg></button>
+                                            <button class="bulk-btn" title="Reply" data-action="reply"><svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M10 9V5l-7 7 7 7v-4.1c5 0 8.5 1.6 11 5.1-1-5-4-10-11-11z" /></svg></button>
+                                            <button class="bulk-btn" title="Delete" data-action="delete"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path></svg></button>
+                                        </div>
+                                    </div>
+                                    <div class="thread-row">
+                                        <span class="thread-subject">Open source</span>
+                                        <span class="thread-time">Now</span>
+                                    </div>
+                                    <div class="thread-snippet">Posta is fully open source. Inspect the code, contribute, or fork it to make it your own.</div>
+                                    <div class="thread-attachments">
+                                        <div class="thread-file-item">
+                                            <svg class="file-icon" width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8l-6-6zm4 18H6V4h7v5h5v11z"/></svg>
+                                            <span class="file-name">source.zip</span>
+                                        </div>
+                                    </div>
+                                    <div class="thread-participants">Posta</div>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="card-resize-handle"></div>
+                    </div>
+
+                    <!-- Meh Card (Red) -->
+                    <div class="card-wrapper" draggable="false">
+                        <div class="card" data-color="red" data-card-id="meh">
+                            <!-- Card Form -->
+                            <div class="card-form">
+                                <div class="card-form-group">
+                                    <label>Name</label>
+                                    <div class="name-color-row">
+                                        <input type="text" value="Meh" data-field="name">
+                                        <div class="color-picker">
+                                            <div class="color-picker-selected" style="background: #E53935;">
+                                                <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M12 22C6.49 22 2 17.51 2 12S6.49 2 12 2s10 4.04 10 9c0 3.31-2.69 6-6 6h-1.77c-.28 0-.5.22-.5.5 0 .12.05.23.13.33.41.47.64 1.06.64 1.67A2.5 2.5 0 0 1 12 22zm0-18c-4.41 0-8 3.59-8 8s3.59 8 8 8c.28 0 .5-.22.5-.5a.54.54 0 0 0-.14-.35c-.41-.46-.63-1.05-.63-1.65a2.5 2.5 0 0 1 2.5-2.5H16c2.21 0 4-1.79 4-4 0-3.86-3.59-7-8-7z"/></svg>
+                                            </div>
+                                            <div class="color-option no-color-option"></div>
+                                            <div class="color-option red"></div>
+                                            <div class="color-option orange"></div>
+                                            <div class="color-option yellow"></div>
+                                            <div class="color-option green"></div>
+                                            <div class="color-option cyan"></div>
+                                            <div class="color-option blue"></div>
+                                            <div class="color-option purple"></div>
+                                            <div class="color-option pink"></div>
+                                        </div>
+                                    </div>
+                                </div>
+                                <div class="card-form-group">
+                                    <label class="query-label">Query <button type="button" class="query-help-btn" title="Query operators help">?</button></label>
+                                    <div class="query-autocomplete-wrap">
+                                        <input type="text" value="category:promotions OR category:updates" data-field="query" class="query-input">
+                                        <div class="query-autocomplete"></div>
+                                    </div>
+                                </div>
+                                <div class="card-form-group">
+                                    <label>Group</label>
+                                    <div class="group-by-buttons" data-group-by="date">
+                                        <button type="button" class="group-by-btn active" data-value="date">Date</button>
+                                        <button type="button" class="group-by-btn" data-value="sender">Sender</button>
+                                        <button type="button" class="group-by-btn" data-value="label">Label</button>
+                                    </div>
+                                </div>
+                                <div class="card-form-actions">
+                                    <button class="btn btn-danger" data-action="delete">
+                                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path></svg>
+                                        Delete
+                                    </button>
+                                    <div style="flex: 1"></div>
+                                    <button class="btn" data-action="cancel">Cancel</button>
+                                    <button class="btn btn-primary" data-action="save">Save</button>
+                                </div>
+                            </div>
+
+                            <div class="card-header" draggable="true">
+                                <button class="collapse-btn">
+                                    <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
+                                        <path d="M7.41 8.59L12 13.17l4.59-4.58L18 10l-6 6-6-6 1.41-1.41z"/>
+                                    </svg>
+                                </button>
+                                <span class="card-title">Meh</span>
+                                <span class="card-unread-badge">3</span>
+                                <div class="card-actions">
+                                    <button class="icon-btn" title="Refresh" data-action="refresh">
+                                        <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
+                                            <path d="M17.65 6.35A7.958 7.958 0 0012 4c-4.42 0-7.99 3.58-7.99 8s3.57 8 7.99 8c3.73 0 6.84-2.55 7.73-6h-2.08A5.99 5.99 0 0112 18c-3.31 0-6-2.69-6-6s2.69-6 6-6c1.66 0 3.14.69 4.22 1.78L13 11h7V4l-2.35 2.35z"/>
+                                        </svg>
+                                    </button>
+                                    <button class="icon-btn" title="Edit" data-action="edit">
+                                        <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
+                                            <path d="M15.5 14h-.79l-.28-.27A6.471 6.471 0 0016 9.5 6.5 6.5 0 109.5 16c1.61 0 3.09-.59 4.23-1.57l.27.28v.79l5 4.99L20.49 19l-4.99-5zm-6 0C7.01 14 5 11.99 5 9.5S7.01 5 9.5 5 14 7.01 14 9.5 11.99 14 9.5 14z"/>
+                                        </svg>
+                                    </button>
+                                </div>
+                            </div>
+
+                            <div class="card-body">
+                                <div class="date-header">This Week</div>
+                                <div class="thread" data-thread-id="meh-1">
+                                    <div class="thread-checkbox-wrap">
+                                        <input type="checkbox" class="thread-checkbox">
+                                        <div class="bulk-actions-wheel">
+                                            <button class="bulk-btn" title="Archive" data-action="archive"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="21 8 21 21 3 21 3 8"></polyline><rect x="1" y="3" width="22" height="5"></rect><line x1="10" y1="12" x2="14" y2="12"></line></svg></button>
+                                            <button class="bulk-btn" title="Star" data-action="star"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"></polygon></svg></button>
+                                            <button class="bulk-btn" title="Reply" data-action="reply"><svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M10 9V5l-7 7 7 7v-4.1c5 0 8.5 1.6 11 5.1-1-5-4-10-11-11z" /></svg></button>
+                                            <button class="bulk-btn" title="Delete" data-action="delete"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path></svg></button>
+                                        </div>
+                                    </div>
+                                    <div class="thread-row">
+                                        <span class="thread-subject">Summer Sale!</span>
+                                        <span class="thread-time">Yesterday</span>
+                                    </div>
+                                    <div class="thread-snippet">50% off everything this weekend only...</div>
+                                    <div class="thread-participants">Brand Store</div>
+                                </div>
+                                <div class="thread" data-thread-id="meh-2">
+                                    <div class="thread-checkbox-wrap">
+                                        <input type="checkbox" class="thread-checkbox">
+                                        <div class="bulk-actions-wheel">
+                                            <button class="bulk-btn" title="Archive" data-action="archive"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="21 8 21 21 3 21 3 8"></polyline><rect x="1" y="3" width="22" height="5"></rect><line x1="10" y1="12" x2="14" y2="12"></line></svg></button>
+                                            <button class="bulk-btn" title="Star" data-action="star"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"></polygon></svg></button>
+                                            <button class="bulk-btn" title="Reply" data-action="reply"><svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M10 9V5l-7 7 7 7v-4.1c5 0 8.5 1.6 11 5.1-1-5-4-10-11-11z" /></svg></button>
+                                            <button class="bulk-btn" title="Delete" data-action="delete"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path></svg></button>
+                                        </div>
+                                    </div>
+                                    <div class="thread-row">
+                                        <span class="thread-subject">New Login to Account</span>
+                                        <span class="thread-time">Dec 21</span>
+                                    </div>
+                                    <div class="thread-snippet">Was this you? A new device signed in...</div>
+                                    <div class="thread-participants">Security Bot</div>
+                                </div>
+                                <div class="thread" data-thread-id="meh-3">
+                                    <div class="thread-checkbox-wrap">
+                                        <input type="checkbox" class="thread-checkbox">
+                                        <div class="bulk-actions-wheel">
+                                            <button class="bulk-btn" title="Archive" data-action="archive"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="21 8 21 21 3 21 3 8"></polyline><rect x="1" y="3" width="22" height="5"></rect><line x1="10" y1="12" x2="14" y2="12"></line></svg></button>
+                                            <button class="bulk-btn" title="Star" data-action="star"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"></polygon></svg></button>
+                                            <button class="bulk-btn" title="Reply" data-action="reply"><svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M10 9V5l-7 7 7 7v-4.1c5 0 8.5 1.6 11 5.1-1-5-4-10-11-11z" /></svg></button>
+                                            <button class="bulk-btn" title="Delete" data-action="delete"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path></svg></button>
+                                        </div>
+                                    </div>
+                                    <div class="thread-row">
+                                        <span class="thread-subject">Your Weekly Digest</span>
+                                        <span class="thread-time">Dec 20</span>
+                                    </div>
+                                    <div class="thread-snippet">Here's what happened in your network...</div>
+                                    <div class="thread-participants">LinkedIn</div>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="card-resize-handle"></div>
+                    </div>
+
+                    <!-- Files Card (Purple) -->
+                    <div class="card-wrapper" draggable="false">
+                        <div class="card" data-color="purple" data-card-id="files">
+                            <!-- Card Form -->
+                            <div class="card-form">
+                                <div class="card-form-group">
+                                    <label>Name</label>
+                                    <div class="name-color-row">
+                                        <input type="text" value="Files" data-field="name">
+                                        <div class="color-picker">
+                                            <div class="color-picker-selected" style="background: #5E35B1;">
+                                                <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M12 22C6.49 22 2 17.51 2 12S6.49 2 12 2s10 4.04 10 9c0 3.31-2.69 6-6 6h-1.77c-.28 0-.5.22-.5.5 0 .12.05.23.13.33.41.47.64 1.06.64 1.67A2.5 2.5 0 0 1 12 22zm0-18c-4.41 0-8 3.59-8 8s3.59 8 8 8c.28 0 .5-.22.5-.5a.54.54 0 0 0-.14-.35c-.41-.46-.63-1.05-.63-1.65a2.5 2.5 0 0 1 2.5-2.5H16c2.21 0 4-1.79 4-4 0-3.86-3.59-7-8-7z"/></svg>
+                                            </div>
+                                            <div class="color-option no-color-option"></div>
+                                            <div class="color-option red"></div>
+                                            <div class="color-option orange"></div>
+                                            <div class="color-option yellow"></div>
+                                            <div class="color-option green"></div>
+                                            <div class="color-option cyan"></div>
+                                            <div class="color-option blue"></div>
+                                            <div class="color-option purple"></div>
+                                            <div class="color-option pink"></div>
+                                        </div>
+                                    </div>
+                                </div>
+                                <div class="card-form-group">
+                                    <label class="query-label">Query <button type="button" class="query-help-btn" title="Query operators help">?</button></label>
+                                    <div class="query-autocomplete-wrap">
+                                        <input type="text" value="has:attachment newer_than:1d" data-field="query" class="query-input">
+                                        <div class="query-autocomplete"></div>
+                                    </div>
+                                </div>
+                                <div class="card-form-group">
+                                    <label>Group</label>
+                                    <div class="group-by-buttons" data-group-by="date">
+                                        <button type="button" class="group-by-btn active" data-value="date">Date</button>
+                                        <button type="button" class="group-by-btn" data-value="sender">Sender</button>
+                                        <button type="button" class="group-by-btn" data-value="label">Label</button>
+                                    </div>
+                                </div>
+                                <div class="card-form-actions">
+                                    <button class="btn btn-danger" data-action="delete">
+                                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path></svg>
+                                        Delete
+                                    </button>
+                                    <div style="flex: 1"></div>
+                                    <button class="btn" data-action="cancel">Cancel</button>
+                                    <button class="btn btn-primary" data-action="save">Save</button>
+                                </div>
+                            </div>
+
+                            <div class="card-header" draggable="true">
+                                <button class="collapse-btn">
+                                    <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
+                                        <path d="M7.41 8.59L12 13.17l4.59-4.58L18 10l-6 6-6-6 1.41-1.41z"/>
+                                    </svg>
+                                </button>
+                                <span class="card-title">Files</span>
+                                <span class="card-unread-badge">8</span>
+                                <div class="card-actions">
+                                    <button class="icon-btn" title="Refresh" data-action="refresh">
+                                        <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
+                                            <path d="M17.65 6.35A7.958 7.958 0 0012 4c-4.42 0-7.99 3.58-7.99 8s3.57 8 7.99 8c3.73 0 6.84-2.55 7.73-6h-2.08A5.99 5.99 0 0112 18c-3.31 0-6-2.69-6-6s2.69-6 6-6c1.66 0 3.14.69 4.22 1.78L13 11h7V4l-2.35 2.35z"/>
+                                        </svg>
+                                    </button>
+                                    <button class="icon-btn" title="Edit" data-action="edit">
+                                        <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
+                                            <path d="M15.5 14h-.79l-.28-.27A6.471 6.471 0 0016 9.5 6.5 6.5 0 109.5 16c1.61 0 3.09-.59 4.23-1.57l.27.28v.79l5 4.99L20.49 19l-4.99-5zm-6 0C7.01 14 5 11.99 5 9.5S7.01 5 9.5 5 14 7.01 14 9.5 11.99 14 9.5 14z"/>
+                                        </svg>
+                                    </button>
+                                </div>
+                            </div>
+
+                            <div class="card-body">
+                                <div class="date-header">Today</div>
+                                <div class="thread" data-thread-id="files-1">
+                                    <div class="thread-checkbox-wrap">
+                                        <input type="checkbox" class="thread-checkbox">
+                                        <div class="bulk-actions-wheel">
+                                            <button class="bulk-btn" title="Archive" data-action="archive"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="21 8 21 21 3 21 3 8"></polyline><rect x="1" y="3" width="22" height="5"></rect><line x1="10" y1="12" x2="14" y2="12"></line></svg></button>
+                                            <button class="bulk-btn" title="Star" data-action="star"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"></polygon></svg></button>
+                                            <button class="bulk-btn" title="Reply" data-action="reply"><svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M10 9V5l-7 7 7 7v-4.1c5 0 8.5 1.6 11 5.1-1-5-4-10-11-11z" /></svg></button>
+                                            <button class="bulk-btn" title="Delete" data-action="delete"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path></svg></button>
+                                        </div>
+                                    </div>
+                                    <div class="thread-row">
+                                        <span class="thread-subject">Re: Quarterly Report</span>
+                                        <span class="thread-time">11:00 AM</span>
+                                    </div>
+                                    <div class="thread-snippet">Here are the Q3 numbers for your review...</div>
+                                    <div class="thread-attachments">
+                                        <div class="thread-file-item">
+                                            <svg class="file-icon" width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><path d="M14 2H6c-1.1 0-1.99.9-1.99 2L4 20c0 1.1.89 2 1.99 2H18c1.1 0 2-.9 2-2V8l-6-6zm2 16H8v-2h8v2zm0-4H8v-2h8v2zm-3-5V3.5L18.5 9H13z"/></svg>
+                                            <span class="file-name">Report.pdf</span>
+                                        </div>
+                                        <div class="thread-file-item">
+                                            <svg class="file-icon" width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><path d="M14 2H6c-1.1 0-1.99.9-1.99 2L4 20c0 1.1.89 2 1.99 2H18c1.1 0 2-.9 2-2V8l-6-6zm2 16H8v-2h8v2zm0-4H8v-2h8v2zm-3-5V3.5L18.5 9H13z"/></svg>
+                                            <span class="file-name">Data.xlsx</span>
+                                        </div>
+                                    </div>
+                                </div>
+                                <div class="thread" data-thread-id="files-2">
+                                    <div class="thread-checkbox-wrap">
+                                        <input type="checkbox" class="thread-checkbox">
+                                        <div class="bulk-actions-wheel">
+                                            <button class="bulk-btn" title="Archive" data-action="archive"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="21 8 21 21 3 21 3 8"></polyline><rect x="1" y="3" width="22" height="5"></rect><line x1="10" y1="12" x2="14" y2="12"></line></svg></button>
+                                            <button class="bulk-btn" title="Star" data-action="star"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"></polygon></svg></button>
+                                            <button class="bulk-btn" title="Reply" data-action="reply"><svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M10 9V5l-7 7 7 7v-4.1c5 0 8.5 1.6 11 5.1-1-5-4-10-11-11z" /></svg></button>
+                                            <button class="bulk-btn" title="Delete" data-action="delete"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path></svg></button>
+                                        </div>
+                                    </div>
+                                    <div class="thread-row">
+                                        <span class="thread-subject">Design Mockups v2</span>
+                                        <span class="thread-time">9:30 AM</span>
+                                    </div>
+                                    <div class="thread-snippet">Updated based on your feedback from yesterday.</div>
+                                    <div class="thread-attachments">
+                                        <div class="thread-file-item">
+                                            <svg class="file-icon" width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><path d="M21 19V5c0-1.1-.9-2-2-2H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2zM8.5 13.5l2.5 3.01L14.5 12l4.5 6H5l3.5-4.5z"/></svg>
+                                            <span class="file-name">Mockups.fig</span>
+                                        </div>
+                                    </div>
+                                </div>
+                                <div class="date-header">Yesterday</div>
+                                <div class="thread" data-thread-id="files-3">
+                                    <div class="thread-checkbox-wrap">
+                                        <input type="checkbox" class="thread-checkbox">
+                                        <div class="bulk-actions-wheel">
+                                            <button class="bulk-btn" title="Archive" data-action="archive"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="21 8 21 21 3 21 3 8"></polyline><rect x="1" y="3" width="22" height="5"></rect><line x1="10" y1="12" x2="14" y2="12"></line></svg></button>
+                                            <button class="bulk-btn" title="Star" data-action="star"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"></polygon></svg></button>
+                                            <button class="bulk-btn" title="Reply" data-action="reply"><svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M10 9V5l-7 7 7 7v-4.1c5 0 8.5 1.6 11 5.1-1-5-4-10-11-11z" /></svg></button>
+                                            <button class="bulk-btn" title="Delete" data-action="delete"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path></svg></button>
+                                        </div>
+                                    </div>
+                                    <div class="thread-row">
+                                        <span class="thread-subject">Signed Contract</span>
+                                        <span class="thread-time">3:45 PM</span>
+                                    </div>
+                                    <div class="thread-snippet">Please find the fully executed agreement attached.</div>
+                                    <div class="thread-attachments">
+                                        <div class="thread-file-item">
+                                            <svg class="file-icon" width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><path d="M14 2H6c-1.1 0-1.99.9-1.99 2L4 20c0 1.1.89 2 1.99 2H18c1.1 0 2-.9 2-2V8l-6-6zm2 16H8v-2h8v2zm0-4H8v-2h8v2zm-3-5V3.5L18.5 9H13z"/></svg>
+                                            <span class="file-name">Contract.pdf</span>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="card-resize-handle"></div>
+                    </div>
+
+                    <!-- Today Card - Calendar -->
+                    <div class="card-wrapper" draggable="false">
+                        <div class="card" data-card-id="today" data-card-type="calendar">
+                            <!-- Card Form -->
+                            <div class="card-form">
+                                <div class="card-form-group">
+                                    <label>Name</label>
+                                    <div class="name-color-row">
+                                        <input type="text" value="Today" data-field="name">
+                                        <div class="color-picker">
+                                            <div class="color-picker-selected" style="background: transparent; border: 1px dashed var(--text-muted);">
+                                                <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M12 22C6.49 22 2 17.51 2 12S6.49 2 12 2s10 4.04 10 9c0 3.31-2.69 6-6 6h-1.77c-.28 0-.5.22-.5.5 0 .12.05.23.13.33.41.47.64 1.06.64 1.67A2.5 2.5 0 0 1 12 22zm0-18c-4.41 0-8 3.59-8 8s3.59 8 8 8c.28 0 .5-.22.5-.5a.54.54 0 0 0-.14-.35c-.41-.46-.63-1.05-.63-1.65a2.5 2.5 0 0 1 2.5-2.5H16c2.21 0 4-1.79 4-4 0-3.86-3.59-7-8-7z"/></svg>
+                                            </div>
+                                            <div class="color-option no-color-option"></div>
+                                            <div class="color-option red"></div>
+                                            <div class="color-option orange"></div>
+                                            <div class="color-option yellow"></div>
+                                            <div class="color-option green"></div>
+                                            <div class="color-option cyan"></div>
+                                            <div class="color-option blue"></div>
+                                            <div class="color-option purple"></div>
+                                            <div class="color-option pink"></div>
+                                        </div>
+                                    </div>
+                                </div>
+                                <div class="card-form-group">
+                                    <label class="query-label">Query <button type="button" class="query-help-btn" title="Query operators help">?</button></label>
+                                    <div class="query-autocomplete-wrap">
+                                        <input type="text" value="calendar:today" data-field="query" class="query-input">
+                                        <div class="query-autocomplete"></div>
+                                    </div>
+                                </div>
+                                <div class="card-form-group">
+                                    <label>Group</label>
+                                    <div class="group-by-buttons" data-group-by="date">
+                                        <button type="button" class="group-by-btn active" data-value="date">Date</button>
+                                        <button type="button" class="group-by-btn" data-value="organizer">Organizer</button>
+                                        <button type="button" class="group-by-btn" data-value="calendar">Calendar</button>
+                                    </div>
+                                </div>
+                                <div class="card-form-actions">
+                                    <button class="btn btn-danger" data-action="delete">
+                                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path></svg>
+                                        Delete
+                                    </button>
+                                    <div style="flex: 1"></div>
+                                    <button class="btn" data-action="cancel">Cancel</button>
+                                    <button class="btn btn-primary" data-action="save">Save</button>
+                                </div>
+                            </div>
+
+                            <div class="card-header" draggable="true">
+                                <button class="collapse-btn">
+                                    <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
+                                        <path d="M7.41 8.59L12 13.17l4.59-4.58L18 10l-6 6-6-6 1.41-1.41z"/>
+                                    </svg>
+                                </button>
+                                <span class="card-title">Today</span>
+                                <span class="card-unread-badge">3</span>
+                                <div class="card-actions">
+                                    <button class="icon-btn" title="Refresh" data-action="refresh">
+                                        <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
+                                            <path d="M17.65 6.35A7.958 7.958 0 0012 4c-4.42 0-7.99 3.58-7.99 8s3.57 8 7.99 8c3.73 0 6.84-2.55 7.73-6h-2.08A5.99 5.99 0 0112 18c-3.31 0-6-2.69-6-6s2.69-6 6-6c1.66 0 3.14.69 4.22 1.78L13 11h7V4l-2.35 2.35z"/>
+                                        </svg>
+                                    </button>
+                                    <button class="icon-btn" title="Edit" data-action="edit">
+                                        <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
+                                            <path d="M15.5 14h-.79l-.28-.27A6.471 6.471 0 0016 9.5 6.5 6.5 0 109.5 16c1.61 0 3.09-.59 4.23-1.57l.27.28v.79l5 4.99L20.49 19l-4.99-5zm-6 0C7.01 14 5 11.99 5 9.5S7.01 5 9.5 5 14 7.01 14 9.5 11.99 14 9.5 14z"/>
+                                        </svg>
+                                    </button>
+                                </div>
+                            </div>
+
+                            <!-- Card Body with Calendar Events -->
+                            <div class="card-body">
+                                <div class="date-header">Today</div>
+                                <div class="calendar-event-item" data-event-id="today-1">
+                                    <div class="calendar-event-row">
+                                        <span class="calendar-event-title">Team Standup</span>
+                                        <span class="calendar-event-time-compact">9:00 AM</span>
+                                    </div>
+                                    <div class="calendar-event-location-compact">
+                                        <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2C8.13 2 5 5.13 5 9c0 5.25 7 13 7 13s7-7.75 7-13c0-3.87-3.13-7-7-7zm0 9.5c-1.38 0-2.5-1.12-2.5-2.5s1.12-2.5 2.5-2.5 2.5 1.12 2.5 2.5-1.12 2.5-2.5 2.5z"/></svg>
+                                        <span>Google Meet</span>
+                                    </div>
+                                    <div class="calendar-event-response accepted">Going</div>
+                                </div>
+                                <div class="calendar-event-item" data-event-id="today-2">
+                                    <div class="calendar-event-row">
+                                        <span class="calendar-event-title">Product Review</span>
+                                        <span class="calendar-event-time-compact">2:00 PM</span>
+                                    </div>
+                                    <div class="calendar-event-description">Review Q4 roadmap and feature priorities</div>
+                                    <div class="calendar-event-location-compact">
+                                        <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2C8.13 2 5 5.13 5 9c0 5.25 7 13 7 13s7-7.75 7-13c0-3.87-3.13-7-7-7zm0 9.5c-1.38 0-2.5-1.12-2.5-2.5s1.12-2.5 2.5-2.5 2.5 1.12 2.5 2.5-1.12 2.5-2.5 2.5z"/></svg>
+                                        <span>Conference Room A</span>
+                                    </div>
+                                    <div class="calendar-event-response needsAction">Pending</div>
+                                </div>
+                                <div class="calendar-event-item" data-event-id="today-3">
+                                    <div class="calendar-event-row">
+                                        <span class="calendar-event-title">1:1 with Manager</span>
+                                        <span class="calendar-event-time-compact">4:30 PM</span>
+                                    </div>
+                                    <div class="calendar-event-response accepted">Going</div>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="card-resize-handle"></div>
+                    </div>
+
+                    <!-- Add Card Button -->
+                    <button class="add-card-btn" id="demo-add-card">
+                        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <line x1="12" y1="5" x2="12" y2="19"></line>
+                            <line x1="5" y1="12" x2="19" y2="12"></line>
+                        </svg>
+                    </button>
+                </div>
+    </section>
+
+    <!-- FAQ -->
+    <section class="faq" id="faq">
+        <h3>FAQ</h3>
+        <div class="faq-list">
+            <details>
+                <summary>What is Posta?</summary>
+                <p>A card-based email client for Gmail. Organize your inbox into columns using search queries.</p>
+            </details>
+            <details>
+                <summary>Is it free?</summary>
+                <p>Yes. Posta is open source and free to use.</p>
+            </details>
+            <details>
+                <summary>Does it work with my Gmail account?</summary>
+                <p>Yes. Posta connects directly to Gmail using OAuth. Your emails stay in Gmail.</p>
+            </details>
+            <details>
+                <summary>Can I use Gmail's search operators?</summary>
+                <p>Yes. Any query that works in Gmail works in Posta. from:, to:, has:attachment, is:unread, etc.</p>
+            </details>
+            <details>
+                <summary>Does it sync my calendar?</summary>
+                <p>Yes. You can create calendar cards to see your events alongside your emails.</p>
+            </details>
+            <details>
+                <summary>Where is my data stored?</summary>
+                <p>Locally on your device. Posta doesn't have servers. Your emails are fetched directly from Gmail.</p>
+            </details>
+            <details>
+                <summary>What if I prefer a traditional inbox?</summary>
+                <p>Pick a preset when you start. Traditional gives you inbox/sent/drafts. Power User adds more. Or start blank and build your own.</p>
+            </details>
+        </div>
+    </section>
+
+    <!-- Footer -->
+    <footer class="footer">
+        <div class="footer__bottom">
+            <p>&copy; 2025 sryo</p>
+        </div>
+    </footer>
+
+    <!-- Query Help Modal -->
+    <div class="query-help-overlay" id="query-help-overlay">
+        <div class="query-help-sheet">
+            <div class="query-help-header">
+                <h3>Query Operators</h3>
+                <button class="query-help-close" id="query-help-close">&times;</button>
+            </div>
+            <div class="query-help-body">
+                <div class="query-help-section">
+                    <h4>Search Operators</h4>
+                    <div class="query-help-table">
+                        <div class="query-help-row"><code>from:sender</code><span>From a specific sender</span></div>
+                        <div class="query-help-row"><code>to:recipient</code><span>To a specific recipient</span></div>
+                        <div class="query-help-row"><code>subject:word</code><span>Subject contains word</span></div>
+                        <div class="query-help-row"><code>has:attachment</code><span>Has attachments</span></div>
+                        <div class="query-help-row"><code>is:unread</code><span>Unread messages</span></div>
+                        <div class="query-help-row"><code>is:starred</code><span>Starred messages</span></div>
+                        <div class="query-help-row"><code>is:important</code><span>Important messages</span></div>
+                    </div>
+                </div>
+                <div class="query-help-section">
+                    <h4>Date Filters</h4>
+                    <div class="query-help-table">
+                        <div class="query-help-row"><code>newer_than:1d</code><span>Last 24 hours</span></div>
+                        <div class="query-help-row"><code>newer_than:7d</code><span>Last week</span></div>
+                        <div class="query-help-row"><code>older_than:1m</code><span>Older than a month</span></div>
+                        <div class="query-help-row"><code>after:2024/01/01</code><span>After specific date</span></div>
+                    </div>
+                </div>
+                <div class="query-help-section">
+                    <h4>Categories</h4>
+                    <div class="query-help-table">
+                        <div class="query-help-row"><code>category:primary</code><span>Primary inbox</span></div>
+                        <div class="query-help-row"><code>category:social</code><span>Social emails</span></div>
+                        <div class="query-help-row"><code>category:promotions</code><span>Promotional emails</span></div>
+                        <div class="query-help-row"><code>category:updates</code><span>Updates and notifications</span></div>
+                    </div>
+                </div>
+                <div class="query-help-section">
+                    <h4>Calendar Operators</h4>
+                    <div class="query-help-table">
+                        <div class="query-help-row"><code>calendar:today</code><span>Today's events</span></div>
+                        <div class="query-help-row"><code>calendar:7d</code><span>Next 7 days</span></div>
+                        <div class="query-help-row"><code>calendar:week</code><span>This week</span></div>
+                        <div class="query-help-row"><code>calendar:month</code><span>This month</span></div>
+                    </div>
+                </div>
+                <div class="query-help-section" style="flex-basis: 100%;">
+                    <h4>Examples</h4>
+                    <div class="query-help-examples">
+                        <code>from:boss is:unread</code>
+                        <code>label:inbox newer_than:1d</code>
+                        <code>has:attachment -newsletter</code>
+                        <code>calendar:week with:john</code>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+            // Smooth scroll for anchor links
+            document.querySelectorAll('a[href^="#"]').forEach(anchor => {
+                anchor.addEventListener('click', function (e) {
+                    e.preventDefault();
+                    const target = document.querySelector(this.getAttribute('href'));
+                    if (target) {
+                        target.scrollIntoView({ behavior: 'smooth', block: 'start' });
+                    }
+                });
+            });
+
+            // ========== FEATURE CARDS ANIMATION ==========
+            const observer = new IntersectionObserver((entries) => {
+                entries.forEach(entry => {
+                    if (entry.isIntersecting) {
+                        entry.target.style.opacity = '1';
+                        entry.target.style.transform = 'translateY(0)';
+                    }
+                });
+            }, { threshold: 0.1, rootMargin: '0px 0px -80px 0px' });
+
+            document.querySelectorAll('.feature-card').forEach((card, index) => {
+                card.style.opacity = '0';
+                card.style.transform = 'translateY(30px)';
+                card.style.transition = `all 0.6s cubic-bezier(0.4, 0, 0.2, 1) ${index * 0.08}s`;
+                observer.observe(card);
+            });
+
+            // ========== DEMO DECK INTERACTIVITY ==========
+            const deck = document.getElementById('demo-deck');
+            const MIN_CARD_WIDTH = 200;
+            const MAX_CARD_WIDTH = 600;
+            const DEFAULT_CARD_WIDTH = 320;
+
+            // Default Posta preset - resets on every page load
+            const defaultCards = [
+                { id: 'hot', name: 'Hot', query: 'is:important newer_than:1d', color: 'blue', groupBy: 'date' },
+                { id: 'meh', name: 'Meh', query: 'category:promotions OR category:updates', color: 'red', groupBy: 'date' },
+                { id: 'files', name: 'Files', query: 'has:attachment newer_than:1d', color: 'purple', groupBy: 'date' }
+            ];
+
+            // Color hex map
+            const colorHexMap = {
+                red: '#E53935', orange: '#FB8C00', yellow: '#FDD835', green: '#43A047',
+                cyan: '#00ACC1', blue: '#1E88E5', purple: '#5E35B1', pink: '#D81B60'
+            };
+
+            // Background color map (lighter versions for deck background)
+            const bgColorMap = {
+                red: 'rgba(229, 57, 53, 0.18)',
+                orange: 'rgba(251, 140, 0, 0.18)',
+                yellow: 'rgba(253, 216, 53, 0.20)',
+                green: 'rgba(67, 160, 71, 0.18)',
+                cyan: 'rgba(0, 172, 193, 0.18)',
+                blue: 'rgba(30, 136, 229, 0.18)',
+                purple: 'rgba(94, 53, 177, 0.18)',
+                pink: 'rgba(216, 27, 96, 0.18)'
+            };
+
+            // ========== CARD RESIZE ==========
+            let isResizing = false;
+            let resizeCard = null;
+            let startX = 0;
+            let startWidth = 0;
+
+            deck.querySelectorAll('.card-resize-handle').forEach(handle => {
+                handle.addEventListener('mousedown', (e) => {
+                    e.preventDefault();
+                    isResizing = true;
+                    resizeCard = handle.previousElementSibling;
+                    startX = e.clientX;
+                    startWidth = resizeCard.offsetWidth;
+                    deck.classList.add('resizing');
+                    document.body.style.cursor = 'ew-resize';
+                });
+            });
+
+            document.addEventListener('mousemove', (e) => {
+                if (!isResizing || !resizeCard) return;
+                const delta = e.clientX - startX;
+                const newWidth = Math.min(MAX_CARD_WIDTH, Math.max(MIN_CARD_WIDTH, startWidth + delta));
+                // Resize ALL cards together
+                deck.querySelectorAll('.card').forEach(card => {
+                    card.style.setProperty('--card-width', newWidth + 'px');
+                });
+            });
+
+            document.addEventListener('mouseup', () => {
+                if (isResizing) {
+                    isResizing = false;
+                    resizeCard = null;
+                    deck.classList.remove('resizing');
+                    document.body.style.cursor = '';
+                }
+            });
+
+            // ========== COLLAPSE / EXPAND ==========
+            deck.querySelectorAll('.collapse-btn').forEach(btn => {
+                btn.addEventListener('click', (e) => {
+                    e.stopPropagation();
+                    const card = btn.closest('.card');
+                    if (card && !card.classList.contains('editing')) {
+                        card.classList.toggle('collapsed');
+                    }
+                });
+            });
+
+            // Click collapsed card to expand
+            deck.querySelectorAll('.card').forEach(card => {
+                card.addEventListener('click', (e) => {
+                    if (card.classList.contains('collapsed') && !e.target.closest('button')) {
+                        card.classList.remove('collapsed');
+                    }
+                });
+            });
+
+            // ========== EDIT MODE ==========
+            function enterEditMode(card) {
+                if (!card) return;
+                card.classList.add('editing');
+                card.classList.remove('collapsed');
+            }
+
+            function exitEditMode(card, save = false) {
+                if (!card) return;
+
+                const cardId = card.dataset.cardId || '';
+                const isNewCard = cardId.startsWith('new-card-');
+
+                if (save) {
+                    // Update card with form values
+                    const nameInput = card.querySelector('input[data-field="name"]');
+                    const queryInput = card.querySelector('input[data-field="query"]');
+                    const titleEl = card.querySelector('.card-title');
+
+                    if (nameInput && titleEl) {
+                        titleEl.textContent = nameInput.value || 'Untitled';
+                    }
+                    card.classList.remove('editing');
+                } else {
+                    // Cancel - if it's a new card that was never saved, remove it
+                    if (isNewCard) {
+                        const wrapper = card.closest('.card-wrapper');
+                        if (wrapper) wrapper.remove();
+                        closeAllColorPickers();
+                        return;
+                    }
+                    card.classList.remove('editing');
+                }
+
+                closeAllColorPickers();
+            }
+
+            // Edit button click
+            deck.querySelectorAll('[data-action="edit"]').forEach(btn => {
+                btn.addEventListener('click', (e) => {
+                    e.stopPropagation();
+                    const card = btn.closest('.card');
+                    enterEditMode(card);
+                });
+            });
+
+            // Save button click
+            deck.querySelectorAll('[data-action="save"]').forEach(btn => {
+                btn.addEventListener('click', (e) => {
+                    e.stopPropagation();
+                    const card = btn.closest('.card');
+                    exitEditMode(card, true);
+                });
+            });
+
+            // Cancel button click
+            deck.querySelectorAll('[data-action="cancel"]').forEach(btn => {
+                btn.addEventListener('click', (e) => {
+                    e.stopPropagation();
+                    const card = btn.closest('.card');
+                    exitEditMode(card, false);
+                });
+            });
+
+            // Delete button click
+            deck.querySelectorAll('[data-action="delete"]').forEach(btn => {
+                btn.addEventListener('click', (e) => {
+                    e.stopPropagation();
+                    const wrapper = btn.closest('.card-wrapper');
+                    if (wrapper && deck.querySelectorAll('.card-wrapper').length > 1) {
+                        wrapper.remove();
+                    }
+                });
+            });
+
+            // ========== GROUP BY BUTTONS ==========
+            deck.querySelectorAll('.group-by-buttons').forEach(group => {
+                group.querySelectorAll('.group-by-btn').forEach(btn => {
+                    btn.addEventListener('click', (e) => {
+                        e.stopPropagation();
+                        group.querySelectorAll('.group-by-btn').forEach(b => b.classList.remove('active'));
+                        btn.classList.add('active');
+                        group.dataset.groupBy = btn.dataset.value;
+
+                        // Update date headers based on grouping
+                        const card = btn.closest('.card');
+                        const dateHeaders = card.querySelectorAll('.date-header');
+                        const groupValue = btn.dataset.value;
+
+                        if (groupValue === 'sender') {
+                            dateHeaders.forEach((h, i) => {
+                                const senders = ['sryo', 'Legal Dept', 'Product Team', 'Finance', 'Support Lead'];
+                                h.textContent = senders[i % senders.length] || 'Unknown Sender';
+                            });
+                        } else if (groupValue === 'label') {
+                            dateHeaders.forEach((h, i) => {
+                                const labels = ['Important', 'Work', 'Personal', 'Updates', 'Promotions'];
+                                h.textContent = labels[i % labels.length] || 'No Label';
+                            });
+                        } else {
+                            dateHeaders.forEach((h, i) => {
+                                const dates = ['Today', 'Yesterday', 'This Week', 'Last Week'];
+                                h.textContent = dates[i % dates.length] || 'Older';
+                            });
+                        }
+                    });
+                });
+            });
+
+            // ========== QUERY AUTOCOMPLETE ==========
+            const GMAIL_OPERATORS = [
+                { op: "from:", desc: "Sender address" },
+                { op: "to:", desc: "Recipient address" },
+                { op: "subject:", desc: "Words in subject" },
+                { op: "label:", desc: "Messages with label" },
+                { op: "has:attachment", desc: "Has attachments" },
+                { op: "is:unread", desc: "Unread messages" },
+                { op: "is:read", desc: "Read messages" },
+                { op: "is:starred", desc: "Starred messages" },
+                { op: "is:important", desc: "Important messages" },
+                { op: "in:inbox", desc: "In inbox" },
+                { op: "in:sent", desc: "In sent" },
+                { op: "in:trash", desc: "In trash" },
+                { op: "newer_than:", desc: "Messages newer than (e.g. 7d)" },
+                { op: "older_than:", desc: "Messages older than" },
+                { op: "category:primary", desc: "Primary category" },
+                { op: "category:promotions", desc: "Promotions category" },
+                { op: "category:updates", desc: "Updates category" },
+                { op: "category:social", desc: "Social category" },
+            ];
+
+            let activeAutocomplete = null;
+            let autocompleteIndex = 0;
+
+            function getQuerySuggestions(query) {
+                if (!query) return [];
+                const parts = query.split(/\s+/);
+                const lastPart = parts[parts.length - 1].toLowerCase();
+                if (!lastPart || lastPart.length < 1) return [];
+
+                return GMAIL_OPERATORS.filter(({ op }) =>
+                    op.toLowerCase().startsWith(lastPart) ||
+                    (lastPart.length >= 2 && op.toLowerCase().includes(lastPart))
+                ).slice(0, 6);
+            }
+
+            function showAutocomplete(input, dropdown) {
+                const query = input.value;
+                const suggestions = getQuerySuggestions(query);
+
+                if (suggestions.length === 0) {
+                    dropdown.classList.remove('open');
+                    dropdown.innerHTML = '';
+                    return;
+                }
+
+                dropdown.innerHTML = suggestions.map((s, i) => `
+                    <div class="query-autocomplete-item ${i === autocompleteIndex ? 'selected' : ''}" data-index="${i}">
+                        <span class="query-autocomplete-op">${s.op}</span>
+                        <span class="query-autocomplete-desc">${s.desc}</span>
+                    </div>
+                `).join('');
+
+                dropdown.classList.add('open');
+                activeAutocomplete = { input, dropdown, suggestions };
+
+                dropdown.querySelectorAll('.query-autocomplete-item').forEach(item => {
+                    item.addEventListener('mousedown', (e) => {
+                        e.preventDefault();
+                        applySuggestion(parseInt(item.dataset.index));
+                    });
+                });
+            }
+
+            function applySuggestion(index) {
+                if (!activeAutocomplete) return;
+                const { input, dropdown, suggestions } = activeAutocomplete;
+                const suggestion = suggestions[index];
+                if (!suggestion) return;
+
+                const parts = input.value.split(/\s+/);
+                parts[parts.length - 1] = suggestion.op;
+                input.value = parts.join(' ');
+                dropdown.classList.remove('open');
+                autocompleteIndex = 0;
+                input.focus();
+            }
+
+            deck.querySelectorAll('.query-input').forEach(input => {
+                const dropdown = input.nextElementSibling;
+
+                input.addEventListener('input', () => {
+                    autocompleteIndex = 0;
+                    showAutocomplete(input, dropdown);
+                });
+
+                input.addEventListener('focus', () => {
+                    showAutocomplete(input, dropdown);
+                });
+
+                input.addEventListener('blur', () => {
+                    setTimeout(() => dropdown.classList.remove('open'), 150);
+                });
+
+                input.addEventListener('keydown', (e) => {
+                    if (!dropdown.classList.contains('open')) return;
+                    const suggestions = activeAutocomplete?.suggestions || [];
+
+                    if (e.key === 'ArrowDown') {
+                        e.preventDefault();
+                        autocompleteIndex = (autocompleteIndex + 1) % suggestions.length;
+                        showAutocomplete(input, dropdown);
+                    } else if (e.key === 'ArrowUp') {
+                        e.preventDefault();
+                        autocompleteIndex = (autocompleteIndex - 1 + suggestions.length) % suggestions.length;
+                        showAutocomplete(input, dropdown);
+                    } else if (e.key === 'Enter' || e.key === 'Tab') {
+                        if (suggestions.length > 0) {
+                            e.preventDefault();
+                            applySuggestion(autocompleteIndex);
+                        }
+                    } else if (e.key === 'Escape') {
+                        dropdown.classList.remove('open');
+                    }
+                });
+            });
+
+            // ========== COLOR PICKER ==========
+            const bgColorPicker = document.getElementById('bg-color-picker');
+            const bgColorSelected = document.getElementById('bg-color-selected');
+
+            function closeAllColorPickers() {
+                document.querySelectorAll('.color-picker.open').forEach(picker => {
+                    picker.classList.remove('open');
+                });
+            }
+
+            // Background color picker
+            bgColorSelected.addEventListener('click', (e) => {
+                e.stopPropagation();
+                const wasOpen = bgColorPicker.classList.contains('open');
+                closeAllColorPickers();
+                if (!wasOpen) {
+                    bgColorPicker.classList.add('open');
+                }
+            });
+
+            bgColorPicker.querySelectorAll('.color-option').forEach(option => {
+                option.addEventListener('click', (e) => {
+                    e.stopPropagation();
+                    const colorName = option.dataset.bgColor;
+
+                    if (colorName === 'none') {
+                        document.body.style.background = '';
+                        document.documentElement.style.setProperty('--accent', '#0071E3');
+                        bgColorSelected.style.background = '';
+                        bgColorSelected.classList.add('no-color');
+                    } else {
+                        document.body.style.background = bgColorMap[colorName];
+                        document.documentElement.style.setProperty('--accent', colorHexMap[colorName]);
+                        bgColorSelected.style.background = colorHexMap[colorName];
+                        bgColorSelected.classList.remove('no-color');
+                    }
+
+                    bgColorPicker.classList.remove('open');
+                });
+            });
+
+            // Card color pickers
+            deck.querySelectorAll('.color-picker-selected').forEach(btn => {
+                btn.addEventListener('click', (e) => {
+                    e.stopPropagation();
+                    const picker = btn.closest('.color-picker');
+                    const wasOpen = picker.classList.contains('open');
+                    closeAllColorPickers();
+                    if (!wasOpen) {
+                        picker.classList.add('open');
+                    }
+                });
+            });
+
+            deck.querySelectorAll('.color-option').forEach(option => {
+                option.addEventListener('click', (e) => {
+                    e.stopPropagation();
+                    const picker = option.closest('.color-picker');
+                    const card = option.closest('.card');
+                    const selectedBtn = picker.querySelector('.color-picker-selected');
+
+                    // Get the color class
+                    const colorClass = Array.from(option.classList).find(c =>
+                        ['red', 'orange', 'yellow', 'green', 'cyan', 'blue', 'purple', 'pink'].includes(c)
+                    );
+
+                    if (option.classList.contains('no-color-option')) {
+                        // Remove color
+                        card.removeAttribute('data-color');
+                        selectedBtn.style.background = '';
+                        selectedBtn.classList.add('no-color');
+                    } else if (colorClass) {
+                        // Set color
+                        card.setAttribute('data-color', colorClass);
+                        selectedBtn.style.background = colorHexMap[colorClass];
+                        selectedBtn.classList.remove('no-color');
+                    }
+
+                    picker.classList.remove('open');
+                });
+            });
+
+            // Close picker when clicking outside
+            document.addEventListener('click', (e) => {
+                if (!e.target.closest('.color-picker')) {
+                    closeAllColorPickers();
+                }
+            });
+
+            // Escape key closes picker and edit mode
+            document.addEventListener('keydown', (e) => {
+                if (e.key === 'Escape') {
+                    closeAllColorPickers();
+                    deck.querySelectorAll('.card.editing').forEach(card => {
+                        exitEditMode(card, false);
+                    });
+                }
+            });
+
+            // ========== CREATE NEW CARD ==========
+            const addCardBtn = document.getElementById('demo-add-card');
+            let newCardCounter = 0;
+
+            function createNewCard() {
+                newCardCounter++;
+                const newId = 'new-card-' + newCardCounter;
+
+                const wrapper = document.createElement('div');
+                wrapper.className = 'card-wrapper';
+                wrapper.draggable = false;
+
+                wrapper.innerHTML = `
+                    <div class="card editing" data-card-id="${newId}">
+                        <div class="card-form">
+                            <div class="card-form-group">
+                                <label>Name</label>
+                                <div class="name-color-row">
+                                    <input type="text" value="" data-field="name" placeholder="Card name">
+                                    <div class="color-picker">
+                                        <div class="color-picker-selected no-color" style="background: #ffffff;">
+                                            <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M12 22C6.49 22 2 17.51 2 12S6.49 2 12 2s10 4.04 10 9c0 3.31-2.69 6-6 6h-1.77c-.28 0-.5.22-.5.5 0 .12.05.23.13.33.41.47.64 1.06.64 1.67A2.5 2.5 0 0 1 12 22zm0-18c-4.41 0-8 3.59-8 8s3.59 8 8 8c.28 0 .5-.22.5-.5a.54.54 0 0 0-.14-.35c-.41-.46-.63-1.05-.63-1.65a2.5 2.5 0 0 1 2.5-2.5H16c2.21 0 4-1.79 4-4 0-3.86-3.59-7-8-7z"/></svg>
+                                        </div>
+                                        <div class="color-option no-color-option"></div>
+                                        <div class="color-option red"></div>
+                                        <div class="color-option orange"></div>
+                                        <div class="color-option yellow"></div>
+                                        <div class="color-option green"></div>
+                                        <div class="color-option cyan"></div>
+                                        <div class="color-option blue"></div>
+                                        <div class="color-option purple"></div>
+                                        <div class="color-option pink"></div>
+                                    </div>
+                                </div>
+                            </div>
+                            <div class="card-form-group">
+                                <label class="query-label">Query <button type="button" class="query-help-btn" title="Query operators help">?</button></label>
+                                <input type="text" value="" data-field="query" placeholder="e.g. from:boss is:unread">
+                            </div>
+                            <div class="card-form-group">
+                                <label>Group</label>
+                                <div class="group-by-buttons">
+                                    <button type="button" class="group-by-btn active">Date</button>
+                                    <button type="button" class="group-by-btn">Sender</button>
+                                    <button type="button" class="group-by-btn">Label</button>
+                                </div>
+                            </div>
+                            <div class="card-form-actions">
+                                <button class="btn btn-danger" data-action="delete">
+                                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path></svg>
+                                    Delete
+                                </button>
+                                <div style="flex: 1"></div>
+                                <button class="btn" data-action="cancel">Cancel</button>
+                                <button class="btn btn-primary" data-action="save">Save</button>
+                            </div>
+                        </div>
+                        <div class="card-header" draggable="true">
+                            <button class="collapse-btn">
+                                <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
+                                    <path d="M7.41 8.59L12 13.17l4.59-4.58L18 10l-6 6-6-6 1.41-1.41z"/>
+                                </svg>
+                            </button>
+                            <span class="card-title">New Card</span>
+                            <span class="card-unread-badge">0</span>
+                            <div class="card-actions">
+                                <button class="icon-btn" title="Refresh" data-action="refresh">
+                                    <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
+                                        <path d="M17.65 6.35A7.958 7.958 0 0012 4c-4.42 0-7.99 3.58-7.99 8s3.57 8 7.99 8c3.73 0 6.84-2.55 7.73-6h-2.08A5.99 5.99 0 0112 18c-3.31 0-6-2.69-6-6s2.69-6 6-6c1.66 0 3.14.69 4.22 1.78L13 11h7V4l-2.35 2.35z"/>
+                                    </svg>
+                                </button>
+                                <button class="icon-btn" title="Edit" data-action="edit">
+                                    <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
+                                        <path d="M15.5 14h-.79l-.28-.27A6.471 6.471 0 0016 9.5 6.5 6.5 0 109.5 16c1.61 0 3.09-.59 4.23-1.57l.27.28v.79l5 4.99L20.49 19l-4.99-5zm-6 0C7.01 14 5 11.99 5 9.5S7.01 5 9.5 5 14 7.01 14 9.5 11.99 14 9.5 14z"/>
+                                    </svg>
+                                </button>
+                            </div>
+                        </div>
+                        <div class="card-body">
+                            <div class="date-header">No emails yet</div>
+                        </div>
+                    </div>
+                    <div class="card-resize-handle"></div>
+                `;
+
+                // Insert before add button
+                deck.insertBefore(wrapper, addCardBtn);
+
+                // Attach event listeners to new card
+                attachCardEventListeners(wrapper);
+
+                // Focus the name input
+                const nameInput = wrapper.querySelector('input[data-field="name"]');
+                if (nameInput) nameInput.focus();
+            }
+
+            function attachCardEventListeners(wrapper) {
+                const card = wrapper.querySelector('.card');
+                const resizeHandle = wrapper.querySelector('.card-resize-handle');
+
+                // Resize
+                resizeHandle.addEventListener('mousedown', (e) => {
+                    e.preventDefault();
+                    isResizing = true;
+                    resizeCard = card;
+                    startX = e.clientX;
+                    startWidth = card.offsetWidth;
+                    deck.classList.add('resizing');
+                    document.body.style.cursor = 'ew-resize';
+                });
+
+                // Collapse button
+                const collapseBtn = card.querySelector('.collapse-btn');
+                collapseBtn.addEventListener('click', (e) => {
+                    e.stopPropagation();
+                    if (!card.classList.contains('editing')) {
+                        card.classList.toggle('collapsed');
+                    }
+                });
+
+                // Click collapsed card to expand
+                card.addEventListener('click', (e) => {
+                    if (card.classList.contains('collapsed') && !e.target.closest('button')) {
+                        card.classList.remove('collapsed');
+                    }
+                });
+
+                // Edit button
+                card.querySelector('[data-action="edit"]').addEventListener('click', (e) => {
+                    e.stopPropagation();
+                    enterEditMode(card);
+                });
+
+                // Save button
+                card.querySelector('[data-action="save"]').addEventListener('click', (e) => {
+                    e.stopPropagation();
+                    exitEditMode(card, true);
+                });
+
+                // Cancel button
+                card.querySelector('[data-action="cancel"]').addEventListener('click', (e) => {
+                    e.stopPropagation();
+                    exitEditMode(card, false);
+                });
+
+                // Delete button
+                card.querySelector('[data-action="delete"]').addEventListener('click', (e) => {
+                    e.stopPropagation();
+                    if (deck.querySelectorAll('.card-wrapper').length > 1) {
+                        wrapper.remove();
+                    }
+                });
+
+                // Group by buttons
+                const groupBtns = card.querySelectorAll('.group-by-btn');
+                groupBtns.forEach(btn => {
+                    btn.addEventListener('click', (e) => {
+                        e.stopPropagation();
+                        groupBtns.forEach(b => b.classList.remove('active'));
+                        btn.classList.add('active');
+                    });
+                });
+
+                // Color picker
+                const pickerSelected = card.querySelector('.color-picker-selected');
+                pickerSelected.addEventListener('click', (e) => {
+                    e.stopPropagation();
+                    const picker = pickerSelected.closest('.color-picker');
+                    const wasOpen = picker.classList.contains('open');
+                    closeAllColorPickers();
+                    if (!wasOpen) picker.classList.add('open');
+                });
+
+                card.querySelectorAll('.color-option').forEach(option => {
+                    option.addEventListener('click', (e) => {
+                        e.stopPropagation();
+                        const picker = option.closest('.color-picker');
+                        const selectedBtn = picker.querySelector('.color-picker-selected');
+
+                        const colorClass = Array.from(option.classList).find(c =>
+                            ['red', 'orange', 'yellow', 'green', 'cyan', 'blue', 'purple', 'pink'].includes(c)
+                        );
+
+                        if (option.classList.contains('no-color-option')) {
+                            card.removeAttribute('data-color');
+                            selectedBtn.style.background = '';
+                            selectedBtn.classList.add('no-color');
+                        } else if (colorClass) {
+                            card.setAttribute('data-color', colorClass);
+                            selectedBtn.style.background = colorHexMap[colorClass];
+                            selectedBtn.classList.remove('no-color');
+                        }
+
+                        picker.classList.remove('open');
+                    });
+                });
+
+                // Drag and drop for this card
+                const header = card.querySelector('.card-header');
+                header.addEventListener('dragstart', onDragStart);
+                header.addEventListener('dragend', onDragEnd);
+                wrapper.addEventListener('dragover', onDragOver);
+                wrapper.addEventListener('drop', onDrop);
+            }
+
+            addCardBtn.addEventListener('click', createNewCard);
+
+            // ========== DRAG AND DROP REORDER ==========
+            let draggedWrapper = null;
+
+            function onDragStart(e) {
+                const card = e.target.closest('.card');
+                if (card.classList.contains('editing')) {
+                    e.preventDefault();
+                    return;
+                }
+
+                draggedWrapper = e.target.closest('.card-wrapper');
+                card.classList.add('dragging');
+                e.dataTransfer.effectAllowed = 'move';
+                e.dataTransfer.setData('text/plain', ''); // Required for Firefox
+            }
+
+            function onDragEnd(e) {
+                const card = e.target.closest('.card');
+                card.classList.remove('dragging');
+                draggedWrapper = null;
+
+                // Remove all drop indicators
+                deck.querySelectorAll('.card-wrapper').forEach(w => {
+                    w.style.marginLeft = '';
+                });
+            }
+
+            function onDragOver(e) {
+                e.preventDefault();
+                if (!draggedWrapper) return;
+
+                const wrapper = e.target.closest('.card-wrapper');
+                if (!wrapper || wrapper === draggedWrapper) return;
+
+                e.dataTransfer.dropEffect = 'move';
+
+                // Visual indicator
+                const rect = wrapper.getBoundingClientRect();
+                const midX = rect.left + rect.width / 2;
+
+                deck.querySelectorAll('.card-wrapper').forEach(w => {
+                    w.style.marginLeft = '';
+                });
+
+                if (e.clientX < midX) {
+                    wrapper.style.marginLeft = '60px';
+                }
+            }
+
+            function onDrop(e) {
+                e.preventDefault();
+                if (!draggedWrapper) return;
+
+                const targetWrapper = e.target.closest('.card-wrapper');
+                if (!targetWrapper || targetWrapper === draggedWrapper) return;
+
+                const rect = targetWrapper.getBoundingClientRect();
+                const midX = rect.left + rect.width / 2;
+
+                if (e.clientX < midX) {
+                    deck.insertBefore(draggedWrapper, targetWrapper);
+                } else {
+                    const next = targetWrapper.nextElementSibling;
+                    if (next && next !== addCardBtn) {
+                        deck.insertBefore(draggedWrapper, next);
+                    } else {
+                        deck.insertBefore(draggedWrapper, addCardBtn);
+                    }
+                }
+
+                // Clear indicators
+                deck.querySelectorAll('.card-wrapper').forEach(w => {
+                    w.style.marginLeft = '';
+                });
+            }
+
+            // Attach drag handlers to existing cards
+            deck.querySelectorAll('.card-header').forEach(header => {
+                header.addEventListener('dragstart', onDragStart);
+                header.addEventListener('dragend', onDragEnd);
+            });
+
+            deck.querySelectorAll('.card-wrapper').forEach(wrapper => {
+                wrapper.addEventListener('dragover', onDragOver);
+                wrapper.addEventListener('drop', onDrop);
+            });
+
+            // ========== THREAD SELECTION & ACTIONS WHEEL ==========
+            // Matches App.tsx ActionsWheel implementation exactly
+            let activeWheel = null;
+
+            // Position radial wheel buttons - exact copy from App.tsx
+            function positionWheelButtons(wheel) {
+                const buttons = wheel.querySelectorAll('.bulk-btn');
+                const innerRadius = 38;
+                const numActions = buttons.length;
+
+                buttons.forEach((btn, i) => {
+                    let x = -innerRadius;
+                    let y = 0;
+                    if (numActions > 1) {
+                        // 120 degree arc from 4pi/3 down to 2pi/3
+                        // In DOM coords (y increases downward):
+                        // i=0 -> 4pi/3 (240 deg) -> top-left
+                        // i=max -> 2pi/3 (120 deg) -> bottom-left
+                        const angle = (4 * Math.PI / 3) - (i / (numActions - 1)) * (2 * Math.PI / 3);
+                        x = innerRadius * Math.cos(angle);
+                        y = innerRadius * Math.sin(angle);
+                    }
+                    btn.style.left = `calc(50% + ${x.toFixed(1)}px - 14px)`;
+                    btn.style.top = `calc(50% + ${y.toFixed(1)}px - 14px)`;
+                });
+            }
+
+            // Initialize all wheels
+            deck.querySelectorAll('.bulk-actions-wheel').forEach(positionWheelButtons);
+
+            // Show wheel on thread hover
+            deck.querySelectorAll('.thread').forEach(thread => {
+                const wheel = thread.querySelector('.bulk-actions-wheel');
+                const checkbox = thread.querySelector('.thread-checkbox');
+
+                thread.addEventListener('mouseenter', () => {
+                    if (activeWheel && activeWheel !== wheel) {
+                        activeWheel.classList.remove('open');
+                    }
+                    wheel.classList.add('open');
+                    activeWheel = wheel;
+                });
+
+                thread.addEventListener('mouseleave', (e) => {
+                    // Keep open if selected
+                    if (!thread.classList.contains('selected')) {
+                        wheel.classList.remove('open');
+                        if (activeWheel === wheel) activeWheel = null;
+                    }
+                });
+
+                // Checkbox click - toggle selection
+                checkbox.addEventListener('click', (e) => {
+                    e.stopPropagation();
+                    thread.classList.toggle('selected');
+                    checkbox.checked = thread.classList.contains('selected');
+                    if (thread.classList.contains('selected')) {
+                        wheel.classList.add('open');
+                        activeWheel = wheel;
+                    }
+                });
+
+                // Thread click - toggle selection via checkbox
+                thread.addEventListener('click', (e) => {
+                    if (e.target.closest('button') || e.target.closest('input')) return;
+                    thread.classList.toggle('selected');
+                    checkbox.checked = thread.classList.contains('selected');
+                    if (thread.classList.contains('selected')) {
+                        wheel.classList.add('open');
+                    }
+                });
+            });
+
+            // Bulk action button handlers
+            deck.querySelectorAll('.bulk-btn').forEach(btn => {
+                btn.addEventListener('click', (e) => {
+                    e.stopPropagation();
+                    const thread = btn.closest('.thread');
+                    const action = btn.dataset.action;
+
+                    if (action === 'star') {
+                        btn.classList.toggle('starred');
+                        const svg = btn.querySelector('svg');
+                        if (btn.classList.contains('starred')) {
+                            svg.setAttribute('fill', 'currentColor');
+                        } else {
+                            svg.setAttribute('fill', 'none');
+                        }
+                    }
+
+                    if (action === 'reply') {
+                        openQuickReply(thread);
+                        return;
+                    }
+
+                    if (action === 'archive' || action === 'delete') {
+                        const threadClone = thread.cloneNode(true);
+                        const parentCard = thread.closest('.card-body');
+                        const nextSibling = thread.nextElementSibling;
+
+                        thread.style.transition = 'opacity 0.2s, transform 0.2s';
+                        thread.style.opacity = '0';
+                        thread.style.transform = 'translateX(20px)';
+                        setTimeout(() => thread.remove(), 200);
+
+                        showUndoToast(action === 'delete' ? 'Deleted' : 'Archived', () => {
+                            if (nextSibling) {
+                                parentCard.insertBefore(threadClone, nextSibling);
+                            } else {
+                                parentCard.appendChild(threadClone);
+                            }
+                        });
+                    }
+                });
+            });
+
+            let undoToast = null;
+            let undoTimeout = null;
+
+            function showUndoToast(message, onUndo) {
+                if (undoToast) {
+                    undoToast.remove();
+                    clearTimeout(undoTimeout);
+                }
+
+                undoToast = document.createElement('div');
+                undoToast.className = 'undo-toast';
+                undoToast.innerHTML = `
+                    <div class="toast-progress"></div>
+                    <span class="toast-message">${message}</span>
+                    <button class="toast-undo-btn">Undo</button>
+                `;
+                document.body.appendChild(undoToast);
+
+                undoToast.querySelector('.toast-undo-btn').addEventListener('click', () => {
+                    onUndo();
+                    undoToast.remove();
+                    undoToast = null;
+                    clearTimeout(undoTimeout);
+                });
+
+                undoTimeout = setTimeout(() => {
+                    if (undoToast) {
+                        undoToast.remove();
+                        undoToast = null;
+                    }
+                }, 5000);
+            }
+
+            // ========== QUERY HELP MODAL ==========
+            const queryHelpOverlay = document.getElementById('query-help-overlay');
+
+            document.querySelectorAll('.query-help-btn').forEach(btn => {
+                btn.addEventListener('click', (e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    queryHelpOverlay.classList.add('open');
+                });
+            });
+
+            document.getElementById('query-help-close').addEventListener('click', () => {
+                queryHelpOverlay.classList.remove('open');
+            });
+
+            queryHelpOverlay.addEventListener('click', (e) => {
+                if (e.target === queryHelpOverlay) {
+                    queryHelpOverlay.classList.remove('open');
+                }
+            });
+
+            // ========== QUICK REPLY ==========
+            let currentQuickReplyThread = null;
+
+            function openQuickReply(thread) {
+                closeQuickReply();
+                thread.classList.add('replying');
+                currentQuickReplyThread = thread;
+
+                const replyBox = document.createElement('div');
+                replyBox.className = 'quick-reply-box';
+                replyBox.innerHTML = `
+                    <textarea class="quick-reply-input" placeholder="Write a reply..."></textarea>
+                    <div class="quick-reply-actions">
+                        <button class="btn quick-reply-cancel">Cancel</button>
+                        <button class="btn btn-primary quick-reply-send">Send</button>
+                    </div>
+                `;
+                thread.after(replyBox);
+
+                const textarea = replyBox.querySelector('.quick-reply-input');
+                textarea.focus();
+
+                replyBox.querySelector('.quick-reply-cancel').addEventListener('click', closeQuickReply);
+                replyBox.querySelector('.quick-reply-send').addEventListener('click', () => {
+                    // In demo mode, just close and show a toast
+                    closeQuickReply();
+                    showDemoToast('Reply sent (demo)');
+                });
+
+                textarea.addEventListener('keydown', (e) => {
+                    if (e.key === 'Escape') {
+                        closeQuickReply();
+                    }
+                    if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') {
+                        closeQuickReply();
+                        showDemoToast('Reply sent (demo)');
+                    }
+                });
+            }
+
+            function closeQuickReply() {
+                if (currentQuickReplyThread) {
+                    currentQuickReplyThread.classList.remove('replying');
+                    const replyBox = currentQuickReplyThread.nextElementSibling;
+                    if (replyBox && replyBox.classList.contains('quick-reply-box')) {
+                        replyBox.remove();
+                    }
+                    currentQuickReplyThread = null;
+                }
+            }
+
+            function showDemoToast(message) {
+                const toast = document.createElement('div');
+                toast.className = 'demo-toast';
+                toast.textContent = message;
+                toast.style.cssText = `
+                    position: fixed;
+                    bottom: 20px;
+                    left: 50%;
+                    transform: translateX(-50%);
+                    background: var(--bg-tertiary);
+                    color: var(--text-primary);
+                    padding: 12px 20px;
+                    border-radius: 8px;
+                    box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+                    z-index: 1000;
+                    font-size: 14px;
+                `;
+                document.body.appendChild(toast);
+                setTimeout(() => toast.remove(), 2000);
+            }
+
+            // Close quick reply when clicking outside
+            document.addEventListener('click', (e) => {
+                if (currentQuickReplyThread && !e.target.closest('.quick-reply-box') && !e.target.closest('.bulk-btn[data-action="reply"]')) {
+                    closeQuickReply();
+                }
+            });
+        </script>
+</body>
+
+</html>
