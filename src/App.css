@@ -1023,6 +1023,7 @@ select:focus:not(:focus-visible) {
     opacity: 0.8;
     z-index: 100;
     box-shadow: 0 8px 24px rgba(0, 0, 0, 0.2);
+    transition: none !important;
 }
 
 /* Thread List */

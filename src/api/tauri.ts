@@ -131,6 +131,10 @@ export async function deleteCard(id: string): Promise<void> {
   return invoke("delete_card", { id });
 }
 
+export async function reorderCards(orders: [string, number][]): Promise<void> {
+  return invoke("reorder_cards", { orders });
+}
+
 export async function fetchThreads(
   accountId: string,
   cardId: string

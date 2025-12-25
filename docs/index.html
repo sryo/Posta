@@ -3106,6 +3106,11 @@
                 // Insert before add button
                 deck.insertBefore(wrapper, addCardBtn);
 
+                // Scroll to the new card
+                requestAnimationFrame(() => {
+                    wrapper.scrollIntoView({ behavior: 'smooth', inline: 'center', block: 'nearest' });
+                });
+
                 // Attach event listeners to new card
                 attachCardEventListeners(wrapper);
 

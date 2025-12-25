@@ -199,6 +199,17 @@ impl CacheDb {
         Ok(())
     }
 
+    pub fn reorder_cards(&self, orders: &[(String, i32)]) -> Result<(), CacheError> {
+        let conn = self.conn.lock().map_err(|_| CacheError::Lock)?;
+        for (card_id, position) in orders {
+            conn.execute(
+                "UPDATE cards SET position = ?1 WHERE id = ?2",
+                params![position, card_id],
+            )?;
+        }
+        Ok(())
+    }
+
     // Thread cache operations
 
     pub fn cache_threads(&self, threads: &[Thread]) -> Result<(), CacheError> {

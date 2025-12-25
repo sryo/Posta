@@ -391,6 +391,18 @@ pub fn delete_card(id: String, state: State<'_, AppState>) -> Result<(), String>
     Ok(())
 }
 
+#[tauri::command]
+pub fn reorder_cards(orders: Vec<(String, i32)>, state: State<'_, AppState>) -> Result<(), String> {
+    {
+        let db_guard = state.db.lock().map_err(|_| "Lock error")?;
+        let db = db_guard.as_ref().ok_or("Database not initialized")?;
+        db.reorder_cards(&orders).map_err(|e| e.to_string())?;
+    }
+
+    sync_cards_to_icloud(&state);
+    Ok(())
+}
+
 /// Helper to get account and card from database
 fn get_account_and_card(
     state: &AppState,

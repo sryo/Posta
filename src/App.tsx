@@ -79,6 +79,7 @@ import {
   createCard,
   updateCard,
   deleteCard,
+  reorderCards,
   deleteAccount,
   fetchThreadsPaginated,
   searchThreadsPreview,
@@ -2334,15 +2335,17 @@ function App() {
     wasDragging = true;
   };
 
-  const onDragEnd = async ({ draggable, droppable }: { draggable: any; droppable: any }) => {
+  const onDragEnd = async (event: { draggable: { id: string } | null; droppable: { id: string } | null }) => {
+    const { draggable, droppable } = event;
     // Reset drag flag after a short delay to prevent click from firing
-    setTimeout(() => { wasDragging = false; }, 50);
+    setTimeout(() => { wasDragging = false; }, 100);
     if (draggable && droppable) {
       const currentIds = cardIds();
       const fromIndex = currentIds.indexOf(draggable.id);
       const toIndex = currentIds.indexOf(droppable.id);
       if (fromIndex !== toIndex) {
-        const currentCards = [...cards()];
+        const previousCards = cards();
+        const currentCards = [...previousCards];
         const [movedCard] = currentCards.splice(fromIndex, 1);
         currentCards.splice(toIndex, 0, movedCard);
 
@@ -2354,11 +2357,11 @@ function App() {
         setCards(reorderedCards);
 
         try {
-          for (const card of reorderedCards) {
-            await updateCard(card);
-          }
+          const orders: [string, number][] = reorderedCards.map(c => [c.id, c.position]);
+          await reorderCards(orders);
         } catch (err) {
           console.error("Failed to persist card order:", err);
+          setCards(previousCards);
         }
       }
     }
