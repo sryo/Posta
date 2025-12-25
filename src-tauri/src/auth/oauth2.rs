@@ -28,8 +28,6 @@ pub enum AuthError {
 struct TokenResponse {
     access_token: String,
     refresh_token: Option<String>,
-    #[allow(dead_code)]
-    expires_in: Option<u64>,
 }
 
 pub struct GmailAuth {
@@ -188,17 +186,17 @@ fn base64_url_encode(input: &[u8]) -> String {
 // Secure token storage - tries keychain first, falls back to file storage
 const KEYRING_SERVICE: &str = "com.posta.mail";
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
-fn get_token_file_path(app_data_dir: &PathBuf, account_id: &str) -> PathBuf {
+fn get_token_file_path(app_data_dir: &Path, account_id: &str) -> PathBuf {
     app_data_dir.join("tokens").join(format!("{}.token", account_id))
 }
 
-fn get_credentials_file_path(app_data_dir: &PathBuf) -> PathBuf {
+fn get_credentials_file_path(app_data_dir: &Path) -> PathBuf {
     app_data_dir.join("tokens").join("oauth_credentials.json")
 }
 
-pub fn store_refresh_token(account_id: &str, token: &str, app_data_dir: &PathBuf) -> Result<(), AuthError> {
+pub fn store_refresh_token(account_id: &str, token: &str, app_data_dir: &Path) -> Result<(), AuthError> {
     tracing::info!("Storing refresh token for account: {}", account_id);
 
     // Try keychain first
@@ -223,7 +221,7 @@ pub fn store_refresh_token(account_id: &str, token: &str, app_data_dir: &PathBuf
     Ok(())
 }
 
-pub fn get_refresh_token(account_id: &str, app_data_dir: &PathBuf) -> Result<String, AuthError> {
+pub fn get_refresh_token(account_id: &str, app_data_dir: &Path) -> Result<String, AuthError> {
     tracing::info!("Getting refresh token for account: {}", account_id);
 
     // Try keychain first
@@ -247,7 +245,7 @@ pub fn get_refresh_token(account_id: &str, app_data_dir: &PathBuf) -> Result<Str
     Err(AuthError::Keyring("No matching entry found in secure storage".to_string()))
 }
 
-pub fn delete_refresh_token(account_id: &str, app_data_dir: &PathBuf) -> Result<(), AuthError> {
+pub fn delete_refresh_token(account_id: &str, app_data_dir: &Path) -> Result<(), AuthError> {
     // Delete from keychain if present
     if let Ok(entry) = keyring::Entry::new(KEYRING_SERVICE, &format!("token:{}", account_id)) {
         let _ = entry.delete_credential();
@@ -266,7 +264,7 @@ pub struct OAuthCredentials {
     pub client_secret: String,
 }
 
-pub fn store_oauth_credentials(client_id: &str, client_secret: &str, app_data_dir: &PathBuf) -> Result<(), AuthError> {
+pub fn store_oauth_credentials(client_id: &str, client_secret: &str, app_data_dir: &Path) -> Result<(), AuthError> {
     tracing::info!("Storing OAuth credentials");
 
     let credentials = OAuthCredentials {
@@ -299,7 +297,7 @@ pub fn store_oauth_credentials(client_id: &str, client_secret: &str, app_data_di
     Ok(())
 }
 
-pub fn get_oauth_credentials(app_data_dir: &PathBuf) -> Result<OAuthCredentials, AuthError> {
+pub fn get_oauth_credentials(app_data_dir: &Path) -> Result<OAuthCredentials, AuthError> {
     // Try keychain first
     if let Ok(entry) = keyring::Entry::new(KEYRING_SERVICE, "oauth:credentials") {
         if let Ok(json) = entry.get_password() {
@@ -322,7 +320,7 @@ pub fn get_oauth_credentials(app_data_dir: &PathBuf) -> Result<OAuthCredentials,
     Err(AuthError::NoCredentials)
 }
 
-pub fn delete_oauth_credentials(app_data_dir: &PathBuf) -> Result<(), AuthError> {
+pub fn delete_oauth_credentials(app_data_dir: &Path) -> Result<(), AuthError> {
     // Delete from keychain if present
     if let Ok(entry) = keyring::Entry::new(KEYRING_SERVICE, "oauth:credentials") {
         let _ = entry.delete_credential();

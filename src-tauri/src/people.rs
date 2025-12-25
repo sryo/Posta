@@ -44,8 +44,6 @@ struct ConnectionsResponse {
     connections: Option<Vec<PeopleConnection>>,
     #[serde(rename = "nextPageToken")]
     next_page_token: Option<String>,
-    #[serde(rename = "totalPeople")]
-    total_people: Option<i32>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -211,7 +209,6 @@ impl PeopleClient {
                 photos
                     .into_iter()
                     .find(|p| p.default != Some(true)) // Prefer non-default photos
-                    .or_else(|| None)
             })
             .and_then(|p| p.url);
 

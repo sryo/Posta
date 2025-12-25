@@ -73,8 +73,6 @@ struct CalendarListEntry {
 #[derive(Debug, Deserialize)]
 struct EventsListResponse {
     items: Option<Vec<ApiEvent>>,
-    #[serde(rename = "nextPageToken")]
-    next_page_token: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -99,8 +97,6 @@ struct EventDateTime {
     #[serde(rename = "dateTime")]
     date_time: Option<String>,
     date: Option<String>,
-    #[serde(rename = "timeZone")]
-    time_zone: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -247,7 +243,6 @@ impl CalendarClient {
 
         // Determine time range from query
         let (time_min, time_max) = query.get_time_range();
-        println!("DEBUG: Searching events with range: {} to {}", time_min, time_max);
 
         for (calendar_id, calendar_name, _primary) in calendars {
             let mut url = format!(
@@ -540,7 +535,6 @@ impl CalendarQuery {
         if !remaining_text.is_empty() {
             cq.text = Some(remaining_text.join(" "));
         }
-        println!("DEBUG: Parsed query '{query}' -> TimeRange: {:?}, Text: {:?}", cq.time_range, cq.text);
 
         cq
     }

@@ -25,7 +25,7 @@ impl ICloudKVStore {
             let cls = class!(NSUbiquitousKeyValueStore);
             let store: Retained<AnyObject> = msg_send![cls, defaultStore];
             // Convert to raw pointer and leak the Retained to prevent deallocation
-            let store_ptr = Retained::into_raw(store) as *mut AnyObject;
+            let store_ptr = Retained::into_raw(store);
             Self { store_ptr }
         }
     }
@@ -96,6 +96,12 @@ impl ICloudKVStore {
                 None => Ok(None),
             }
         }
+    }
+}
+
+impl Default for ICloudKVStore {
+    fn default() -> Self {
+        Self::new()
     }
 }
 

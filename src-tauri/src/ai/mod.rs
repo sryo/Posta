@@ -38,17 +38,32 @@ impl VertexAiClient {
         }
     }
 
-    pub async fn suggest_replies(&self, email_context: &str) -> Result<Vec<String>, String> {
+    pub async fn suggest_replies(&self, email_context: &str, user_email: &str) -> Result<Vec<String>, String> {
         let url = API_ENDPOINT_TEMPLATE.replace("{PROJECT_ID}", &self.project_id);
 
         let prompt = format!(
-            "You are a helpful email assistant. Based on the following email thread, suggest 3 short, professional, and concise replies. \
-            Return ONLY a raw JSON array of strings, e.g., [\"Yes, that works.\", \"I'll review it.\", \"Can we reschedule?\"]. \
-            Do not include markdown formatting (like ```json). \
-            \
-            Email Context: \
-            {}",
-            email_context
+            r#"You are an email assistant for {user_email}.
+
+Analyze this email thread and generate 3 contextually appropriate reply suggestions.
+
+Guidelines:
+- Match the tone of the conversation (formal for business, casual for personal)
+- If it's a scheduling request: suggest accepting, declining, or proposing alternatives
+- If it's a question: provide a substantive answer or acknowledge you'll look into it
+- If it's a request/task: acknowledge and indicate action or timeline
+- If it's informational: thank them or acknowledge receipt appropriately
+- Use first person ("I'll", "I can", "Thanks for")
+- Reference specific details from the email when relevant
+- Keep replies 1-2 sentences, ready to send as-is
+- Don't be generic - tailor each reply to the actual content
+
+Email Thread:
+{context}
+
+Return ONLY a raw JSON array of 3 strings. No markdown, no explanation.
+Example format: ["Reply 1", "Reply 2", "Reply 3"]"#,
+            user_email = user_email,
+            context = email_context
         );
 
         let body = json!({
@@ -57,8 +72,8 @@ impl VertexAiClient {
                 "parts": [{ "text": prompt }]
             }],
             "generationConfig": {
-                "temperature": 0.2,
-                "maxOutputTokens": 256,
+                "temperature": 0.4,
+                "maxOutputTokens": 512,
             }
         });
 

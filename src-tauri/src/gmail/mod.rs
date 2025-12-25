@@ -31,29 +31,19 @@ struct ThreadListResponse {
 }
 
 #[derive(Debug, Deserialize)]
-#[allow(dead_code)]
 struct ThreadRef {
     id: String,
-    #[serde(rename = "historyId")]
-    history_id: Option<String>,
-    snippet: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
-#[allow(dead_code)]
 struct ThreadDetail {
     id: String,
-    #[serde(rename = "historyId")]
-    history_id: Option<String>,
     messages: Option<Vec<MessageDetail>>,
 }
 
 #[derive(Debug, Deserialize)]
-#[allow(dead_code)]
 struct MessageDetail {
     id: String,
-    #[serde(rename = "threadId")]
-    thread_id: String,
     #[serde(rename = "labelIds")]
     label_ids: Option<Vec<String>>,
     snippet: Option<String>,
@@ -1141,6 +1131,7 @@ impl GmailClient {
     pub async fn get_history_changes(&self, start_history_id: &str) -> Result<HistoryChanges, String> {
         let mut all_modified_thread_ids = std::collections::HashSet::new();
         let mut all_deleted_message_ids = std::collections::HashSet::new();
+        #[allow(unused_assignments)]
         let mut new_history_id = start_history_id.to_string();
         let mut page_token: Option<String> = None;
 
@@ -1247,8 +1238,6 @@ struct HistoryListResponse {
 
 #[derive(Debug, Deserialize)]
 struct HistoryItem {
-    #[allow(dead_code)]
-    id: String,
     #[serde(rename = "messagesAdded")]
     messages_added: Option<Vec<MessageAddedEvent>>,
     #[serde(rename = "messagesDeleted")]
@@ -1272,9 +1261,6 @@ struct MessageDeletedEvent {
 #[derive(Debug, Deserialize)]
 struct LabelEvent {
     message: HistoryMessage,
-    #[allow(dead_code)]
-    #[serde(rename = "labelIds")]
-    label_ids: Option<Vec<String>>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1701,4 +1687,77 @@ pub async fn rsvp_calendar_event(
     }
 
     Ok(())
+}
+
+/// Extract plain text body from a FullMessage
+/// Recursively searches through message parts to find text/plain content
+pub fn extract_body_text_from_message(message: &FullMessage) -> Option<String> {
+    let payload = message.payload.as_ref()?;
+
+    // Try to get body directly from payload
+    if let Some(body_text) = extract_text_from_payload(payload) {
+        return Some(body_text);
+    }
+
+    None
+}
+
+fn extract_text_from_payload(payload: &MessagePayload) -> Option<String> {
+    // Check if this payload itself is text/plain
+    if let Some(mime_type) = &payload.mime_type {
+        if mime_type == "text/plain" {
+            if let Some(body) = &payload.body {
+                if let Some(data) = &body.data {
+                    return decode_base64_body(data);
+                }
+            }
+        }
+    }
+
+    // Check parts recursively
+    if let Some(parts) = &payload.parts {
+        // First, look for text/plain
+        for part in parts {
+            if part.mime_type == "text/plain" {
+                if let Some(body) = &part.body {
+                    if let Some(data) = &body.data {
+                        if let Some(text) = decode_base64_body(data) {
+                            return Some(text);
+                        }
+                    }
+                }
+            }
+        }
+
+        // If no text/plain, recurse into multipart alternatives
+        for part in parts {
+            if part.mime_type.starts_with("multipart/") {
+                if let Some(nested_parts) = &part.parts {
+                    for nested in nested_parts {
+                        if nested.mime_type == "text/plain" {
+                            if let Some(body) = &nested.body {
+                                if let Some(data) = &body.data {
+                                    if let Some(text) = decode_base64_body(data) {
+                                        return Some(text);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    None
+}
+
+fn decode_base64_body(data: &str) -> Option<String> {
+    use base64::Engine;
+    // Gmail uses URL-safe base64 encoding
+    let normalized = data.replace('-', "+").replace('_', "/");
+    base64::engine::general_purpose::STANDARD
+        .decode(&normalized)
+        .ok()
+        .and_then(|bytes| String::from_utf8(bytes).ok())
 }

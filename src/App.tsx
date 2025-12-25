@@ -4915,14 +4915,14 @@ function App() {
       }
     }
 
-    // If already selected, just show the action wheel without deselecting
+    // Toggle selection
     if (isSelected) {
-      return;
+      currentMap.delete(threadId);
+    } else {
+      currentMap.add(threadId);
+      setLastSelectedThread({ ...lastSelectedThread(), [cardId]: threadId });
     }
 
-    // Add to selection
-    currentMap.add(threadId);
-    setLastSelectedThread({ ...lastSelectedThread(), [cardId]: threadId });
     setSelectedThreads({ ...selectedThreads(), [cardId]: currentMap });
   }
 

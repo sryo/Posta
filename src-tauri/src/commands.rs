@@ -29,6 +29,12 @@ impl AppState {
     }
 }
 
+impl Default for AppState {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 // Sync all cards to iCloud after any card operation
 fn sync_cards_to_icloud(state: &AppState) {
     let db_guard = match state.db.lock() {
@@ -186,13 +192,13 @@ pub async fn run_oauth_flow(
     app_handle: tauri::AppHandle,
     state: State<'_, AppState>,
 ) -> Result<Account, String> {
-    let app_data_dir = app_handle
+    let _app_data_dir = app_handle
         .path()
         .app_data_dir()
         .map_err(|e| format!("Failed to get app data dir: {}", e))?;
 
     // Start OAuth flow and get authorization URL
-    let (auth_url, csrf_token) = {
+    let (auth_url, _csrf_token) = {
         let auth_guard = state.auth.lock().await;
         let auth = auth_guard
             .as_ref()
@@ -410,7 +416,7 @@ fn get_account_and_card(
 }
 
 /// Helper to get a valid access token for an account (refreshing if needed)
-async fn get_access_token(state: &AppState, account_id: &str, app_data_dir: &std::path::PathBuf) -> Result<String, String> {
+async fn get_access_token(state: &AppState, account_id: &str, app_data_dir: &std::path::Path) -> Result<String, String> {
     // Get stored refresh token
     let refresh_token = auth::get_refresh_token(account_id, app_data_dir).map_err(|e| e.to_string())?;
 
@@ -1425,16 +1431,17 @@ pub async fn suggest_replies(
         return Err("Google Cloud Project ID is required for smart replies.".to_string());
     }
 
-    // Verify account exists
-    {
+    // Get user email for context
+    let user_email = {
         let db_guard = state.db.lock().map_err(|_| "Lock error")?;
         let db = db_guard.as_ref().ok_or("Database not initialized")?;
         let accounts = db.get_accounts().map_err(|e| e.to_string())?;
 
-        if !accounts.iter().any(|a| a.id == account_id) {
-            return Err("Account not found".to_string());
-        }
-    }
+        accounts.iter()
+            .find(|a| a.id == account_id)
+            .map(|a| a.email.clone())
+            .ok_or("Account not found")?
+    };
 
     let access_token = get_access_token(&state, &account_id, &app_data_dir).await?;
 
@@ -1445,37 +1452,51 @@ pub async fn suggest_replies(
         .await
         .map_err(|e| format!("Failed to fetch thread: {}", e))?;
 
-    // 2. Build email context from the last few messages
+    // 2. Build email context from the last few messages with FULL bodies
     let mut context = String::new();
-    
-    // Attempt to find Subject
+
+    // Get subject
     let subject = thread.messages.first()
         .and_then(|m| m.payload.as_ref())
         .and_then(|p| p.headers.as_ref())
         .and_then(|h| h.iter().find(|x| x.name.eq_ignore_ascii_case("Subject")))
         .map(|x| x.value.as_str())
         .unwrap_or("(No Subject)");
-    
+
     context.push_str(&format!("Subject: {}\n\n", subject));
 
-    // Take last 3 messages
-    // Gmail API generally returns messages in chronological order
+    // Take last 3 messages with full bodies
     let count = thread.messages.len();
-    let skip = if count > 3 { count - 3 } else { 0 };
-    
+    let skip = count.saturating_sub(3);
+
     for msg in thread.messages.iter().skip(skip) {
         let from = msg.payload.as_ref()
             .and_then(|p| p.headers.as_ref())
             .and_then(|h| h.iter().find(|x| x.name.eq_ignore_ascii_case("From")))
             .map(|x| x.value.as_str())
             .unwrap_or("Unknown");
-        
-        let snippet = msg.snippet.as_deref().unwrap_or("");
-        
-        context.push_str(&format!("From: {}\nMessage: {}\n\n", from, snippet));
+
+        let date = msg.payload.as_ref()
+            .and_then(|p| p.headers.as_ref())
+            .and_then(|h| h.iter().find(|x| x.name.eq_ignore_ascii_case("Date")))
+            .map(|x| x.value.as_str())
+            .unwrap_or("");
+
+        // Get full body text instead of snippet
+        let body = crate::gmail::extract_body_text_from_message(msg)
+            .unwrap_or_else(|| msg.snippet.clone().unwrap_or_default());
+
+        // Truncate very long messages to avoid token limits
+        let body_truncated = if body.len() > 2000 {
+            format!("{}...", &body[..2000])
+        } else {
+            body
+        };
+
+        context.push_str(&format!("From: {}\nDate: {}\n{}\n\n---\n\n", from, date, body_truncated));
     }
 
-    // 3. Call Vertex AI
+    // 3. Call Vertex AI with user context
     let vertex = VertexAiClient::new(access_token, project_id);
-    vertex.suggest_replies(&context).await
+    vertex.suggest_replies(&context, &user_email).await
 }

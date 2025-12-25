@@ -14,9 +14,12 @@ tauri-build = { version = "2", features = [] }
 
 [dependencies]
 # Tauri core
-tauri = { version = "2", features = ["macos-private-api"] }
+tauri = "2"
 tauri-plugin-opener = "2"
 tauri-plugin-deep-link = "2"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+tauri = { version = "2", features = ["macos-private-api"] }
 
 # Serialization
 serde = { version = "1", features = ["derive"] }

@@ -47,25 +47,23 @@ pub fn wait_for_callback(timeout_secs: u64) -> Result<CallbackResult, String> {
                     // Parse the request to extract the code and state
                     if let Some((code, state)) = extract_code_and_state(&request_line) {
                         // Send success response
-                        let response = format!(
-                            "HTTP/1.1 200 OK\r\n\
+                        let response = "HTTP/1.1 200 OK\r\n\
                             Content-Type: text/html; charset=utf-8\r\n\
                             Connection: close\r\n\r\n\
                             <!DOCTYPE html>\
                             <html><head><meta charset=\"utf-8\"><style>\
-                            body {{ font-family: -apple-system, BlinkMacSystemFont, sans-serif; \
+                            body { font-family: -apple-system, BlinkMacSystemFont, sans-serif; \
                             display: flex; justify-content: center; align-items: center; \
-                            height: 100vh; margin: 0; background: #f5f5f5; color: #222; }}\
-                            @media (prefers-color-scheme: dark) {{ body {{ background: #1e1e1e; color: #e0e0e0; }} }}\
-                            .container {{ text-align: center; }}\
-                            h1 {{ color: #4285f4; margin-bottom: 8px; }}\
-                            p {{ color: #666; }} @media (prefers-color-scheme: dark) {{ p {{ color: #999; }} }}\
+                            height: 100vh; margin: 0; background: #f5f5f5; color: #222; }\
+                            @media (prefers-color-scheme: dark) { body { background: #1e1e1e; color: #e0e0e0; } }\
+                            .container { text-align: center; }\
+                            h1 { color: #4285f4; margin-bottom: 8px; }\
+                            p { color: #666; } @media (prefers-color-scheme: dark) { p { color: #999; } }\
                             </style></head><body>\
                             <div class=\"container\">\
                             <h1>✓ Signed In</h1>\
                             <p>You can close this window and return to Posta.</p>\
-                            </div></body></html>"
-                        );
+                            </div></body></html>";
                         let _ = stream.write_all(response.as_bytes());
                         let _ = stream.flush();
                         let _ = tx.send(Ok(CallbackResult { code, state }));
