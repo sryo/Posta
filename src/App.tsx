@@ -1675,7 +1675,7 @@ function App() {
   const [shortcutsHelpOpen, setShortcutsHelpOpen] = createSignal(false);
   const [accountChooserOpen, setAccountChooserOpen] = createSignal(false);
   const [resizing, setResizing] = createSignal(false);
-  const MIN_CARD_WIDTH = 200;
+  const MIN_CARD_WIDTH = 250;
   const MAX_CARD_WIDTH = 600;
   const [cardWidth, setCardWidth] = createSignal<number>(
     Math.max(MIN_CARD_WIDTH, Math.min(MAX_CARD_WIDTH, parseInt(safeGetItem("cardWidth") || "320", 10)))
