@@ -703,6 +703,7 @@ select:focus:not(:focus-visible) {
     display: flex;
     padding: var(--app-edge-margin);
     padding-left: calc(var(--sidebar-width) + 16px);
+    padding-right: 40px;
     padding-top: var(--drag-region-height);
     padding-bottom: 24px;
     overflow-x: auto;
@@ -851,6 +852,12 @@ select:focus:not(:focus-visible) {
     min-width: 36px;
     max-width: 36px;
     cursor: pointer;
+}
+
+/* Collapsed card being edited needs full width for form */
+.card.collapsed.editing {
+    min-width: var(--card-width, 320px);
+    max-width: var(--card-width, 320px);
 }
 
 .card-header {
@@ -2008,6 +2015,11 @@ button:disabled:hover {
 .deck.resizing * {
     cursor: ew-resize !important;
     user-select: none;
+}
+
+/* Disable card width transitions during resize for smooth performance */
+.deck.resizing .card {
+    transition: none !important;
 }
 
 /* Radial Color Picker */
@@ -4733,11 +4745,6 @@ button:disabled:hover {
         display: none;
     }
 
-    .card {
-        min-width: 260px;
-        max-width: 260px;
-    }
-
     .thread-view {
         width: 100% !important;
         max-width: 100% !important;
@@ -4766,14 +4773,9 @@ button:disabled:hover {
         height: 32px;
     }
 
-    .card {
-        min-width: 240px;
-        max-width: 240px;
-    }
-
     .deck {
         padding-left: calc(var(--sidebar-width) + 8px);
-        padding-right: 8px;
+        padding-right: 24px;
     }
 
     .card-header {
