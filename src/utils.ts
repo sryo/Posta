@@ -33,6 +33,21 @@ export function formatTime(timestamp: number): string {
   return date.toLocaleDateString([], { month: "short", day: "numeric" });
 }
 
+// Sync status thresholds (in milliseconds)
+export const SYNC_FRESH_MS = 3000;      // "just now" duration
+export const SYNC_STALE_MS = 15 * 60 * 1000;  // 15 minutes
+
+/**
+ * Get sync status state: 'fresh' | 'stale' | 'normal'
+ */
+export function getSyncState(timestamp: number | undefined, now?: number): 'fresh' | 'stale' | 'normal' {
+  if (!timestamp) return 'normal';
+  const diff = (now ?? Date.now()) - timestamp;
+  if (diff < SYNC_FRESH_MS) return 'fresh';
+  if (diff > SYNC_STALE_MS) return 'stale';
+  return 'normal';
+}
+
 /**
  * Format sync time as relative time (e.g., "2m ago")
  * @param timestamp - The timestamp to format
@@ -46,7 +61,8 @@ export function formatSyncTime(timestamp: number | undefined, now?: number): str
   const minutes = Math.floor(seconds / 60);
   const hours = Math.floor(minutes / 60);
 
-  if (seconds < 60) return "just now";
+  if (diff < SYNC_FRESH_MS) return "just now";
+  if (seconds < 60) return `${seconds}s ago`;
   if (minutes < 60) return `${minutes}m ago`;
   if (hours < 24) return `${hours}h ago`;
   return new Date(timestamp).toLocaleDateString([], { month: "short", day: "numeric" });

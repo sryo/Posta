@@ -120,6 +120,7 @@ import {
   formatFileSize,
   formatTime,
   formatSyncTime,
+  getSyncState,
   truncateMiddle,
   getInitial,
   extractEmail,
@@ -2909,8 +2910,8 @@ function App() {
     }
   });
 
-  // Update currentTime every 30 seconds to keep relative timestamps fresh
-  const timeUpdateInterval = setInterval(() => setCurrentTime(Date.now()), 30000);
+  // Update currentTime every second to keep relative timestamps fresh
+  const timeUpdateInterval = setInterval(() => setCurrentTime(Date.now()), 1000);
 
   onCleanup(() => {
     if (pollTimeoutId) {
@@ -5040,6 +5041,17 @@ function App() {
     setActiveThread(null);
     setFocusedMessageIndex(0);
 
+    // Check if thread is unread and mark as read
+    const groups = cardThreads()[cardId] || [];
+    for (const group of groups) {
+      const thread = group.threads.find(t => t.gmail_thread_id === threadId);
+      if (thread && thread.unread_count > 0) {
+        // Mark as read in background (don't await)
+        handleThreadAction('read', [threadId], cardId);
+        break;
+      }
+    }
+
     try {
       const details = await getThreadDetails(account.id, threadId);
       setActiveThread(details);
@@ -6089,13 +6101,19 @@ function App() {
                               <ChevronIcon />
                             </button>
                             <span class="card-title">{card.name}</span>
-                            <Show when={lastSyncTimes()[card.id] && !loadingThreads()[card.id] && (currentTime() - (lastSyncTimes()[card.id] || 0)) > 10000}>
-                              <span
-                                class={`sync-status ${syncErrors()[card.id] ? 'sync-error' : ''} ${(currentTime() - (lastSyncTimes()[card.id] || 0)) > 15 * 60 * 1000 ? 'sync-stale' : ''}`}
-                                title={syncErrors()[card.id] ? `Sync failed: ${syncErrors()[card.id]}` : `Last synced: ${formatSyncTime(lastSyncTimes()[card.id], currentTime())}`}
-                              >
-                                {syncErrors()[card.id] ? '!' : formatSyncTime(lastSyncTimes()[card.id], currentTime())}
-                              </span>
+                            <Show when={lastSyncTimes()[card.id] && !loadingThreads()[card.id]}>
+                              {(() => {
+                                const state = getSyncState(lastSyncTimes()[card.id], currentTime());
+                                const hasError = syncErrors()[card.id];
+                                return (
+                                  <span
+                                    class={`sync-status ${hasError ? 'sync-error' : ''} ${state === 'fresh' ? 'sync-fresh' : ''} ${state === 'stale' ? 'sync-stale' : ''}`}
+                                    title={hasError ? `Sync failed: ${hasError}` : `Last synced: ${formatSyncTime(lastSyncTimes()[card.id], currentTime())}`}
+                                  >
+                                    {hasError ? 'sync failed' : formatSyncTime(lastSyncTimes()[card.id], currentTime())}
+                                  </span>
+                                );
+                              })()}
                             </Show>
                             <Show when={getCardUnreadCount(card.id) > 0}>
                               <span class="card-unread-badge">{getCardUnreadCount(card.id)}</span>

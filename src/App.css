@@ -949,27 +949,26 @@ select:focus:not(:focus-visible) {
 .sync-status {
     font-size: 10px;
     color: inherit;
-    opacity: 0.7;
+    opacity: 0;
     margin-left: auto;
     margin-right: 4px;
     white-space: nowrap;
-    transition: opacity 0.2s;
+    transition: opacity 0.3s;
+}
+
+.sync-status.sync-fresh,
+.sync-status.sync-stale {
+    opacity: 0.6;
 }
 
 .sync-status.sync-error {
+    opacity: 1;
     color: var(--danger);
-    font-weight: bold;
     cursor: help;
 }
 
 .card.collapsed .sync-status {
     display: none;
-}
-
-@media (prefers-color-scheme: dark) {
-    .sync-status.sync-error {
-        color: var(--danger);
-    }
 }
 
 .card-actions {
