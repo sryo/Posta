@@ -66,8 +66,8 @@ import {
   DragDropSensors,
   SortableProvider,
   createSortable,
-  closestCenter,
-  createPointerSensor,
+  mostIntersecting,
+  type Id,
 } from "@thisbeyond/solid-dnd";
 import {
   initApp,
@@ -111,7 +111,6 @@ import {
   saveCachedCardEvents,
   createCalendarEvent,
   type Attachment,
-  completeOAuthFlow,
 } from "./api/tauri";
 import { Menu, MenuItem, PredefinedMenuItem } from "@tauri-apps/api/menu";
 import {
@@ -121,7 +120,6 @@ import {
   formatSyncTime,
   truncateMiddle,
   getInitial,
-  base64ToBlob,
   extractEmail,
   parseContact,
   getAvatarColor,
@@ -136,7 +134,6 @@ import {
   PlusIcon,
   GoogleLogo,
   SettingsIcon,
-  LogoutIcon,
   ComposeIcon,
   CloseIcon,
   ClearIcon,
@@ -149,14 +146,11 @@ import {
   StarIcon,
   StarFilledIcon,
   TrashIcon,
-  MailIcon,
   EditIcon,
-  AlertIcon,
   SpamIcon,
   ThumbsUpIcon,
   ThumbsUpFilledIcon,
   EyeOpenIcon,
-  EyeOpenFilledIcon,
   EyeClosedIcon,
   LabelIcon,
   PaletteIcon,
@@ -239,14 +233,6 @@ const CloseButton = (props: {
   );
 };
 
-const Spinner = (props: {
-  size?: 'sm' | 'md' | 'lg',
-  class?: string,
-}) => {
-  const sizeClass = props.size === 'sm' ? 'spinner-sm' : props.size === 'lg' ? 'spinner-lg' : '';
-  return <div class={`spinner ${sizeClass} ${props.class || ''}`} />;
-};
-
 // Shared Compose Form component
 interface ComposeFormProps {
   // Mode and display
@@ -278,7 +264,7 @@ interface ComposeFormProps {
   error?: string | null;
   draftSaving?: boolean;
   draftSaved?: boolean;
-  sending: boolean;
+  sending?: boolean;
   // Actions
   onSend: () => void;
   onClose: () => void;
@@ -920,7 +906,7 @@ interface InlineComposeProps {
   error: string | null;
   draftSaving: boolean;
   draftSaved: boolean;
-  sending: boolean;
+  sending?: boolean;
   onSend: () => void;
   onClose: () => void;
   onInput: () => void;
@@ -1582,10 +1568,6 @@ function App() {
   const [threadError, setThreadError] = createSignal<string | null>(null);
   const [focusedMessageIndex, setFocusedMessageIndex] = createSignal(0);
 
-  const [activeDragId, setActiveDragId] = createSignal<string | null>(null);
-  const [activeDragItem, setActiveDragItem] = createSignal<Thread | null>(null);
-
-
   // Label drawer state
   const [labelDrawerOpen, setLabelDrawerOpen] = createSignal(false);
   const [accountLabels, setAccountLabels] = createSignal<GmailLabel[]>([]);
@@ -1650,13 +1632,6 @@ function App() {
     } finally {
       setRsvpLoading(prev => ({ ...prev, [threadId]: false }));
     }
-  };
-
-  // Helper to get display status for UI
-  const getRsvpDisplayStatus = (threadId: string): string | null => {
-    const status = rsvpStatus()[threadId];
-    if (!status || status === "needsAction") return null;
-    return status; // accepted, tentative, declined
   };
 
   // Undo/toast state
@@ -1758,9 +1733,6 @@ function App() {
   // Add card form
   const [addingCard, setAddingCard] = createSignal(false);
   const [closingAddCard, setClosingAddCard] = createSignal(false);
-  const [previewThreads, setPreviewThreads] = createSignal<ThreadGroup[]>([]);
-  const [previewLoading, setPreviewLoading] = createSignal(false);
-  let previewDebounceTimer: number | undefined;
   const [newCardName, setNewCardName] = createSignal("");
   const [newCardQuery, setNewCardQuery] = createSignal("");
   const [newCardColor, setNewCardColor] = createSignal<CardColor>(null);
@@ -1872,7 +1844,6 @@ function App() {
   const [quickReplyCardId, setQuickReplyCardId] = createSignal<string | null>(null);
   const [quickReplyText, setQuickReplyText] = createSignal("");
   const [quickReplySending, setQuickReplySending] = createSignal(false);
-  const [sending, setSending] = createSignal(false);
 
   // Thread actions wheel
   const [hoveredThread, setHoveredThread] = createSignal<string | null>(null);
@@ -1985,7 +1956,6 @@ function App() {
   const [gmailDraftId, setGmailDraftId] = createSignal<string | null>(null);
   let fabHoverTimeout: number | undefined;
   let draftSaveTimeout: number | undefined;
-  let fileInputRef: HTMLInputElement | undefined;
 
   // Draft management
   interface Draft {
@@ -2139,21 +2109,6 @@ function App() {
   const [batchReplySending, setBatchReplySending] = createSignal<Record<string, boolean>>({});
   const [batchReplyLoading, setBatchReplyLoading] = createSignal(false);
   const [batchReplyAttachments, setBatchReplyAttachments] = createSignal<Record<string, SendAttachment[]>>({});
-
-  // Recent contacts (stored locally for now - would come from backend)
-  interface RecentContact {
-    email: string;
-    name?: string;
-    picture?: string;
-    lastContacted: number; // timestamp
-    frequency: number; // count of interactions
-  }
-
-  const [recentContacts, setRecentContacts] = createSignal<RecentContact[]>([
-    { email: "alice@example.com", name: "Alice Smith", lastContacted: Date.now(), frequency: 10 },
-    { email: "bob@example.com", name: "Bob Jones", lastContacted: Date.now(), frequency: 8 },
-    { email: "charlie@example.com", name: "Charlie Day", lastContacted: Date.now(), frequency: 5 },
-  ]);
 
   // Settings form
   const [clientId, setClientId] = createSignal("");
@@ -2335,14 +2290,14 @@ function App() {
     wasDragging = true;
   };
 
-  const onDragEnd = async (event: { draggable: { id: string } | null; droppable: { id: string } | null }) => {
+  const onDragEnd = async (event: { draggable: { id: Id } | null; droppable: { id: Id } | null }) => {
     const { draggable, droppable } = event;
     // Reset drag flag after a short delay to prevent click from firing
     setTimeout(() => { wasDragging = false; }, 100);
     if (draggable && droppable) {
       const currentIds = cardIds();
-      const fromIndex = currentIds.indexOf(draggable.id);
-      const toIndex = currentIds.indexOf(droppable.id);
+      const fromIndex = currentIds.indexOf(String(draggable.id));
+      const toIndex = currentIds.indexOf(String(droppable.id));
       if (fromIndex !== toIndex) {
         const previousCards = cards();
         const currentCards = [...previousCards];
@@ -2763,16 +2718,6 @@ function App() {
     }
   }
 
-  async function refreshAllCards() {
-    const cardList = cards();
-    const collapsed = collapsedCards();
-    for (const card of cardList) {
-      if (!collapsed[card.id] && !loadingThreads()[card.id]) {
-        loadCardThreads(card.id);
-      }
-    }
-  }
-
   async function handleSignIn() {
     const storedCreds = await getStoredCredentials();
 
@@ -2962,18 +2907,6 @@ function App() {
     } catch (e) {
       setError(`Failed to save credentials: ${e}`);
     }
-  }
-
-  async function toggleSettings() {
-    if (!settingsOpen()) {
-      // Load stored credentials when opening settings
-      const storedCreds = await getStoredCredentials();
-      if (storedCreds) {
-        setClientId(storedCreds.client_id);
-        setClientSecret(storedCreds.client_secret);
-      }
-    }
-    setSettingsOpen(!settingsOpen());
   }
 
   async function handleSignOut() {
@@ -3668,14 +3601,6 @@ function App() {
     }
   }
 
-  async function setCardColor(cardId: string, color: CardColor) {
-    const card = cards().find(c => c.id === cardId);
-    if (!card) return;
-    const updatedCard = { ...card, color: color || null };
-    await updateCard(updatedCard);
-    setCards(cards().map(c => c.id === cardId ? updatedCard : c));
-  }
-
   function saveCollapsedState(collapsed: Record<string, boolean>) {
     setCollapsedCards(collapsed);
     safeSetJSON("collapsedCards", collapsed);
@@ -3758,11 +3683,6 @@ function App() {
       console.error("Failed to delete card:", err);
       alert(`Failed to delete card: ${err}`);
     }
-  }
-
-  function selectEditColor(color: CardColor) {
-    setEditCardColor(color);
-    setEditColorPickerOpen(false);
   }
 
   async function toggleCardCollapse(cardId: string) {
@@ -3981,10 +3901,12 @@ function App() {
     setCards(cards().map(c => c.id === cardId ? updatedCard : c));
   }
 
-  function updateCardWidth(width: number) {
+  function updateCardWidth(width: number, persist = true) {
     setCardWidth(width);
-    safeSetItem("cardWidth", String(width));
     document.documentElement.style.setProperty("--card-width", `${width}px`);
+    if (persist) {
+      safeSetItem("cardWidth", String(width));
+    }
   }
 
   function toggleActionSetting(key: string) {
@@ -4124,13 +4046,7 @@ function App() {
           const scoreB = score(b.label);
 
           if (scoreA !== scoreB) {
-            // If both are special, order fixed.
-            // If one is date and other special, special comes first usually?
-            // Wait, Yesterday (1) < Today (2) < Tomorrow (3). 
-            // Previous dates (older than yesterday) should be > or <?
-            // Usually we want chronological: Older dates -> Yesterday -> Today -> Tomorrow -> Future dates.
-            // Let's rely on event timestamps.
-            return 0; // Fallthrough
+            return scoreA - scoreB;
           }
 
           // Sort by start time of first event
@@ -4377,9 +4293,13 @@ function App() {
     }
   }
 
-  function selectColor(color: CardColor) {
-    setNewCardColor(color);
-    setColorPickerOpen(false);
+  // Contact candidate for autocomplete
+  interface RecentContact {
+    email: string;
+    name?: string;
+    lastContacted: number;
+    frequency: number;
+    fromGoogle?: boolean;
   }
 
   // Get all unique participants from loaded threads and Google contacts
@@ -4746,8 +4666,6 @@ function App() {
       // Simple animation trigger
       setTimeout(() => el.classList.add('open'), 10);
     };
-
-    const selection = props.cardId ? (selectedThreads()[props.cardId] || new Set<string>()) : new Set<string>();
 
     // Get thread state for icon selection
     const isStarred = props.thread?.labels?.includes("STARRED") ?? false;
@@ -5371,8 +5289,8 @@ function App() {
 
       {/* Deck */}
       <Show when={!loading() && selectedAccount()}>
-        <DragDropProvider onDragStart={onDragStart} onDragEnd={onDragEnd} collisionDetector={closestCenter}>
-          <DragDropSensors sensors={[createPointerSensor({ activationConstraint: { distance: 5 } })]} />
+        <DragDropProvider onDragStart={onDragStart} onDragEnd={onDragEnd as any} collisionDetector={mostIntersecting}>
+          <DragDropSensors />
           <div class={`deck ${resizing() ? 'resizing' : ''}`}>
             <SortableProvider ids={cardIds()}>
               <For each={cards()}>
@@ -5811,10 +5729,11 @@ function App() {
                           const onMove = (moveE: MouseEvent) => {
                             const delta = moveE.clientX - startX;
                             const newWidth = Math.max(MIN_CARD_WIDTH, Math.min(MAX_CARD_WIDTH, startWidth + delta));
-                            updateCardWidth(newWidth);
+                            updateCardWidth(newWidth, false); // Don't persist during drag
                           };
                           const onUp = () => {
                             setResizing(false);
+                            safeSetItem("cardWidth", String(cardWidth())); // Persist on release
                             document.removeEventListener('mousemove', onMove);
                             document.removeEventListener('mouseup', onUp);
                           };
@@ -5954,7 +5873,6 @@ function App() {
             error={composeEmailError()}
             draftSaving={draftSaving()}
             draftSaved={draftSaved()}
-            sending={sending()}
             onSend={handleSendEmail}
             onClose={closeCompose}
             onInput={debouncedSaveDraft}
@@ -6117,7 +6035,6 @@ function App() {
             error: composeEmailError(),
             draftSaving: draftSaving(),
             draftSaved: draftSaved(),
-            sending: sending(),
             onSend: handleSendEmail,
             onClose: closeCompose,
             onInput: debouncedSaveDraft,
@@ -6258,7 +6175,6 @@ function App() {
                     <div class="inline-compose">
                       <ComposeForm
                         mode="batchReply"
-                        inline={true}
                         showFields={false}
                         body={batchReplyMessages()[thread.threadId] || ''}
                         setBody={(v) => updateBatchReplyMessage(thread.threadId, v)}
