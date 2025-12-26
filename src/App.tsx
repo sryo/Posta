@@ -639,7 +639,7 @@ const CreateEventForm = (props: {
     setViewDate(newDate);
   };
 
-  const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+  const months = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
   const currentYear = new Date().getFullYear();
   const years = Array.from({ length: 5 }, (_, i) => currentYear + i);
 
@@ -757,7 +757,9 @@ const CreateEventForm = (props: {
           <Show when={!props.allDay}>
             <div class="scheduler-times" style={{ display: "flex", gap: "15px", padding: "0 15px", height: "200px" }}>
               <div style={{ flex: 1, display: "flex", "flex-direction": "column" }}>
-                <label style={{ "font-size": "12px", "margin-bottom": "5px", color: "var(--text-secondary)" }}>Start</label>
+                <div style={{ display: "flex", "align-items": "center", height: "17px", "margin-bottom": "5px" }}>
+                  <label style={{ "font-size": "12px", color: "var(--text-secondary)" }}>Start</label>
+                </div>
                 <div class="time-picker-start" style={{ flex: 1, "overflow-y": "auto", border: "1px solid var(--border)", "border-radius": "6px" }}>
                   <For each={timeSlots}>
                     {(t) => (
@@ -781,7 +783,7 @@ const CreateEventForm = (props: {
                 </div>
               </div>
               <div style={{ flex: 1, display: "flex", "flex-direction": "column" }}>
-                <div style={{ display: "flex", "align-items": "center", "justify-content": "space-between", "margin-bottom": "5px" }}>
+                <div style={{ display: "flex", "align-items": "center", "justify-content": "space-between", height: "17px", "margin-bottom": "5px" }}>
                   <label style={{ "font-size": "12px", color: "var(--text-secondary)" }}>End</label>
                   <label style={{ display: "flex", "align-items": "center", gap: "5px", cursor: "pointer", "font-size": "12px", color: "var(--text-secondary)" }}>
                     <input type="checkbox" checked={props.allDay} onChange={(e) => props.setAllDay(e.currentTarget.checked)} />
@@ -811,7 +813,9 @@ const CreateEventForm = (props: {
                 </div>
               </div>
               <div style={{ flex: 1, display: "flex", "flex-direction": "column" }}>
-                <label style={{ "font-size": "12px", "margin-bottom": "5px", color: "var(--text-secondary)" }}>Repeat</label>
+                <div style={{ display: "flex", "align-items": "center", height: "17px", "margin-bottom": "5px" }}>
+                  <label style={{ "font-size": "12px", color: "var(--text-secondary)" }}>Repeat</label>
+                </div>
                 <div style={{ flex: 1, "overflow-y": "auto", border: "1px solid var(--border)", "border-radius": "6px" }}>
                   <For each={recurrenceOptions}>
                     {(opt) => (
@@ -865,8 +869,8 @@ const CreateEventForm = (props: {
       <div class="compose-footer">
         <Show when={props.error}><div class="compose-error">{props.error}</div></Show>
         <div class="compose-spacer" />
-        <button class="btn btn-primary" disabled={props.saving || !props.summary} onClick={props.onSave}>
-          {props.saving ? "Saving..." : "Save event"}
+        <button class="btn btn-primary" disabled={props.saving || !props.summary} onClick={props.onSave} title="Save event (⌘Enter)">
+          {props.saving ? "Saving..." : <>Save event <span class="shortcut-hint">⌘↵</span></>}
         </button>
       </div>
     </div>
@@ -2503,6 +2507,13 @@ function App() {
       e.preventDefault();
       setShowGlobalFilter(true);
       setTimeout(() => filterInputRef?.focus(), 0);
+      return;
+    }
+
+    // Cmd/Ctrl+Enter to save event (works even when typing)
+    if (e.key === 'Enter' && (e.metaKey || e.ctrlKey) && creatingEvent() && newEventSummary() && !newEventSaving()) {
+      e.preventDefault();
+      handleCreateEvent();
       return;
     }
 
