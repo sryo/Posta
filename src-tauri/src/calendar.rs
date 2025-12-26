@@ -6,6 +6,14 @@ use serde::{Deserialize, Serialize};
 
 const CALENDAR_API_BASE: &str = "https://www.googleapis.com/calendar/v3";
 
+/// Calendar info returned to frontend
+#[derive(Debug, Clone, Serialize)]
+pub struct CalendarInfo {
+    pub id: String,
+    pub name: String,
+    pub is_primary: bool,
+}
+
 /// Convert calendar API errors to user-friendly messages
 fn friendly_calendar_error(status: StatusCode, body: &str) -> String {
     // Check for specific error patterns
@@ -155,7 +163,7 @@ impl CalendarClient {
     }
 
     /// List all calendars for the user
-    pub async fn list_calendars(&self) -> Result<Vec<(String, String, bool)>, String> {
+    pub async fn list_calendars(&self) -> Result<Vec<CalendarInfo>, String> {
         let url = format!("{}/users/me/calendarList", CALENDAR_API_BASE);
 
         let resp = self
@@ -181,7 +189,11 @@ impl CalendarClient {
             .items
             .unwrap_or_default()
             .into_iter()
-            .map(|c| (c.id, c.summary.unwrap_or_default(), c.primary.unwrap_or(false)))
+            .map(|c| CalendarInfo {
+                id: c.id,
+                name: c.summary.unwrap_or_default(),
+                is_primary: c.primary.unwrap_or(false),
+            })
             .collect())
     }
 
@@ -244,11 +256,11 @@ impl CalendarClient {
         // Determine time range from query
         let (time_min, time_max) = query.get_time_range();
 
-        for (calendar_id, calendar_name, _primary) in calendars {
+        for cal in calendars {
             let mut url = format!(
                 "{}/calendars/{}/events?timeMin={}&timeMax={}&maxResults={}&singleEvents=true&orderBy=startTime",
                 CALENDAR_API_BASE,
-                urlencoding::encode(&calendar_id),
+                urlencoding::encode(&cal.id),
                 urlencoding::encode(&time_min.to_rfc3339()),
                 urlencoding::encode(&time_max.to_rfc3339()),
                 max_results
@@ -280,7 +292,7 @@ impl CalendarClient {
                 .items
                 .unwrap_or_default()
                 .into_iter()
-                .filter_map(|e| self.api_event_to_calendar_event(e, &calendar_id, &calendar_name))
+                .filter_map(|e| self.api_event_to_calendar_event(e, &cal.id, &cal.name))
                 .collect();
 
             all_events.extend(events);
@@ -387,6 +399,44 @@ impl CalendarClient {
         // or just empty string. It's mostly for display.
         self.api_event_to_calendar_event(api_event, calendar_id, "")
             .ok_or_else(|| "Failed to convert created event".to_string())
+    }
+
+    /// Move an event to a different calendar
+    pub async fn move_event(
+        &self,
+        source_calendar_id: &str,
+        event_id: &str,
+        destination_calendar_id: &str,
+    ) -> Result<CalendarEvent, String> {
+        let url = format!(
+            "{}/calendars/{}/events/{}/move?destination={}",
+            CALENDAR_API_BASE,
+            urlencoding::encode(source_calendar_id),
+            urlencoding::encode(event_id),
+            urlencoding::encode(destination_calendar_id)
+        );
+
+        let resp = self
+            .http_client
+            .post(&url)
+            .bearer_auth(&self.access_token)
+            .send()
+            .await
+            .map_err(|e| format!("Move event request failed: {}", e))?;
+
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let body = resp.text().await.unwrap_or_default();
+            return Err(friendly_calendar_error(status, &body));
+        }
+
+        let api_event: ApiEvent = resp
+            .json()
+            .await
+            .map_err(|e| format!("Failed to parse moved event: {}", e))?;
+
+        self.api_event_to_calendar_event(api_event, destination_calendar_id, "")
+            .ok_or_else(|| "Failed to convert moved event".to_string())
     }
 
     fn api_event_to_calendar_event(&self, event: ApiEvent, calendar_id: &str, calendar_name: &str) -> Option<CalendarEvent> {

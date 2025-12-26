@@ -106,6 +106,8 @@ import {
   type Contact,
   fetchCalendarEvents,
   type GoogleCalendarEvent,
+  listCalendars,
+  moveCalendarEvent,
   pullFromICloud,
   getCachedCardEvents,
   saveCachedCardEvents,
@@ -130,6 +132,8 @@ import {
 import "./App.css";
 import {
   ChevronIcon,
+  ChevronLeftIcon,
+  ChevronRightIcon,
   RefreshIcon,
   PlusIcon,
   GoogleLogo,
@@ -150,6 +154,7 @@ import {
   SpamIcon,
   ThumbsUpIcon,
   ThumbsUpFilledIcon,
+  ThumbsDownIcon,
   EyeOpenIcon,
   EyeClosedIcon,
   LabelIcon,
@@ -157,6 +162,8 @@ import {
   CalendarIcon,
   LocationIcon,
   ClockIcon,
+  VideoIcon,
+  CheckIcon,
 } from "./components/Icons";
 import { SmartReplies } from "./components/SmartReplies";
 
@@ -719,8 +726,8 @@ const CreateEventForm = (props: {
               </select>
             </div>
             <div style={{ display: "flex", gap: "5px" }}>
-              <button class="btn btn-sm btn-ghost" onClick={() => shiftViewDate(-7)} title="Previous Week">{"<"}</button>
-              <button class="btn btn-sm btn-ghost" onClick={() => shiftViewDate(7)} title="Next Week">{">"}</button>
+              <button class="btn btn-sm btn-ghost" onClick={() => shiftViewDate(-7)} title="Previous Week"><ChevronLeftIcon /></button>
+              <button class="btn btn-sm btn-ghost" onClick={() => shiftViewDate(7)} title="Next Week"><ChevronRightIcon /></button>
             </div>
           </div>
 
@@ -889,6 +896,62 @@ const COLOR_HEX: Record<string, string> = {
   pink: "#D81B60",
 };
 
+// Message Actions Wheel Component - shared between ThreadView and EventView
+const MessageActionsWheel = (props: {
+  onReply: () => void;
+  onReplyAll: () => void;
+  onForward: () => void;
+  open: boolean;
+  showHints?: boolean;
+  onMouseEnter?: () => void;
+  onMouseLeave?: () => void;
+}) => {
+  const actions = [
+    { title: 'Reply', keyHint: 'R', icon: ReplyIcon, onClick: props.onReply },
+    { title: 'Reply All', keyHint: 'A', icon: ReplyAllIcon, onClick: props.onReplyAll },
+    { title: 'Forward', keyHint: 'F', icon: ForwardIcon, onClick: props.onForward },
+  ];
+
+  const innerRadius = 38;
+  const numActions = actions.length;
+
+  return (
+    <div
+      class={`message-actions-wheel ${props.open ? 'open' : ''}`}
+      onMouseEnter={props.onMouseEnter}
+      onMouseLeave={props.onMouseLeave}
+    >
+      <For each={actions}>
+        {(action, i) => {
+          // Arc on RIGHT side: from -60deg (top-right) to +60deg (bottom-right)
+          const angle = (-Math.PI / 3) + (i() / (numActions - 1)) * (2 * Math.PI / 3);
+          const x = innerRadius * Math.cos(angle);
+          const y = innerRadius * Math.sin(angle);
+
+          return (
+            <button
+              class="message-action-btn"
+              style={{
+                left: `calc(50% + ${x.toFixed(1)}px - 13px)`,
+                top: `calc(50% + ${y.toFixed(1)}px - 13px)`
+              }}
+              onClick={(e) => { e.stopPropagation(); action.onClick(); }}
+              title={action.title}
+            >
+              <div style={{ width: '14px', height: '14px' }}>
+                <action.icon />
+              </div>
+              <Show when={props.showHints}>
+                <span class="action-key-hint">{action.keyHint}</span>
+              </Show>
+            </button>
+          );
+        }}
+      </For>
+    </div>
+  );
+};
+
 interface InlineComposeProps {
   replyToMessageId: string | null;
   isForward: boolean;
@@ -943,6 +1006,7 @@ const ThreadView = (props: {
   isRead: boolean,
   isImportant: boolean,
   isInInbox: boolean,
+  labelCount: number,
   // Inline compose
   inlineCompose: InlineComposeProps | null,
   // Attachments from thread listing (with inline_data for thumbnails)
@@ -965,7 +1029,13 @@ const ThreadView = (props: {
   createEffect(() => {
     if (props.thread && contentRef) {
       requestAnimationFrame(() => {
-        contentRef!.scrollTop = contentRef!.scrollHeight;
+        const lastIndex = props.thread!.messages.length - 1;
+        const lastMessage = messageRefs[lastIndex];
+        if (lastMessage) {
+          lastMessage.scrollIntoView({ block: 'start' });
+        } else {
+          contentRef!.scrollTop = contentRef!.scrollHeight;
+        }
       });
     }
   });
@@ -992,63 +1062,6 @@ const ThreadView = (props: {
       setWheelOpen(false);
       setHoveredMessageId(null);
     }, 150);
-  };
-
-  // Message Actions Wheel Component - arc on RIGHT side
-  const MessageActionsWheel = (msgProps: {
-    msgId: string;
-    onReply: () => void;
-    onReplyAll: () => void;
-    onForward: () => void;
-    open: boolean;
-    showHints?: boolean;
-  }) => {
-    const actions = [
-      { title: 'Reply', keyHint: 'R', icon: ReplyIcon, onClick: msgProps.onReply },
-      { title: 'Reply All', keyHint: 'A', icon: ReplyAllIcon, onClick: msgProps.onReplyAll },
-      { title: 'Forward', keyHint: 'F', icon: ForwardIcon, onClick: msgProps.onForward },
-    ];
-
-    const innerRadius = 38;
-    const numActions = actions.length;
-
-    return (
-      <div
-        class={`message-actions-wheel ${msgProps.open ? 'open' : ''}`}
-        onMouseEnter={() => showMessageWheel(msgProps.msgId)}
-        onMouseLeave={hideMessageWheel}
-      >
-        <For each={actions}>
-          {(action, i) => {
-            // Arc on RIGHT side: from -60° (top-right) to +60° (bottom-right)
-            // i=0 -> -π/3 (-60°) -> top-right
-            // i=max -> π/3 (60°) -> bottom-right
-            const angle = (-Math.PI / 3) + (i() / (numActions - 1)) * (2 * Math.PI / 3);
-            const x = innerRadius * Math.cos(angle);
-            const y = innerRadius * Math.sin(angle);
-
-            return (
-              <button
-                class="message-action-btn"
-                style={{
-                  left: `calc(50% + ${x.toFixed(1)}px - 13px)`,
-                  top: `calc(50% + ${y.toFixed(1)}px - 13px)`
-                }}
-                onClick={(e) => { e.stopPropagation(); action.onClick(); }}
-                title={action.title}
-              >
-                <div style={{ width: '14px', height: '14px' }}>
-                  <action.icon />
-                </div>
-                <Show when={msgProps.showHints}>
-                  <span class="action-key-hint">{action.keyHint}</span>
-                </Show>
-              </button>
-            );
-          }}
-        </For>
-      </div>
-    );
   };
 
   const handleKeyDown = (e: KeyboardEvent) => {
@@ -1147,7 +1160,7 @@ const ThreadView = (props: {
 
             <button class="thread-toolbar-btn" onClick={props.onOpenLabels} title="Manage labels">
               <LabelIcon />
-              <span class="thread-toolbar-label">Labels</span>
+              <span class="thread-toolbar-label">Labels{props.labelCount > 0 ? ` (${props.labelCount})` : ''}</span>
               <span class="shortcut-hint">L</span>
             </button>
 
@@ -1332,12 +1345,13 @@ const ThreadView = (props: {
                       {/* Message Actions Wheel - show for focused or hovered message */}
                       <Show when={((hoveredMessageId() === msg.id && wheelOpen()) || props.focusedMessageIndex === index()) && !showInlineCompose()}>
                         <MessageActionsWheel
-                          msgId={msg.id}
                           onReply={handleReply}
                           onReplyAll={handleReplyAll}
                           onForward={handleForward}
                           open={true}
                           showHints={props.focusedMessageIndex === index()}
+                          onMouseEnter={() => showMessageWheel(msg.id)}
+                          onMouseLeave={hideMessageWheel}
                         />
                       </Show>
                       <div class="message-body" innerHTML={DOMPurify.sanitize(getBody(), DOMPURIFY_CONFIG)}></div>
@@ -1490,6 +1504,355 @@ const ThreadView = (props: {
   );
 };
 
+// Event View Component
+const EventView = (props: {
+  event: GoogleCalendarEvent | null;
+  card: { name: string; color: string | null } | null;
+  focusColor: string | null;
+  onClose: () => void;
+  onRsvp: (status: "accepted" | "declined" | "tentative") => void;
+  onReplyOrganizer: () => void;
+  onReplyAll: () => void;
+  onForward: () => void;
+  onDelete: () => void;
+  onOpenCalendars: () => void;
+  calendarDrawerOpen: boolean;
+  onCloseCalendarDrawer: () => void;
+  calendars: { id: string; name: string; is_primary: boolean }[];
+  calendarsLoading: boolean;
+  onMoveToCalendar: (calendarId: string) => void;
+  rsvpLoading: boolean;
+  inlineCompose: InlineComposeProps | null;
+}) => {
+  const [closing, setClosing] = createSignal(false);
+
+  const handleClose = () => {
+    setClosing(true);
+    setTimeout(() => props.onClose(), 200);
+  };
+
+  const formatEventDateTime = (startTime: number, endTime: number | null, allDay: boolean) => {
+    const start = new Date(startTime);
+    const end = endTime ? new Date(endTime) : null;
+    const dateOpts: Intl.DateTimeFormatOptions = { weekday: 'long', month: 'long', day: 'numeric', year: 'numeric' };
+    const timeOpts: Intl.DateTimeFormatOptions = { hour: 'numeric', minute: '2-digit' };
+
+    if (allDay) {
+      if (end && end.getTime() - start.getTime() > 86400000) {
+        return `${start.toLocaleDateString(undefined, dateOpts)} - ${end.toLocaleDateString(undefined, dateOpts)} (All day)`;
+      }
+      return `${start.toLocaleDateString(undefined, dateOpts)} (All day)`;
+    }
+
+    const startDate = start.toLocaleDateString(undefined, dateOpts);
+    const startTimeStr = start.toLocaleTimeString(undefined, timeOpts);
+    const endTimeStr = end ? end.toLocaleTimeString(undefined, timeOpts) : '';
+
+    if (end && start.toDateString() !== end.toDateString()) {
+      return `${startDate} ${startTimeStr} - ${end.toLocaleDateString(undefined, dateOpts)} ${endTimeStr}`;
+    }
+    return `${startDate}, ${startTimeStr}${endTimeStr ? ` - ${endTimeStr}` : ''}`;
+  };
+
+  const getResponseLabel = (status: string | null) => {
+    switch (status) {
+      case "accepted": return "Going";
+      case "tentative": return "Maybe";
+      case "declined": return "Declined";
+      case "needsAction": return "Pending";
+      default: return status || "No response";
+    }
+  };
+
+  return (
+    <div class={`thread-overlay ${closing() ? 'closing' : ''}`} style={props.focusColor ? { '--message-focused-color': props.focusColor } as any : undefined}>
+      <div class="thread-floating-bar">
+        {/* Row 1: Close + Title + Card indicator */}
+        <div class="thread-floating-bar-row">
+          <CloseButton onClick={handleClose} />
+          <div class="thread-bar-subject">
+            <Show when={props.event} fallback={<span>Loading...</span>}>
+              <h2>{props.event?.title || '(No title)'}</h2>
+            </Show>
+          </div>
+          <Show when={props.card}>
+            <div
+              class="thread-bar-card"
+              style={props.card?.color ? {
+                background: COLOR_HEX[props.card.color] + '20',
+                color: COLOR_HEX[props.card.color]
+              } : {
+                background: 'var(--bg-tertiary)',
+                color: 'var(--text-secondary)'
+              }}
+            >
+              {props.card?.name}
+            </div>
+          </Show>
+        </div>
+
+        {/* Row 2: Actions */}
+        <Show when={props.event}>
+          <div class="thread-floating-bar-row thread-bar-actions">
+            {/* Reply to organizer */}
+            <Show when={props.event!.organizer}>
+              <button
+                class="thread-toolbar-btn"
+                onClick={props.onReplyOrganizer}
+                title="Reply to organizer"
+              >
+                <ReplyIcon />
+                <span class="thread-toolbar-label">Reply</span>
+                <span class="shortcut-hint">R</span>
+              </button>
+            </Show>
+
+            <Show when={props.event!.hangout_link}>
+              <div class="thread-toolbar-divider" />
+              <button
+                class="thread-toolbar-btn"
+                onClick={() => props.event!.hangout_link && openUrl(props.event!.hangout_link)}
+                title="Join video call"
+              >
+                <VideoIcon />
+                <span class="thread-toolbar-label">Join</span>
+                <span class="shortcut-hint">J</span>
+              </button>
+            </Show>
+
+            <Show when={props.event!.html_link}>
+              <button
+                class="thread-toolbar-btn"
+                onClick={() => props.event!.html_link && openUrl(props.event!.html_link)}
+                title="Open in Google Calendar"
+              >
+                <CalendarIcon />
+                <span class="thread-toolbar-label">Open</span>
+                <span class="shortcut-hint">O</span>
+              </button>
+            </Show>
+
+            <button class="thread-toolbar-btn" onClick={props.onOpenCalendars} title="Move to calendar">
+              <CalendarIcon />
+              <span class="thread-toolbar-label">Move</span>
+              <span class="shortcut-hint">C</span>
+            </button>
+
+            <div class="thread-toolbar-divider" />
+
+            <button
+              class="thread-toolbar-btn thread-toolbar-btn-danger"
+              onClick={props.onDelete}
+              title="Delete event"
+            >
+              <TrashIcon />
+              <span class="thread-toolbar-label">Delete</span>
+              <span class="shortcut-hint">#</span>
+            </button>
+          </div>
+        </Show>
+      </div>
+
+      <div class="thread-content">
+        <Show when={props.event}>
+          <div class="messages-list">
+            <div class={`message-row ${props.inlineCompose ? 'with-compose' : ''} ${props.inlineCompose?.resizing ? 'resizing' : ''}`}>
+              <div class="message-card message-focused">
+                {/* Event Header */}
+                <div class="message-header">
+                  <div class="message-sender">{props.event!.organizer || 'Unknown organizer'}</div>
+                  <div class="message-date">{formatEventDateTime(props.event!.start_time, props.event!.end_time, props.event!.all_day)}</div>
+                </div>
+
+                {/* Message Actions Wheel - hide when composing */}
+                <Show when={!props.inlineCompose}>
+                  <MessageActionsWheel
+                    onReply={props.onReplyOrganizer}
+                    onReplyAll={props.onReplyAll}
+                    onForward={props.onForward}
+                    open={true}
+                    showHints={true}
+                  />
+                </Show>
+
+                {/* Calendar Name */}
+                <div class="event-info-row">
+                  <CalendarIcon />
+                  <span>{props.event!.calendar_name}</span>
+                </div>
+
+                {/* Location */}
+                <Show when={props.event!.location}>
+                  <div class="event-info-row">
+                    <LocationIcon />
+                    <span>{props.event!.location}</span>
+                  </div>
+                </Show>
+
+                {/* Video call */}
+                <Show when={props.event!.hangout_link}>
+                  <div class="event-info-row">
+                    <VideoIcon />
+                    <a href="#" onClick={(e) => { e.preventDefault(); props.event!.hangout_link && openUrl(props.event!.hangout_link); }}>
+                      Join video call
+                    </a>
+                  </div>
+                </Show>
+
+                {/* Description */}
+                <Show when={props.event!.description}>
+                  <div class="message-body">
+                    <div innerHTML={props.event!.description!.replace(/\n/g, '<br>')} />
+                  </div>
+                </Show>
+
+                {/* RSVP Section */}
+                <Show when={props.event!.response_status}>
+                  <div class="event-rsvp-section">
+                    <div class="event-rsvp-current">
+                      Your response: <span class={`event-rsvp-status ${props.event!.response_status}`}>
+                        {getResponseLabel(props.event!.response_status)}
+                      </span>
+                    </div>
+                    <div class="event-rsvp-buttons">
+                      <button
+                        class={`event-rsvp-btn ${props.event!.response_status === 'accepted' ? 'active' : ''}`}
+                        onClick={() => props.onRsvp('accepted')}
+                        disabled={props.rsvpLoading}
+                      >
+                        Yes
+                      </button>
+                      <button
+                        class={`event-rsvp-btn ${props.event!.response_status === 'tentative' ? 'active' : ''}`}
+                        onClick={() => props.onRsvp('tentative')}
+                        disabled={props.rsvpLoading}
+                      >
+                        Maybe
+                      </button>
+                      <button
+                        class={`event-rsvp-btn ${props.event!.response_status === 'declined' ? 'active' : ''}`}
+                        onClick={() => props.onRsvp('declined')}
+                        disabled={props.rsvpLoading}
+                      >
+                        No
+                      </button>
+                    </div>
+                  </div>
+                </Show>
+
+                {/* Attendees */}
+                <Show when={props.event!.attendees.length > 0}>
+                  <div class="event-attendees-section">
+                    <div class="event-attendees-label">{props.event!.attendees.length} guests</div>
+                    <div class="event-attendees-list">
+                      <For each={props.event!.attendees}>
+                        {(attendee) => (
+                          <div class={`event-attendee ${attendee.response_status || ''}`}>
+                            <span class="event-attendee-name">
+                              {attendee.display_name || attendee.email}
+                              {attendee.is_organizer && <span class="event-attendee-badge">Organizer</span>}
+                            </span>
+                            <span class={`event-attendee-status ${attendee.response_status || ''}`}>
+                              {getResponseLabel(attendee.response_status)}
+                            </span>
+                          </div>
+                        )}
+                      </For>
+                    </div>
+                  </div>
+                </Show>
+              </div>
+
+              {/* Resize handle and inline compose form */}
+              <Show when={props.inlineCompose}>
+                <div
+                  class="inline-resize-handle"
+                  onMouseDown={props.inlineCompose!.onResizeStart}
+                />
+                <div class="inline-compose">
+                  <ComposeForm
+                    mode={props.inlineCompose!.isForward ? 'forward' : 'reply'}
+                    to={props.inlineCompose!.to}
+                    setTo={props.inlineCompose!.setTo}
+                    cc={props.inlineCompose!.cc}
+                    setCc={props.inlineCompose!.setCc}
+                    bcc={props.inlineCompose!.bcc}
+                    setBcc={props.inlineCompose!.setBcc}
+                    showCcBcc={props.inlineCompose!.showCcBcc}
+                    setShowCcBcc={props.inlineCompose!.setShowCcBcc}
+                    body={props.inlineCompose!.body}
+                    setBody={props.inlineCompose!.setBody}
+                    attachments={props.inlineCompose!.attachments}
+                    onRemoveAttachment={props.inlineCompose!.onRemoveAttachment}
+                    onFileSelect={props.inlineCompose!.onFileSelect}
+                    fileInputId={`inline-file-input-event-${props.event!.id}`}
+                    error={props.inlineCompose!.error}
+                    draftSaving={props.inlineCompose!.draftSaving}
+                    draftSaved={props.inlineCompose!.draftSaved}
+                    sending={props.inlineCompose!.sending}
+                    onSend={props.inlineCompose!.onSend}
+                    onClose={props.inlineCompose!.onClose}
+                    onInput={props.inlineCompose!.onInput}
+                    focusBody={props.inlineCompose!.focusBody}
+                  />
+                </div>
+              </Show>
+            </div>
+          </div>
+        </Show>
+      </div>
+
+      {/* Calendar Drawer */}
+      <Show when={props.calendarDrawerOpen}>
+        <div class="label-drawer-overlay" onClick={props.onCloseCalendarDrawer}></div>
+        <div class="label-drawer">
+          <div class="label-drawer-header">
+            <h3>Move to Calendar</h3>
+            <CloseButton onClick={props.onCloseCalendarDrawer} />
+          </div>
+
+          <div class="label-drawer-body">
+            <Show when={props.calendarsLoading}>
+              <div class="label-drawer-loading">Loading calendars...</div>
+            </Show>
+
+            <Show when={!props.calendarsLoading}>
+              <For each={props.calendars}>
+                {(cal) => {
+                  const isCurrent = () => props.event?.calendar_id === cal.id;
+
+                  return (
+                    <label class={`label-item ${isCurrent() ? 'label-item-selected' : ''}`}>
+                      <input
+                        type="radio"
+                        name="event-calendar"
+                        checked={isCurrent()}
+                        onChange={() => props.onMoveToCalendar(cal.id)}
+                      />
+                      <span class="label-name">{cal.name}</span>
+                      <Show when={cal.is_primary}>
+                        <span class="label-badge">Primary</span>
+                      </Show>
+                    </label>
+                  );
+                }}
+              </For>
+
+              <Show when={!props.calendarsLoading && props.calendars.length === 0}>
+                <div class="label-drawer-empty">No calendars found</div>
+              </Show>
+            </Show>
+          </div>
+
+          <div class="label-drawer-footer">
+            <span class="shortcut-hint">Press C to toggle calendars</span>
+          </div>
+        </div>
+      </Show>
+    </div>
+  );
+};
+
 type CardColor = typeof CARD_COLORS[number] | null;
 
 // Background colors with light/dark mode support (same base colors, lower opacity)
@@ -1572,6 +1935,17 @@ function App() {
   const [threadError, setThreadError] = createSignal<string | null>(null);
   const [focusedMessageIndex, setFocusedMessageIndex] = createSignal(0);
 
+  // Event View State
+  const [activeEvent, setActiveEvent] = createSignal<GoogleCalendarEvent | null>(null);
+  const [activeEventCardId, setActiveEventCardId] = createSignal<string | null>(null);
+
+  // Calendar drawer state (for events)
+  const [calendarDrawerOpen, setCalendarDrawerOpen] = createSignal(false);
+  const [availableCalendars, setAvailableCalendars] = createSignal<{ id: string; name: string; is_primary: boolean }[]>([]);
+  const [calendarsLoading, setCalendarsLoading] = createSignal(false);
+  // Track last account to detect changes
+  let lastAccountId: string | null = null;
+
   // Label drawer state
   const [labelDrawerOpen, setLabelDrawerOpen] = createSignal(false);
   const [accountLabels, setAccountLabels] = createSignal<GmailLabel[]>([]);
@@ -1595,6 +1969,8 @@ function App() {
   // Sync status tracking
   const [lastSyncTimes, setLastSyncTimes] = createSignal<Record<string, number>>({});
   const [syncErrors, setSyncErrors] = createSignal<Record<string, string | null>>({});
+  // Current time signal for reactive relative time displays (updates every 30s)
+  const [currentTime, setCurrentTime] = createSignal(Date.now());
 
   // Google Contacts from People API
   const [googleContacts, setGoogleContacts] = createSignal<Contact[]>([]);
@@ -1686,8 +2062,9 @@ function App() {
   const [inlineResizing, setInlineResizing] = createSignal(false);
   const MIN_MESSAGE_WIDTH = 200;
   const MAX_MESSAGE_WIDTH = 1200;
+  const getMaxMessageWidth = () => Math.min(MAX_MESSAGE_WIDTH, window.innerWidth - 96 - 220);
   const [inlineMessageWidth, setInlineMessageWidth] = createSignal<number>(
-    Math.max(MIN_MESSAGE_WIDTH, Math.min(MAX_MESSAGE_WIDTH, parseInt(safeGetItem("inlineMessageWidth") || "400", 10)))
+    Math.max(MIN_MESSAGE_WIDTH, Math.min(getMaxMessageWidth(), parseInt(safeGetItem("inlineMessageWidth") || "400", 10)))
   );
 
   function updateInlineMessageWidth(width: number) {
@@ -1702,11 +2079,9 @@ function App() {
     setInlineResizing(true);
     const startX = e.clientX;
     const startWidth = inlineMessageWidth();
-    // Calculate dynamic max based on viewport, leaving min 200px for compose + 20px resize handle
-    const dynamicMax = Math.min(MAX_MESSAGE_WIDTH, window.innerWidth - 96 - 220);
     const onMove = (moveE: MouseEvent) => {
       const delta = moveE.clientX - startX;
-      const newWidth = Math.max(MIN_MESSAGE_WIDTH, Math.min(dynamicMax, startWidth + delta));
+      const newWidth = Math.max(MIN_MESSAGE_WIDTH, Math.min(getMaxMessageWidth(), startWidth + delta));
       updateInlineMessageWidth(newWidth);
     };
     const onUp = () => {
@@ -1728,6 +2103,15 @@ function App() {
   );
   const [draggingAction, setDraggingAction] = createSignal<string | null>(null);
 
+  // Event action visibility settings
+  const [eventActionSettings, setEventActionSettings] = createSignal<Record<string, boolean>>(
+    safeGetJSON<Record<string, boolean>>("eventActionSettings", { "openCalendar": true, "rsvpYes": true, "rsvpNo": true, "joinMeeting": true, "quickReply": true, "delete": false })
+  );
+  const DEFAULT_EVENT_ACTION_ORDER = ["openCalendar", "rsvpYes", "rsvpNo", "joinMeeting", "quickReply", "delete"];
+  const [eventActionOrder, setEventActionOrder] = createSignal<string[]>(
+    safeGetJSON<string[]>("eventActionOrder", DEFAULT_EVENT_ACTION_ORDER)
+  );
+
   // Background color picker (stores index, not color value)
   const [bgColorPickerOpen, setBgColorPickerOpen] = createSignal(false);
   const [selectedBgColorIndex, setSelectedBgColorIndex] = createSignal<number | null>(
@@ -1742,6 +2126,16 @@ function App() {
   const [newCardColor, setNewCardColor] = createSignal<CardColor>(null);
   const [newCardGroupBy, setNewCardGroupBy] = createSignal<GroupBy>("date");
   const [colorPickerOpen, setColorPickerOpen] = createSignal(false);
+  let addCardFormRef: HTMLDivElement | undefined;
+
+  // Scroll add card form into view when it appears
+  createEffect(() => {
+    if (addingCard() && addCardFormRef) {
+      requestAnimationFrame(() => {
+        addCardFormRef?.scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'nearest' });
+      });
+    }
+  });
 
   // Edit card state
   const [editingCardId, setEditingCardId] = createSignal<string | null>(null);
@@ -1785,6 +2179,7 @@ function App() {
   const [queryInputRef, setQueryInputRef] = createSignal<HTMLInputElement | null>(null);
   const [queryDropdownPos, setQueryDropdownPos] = createSignal<{ top: number; left: number; width: number } | null>(null);
   const [queryPreviewThreads, setQueryPreviewThreads] = createSignal<ThreadGroup[]>([]);
+  const [queryPreviewCalendarEvents, setQueryPreviewCalendarEvents] = createSignal<GoogleCalendarEvent[]>([]);
   const [queryPreviewLoading, setQueryPreviewLoading] = createSignal(false);
   const [queryHelpOpen, setQueryHelpOpen] = createSignal(false);
   const [globalFilter, setGlobalFilter] = createSignal("");
@@ -1810,13 +2205,7 @@ function App() {
   async function fetchQueryPreview(query: string) {
     if (!query.trim()) {
       setQueryPreviewThreads([]);
-      return;
-    }
-
-    // Skip email preview for calendar queries
-    if (query.toLowerCase().includes("calendar:")) {
-      setQueryPreviewThreads([]);
-      setQueryPreviewLoading(false);
+      setQueryPreviewCalendarEvents([]);
       return;
     }
 
@@ -1824,6 +2213,23 @@ function App() {
     if (!account) return;
 
     setQueryPreviewLoading(true);
+
+    // Fetch calendar events for calendar queries
+    if (query.toLowerCase().includes("calendar:")) {
+      setQueryPreviewThreads([]);
+      try {
+        const events = await fetchCalendarEvents(account.id, query);
+        setQueryPreviewCalendarEvents(events);
+      } catch {
+        setQueryPreviewCalendarEvents([]);
+      } finally {
+        setQueryPreviewLoading(false);
+      }
+      return;
+    }
+
+    // Fetch threads for email queries
+    setQueryPreviewCalendarEvents([]);
     try {
       const groups = await searchThreadsPreview(account.id, query);
       setQueryPreviewThreads(groups);
@@ -1849,11 +2255,19 @@ function App() {
   const [quickReplyText, setQuickReplyText] = createSignal("");
   const [quickReplySending, setQuickReplySending] = createSignal(false);
 
+  // Event quick reply
+  const [quickReplyEventId, setQuickReplyEventId] = createSignal<string | null>(null);
+
   // Thread actions wheel
   const [hoveredThread, setHoveredThread] = createSignal<string | null>(null);
   const [actionsWheelOpen, setActionsWheelOpen] = createSignal(false);
-  const [actionConfigMenu, setActionConfigMenu] = createSignal<{ x: number; y: number } | null>(null);
+  const [actionConfigMenu, setActionConfigMenu] = createSignal<{ x: number; y: number; isEvent?: boolean } | null>(null);
   let hoverActionsTimeout: number | undefined;
+
+  // Event actions wheel
+  const [hoveredEvent, setHoveredEvent] = createSignal<string | null>(null);
+  const [eventActionsWheelOpen, setEventActionsWheelOpen] = createSignal(false);
+  let hoverEventActionsTimeout: number | undefined;
 
   function showThreadHoverActions(cardId: string, threadId: string) {
     if (hoverActionsTimeout) {
@@ -1881,8 +2295,28 @@ function App() {
     }, 100);
   }
 
+  function showEventHoverActions(eventId: string) {
+    if (hoverEventActionsTimeout) {
+      clearTimeout(hoverEventActionsTimeout);
+      hoverEventActionsTimeout = undefined;
+    }
+    setHoveredEvent(eventId);
+    setEventActionsWheelOpen(true);
+  }
+
+  function hideEventHoverActions() {
+    hoverEventActionsTimeout = window.setTimeout(() => {
+      setEventActionsWheelOpen(false);
+      setHoveredEvent(null);
+    }, 100);
+  }
+
   const [selectedThreads, setSelectedThreads] = createSignal<Record<string, Set<string>>>({});
   const [lastSelectedThread, setLastSelectedThread] = createSignal<Record<string, string | null>>({});
+
+  // Event selection (like thread selection)
+  const [selectedEvents, setSelectedEvents] = createSignal<Record<string, Set<string>>>({});
+  const [lastSelectedEvent, setLastSelectedEvent] = createSignal<Record<string, string | null>>({});
 
   // Compose
   const [composing, setComposing] = createSignal(false);
@@ -1952,6 +2386,8 @@ function App() {
   const [composeFabHovered, setComposeFabHovered] = createSignal(false);
   const [forwardingThread, setForwardingThread] = createSignal<{ threadId: string; subject: string; body: string } | null>(null);
   const [replyingToThread, setReplyingToThread] = createSignal<{ threadId: string; messageId: string } | null>(null);
+  const [replyingToEvent, setReplyingToEvent] = createSignal<{ eventId: string } | null>(null);
+  const [forwardingEvent, setForwardingEvent] = createSignal<{ eventId: string } | null>(null);
   const [focusComposeBody, setFocusComposeBody] = createSignal(false);
   const [composeEmailError, setComposeEmailError] = createSignal<string | null>(null);
   const [draftSaved, setDraftSaved] = createSignal(false);
@@ -2283,6 +2719,7 @@ function App() {
   // Handle window focus - reset to fast polling and sync immediately
   function handleWindowFocus() {
     setPollInterval(BASE_POLL_INTERVAL);
+    setCurrentTime(Date.now());
     performIncrementalSync();
   }
 
@@ -2356,6 +2793,15 @@ function App() {
 
     // Apply saved inline message width
     document.documentElement.style.setProperty("--inline-message-width", `${inlineMessageWidth()}px`);
+
+    // Constrain inline message width on window resize
+    const handleResize = () => {
+      const maxWidth = getMaxMessageWidth();
+      if (inlineMessageWidth() > maxWidth) {
+        updateInlineMessageWidth(Math.max(MIN_MESSAGE_WIDTH, maxWidth));
+      }
+    };
+    window.addEventListener("resize", handleResize);
 
     // Listen for color scheme changes
     const colorSchemeQuery = window.matchMedia?.("(prefers-color-scheme: dark)");
@@ -2463,6 +2909,9 @@ function App() {
     }
   });
 
+  // Update currentTime every 30 seconds to keep relative timestamps fresh
+  const timeUpdateInterval = setInterval(() => setCurrentTime(Date.now()), 30000);
+
   onCleanup(() => {
     if (pollTimeoutId) {
       clearTimeout(pollTimeoutId);
@@ -2470,6 +2919,7 @@ function App() {
     if (queryPreviewTimeout) {
       clearTimeout(queryPreviewTimeout);
     }
+    clearInterval(timeUpdateInterval);
     window.removeEventListener("focus", handleWindowFocus);
   });
 
@@ -2567,6 +3017,8 @@ function App() {
         closeBatchReply();
       } else if (composing()) {
         closeCompose();
+      } else if (activeEvent()) {
+        closeEvent();
       } else if (creatingEvent()) {
         closeEventForm();
       } else if (editingCardId()) {
@@ -3268,6 +3720,27 @@ function App() {
     }
   }
 
+  async function handleEventQuickReply(event: GoogleCalendarEvent) {
+    const account = selectedAccount();
+    const text = quickReplyText();
+    if (!account || !event.organizer || !text.trim()) return;
+
+    const subject = `Re: ${event.title}`;
+
+    setQuickReplySending(true);
+    try {
+      await sendEmail(account.id, event.organizer, "", "", subject, text);
+      setQuickReplyEventId(null);
+      setQuickReplyText("");
+      showToast("Reply sent");
+    } catch (e) {
+      console.error("Failed to send reply:", e);
+      setError(`Failed to send reply: ${e}`);
+    } finally {
+      setQuickReplySending(false);
+    }
+  }
+
   function handleForward(threadId: string, cardId: string) {
     // Find the thread
     const threads = getCardThreadsFlat(cardId);
@@ -3337,6 +3810,63 @@ function App() {
     }
   }
 
+  // Calendar drawer functions (for events)
+  async function fetchAvailableCalendars() {
+    const account = selectedAccount();
+    if (!account) return;
+
+    // Clear cache if account changed
+    if (lastAccountId !== account.id) {
+      setAvailableCalendars([]);
+      lastAccountId = account.id;
+    }
+
+    if (availableCalendars().length > 0) return; // Already cached
+
+    setCalendarsLoading(true);
+    try {
+      const calendars = await listCalendars(account.id);
+      // Sort: primary first, then alphabetically
+      const sorted = calendars.sort((a, b) => {
+        if (a.is_primary && !b.is_primary) return -1;
+        if (!a.is_primary && b.is_primary) return 1;
+        return a.name.localeCompare(b.name);
+      });
+      setAvailableCalendars(sorted);
+    } catch (e) {
+      console.error("Failed to fetch calendars:", e);
+      showToast("Failed to load calendars");
+    } finally {
+      setCalendarsLoading(false);
+    }
+  }
+
+  async function handleMoveEventToCalendar(destinationCalendarId: string) {
+    const event = activeEvent();
+    const account = selectedAccount();
+    if (!event || !account || event.calendar_id === destinationCalendarId) return;
+
+    try {
+      const movedEvent = await moveCalendarEvent(
+        account.id,
+        event.calendar_id,
+        event.id,
+        destinationCalendarId
+      );
+
+      // Update the active event with new calendar info
+      setActiveEvent(movedEvent);
+
+      // Find the destination calendar name
+      const destCal = availableCalendars().find(c => c.id === destinationCalendarId);
+      showToast(`Moved to ${destCal?.name || 'calendar'}`);
+      setCalendarDrawerOpen(false);
+    } catch (e) {
+      console.error("Failed to move event:", e);
+      showToast(`Failed to move event: ${e}`);
+    }
+  }
+
   function getCurrentThreadLabels(): string[] {
     const thread = activeThread();
     if (!thread || !thread.messages.length) return [];
@@ -3360,6 +3890,13 @@ function App() {
 
   function isThreadInInbox(): boolean {
     return getCurrentThreadLabels().includes('INBOX');
+  }
+
+  function getThreadUserLabelCount(): number {
+    const labels = getCurrentThreadLabels();
+    // System labels are uppercase (INBOX, SENT, STARRED, etc.) or start with CATEGORY_
+    const systemLabels = ['INBOX', 'SENT', 'DRAFT', 'SPAM', 'TRASH', 'STARRED', 'UNREAD', 'IMPORTANT', 'CHAT', 'FORUMS', 'UPDATES', 'PROMOTIONS', 'SOCIAL', 'PERSONAL'];
+    return labels.filter(l => !systemLabels.includes(l) && !l.startsWith('CATEGORY_')).length;
   }
 
   async function handleThreadViewAction(action: string) {
@@ -3625,6 +4162,7 @@ function App() {
     }
     // Clear any existing preview
     setQueryPreviewThreads([]);
+    setQueryPreviewCalendarEvents([]);
     setQueryPreviewLoading(false);
     setEditingCardId(card.id);
     setEditCardName(card.name);
@@ -3920,19 +4458,39 @@ function App() {
     }
   }
 
-  function toggleActionSetting(key: string) {
-    const newSettings = { ...actionSettings(), [key]: !actionSettings()[key] };
-    setActionSettings(newSettings);
-    safeSetJSON("actionSettings", newSettings);
+  // Generic action settings helpers
+  function createActionSettingsHandlers(
+    getSettings: () => Record<string, boolean>,
+    setSettings: (s: Record<string, boolean>) => void,
+    getOrder: () => string[],
+    setOrder: (o: string[]) => void,
+    storageKeySettings: string,
+    storageKeyOrder: string
+  ) {
+    return {
+      toggle: (key: string) => {
+        const newSettings = { ...getSettings(), [key]: !getSettings()[key] };
+        setSettings(newSettings);
+        safeSetJSON(storageKeySettings, newSettings);
+      },
+      move: (fromIndex: number, toIndex: number) => {
+        const order = [...getOrder()];
+        const [item] = order.splice(fromIndex, 1);
+        order.splice(toIndex, 0, item);
+        setOrder(order);
+        safeSetJSON(storageKeyOrder, order);
+      }
+    };
   }
 
-  function moveActionInOrder(fromIndex: number, toIndex: number) {
-    const order = [...actionOrder()];
-    const [item] = order.splice(fromIndex, 1);
-    order.splice(toIndex, 0, item);
-    setActionOrder(order);
-    safeSetJSON("actionOrder", order);
-  }
+  const threadActionHandlers = createActionSettingsHandlers(
+    actionSettings, setActionSettings, actionOrder, setActionOrder,
+    "actionSettings", "actionOrder"
+  );
+  const eventActionHandlers = createActionSettingsHandlers(
+    eventActionSettings, setEventActionSettings, eventActionOrder, setEventActionOrder,
+    "eventActionSettings", "eventActionOrder"
+  );
 
   function selectBgColor(colorIndex: number | null) {
     setSelectedBgColorIndex(colorIndex);
@@ -4495,6 +5053,23 @@ function App() {
     }
   }
 
+  function openEvent(event: GoogleCalendarEvent, cardId: string) {
+    setActiveEvent(event);
+    setActiveEventCardId(cardId);
+  }
+
+  function closeEvent() {
+    const wasComposing = replyingToEvent() || forwardingEvent();
+    setActiveEvent(null);
+    setActiveEventCardId(null);
+    setReplyingToEvent(null);
+    setForwardingEvent(null);
+    setCalendarDrawerOpen(false);
+    if (wasComposing) {
+      closeCompose();
+    }
+  }
+
   function showToast(message?: string) {
     clearTimeout(toastTimeoutId);
     setSimpleToastMessage(message || null);
@@ -4665,8 +5240,9 @@ function App() {
   // Half Pie Menu Component
   const ActionsWheel = (props: {
     cardId: string;
-    threadId: string | null;
+    threadId?: string | null;
     thread?: Thread | null;
+    event?: GoogleCalendarEvent | null;
     selectedCount: number;
     open: boolean;
     onClose: () => void;
@@ -4678,94 +5254,216 @@ function App() {
       setTimeout(() => el.classList.add('open'), 10);
     };
 
-    // Get thread state for icon selection
-    const isStarred = props.thread?.labels?.includes("STARRED") ?? false;
-    const isImportant = props.thread?.labels?.includes("IMPORTANT") ?? false;
-    const isRead = (props.thread?.unread_count ?? 0) === 0;
-    const isInInbox = props.thread?.labels?.includes("INBOX") ?? true;
+    // Event actions (when event prop is provided)
+    if (props.event) {
+      const evt = props.event;
+      const cId = props.cardId;
+      const evtSelectedCount = selectedEvents()[cId]?.size || 0;
+      const evtSettings = eventActionSettings();
+      const evtOrder = eventActionOrder();
 
-    const order = actionOrder();
-
-    // Action definitions - use order from settings
-    const actionDefs: Record<string, { cls: string; title: string; keyHint?: string; icon: () => JSX.Element; onClick: (e: MouseEvent) => void; bulkTitle?: string; bulkIcon?: () => JSX.Element; bulkOnClick?: (e: MouseEvent) => void }> = {};
-    const cId = props.cardId!;
-    const tId = props.threadId!;
-    const getSelection = () => Array.from(selectedThreads()[cId] || []);
-
-    actionDefs.quickReply = {
-      cls: 'bulk-reply', title: 'Reply', keyHint: 'r', icon: ReplyIcon,
-      onClick: (e) => { e.stopPropagation(); setQuickReplyThreadId(props.threadId); setQuickReplyCardId(props.cardId); },
-      bulkTitle: 'Batch Reply', bulkOnClick: (e) => { e.stopPropagation(); startBatchReply(cId, getSelection()); props.onClose(); }
-    };
-    actionDefs.quickForward = {
-      cls: 'bulk-forward', title: 'Forward', keyHint: 'f', icon: ForwardIcon,
-      onClick: (e) => { e.stopPropagation(); handleForward(tId, cId); }
-    };
-    actionDefs.archive = {
-      cls: 'bulk-archive', title: isInInbox ? 'Archive' : 'Move to Inbox', keyHint: 'a', icon: isInInbox ? ArchiveIcon : InboxIcon,
-      onClick: (e) => { e.stopPropagation(); handleThreadAction(isInInbox ? 'archive' : 'inbox', [tId], cId); },
-      bulkTitle: 'Archive', bulkIcon: ArchiveIcon, bulkOnClick: (e) => { e.stopPropagation(); handleThreadAction('archive', getSelection(), cId); }
-    };
-    actionDefs.star = {
-      cls: 'bulk-star', title: isStarred ? 'Unstar' : 'Star', keyHint: 's', icon: isStarred ? StarFilledIcon : StarIcon,
-      onClick: (e) => { e.stopPropagation(); handleThreadAction(isStarred ? 'unstar' : 'star', [tId], cId); },
-      bulkTitle: 'Star', bulkIcon: StarIcon, bulkOnClick: (e) => { e.stopPropagation(); handleThreadAction('star', getSelection(), cId); }
-    };
-    actionDefs.markRead = {
-      cls: 'bulk-read', title: isRead ? 'Mark unread' : 'Mark read', keyHint: 'u', icon: isRead ? EyeClosedIcon : EyeOpenIcon,
-      onClick: (e) => { e.stopPropagation(); handleThreadAction(isRead ? 'unread' : 'read', [tId], cId); },
-      bulkTitle: 'Mark read', bulkIcon: EyeOpenIcon, bulkOnClick: (e) => { e.stopPropagation(); handleThreadAction('read', getSelection(), cId); }
-    };
-    actionDefs.markImportant = {
-      cls: 'bulk-important', title: isImportant ? 'Unmark important' : 'Mark important', keyHint: 'i', icon: isImportant ? ThumbsUpFilledIcon : ThumbsUpIcon,
-      onClick: (e) => { e.stopPropagation(); handleThreadAction(isImportant ? 'notImportant' : 'important', [tId], cId); },
-      bulkTitle: 'Mark important', bulkIcon: ThumbsUpIcon, bulkOnClick: (e) => { e.stopPropagation(); handleThreadAction('important', getSelection(), cId); }
-    };
-    actionDefs.spam = {
-      cls: 'bulk-spam', title: 'Report spam', keyHint: 'x', icon: SpamIcon,
-      onClick: (e) => { e.stopPropagation(); handleThreadAction('spam', [tId], cId); },
-      bulkOnClick: (e) => { e.stopPropagation(); handleThreadAction('spam', getSelection(), cId); }
-    };
-    actionDefs.trash = {
-      cls: 'bulk-danger', title: 'Delete', keyHint: 'd', icon: TrashIcon,
-      onClick: (e) => { e.stopPropagation(); handleThreadAction('trash', [tId], cId); },
-      bulkOnClick: (e) => { e.stopPropagation(); handleThreadAction('trash', getSelection(), cId); }
-    };
-
-    if (props.selectedCount > 0) {
-      // Bulk Actions - follow same order as single thread actions
-      for (const key of order) {
-        if (key === 'quickForward') continue; // No forward in bulk
-        const def = actionDefs[key];
-        if (!def) continue;
-        // For quickReply, check if enabled (default true)
-        if (key === 'quickReply') {
-          if (settings[key] === false) continue;
-        } else {
-          if (!settings[key]) continue;
+      // Event action definitions
+      const eventActionDefs: Record<string, { cls: string; title: string; keyHint?: string; icon: () => JSX.Element; onClick: (e: MouseEvent) => void; available: boolean }> = {
+        quickReply: {
+          cls: 'bulk-reply',
+          title: 'Reply to organizer',
+          keyHint: 'r',
+          icon: ReplyIcon,
+          onClick: (e) => { e.stopPropagation(); setQuickReplyEventId(evt.id); },
+          available: !!evt.organizer
+        },
+        joinMeeting: {
+          cls: 'event-join',
+          title: 'Join meeting',
+          keyHint: 'j',
+          icon: VideoIcon,
+          onClick: (e) => { e.stopPropagation(); evt.hangout_link && openUrl(evt.hangout_link); },
+          available: !!evt.hangout_link
+        },
+        openCalendar: {
+          cls: 'event-open',
+          title: 'Open in Calendar',
+          keyHint: 'o',
+          icon: CalendarIcon,
+          onClick: (e) => { e.stopPropagation(); evt.html_link && openUrl(evt.html_link); },
+          available: !!evt.html_link
+        },
+        rsvpYes: {
+          cls: evt.response_status === 'accepted' ? 'event-rsvp-active' : 'event-rsvp',
+          title: 'RSVP Yes',
+          keyHint: 'y',
+          icon: CheckIcon,
+          onClick: async (e) => {
+            e.stopPropagation();
+            const account = selectedAccount();
+            if (!account) return;
+            try {
+              await rsvpCalendarEvent(account.id, evt.id, 'accepted');
+              showToast('RSVP: Yes');
+              props.onClose();
+            } catch (err) {
+              showToast('Failed to RSVP');
+            }
+          },
+          available: true
+        },
+        rsvpNo: {
+          cls: evt.response_status === 'declined' ? 'event-rsvp-active' : 'event-rsvp',
+          title: 'RSVP No',
+          keyHint: 'n',
+          icon: ThumbsDownIcon,
+          onClick: async (e) => {
+            e.stopPropagation();
+            const account = selectedAccount();
+            if (!account) return;
+            try {
+              await rsvpCalendarEvent(account.id, evt.id, 'declined');
+              showToast('RSVP: No');
+              props.onClose();
+            } catch (err) {
+              showToast('Failed to RSVP');
+            }
+          },
+          available: true
+        },
+        delete: {
+          cls: 'bulk-danger',
+          title: 'Delete',
+          keyHint: 'd',
+          icon: TrashIcon,
+          onClick: async (e) => {
+            e.stopPropagation();
+            // Decline and remove from view
+            const account = selectedAccount();
+            if (!account) return;
+            try {
+              await rsvpCalendarEvent(account.id, evt.id, 'declined');
+              showToast('Event declined');
+              props.onClose();
+            } catch (err) {
+              showToast('Failed to decline event');
+            }
+          },
+          available: true
         }
-        actions.push({
-          cls: def.cls,
-          title: def.bulkTitle || def.title,
-          keyHint: def.keyHint,
-          icon: def.bulkIcon || def.icon,
-          onClick: def.bulkOnClick || def.onClick
-        });
-      }
-      // Clear at end
-      actions.push({ cls: 'bulk-clear', title: 'Clear', keyHint: 'ESC', icon: ClearIcon, onClick: (e) => { e.stopPropagation(); setSelectedThreads({ ...selectedThreads(), [cId]: new Set() }); } });
-    } else if (props.threadId && props.cardId) {
-      // Single Thread Actions - use order
-      for (const key of order) {
-        const def = actionDefs[key];
-        if (!def) continue;
-        // Check settings (quickReply/quickForward default to true if not set)
-        if (key === 'quickReply' || key === 'quickForward') {
-          if (settings[key] === false) continue;
+      };
+
+      // Add actions in order, respecting settings
+      for (const key of evtOrder) {
+        const def = eventActionDefs[key];
+        if (!def || !def.available) continue;
+        // Check if enabled (quickReply defaults to true)
+        if (key === 'quickReply') {
+          if (evtSettings[key] === false) continue;
         } else {
-          if (!settings[key]) continue;
+          if (!evtSettings[key]) continue;
         }
         actions.push({ cls: def.cls, title: def.title, keyHint: def.keyHint, icon: def.icon, onClick: def.onClick });
+      }
+
+      // Clear selection (if events are selected)
+      if (evtSelectedCount > 0) {
+        actions.push({
+          cls: 'bulk-clear',
+          title: 'Clear',
+          keyHint: 'ESC',
+          icon: ClearIcon,
+          onClick: (e) => { e.stopPropagation(); setSelectedEvents({ ...selectedEvents(), [cId]: new Set() }); }
+        });
+      }
+    }
+
+    // Thread actions (when thread prop is provided)
+    if (props.thread && props.threadId) {
+      // Get thread state for icon selection
+      const isStarred = props.thread.labels?.includes("STARRED") ?? false;
+      const isImportant = props.thread.labels?.includes("IMPORTANT") ?? false;
+      const isRead = (props.thread.unread_count ?? 0) === 0;
+      const isInInbox = props.thread.labels?.includes("INBOX") ?? true;
+
+      const order = actionOrder();
+
+      // Action definitions - use order from settings
+      const actionDefs: Record<string, { cls: string; title: string; keyHint?: string; icon: () => JSX.Element; onClick: (e: MouseEvent) => void; bulkTitle?: string; bulkIcon?: () => JSX.Element; bulkOnClick?: (e: MouseEvent) => void }> = {};
+      const cId = props.cardId;
+      const tId = props.threadId;
+      const getSelection = () => Array.from(selectedThreads()[cId] || []);
+
+      actionDefs.quickReply = {
+        cls: 'bulk-reply', title: 'Reply', keyHint: 'r', icon: ReplyIcon,
+        onClick: (e) => { e.stopPropagation(); setQuickReplyThreadId(tId); setQuickReplyCardId(cId); },
+        bulkTitle: 'Batch Reply', bulkOnClick: (e) => { e.stopPropagation(); startBatchReply(cId, getSelection()); props.onClose(); }
+      };
+      actionDefs.quickForward = {
+        cls: 'bulk-forward', title: 'Forward', keyHint: 'f', icon: ForwardIcon,
+        onClick: (e) => { e.stopPropagation(); handleForward(tId, cId); }
+      };
+      actionDefs.archive = {
+        cls: 'bulk-archive', title: isInInbox ? 'Archive' : 'Move to Inbox', keyHint: 'a', icon: isInInbox ? ArchiveIcon : InboxIcon,
+        onClick: (e) => { e.stopPropagation(); handleThreadAction(isInInbox ? 'archive' : 'inbox', [tId], cId); },
+        bulkTitle: 'Archive', bulkIcon: ArchiveIcon, bulkOnClick: (e) => { e.stopPropagation(); handleThreadAction('archive', getSelection(), cId); }
+      };
+      actionDefs.star = {
+        cls: 'bulk-star', title: isStarred ? 'Unstar' : 'Star', keyHint: 's', icon: isStarred ? StarFilledIcon : StarIcon,
+        onClick: (e) => { e.stopPropagation(); handleThreadAction(isStarred ? 'unstar' : 'star', [tId], cId); },
+        bulkTitle: 'Star', bulkIcon: StarIcon, bulkOnClick: (e) => { e.stopPropagation(); handleThreadAction('star', getSelection(), cId); }
+      };
+      actionDefs.markRead = {
+        cls: 'bulk-read', title: isRead ? 'Mark unread' : 'Mark read', keyHint: 'u', icon: isRead ? EyeClosedIcon : EyeOpenIcon,
+        onClick: (e) => { e.stopPropagation(); handleThreadAction(isRead ? 'unread' : 'read', [tId], cId); },
+        bulkTitle: 'Mark read', bulkIcon: EyeOpenIcon, bulkOnClick: (e) => { e.stopPropagation(); handleThreadAction('read', getSelection(), cId); }
+      };
+      actionDefs.markImportant = {
+        cls: 'bulk-important', title: isImportant ? 'Unmark important' : 'Mark important', keyHint: 'i', icon: isImportant ? ThumbsUpFilledIcon : ThumbsUpIcon,
+        onClick: (e) => { e.stopPropagation(); handleThreadAction(isImportant ? 'notImportant' : 'important', [tId], cId); },
+        bulkTitle: 'Mark important', bulkIcon: ThumbsUpIcon, bulkOnClick: (e) => { e.stopPropagation(); handleThreadAction('important', getSelection(), cId); }
+      };
+      actionDefs.spam = {
+        cls: 'bulk-spam', title: 'Report spam', keyHint: 'x', icon: SpamIcon,
+        onClick: (e) => { e.stopPropagation(); handleThreadAction('spam', [tId], cId); },
+        bulkOnClick: (e) => { e.stopPropagation(); handleThreadAction('spam', getSelection(), cId); }
+      };
+      actionDefs.trash = {
+        cls: 'bulk-danger', title: 'Delete', keyHint: 'd', icon: TrashIcon,
+        onClick: (e) => { e.stopPropagation(); handleThreadAction('trash', [tId], cId); },
+        bulkOnClick: (e) => { e.stopPropagation(); handleThreadAction('trash', getSelection(), cId); }
+      };
+
+      if (props.selectedCount > 0) {
+        // Bulk Actions - follow same order as single thread actions
+        for (const key of order) {
+          if (key === 'quickForward') continue; // No forward in bulk
+          const def = actionDefs[key];
+          if (!def) continue;
+          // For quickReply, check if enabled (default true)
+          if (key === 'quickReply') {
+            if (settings[key] === false) continue;
+          } else {
+            if (!settings[key]) continue;
+          }
+          actions.push({
+            cls: def.cls,
+            title: def.bulkTitle || def.title,
+            keyHint: def.keyHint,
+            icon: def.bulkIcon || def.icon,
+            onClick: def.bulkOnClick || def.onClick
+          });
+        }
+        // Clear at end
+        actions.push({ cls: 'bulk-clear', title: 'Clear', keyHint: 'ESC', icon: ClearIcon, onClick: (e) => { e.stopPropagation(); setSelectedThreads({ ...selectedThreads(), [cId]: new Set() }); } });
+      } else {
+        // Single Thread Actions - use order
+        for (const key of order) {
+          const def = actionDefs[key];
+          if (!def) continue;
+          // Check settings (quickReply/quickForward default to true if not set)
+          if (key === 'quickReply' || key === 'quickForward') {
+            if (settings[key] === false) continue;
+          } else {
+            if (!settings[key]) continue;
+          }
+          actions.push({ cls: def.cls, title: def.title, keyHint: def.keyHint, icon: def.icon, onClick: def.onClick });
+        }
       }
     }
 
@@ -4815,7 +5513,6 @@ function App() {
     );
   };
 
-
   function toggleThreadSelection(cardId: string, threadId: string, e?: MouseEvent) {
     // Show actions on the selected thread
     setHoveredThread(threadId);
@@ -4858,6 +5555,46 @@ function App() {
     setSelectedThreads({ ...selectedThreads(), [cardId]: currentMap });
   }
 
+  function toggleEventSelection(cardId: string, eventId: string, e?: MouseEvent) {
+    // Show actions on the selected event
+    setHoveredEvent(eventId);
+    setEventActionsWheelOpen(true);
+
+    const currentMap = new Set(selectedEvents()[cardId] || []);
+    const isSelected = currentMap.has(eventId);
+
+    // Shift+Click Logic for range selection
+    if (e?.shiftKey && lastSelectedEvent()[cardId]) {
+      const lastId = lastSelectedEvent()[cardId]!;
+      const eventGroups = getCalendarEventGroups(cardId);
+      const allEvents = eventGroups.flatMap(g => g.events);
+
+      const currentIndex = allEvents.findIndex(ev => ev.id === eventId);
+      const lastIndex = allEvents.findIndex(ev => ev.id === lastId);
+
+      if (currentIndex !== -1 && lastIndex !== -1) {
+        const start = Math.min(currentIndex, lastIndex);
+        const end = Math.max(currentIndex, lastIndex);
+
+        // Add all events in range to selection
+        const eventsInRange = allEvents.slice(start, end + 1);
+        eventsInRange.forEach(ev => currentMap.add(ev.id));
+
+        setSelectedEvents({ ...selectedEvents(), [cardId]: currentMap });
+        return;
+      }
+    }
+
+    // Toggle selection
+    if (isSelected) {
+      currentMap.delete(eventId);
+    } else {
+      currentMap.add(eventId);
+      setLastSelectedEvent({ ...lastSelectedEvent(), [cardId]: eventId });
+    }
+
+    setSelectedEvents({ ...selectedEvents(), [cardId]: currentMap });
+  }
 
   const contactCandidates = createMemo(() => getContactCandidates());
 
@@ -5352,12 +6089,12 @@ function App() {
                               <ChevronIcon />
                             </button>
                             <span class="card-title">{card.name}</span>
-                            <Show when={lastSyncTimes()[card.id] && !loadingThreads()[card.id] && (Date.now() - (lastSyncTimes()[card.id] || 0)) > 10000}>
+                            <Show when={lastSyncTimes()[card.id] && !loadingThreads()[card.id] && (currentTime() - (lastSyncTimes()[card.id] || 0)) > 10000}>
                               <span
-                                class={`sync-status ${syncErrors()[card.id] ? 'sync-error' : ''} ${(Date.now() - (lastSyncTimes()[card.id] || 0)) > 15 * 60 * 1000 ? 'sync-stale' : ''}`}
-                                title={syncErrors()[card.id] ? `Sync failed: ${syncErrors()[card.id]}` : `Last synced: ${formatSyncTime(lastSyncTimes()[card.id])}`}
+                                class={`sync-status ${syncErrors()[card.id] ? 'sync-error' : ''} ${(currentTime() - (lastSyncTimes()[card.id] || 0)) > 15 * 60 * 1000 ? 'sync-stale' : ''}`}
+                                title={syncErrors()[card.id] ? `Sync failed: ${syncErrors()[card.id]}` : `Last synced: ${formatSyncTime(lastSyncTimes()[card.id], currentTime())}`}
                               >
-                                {syncErrors()[card.id] ? '!' : formatSyncTime(lastSyncTimes()[card.id])}
+                                {syncErrors()[card.id] ? '!' : formatSyncTime(lastSyncTimes()[card.id], currentTime())}
                               </span>
                             </Show>
                             <Show when={getCardUnreadCount(card.id) > 0}>
@@ -5398,7 +6135,43 @@ function App() {
                             <Show when={queryPreviewLoading()}>
                               <div class="loading">Searching...</div>
                             </Show>
-                            <Show when={!queryPreviewLoading() && queryPreviewThreads().length === 0 && editCardQuery().trim()}>
+                            {/* Calendar events preview */}
+                            <Show when={!queryPreviewLoading() && editCardQuery().toLowerCase().includes("calendar:")}>
+                              <Show when={queryPreviewCalendarEvents().length === 0}>
+                                <div class="empty">No events</div>
+                              </Show>
+                              <For each={queryPreviewCalendarEvents()}>
+                                {(event) => (
+                                  <div class={`calendar-event-item ${event.response_status === "declined" ? "declined" : ""}`}>
+                                    <div class="calendar-event-row">
+                                      <span class="calendar-event-title">{event.title}</span>
+                                      <span class="calendar-event-time-compact">
+                                        {getSmartEventTime(event)}
+                                      </span>
+                                    </div>
+                                    <Show when={event.description}>
+                                      <div class="calendar-event-description">{event.description}</div>
+                                    </Show>
+                                    <Show when={event.location}>
+                                      <div class="calendar-event-location-compact">
+                                        <LocationIcon />
+                                        <span>{event.location}</span>
+                                      </div>
+                                    </Show>
+                                    <Show when={event.response_status}>
+                                      <div class={`calendar-event-response ${event.response_status}`}>
+                                        {event.response_status === "accepted" ? "Going" :
+                                          event.response_status === "tentative" ? "Maybe" :
+                                            event.response_status === "declined" ? "Declined" :
+                                              event.response_status === "needsAction" ? "Pending" : event.response_status}
+                                      </div>
+                                    </Show>
+                                  </div>
+                                )}
+                              </For>
+                            </Show>
+                            {/* Email threads preview */}
+                            <Show when={!queryPreviewLoading() && queryPreviewThreads().length === 0 && editCardQuery().trim() && !editCardQuery().toLowerCase().includes("calendar:")}>
                               <div class="empty">No matches</div>
                             </Show>
                             <Show when={!queryPreviewLoading() && queryPreviewThreads().length > 0}>
@@ -5487,9 +6260,12 @@ function App() {
                                     <div class="date-header">{group.label}</div>
                                     <For each={group.events}>
                                       {(event) => (
+                                        <>
                                         <div
-                                          class={`calendar-event-item ${event.response_status === "declined" ? "declined" : ""}`}
-                                          onClick={() => event.html_link && openUrl(event.html_link)}
+                                          class={`calendar-event-item ${event.response_status === "declined" ? "declined" : ""} ${selectedEvents()[card.id]?.has(event.id) ? "selected" : ""} ${quickReplyEventId() === event.id ? "replying" : ""}`}
+                                          onClick={() => openEvent(event, card.id)}
+                                          onMouseEnter={() => showEventHoverActions(event.id)}
+                                          onMouseLeave={hideEventHoverActions}
                                         >
                                           <div class="calendar-event-row">
                                             <span class="calendar-event-title">{event.title}</span>
@@ -5522,7 +6298,60 @@ function App() {
                                               Join meeting
                                             </button>
                                           </Show>
+                                          {/* Event Checkbox and Actions Wheel */}
+                                          <div
+                                            class="thread-checkbox-wrap"
+                                            onContextMenu={(e) => {
+                                              e.preventDefault();
+                                              e.stopPropagation();
+                                              setActionConfigMenu({ x: e.clientX, y: e.clientY, isEvent: true });
+                                            }}
+                                          >
+                                            <input
+                                              type="checkbox"
+                                              class="thread-checkbox"
+                                              checked={selectedEvents()[card.id]?.has(event.id) || false}
+                                              onClick={(e) => {
+                                                e.stopPropagation();
+                                                toggleEventSelection(card.id, event.id, e);
+                                              }}
+                                            />
+                                            <Show when={(hoveredEvent() === event.id && eventActionsWheelOpen()) || selectedEvents()[card.id]?.has(event.id)}>
+                                              <ActionsWheel
+                                                cardId={card.id}
+                                                event={event}
+                                                selectedCount={selectedEvents()[card.id]?.size || 0}
+                                                open={true}
+                                                onClose={() => setEventActionsWheelOpen(false)}
+                                              />
+                                            </Show>
+                                          </div>
+                                          <div class="thread-actions-wheel-placeholder"></div>
                                         </div>
+                                        {/* Event Quick Reply */}
+                                        <Show when={quickReplyEventId() === event.id}>
+                                          <div class="quick-reply-box" onClick={(e) => e.stopPropagation()}>
+                                            <ComposeTextarea
+                                              class="quick-reply-input"
+                                              placeholder={`Reply to ${event.organizer || 'organizer'}...`}
+                                              value={quickReplyText()}
+                                              onChange={setQuickReplyText}
+                                              onSend={() => handleEventQuickReply(event)}
+                                              onCancel={() => { setQuickReplyEventId(null); setQuickReplyText(""); }}
+                                              disabled={quickReplySending()}
+                                              autofocus
+                                            />
+                                            <div class="quick-reply-actions">
+                                              <button class="btn" onClick={() => { setQuickReplyEventId(null); setQuickReplyText(""); }} disabled={quickReplySending()}>Cancel <span class="shortcut-hint">ESC</span></button>
+                                              <ComposeSendButton
+                                                onClick={() => handleEventQuickReply(event)}
+                                                disabled={!quickReplyText().trim()}
+                                                sending={quickReplySending()}
+                                              />
+                                            </div>
+                                          </div>
+                                        </Show>
+                                        </>
                                       )}
                                     </For>
                                   </>
@@ -5760,7 +6589,7 @@ function App() {
 
             {/* Add card form (inline) */}
             <Show when={addingCard()}>
-              <div class="card-wrapper">
+              <div class="card-wrapper" ref={addCardFormRef}>
                 <div class={`card form-mode ${closingAddCard() ? 'closing' : ''}`} data-color={newCardColor() || undefined}>
                   <CardForm
                     mode="new"
@@ -5783,16 +6612,44 @@ function App() {
                     <Show when={queryPreviewLoading()}>
                       <div class="loading">Searching...</div>
                     </Show>
-                    <Show when={!queryPreviewLoading() && queryPreviewThreads().length === 0 && newCardQuery().trim()}>
-                      <Show when={newCardQuery().toLowerCase().includes("calendar:")}>
-                        <div class="empty calendar-hint">
-                          <CalendarIcon />
-                          <span>Calendar card</span>
-                        </div>
+                    {/* Calendar events preview */}
+                    <Show when={!queryPreviewLoading() && newCardQuery().toLowerCase().includes("calendar:")}>
+                      <Show when={queryPreviewCalendarEvents().length === 0}>
+                        <div class="empty">No events</div>
                       </Show>
-                      <Show when={!newCardQuery().toLowerCase().includes("calendar:")}>
-                        <div class="empty">No matches</div>
-                      </Show>
+                      <For each={queryPreviewCalendarEvents()}>
+                        {(event) => (
+                          <div class={`calendar-event-item ${event.response_status === "declined" ? "declined" : ""}`}>
+                            <div class="calendar-event-row">
+                              <span class="calendar-event-title">{event.title}</span>
+                              <span class="calendar-event-time-compact">
+                                {getSmartEventTime(event)}
+                              </span>
+                            </div>
+                            <Show when={event.description}>
+                              <div class="calendar-event-description">{event.description}</div>
+                            </Show>
+                            <Show when={event.location}>
+                              <div class="calendar-event-location-compact">
+                                <LocationIcon />
+                                <span>{event.location}</span>
+                              </div>
+                            </Show>
+                            <Show when={event.response_status}>
+                              <div class={`calendar-event-response ${event.response_status}`}>
+                                {event.response_status === "accepted" ? "Going" :
+                                  event.response_status === "tentative" ? "Maybe" :
+                                    event.response_status === "declined" ? "Declined" :
+                                      event.response_status === "needsAction" ? "Pending" : event.response_status}
+                              </div>
+                            </Show>
+                          </div>
+                        )}
+                      </For>
+                    </Show>
+                    {/* Email threads preview */}
+                    <Show when={!queryPreviewLoading() && queryPreviewThreads().length === 0 && newCardQuery().trim() && !newCardQuery().toLowerCase().includes("calendar:")}>
+                      <div class="empty">No matches</div>
                     </Show>
                     <Show when={!queryPreviewLoading() && queryPreviewThreads().length > 0}>
                       <For each={queryPreviewThreads()}>
@@ -5850,7 +6707,7 @@ function App() {
 
             {/* Add card button */}
             <Show when={!addingCard()}>
-              <button class="add-card-btn" onClick={() => { setNewCardColor(null); setQueryPreviewThreads([]); setQueryPreviewLoading(false); setAddingCard(true); }} aria-label="New card" title="New card">
+              <button class="add-card-btn" onClick={() => { setNewCardColor(null); setQueryPreviewThreads([]); setQueryPreviewCalendarEvents([]); setQueryPreviewLoading(false); setAddingCard(true); }} aria-label="New card" title="New card">
                 <PlusIcon />
               </button>
             </Show>
@@ -6024,6 +6881,7 @@ function App() {
           isRead={isThreadRead()}
           isImportant={isThreadImportant()}
           isInInbox={isThreadInInbox()}
+          labelCount={getThreadUserLabelCount()}
           // Inline compose props
           inlineCompose={composing() ? {
             replyToMessageId: replyingToThread()?.messageId || null,
@@ -6129,6 +6987,128 @@ function App() {
             </div>
           </div>
         </Show>
+      </Show>
+
+      {/* Event View Overlay */}
+      <Show when={activeEvent()}>
+        <EventView
+          event={activeEvent()}
+          card={activeEventCardId() ? (() => {
+            const c = cards().find(c => c.id === activeEventCardId());
+            return c ? { name: c.name, color: (c.color as CardColor) || null } : null;
+          })() : null}
+          focusColor={selectedBgColorIndex() !== null ? BG_COLORS[selectedBgColorIndex()!].hex : null}
+          onClose={closeEvent}
+          onRsvp={async (status) => {
+            const event = activeEvent();
+            if (!event || !selectedAccount()) return;
+            try {
+              closeEvent();
+              showToast(`Response updated to ${status}`);
+            } catch (e) {
+              console.error("Failed to update RSVP", e);
+            }
+          }}
+          onReplyOrganizer={() => {
+            const event = activeEvent();
+            if (!event) return;
+            const subject = `Re: ${event.title}`;
+            const to = event.organizer || '';
+            setComposeTo(to);
+            setComposeSubject(subject);
+            setComposeBody('');
+            setReplyingToEvent({ eventId: event.id });
+            setForwardingEvent(null);
+            setComposing(true);
+            setFocusComposeBody(true);
+          }}
+          onReplyAll={() => {
+            const event = activeEvent();
+            if (!event) return;
+            const subject = `Re: ${event.title}`;
+            const allEmails = event.attendees
+              .filter(a => !a.is_self)
+              .map(a => a.email)
+              .join(', ');
+            const to = event.organizer || '';
+            const cc = allEmails;
+            setComposeTo(to);
+            setComposeCc(cc);
+            setShowCcBcc(true);
+            setComposeSubject(subject);
+            setComposeBody('');
+            setReplyingToEvent({ eventId: event.id });
+            setForwardingEvent(null);
+            setComposing(true);
+            setFocusComposeBody(true);
+          }}
+          onForward={() => {
+            const event = activeEvent();
+            if (!event) return;
+            const subject = `Fwd: ${event.title}`;
+            const body = `---------- Forwarded event ----------\n` +
+              `Title: ${event.title}\n` +
+              `When: ${new Date(event.start_time).toLocaleString()}\n` +
+              (event.location ? `Where: ${event.location}\n` : '') +
+              (event.organizer ? `Organizer: ${event.organizer}\n` : '') +
+              (event.description ? `\n${event.description}` : '');
+            setComposeTo('');
+            setComposeSubject(subject);
+            setComposeBody(body);
+            setForwardingEvent({ eventId: event.id });
+            setReplyingToEvent(null);
+            setComposing(true);
+            setFocusComposeBody(true);
+          }}
+          onDelete={() => {
+            const event = activeEvent();
+            if (!event) return;
+            // TODO: Implement delete_calendar_event Tauri command
+            if (event.html_link) {
+              openUrl(event.html_link);
+              showToast('Open in Calendar to delete');
+            } else {
+              showToast('Cannot delete this event');
+            }
+            closeEvent();
+          }}
+          onOpenCalendars={() => { fetchAvailableCalendars(); setCalendarDrawerOpen(true); }}
+          calendarDrawerOpen={calendarDrawerOpen()}
+          onCloseCalendarDrawer={() => setCalendarDrawerOpen(false)}
+          calendars={availableCalendars()}
+          calendarsLoading={calendarsLoading()}
+          onMoveToCalendar={handleMoveEventToCalendar}
+          rsvpLoading={false}
+          inlineCompose={composing() && activeEvent() && (replyingToEvent()?.eventId === activeEvent()!.id || forwardingEvent()?.eventId === activeEvent()!.id) ? {
+            replyToMessageId: null,
+            isForward: !!forwardingEvent(),
+            to: composeTo(),
+            setTo: setComposeTo,
+            cc: composeCc(),
+            setCc: setComposeCc,
+            bcc: composeBcc(),
+            setBcc: setComposeBcc,
+            showCcBcc: showCcBcc(),
+            setShowCcBcc: setShowCcBcc,
+            subject: composeSubject(),
+            setSubject: setComposeSubject,
+            body: composeBody(),
+            setBody: setComposeBody,
+            attachments: composeAttachments(),
+            onRemoveAttachment: removeAttachment,
+            onFileSelect: handleFileSelect,
+            error: composeEmailError(),
+            draftSaving: draftSaving(),
+            draftSaved: draftSaved(),
+            onSend: handleSendEmail,
+            onClose: () => { closeCompose(); setReplyingToEvent(null); setForwardingEvent(null); },
+            onInput: debouncedSaveDraft,
+            focusBody: focusComposeBody(),
+            messageWidth: inlineMessageWidth(),
+            resizing: inlineResizing(),
+            onResizeStart: handleInlineResizeStart,
+          } : null}
+        />
       </Show>
 
       {/* Batch Reply Panel */}
@@ -6479,57 +7459,52 @@ function App() {
 
       {/* Action config context menu */}
       <Show when={actionConfigMenu()}>
-        <div
-          class="action-config-menu"
-          style={{
-            top: `${actionConfigMenu()!.y}px`,
-            left: `${actionConfigMenu()!.x}px`,
-          }}
-        >
-          <For each={actionOrder()}>
-            {(key, i) => {
-              const labels: Record<string, string> = {
-                quickReply: 'Reply',
-                quickForward: 'Forward',
-                archive: 'Archive',
-                star: 'Star',
-                trash: 'Delete',
-                markRead: 'Read',
-                markImportant: 'Important',
-                spam: 'Spam'
-              };
-              const isEnabled = key === 'quickReply' || key === 'quickForward'
-                ? actionSettings()[key] !== false
-                : !!actionSettings()[key];
-              return (
-                <label
-                  class={`action-config-item ${draggingAction() === key ? 'dragging' : ''}`}
-                  draggable={true}
-                  onDragStart={(e) => {
-                    setDraggingAction(key);
-                    e.dataTransfer!.effectAllowed = 'move';
-                  }}
-                  onDragEnd={() => setDraggingAction(null)}
-                  onDragOver={(e) => {
-                    e.preventDefault();
-                    e.dataTransfer!.dropEffect = 'move';
-                  }}
-                  onDrop={(e) => {
-                    e.preventDefault();
-                    const from = actionOrder().indexOf(draggingAction()!);
-                    const to = i();
-                    if (from !== to) moveActionInOrder(from, to);
-                    setDraggingAction(null);
-                  }}
-                >
-                  <span class="drag-handle">⋮⋮</span>
-                  <input type="checkbox" checked={isEnabled} onChange={() => toggleActionSetting(key)} />
-                  {labels[key]}
-                </label>
-              );
-            }}
-          </For>
-        </div>
+        {(() => {
+          const isEvent = actionConfigMenu()?.isEvent;
+          const order = isEvent ? eventActionOrder() : actionOrder();
+          const settings = isEvent ? eventActionSettings() : actionSettings();
+          const handlers = isEvent ? eventActionHandlers : threadActionHandlers;
+          const labels: Record<string, string> = isEvent
+            ? { quickReply: 'Reply', joinMeeting: 'Join Meeting', openCalendar: 'Open in Calendar', rsvpYes: 'RSVP Yes', rsvpNo: 'RSVP No', delete: 'Delete' }
+            : { quickReply: 'Reply', quickForward: 'Forward', archive: 'Archive', star: 'Star', trash: 'Delete', markRead: 'Read', markImportant: 'Important', spam: 'Spam' };
+          const defaultEnabled = isEvent ? ['quickReply'] : ['quickReply', 'quickForward'];
+
+          return (
+            <div
+              class={`action-config-menu ${draggingAction() ? 'dragging' : ''}`}
+              style={{ top: `${actionConfigMenu()!.y}px`, left: `${actionConfigMenu()!.x}px` }}
+            >
+              <For each={order}>
+                {(key, i) => {
+                  const isEnabled = defaultEnabled.includes(key) ? settings[key] !== false : !!settings[key];
+                  return (
+                    <div
+                      class={`action-config-item ${draggingAction() === key ? 'dragging' : ''}`}
+                      onMouseDown={(e) => {
+                        if ((e.target as HTMLElement).tagName === 'INPUT') return;
+                        e.preventDefault();
+                        window.getSelection()?.removeAllRanges();
+                        setDraggingAction(key);
+                        const onUp = () => { setDraggingAction(null); document.removeEventListener('mouseup', onUp); };
+                        document.addEventListener('mouseup', onUp);
+                      }}
+                      onMouseEnter={() => {
+                        if (draggingAction() && draggingAction() !== key) {
+                          const from = order.indexOf(draggingAction()!);
+                          if (from !== i()) handlers.move(from, i());
+                        }
+                      }}
+                    >
+                      <span class="drag-handle">⋮⋮</span>
+                      <input type="checkbox" checked={isEnabled} onChange={() => handlers.toggle(key)} />
+                      <span>{labels[key]}</span>
+                    </div>
+                  );
+                }}
+              </For>
+            </div>
+          );
+        })()}
       </Show>
 
       {/* Undo Toast */}

@@ -1337,7 +1337,7 @@ pub async fn search_contacts(
 pub async fn list_calendars(
     account_id: String,
     app_handle: tauri::AppHandle, state: State<'_, AppState>,
-) -> Result<Vec<(String, String, bool)>, String> {
+) -> Result<Vec<crate::calendar::CalendarInfo>, String> {
     let app_data_dir = app_handle
         .path()
         .app_data_dir()
@@ -1424,6 +1424,28 @@ pub async fn create_calendar_event(
             attendees,
             recurrence,
         )
+        .await
+}
+
+#[tauri::command]
+pub async fn move_calendar_event(
+    account_id: String,
+    source_calendar_id: String,
+    event_id: String,
+    destination_calendar_id: String,
+    app_handle: tauri::AppHandle,
+    state: State<'_, AppState>,
+) -> Result<crate::models::GoogleCalendarEvent, String> {
+    let app_data_dir = app_handle
+        .path()
+        .app_data_dir()
+        .map_err(|e| format!("Failed to get app data dir: {}", e))?;
+
+    let access_token = get_access_token(&state, &account_id, &app_data_dir).await?;
+    let calendar = crate::calendar::CalendarClient::new(access_token);
+
+    calendar
+        .move_event(&source_calendar_id, &event_id, &destination_calendar_id)
         .await
 }
 

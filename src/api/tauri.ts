@@ -449,6 +449,20 @@ export async function createCalendarEvent(
   });
 }
 
+export async function moveCalendarEvent(
+  accountId: string,
+  sourceCalendarId: string,
+  eventId: string,
+  destinationCalendarId: string
+): Promise<GoogleCalendarEvent> {
+  return invoke("move_calendar_event", {
+    accountId,
+    sourceCalendarId,
+    eventId,
+    destinationCalendarId,
+  });
+}
+
 export async function suggestReplies(
   accountId: string,
   threadId: string,

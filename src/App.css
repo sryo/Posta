@@ -1309,6 +1309,7 @@ select:focus:not(:focus-visible) {
 
 /* Calendar card event items */
 .calendar-event-item {
+    position: relative;
     padding: 10px 12px;
     border-bottom: 1px solid var(--border-color);
     cursor: pointer;
@@ -1595,16 +1596,23 @@ select:focus:not(:focus-visible) {
     border-top: 1px solid var(--card-border-color, var(--border-light));
 }
 
-.card.editing .thread {
+.card.editing .thread,
+.card.editing .calendar-event-item,
+.card.form-mode .thread,
+.card.form-mode .calendar-event-item {
     cursor: default;
     padding: 6px 10px;
 }
 
-.card.editing .thread:hover {
+.card.editing .thread:hover,
+.card.editing .calendar-event-item:hover,
+.card.form-mode .thread:hover,
+.card.form-mode .calendar-event-item:hover {
     background: transparent;
 }
 
-.card.editing .thread-snippet {
+.card.editing .thread-snippet,
+.card.form-mode .thread-snippet {
     font-size: 11px;
 }
 
@@ -1737,8 +1745,9 @@ select:focus:not(:focus-visible) {
     gap: 8px;
     padding: 6px 12px;
     font-size: 13px;
-    cursor: pointer;
+    cursor: grab;
     transition: background 0.1s ease;
+    user-select: none;
 }
 
 .action-config-item:hover {
@@ -1761,8 +1770,21 @@ select:focus:not(:focus-visible) {
     font-size: 10px;
     cursor: grab;
     user-select: none;
+    -webkit-user-select: none;
     letter-spacing: -2px;
     margin-right: 2px;
+    padding: 4px;
+    margin: -4px;
+    margin-right: -2px;
+}
+
+.action-config-item .drag-handle:active {
+    cursor: grabbing;
+}
+
+.action-config-menu.dragging {
+    user-select: none;
+    -webkit-user-select: none;
 }
 
 .action-config-item:active .drag-handle {
@@ -2551,7 +2573,8 @@ button:disabled:hover {
 }
 
 .thread:hover .thread-checkbox-wrap,
-.thread.selected .thread-checkbox-wrap {
+.thread.selected .thread-checkbox-wrap,
+.calendar-event-item:hover .thread-checkbox-wrap {
     opacity: 1;
 }
 
@@ -2594,6 +2617,26 @@ button:disabled:hover {
 
 /* Quick Reply */
 .thread.replying {
+    border-bottom: none;
+    background: var(--bg-tertiary);
+}
+
+/* Calendar event selection and replying */
+.calendar-event-item.selected {
+    background: color-mix(in srgb, var(--accent) 8%, transparent);
+}
+
+.calendar-event-item.selected .thread-checkbox-wrap {
+    opacity: 1;
+}
+
+@media (prefers-color-scheme: dark) {
+    .calendar-event-item.selected {
+        background: color-mix(in srgb, var(--accent) 15%, transparent);
+    }
+}
+
+.calendar-event-item.replying {
     border-bottom: none;
     background: var(--bg-tertiary);
 }
@@ -3600,6 +3643,165 @@ button:disabled:hover {
     animation: threadSlideOut 0.2s ease-in forwards;
 }
 
+/* Event View specific styles (uses thread-overlay base) */
+.event-info-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 8px 0;
+    font-size: 0.9rem;
+    color: var(--text-primary);
+}
+
+.event-info-row svg {
+    width: 16px;
+    height: 16px;
+    color: var(--text-muted);
+    flex-shrink: 0;
+}
+
+.event-info-row a {
+    color: var(--accent);
+    text-decoration: none;
+}
+
+.event-info-row a:hover {
+    text-decoration: underline;
+}
+
+.event-rsvp-section {
+    padding: 16px 0;
+    border-top: 1px solid var(--border-light);
+    margin-top: 16px;
+}
+
+.event-rsvp-current {
+    font-size: 0.9rem;
+    color: var(--text-secondary);
+    margin-bottom: 12px;
+}
+
+.event-rsvp-status {
+    font-weight: 500;
+}
+
+.event-rsvp-status.accepted {
+    color: #43A047;
+}
+
+.event-rsvp-status.tentative {
+    color: #FB8C00;
+}
+
+.event-rsvp-status.declined {
+    color: #E53935;
+}
+
+.event-rsvp-status.needsAction {
+    color: var(--text-muted);
+}
+
+.event-rsvp-buttons {
+    display: flex;
+    gap: 8px;
+}
+
+.event-rsvp-btn {
+    flex: 1;
+    padding: 10px 16px;
+    border: 1px solid var(--border-color);
+    background: var(--bg-primary);
+    color: var(--text-primary);
+    border-radius: 8px;
+    font-size: 0.875rem;
+    font-weight: 500;
+    cursor: pointer;
+    transition: all 0.15s;
+}
+
+.event-rsvp-btn:hover {
+    background: var(--bg-secondary);
+}
+
+.event-rsvp-btn.active {
+    background: var(--accent);
+    color: white;
+    border-color: var(--accent);
+}
+
+.event-rsvp-btn:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+}
+
+.event-attendees-section {
+    padding: 16px 0;
+    border-top: 1px solid var(--border-light);
+    margin-top: 8px;
+}
+
+.event-attendees-label {
+    font-size: 0.9rem;
+    font-weight: 500;
+    color: var(--text-primary);
+    margin-bottom: 10px;
+}
+
+.event-attendees-list {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+
+.event-attendee {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 8px 12px;
+    background: var(--bg-secondary);
+    border-radius: 6px;
+    font-size: 0.85rem;
+}
+
+.event-attendee-name {
+    color: var(--text-primary);
+}
+
+.event-attendee-badge {
+    font-size: 0.7rem;
+    background: var(--accent);
+    color: white;
+    padding: 2px 6px;
+    border-radius: 4px;
+    margin-left: 8px;
+}
+
+.event-attendee-status {
+    font-size: 0.75rem;
+    padding: 2px 8px;
+    border-radius: 4px;
+}
+
+.event-attendee-status.accepted {
+    background: rgba(67, 160, 71, 0.15);
+    color: #43A047;
+}
+
+.event-attendee-status.tentative {
+    background: rgba(251, 140, 0, 0.15);
+    color: #FB8C00;
+}
+
+.event-attendee-status.declined {
+    background: rgba(229, 57, 53, 0.15);
+    color: #E53935;
+}
+
+.event-attendee-status.needsAction {
+    background: rgba(150, 150, 150, 0.15);
+    color: var(--text-muted);
+}
+
 .link-status-bar {
     position: fixed;
     bottom: 0;
@@ -3720,8 +3922,7 @@ button:disabled:hover {
 .thread-floating-bar {
     position: absolute;
     top: var(--drag-region-height);
-    left: calc(50% - 18px);
-    /* Offset to align with messages (asymmetric padding) */
+    left: 50%;
     transform: translateX(-50%);
     display: flex;
     flex-direction: column;
@@ -3864,6 +4065,15 @@ button:disabled:hover {
 .thread-toolbar-btn-danger:hover {
     background: rgba(239, 83, 80, 0.15);
     color: var(--danger);
+}
+
+.thread-toolbar-btn-active {
+    background: color-mix(in srgb, var(--accent) 15%, transparent);
+    color: var(--accent);
+}
+
+.thread-toolbar-btn-active:hover {
+    background: color-mix(in srgb, var(--accent) 25%, transparent);
 }
 
 .thread-toolbar-btn .shortcut-hint {
@@ -4139,7 +4349,7 @@ button:disabled:hover {
     display: flex;
     flex-direction: column;
     gap: 20px;
-    padding: 0 60px 0 24px;
+    padding: 0 24px;
     align-items: center;
 }
 
@@ -4153,6 +4363,7 @@ button:disabled:hover {
     transition: box-shadow 0.15s;
     width: 100%;
     overflow: visible;
+    scroll-margin-top: 140px;
 }
 
 .message-card.message-focused {
@@ -4161,6 +4372,7 @@ button:disabled:hover {
 
 .message-header {
     display: flex;
+    flex-wrap: wrap;
     justify-content: space-between;
     align-items: flex-start;
     margin-bottom: 16px;
@@ -4848,7 +5060,7 @@ button:disabled:hover {
     top: 0;
     min-width: 0 !important;
     max-width: none !important;
-    overflow: hidden;
+    overflow: auto;
     box-sizing: border-box;
 }
 

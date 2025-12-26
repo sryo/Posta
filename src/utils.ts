@@ -35,11 +35,13 @@ export function formatTime(timestamp: number): string {
 
 /**
  * Format sync time as relative time (e.g., "2m ago")
+ * @param timestamp - The timestamp to format
+ * @param now - Optional current time (for reactive updates)
  */
-export function formatSyncTime(timestamp: number | undefined): string {
+export function formatSyncTime(timestamp: number | undefined, now?: number): string {
   if (!timestamp) return "";
-  const now = Date.now();
-  const diff = now - timestamp;
+  const currentTime = now ?? Date.now();
+  const diff = currentTime - timestamp;
   const seconds = Math.floor(diff / 1000);
   const minutes = Math.floor(seconds / 60);
   const hours = Math.floor(minutes / 60);
