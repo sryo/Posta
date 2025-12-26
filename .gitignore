@@ -22,3 +22,9 @@ npm-debug.log*
 .env
 .env.local
 .env.*.local
+
+# Tauri generated
+src-tauri/gen/
+
+# Backups
+*.bak
