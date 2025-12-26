@@ -108,6 +108,7 @@ import {
   type GoogleCalendarEvent,
   listCalendars,
   moveCalendarEvent,
+  deleteCalendarEvent,
   pullFromICloud,
   getCachedCardEvents,
   saveCachedCardEvents,
@@ -7078,17 +7079,27 @@ function App() {
             setComposing(true);
             setFocusComposeBody(true);
           }}
-          onDelete={() => {
+          onDelete={async () => {
             const event = activeEvent();
-            if (!event) return;
-            // TODO: Implement delete_calendar_event Tauri command
-            if (event.html_link) {
-              openUrl(event.html_link);
-              showToast('Open in Calendar to delete');
-            } else {
-              showToast('Cannot delete this event');
+            const account = selectedAccount();
+            const cardId = activeEventCardId();
+            if (!event || !account) return;
+            try {
+              await deleteCalendarEvent(account.id, event.calendar_id, event.id);
+              // Remove event from card's event list
+              if (cardId) {
+                const currentEvents = cardCalendarEvents()[cardId] || [];
+                setCardCalendarEvents({
+                  ...cardCalendarEvents(),
+                  [cardId]: currentEvents.filter(e => e.id !== event.id)
+                });
+              }
+              showToast('Event deleted');
+              closeEvent();
+            } catch (e) {
+              console.error('Failed to delete event:', e);
+              showToast(String(e));
             }
-            closeEvent();
           }}
           onOpenCalendars={() => { fetchAvailableCalendars(); setCalendarDrawerOpen(true); }}
           calendarDrawerOpen={calendarDrawerOpen()}

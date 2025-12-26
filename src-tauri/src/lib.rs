@@ -151,6 +151,7 @@ pub fn run() {
             commands::fetch_calendar_events,
             commands::create_calendar_event,
             commands::move_calendar_event,
+            commands::delete_calendar_event,
             commands::suggest_replies,
         ])
         .build(tauri::generate_context!())

@@ -439,6 +439,36 @@ impl CalendarClient {
             .ok_or_else(|| "Failed to convert moved event".to_string())
     }
 
+    /// Delete an event from a calendar
+    pub async fn delete_event(
+        &self,
+        calendar_id: &str,
+        event_id: &str,
+    ) -> Result<(), String> {
+        let url = format!(
+            "{}/calendars/{}/events/{}",
+            CALENDAR_API_BASE,
+            urlencoding::encode(calendar_id),
+            urlencoding::encode(event_id)
+        );
+
+        let resp = self
+            .http_client
+            .delete(&url)
+            .bearer_auth(&self.access_token)
+            .send()
+            .await
+            .map_err(|e| format!("Delete event request failed: {}", e))?;
+
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let body = resp.text().await.unwrap_or_default();
+            return Err(friendly_calendar_error(status, &body));
+        }
+
+        Ok(())
+    }
+
     fn api_event_to_calendar_event(&self, event: ApiEvent, calendar_id: &str, calendar_name: &str) -> Option<CalendarEvent> {
         let (start_time, all_day) = self.parse_event_datetime(&event.start)?;
         let end_time = event.end.as_ref().and_then(|e| self.parse_event_datetime(&Some(e.clone())).map(|(t, _)| t));
@@ -596,7 +626,7 @@ impl CalendarQuery {
         // or just to be safe.
         // Actually, let's just stick to strict Today unless upcoming.
         
-        let today_start = now.date_naive().and_hms_opt(0, 0, 0).unwrap().and_utc();
+        let today_start = now.date_naive().and_hms_opt(0, 0, 0).expect("midnight is always valid").and_utc();
 
         match &self.time_range {
             TimeRange::Today => (today_start, today_start + Duration::days(1)),

@@ -463,6 +463,18 @@ export async function moveCalendarEvent(
   });
 }
 
+export async function deleteCalendarEvent(
+  accountId: string,
+  calendarId: string,
+  eventId: string
+): Promise<void> {
+  return invoke("delete_calendar_event", {
+    accountId,
+    calendarId,
+    eventId,
+  });
+}
+
 export async function suggestReplies(
   accountId: string,
   threadId: string,
