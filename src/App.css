@@ -170,7 +170,7 @@ select:focus:not(:focus-visible) {
     display: flex;
     flex-direction: column;
     align-items: center;
-    padding-top: var(--drag-region-height);
+    padding-top: 16px;
     padding-bottom: 20px;
     -webkit-app-region: drag;
     transition: width 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
@@ -341,11 +341,18 @@ select:focus:not(:focus-visible) {
     flex-direction: column;
     align-items: center;
     gap: 24px;
-    padding: 12px;
+    padding: 24px;
     width: 100%;
+    left: 24px;
+}
+
+.toolbar-wrapper::before {
+    content: '';
+    position: absolute;
+    inset: 12px;
     backdrop-filter: blur(40px);
     border-radius: 16px;
-    left: 24px;
+    z-index: -1;
 }
 
 .toolbar-btn {
@@ -548,11 +555,18 @@ select:focus:not(:focus-visible) {
     flex-direction: column;
     align-items: center;
     gap: 4px;
-    padding: 12px;
+    padding: 24px;
     width: 100%;
+    left: 16px;
+}
+
+.compose-toolbar::before {
+    content: '';
+    position: absolute;
+    inset: 12px;
     backdrop-filter: blur(40px);
     border-radius: 16px;
-    left: 16px;
+    z-index: -1;
 }
 
 .compose-btn-wrapper {
@@ -2246,8 +2260,8 @@ button:disabled:hover {
 /* Compose Panel */
 .compose-panel {
     position: fixed;
-    top: calc(var(--drag-region-height) + 12px);
-    left: 20px;
+    top: 40px;
+    left: 24px;
     width: 480px;
     max-width: calc(100vw - 48px);
     background: var(--bg-primary);
@@ -2309,7 +2323,7 @@ button:disabled:hover {
 
 /* Event Compose Panel - positioned at new-event button */
 .compose-panel.event-compose {
-    top: calc(var(--drag-region-height) + 12px + var(--toolbar-btn-size) + 4px);
+    top: 84px;
     animation: eventPanelExpand 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
 }
 
@@ -3556,6 +3570,7 @@ button:disabled:hover {
     height: 0;
 }
 
+
 .bulk-actions-wheel .bulk-btn {
     width: 28px;
     height: 28px;
@@ -4429,6 +4444,7 @@ button:disabled:hover {
     z-index: 100;
 }
 
+
 .message-actions-wheel .message-action-btn {
     width: 26px;
     height: 26px;
@@ -5154,6 +5170,64 @@ button:disabled:hover {
         opacity: 1;
         transform: translateY(0);
     }
+}
+
+/* Inline Event Edit Form */
+.inline-event-form {
+    background: var(--bg-primary);
+    border: 1px solid var(--border-color);
+    border-radius: 8px;
+    overflow: hidden;
+    animation: inlineComposeSlide 0.2s ease-out;
+}
+
+.inline-event-body {
+    padding: 16px;
+    overflow-y: auto;
+    max-height: calc(100vh - 200px);
+}
+
+.inline-event-body .compose-field {
+    margin-bottom: 12px;
+}
+
+.inline-event-body .compose-field input {
+    width: 100%;
+    padding: 10px 12px;
+    border: 1px solid var(--border-color);
+    border-radius: 6px;
+    background: var(--bg-secondary);
+    color: var(--text-primary);
+    font-size: 14px;
+}
+
+.inline-event-body .compose-field input:focus {
+    outline: none;
+    border-color: var(--accent);
+}
+
+.inline-event-body .compose-content textarea {
+    width: 100%;
+    padding: 10px 12px;
+    border: 1px solid var(--border-color);
+    border-radius: 6px;
+    background: var(--bg-secondary);
+    color: var(--text-primary);
+    font-size: 14px;
+    resize: vertical;
+}
+
+.inline-event-body .compose-content textarea:focus {
+    outline: none;
+    border-color: var(--accent);
+}
+
+.inline-event-footer {
+    display: flex;
+    align-items: center;
+    padding: 12px 16px;
+    border-top: 1px solid var(--border-color);
+    background: var(--bg-secondary);
 }
 
 .compose-spacer {

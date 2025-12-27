@@ -12,6 +12,7 @@ pub struct CalendarInfo {
     pub id: String,
     pub name: String,
     pub is_primary: bool,
+    pub access_role: String, // owner, writer, reader, freeBusyReader
 }
 
 /// Convert calendar API errors to user-friendly messages
@@ -55,6 +56,8 @@ pub struct CalendarEvent {
     pub html_link: Option<String>,
     pub hangout_link: Option<String>,
     pub response_status: Option<String>, // accepted, declined, tentative, needsAction
+    #[serde(default)]
+    pub can_edit: bool, // whether the current user can edit this event
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -76,11 +79,20 @@ struct CalendarListEntry {
     id: String,
     summary: Option<String>,
     primary: Option<bool>,
+    #[serde(rename = "accessRole")]
+    access_role: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
 struct EventsListResponse {
     items: Option<Vec<ApiEvent>>,
+}
+
+#[derive(Debug, Deserialize)]
+struct EventCreator {
+    email: Option<String>,
+    #[serde(rename = "self")]
+    is_self: Option<bool>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -92,12 +104,16 @@ struct ApiEvent {
     status: Option<String>,
     start: Option<EventDateTime>,
     end: Option<EventDateTime>,
+    creator: Option<EventCreator>,
     organizer: Option<EventOrganizer>,
     attendees: Option<Vec<ApiAttendee>>,
     #[serde(rename = "htmlLink")]
     html_link: Option<String>,
     #[serde(rename = "hangoutLink")]
     hangout_link: Option<String>,
+    #[serde(rename = "guestsCanModify")]
+    guests_can_modify: Option<bool>,
+    locked: Option<bool>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -112,6 +128,8 @@ struct EventOrganizer {
     email: Option<String>,
     #[serde(rename = "displayName")]
     display_name: Option<String>,
+    #[serde(rename = "self")]
+    is_self: Option<bool>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -193,6 +211,7 @@ impl CalendarClient {
                 id: c.id,
                 name: c.summary.unwrap_or_default(),
                 is_primary: c.primary.unwrap_or(false),
+                access_role: c.access_role.unwrap_or_else(|| "reader".to_string()),
             })
             .collect())
     }
@@ -202,6 +221,7 @@ impl CalendarClient {
         &self,
         calendar_id: &str,
         calendar_name: &str,
+        access_role: &str,
         time_min: DateTime<Utc>,
         time_max: DateTime<Utc>,
         max_results: i32,
@@ -238,7 +258,7 @@ impl CalendarClient {
             .items
             .unwrap_or_default()
             .into_iter()
-            .filter_map(|e| self.api_event_to_calendar_event(e, calendar_id, calendar_name))
+            .filter_map(|e| self.api_event_to_calendar_event(e, calendar_id, calendar_name, access_role))
             .collect();
 
         Ok(events)
@@ -292,7 +312,7 @@ impl CalendarClient {
                 .items
                 .unwrap_or_default()
                 .into_iter()
-                .filter_map(|e| self.api_event_to_calendar_event(e, &cal.id, &cal.name))
+                .filter_map(|e| self.api_event_to_calendar_event(e, &cal.id, &cal.name, &cal.access_role))
                 .collect();
 
             all_events.extend(events);
@@ -397,7 +417,7 @@ impl CalendarClient {
 
         // We can use "primary" as calendar name for the returned object since we don't have it easily here, 
         // or just empty string. It's mostly for display.
-        self.api_event_to_calendar_event(api_event, calendar_id, "")
+        self.api_event_to_calendar_event(api_event, calendar_id, "", "owner")
             .ok_or_else(|| "Failed to convert created event".to_string())
     }
 
@@ -435,7 +455,7 @@ impl CalendarClient {
             .await
             .map_err(|e| format!("Failed to parse moved event: {}", e))?;
 
-        self.api_event_to_calendar_event(api_event, destination_calendar_id, "")
+        self.api_event_to_calendar_event(api_event, destination_calendar_id, "", "owner")
             .ok_or_else(|| "Failed to convert moved event".to_string())
     }
 
@@ -469,7 +489,93 @@ impl CalendarClient {
         Ok(())
     }
 
-    fn api_event_to_calendar_event(&self, event: ApiEvent, calendar_id: &str, calendar_name: &str) -> Option<CalendarEvent> {
+    pub async fn update_event(
+        &self,
+        calendar_id: &str,
+        event_id: &str,
+        summary: String,
+        description: Option<String>,
+        start_time: i64,
+        end_time: i64,
+        all_day: bool,
+        location: Option<String>,
+        attendees: Option<Vec<String>>,
+        recurrence: Option<Vec<String>>,
+    ) -> Result<CalendarEvent, String> {
+        let url = format!(
+            "{}/calendars/{}/events/{}",
+            CALENDAR_API_BASE,
+            urlencoding::encode(calendar_id),
+            urlencoding::encode(event_id)
+        );
+
+        let start_dt = DateTime::<Utc>::from_timestamp(start_time / 1000, (start_time % 1000 * 1_000_000) as u32).ok_or("Invalid start time")?;
+        let end_dt = DateTime::<Utc>::from_timestamp(end_time / 1000, (end_time % 1000 * 1_000_000) as u32).ok_or("Invalid end time")?;
+
+        let (start, end) = if all_day {
+            (
+                EventDateTimeInput {
+                    date: Some(start_dt.format("%Y-%m-%d").to_string()),
+                    date_time: None,
+                },
+                EventDateTimeInput {
+                    date: Some(end_dt.format("%Y-%m-%d").to_string()),
+                    date_time: None,
+                },
+            )
+        } else {
+            (
+                EventDateTimeInput {
+                    date_time: Some(start_dt.to_rfc3339()),
+                    date: None,
+                },
+                EventDateTimeInput {
+                    date_time: Some(end_dt.to_rfc3339()),
+                    date: None,
+                },
+            )
+        };
+
+        let body = CreateEventRequest {
+            summary,
+            description,
+            location,
+            start,
+            end,
+            attendees: attendees.map(|emails| {
+                emails
+                    .into_iter()
+                    .map(|email| AttendeeInput { email })
+                    .collect()
+            }),
+            recurrence,
+        };
+
+        let resp = self
+            .http_client
+            .put(&url)
+            .bearer_auth(&self.access_token)
+            .json(&body)
+            .send()
+            .await
+            .map_err(|e| format!("Update event request failed: {}", e))?;
+
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let body = resp.text().await.unwrap_or_default();
+            return Err(friendly_calendar_error(status, &body));
+        }
+
+        let api_event: ApiEvent = resp
+            .json()
+            .await
+            .map_err(|e| format!("Failed to parse updated event: {}", e))?;
+
+        self.api_event_to_calendar_event(api_event, calendar_id, "", "owner")
+            .ok_or_else(|| "Failed to convert updated event".to_string())
+    }
+
+    fn api_event_to_calendar_event(&self, event: ApiEvent, calendar_id: &str, calendar_name: &str, calendar_access_role: &str) -> Option<CalendarEvent> {
         let (start_time, all_day) = self.parse_event_datetime(&event.start)?;
         let end_time = event.end.as_ref().and_then(|e| self.parse_event_datetime(&Some(e.clone())).map(|(t, _)| t));
 
@@ -494,6 +600,38 @@ impl CalendarClient {
             .find(|a| a.is_self)
             .and_then(|a| a.response_status.clone());
 
+        // Extract organizer and creator info before consuming
+        let is_self_organizer = event.organizer.as_ref()
+            .and_then(|o| o.is_self)
+            .unwrap_or(false);
+        let is_self_creator = event.creator.as_ref()
+            .and_then(|c| c.is_self)
+            .unwrap_or(false);
+        let organizer_display = event.organizer.and_then(|o| o.email.or(o.display_name));
+
+        // Determine if user can edit this event:
+        // Calendar must have write access (owner or writer), event must not be locked, and one of:
+        // 1. User is the organizer (from organizer.self field)
+        // 2. User is the creator (from creator.self field)
+        // 3. guestsCanModify is true and user is an attendee
+        let has_calendar_write_access = calendar_access_role == "owner" || calendar_access_role == "writer";
+        let is_locked = event.locked.unwrap_or(false);
+        let is_attendee = attendees.iter().any(|a| a.is_self);
+        let guests_can_modify = event.guests_can_modify.unwrap_or(false);
+        let can_edit = has_calendar_write_access && !is_locked && (is_self_organizer || is_self_creator || (guests_can_modify && is_attendee));
+
+        tracing::info!(
+            "Event '{}': calendar_access={}, is_self_organizer={}, is_self_creator={}, guests_can_modify={}, is_attendee={}, is_locked={}, can_edit={}",
+            event.summary.as_deref().unwrap_or("(no title)"),
+            calendar_access_role,
+            is_self_organizer,
+            is_self_creator,
+            guests_can_modify,
+            is_attendee,
+            is_locked,
+            can_edit
+        );
+
         Some(CalendarEvent {
             id: event.id,
             calendar_id: calendar_id.to_string(),
@@ -505,11 +643,12 @@ impl CalendarClient {
             end_time,
             all_day,
             status: event.status.unwrap_or_else(|| "confirmed".to_string()),
-            organizer: event.organizer.and_then(|o| o.email.or(o.display_name)),
+            organizer: organizer_display,
             attendees,
             html_link: event.html_link,
             hangout_link: event.hangout_link,
             response_status,
+            can_edit,
         })
     }
 

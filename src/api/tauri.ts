@@ -404,6 +404,7 @@ export interface GoogleCalendarEvent {
   html_link: string | null;
   hangout_link: string | null;
   response_status: string | null; // accepted, declined, tentative, needsAction
+  can_edit: boolean; // whether the current user can edit this event
 }
 
 export interface CalendarInfo {
@@ -472,6 +473,34 @@ export async function deleteCalendarEvent(
     accountId,
     calendarId,
     eventId,
+  });
+}
+
+export async function updateCalendarEvent(
+  accountId: string,
+  calendarId: string,
+  eventId: string,
+  summary: string,
+  description: string | null,
+  location: string | null,
+  startTime: number,
+  endTime: number,
+  allDay: boolean,
+  attendees: string[] | null,
+  recurrence: string[] | null
+): Promise<GoogleCalendarEvent> {
+  return invoke("update_calendar_event", {
+    accountId,
+    calendarId,
+    eventId,
+    summary,
+    description,
+    location,
+    startTime: Math.round(startTime),
+    endTime: Math.round(endTime),
+    allDay,
+    attendees,
+    recurrence,
   });
 }
 

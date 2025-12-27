@@ -1469,6 +1469,46 @@ pub async fn delete_calendar_event(
 }
 
 #[tauri::command]
+pub async fn update_calendar_event(
+    account_id: String,
+    calendar_id: String,
+    event_id: String,
+    summary: String,
+    description: Option<String>,
+    location: Option<String>,
+    start_time: i64,
+    end_time: i64,
+    all_day: bool,
+    attendees: Option<Vec<String>>,
+    recurrence: Option<Vec<String>>,
+    app_handle: tauri::AppHandle,
+    state: State<'_, AppState>,
+) -> Result<crate::models::GoogleCalendarEvent, String> {
+    let app_data_dir = app_handle
+        .path()
+        .app_data_dir()
+        .map_err(|e| format!("Failed to get app data dir: {}", e))?;
+
+    let access_token = get_access_token(&state, &account_id, &app_data_dir).await?;
+    let calendar = crate::calendar::CalendarClient::new(access_token);
+
+    calendar
+        .update_event(
+            &calendar_id,
+            &event_id,
+            summary,
+            description,
+            start_time,
+            end_time,
+            all_day,
+            location,
+            attendees,
+            recurrence,
+        )
+        .await
+}
+
+#[tauri::command]
 pub async fn suggest_replies(
     account_id: String,
     thread_id: String,

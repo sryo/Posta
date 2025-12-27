@@ -109,6 +109,7 @@ import {
   listCalendars,
   moveCalendarEvent,
   deleteCalendarEvent,
+  updateCalendarEvent,
   pullFromICloud,
   getCachedCardEvents,
   saveCachedCardEvents,
@@ -153,6 +154,7 @@ import {
   StarFilledIcon,
   TrashIcon,
   EditIcon,
+  SearchIcon,
   SpamIcon,
   ThumbsUpIcon,
   ThumbsUpFilledIcon,
@@ -553,6 +555,8 @@ const CreateEventForm = (props: {
   saving: boolean;
   onSave: () => void;
   error: string | null;
+  inline?: boolean;
+  isEditing?: boolean;
 }) => {
   if (!props.show) return null;
 
@@ -685,13 +689,9 @@ const CreateEventForm = (props: {
     };
   };
 
-  return (
-    <div class={`compose-panel event-compose ${props.closing ? 'closing' : ''}`} style={{ height: "auto", "max-height": "90vh", display: "flex", "flex-direction": "column" }}>
-      <div class="compose-header">
-        <h3>New event</h3>
-        <CloseButton onClick={props.onClose} />
-      </div>
-      <div class="compose-body" style={{ flex: 1, "overflow-y": "auto" }}>
+  const formContent = () => (
+    <>
+      <div class={props.inline ? "inline-event-body" : "compose-body"} style={{ flex: 1, "overflow-y": "auto" }}>
         <div class="compose-field">
           <input
             type="text"
@@ -763,7 +763,7 @@ const CreateEventForm = (props: {
 
 
           {/* All day toggle */}
-          <div style={{ display: "flex", "justify-content": "flex-end", padding: "0 15px", "margin-bottom": "8px" }}>
+          <div style={{ display: "flex", "justify-content": "flex-start", padding: "0 15px", "margin-bottom": "8px" }}>
             <label style={{ display: "flex", "align-items": "center", gap: "5px", cursor: "pointer", "font-size": "12px", color: "var(--text-secondary)" }}>
               <input type="checkbox" checked={props.allDay} onChange={(e) => props.setAllDay(e.currentTarget.checked)} />
               All day
@@ -879,13 +879,34 @@ const CreateEventForm = (props: {
           />
         </div>
       </div>
-      <div class="compose-footer">
+      <div class={props.inline ? "inline-event-footer" : "compose-footer"}>
         <Show when={props.error}><div class="compose-error">{props.error}</div></Show>
         <div class="compose-spacer" />
+        <button class="btn btn-secondary" onClick={props.onClose} style={{ "margin-right": "8px" }}>
+          Cancel
+        </button>
         <button class="btn btn-primary" disabled={props.saving || !props.summary} onClick={props.onSave} title="Save event (⌘Enter)">
-          {props.saving ? "Saving..." : <>Save event <span class="shortcut-hint">⌘↵</span></>}
+          {props.saving ? "Saving..." : <>{props.isEditing ? "Update" : "Save"} <span class="shortcut-hint">⌘↵</span></>}
         </button>
       </div>
+    </>
+  );
+
+  if (props.inline) {
+    return (
+      <div class="inline-event-form">
+        {formContent()}
+      </div>
+    );
+  }
+
+  return (
+    <div class={`compose-panel event-compose ${props.closing ? 'closing' : ''}`} style={{ height: "auto", "max-height": "90vh", display: "flex", "flex-direction": "column" }}>
+      <div class="compose-header">
+        <h3>{props.isEditing ? "Edit event" : "New event"}</h3>
+        <CloseButton onClick={props.onClose} />
+      </div>
+      {formContent()}
     </div>
   );
 };
@@ -986,6 +1007,36 @@ interface InlineComposeProps {
   focusBody: boolean;
   // Resize props
   messageWidth: number;
+  resizing: boolean;
+  onResizeStart: (e: MouseEvent) => void;
+}
+
+interface InlineEditEventProps {
+  summary: string;
+  setSummary: (v: string) => void;
+  description: string;
+  setDescription: (v: string) => void;
+  location: string;
+  setLocation: (v: string) => void;
+  startDate: string;
+  setStartDate: (v: string) => void;
+  startTime: string;
+  setStartTime: (v: string) => void;
+  endDate: string;
+  setEndDate: (v: string) => void;
+  endTime: string;
+  setEndTime: (v: string) => void;
+  allDay: boolean;
+  setAllDay: (v: boolean) => void;
+  attendees: string;
+  setAttendees: (v: string) => void;
+  recurrence: string | null;
+  setRecurrence: (v: string | null) => void;
+  saving: boolean;
+  onSave: () => void;
+  onClose: () => void;
+  error: string | null;
+  // Resize props
   resizing: boolean;
   onResizeStart: (e: MouseEvent) => void;
 }
@@ -1520,6 +1571,7 @@ const EventView = (props: {
   onReplyOrganizer: () => void;
   onReplyAll: () => void;
   onForward: () => void;
+  onEdit: () => void;
   onDelete: () => void;
   onOpenCalendars: () => void;
   calendarDrawerOpen: boolean;
@@ -1529,6 +1581,7 @@ const EventView = (props: {
   onMoveToCalendar: (calendarId: string) => void;
   rsvpLoading: boolean;
   inlineCompose: InlineComposeProps | null;
+  inlineEdit: InlineEditEventProps | null;
 }) => {
   const [closing, setClosing] = createSignal(false);
 
@@ -1644,17 +1697,29 @@ const EventView = (props: {
               <span class="shortcut-hint">C</span>
             </button>
 
-            <div class="thread-toolbar-divider" />
+            <Show when={props.event!.can_edit}>
+              <div class="thread-toolbar-divider" />
 
-            <button
-              class="thread-toolbar-btn thread-toolbar-btn-danger"
-              onClick={props.onDelete}
-              title="Delete event"
-            >
-              <TrashIcon />
-              <span class="thread-toolbar-label">Delete</span>
-              <span class="shortcut-hint">#</span>
-            </button>
+              <button
+                class="thread-toolbar-btn"
+                onClick={props.onEdit}
+                title="Edit event"
+              >
+                <EditIcon />
+                <span class="thread-toolbar-label">Edit</span>
+                <span class="shortcut-hint">E</span>
+              </button>
+
+              <button
+                class="thread-toolbar-btn thread-toolbar-btn-danger"
+                onClick={props.onDelete}
+                title="Delete event"
+              >
+                <TrashIcon />
+                <span class="thread-toolbar-label">Delete</span>
+                <span class="shortcut-hint">#</span>
+              </button>
+            </Show>
           </div>
         </Show>
       </div>
@@ -1662,112 +1727,112 @@ const EventView = (props: {
       <div class="thread-content">
         <Show when={props.event}>
           <div class="messages-list">
-            <div class={`message-row ${props.inlineCompose ? 'with-compose' : ''} ${props.inlineCompose?.resizing ? 'resizing' : ''}`}>
-              <div class="message-card message-focused">
-                {/* Event Header */}
-                <div class="message-header">
-                  <div class="message-sender">{props.event!.organizer || 'Unknown organizer'}</div>
-                  <div class="message-date">{formatEventDateTime(props.event!.start_time, props.event!.end_time, props.event!.all_day)}</div>
-                </div>
+              <div class={`message-row ${props.inlineCompose || props.inlineEdit ? 'with-compose' : ''} ${props.inlineCompose?.resizing || props.inlineEdit?.resizing ? 'resizing' : ''}`}>
+                <div class="message-card message-focused">
+                  {/* Event Header */}
+                  <div class="message-header">
+                    <div class="message-sender">{props.event!.organizer || 'Unknown organizer'}</div>
+                    <div class="message-date">{formatEventDateTime(props.event!.start_time, props.event!.end_time, props.event!.all_day)}</div>
+                  </div>
 
-                {/* Message Actions Wheel - hide when composing */}
-                <Show when={!props.inlineCompose}>
-                  <MessageActionsWheel
-                    onReply={props.onReplyOrganizer}
-                    onReplyAll={props.onReplyAll}
-                    onForward={props.onForward}
-                    open={true}
-                    showHints={true}
-                  />
-                </Show>
+                  {/* Message Actions Wheel - hide when composing or editing */}
+                  <Show when={!props.inlineCompose && !props.inlineEdit}>
+                    <MessageActionsWheel
+                      onReply={props.onReplyOrganizer}
+                      onReplyAll={props.onReplyAll}
+                      onForward={props.onForward}
+                      open={true}
+                      showHints={true}
+                    />
+                  </Show>
 
-                {/* Calendar Name */}
-                <div class="event-info-row">
-                  <CalendarIcon />
-                  <span>{props.event!.calendar_name}</span>
-                </div>
-
-                {/* Location */}
-                <Show when={props.event!.location}>
+                  {/* Calendar Name */}
                   <div class="event-info-row">
-                    <LocationIcon />
-                    <span>{props.event!.location}</span>
+                    <CalendarIcon />
+                    <span>{props.event!.calendar_name}</span>
                   </div>
-                </Show>
 
-                {/* Video call */}
-                <Show when={props.event!.hangout_link}>
-                  <div class="event-info-row">
-                    <VideoIcon />
-                    <a href="#" onClick={(e) => { e.preventDefault(); props.event!.hangout_link && openUrl(props.event!.hangout_link); }}>
-                      Join video call
-                    </a>
-                  </div>
-                </Show>
-
-                {/* Description */}
-                <Show when={props.event!.description}>
-                  <div class="message-body">
-                    <div innerHTML={props.event!.description!.replace(/\n/g, '<br>')} />
-                  </div>
-                </Show>
-
-                {/* RSVP Section */}
-                <Show when={props.event!.response_status}>
-                  <div class="event-rsvp-section">
-                    <div class="event-rsvp-current">
-                      Your response: <span class={`event-rsvp-status ${props.event!.response_status}`}>
-                        {getResponseLabel(props.event!.response_status)}
-                      </span>
+                  {/* Location */}
+                  <Show when={props.event!.location}>
+                    <div class="event-info-row">
+                      <LocationIcon />
+                      <span>{props.event!.location}</span>
                     </div>
-                    <div class="event-rsvp-buttons">
-                      <button
-                        class={`event-rsvp-btn ${props.event!.response_status === 'accepted' ? 'active' : ''}`}
-                        onClick={() => props.onRsvp('accepted')}
-                        disabled={props.rsvpLoading}
-                      >
-                        Yes
-                      </button>
-                      <button
-                        class={`event-rsvp-btn ${props.event!.response_status === 'tentative' ? 'active' : ''}`}
-                        onClick={() => props.onRsvp('tentative')}
-                        disabled={props.rsvpLoading}
-                      >
-                        Maybe
-                      </button>
-                      <button
-                        class={`event-rsvp-btn ${props.event!.response_status === 'declined' ? 'active' : ''}`}
-                        onClick={() => props.onRsvp('declined')}
-                        disabled={props.rsvpLoading}
-                      >
-                        No
-                      </button>
-                    </div>
-                  </div>
-                </Show>
+                  </Show>
 
-                {/* Attendees */}
-                <Show when={props.event!.attendees.length > 0}>
-                  <div class="event-attendees-section">
-                    <div class="event-attendees-label">{props.event!.attendees.length} guests</div>
-                    <div class="event-attendees-list">
-                      <For each={props.event!.attendees}>
-                        {(attendee) => (
-                          <div class={`event-attendee ${attendee.response_status || ''}`}>
-                            <span class="event-attendee-name">
-                              {attendee.display_name || attendee.email}
-                              {attendee.is_organizer && <span class="event-attendee-badge">Organizer</span>}
-                            </span>
-                            <span class={`event-attendee-status ${attendee.response_status || ''}`}>
-                              {getResponseLabel(attendee.response_status)}
-                            </span>
-                          </div>
-                        )}
-                      </For>
+                  {/* Video call */}
+                  <Show when={props.event!.hangout_link}>
+                    <div class="event-info-row">
+                      <VideoIcon />
+                      <a href="#" onClick={(e) => { e.preventDefault(); props.event!.hangout_link && openUrl(props.event!.hangout_link); }}>
+                        Join video call
+                      </a>
                     </div>
-                  </div>
-                </Show>
-              </div>
+                  </Show>
+
+                  {/* Description */}
+                  <Show when={props.event!.description}>
+                    <div class="message-body">
+                      <div innerHTML={props.event!.description!.replace(/\n/g, '<br>')} />
+                    </div>
+                  </Show>
+
+                  {/* RSVP Section */}
+                  <Show when={props.event!.response_status}>
+                    <div class="event-rsvp-section">
+                      <div class="event-rsvp-current">
+                        Your response: <span class={`event-rsvp-status ${props.event!.response_status}`}>
+                          {getResponseLabel(props.event!.response_status)}
+                        </span>
+                      </div>
+                      <div class="event-rsvp-buttons">
+                        <button
+                          class={`event-rsvp-btn ${props.event!.response_status === 'accepted' ? 'active' : ''}`}
+                          onClick={() => props.onRsvp('accepted')}
+                          disabled={props.rsvpLoading}
+                        >
+                          Yes
+                        </button>
+                        <button
+                          class={`event-rsvp-btn ${props.event!.response_status === 'tentative' ? 'active' : ''}`}
+                          onClick={() => props.onRsvp('tentative')}
+                          disabled={props.rsvpLoading}
+                        >
+                          Maybe
+                        </button>
+                        <button
+                          class={`event-rsvp-btn ${props.event!.response_status === 'declined' ? 'active' : ''}`}
+                          onClick={() => props.onRsvp('declined')}
+                          disabled={props.rsvpLoading}
+                        >
+                          No
+                        </button>
+                      </div>
+                    </div>
+                  </Show>
+
+                  {/* Attendees */}
+                  <Show when={props.event!.attendees.length > 0}>
+                    <div class="event-attendees-section">
+                      <div class="event-attendees-label">{props.event!.attendees.length} guests</div>
+                      <div class="event-attendees-list">
+                        <For each={props.event!.attendees}>
+                          {(attendee) => (
+                            <div class={`event-attendee ${attendee.response_status || ''}`}>
+                              <span class="event-attendee-name">
+                                {attendee.display_name || attendee.email}
+                                {attendee.is_organizer && <span class="event-attendee-badge">Organizer</span>}
+                              </span>
+                              <span class={`event-attendee-status ${attendee.response_status || ''}`}>
+                                {getResponseLabel(attendee.response_status)}
+                              </span>
+                            </div>
+                          )}
+                        </For>
+                      </div>
+                    </div>
+                  </Show>
+                </div>
 
               {/* Resize handle and inline compose form */}
               <Show when={props.inlineCompose}>
@@ -1803,7 +1868,46 @@ const EventView = (props: {
                   />
                 </div>
               </Show>
-            </div>
+
+              {/* Inline edit form */}
+              <Show when={props.inlineEdit}>
+                <div
+                  class="inline-resize-handle"
+                  onMouseDown={props.inlineEdit!.onResizeStart}
+                />
+                <div class="inline-compose">
+                  <CreateEventForm
+                    show={true}
+                    inline={true}
+                    isEditing={true}
+                    onClose={props.inlineEdit!.onClose}
+                    summary={props.inlineEdit!.summary}
+                    setSummary={props.inlineEdit!.setSummary}
+                    description={props.inlineEdit!.description}
+                    setDescription={props.inlineEdit!.setDescription}
+                    location={props.inlineEdit!.location}
+                    setLocation={props.inlineEdit!.setLocation}
+                    startDate={props.inlineEdit!.startDate}
+                    setStartDate={props.inlineEdit!.setStartDate}
+                    startTime={props.inlineEdit!.startTime}
+                    setStartTime={props.inlineEdit!.setStartTime}
+                    endDate={props.inlineEdit!.endDate}
+                    setEndDate={props.inlineEdit!.setEndDate}
+                    endTime={props.inlineEdit!.endTime}
+                    setEndTime={props.inlineEdit!.setEndTime}
+                    allDay={props.inlineEdit!.allDay}
+                    setAllDay={props.inlineEdit!.setAllDay}
+                    attendees={props.inlineEdit!.attendees}
+                    setAttendees={props.inlineEdit!.setAttendees}
+                    recurrence={props.inlineEdit!.recurrence}
+                    setRecurrence={props.inlineEdit!.setRecurrence}
+                    saving={props.inlineEdit!.saving}
+                    onSave={props.inlineEdit!.onSave}
+                    error={props.inlineEdit!.error}
+                  />
+                </div>
+              </Show>
+              </div>
           </div>
         </Show>
       </div>
@@ -2359,6 +2463,7 @@ function App() {
   const [newEventRecurrence, setNewEventRecurrence] = createSignal<string | null>(null);
   const [newEventSaving, setNewEventSaving] = createSignal(false);
   const [newEventError, setNewEventError] = createSignal<string | null>(null);
+  const [editingEvent, setEditingEvent] = createSignal<{ id: string; calendarId: string } | null>(null);
   const resetEventFormToNow = () => {
     const defaults = getSmartEventDefaults();
     setNewEventStartDate(defaults.date);
@@ -2372,6 +2477,7 @@ function App() {
     setTimeout(() => {
       setCreatingEvent(false);
       setClosingEvent(false);
+      setEditingEvent(null);
       setNewEventSummary("");
       setNewEventDescription("");
       setNewEventLocation("");
@@ -3512,6 +3618,8 @@ function App() {
     setNewEventSaving(true);
     setNewEventError(null);
 
+    const editing = editingEvent();
+
     try {
       let start: number, end: number;
       if (newEventAllDay()) {
@@ -3532,20 +3640,39 @@ function App() {
         .map(s => s.trim())
         .filter(s => s.length > 0);
 
-      await createCalendarEvent(
-        account.id,
-        null,
-        newEventSummary(),
-        newEventDescription() || null,
-        newEventLocation() || null,
-        start,
-        end,
-        newEventAllDay(),
-        attendeesList.length > 0 ? attendeesList : null,
-        newEventRecurrence() ? [newEventRecurrence()!] : null
-      );
+      if (editing) {
+        // Update existing event
+        await updateCalendarEvent(
+          account.id,
+          editing.calendarId,
+          editing.id,
+          newEventSummary(),
+          newEventDescription() || null,
+          newEventLocation() || null,
+          start,
+          end,
+          newEventAllDay(),
+          attendeesList.length > 0 ? attendeesList : null,
+          newEventRecurrence() ? [newEventRecurrence()!] : null
+        );
+      } else {
+        // Create new event
+        await createCalendarEvent(
+          account.id,
+          null,
+          newEventSummary(),
+          newEventDescription() || null,
+          newEventLocation() || null,
+          start,
+          end,
+          newEventAllDay(),
+          attendeesList.length > 0 ? attendeesList : null,
+          newEventRecurrence() ? [newEventRecurrence()!] : null
+        );
+      }
 
       setCreatingEvent(false);
+      setEditingEvent(null);
       setNewEventSummary("");
       setNewEventDescription("");
       setNewEventLocation("");
@@ -3560,11 +3687,11 @@ function App() {
         }
       });
 
-      showToast("Event created successfully");
+      showToast(editing ? "Event updated" : "Event created");
 
     } catch (e) {
       console.error(e);
-      setNewEventError("Failed to create event: " + String(e));
+      setNewEventError((editing ? "Failed to update event: " : "Failed to create event: ") + String(e));
     } finally {
       setNewEventSaving(false);
     }
@@ -4860,8 +4987,9 @@ function App() {
       setActionsWheelOpen(false);
       setHoveredThread(null);
     }
-    if (!target.closest('.quick-reply-container')) {
+    if (!target.closest('.quick-reply-box') && !quickReplyText().trim()) {
       setQuickReplyThreadId(null);
+      setQuickReplyEventId(null);
     }
     if (!target.closest('.action-config-menu')) {
       setActionConfigMenu(null);
@@ -5817,10 +5945,6 @@ function App() {
       {/* Global filter bar - keyboard activated */}
       <div class={`global-filter-bar ${showGlobalFilter() ? 'visible' : ''}`}>
         <div class="global-filter-container">
-          <svg class="filter-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-            <circle cx="11" cy="11" r="8"></circle>
-            <line x1="21" y1="21" x2="16.65" y2="16.65"></line>
-          </svg>
           <input
             ref={filterInputRef}
             type="text"
@@ -5836,11 +5960,6 @@ function App() {
               }
             }}
           />
-          <Show when={globalFilter()}>
-            <button class="global-filter-clear" onClick={() => setGlobalFilter("")} title="Clear filter">
-              <ClearIcon />
-            </button>
-          </Show>
           <button class="global-filter-close" onClick={() => { setShowGlobalFilter(false); setGlobalFilter(""); }} title="Close filter">
             <CloseIcon />
             <span class="shortcut-hint">ESC</span>
@@ -6131,9 +6250,9 @@ function App() {
                               <button
                                 class="icon-btn"
                                 onClick={(e) => startEditCard(card, e)}
-                                title="Edit"
+                                title="Edit query"
                               >
-                                <EditIcon />
+                                <SearchIcon />
                               </button>
                             </div>
                           </div>
@@ -7079,6 +7198,36 @@ function App() {
             setComposing(true);
             setFocusComposeBody(true);
           }}
+          onEdit={() => {
+            const event = activeEvent();
+            if (!event) return;
+            // Pre-fill the event form with current event data
+            setNewEventSummary(event.title || '');
+            setNewEventDescription(event.description || '');
+            setNewEventLocation(event.location || '');
+
+            // Parse start date/time
+            const startDate = new Date(event.start_time);
+            setNewEventStartDate(startDate.toISOString().split('T')[0]);
+            setNewEventStartTime(startDate.toTimeString().slice(0, 5));
+
+            // Parse end date/time
+            if (event.end_time) {
+              const endDate = new Date(event.end_time);
+              setNewEventEndDate(endDate.toISOString().split('T')[0]);
+              setNewEventEndTime(endDate.toTimeString().slice(0, 5));
+            } else {
+              setNewEventEndDate(startDate.toISOString().split('T')[0]);
+              setNewEventEndTime(startDate.toTimeString().slice(0, 5));
+            }
+
+            setNewEventAllDay(event.all_day);
+            setNewEventAttendees(event.attendees.map(a => a.email).join(', '));
+            setNewEventRecurrence(null); // Recurrence editing not supported yet
+
+            // Set editing state - inline editing in event view
+            setEditingEvent({ id: event.id, calendarId: event.calendar_id });
+          }}
           onDelete={async () => {
             const event = activeEvent();
             const account = selectedAccount();
@@ -7134,6 +7283,34 @@ function App() {
             onInput: debouncedSaveDraft,
             focusBody: focusComposeBody(),
             messageWidth: inlineMessageWidth(),
+            resizing: inlineResizing(),
+            onResizeStart: handleInlineResizeStart,
+          } : null}
+          inlineEdit={editingEvent() && activeEvent() && editingEvent()!.id === activeEvent()!.id ? {
+            summary: newEventSummary(),
+            setSummary: setNewEventSummary,
+            description: newEventDescription(),
+            setDescription: setNewEventDescription,
+            location: newEventLocation(),
+            setLocation: setNewEventLocation,
+            startDate: newEventStartDate(),
+            setStartDate: setNewEventStartDate,
+            startTime: newEventStartTime(),
+            setStartTime: setNewEventStartTime,
+            endDate: newEventEndDate(),
+            setEndDate: setNewEventEndDate,
+            endTime: newEventEndTime(),
+            setEndTime: setNewEventEndTime,
+            allDay: newEventAllDay(),
+            setAllDay: setNewEventAllDay,
+            attendees: newEventAttendees(),
+            setAttendees: setNewEventAttendees,
+            recurrence: newEventRecurrence(),
+            setRecurrence: setNewEventRecurrence,
+            saving: newEventSaving(),
+            onSave: handleCreateEvent,
+            onClose: () => setEditingEvent(null),
+            error: newEventError(),
             resizing: inlineResizing(),
             onResizeStart: handleInlineResizeStart,
           } : null}
