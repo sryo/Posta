@@ -180,6 +180,13 @@ select:focus:not(:focus-visible) {
     width: 110px;
 }
 
+.sidebar-content {
+    position: relative;
+    display: flex;
+    flex-direction: column;
+    flex: 1;
+}
+
 .blur-layer {
     position: absolute;
     inset: 0;
@@ -187,37 +194,37 @@ select:focus:not(:focus-visible) {
     pointer-events: none;
 }
 
-/* 
-  Progressive Blur Stack 
-  Layer 1: Highest blur, shortest distance (fades out quickly)
-  Layer 4: Lowest blur, longest distance
+/*
+  Progressive Blur Stack - Radial blur for rounded button islands
+  Layer 1: Highest blur, smallest radius
+  Layer 4: Lowest blur, largest radius
 */
 .layer-1 {
     backdrop-filter: blur(48px);
     -webkit-backdrop-filter: blur(48px);
-    mask-image: linear-gradient(to right, black 20%, transparent 40%);
-    -webkit-mask-image: linear-gradient(to right, black 20%, transparent 40%);
+    mask-image: radial-gradient(ellipse at center, black 0%, transparent 50%);
+    -webkit-mask-image: radial-gradient(ellipse at center, black 0%, transparent 50%);
 }
 
 .layer-2 {
     backdrop-filter: blur(24px);
     -webkit-backdrop-filter: blur(24px);
-    mask-image: linear-gradient(to right, black 40%, transparent 60%);
-    -webkit-mask-image: linear-gradient(to right, black 40%, transparent 60%);
+    mask-image: radial-gradient(ellipse at center, black 20%, transparent 70%);
+    -webkit-mask-image: radial-gradient(ellipse at center, black 20%, transparent 70%);
 }
 
 .layer-3 {
     backdrop-filter: blur(12px);
     -webkit-backdrop-filter: blur(12px);
-    mask-image: linear-gradient(to right, black 60%, transparent 80%);
-    -webkit-mask-image: linear-gradient(to right, black 60%, transparent 80%);
+    mask-image: radial-gradient(ellipse at center, black 40%, transparent 85%);
+    -webkit-mask-image: radial-gradient(ellipse at center, black 40%, transparent 85%);
 }
 
 .layer-4 {
     backdrop-filter: blur(4px);
     -webkit-backdrop-filter: blur(4px);
-    mask-image: linear-gradient(to right, black 80%, transparent 100%);
-    -webkit-mask-image: linear-gradient(to right, black 80%, transparent 100%);
+    mask-image: radial-gradient(ellipse at center, black 60%, transparent 100%);
+    -webkit-mask-image: radial-gradient(ellipse at center, black 60%, transparent 100%);
 }
 
 /* Sidebar items should not drag */
@@ -328,13 +335,17 @@ select:focus:not(:focus-visible) {
 
 /* Toolbar (settings + bg color) - Now at bottom of sidebar */
 .toolbar-wrapper {
+    position: relative;
     margin-top: auto;
     display: flex;
     flex-direction: column;
-    gap: 24px;
     align-items: center;
+    gap: 24px;
+    padding: 12px;
     width: 100%;
-    padding-bottom: 12px;
+    backdrop-filter: blur(40px);
+    border-radius: 16px;
+    left: 24px;
 }
 
 .toolbar-btn {
@@ -532,12 +543,16 @@ select:focus:not(:focus-visible) {
 
 /* Compose toolbar - Now at top of sidebar */
 .compose-toolbar {
+    position: relative;
     display: flex;
     flex-direction: column;
     align-items: center;
-    gap: 12px;
-    padding: 12px 0;
+    gap: 4px;
+    padding: 12px;
     width: 100%;
+    backdrop-filter: blur(40px);
+    border-radius: 16px;
+    left: 16px;
 }
 
 .compose-btn-wrapper {
@@ -702,7 +717,7 @@ select:focus:not(:focus-visible) {
 .deck {
     display: flex;
     padding: var(--app-edge-margin);
-    padding-left: calc(var(--sidebar-width) + 16px);
+    padding-left: calc(var(--sidebar-width) + 32px);
     padding-right: 40px;
     padding-top: var(--drag-region-height);
     padding-bottom: 24px;
@@ -2232,7 +2247,7 @@ button:disabled:hover {
 .compose-panel {
     position: fixed;
     top: calc(var(--drag-region-height) + 12px);
-    left: calc((var(--sidebar-width) - var(--toolbar-btn-size)) / 2);
+    left: 20px;
     width: 480px;
     max-width: calc(100vw - 48px);
     background: var(--bg-primary);
@@ -2294,7 +2309,7 @@ button:disabled:hover {
 
 /* Event Compose Panel - positioned at new-event button */
 .compose-panel.event-compose {
-    top: calc(var(--drag-region-height) + 12px + var(--toolbar-btn-size) + 8px);
+    top: calc(var(--drag-region-height) + 12px + var(--toolbar-btn-size) + 4px);
     animation: eventPanelExpand 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
 }
 

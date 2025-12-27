@@ -762,6 +762,14 @@ const CreateEventForm = (props: {
           </div>
 
 
+          {/* All day toggle */}
+          <div style={{ display: "flex", "justify-content": "flex-end", padding: "0 15px", "margin-bottom": "8px" }}>
+            <label style={{ display: "flex", "align-items": "center", gap: "5px", cursor: "pointer", "font-size": "12px", color: "var(--text-secondary)" }}>
+              <input type="checkbox" checked={props.allDay} onChange={(e) => props.setAllDay(e.currentTarget.checked)} />
+              All day
+            </label>
+          </div>
+
           {/* Vertical Time Lists + Repeat */}
           <Show when={!props.allDay}>
             <div class="scheduler-times" style={{ display: "flex", gap: "15px", padding: "0 15px", height: "200px" }}>
@@ -792,12 +800,8 @@ const CreateEventForm = (props: {
                 </div>
               </div>
               <div style={{ flex: 1, display: "flex", "flex-direction": "column" }}>
-                <div style={{ display: "flex", "align-items": "center", "justify-content": "space-between", height: "17px", "margin-bottom": "5px" }}>
+                <div style={{ display: "flex", "align-items": "center", height: "17px", "margin-bottom": "5px" }}>
                   <label style={{ "font-size": "12px", color: "var(--text-secondary)" }}>End</label>
-                  <label style={{ display: "flex", "align-items": "center", gap: "5px", cursor: "pointer", "font-size": "12px", color: "var(--text-secondary)" }}>
-                    <input type="checkbox" checked={props.allDay} onChange={(e) => props.setAllDay(e.currentTarget.checked)} />
-                    All day
-                  </label>
                 </div>
                 <div class="time-picker-end" style={{ flex: 1, "overflow-y": "auto", border: "1px solid var(--border)", "border-radius": "6px" }}>
                   <For each={timeSlots}>
@@ -5847,13 +5851,8 @@ function App() {
       {/* Compose button with contact suggestions - top left */}
       <Show when={selectedAccount()}>
         <aside class={`sidebar ${bgColorPickerOpen() ? 'expanded' : ''}`}>
-          {/* Progressive Blur Layers */}
-          <div class="blur-layer layer-1"></div>
-          <div class="blur-layer layer-2"></div>
-          <div class="blur-layer layer-3"></div>
-          <div class="blur-layer layer-4"></div>
-
-          <Show when={!composing()}>
+          <div class="sidebar-content">
+            <Show when={!composing()}>
             <div
               class="compose-toolbar"
               onMouseLeave={() => {
@@ -6006,6 +6005,7 @@ function App() {
                 </Show>
               </div>
             </Show>
+          </div>
           </div>
         </aside>
       </Show>
