@@ -1,7 +1,7 @@
-import { Show, type Component } from "solid-js";
+import { For, Show, type Component } from "solid-js";
 import type { CalendarEvent } from "../api/tauri";
 import { formatCalendarEventDate } from "../utils";
-import { ClockIcon, LocationIcon } from "./Icons";
+import { ClockIcon, LocationIcon, PeopleIcon } from "./Icons";
 
 export interface CalendarEventCardProps {
   event: CalendarEvent;
@@ -42,11 +42,18 @@ export const CalendarEventCard: Component<CalendarEventCardProps> = (props) => {
         </div>
       </Show>
 
+      <Show when={props.event.description}>
+        <div class="calendar-event-description">{props.event.description}</div>
+      </Show>
+
       <Show when={props.showAttendees && props.event.attendees.length > 0}>
         <div class="calendar-event-attendees">
-          <span class="attendee-count">
-            {props.event.attendees.length} attendee{props.event.attendees.length !== 1 ? 's' : ''}
-          </span>
+          <PeopleIcon />
+          <div class="attendee-list">
+            <For each={props.event.attendees}>
+              {(attendee) => <span class="attendee">{attendee}</span>}
+            </For>
+          </div>
         </div>
       </Show>
 

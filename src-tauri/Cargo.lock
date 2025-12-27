@@ -2761,7 +2761,7 @@ dependencies = [
 
 [[package]]
 name = "posta"
-version = "0.1.0"
+version = "2025.12.27"
 dependencies = [
  "base64 0.22.1",
  "chrono",

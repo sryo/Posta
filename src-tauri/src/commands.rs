@@ -741,6 +741,7 @@ pub async fn send_email(
     subject: String,
     body: String,
     attachments: Vec<SendAttachment>,
+    is_html: Option<bool>,
     app_handle: tauri::AppHandle, state: State<'_, AppState>,
 ) -> Result<(), String> {
     let app_data_dir = app_handle
@@ -762,7 +763,7 @@ pub async fn send_email(
     let access_token = get_access_token(&state, &account_id, &app_data_dir).await?;
     let gmail = GmailClient::new(access_token);
 
-    gmail.send_email(&to, &cc, &bcc, &subject, &body, &attachments).await
+    gmail.send_email(&to, &cc, &bcc, &subject, &body, &attachments, is_html.unwrap_or(false)).await
 }
 
 #[tauri::command]
@@ -776,6 +777,7 @@ pub async fn reply_to_thread(
     body: String,
     message_id: Option<String>,
     attachments: Vec<SendAttachment>,
+    is_html: Option<bool>,
     app_handle: tauri::AppHandle, state: State<'_, AppState>,
 ) -> Result<(), String> {
     let app_data_dir = app_handle
@@ -797,7 +799,40 @@ pub async fn reply_to_thread(
     let access_token = get_access_token(&state, &account_id, &app_data_dir).await?;
     let gmail = GmailClient::new(access_token);
 
-    gmail.reply_to_thread(&thread_id, &to, &cc, &bcc, &subject, &body, message_id.as_deref(), &attachments).await
+    gmail.reply_to_thread(&thread_id, &to, &cc, &bcc, &subject, &body, message_id.as_deref(), &attachments, is_html.unwrap_or(false)).await
+}
+
+#[tauri::command]
+pub async fn send_reaction(
+    account_id: String,
+    thread_id: String,
+    message_id: String,
+    emoji: String,
+    to_email: String,
+    app_handle: tauri::AppHandle,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    let app_data_dir = app_handle
+        .path()
+        .app_data_dir()
+        .map_err(|e| format!("Failed to get app data dir: {}", e))?;
+
+    // Get account email
+    let from_email = {
+        let db_guard = state.db.lock().map_err(|_| "Lock error")?;
+        let db = db_guard.as_ref().ok_or("Database not initialized")?;
+        let accounts = db.get_accounts().map_err(|e| e.to_string())?;
+        accounts
+            .iter()
+            .find(|a| a.id == account_id)
+            .map(|a| a.email.clone())
+            .ok_or("Account not found")?
+    };
+
+    let access_token = get_access_token(&state, &account_id, &app_data_dir).await?;
+    let gmail = GmailClient::new(access_token);
+
+    gmail.send_reaction(&thread_id, &message_id, &emoji, &from_email, &to_email).await
 }
 
 #[derive(Debug, Serialize)]
@@ -1076,12 +1111,12 @@ pub async fn save_draft(
     match draft_id {
         Some(id) => {
             gmail
-                .update_draft(&id, &to, &cc, &bcc, &subject, &body, thread_id.as_deref())
+                .update_draft(&id, &to, &cc, &bcc, &subject, &body, thread_id.as_deref(), false)
                 .await
         }
         None => {
             gmail
-                .create_draft(&to, &cc, &bcc, &subject, &body, thread_id.as_deref())
+                .create_draft(&to, &cc, &bcc, &subject, &body, thread_id.as_deref(), false)
                 .await
         }
     }

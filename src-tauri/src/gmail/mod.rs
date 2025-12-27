@@ -789,10 +789,11 @@ impl GmailClient {
         subject: &str,
         body: &str,
         attachments: &[SendAttachment],
+        is_html: bool,
     ) -> Result<(), String> {
         let url = format!("{}/users/me/messages/send", GMAIL_API_BASE);
 
-        let message = self.build_mime_message(to, cc, bcc, subject, body, attachments, None)?;
+        let message = self.build_mime_message(to, cc, bcc, subject, body, attachments, None, is_html)?;
 
         // Base64url encode
         use base64::Engine;
@@ -820,7 +821,7 @@ impl GmailClient {
         Ok(())
     }
 
-    /// Build a MIME message (plain text or multipart with attachments)
+    /// Build a MIME message with multipart/alternative for HTML emails
     fn build_mime_message(
         &self,
         to: &str,
@@ -830,6 +831,7 @@ impl GmailClient {
         body: &str,
         attachments: &[SendAttachment],
         reply_headers: Option<(&str, &str)>, // (In-Reply-To, References)
+        is_html: bool,
     ) -> Result<String, String> {
         let mut message = format!("To: {}\r\n", to);
 
@@ -851,21 +853,61 @@ impl GmailClient {
             message.push_str(&format!("In-Reply-To: {}\r\nReferences: {}\r\n", in_reply_to, references));
         }
 
-        if attachments.is_empty() {
+        if !is_html && attachments.is_empty() {
             // Simple plain text message
             message.push_str("Content-Type: text/plain; charset=utf-8\r\n\r\n");
             message.push_str(body);
+        } else if is_html && attachments.is_empty() {
+            // HTML message with plain text fallback (multipart/alternative)
+            let alt_boundary = format!("----=_Alt_{}", uuid::Uuid::new_v4().to_string().replace("-", ""));
+            message.push_str(&format!("Content-Type: multipart/alternative; boundary=\"{}\"\r\n\r\n", alt_boundary));
+
+            // Plain text part (strip HTML for fallback)
+            let plain_body = strip_html_tags(body);
+            message.push_str(&format!("--{}\r\n", alt_boundary));
+            message.push_str("Content-Type: text/plain; charset=utf-8\r\n\r\n");
+            message.push_str(&plain_body);
+            message.push_str("\r\n");
+
+            // HTML part
+            message.push_str(&format!("--{}\r\n", alt_boundary));
+            message.push_str("Content-Type: text/html; charset=utf-8\r\n\r\n");
+            message.push_str(body);
+            message.push_str("\r\n");
+
+            message.push_str(&format!("--{}--\r\n", alt_boundary));
         } else {
             // Multipart message with attachments
             let boundary = format!("----=_Part_{}", uuid::Uuid::new_v4().to_string().replace("-", ""));
             message.push_str(&format!("Content-Type: multipart/mixed; boundary=\"{}\"\r\n\r\n", boundary));
 
-            // Text part
-            message.push_str(&format!("--{}\r\n", boundary));
-            message.push_str("Content-Type: text/plain; charset=utf-8\r\n");
-            message.push_str("Content-Transfer-Encoding: 7bit\r\n\r\n");
-            message.push_str(body);
-            message.push_str("\r\n");
+            if is_html {
+                // Include multipart/alternative for HTML with plain text fallback
+                let alt_boundary = format!("----=_Alt_{}", uuid::Uuid::new_v4().to_string().replace("-", ""));
+                message.push_str(&format!("--{}\r\n", boundary));
+                message.push_str(&format!("Content-Type: multipart/alternative; boundary=\"{}\"\r\n\r\n", alt_boundary));
+
+                // Plain text part
+                let plain_body = strip_html_tags(body);
+                message.push_str(&format!("--{}\r\n", alt_boundary));
+                message.push_str("Content-Type: text/plain; charset=utf-8\r\n\r\n");
+                message.push_str(&plain_body);
+                message.push_str("\r\n");
+
+                // HTML part
+                message.push_str(&format!("--{}\r\n", alt_boundary));
+                message.push_str("Content-Type: text/html; charset=utf-8\r\n\r\n");
+                message.push_str(body);
+                message.push_str("\r\n");
+
+                message.push_str(&format!("--{}--\r\n", alt_boundary));
+            } else {
+                // Plain text part only
+                message.push_str(&format!("--{}\r\n", boundary));
+                message.push_str("Content-Type: text/plain; charset=utf-8\r\n\r\n");
+                message.push_str(body);
+                message.push_str("\r\n");
+            }
 
             // Attachment parts
             for attachment in attachments {
@@ -909,13 +951,14 @@ impl GmailClient {
         body: &str,
         message_id: Option<&str>,
         attachments: &[SendAttachment],
+        is_html: bool,
     ) -> Result<(), String> {
         let url = format!("{}/users/me/messages/send", GMAIL_API_BASE);
 
         // Build reply headers if message_id is present
         let reply_headers = message_id.map(|id| (id, id));
 
-        let message = self.build_mime_message(to, cc, bcc, subject, body, attachments, reply_headers)?;
+        let message = self.build_mime_message(to, cc, bcc, subject, body, attachments, reply_headers, is_html)?;
 
         // Base64url encode
         use base64::Engine;
@@ -979,10 +1022,11 @@ impl GmailClient {
         subject: &str,
         body: &str,
         thread_id: Option<&str>,
+        is_html: bool,
     ) -> Result<GmailDraft, String> {
         let url = format!("{}/users/me/drafts", GMAIL_API_BASE);
 
-        let message = self.build_mime_message(to, cc, bcc, subject, body, &[], None)?;
+        let message = self.build_mime_message(to, cc, bcc, subject, body, &[], None, is_html)?;
 
         use base64::Engine;
         let encoded = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(message.as_bytes());
@@ -1030,10 +1074,11 @@ impl GmailClient {
         subject: &str,
         body: &str,
         thread_id: Option<&str>,
+        is_html: bool,
     ) -> Result<GmailDraft, String> {
         let url = format!("{}/users/me/drafts/{}", GMAIL_API_BASE, draft_id);
 
-        let message = self.build_mime_message(to, cc, bcc, subject, body, &[], None)?;
+        let message = self.build_mime_message(to, cc, bcc, subject, body, &[], None, is_html)?;
 
         use base64::Engine;
         let encoded = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(message.as_bytes());
@@ -1760,4 +1805,284 @@ fn decode_base64_body(data: &str) -> Option<String> {
         .decode(&normalized)
         .ok()
         .and_then(|bytes| String::from_utf8(bytes).ok())
+}
+
+/// Strip HTML tags to create plain text fallback
+fn strip_html_tags(html: &str) -> String {
+    let mut result = String::new();
+    let mut in_tag = false;
+
+    for c in html.chars() {
+        match c {
+            '<' => in_tag = true,
+            '>' => in_tag = false,
+            _ if !in_tag => result.push(c),
+            _ => {}
+        }
+    }
+
+    // Decode common HTML entities
+    result
+        .replace("&nbsp;", " ")
+        .replace("&amp;", "&")
+        .replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&quot;", "\"")
+        .replace("&#39;", "'")
+        .replace("<br>", "\n")
+        .replace("<br/>", "\n")
+        .replace("<br />", "\n")
+}
+
+// ============ Email Reactions ============
+
+/// Reaction data parsed from email
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ParsedReaction {
+    pub emoji: String,
+    pub from_addr: String,
+    pub in_reply_to: String,
+    pub message_id: String,
+}
+
+/// Parse reaction from a message if it contains a valid reaction part
+pub fn parse_reaction_from_message(message: &FullMessage) -> Option<ParsedReaction> {
+    let payload = message.payload.as_ref()?;
+
+    // Get headers
+    let headers = payload.headers.as_ref()?;
+    let from = headers.iter()
+        .find(|h| h.name.eq_ignore_ascii_case("From"))
+        .map(|h| extract_email_address(&h.value))?;
+    let in_reply_to = headers.iter()
+        .find(|h| h.name.eq_ignore_ascii_case("In-Reply-To"))
+        .map(|h| h.value.trim().to_string())?;
+
+    // Look for reaction JSON part
+    let emoji = find_reaction_in_payload(payload)?;
+
+    Some(ParsedReaction {
+        emoji,
+        from_addr: from,
+        in_reply_to,
+        message_id: message.id.clone(),
+    })
+}
+
+/// Recursively search for reaction part in payload
+fn find_reaction_in_payload(payload: &MessagePayload) -> Option<String> {
+    // Check if top-level is reaction
+    if let Some(mime_type) = &payload.mime_type {
+        if mime_type == "text/vnd.google.email-reaction+json" {
+            if let Some(body) = &payload.body {
+                if let Some(data) = &body.data {
+                    return parse_reaction_json(data);
+                }
+            }
+        }
+    }
+
+    // Check parts
+    if let Some(parts) = &payload.parts {
+        for part in parts {
+            if part.mime_type == "text/vnd.google.email-reaction+json" {
+                // Skip if it's an attachment
+                if let Some(headers) = &part.headers {
+                    let is_attachment = headers.iter().any(|h| {
+                        h.name.eq_ignore_ascii_case("Content-Disposition")
+                            && h.value.to_lowercase().contains("attachment")
+                    });
+                    if is_attachment {
+                        continue;
+                    }
+                }
+                if let Some(body) = &part.body {
+                    if let Some(data) = &body.data {
+                        return parse_reaction_json(data);
+                    }
+                }
+            }
+            // Recurse into nested parts
+            if let Some(nested) = &part.parts {
+                for nested_part in nested {
+                    if nested_part.mime_type == "text/vnd.google.email-reaction+json" {
+                        if let Some(body) = &nested_part.body {
+                            if let Some(data) = &body.data {
+                                return parse_reaction_json(data);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    None
+}
+
+/// Parse the reaction JSON and validate it
+fn parse_reaction_json(base64_data: &str) -> Option<String> {
+    let decoded = decode_base64_body(base64_data)?;
+
+    #[derive(Deserialize)]
+    struct ReactionJson {
+        version: i32,
+        emoji: String,
+    }
+
+    let reaction: ReactionJson = serde_json::from_str(&decoded).ok()?;
+
+    // Version must be 1
+    if reaction.version != 1 {
+        return None;
+    }
+
+    // Validate emoji (basic check - must be non-empty)
+    if reaction.emoji.is_empty() {
+        return None;
+    }
+
+    Some(reaction.emoji)
+}
+
+impl GmailClient {
+    /// Send an emoji reaction to a message
+    pub async fn send_reaction(
+        &self,
+        thread_id: &str,
+        message_id: &str,
+        emoji: &str,
+        from_email: &str,
+        to_email: &str,
+    ) -> Result<(), String> {
+        let url = format!("{}/users/me/messages/send", GMAIL_API_BASE);
+
+        let message = self.build_reaction_message(emoji, from_email, to_email, message_id)?;
+
+        use base64::Engine;
+        let encoded = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(message.as_bytes());
+
+        let request_body = serde_json::json!({
+            "raw": encoded,
+            "threadId": thread_id
+        });
+
+        let resp = self
+            .client
+            .post(&url)
+            .bearer_auth(&self.access_token)
+            .json(&request_body)
+            .send()
+            .await
+            .map_err(|e| format!("Request failed: {}", e))?;
+
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let body = resp.text().await.unwrap_or_default();
+            return Err(format!("API error {}: {}", status, body));
+        }
+
+        Ok(())
+    }
+
+    /// Build a reaction MIME message per Google's spec
+    fn build_reaction_message(
+        &self,
+        emoji: &str,
+        from_email: &str,
+        to_email: &str,
+        reply_to_message_id: &str,
+    ) -> Result<String, String> {
+        let boundary = format!("----=_React_{}", uuid::Uuid::new_v4().to_string().replace("-", ""));
+
+        // Build the reaction JSON
+        let reaction_json = serde_json::json!({
+            "version": 1,
+            "emoji": emoji
+        });
+        let reaction_json_str = serde_json::to_string(&reaction_json)
+            .map_err(|e| format!("Failed to serialize reaction: {}", e))?;
+
+        // Fallback text for clients that don't support reactions
+        let plain_text = format!("Reacted with {}", emoji);
+        let html_text = format!(
+            "<html><body><p>Reacted with <span style=\"font-size: 24px\">{}</span></p></body></html>",
+            emoji
+        );
+
+        let mut message = String::new();
+
+        // Headers
+        message.push_str(&format!("From: {}\r\n", from_email));
+        message.push_str(&format!("To: {}\r\n", to_email));
+        message.push_str(&format!("Subject: Re: {}\r\n", emoji));
+        message.push_str("MIME-Version: 1.0\r\n");
+        message.push_str(&format!("In-Reply-To: {}\r\n", reply_to_message_id));
+        message.push_str(&format!("References: {}\r\n", reply_to_message_id));
+        message.push_str(&format!(
+            "Content-Type: multipart/alternative; boundary=\"{}\"\r\n\r\n",
+            boundary
+        ));
+
+        // Plain text part (first, for clients that show first part)
+        message.push_str(&format!("--{}\r\n", boundary));
+        message.push_str("Content-Type: text/plain; charset=utf-8\r\n\r\n");
+        message.push_str(&plain_text);
+        message.push_str("\r\n");
+
+        // Reaction JSON part (between plain and HTML per Google recommendation)
+        message.push_str(&format!("--{}\r\n", boundary));
+        message.push_str("Content-Type: text/vnd.google.email-reaction+json; charset=utf-8\r\n\r\n");
+        message.push_str(&reaction_json_str);
+        message.push_str("\r\n");
+
+        // HTML part (last, for clients that show last part)
+        message.push_str(&format!("--{}\r\n", boundary));
+        message.push_str("Content-Type: text/html; charset=utf-8\r\n\r\n");
+        message.push_str(&html_text);
+        message.push_str("\r\n");
+
+        // Close boundary
+        message.push_str(&format!("--{}--\r\n", boundary));
+
+        Ok(message)
+    }
+}
+
+/// Check if a message should allow reactions based on Google's recommended limits
+pub fn can_react_to_message(
+    to_addrs: &[String],
+    cc_addrs: &[String],
+    user_email: &str,
+    is_mailing_list: bool,
+) -> Result<(), String> {
+    // No reactions on mailing list messages
+    if is_mailing_list {
+        return Err("Cannot react to mailing list messages".to_string());
+    }
+
+    // Max 20 recipients in To + CC
+    let total_recipients = to_addrs.len() + cc_addrs.len();
+    if total_recipients > 20 {
+        return Err("Too many recipients (max 20)".to_string());
+    }
+
+    // User must be in To or CC
+    let user_lower = user_email.to_lowercase();
+    let in_to = to_addrs.iter().any(|a| a.to_lowercase() == user_lower);
+    let in_cc = cc_addrs.iter().any(|a| a.to_lowercase() == user_lower);
+    if !in_to && !in_cc {
+        return Err("You must be a recipient to react".to_string());
+    }
+
+    Ok(())
+}
+
+/// Check if message has mailing list headers
+pub fn is_mailing_list_message(headers: &[Header]) -> bool {
+    headers.iter().any(|h| {
+        h.name.eq_ignore_ascii_case("List-Unsubscribe")
+            || h.name.eq_ignore_ascii_case("List-Id")
+            || h.name.eq_ignore_ascii_case("Precedence") && h.value.to_lowercase() == "list"
+    })
 }

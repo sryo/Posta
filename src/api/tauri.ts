@@ -244,9 +244,10 @@ export async function sendEmail(
   bcc: string,
   subject: string,
   body: string,
-  attachments: SendAttachment[] = []
+  attachments: SendAttachment[] = [],
+  isHtml?: boolean
 ): Promise<void> {
-  return invoke("send_email", { accountId, to, cc, bcc, subject, body, attachments });
+  return invoke("send_email", { accountId, to, cc, bcc, subject, body, attachments, is_html: isHtml });
 }
 
 export async function replyToThread(
@@ -258,9 +259,10 @@ export async function replyToThread(
   subject: string,
   body: string,
   messageId?: string,
-  attachments: SendAttachment[] = []
+  attachments: SendAttachment[] = [],
+  isHtml?: boolean
 ): Promise<void> {
-  return invoke("reply_to_thread", { accountId, threadId, to, cc, bcc, subject, body, messageId, attachments });
+  return invoke("reply_to_thread", { accountId, threadId, to, cc, bcc, subject, body, messageId, attachments, is_html: isHtml });
 }
 
 // Cache operations
@@ -510,4 +512,16 @@ export async function suggestReplies(
   projectId: string
 ): Promise<string[]> {
   return invoke("suggest_replies", { accountId, threadId, projectId });
+}
+
+// Email Reactions
+
+export async function sendReaction(
+  accountId: string,
+  threadId: string,
+  messageId: string,
+  emoji: string,
+  toEmail: string
+): Promise<void> {
+  return invoke("send_reaction", { accountId, threadId, messageId, emoji, toEmail });
 }

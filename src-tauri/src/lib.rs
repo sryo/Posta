@@ -131,6 +131,7 @@ pub fn run() {
             commands::get_thread_details,
             commands::send_email,
             commands::reply_to_thread,
+            commands::send_reaction,
             commands::get_cached_card_threads,
             commands::save_cached_card_threads,
             commands::get_cached_card_events,

@@ -170,6 +170,17 @@ pub struct Message {
     pub body_html: Option<String>,
 }
 
+/// Email reaction (emoji response to a message)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Reaction {
+    /// The emoji used for this reaction
+    pub emoji: String,
+    /// Email address of the person who reacted
+    pub from_addr: String,
+    /// Message ID this reaction is in response to
+    pub in_reply_to: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ThreadGroup {
     pub label: String,

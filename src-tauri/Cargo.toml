@@ -1,8 +1,8 @@
 [package]
 name = "posta"
-version = "0.1.0"
+version = "2025.12.27"
 description = "Gmail client with horizontal cards UI"
-authors = ["Mateo Yadarola"]
+authors = ["sryo"]
 edition = "2021"
 
 [lib]
@@ -57,3 +57,12 @@ open = "5"
 objc2 = "0.6"
 objc2-foundation = { version = "0.3", features = ["NSString", "NSData"] }
 
+[profile.dev]
+incremental = true
+
+[profile.release]
+codegen-units = 1
+lto = true
+opt-level = "s"
+panic = "abort"
+strip = true

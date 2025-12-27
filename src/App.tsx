@@ -115,6 +115,7 @@ import {
   saveCachedCardEvents,
   createCalendarEvent,
   type Attachment,
+  sendReaction,
 } from "./api/tauri";
 import { Menu, MenuItem, PredefinedMenuItem } from "@tauri-apps/api/menu";
 import {
@@ -170,6 +171,7 @@ import {
   CheckIcon,
 } from "./components/Icons";
 import { SmartReplies } from "./components/SmartReplies";
+import { ReactionButton } from "./components/ReactionButton";
 
 // Shared compose components
 const ComposeTextarea = (props: {
@@ -1053,7 +1055,7 @@ const ThreadView = (props: {
   onOpenAttachment: (messageId: string, attachmentId: string | undefined, filename: string, mimeType: string, inlineData?: string) => void,
   onDownloadAttachment: (messageId: string, attachmentId: string | undefined, filename: string, mimeType: string, inlineData?: string) => void,
   onShowAttachmentMenu: (att: { messageId: string; attachmentId: string; filename: string; mimeType: string; inlineData: string | null }) => void,
-  onReply: (to: string, cc: string, subject: string, quotedBody: string, messageId: string) => void,
+  onReply: (to: string, cc: string, subject: string, quotedBody: string, messageId: string, isHtml: boolean) => void,
   onForward: (subject: string, body: string) => void,
   // Toolbar action props
   onAction: (action: string) => void,
@@ -1075,7 +1077,33 @@ const ThreadView = (props: {
   const [wheelOpen, setWheelOpen] = createSignal(false);
   const [hoveredLinkUrl, setHoveredLinkUrl] = createSignal<string | null>(null);
   const [closing, setClosing] = createSignal(false);
+  const [sendingReaction, setSendingReaction] = createSignal(false);
   let hoverTimeout: number | undefined;
+
+  // Handle sending a reaction
+  const handleSendReaction = async (msgId: string, emoji: string) => {
+    if (!props.thread || sendingReaction()) return;
+
+    const msg = props.thread.messages.find(m => m.id === msgId);
+    if (!msg) return;
+
+    // Get the sender's email to send the reaction to
+    const fromHeader = msg.payload?.headers?.find(h => h.name === 'From')?.value;
+    if (!fromHeader) return;
+
+    const toEmail = extractEmail(fromHeader);
+    const messageIdHeader = msg.payload?.headers?.find(h => h.name === 'Message-ID')?.value || msgId;
+
+    setSendingReaction(true);
+
+    try {
+      await sendReaction(props.accountId, props.thread.id, messageIdHeader, emoji, toEmail);
+    } catch (e) {
+      console.error('Failed to send reaction:', e);
+    } finally {
+      setSendingReaction(false);
+    }
+  };
 
   const handleClose = () => {
     setClosing(true);
@@ -1270,24 +1298,24 @@ const ThreadView = (props: {
                 const from = headers.find(h => h.name === 'From')?.value || 'Unknown';
                 const date = headers.find(h => h.name === 'Date')?.value || '';
 
+                // Recursively search for content in nested parts
+                const findContent = (parts: any[] | undefined, mimeType: string): string | null => {
+                  if (!parts) return null;
+                  for (const part of parts) {
+                    if (part.mimeType === mimeType && part.body?.data) {
+                      return decodeBase64Utf8(part.body.data);
+                    }
+                    // Search nested parts (multipart/alternative, multipart/mixed, etc.)
+                    if (part.parts) {
+                      const found = findContent(part.parts, mimeType);
+                      if (found) return found;
+                    }
+                  }
+                  return null;
+                };
+
                 const getBody = () => {
                   if (msg.payload?.body?.data) return decodeBase64Utf8(msg.payload.body.data);
-
-                  // Recursively search for content in nested parts
-                  const findContent = (parts: any[] | undefined, mimeType: string): string | null => {
-                    if (!parts) return null;
-                    for (const part of parts) {
-                      if (part.mimeType === mimeType && part.body?.data) {
-                        return decodeBase64Utf8(part.body.data);
-                      }
-                      // Search nested parts (multipart/alternative, multipart/mixed, etc.)
-                      if (part.parts) {
-                        const found = findContent(part.parts, mimeType);
-                        if (found) return found;
-                      }
-                    }
-                    return null;
-                  };
 
                   // Prefer HTML, fall back to plain text
                   const htmlContent = findContent(msg.payload?.parts, 'text/html');
@@ -1345,12 +1373,20 @@ const ThreadView = (props: {
                   return temp.textContent || temp.innerText || '';
                 };
 
+                // Detect if original message was HTML
+                const isOriginalHtml = () => {
+                  // Check payload mimeType first
+                  if (msg.payload?.mimeType === 'text/html') return true;
+                  // Then check parts
+                  return !!findContent(msg.payload?.parts, 'text/html');
+                };
+
                 const handleReply = () => {
                   const replyTo = extractEmail(from);
                   const subject = getSubject();
                   const plainBody = getPlainTextBody();
                   const quotedBody = `\n\nOn ${date}, ${from} wrote:\n> ${plainBody.split('\n').join('\n> ')}`;
-                  props.onReply(replyTo, "", subject, quotedBody, msg.id);
+                  props.onReply(replyTo, "", subject, quotedBody, msg.id, isOriginalHtml());
                 };
 
                 const handleReplyAll = () => {
@@ -1368,7 +1404,7 @@ const ThreadView = (props: {
                   const subject = getSubject();
                   const plainBody = getPlainTextBody();
                   const quotedBody = `\n\nOn ${date}, ${from} wrote:\n> ${plainBody.split('\n').join('\n> ')}`;
-                  props.onReply(replyTo, ccList, subject, quotedBody, msg.id);
+                  props.onReply(replyTo, ccList, subject, quotedBody, msg.id, isOriginalHtml());
                 };
 
                 const handleForward = () => {
@@ -1396,6 +1432,10 @@ const ThreadView = (props: {
                       <div class="message-header">
                         <div class="message-sender">{from}</div>
                         <div class="message-header-actions">
+                          <ReactionButton
+                            onSelect={(emoji) => handleSendReaction(msg.id, emoji)}
+                            sending={sendingReaction()}
+                          />
                           <div class="message-date">{formatEmailDate(date)}</div>
                         </div>
                       </div>
@@ -1512,23 +1552,23 @@ const ThreadView = (props: {
                 return subj.startsWith('Re:') ? subj : `Re: ${subj}`;
               };
 
+              const findContent = (parts: any[] | undefined, mimeType: string): string | null => {
+                if (!parts) return null;
+                for (const part of parts) {
+                  if (part.mimeType === mimeType && part.body?.data) {
+                    return decodeBase64Utf8(part.body.data);
+                  }
+                  if (part.parts) {
+                    const found = findContent(part.parts, mimeType);
+                    if (found) return found;
+                  }
+                }
+                return null;
+              };
+
               const getBody = () => {
                 const payload = lastMsg.payload;
                 if (payload?.body?.data) return decodeBase64Utf8(payload.body.data);
-
-                const findContent = (parts: any[] | undefined, mimeType: string): string | null => {
-                  if (!parts) return null;
-                  for (const part of parts) {
-                    if (part.mimeType === mimeType && part.body?.data) {
-                      return decodeBase64Utf8(part.body.data);
-                    }
-                    if (part.parts) {
-                      const found = findContent(part.parts, mimeType);
-                      if (found) return found;
-                    }
-                  }
-                  return null;
-                };
 
                 const htmlContent = findContent(payload?.parts, 'text/html');
                 if (htmlContent) return htmlContent;
@@ -1546,7 +1586,8 @@ const ThreadView = (props: {
               const quotedBody = `\n\nOn ${date}, ${from} wrote:\n> ${plainBody.split('\n').join('\n> ')}`;
               const fullBody = `${suggestion}${quotedBody}`;
 
-              props.onReply(replyTo, "", getSubject(), fullBody, lastMsg.id);
+              const isHtml = lastMsg.payload?.mimeType === 'text/html' || !!findContent(lastMsg.payload?.parts, 'text/html');
+              props.onReply(replyTo, "", getSubject(), fullBody, lastMsg.id, isHtml);
             }}
           />
         </Show>
@@ -2148,6 +2189,7 @@ function App() {
     body: string;
     attachments: SendAttachment[];
     reply?: { threadId: string; messageId: string };
+    isHtml?: boolean;
     timeoutId: number;
   }
   const [pendingSend, setPendingSend] = createSignal<PendingSend | null>(null);
@@ -2365,6 +2407,9 @@ function App() {
   const [quickReplyText, setQuickReplyText] = createSignal("");
   const [quickReplySending, setQuickReplySending] = createSignal(false);
 
+  // Quick Reaction (for thread list)
+  const [quickReactionSending, setQuickReactionSending] = createSignal(false);
+
   // Event quick reply
   const [quickReplyEventId, setQuickReplyEventId] = createSignal<string | null>(null);
 
@@ -2384,15 +2429,17 @@ function App() {
       clearTimeout(hoverActionsTimeout);
       hoverActionsTimeout = undefined;
     }
-    // Logic from scripts.html:
-    // If we have selection, we only show hover actions if THIS thread is selected?
-    // Actually scripts.html says: "If threads are selected, don't show hover actions on non-selected threads"
+    // If threads are selected, don't show hover actions on non-selected threads
     const hasSelection = (selectedThreads()[cardId]?.size || 0) > 0;
     const isSelected = selectedThreads()[cardId]?.has(threadId);
 
     if (hasSelection && !isSelected) {
       return;
     }
+
+    // Close event wheel when showing thread wheel
+    setEventActionsWheelOpen(false);
+    setHoveredEvent(null);
 
     setHoveredThread(threadId);
     setActionsWheelOpen(true);
@@ -2405,11 +2452,23 @@ function App() {
     }, 100);
   }
 
-  function showEventHoverActions(eventId: string) {
+  function showEventHoverActions(cardId: string, eventId: string) {
     if (hoverEventActionsTimeout) {
       clearTimeout(hoverEventActionsTimeout);
       hoverEventActionsTimeout = undefined;
     }
+    // If events are selected, don't show hover actions on non-selected events
+    const hasSelection = (selectedEvents()[cardId]?.size || 0) > 0;
+    const isSelected = selectedEvents()[cardId]?.has(eventId);
+
+    if (hasSelection && !isSelected) {
+      return;
+    }
+
+    // Close thread wheel when showing event wheel
+    setActionsWheelOpen(false);
+    setHoveredThread(null);
+
     setHoveredEvent(eventId);
     setEventActionsWheelOpen(true);
   }
@@ -2493,6 +2552,7 @@ function App() {
   const [showCcBcc, setShowCcBcc] = createSignal(false);
   const [composeSubject, setComposeSubject] = createSignal("");
   const [composeBody, setComposeBody] = createSignal("");
+  const [composeIsHtml, setComposeIsHtml] = createSignal(false);
   const [showAutocomplete, setShowAutocomplete] = createSignal(false);
   const [autocompleteIndex, setAutocompleteIndex] = createSignal(0);
   const [composeFabHovered, setComposeFabHovered] = createSignal(false);
@@ -3728,6 +3788,7 @@ function App() {
       body: composeBody(),
       attachments: [...composeAttachments()],
       reply: replyingToThread() ? { ...replyingToThread()! } : undefined,
+      isHtml: composeIsHtml(),
       timeoutId: 0,
     };
 
@@ -3763,6 +3824,18 @@ function App() {
     }
 
     try {
+      // Convert plain text to HTML if sending as HTML
+      let body = pending.body;
+      if (pending.isHtml) {
+        // Escape HTML entities and convert newlines to <br>
+        body = body
+          .replace(/&/g, '&amp;')
+          .replace(/</g, '&lt;')
+          .replace(/>/g, '&gt;')
+          .replace(/\n/g, '<br>\n');
+        body = `<div>${body}</div>`;
+      }
+
       if (pending.reply) {
         await replyToThread(
           account.id,
@@ -3771,12 +3844,13 @@ function App() {
           pending.cc,
           pending.bcc,
           pending.subject,
-          pending.body,
+          body,
           pending.reply.messageId,
-          pending.attachments
+          pending.attachments,
+          pending.isHtml
         );
       } else {
-        await sendEmail(account.id, pending.to, pending.cc, pending.bcc, pending.subject, pending.body, pending.attachments);
+        await sendEmail(account.id, pending.to, pending.cc, pending.bcc, pending.subject, body, pending.attachments, pending.isHtml);
       }
       hideSendToast();
     } catch (e) {
@@ -3841,7 +3915,7 @@ function App() {
 
     setQuickReplySending(true);
     try {
-      await replyToThread(account.id, threadId, replyTo, "", "", subject, text);
+      await replyToThread(account.id, threadId, replyTo, "", "", subject, text, undefined, [], false);
       setQuickReplyThreadId(null);
       setQuickReplyCardId(null);
       setQuickReplyText("");
@@ -3874,6 +3948,33 @@ function App() {
     }
   }
 
+  async function handleQuickReaction(threadId: string, emoji: string) {
+    const account = selectedAccount();
+    if (!account || quickReactionSending()) return;
+
+    setQuickReactionSending(true);
+
+    try {
+      // Fetch thread details to get the last message
+      const fullThread = await getThreadDetails(account.id, threadId);
+      if (!fullThread.messages.length) return;
+
+      const lastMsg = fullThread.messages[fullThread.messages.length - 1];
+      const headers = lastMsg.payload?.headers || [];
+      const fromHeader = headers.find(h => h.name === 'From')?.value;
+      const messageIdHeader = headers.find(h => h.name === 'Message-ID')?.value || lastMsg.id;
+
+      if (!fromHeader) return;
+
+      const toEmail = extractEmail(fromHeader);
+      await sendReaction(account.id, threadId, messageIdHeader, emoji, toEmail);
+    } catch (e) {
+      console.error("Failed to send reaction:", e);
+    } finally {
+      setQuickReactionSending(false);
+    }
+  }
+
   function handleForward(threadId: string, cardId: string) {
     // Find the thread
     const threads = getCardThreadsFlat(cardId);
@@ -3894,7 +3995,7 @@ function App() {
     setComposing(true);
   }
 
-  function handleReplyFromThread(to: string, cc: string, subject: string, quotedBody: string, messageId: string) {
+  function handleReplyFromThread(to: string, cc: string, subject: string, quotedBody: string, messageId: string, isHtml: boolean) {
     const threadId = activeThreadId();
     if (!threadId) return;
 
@@ -3905,6 +4006,7 @@ function App() {
     setComposeBcc("");
     setComposeSubject(subject);
     setComposeBody(quotedBody);
+    setComposeIsHtml(isHtml);
     setFocusComposeBody(true);
     setComposing(true);
   }
@@ -4237,7 +4339,7 @@ function App() {
 
     try {
       const replySubject = thread.subject.startsWith('Re:') ? thread.subject : `Re: ${thread.subject}`;
-      await replyToThread(account.id, threadId, thread.to, "", "", replySubject, message, undefined, attachments);
+      await replyToThread(account.id, threadId, thread.to, "", "", replySubject, message, undefined, attachments, false);
 
       // Remove from batch reply list
       setBatchReplyThreads(batchReplyThreads().filter(t => t.threadId !== threadId));
@@ -6402,7 +6504,7 @@ function App() {
                                         <div
                                           class={`calendar-event-item ${event.response_status === "declined" ? "declined" : ""} ${selectedEvents()[card.id]?.has(event.id) ? "selected" : ""} ${quickReplyEventId() === event.id ? "replying" : ""}`}
                                           onClick={() => openEvent(event, card.id)}
-                                          onMouseEnter={() => showEventHoverActions(event.id)}
+                                          onMouseEnter={() => showEventHoverActions(card.id, event.id)}
                                           onMouseLeave={hideEventHoverActions}
                                         >
                                           <div class="calendar-event-row">
@@ -6454,7 +6556,7 @@ function App() {
                                                 toggleEventSelection(card.id, event.id, e);
                                               }}
                                             />
-                                            <Show when={(hoveredEvent() === event.id && eventActionsWheelOpen()) || selectedEvents()[card.id]?.has(event.id)}>
+                                            <Show when={hoveredEvent() === event.id && eventActionsWheelOpen()}>
                                               <ActionsWheel
                                                 cardId={card.id}
                                                 event={event}
@@ -6671,6 +6773,10 @@ function App() {
                                                 autofocus
                                               />
                                               <div class="quick-reply-actions">
+                                                <ReactionButton
+                                                  onSelect={(emoji) => handleQuickReaction(thread.gmail_thread_id, emoji)}
+                                                  sending={quickReactionSending()}
+                                                />
                                                 <button class="btn" onClick={() => { setQuickReplyThreadId(null); setQuickReplyText(""); }} disabled={quickReplySending()}>Cancel <span class="shortcut-hint">ESC</span></button>
                                                 <ComposeSendButton
                                                   onClick={handleQuickReply}
@@ -7590,7 +7696,6 @@ function App() {
           <Show when={selectedAccount()}>
             <button class="signout-btn" onClick={handleSignOut}>Sign out</button>
           </Show>
-          <div class="copyright">© sryo</div>
         </div>
       </div>
 
