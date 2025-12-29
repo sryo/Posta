@@ -33,6 +33,7 @@ export interface Attachment {
   mime_type: string;
   size: number;
   inline_data: string | null; // Base64-encoded data for small images
+  content_id: string | null; // Content-ID for inline images (cid: references)
 }
 
 export interface CalendarEvent {

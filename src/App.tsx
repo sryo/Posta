@@ -15,6 +15,100 @@ const DOMPURIFY_CONFIG = {
   FORBID_ATTR: ['onerror', 'onload', 'onclick', 'onmouseover']
 };
 
+// MessageBody component - handles reactive CID image replacement
+const MessageBody = (props: {
+  body: string;
+  cidAttachmentData?: Record<string, string>;
+  msgPayloadParts?: any[];
+  msgId: string;
+  threadAttachments?: { message_id: string; attachment_id: string; content_id: string | null; inline_data: string | null; mime_type: string }[];
+}) => {
+  // Use createMemo to reactively recompute when cidAttachmentData changes
+  const processedHtml = createMemo(() => {
+    const cidMap = new Map<string, string>();
+
+    // First, use fetched CID data (from downloadAttachment calls)
+    if (props.cidAttachmentData) {
+      for (const [cid, data] of Object.entries(props.cidAttachmentData)) {
+        if (data) {
+          const base64Data = data.replace(/-/g, '+').replace(/_/g, '/');
+          // Find the mimeType for this CID from message parts
+          let mimeType = 'image/png';
+          const findMimeType = (parts: any[]) => {
+            parts?.forEach(part => {
+              const contentIdHeader = part.headers?.find((h: any) =>
+                h.name?.toLowerCase() === 'content-id'
+              );
+              if (contentIdHeader) {
+                const partCid = contentIdHeader.value?.replace(/^<|>$/g, '') || '';
+                if (partCid === cid && part.mimeType) {
+                  mimeType = part.mimeType;
+                }
+              }
+              if (part.parts) findMimeType(part.parts);
+            });
+          };
+          findMimeType(props.msgPayloadParts || []);
+          cidMap.set(cid, `data:${mimeType};base64,${base64Data}`);
+        }
+      }
+    }
+
+    // Then scan message parts for Content-ID headers with inline data
+    const findCidImages = (parts: any[]) => {
+      parts?.forEach(part => {
+        const contentIdHeader = part.headers?.find((h: any) =>
+          h.name?.toLowerCase() === 'content-id'
+        );
+        if (contentIdHeader && part.mimeType?.startsWith('image/')) {
+          const cid = contentIdHeader.value?.replace(/^<|>$/g, '') || '';
+          if (cid && !cidMap.has(cid)) {
+            const attachmentId = part.body?.attachmentId;
+            let data = part.body?.data;
+
+            if (!data && attachmentId) {
+              const threadAtt = props.threadAttachments?.find(
+                a => a.message_id === props.msgId && a.attachment_id === attachmentId
+              );
+              data = threadAtt?.inline_data;
+            }
+
+            if (data) {
+              const base64Data = data.replace(/-/g, '+').replace(/_/g, '/');
+              cidMap.set(cid, `data:${part.mimeType};base64,${base64Data}`);
+            }
+          }
+        }
+        if (part.parts) findCidImages(part.parts);
+      });
+    };
+    findCidImages(props.msgPayloadParts || []);
+
+    // Also check threadAttachments with content_id (as backup)
+    props.threadAttachments?.forEach(att => {
+      if (att.message_id === props.msgId && att.content_id && att.inline_data && att.mime_type.startsWith('image/')) {
+        if (!cidMap.has(att.content_id)) {
+          const base64Data = att.inline_data.replace(/-/g, '+').replace(/_/g, '/');
+          cidMap.set(att.content_id, `data:${att.mime_type};base64,${base64Data}`);
+        }
+      }
+    });
+
+    // Replace cid: URLs with data URLs
+    let html = props.body;
+    if (cidMap.size > 0) {
+      html = html.replace(/src=["']cid:([^"']+)["']/gi, (match, cid) => {
+        const dataUrl = cidMap.get(cid);
+        return dataUrl ? `src="${dataUrl}"` : match;
+      });
+    }
+
+    return DOMPurify.sanitize(html, DOMPURIFY_CONFIG);
+  });
+
+  return <div class="message-body" innerHTML={processedHtml()}></div>;
+};
+
 // Safe localStorage helpers (handles private browsing, quota exceeded, etc.)
 function safeGetItem(key: string): string | null {
   try {
@@ -96,6 +190,7 @@ import {
   saveCachedCardThreads,
   clearCardCache,
   openAttachment as openAttachmentApi,
+  downloadAttachment as downloadAttachmentApi,
   type SendAttachment,
   listLabels,
   type GmailLabel,
@@ -1070,6 +1165,8 @@ const ThreadView = (props: {
   inlineCompose: InlineComposeProps | null,
   // Attachments from thread listing (with inline_data for thumbnails)
   threadAttachments?: Attachment[],
+  // CID attachment data fetched on-demand (cid -> base64 data)
+  cidAttachmentData?: Record<string, string>,
 }) => {
   let messageRefs: (HTMLDivElement | undefined)[] = [];
   let contentRef: HTMLDivElement | undefined;
@@ -1360,6 +1457,91 @@ const ThreadView = (props: {
                 const isImage = (mime: string) => mime.startsWith('image/');
                 const isPdf = (mime: string) => mime === 'application/pdf';
 
+                // Build CID map for inline images (Content-ID -> data URL)
+                const getCidMap = (): Map<string, string> => {
+                  const cidMap = new Map<string, string>();
+
+                  // First, use fetched CID data (from downloadAttachment calls)
+                  if (props.cidAttachmentData) {
+                    for (const [cid, data] of Object.entries(props.cidAttachmentData)) {
+                      if (data) {
+                        const base64Data = data.replace(/-/g, '+').replace(/_/g, '/');
+                        // Find the mimeType for this CID from message parts
+                        let mimeType = 'image/png';
+                        const findMimeType = (parts: any[]) => {
+                          parts?.forEach(part => {
+                            const contentIdHeader = part.headers?.find((h: any) =>
+                              h.name?.toLowerCase() === 'content-id'
+                            );
+                            if (contentIdHeader) {
+                              const partCid = contentIdHeader.value?.replace(/^<|>$/g, '') || '';
+                              if (partCid === cid && part.mimeType) {
+                                mimeType = part.mimeType;
+                              }
+                            }
+                            if (part.parts) findMimeType(part.parts);
+                          });
+                        };
+                        findMimeType(msg.payload?.parts || []);
+                        cidMap.set(cid, `data:${mimeType};base64,${base64Data}`);
+                      }
+                    }
+                  }
+
+                  // Then scan message parts for Content-ID headers with inline data
+                  const findCidImages = (parts: any[]) => {
+                    parts?.forEach(part => {
+                      const contentIdHeader = part.headers?.find((h: any) =>
+                        h.name?.toLowerCase() === 'content-id'
+                      );
+                      if (contentIdHeader && part.mimeType?.startsWith('image/')) {
+                        const cid = contentIdHeader.value?.replace(/^<|>$/g, '') || '';
+                        if (cid && !cidMap.has(cid)) {
+                          // Get data from part body or from threadAttachments
+                          const attachmentId = part.body?.attachmentId;
+                          let data = part.body?.data;
+
+                          if (!data && attachmentId) {
+                            const threadAtt = props.threadAttachments?.find(
+                              a => a.message_id === msg.id && a.attachment_id === attachmentId
+                            );
+                            data = threadAtt?.inline_data;
+                          }
+
+                          if (data) {
+                            const base64Data = data.replace(/-/g, '+').replace(/_/g, '/');
+                            cidMap.set(cid, `data:${part.mimeType};base64,${base64Data}`);
+                          }
+                        }
+                      }
+                      if (part.parts) findCidImages(part.parts);
+                    });
+                  };
+                  findCidImages(msg.payload?.parts || []);
+
+                  // Also check threadAttachments with content_id (as backup)
+                  props.threadAttachments?.forEach(att => {
+                    if (att.message_id === msg.id && att.content_id && att.inline_data && att.mime_type.startsWith('image/')) {
+                      if (!cidMap.has(att.content_id)) {
+                        const base64Data = att.inline_data.replace(/-/g, '+').replace(/_/g, '/');
+                        cidMap.set(att.content_id, `data:${att.mime_type};base64,${base64Data}`);
+                      }
+                    }
+                  });
+
+                  return cidMap;
+                };
+                const cidMap = getCidMap();
+
+                // Replace cid: URLs in HTML with data URLs
+                const replaceCidUrls = (html: string): string => {
+                  if (cidMap.size === 0) return html;
+                  return html.replace(/src=["']cid:([^"']+)["']/gi, (match, cid) => {
+                    const dataUrl = cidMap.get(cid);
+                    return dataUrl ? `src="${dataUrl}"` : match;
+                  });
+                };
+
                 const getSubject = () => {
                   const subj = headers.find(h => h.name === 'Subject')?.value || '';
                   return subj.startsWith('Re:') ? subj : `Re: ${subj}`;
@@ -1451,7 +1633,13 @@ const ThreadView = (props: {
                           onMouseLeave={hideMessageWheel}
                         />
                       </Show>
-                      <div class="message-body" innerHTML={DOMPurify.sanitize(getBody(), DOMPURIFY_CONFIG)}></div>
+                      <MessageBody
+                        body={getBody()}
+                        cidAttachmentData={props.cidAttachmentData}
+                        msgPayloadParts={msg.payload?.parts}
+                        msgId={msg.id}
+                        threadAttachments={props.threadAttachments}
+                      />
                       <Show when={attachments.length > 0}>
                         <div class="message-attachments">
                           <For each={attachments}>
@@ -2082,6 +2270,8 @@ function App() {
   const [activeThreadId, setActiveThreadId] = createSignal<string | null>(null);
   const [activeThreadCardId, setActiveThreadCardId] = createSignal<string | null>(null);
   const [activeThread, setActiveThread] = createSignal<FullThread | null>(null);
+  // CID attachment data fetched on-demand for inline images (cid -> base64 data)
+  const [cidAttachmentData, setCidAttachmentData] = createSignal<Record<string, string>>({});
   const [threadLoading, setThreadLoading] = createSignal(false);
   const [threadError, setThreadError] = createSignal<string | null>(null);
   const [focusedMessageIndex, setFocusedMessageIndex] = createSignal(0);
@@ -5275,6 +5465,7 @@ function App() {
     setThreadError(null);
     setActiveThread(null);
     setFocusedMessageIndex(0);
+    setCidAttachmentData({});
 
     // Check if thread is unread and mark as read
     const groups = cardThreads()[cardId] || [];
@@ -5292,11 +5483,63 @@ function App() {
       setActiveThread(details);
       // Focus the most recent (last) message
       setFocusedMessageIndex(details.messages.length - 1);
+
+      // Fetch CID attachments in background (don't block thread display)
+      fetchCidAttachments(account.id, details);
     } catch (e) {
       console.error("Failed to load thread details", e);
       setThreadError("Failed to load email. Please try again.");
     } finally {
       setThreadLoading(false);
+    }
+  }
+
+  // Fetch CID image attachments for inline display
+  async function fetchCidAttachments(accountId: string, thread: FullThread) {
+    const cidImages: { messageId: string; attachmentId: string; cid: string }[] = [];
+
+    // Find all CID images in all messages
+    for (const msg of thread.messages) {
+      const findCidParts = (parts: any[]) => {
+        parts?.forEach(part => {
+          const contentIdHeader = part.headers?.find((h: any) =>
+            h.name?.toLowerCase() === 'content-id'
+          );
+          if (contentIdHeader && part.mimeType?.startsWith('image/') && part.body?.attachmentId) {
+            const cid = contentIdHeader.value?.replace(/^<|>$/g, '') || '';
+            if (cid && !part.body?.data) {
+              cidImages.push({
+                messageId: msg.id,
+                attachmentId: part.body.attachmentId,
+                cid
+              });
+            }
+          }
+          if (part.parts) findCidParts(part.parts);
+        });
+      };
+      findCidParts(msg.payload?.parts || []);
+    }
+
+    if (cidImages.length === 0) return;
+
+    // Fetch all CID attachments in parallel
+    const results = await Promise.allSettled(
+      cidImages.map(async ({ messageId, attachmentId, cid }) => {
+        const data = await downloadAttachmentApi(accountId, messageId, attachmentId);
+        return { cid, data };
+      })
+    );
+
+    // Update CID data signal
+    const newCidData: Record<string, string> = {};
+    for (const result of results) {
+      if (result.status === 'fulfilled') {
+        newCidData[result.value.cid] = result.value.data;
+      }
+    }
+    if (Object.keys(newCidData).length > 0) {
+      setCidAttachmentData(prev => ({ ...prev, ...newCidData }));
     }
   }
 
@@ -7111,7 +7354,7 @@ function App() {
             return c ? { name: c.name, color: (c.color as CardColor) || null } : null;
           })() : null}
           focusColor={selectedBgColorIndex() !== null ? BG_COLORS[selectedBgColorIndex()!].hex : null}
-          onClose={() => { setActiveThreadId(null); setActiveThreadCardId(null); setFocusedMessageIndex(0); setLabelDrawerOpen(false); closeCompose(); }}
+          onClose={() => { setActiveThreadId(null); setActiveThreadCardId(null); setFocusedMessageIndex(0); setLabelDrawerOpen(false); closeCompose(); setCidAttachmentData({}); }}
           focusedMessageIndex={focusedMessageIndex()}
           onFocusChange={setFocusedMessageIndex}
           onOpenAttachment={(messageId, attachmentId, filename, mimeType, inlineData) => openAttachment(messageId, attachmentId, filename, mimeType, inlineData)}
@@ -7167,6 +7410,7 @@ function App() {
             }
             return undefined;
           })()}
+          cidAttachmentData={cidAttachmentData()}
         />
 
         {/* Label Drawer */}

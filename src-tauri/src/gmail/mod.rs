@@ -446,6 +446,7 @@ impl GmailClient {
                         mime_type: info.mime_type,
                         size: info.size,
                         inline_data: None,
+                        content_id: info.content_id,
                     });
                 }
             }
@@ -713,6 +714,7 @@ impl GmailClient {
                         mime_type: info.mime_type,
                         size: info.size,
                         inline_data: None,
+                        content_id: info.content_id,
                     });
                 }
             }
@@ -1481,27 +1483,42 @@ struct AttachmentInfo {
     filename: String,
     mime_type: String,
     size: i32,
+    content_id: Option<String>,
 }
 
 fn extract_attachments_from_parts(parts: &Option<Vec<MessagePart>>) -> Vec<AttachmentInfo> {
     let mut attachments = Vec::new();
     if let Some(parts) = parts {
         for part in parts {
-            // Check if this part has a filename and attachmentId (real attachment)
-            if let Some(filename) = &part.filename {
-                if !filename.is_empty() {
-                    if let Some(body) = &part.body {
-                        if let Some(attachment_id) = &body.attachment_id {
-                            let size = body.size.unwrap_or(0);
-                            if size > 0 {
-                                attachments.push(AttachmentInfo {
-                                    attachment_id: attachment_id.clone(),
-                                    filename: filename.clone(),
-                                    mime_type: part.mime_type.clone(),
-                                    size,
-                                });
-                            }
-                        }
+            // Extract Content-ID header if present (for inline images)
+            let content_id = part.headers.as_ref().and_then(|headers| {
+                headers.iter()
+                    .find(|h| h.name.eq_ignore_ascii_case("Content-ID"))
+                    .map(|h| h.value.trim_matches(|c| c == '<' || c == '>').to_string())
+            });
+
+            // Check if this part has an attachmentId (required for fetching)
+            if let Some(body) = &part.body {
+                if let Some(attachment_id) = &body.attachment_id {
+                    let size = body.size.unwrap_or(0);
+                    if size > 0 {
+                        // Use filename if available, otherwise generate one for inline images
+                        let filename = part.filename.clone()
+                            .filter(|f| !f.is_empty())
+                            .unwrap_or_else(|| {
+                                if let Some(ref cid) = content_id {
+                                    format!("{}.{}", cid, part.mime_type.split('/').last().unwrap_or("bin"))
+                                } else {
+                                    format!("attachment.{}", part.mime_type.split('/').last().unwrap_or("bin"))
+                                }
+                            });
+                        attachments.push(AttachmentInfo {
+                            attachment_id: attachment_id.clone(),
+                            filename,
+                            mime_type: part.mime_type.clone(),
+                            size,
+                            content_id,
+                        });
                     }
                 }
             }

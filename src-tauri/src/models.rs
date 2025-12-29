@@ -90,6 +90,8 @@ pub struct Attachment {
     pub size: i32,
     /// Base64-encoded data for small images (< 100KB), None for larger files
     pub inline_data: Option<String>,
+    /// Content-ID for inline images (used for cid: references in HTML)
+    pub content_id: Option<String>,
 }
 
 impl Attachment {
