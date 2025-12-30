@@ -226,10 +226,13 @@ export function formatCalendarEventDate(
     start = new Date(startTime);
   }
   const now = new Date();
-  const isToday = start.toDateString() === now.toDateString();
-  const tomorrow = new Date(now);
+  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  const tomorrow = new Date(today);
   tomorrow.setDate(tomorrow.getDate() + 1);
-  const isTomorrow = start.toDateString() === tomorrow.toDateString();
+  // Normalize start to midnight for date comparison (matches grouping logic)
+  const startDay = new Date(start.getFullYear(), start.getMonth(), start.getDate());
+  const isToday = startDay.getTime() === today.getTime();
+  const isTomorrow = startDay.getTime() === tomorrow.getTime();
   const isThisYear = start.getFullYear() === now.getFullYear();
 
   // Format date part

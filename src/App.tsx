@@ -4954,6 +4954,12 @@ function App() {
 
   function getSmartEventTime(event: GoogleCalendarEvent): string {
     const now = Date.now();
+
+    // All-day events: compare dates only, not times
+    if (event.all_day) {
+      return formatCalendarEventDate(event.start_time, event.end_time, event.all_day);
+    }
+
     const endTime = event.end_time || (event.start_time + 3600000);
 
     // Currently happening
