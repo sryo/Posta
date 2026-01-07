@@ -12,6 +12,8 @@ pub struct Account {
     pub id: String,
     pub email: String,
     pub picture: Option<String>,
+    #[serde(default)]
+    pub signature: Option<String>,
     #[serde(skip_serializing)]
     pub refresh_token_ref: Option<String>,
 }
@@ -22,6 +24,7 @@ impl Account {
             id: Uuid::new_v4().to_string(),
             email,
             picture,
+            signature: None,
             refresh_token_ref: None,
         }
     }

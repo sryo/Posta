@@ -1,6 +1,15 @@
 // Utility functions
 
 /**
+ * Decode HTML entities like &amp; &#39; etc.
+ */
+export function decodeHtmlEntities(text: string): string {
+  const textarea = document.createElement('textarea');
+  textarea.innerHTML = text;
+  return textarea.value;
+}
+
+/**
  * Decode base64 URL-safe string as UTF-8
  */
 export function decodeBase64Utf8(base64: string): string {
@@ -8,6 +17,23 @@ export function decodeBase64Utf8(base64: string): string {
   const binaryStr = atob(normalized);
   const bytes = Uint8Array.from(binaryStr, c => c.charCodeAt(0));
   return new TextDecoder('utf-8').decode(bytes);
+}
+
+/**
+ * Recursively search for content in nested MIME parts by type
+ */
+export function findContent(parts: any[] | undefined, mimeType: string): string | null {
+  if (!parts) return null;
+  for (const part of parts) {
+    if (part.mimeType === mimeType && part.body?.data) {
+      return decodeBase64Utf8(part.body.data);
+    }
+    if (part.parts) {
+      const found = findContent(part.parts, mimeType);
+      if (found) return found;
+    }
+  }
+  return null;
 }
 
 /**

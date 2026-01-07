@@ -43,6 +43,12 @@ impl ICloudKVStore {
     }
 
     pub fn load_cards(&self) -> Result<Option<Vec<Card>>, String> {
+        // Force sync from iCloud before reading
+        unsafe {
+            let sync_result: bool = msg_send![self.store_ptr, synchronize];
+            tracing::info!("iCloud synchronize result: {}", sync_result);
+        }
+
         let key = NSString::from_str("posta_cards");
 
         unsafe {
@@ -51,14 +57,23 @@ impl ICloudKVStore {
             match value {
                 Some(s) => {
                     let json = s.to_string();
+                    tracing::info!("iCloud load_cards: found {} bytes of JSON", json.len());
                     if json.is_empty() {
+                        tracing::info!("iCloud load_cards: JSON is empty");
                         return Ok(None);
                     }
                     let cards: Vec<Card> =
-                        serde_json::from_str(&json).map_err(|e| e.to_string())?;
+                        serde_json::from_str(&json).map_err(|e| {
+                            tracing::error!("iCloud load_cards parse error: {}", e);
+                            e.to_string()
+                        })?;
+                    tracing::info!("iCloud load_cards: parsed {} cards", cards.len());
                     Ok(Some(cards))
                 }
-                None => Ok(None),
+                None => {
+                    tracing::info!("iCloud load_cards: no value found for key");
+                    Ok(None)
+                }
             }
         }
     }

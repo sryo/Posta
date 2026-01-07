@@ -124,7 +124,7 @@ pub struct GmailLabel {
     pub message_list_visibility: Option<String>,
     #[serde(rename = "labelListVisibility")]
     pub label_list_visibility: Option<String>,
-    #[serde(rename = "type")]
+    #[serde(rename(deserialize = "type"))]
     pub label_type: Option<String>,
 }
 
@@ -453,19 +453,29 @@ impl GmailClient {
         }
 
         // Fetch small image attachments inline (limit to first 3 images, < 100KB each)
-        let image_attachments: Vec<&mut Attachment> = attachments
-            .iter_mut()
-            .filter(|a| a.mime_type.starts_with("image/") && a.size < MAX_INLINE_IMAGE_SIZE)
+        // Collect indices and metadata for parallel fetch
+        let image_indices: Vec<(usize, String, String)> = attachments
+            .iter()
+            .enumerate()
+            .filter(|(_, a)| a.mime_type.starts_with("image/") && a.size < MAX_INLINE_IMAGE_SIZE)
             .take(3)
+            .map(|(i, a)| (i, a.message_id.clone(), a.attachment_id.clone()))
             .collect();
 
-        for attachment in image_attachments {
-            match self.get_attachment(&attachment.message_id, &attachment.attachment_id).await {
+        // Fetch all images in parallel
+        let fetch_futures = image_indices.iter().map(|(_, msg_id, att_id)| {
+            self.get_attachment(msg_id, att_id)
+        });
+        let results: Vec<Result<String, String>> = futures::future::join_all(fetch_futures).await;
+
+        // Apply results to attachments
+        for ((idx, _, _), result) in image_indices.into_iter().zip(results) {
+            match result {
                 Ok(data) => {
-                    attachment.inline_data = Some(data);
+                    attachments[idx].inline_data = Some(data);
                 }
                 Err(e) => {
-                    tracing::warn!("Failed to fetch attachment {}: {}", attachment.filename, e);
+                    tracing::warn!("Failed to fetch attachment {}: {}", attachments[idx].filename, e);
                 }
             }
         }
@@ -721,22 +731,29 @@ impl GmailClient {
         }
 
         // Fetch small image attachments inline (limit to first 3 images, < 100KB each)
-        let image_indices: Vec<usize> = attachments
+        // Collect indices and metadata for parallel fetch
+        let image_indices: Vec<(usize, String, String)> = attachments
             .iter()
             .enumerate()
             .filter(|(_, a)| a.mime_type.starts_with("image/") && a.size < MAX_INLINE_IMAGE_SIZE)
             .take(3)
-            .map(|(i, _)| i)
+            .map(|(i, a)| (i, a.message_id.clone(), a.attachment_id.clone()))
             .collect();
 
-        for idx in image_indices {
-            let attachment = &attachments[idx];
-            match self.get_attachment(&attachment.message_id, &attachment.attachment_id).await {
+        // Fetch all images in parallel
+        let fetch_futures = image_indices.iter().map(|(_, msg_id, att_id)| {
+            self.get_attachment(msg_id, att_id)
+        });
+        let results: Vec<Result<String, String>> = futures::future::join_all(fetch_futures).await;
+
+        // Apply results to attachments
+        for ((idx, _, _), result) in image_indices.into_iter().zip(results) {
+            match result {
                 Ok(data) => {
                     attachments[idx].inline_data = Some(data);
                 }
                 Err(e) => {
-                    tracing::warn!("Failed to fetch attachment {}: {}", attachment.filename, e);
+                    tracing::warn!("Failed to fetch attachment {}: {}", attachments[idx].filename, e);
                 }
             }
         }

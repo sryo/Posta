@@ -1,7 +1,7 @@
 // Tauri command handlers
 
 use crate::auth::{self, wait_for_callback, GmailAuth};
-use crate::ai::VertexAiClient;
+use crate::ai::GeminiClient;
 use crate::cache::CacheDb;
 use crate::gmail::{GmailClient, GmailDraft, GmailLabel, SearchResult};
 use crate::icloud::ICloudKVStore;
@@ -99,6 +99,24 @@ pub fn init_app(app_handle: tauri::AppHandle, state: State<'_, AppState>) -> Res
     tracing::info!("DB path: {:?}", db_path);
 
     let db = CacheDb::new(&db_path).map_err(|e| format!("Failed to open database: {}", e))?;
+
+    // Clean up stale cache on startup (24 hour expiry for non-priority items)
+    match db.clear_old_cache(24) {
+        Ok(count) => {
+            if count > 0 {
+                tracing::info!("Cleaned up {} stale thread cache entries", count);
+            }
+        }
+        Err(e) => tracing::warn!("Failed to clean thread cache: {}", e),
+    }
+    match db.clear_stale_card_cache(24) {
+        Ok(count) => {
+            if count > 0 {
+                tracing::info!("Cleaned up {} stale card cache entries", count);
+            }
+        }
+        Err(e) => tracing::warn!("Failed to clean card cache: {}", e),
+    }
 
     let mut db_guard = state.db.lock().map_err(|_| "Lock error".to_string())?;
     *db_guard = Some(db);
@@ -325,6 +343,13 @@ pub fn delete_account(account_id: String, app_handle: tauri::AppHandle, state: S
     auth::delete_refresh_token(&account_id, &app_data_dir).map_err(|e| e.to_string())?;
 
     Ok(())
+}
+
+#[tauri::command]
+pub fn update_account_signature(account_id: String, signature: Option<String>, state: State<'_, AppState>) -> Result<(), String> {
+    let db_guard = state.db.lock().map_err(|_| "Lock error")?;
+    let db = db_guard.as_ref().ok_or("Database not initialized")?;
+    db.update_account_signature(&account_id, signature.as_deref()).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -1259,29 +1284,50 @@ pub fn pull_from_icloud(state: State<'_, AppState>) -> Result<bool, String> {
 
     let mut changes_made = false;
 
+    tracing::info!(
+        "pull_from_icloud: {} iCloud cards, {} local accounts, {} account mappings",
+        icloud_cards.len(),
+        accounts.len(),
+        account_mappings.len()
+    );
+
     // Merge: iCloud cards that don't exist locally get inserted
     for mut card in icloud_cards {
         // Check if this card's account exists locally
         if !local_account_ids.contains(&card.account_id) {
-            // Account doesn't exist by ID - try to match by email
+            let mut remapped = false;
+
+            // Try to match by email mapping first
             if let Some(old_email) = account_mappings.get(&card.account_id) {
-                // Found the email for this old account_id, find local account with same email
                 if let Some(local_account) = local_account_by_email.get(&old_email.to_lowercase()) {
-                    // Remap the card to the new local account_id
+                    tracing::info!(
+                        "Remapping card {} from {} to {} via email {}",
+                        card.name,
+                        card.account_id,
+                        local_account.id,
+                        old_email
+                    );
                     card.account_id = local_account.id.clone();
-                } else {
-                    // No local account with this email - skip card
-                    continue;
+                    remapped = true;
                 }
-            } else {
-                // No email mapping found.
-                // Fallback: If there is exactly one local account, assume these orphaned cards belong to it.
-                // This covers the case where account mappings are missing (e.g. older version or sync issue)
-                // and the user is setting up fresh with a single account.
+            }
+
+            // Fallback: If there is exactly one local account, assign orphaned cards to it
+            if !remapped {
                 if accounts.len() == 1 {
+                    tracing::info!(
+                        "Remapping orphaned card {} to single account {}",
+                        card.name,
+                        accounts[0].id
+                    );
                     card.account_id = accounts[0].id.clone();
+                    remapped = true;
                 } else {
-                    // No email mapping found and multiple/no local accounts - skip orphaned card
+                    tracing::warn!(
+                        "Skipping card {} - no matching account (have {} accounts)",
+                        card.name,
+                        accounts.len()
+                    );
                     continue;
                 }
             }
@@ -1547,7 +1593,7 @@ pub async fn update_calendar_event(
 pub async fn suggest_replies(
     account_id: String,
     thread_id: String,
-    project_id: String,
+    api_key: String,
     app_handle: tauri::AppHandle, state: State<'_, AppState>,
 ) -> Result<Vec<String>, String> {
     let app_data_dir = app_handle
@@ -1555,8 +1601,8 @@ pub async fn suggest_replies(
         .app_data_dir()
         .map_err(|e| format!("Failed to get app data dir: {}", e))?;
 
-    if project_id.is_empty() {
-        return Err("Google Cloud Project ID is required for smart replies.".to_string());
+    if api_key.is_empty() {
+        return Err("Gemini API key is required for smart replies.".to_string());
     }
 
     // Get user email for context
@@ -1624,7 +1670,7 @@ pub async fn suggest_replies(
         context.push_str(&format!("From: {}\nDate: {}\n{}\n\n---\n\n", from, date, body_truncated));
     }
 
-    // 3. Call Vertex AI with user context
-    let vertex = VertexAiClient::new(access_token, project_id);
-    vertex.suggest_replies(&context, &user_email).await
+    // 3. Call Gemini API
+    let gemini = GeminiClient::new(api_key);
+    gemini.suggest_replies(&context, &user_email).await
 }

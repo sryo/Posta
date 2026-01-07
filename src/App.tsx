@@ -1,113 +1,6 @@
 import { createSignal, onMount, onCleanup, Show, For, createMemo, createEffect, type JSX } from "solid-js";
 import DOMPurify from 'dompurify';
-
-// Configure DOMPurify with safe defaults for email HTML
-const DOMPURIFY_CONFIG = {
-  ALLOWED_TAGS: [
-    'p', 'br', 'div', 'span', 'a', 'b', 'i', 'u', 'strong', 'em',
-    'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'ul', 'ol', 'li', 'blockquote',
-    'table', 'thead', 'tbody', 'tr', 'td', 'th', 'img', 'pre', 'code',
-    'hr', 'sub', 'sup', 'font', 'center'
-  ],
-  ALLOWED_ATTR: ['href', 'src', 'alt', 'title', 'style', 'class', 'target', 'width', 'height', 'color', 'size', 'face'],
-  ALLOW_DATA_ATTR: false,
-  FORBID_TAGS: ['script', 'iframe', 'object', 'embed', 'form', 'input', 'button'],
-  FORBID_ATTR: ['onerror', 'onload', 'onclick', 'onmouseover']
-};
-
-// MessageBody component - handles reactive CID image replacement
-const MessageBody = (props: {
-  body: string;
-  cidAttachmentData?: Record<string, string>;
-  msgPayloadParts?: any[];
-  msgId: string;
-  threadAttachments?: { message_id: string; attachment_id: string; content_id: string | null; inline_data: string | null; mime_type: string }[];
-}) => {
-  // Use createMemo to reactively recompute when cidAttachmentData changes
-  const processedHtml = createMemo(() => {
-    const cidMap = new Map<string, string>();
-
-    // First, use fetched CID data (from downloadAttachment calls)
-    if (props.cidAttachmentData) {
-      for (const [cid, data] of Object.entries(props.cidAttachmentData)) {
-        if (data) {
-          const base64Data = data.replace(/-/g, '+').replace(/_/g, '/');
-          // Find the mimeType for this CID from message parts
-          let mimeType = 'image/png';
-          const findMimeType = (parts: any[]) => {
-            parts?.forEach(part => {
-              const contentIdHeader = part.headers?.find((h: any) =>
-                h.name?.toLowerCase() === 'content-id'
-              );
-              if (contentIdHeader) {
-                const partCid = contentIdHeader.value?.replace(/^<|>$/g, '') || '';
-                if (partCid === cid && part.mimeType) {
-                  mimeType = part.mimeType;
-                }
-              }
-              if (part.parts) findMimeType(part.parts);
-            });
-          };
-          findMimeType(props.msgPayloadParts || []);
-          cidMap.set(cid, `data:${mimeType};base64,${base64Data}`);
-        }
-      }
-    }
-
-    // Then scan message parts for Content-ID headers with inline data
-    const findCidImages = (parts: any[]) => {
-      parts?.forEach(part => {
-        const contentIdHeader = part.headers?.find((h: any) =>
-          h.name?.toLowerCase() === 'content-id'
-        );
-        if (contentIdHeader && part.mimeType?.startsWith('image/')) {
-          const cid = contentIdHeader.value?.replace(/^<|>$/g, '') || '';
-          if (cid && !cidMap.has(cid)) {
-            const attachmentId = part.body?.attachmentId;
-            let data = part.body?.data;
-
-            if (!data && attachmentId) {
-              const threadAtt = props.threadAttachments?.find(
-                a => a.message_id === props.msgId && a.attachment_id === attachmentId
-              );
-              data = threadAtt?.inline_data;
-            }
-
-            if (data) {
-              const base64Data = data.replace(/-/g, '+').replace(/_/g, '/');
-              cidMap.set(cid, `data:${part.mimeType};base64,${base64Data}`);
-            }
-          }
-        }
-        if (part.parts) findCidImages(part.parts);
-      });
-    };
-    findCidImages(props.msgPayloadParts || []);
-
-    // Also check threadAttachments with content_id (as backup)
-    props.threadAttachments?.forEach(att => {
-      if (att.message_id === props.msgId && att.content_id && att.inline_data && att.mime_type.startsWith('image/')) {
-        if (!cidMap.has(att.content_id)) {
-          const base64Data = att.inline_data.replace(/-/g, '+').replace(/_/g, '/');
-          cidMap.set(att.content_id, `data:${att.mime_type};base64,${base64Data}`);
-        }
-      }
-    });
-
-    // Replace cid: URLs with data URLs
-    let html = props.body;
-    if (cidMap.size > 0) {
-      html = html.replace(/src=["']cid:([^"']+)["']/gi, (match, cid) => {
-        const dataUrl = cidMap.get(cid);
-        return dataUrl ? `src="${dataUrl}"` : match;
-      });
-    }
-
-    return DOMPurify.sanitize(html, DOMPURIFY_CONFIG);
-  });
-
-  return <div class="message-body" innerHTML={processedHtml()}></div>;
-};
+import { MessageBody, DOMPURIFY_CONFIG } from './components/MessageBody';
 
 // Safe localStorage helpers (handles private browsing, quota exceeded, etc.)
 function safeGetItem(key: string): string | null {
@@ -215,6 +108,7 @@ import {
 import { Menu, MenuItem, PredefinedMenuItem } from "@tauri-apps/api/menu";
 import {
   decodeBase64Utf8,
+  findContent,
   formatFileSize,
   formatTime,
   formatSyncTime,
@@ -227,6 +121,7 @@ import {
   validateEmailList,
   formatEmailDate,
   formatCalendarEventDate,
+  decodeHtmlEntities,
 } from "./utils";
 import "./App.css";
 import {
@@ -1395,22 +1290,6 @@ const ThreadView = (props: {
                 const from = headers.find(h => h.name === 'From')?.value || 'Unknown';
                 const date = headers.find(h => h.name === 'Date')?.value || '';
 
-                // Recursively search for content in nested parts
-                const findContent = (parts: any[] | undefined, mimeType: string): string | null => {
-                  if (!parts) return null;
-                  for (const part of parts) {
-                    if (part.mimeType === mimeType && part.body?.data) {
-                      return decodeBase64Utf8(part.body.data);
-                    }
-                    // Search nested parts (multipart/alternative, multipart/mixed, etc.)
-                    if (part.parts) {
-                      const found = findContent(part.parts, mimeType);
-                      if (found) return found;
-                    }
-                  }
-                  return null;
-                };
-
                 const getBody = () => {
                   if (msg.payload?.body?.data) return decodeBase64Utf8(msg.payload.body.data);
 
@@ -1740,20 +1619,6 @@ const ThreadView = (props: {
                 return subj.startsWith('Re:') ? subj : `Re: ${subj}`;
               };
 
-              const findContent = (parts: any[] | undefined, mimeType: string): string | null => {
-                if (!parts) return null;
-                for (const part of parts) {
-                  if (part.mimeType === mimeType && part.body?.data) {
-                    return decodeBase64Utf8(part.body.data);
-                  }
-                  if (part.parts) {
-                    const found = findContent(part.parts, mimeType);
-                    if (found) return found;
-                  }
-                }
-                return null;
-              };
-
               const getBody = () => {
                 const payload = lastMsg.payload;
                 if (payload?.body?.data) return decodeBase64Utf8(payload.body.data);
@@ -2002,7 +1867,7 @@ const EventView = (props: {
                   {/* Description */}
                   <Show when={props.event!.description}>
                     <div class="message-body">
-                      <div innerHTML={props.event!.description!.replace(/\n/g, '<br>')} />
+                      <div innerHTML={DOMPurify.sanitize(props.event!.description!.replace(/\n/g, '<br>'), DOMPURIFY_CONFIG)} />
                     </div>
                   </Show>
 
@@ -2484,6 +2349,7 @@ function App() {
   const [editCardName, setEditCardName] = createSignal("");
   const [editCardQuery, setEditCardQuery] = createSignal("");
   const [editCardColor, setEditCardColor] = createSignal<CardColor>(null);
+  const [editCardGroupBy, setEditCardGroupBy] = createSignal<GroupBy>("date");
   const [editColorPickerOpen, setEditColorPickerOpen] = createSignal(false);
 
   // Keyboard navigation focus state
@@ -2915,7 +2781,7 @@ function App() {
   // Settings form
   const [clientId, setClientId] = createSignal("");
   const [clientSecret, setClientSecret] = createSignal("");
-  const [vertexProjectId, setVertexProjectId] = createSignal(localStorage.getItem("google_cloud_project_id") || "");
+  const [geminiApiKey, setGeminiApiKey] = createSignal(localStorage.getItem("gemini_api_key") || "");
   const [smartRepliesOpen, setSmartRepliesOpen] = createSignal(false);
 
   // Preset selection for new accounts
@@ -3570,17 +3436,29 @@ function App() {
       }
 
       const account = result;
+      console.log("Sign in complete, account:", account.id, account.email);
       setAccounts([...accounts(), account]);
       setSelectedAccount(account);
 
       // Try to restore cards from iCloud (remaps orphaned cards to new account)
+      // Small delay to allow iCloud sync to complete
       try {
-        await pullFromICloud();
+        await new Promise(resolve => setTimeout(resolve, 500));
+        const icloudResult = await pullFromICloud();
+        console.log("iCloud pull result:", icloudResult);
+        // If first attempt didn't find cards, try once more after a longer delay
+        if (!icloudResult) {
+          console.log("No iCloud cards found, retrying...");
+          await new Promise(resolve => setTimeout(resolve, 1000));
+          const retryResult = await pullFromICloud();
+          console.log("iCloud retry result:", retryResult);
+        }
       } catch (e) {
         console.warn("iCloud pull failed:", e);
       }
 
       const cardList = await getCards(account.id);
+      console.log("Cards after iCloud pull:", cardList.length, cardList.map(c => c.name));
       setCards(cardList);
 
       // Show restore prompt if cards exist (restored from iCloud)
@@ -3588,6 +3466,7 @@ function App() {
       if (cardList.length > 0) {
         setShowRestorePrompt(true);
       } else {
+        console.log("No cards found, showing preset selection");
         setShowPresetSelection(true);
       }
     } catch (e) {
@@ -3650,7 +3529,9 @@ function App() {
       const newCards: Card[] = [];
 
       for (const cardPreset of preset.cards) {
-        const card = await createCard(account.id, cardPreset.name, cardPreset.query, cardPreset.color || null);
+        // Detect calendar card from query
+        const cardType = cardPreset.query.toLowerCase().includes("calendar:") ? "calendar" : "email";
+        const card = await createCard(account.id, cardPreset.name, cardPreset.query, cardPreset.color || null, "date", cardType);
         newCards.push(card);
       }
 
@@ -4199,6 +4080,15 @@ function App() {
     setComposeIsHtml(isHtml);
     setFocusComposeBody(true);
     setComposing(true);
+
+    // Focus the message being replied to
+    const thread = activeThread();
+    if (thread) {
+      const messageIndex = thread.messages.findIndex(m => m.id === messageId);
+      if (messageIndex >= 0) {
+        setFocusedMessageIndex(messageIndex);
+      }
+    }
   }
 
   function handleForwardFromThread(subject: string, body: string) {
@@ -4385,20 +4275,6 @@ function App() {
     // Helper to extract body from message
     const extractBody = (msg: any): string => {
       if (msg.payload?.body?.data) return decodeBase64Utf8(msg.payload.body.data);
-
-      const findContent = (parts: any[] | undefined, mimeType: string): string | null => {
-        if (!parts) return null;
-        for (const part of parts) {
-          if (part.mimeType === mimeType && part.body?.data) {
-            return decodeBase64Utf8(part.body.data);
-          }
-          if (part.parts) {
-            const found = findContent(part.parts, mimeType);
-            if (found) return found;
-          }
-        }
-        return null;
-      };
 
       const htmlContent = findContent(msg.payload?.parts, 'text/html');
       if (htmlContent) return htmlContent;
@@ -4593,6 +4469,7 @@ function App() {
     setEditCardName(card.name);
     setEditCardQuery(card.query);
     setEditCardColor((card.color as CardColor) || null);
+    setEditCardGroupBy((card.group_by as GroupBy) || "date");
     setEditColorPickerOpen(false);
     // Fetch initial preview
     fetchQueryPreview(card.query);
@@ -4608,11 +4485,16 @@ function App() {
     const queryChanged = card.query !== editCardQuery();
 
     try {
+      // Detect card type from query
+      const newQuery = editCardQuery();
+      const cardType = newQuery.toLowerCase().includes("calendar:") ? "calendar" : "email";
       const updatedCard: Card = {
         ...card,
         name: editCardName(),
-        query: editCardQuery(),
+        query: newQuery,
         color: editCardColor() || null,
+        card_type: cardType,
+        group_by: editCardGroupBy(),
       };
       await updateCard(updatedCard);
       setCards(cards().map(c => c.id === cardId ? updatedCard : c));
@@ -4631,7 +4513,13 @@ function App() {
           delete updated[cardId];
           return updated;
         });
-        loadCardThreads(cardId);
+        setCardCalendarEvents(prev => {
+          const updated = { ...prev };
+          delete updated[cardId];
+          return updated;
+        });
+        // Force refresh since we just cleared the cache
+        loadCardThreads(cardId, false, true);
       }
     } catch (e) {
       setError(String(e));
@@ -4740,13 +4628,21 @@ function App() {
       setSyncErrors({ ...syncErrors(), [cardId]: null });
     } catch (e) {
       const errorMsg = String(e);
-      if (errorMsg.includes("Keyring error") || errorMsg.includes("No auth token")) {
-        // Auto sign out on session expiry
-        setError("Session expired");
-        setTimeout(async () => {
-          await handleSignOut();
-          setError(null);
-        }, 1500);
+      console.error("loadCardThreads error:", errorMsg);
+      // Check for session expiry (token revoked, keyring issues, refresh failures)
+      if (errorMsg.includes("Keyring error") ||
+          errorMsg.includes("No auth token") ||
+          errorMsg.includes("Token refresh failed") ||
+          errorMsg.includes("invalid_grant") ||
+          errorMsg.includes("unauthorized")) {
+        // Only trigger sign out once (prevent race conditions from multiple card loads)
+        if (!error()?.includes("Session expired")) {
+          setError("Session expired - please sign in again");
+          setTimeout(async () => {
+            await handleSignOut();
+            setError(null);
+          }, 1500);
+        }
       } else {
         setCardErrors({ ...cardErrors(), [cardId]: errorMsg });
         setSyncErrors({ ...syncErrors(), [cardId]: errorMsg });
@@ -4795,12 +4691,19 @@ function App() {
       await fetchAndCacheCalendarEvents(account.id, cardId, card.query);
     } catch (e) {
       const errorMsg = String(e);
-      if (errorMsg.includes("Keyring error") || errorMsg.includes("No auth token")) {
-        setError("Session expired");
-        setTimeout(async () => {
-          await handleSignOut();
-          setError(null);
-        }, 1500);
+      console.error("loadCalendarEvents error:", errorMsg);
+      if (errorMsg.includes("Keyring error") ||
+          errorMsg.includes("No auth token") ||
+          errorMsg.includes("Token refresh failed") ||
+          errorMsg.includes("invalid_grant") ||
+          errorMsg.includes("unauthorized")) {
+        if (!error()?.includes("Session expired")) {
+          setError("Session expired - please sign in again");
+          setTimeout(async () => {
+            await handleSignOut();
+            setError(null);
+          }, 1500);
+        }
       } else {
         setCardErrors({ ...cardErrors(), [cardId]: errorMsg });
         setSyncErrors({ ...syncErrors(), [cardId]: errorMsg });
@@ -6507,6 +6410,13 @@ function App() {
           <Show when={error()}>
             <p class="auth-error">{error()}</p>
           </Show>
+          <button
+            class="auth-settings-btn"
+            onClick={() => setSettingsOpen(true)}
+            style="margin-top: 24px; background: none; border: none; color: var(--text-secondary); cursor: pointer; font-size: var(--font-size-sm);"
+          >
+            Settings
+          </button>
         </div>
       </Show>
 
@@ -6552,8 +6462,8 @@ function App() {
                             setQuery={setEditCardQuery}
                             color={editCardColor()}
                             setColor={(c) => { setEditCardColor(c); }}
-                            groupBy={getGroupByForCard(card.id)}
-                            setGroupBy={(v) => setGroupByForCard(card.id, v)}
+                            groupBy={editCardGroupBy()}
+                            setGroupBy={setEditCardGroupBy}
                             colorPickerOpen={editColorPickerOpen()}
                             setColorPickerOpen={setEditColorPickerOpen}
                             onSave={saveEditCard}
@@ -6629,33 +6539,40 @@ function App() {
                               <Show when={queryPreviewCalendarEvents().length === 0}>
                                 <div class="empty">No events</div>
                               </Show>
-                              <For each={queryPreviewCalendarEvents()}>
-                                {(event) => (
-                                  <div class={`calendar-event-item ${event.response_status === "declined" ? "declined" : ""}`}>
-                                    <div class="calendar-event-row">
-                                      <span class="calendar-event-title">{event.title}</span>
-                                      <span class="calendar-event-time-compact">
-                                        {getSmartEventTime(event)}
-                                      </span>
-                                    </div>
-                                    <Show when={event.description}>
-                                      <div class="calendar-event-description">{event.description}</div>
-                                    </Show>
-                                    <Show when={event.location}>
-                                      <div class="calendar-event-location-compact">
-                                        <LocationIcon />
-                                        <span>{event.location}</span>
-                                      </div>
-                                    </Show>
-                                    <Show when={event.response_status}>
-                                      <div class={`calendar-event-response ${event.response_status}`}>
-                                        {event.response_status === "accepted" ? "Going" :
-                                          event.response_status === "tentative" ? "Maybe" :
-                                            event.response_status === "declined" ? "Declined" :
-                                              event.response_status === "needsAction" ? "Pending" : event.response_status}
-                                      </div>
-                                    </Show>
-                                  </div>
+                              <For each={groupCalendarEvents(queryPreviewCalendarEvents(), editCardGroupBy())}>
+                                {(group) => (
+                                  <>
+                                    <div class="date-header">{group.label}</div>
+                                    <For each={group.events}>
+                                      {(event) => (
+                                        <div class={`calendar-event-item ${event.response_status === "declined" ? "declined" : ""}`}>
+                                          <div class="calendar-event-row">
+                                            <span class="calendar-event-title">{event.title}</span>
+                                            <span class="calendar-event-time-compact">
+                                              {getSmartEventTime(event)}
+                                            </span>
+                                          </div>
+                                          <Show when={event.description}>
+                                            <div class="calendar-event-description">{event.description}</div>
+                                          </Show>
+                                          <Show when={event.location}>
+                                            <div class="calendar-event-location-compact">
+                                              <LocationIcon />
+                                              <span>{event.location}</span>
+                                            </div>
+                                          </Show>
+                                          <Show when={event.response_status}>
+                                            <div class={`calendar-event-response ${event.response_status}`}>
+                                              {event.response_status === "accepted" ? "Going" :
+                                                event.response_status === "tentative" ? "Maybe" :
+                                                  event.response_status === "declined" ? "Declined" :
+                                                    event.response_status === "needsAction" ? "Pending" : event.response_status}
+                                            </div>
+                                          </Show>
+                                        </div>
+                                      )}
+                                    </For>
+                                  </>
                                 )}
                               </For>
                             </Show>
@@ -6664,7 +6581,7 @@ function App() {
                               <div class="empty">No matches</div>
                             </Show>
                             <Show when={!queryPreviewLoading() && queryPreviewThreads().length > 0}>
-                              <For each={queryPreviewThreads()}>
+                              <For each={regroupThreads(queryPreviewThreads(), editCardGroupBy())}>
                                 {(group) => (
                                   <>
                                     <div class="date-header">{group.label}</div>
@@ -6688,7 +6605,7 @@ function App() {
                                             </Show>
                                             <span class="thread-time">{formatTime(thread.last_message_date)}</span>
                                           </div>
-                                          <div class="thread-snippet">{thread.snippet}</div>
+                                          <div class="thread-snippet">{decodeHtmlEntities(thread.snippet)}</div>
                                           {/* Attachment previews */}
                                           <Show when={thread.attachments?.length > 0 && !thread.calendar_event}>
                                             <div class="thread-attachments">
@@ -6928,7 +6845,7 @@ function App() {
                                               </div>
                                             </Show>
                                             <Show when={!thread.calendar_event}>
-                                              <div class="thread-snippet">{thread.snippet}</div>
+                                              <div class="thread-snippet">{decodeHtmlEntities(thread.snippet)}</div>
                                             </Show>
                                             <div class="thread-participants">
                                               {thread.participants.slice(0, 3).join(", ")}
@@ -7110,33 +7027,40 @@ function App() {
                       <Show when={queryPreviewCalendarEvents().length === 0}>
                         <div class="empty">No events</div>
                       </Show>
-                      <For each={queryPreviewCalendarEvents()}>
-                        {(event) => (
-                          <div class={`calendar-event-item ${event.response_status === "declined" ? "declined" : ""}`}>
-                            <div class="calendar-event-row">
-                              <span class="calendar-event-title">{event.title}</span>
-                              <span class="calendar-event-time-compact">
-                                {getSmartEventTime(event)}
-                              </span>
-                            </div>
-                            <Show when={event.description}>
-                              <div class="calendar-event-description">{event.description}</div>
-                            </Show>
-                            <Show when={event.location}>
-                              <div class="calendar-event-location-compact">
-                                <LocationIcon />
-                                <span>{event.location}</span>
-                              </div>
-                            </Show>
-                            <Show when={event.response_status}>
-                              <div class={`calendar-event-response ${event.response_status}`}>
-                                {event.response_status === "accepted" ? "Going" :
-                                  event.response_status === "tentative" ? "Maybe" :
-                                    event.response_status === "declined" ? "Declined" :
-                                      event.response_status === "needsAction" ? "Pending" : event.response_status}
-                              </div>
-                            </Show>
-                          </div>
+                      <For each={groupCalendarEvents(queryPreviewCalendarEvents(), newCardGroupBy())}>
+                        {(group) => (
+                          <>
+                            <div class="date-header">{group.label}</div>
+                            <For each={group.events}>
+                              {(event) => (
+                                <div class={`calendar-event-item ${event.response_status === "declined" ? "declined" : ""}`}>
+                                  <div class="calendar-event-row">
+                                    <span class="calendar-event-title">{event.title}</span>
+                                    <span class="calendar-event-time-compact">
+                                      {getSmartEventTime(event)}
+                                    </span>
+                                  </div>
+                                  <Show when={event.description}>
+                                    <div class="calendar-event-description">{event.description}</div>
+                                  </Show>
+                                  <Show when={event.location}>
+                                    <div class="calendar-event-location-compact">
+                                      <LocationIcon />
+                                      <span>{event.location}</span>
+                                    </div>
+                                  </Show>
+                                  <Show when={event.response_status}>
+                                    <div class={`calendar-event-response ${event.response_status}`}>
+                                      {event.response_status === "accepted" ? "Going" :
+                                        event.response_status === "tentative" ? "Maybe" :
+                                          event.response_status === "declined" ? "Declined" :
+                                            event.response_status === "needsAction" ? "Pending" : event.response_status}
+                                    </div>
+                                  </Show>
+                                </div>
+                              )}
+                            </For>
+                          </>
                         )}
                       </For>
                     </Show>
@@ -7145,7 +7069,7 @@ function App() {
                       <div class="empty">No matches</div>
                     </Show>
                     <Show when={!queryPreviewLoading() && queryPreviewThreads().length > 0}>
-                      <For each={queryPreviewThreads()}>
+                      <For each={regroupThreads(queryPreviewThreads(), newCardGroupBy())}>
                         {(group) => (
                           <>
                             <div class="date-header">{group.label}</div>
@@ -7164,7 +7088,7 @@ function App() {
                                     </Show>
                                     <span class="thread-time">{formatTime(thread.last_message_date)}</span>
                                   </div>
-                                  <div class="thread-snippet">{thread.snippet}</div>
+                                  <div class="thread-snippet">{decodeHtmlEntities(thread.snippet)}</div>
                                   <Show when={thread.attachments?.length > 0}>
                                     <div class="thread-attachments">
                                       <For each={thread.attachments?.filter(a => a.inline_data && a.mime_type.startsWith("image/")).slice(0, 3)}>
@@ -7476,9 +7400,6 @@ function App() {
               </Show>
             </div>
 
-            <div class="label-drawer-footer">
-              <span class="shortcut-hint">Press L to toggle labels</span>
-            </div>
           </div>
         </Show>
       </Show>
@@ -7741,6 +7662,7 @@ function App() {
                         onClose={closeBatchReply}
                         onSkip={() => discardBatchReplyThread(thread.threadId)}
                         canSend={!!batchReplyMessages()[thread.threadId]?.trim()}
+                        focusBody={batchReplyThreads()[0]?.threadId === thread.threadId}
                       />
                     </div>
                   </div>
@@ -7925,18 +7847,18 @@ function App() {
             </div>
             <Show when={smartRepliesOpen()}>
               <p class="settings-hint" style="margin-bottom: 12px;">
-                AI-powered reply suggestions via Vertex AI.
+                AI-powered reply suggestions via Gemini.
               </p>
               <div class="settings-form-group">
-                <label>Project ID</label>
+                <label>API Key</label>
                 <input
-                  type="text"
-                  value={vertexProjectId()}
+                  type="password"
+                  value={geminiApiKey()}
                   onInput={(e) => {
-                    setVertexProjectId(e.currentTarget.value);
-                    localStorage.setItem("google_cloud_project_id", e.currentTarget.value);
+                    setGeminiApiKey(e.currentTarget.value);
+                    localStorage.setItem("gemini_api_key", e.currentTarget.value);
                   }}
-                  placeholder="my-gcp-project"
+                  placeholder="AIza..."
                 />
               </div>
             </Show>

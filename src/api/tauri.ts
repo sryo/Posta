@@ -6,6 +6,7 @@ export interface Account {
   id: string;
   email: string;
   picture: string | null;
+  signature: string | null;
 }
 
 export interface Card {
@@ -107,6 +108,10 @@ export async function getAccounts(): Promise<Account[]> {
 
 export async function deleteAccount(id: string): Promise<void> {
   return invoke("delete_account", { accountId: id });
+}
+
+export async function updateAccountSignature(accountId: string, signature: string | null): Promise<void> {
+  return invoke("update_account_signature", { accountId, signature });
 }
 
 export async function getCards(accountId: string): Promise<Card[]> {
@@ -510,9 +515,9 @@ export async function updateCalendarEvent(
 export async function suggestReplies(
   accountId: string,
   threadId: string,
-  projectId: string
+  apiKey: string
 ): Promise<string[]> {
-  return invoke("suggest_replies", { accountId, threadId, projectId });
+  return invoke("suggest_replies", { accountId, threadId, apiKey });
 }
 
 // Email Reactions

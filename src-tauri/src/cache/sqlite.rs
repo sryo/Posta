@@ -114,6 +114,8 @@ impl CacheDb {
         let _ = conn.execute("ALTER TABLE cards ADD COLUMN group_by TEXT NOT NULL DEFAULT 'date'", []);
         // Add card_type column to cards
         let _ = conn.execute("ALTER TABLE cards ADD COLUMN card_type TEXT NOT NULL DEFAULT 'email'", []);
+        // Add signature column to accounts
+        let _ = conn.execute("ALTER TABLE accounts ADD COLUMN signature TEXT", []);
         Ok(())
     }
 
@@ -121,13 +123,14 @@ impl CacheDb {
 
     pub fn get_accounts(&self) -> Result<Vec<Account>, CacheError> {
         let conn = self.conn.lock().map_err(|_| CacheError::Lock)?;
-        let mut stmt = conn.prepare("SELECT id, email, picture, refresh_token_ref FROM accounts ORDER BY email")?;
+        let mut stmt = conn.prepare("SELECT id, email, picture, signature, refresh_token_ref FROM accounts ORDER BY email")?;
         let rows = stmt.query_map([], |row| {
             Ok(Account {
                 id: row.get(0)?,
                 email: row.get(1)?,
                 picture: row.get(2)?,
-                refresh_token_ref: row.get(3)?,
+                signature: row.get(3)?,
+                refresh_token_ref: row.get(4)?,
             })
         })?;
         rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
@@ -136,8 +139,17 @@ impl CacheDb {
     pub fn insert_account(&self, account: &Account) -> Result<(), CacheError> {
         let conn = self.conn.lock().map_err(|_| CacheError::Lock)?;
         conn.execute(
-            "INSERT OR REPLACE INTO accounts (id, email, picture, refresh_token_ref) VALUES (?1, ?2, ?3, ?4)",
-            params![account.id, account.email, account.picture, account.refresh_token_ref],
+            "INSERT OR REPLACE INTO accounts (id, email, picture, signature, refresh_token_ref) VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![account.id, account.email, account.picture, account.signature, account.refresh_token_ref],
+        )?;
+        Ok(())
+    }
+
+    pub fn update_account_signature(&self, account_id: &str, signature: Option<&str>) -> Result<(), CacheError> {
+        let conn = self.conn.lock().map_err(|_| CacheError::Lock)?;
+        conn.execute(
+            "UPDATE accounts SET signature = ?1 WHERE id = ?2",
+            params![signature, account_id],
         )?;
         Ok(())
     }
@@ -200,13 +212,15 @@ impl CacheDb {
     }
 
     pub fn reorder_cards(&self, orders: &[(String, i32)]) -> Result<(), CacheError> {
-        let conn = self.conn.lock().map_err(|_| CacheError::Lock)?;
+        let mut conn = self.conn.lock().map_err(|_| CacheError::Lock)?;
+        let tx = conn.transaction()?;
         for (card_id, position) in orders {
-            conn.execute(
+            tx.execute(
                 "UPDATE cards SET position = ?1 WHERE id = ?2",
                 params![position, card_id],
             )?;
         }
+        tx.commit()?;
         Ok(())
     }
 
@@ -245,8 +259,41 @@ impl CacheDb {
     pub fn clear_old_cache(&self, max_age_hours: i64) -> Result<usize, CacheError> {
         let conn = self.conn.lock().map_err(|_| CacheError::Lock)?;
         let cutoff = chrono::Utc::now().timestamp() - (max_age_hours * 3600);
-        let count = conn.execute("DELETE FROM threads WHERE cached_at < ?1", params![cutoff])?;
+        // Keep starred and important threads even if old
+        let count = conn.execute(
+            "DELETE FROM threads WHERE cached_at < ?1 AND labels NOT LIKE '%STARRED%' AND labels NOT LIKE '%IMPORTANT%'",
+            params![cutoff],
+        )?;
         Ok(count)
+    }
+
+    /// Clear stale card caches (older than max_age_hours)
+    pub fn clear_stale_card_cache(&self, max_age_hours: i64) -> Result<usize, CacheError> {
+        let conn = self.conn.lock().map_err(|_| CacheError::Lock)?;
+        let cutoff = chrono::Utc::now().timestamp() - (max_age_hours * 3600);
+        let thread_count = conn.execute(
+            "DELETE FROM card_thread_cache WHERE cached_at < ?1",
+            params![cutoff],
+        )?;
+        let calendar_count = conn.execute(
+            "DELETE FROM card_calendar_cache WHERE cached_at < ?1",
+            params![cutoff],
+        )?;
+        Ok(thread_count + calendar_count)
+    }
+
+    /// Get threads that should be prioritized for caching (starred, important, recent)
+    pub fn get_priority_thread_ids(&self, account_id: &str, limit: i64) -> Result<Vec<String>, CacheError> {
+        let conn = self.conn.lock().map_err(|_| CacheError::Lock)?;
+        let mut stmt = conn.prepare(
+            "SELECT gmail_thread_id FROM threads
+             WHERE account_id = ?1
+             AND (labels LIKE '%STARRED%' OR labels LIKE '%IMPORTANT%')
+             ORDER BY last_message_date DESC
+             LIMIT ?2"
+        )?;
+        let rows = stmt.query_map(params![account_id, limit], |row| row.get(0))?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
     }
 
     // Card thread cache operations

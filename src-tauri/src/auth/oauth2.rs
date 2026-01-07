@@ -7,7 +7,7 @@ use tokio::sync::Mutex;
 
 const GOOGLE_AUTH_URL: &str = "https://accounts.google.com/o/oauth2/v2/auth";
 const GOOGLE_TOKEN_URL: &str = "https://oauth2.googleapis.com/token";
-const SCOPES: &str = "https://mail.google.com/ https://www.googleapis.com/auth/calendar.readonly https://www.googleapis.com/auth/calendar.events https://www.googleapis.com/auth/contacts.readonly https://www.googleapis.com/auth/cloud-platform email profile";
+const SCOPES: &str = "https://mail.google.com/ https://www.googleapis.com/auth/calendar.readonly https://www.googleapis.com/auth/calendar.events https://www.googleapis.com/auth/contacts.readonly email profile";
 const REDIRECT_URI: &str = "http://localhost:8420/callback";
 
 #[derive(Error, Debug)]
@@ -200,24 +200,27 @@ pub fn store_refresh_token(account_id: &str, token: &str, app_data_dir: &Path) -
     tracing::info!("Storing refresh token for account: {}", account_id);
 
     // Try keychain first
-    let keychain_ok = keyring::Entry::new(KEYRING_SERVICE, &format!("token:{}", account_id))
-        .ok()
-        .and_then(|entry| entry.set_password(token).ok())
-        .is_some();
+    let keychain_ok = if let Ok(entry) = keyring::Entry::new(KEYRING_SERVICE, &format!("token:{}", account_id)) {
+        entry.set_password(token).is_ok()
+    } else {
+        false
+    };
 
     if keychain_ok {
         tracing::info!("Token stored in system keychain");
+    } else {
+        tracing::warn!("Keychain storage failed, using file fallback");
     }
 
-    // Always write to file as backup (keychain can silently fail on unsigned apps)
+    // Always also write to file as backup (keychain can silently fail in sandboxed apps)
     let path = get_token_file_path(app_data_dir, account_id);
     if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)
-            .map_err(|e| AuthError::Keyring(format!("Failed to create token dir: {}", e)))?;
+        let _ = std::fs::create_dir_all(parent);
     }
     std::fs::write(&path, token)
-        .map_err(|e| AuthError::Keyring(format!("Failed to write token: {}", e)))?;
-    tracing::info!("Token stored at: {:?}", path);
+        .map_err(|e| AuthError::Keyring(format!("Failed to store token: {}", e)))?;
+    tracing::info!("Token stored in file: {:?}", path);
+
     Ok(())
 }
 
@@ -225,20 +228,39 @@ pub fn get_refresh_token(account_id: &str, app_data_dir: &Path) -> Result<String
     tracing::info!("Getting refresh token for account: {}", account_id);
 
     // Try keychain first
-    if let Ok(entry) = keyring::Entry::new(KEYRING_SERVICE, &format!("token:{}", account_id)) {
-        if let Ok(token) = entry.get_password() {
-            tracing::info!("Token found in keychain");
-            return Ok(token);
+    let key = format!("token:{}", account_id);
+    match keyring::Entry::new(KEYRING_SERVICE, &key) {
+        Ok(entry) => {
+            match entry.get_password() {
+                Ok(token) => {
+                    tracing::info!("Found token in keychain");
+                    return Ok(token);
+                }
+                Err(e) => {
+                    tracing::warn!("Keychain get_password failed: {:?}", e);
+                }
+            }
+        }
+        Err(e) => {
+            tracing::warn!("Keychain Entry::new failed: {:?}", e);
         }
     }
 
-    // Fall back to file storage
+    // Fall back to file storage for backwards compatibility (migrate to keychain on next store)
     let path = get_token_file_path(app_data_dir, account_id);
+    tracing::info!("Checking file fallback at: {:?}, exists: {}", path, path.exists());
     if path.exists() {
-        let token = std::fs::read_to_string(&path)
-            .map_err(|e| AuthError::Keyring(format!("Failed to read token: {}", e)))?;
-        tracing::info!("Token found in file storage");
-        return Ok(token);
+        if let Ok(token) = std::fs::read_to_string(&path) {
+            let token = token.trim().to_string();
+            if !token.is_empty() {
+                tracing::info!("Found token in file storage (legacy), will migrate on next refresh");
+                // Migrate to keychain for future use
+                if let Ok(entry) = keyring::Entry::new(KEYRING_SERVICE, &format!("token:{}", account_id)) {
+                    let _ = entry.set_password(&token);
+                }
+                return Ok(token);
+            }
+        }
     }
 
     tracing::warn!("No token found for account: {}", account_id);
@@ -276,24 +298,27 @@ pub fn store_oauth_credentials(client_id: &str, client_secret: &str, app_data_di
         .map_err(|e| AuthError::Keyring(format!("Failed to serialize credentials: {}", e)))?;
 
     // Try keychain first
-    let keychain_ok = keyring::Entry::new(KEYRING_SERVICE, "oauth:credentials")
-        .ok()
-        .and_then(|entry| entry.set_password(&json).ok())
-        .is_some();
+    let keychain_ok = if let Ok(entry) = keyring::Entry::new(KEYRING_SERVICE, "oauth:credentials") {
+        entry.set_password(&json).is_ok()
+    } else {
+        false
+    };
 
     if keychain_ok {
         tracing::info!("OAuth credentials stored in keychain");
+    } else {
+        tracing::warn!("Keychain storage failed for credentials");
     }
 
-    // Always write to file as backup (keychain can silently fail on unsigned apps)
+    // Always also write to file as backup
     let path = get_credentials_file_path(app_data_dir);
     if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)
-            .map_err(|e| AuthError::Keyring(format!("Failed to create credentials dir: {}", e)))?;
+        let _ = std::fs::create_dir_all(parent);
     }
     std::fs::write(&path, &json)
-        .map_err(|e| AuthError::Keyring(format!("Failed to write credentials: {}", e)))?;
-    tracing::info!("OAuth credentials stored at: {:?}", path);
+        .map_err(|e| AuthError::Keyring(format!("Failed to store credentials: {}", e)))?;
+    tracing::info!("OAuth credentials stored in file: {:?}", path);
+
     Ok(())
 }
 
@@ -301,20 +326,26 @@ pub fn get_oauth_credentials(app_data_dir: &Path) -> Result<OAuthCredentials, Au
     // Try keychain first
     if let Ok(entry) = keyring::Entry::new(KEYRING_SERVICE, "oauth:credentials") {
         if let Ok(json) = entry.get_password() {
-            let credentials: OAuthCredentials = serde_json::from_str(&json)
-                .map_err(|e| AuthError::Keyring(format!("Failed to parse credentials: {}", e)))?;
-            return Ok(credentials);
+            if let Ok(creds) = serde_json::from_str(&json) {
+                tracing::info!("Found OAuth credentials in keychain");
+                return Ok(creds);
+            }
         }
     }
 
-    // Fall back to file storage
+    // Fall back to file storage for backwards compatibility
     let path = get_credentials_file_path(app_data_dir);
     if path.exists() {
-        let json = std::fs::read_to_string(&path)
-            .map_err(|e| AuthError::Keyring(format!("Failed to read credentials: {}", e)))?;
-        let credentials: OAuthCredentials = serde_json::from_str(&json)
-            .map_err(|e| AuthError::Keyring(format!("Failed to parse credentials: {}", e)))?;
-        return Ok(credentials);
+        if let Ok(json) = std::fs::read_to_string(&path) {
+            if let Ok(creds) = serde_json::from_str::<OAuthCredentials>(&json) {
+                tracing::info!("Found OAuth credentials in file (legacy), migrating to keychain");
+                // Migrate to keychain
+                if let Ok(entry) = keyring::Entry::new(KEYRING_SERVICE, "oauth:credentials") {
+                    let _ = entry.set_password(&json);
+                }
+                return Ok(creds);
+            }
+        }
     }
 
     Err(AuthError::NoCredentials)

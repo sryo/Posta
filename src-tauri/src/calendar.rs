@@ -1,6 +1,7 @@
 // Google Calendar API client
 
-use chrono::{DateTime, Duration, NaiveDate, Utc};
+use chrono::{DateTime, Duration, Local, NaiveDate, TimeZone, Utc};
+use chrono_tz::Tz;
 use reqwest::StatusCode;
 use serde::{Deserialize, Serialize};
 
@@ -13,6 +14,7 @@ pub struct CalendarInfo {
     pub name: String,
     pub is_primary: bool,
     pub access_role: String, // owner, writer, reader, freeBusyReader
+    pub timezone: Option<String>, // IANA timezone (e.g. "America/Argentina/Buenos_Aires")
 }
 
 /// Convert calendar API errors to user-friendly messages
@@ -81,6 +83,8 @@ struct CalendarListEntry {
     primary: Option<bool>,
     #[serde(rename = "accessRole")]
     access_role: Option<String>,
+    #[serde(rename = "timeZone")]
+    time_zone: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -212,6 +216,7 @@ impl CalendarClient {
                 name: c.summary.unwrap_or_default(),
                 is_primary: c.primary.unwrap_or(false),
                 access_role: c.access_role.unwrap_or_else(|| "reader".to_string()),
+                timezone: c.time_zone,
             })
             .collect())
     }
@@ -273,8 +278,15 @@ impl CalendarClient {
         let calendars = self.list_calendars().await?;
         let mut all_events = Vec::new();
 
-        // Determine time range from query
-        let (time_min, time_max) = query.get_time_range();
+        // Use primary calendar's timezone, or first calendar's, for time range calculation
+        let timezone = calendars
+            .iter()
+            .find(|c| c.is_primary)
+            .or_else(|| calendars.first())
+            .and_then(|c| c.timezone.as_deref());
+
+        // Determine time range from query using calendar timezone
+        let (time_min, time_max) = query.get_time_range(timezone);
 
         for cal in calendars {
             let mut url = format!(
@@ -758,14 +770,36 @@ impl CalendarQuery {
         cq
     }
 
-    pub fn get_time_range(&self) -> (DateTime<Utc>, DateTime<Utc>) {
+    pub fn get_time_range(&self, timezone: Option<&str>) -> (DateTime<Utc>, DateTime<Utc>) {
         let now = Utc::now();
-        // Use yesterday as potential start buffer to handle Timezone offsets 
-        // ensuring we don't miss "today's" events in local time that are "yesterday" in UTC
-        // or just to be safe.
-        // Actually, let's just stick to strict Today unless upcoming.
-        
-        let today_start = now.date_naive().and_hms_opt(0, 0, 0).expect("midnight is always valid").and_utc();
+
+        // Calculate today's start using calendar timezone if provided, otherwise local
+        let today_start = if let Some(tz_str) = timezone {
+            if let Ok(tz) = tz_str.parse::<Tz>() {
+                let tz_now = now.with_timezone(&tz);
+                let tz_today = tz_now.date_naive();
+                tz.from_local_datetime(&tz_today.and_hms_opt(0, 0, 0).unwrap())
+                    .single()
+                    .map(|dt| dt.with_timezone(&Utc))
+                    .unwrap_or_else(|| now.date_naive().and_hms_opt(0, 0, 0).unwrap().and_utc())
+            } else {
+                // Invalid timezone string, fall back to local
+                let local_now = Local::now();
+                let local_today = local_now.date_naive();
+                Local.from_local_datetime(&local_today.and_hms_opt(0, 0, 0).unwrap())
+                    .single()
+                    .expect("local midnight should be valid")
+                    .with_timezone(&Utc)
+            }
+        } else {
+            // No timezone provided, use local
+            let local_now = Local::now();
+            let local_today = local_now.date_naive();
+            Local.from_local_datetime(&local_today.and_hms_opt(0, 0, 0).unwrap())
+                .single()
+                .expect("local midnight should be valid")
+                .with_timezone(&Utc)
+        };
 
         match &self.time_range {
             TimeRange::Today => (today_start, today_start + Duration::days(1)),
@@ -775,8 +809,7 @@ impl CalendarQuery {
             ),
             TimeRange::Week => (today_start, today_start + Duration::days(7)),
             TimeRange::Month => (today_start, today_start + Duration::days(30)),
-            // For upcoming, we start from NOW to avoid missing things that just started,
-            // also avoids showing events from "yesterday" due to timezone offsets if we used today_start (UTC 00:00)
+            // For upcoming, we start from NOW to avoid missing things that just started
             TimeRange::Upcoming(duration) => (now, now + *duration),
             TimeRange::Custom { start, end } => (*start, *end),
         }
@@ -897,16 +930,36 @@ mod tests {
 
     #[test]
     fn test_get_time_range() {
-        let cq = CalendarQuery::parse("calendar:7d");
-        let (start, end) = cq.get_time_range();
-        
-        let now = Utc::now();
-        let today = now.date_naive().and_hms_opt(0, 0, 0).unwrap().and_utc();
-        
-        // Start should be today (midnight UTC)
+        // Test "week" which uses today-based range (no timezone = local)
+        let cq = CalendarQuery::parse("calendar:week");
+        let (start, end) = cq.get_time_range(None);
+
+        let local_now = Local::now();
+        let local_today = local_now.date_naive();
+        let today = Local.from_local_datetime(&local_today.and_hms_opt(0, 0, 0).unwrap())
+            .single()
+            .unwrap()
+            .with_timezone(&Utc);
+
+        // Start should be today (midnight local time, converted to UTC)
         assert_eq!(start, today);
         // End should be today + 7 days
         assert_eq!(end, today + Duration::days(7));
+
+        // Test "7d" which uses Upcoming (from now, not midnight)
+        let cq_upcoming = CalendarQuery::parse("calendar:7d");
+        let (start_up, end_up) = cq_upcoming.get_time_range(None);
+        let now = Utc::now();
+        // Upcoming should start within a second of now
+        assert!((start_up - now).num_seconds().abs() < 2);
+        // End should be ~7 days from start
+        assert_eq!((end_up - start_up).num_days(), 7);
+
+        // Test with explicit timezone
+        let cq_today = CalendarQuery::parse("calendar:today");
+        let (start_tz, _end_tz) = cq_today.get_time_range(Some("America/Argentina/Buenos_Aires"));
+        // Should successfully parse and return a valid time
+        assert!(start_tz <= Utc::now());
     }
 }
 

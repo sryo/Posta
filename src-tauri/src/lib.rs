@@ -118,6 +118,7 @@ pub fn run() {
             commands::run_oauth_flow,
             commands::get_accounts,
             commands::delete_account,
+            commands::update_account_signature,
             commands::get_cards,
             commands::create_card,
             commands::update_card,

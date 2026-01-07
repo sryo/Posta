@@ -12,15 +12,15 @@ export const SmartReplies = (props: SmartRepliesProps) => {
     const [loading, setLoading] = createSignal(false);
     const [error, setError] = createSignal<string | null>(null);
 
-    const projectId = () => localStorage.getItem("google_cloud_project_id") || "";
+    const apiKey = () => localStorage.getItem("gemini_api_key") || "";
 
     const fetchSuggestions = async () => {
-        if (!props.threadId || !props.accountId || !projectId()) return;
+        if (!props.threadId || !props.accountId || !apiKey()) return;
 
         setLoading(true);
         setError(null);
         try {
-            const results = await suggestReplies(props.accountId, props.threadId, projectId());
+            const results = await suggestReplies(props.accountId, props.threadId, apiKey());
             setSuggestions(results);
         } catch (e: any) {
             setError(typeof e === 'string' ? e : e.message);
@@ -30,13 +30,13 @@ export const SmartReplies = (props: SmartRepliesProps) => {
     };
 
     onMount(() => {
-        if (projectId()) {
+        if (apiKey()) {
             fetchSuggestions();
         }
     });
 
-    // Don't render if no project ID configured
-    if (!projectId()) return null;
+    // Don't render if no API key configured
+    if (!apiKey()) return null;
 
     return (
         <div class="smart-replies-container">

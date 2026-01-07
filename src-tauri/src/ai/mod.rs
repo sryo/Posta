@@ -1,12 +1,12 @@
+// Gemini API client for smart replies
 use serde::Deserialize;
 use serde_json::json;
 
-const API_ENDPOINT_TEMPLATE: &str = "https://us-central1-aiplatform.googleapis.com/v1/projects/{PROJECT_ID}/locations/us-central1/publishers/google/models/gemini-1.5-flash:generateContent";
+const API_ENDPOINT: &str = "https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent";
 
-pub struct VertexAiClient {
+pub struct GeminiClient {
     client: reqwest::Client,
-    access_token: String,
-    project_id: String,
+    api_key: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -29,17 +29,16 @@ struct Part {
     text: Option<String>,
 }
 
-impl VertexAiClient {
-    pub fn new(access_token: String, project_id: String) -> Self {
+impl GeminiClient {
+    pub fn new(api_key: String) -> Self {
         Self {
             client: reqwest::Client::new(),
-            access_token,
-            project_id,
+            api_key,
         }
     }
 
     pub async fn suggest_replies(&self, email_context: &str, user_email: &str) -> Result<Vec<String>, String> {
-        let url = API_ENDPOINT_TEMPLATE.replace("{PROJECT_ID}", &self.project_id);
+        let url = format!("{}?key={}", API_ENDPOINT, self.api_key);
 
         let prompt = format!(
             r#"You are an email assistant for {user_email}.
@@ -79,7 +78,6 @@ Example format: ["Reply 1", "Reply 2", "Reply 3"]"#,
 
         let resp = self.client
             .post(&url)
-            .bearer_auth(&self.access_token)
             .json(&body)
             .send()
             .await
@@ -88,14 +86,13 @@ Example format: ["Reply 1", "Reply 2", "Reply 3"]"#,
         if !resp.status().is_success() {
             let status = resp.status();
             let text = resp.text().await.unwrap_or_default();
-            return Err(format!("Vertex AI API error {}: {}", status, text));
+            return Err(format!("Gemini API error {}: {}", status, text));
         }
 
         let response: GenerationResponse = resp.json()
             .await
             .map_err(|e| format!("Failed to parse response: {}", e))?;
 
-        // Extract text
         if let Some(candidates) = response.candidates {
             if let Some(first) = candidates.first() {
                 if let Some(content) = &first.content {
@@ -114,7 +111,6 @@ Example format: ["Reply 1", "Reply 2", "Reply 3"]"#,
     }
 
     fn parse_json_list(&self, text: &str) -> Result<Vec<String>, String> {
-        // Clean up text (remove markdown codes if present)
         let clean_text = text.trim()
             .trim_start_matches("```json")
             .trim_start_matches("```")
