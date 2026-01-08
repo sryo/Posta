@@ -2355,6 +2355,7 @@ function App() {
   // Keyboard navigation focus state
   const [focusedCardId, setFocusedCardId] = createSignal<string | null>(null);
   const [focusedThreadIndex, setFocusedThreadIndex] = createSignal<number>(-1);
+  const [focusedEventIndex, setFocusedEventIndex] = createSignal<number>(-1);
 
   // Native context menu for attachments
   async function showAttachmentContextMenu(
@@ -3153,8 +3154,7 @@ function App() {
 
   // Helper to get all threads from a card as a flat array
   function getCardThreadsFlat(cardId: string): Thread[] {
-    const groups = cardThreads()[cardId] || [];
-    return groups.flatMap(g => g.threads);
+    return getDisplayGroups(cardId).flatMap(g => g.threads);
   }
 
   // Get the focused thread
@@ -3173,6 +3173,45 @@ function App() {
     if (idx < 0) return false;
     const threads = getCardThreadsFlat(cardId);
     return threads[idx]?.gmail_thread_id === threadId;
+  }
+
+  // Get flattened list of calendar events for a card
+  function getCardEventsFlat(cardId: string): GoogleCalendarEvent[] {
+    return getCalendarEventGroups(cardId).flatMap(g => g.events);
+  }
+
+  // Check if a specific event in a card is focused
+  function isEventFocused(cardId: string, eventId: string): boolean {
+    if (focusedCardId() !== cardId) return false;
+    const idx = focusedEventIndex();
+    if (idx < 0) return false;
+    const events = getCardEventsFlat(cardId);
+    return events[idx]?.id === eventId;
+  }
+
+  // Get the focused event
+  function getFocusedEvent(): GoogleCalendarEvent | null {
+    const cardId = focusedCardId();
+    const idx = focusedEventIndex();
+    if (!cardId || idx < 0) return null;
+    const events = getCardEventsFlat(cardId);
+    return events[idx] || null;
+  }
+
+  // Check if a card is a calendar card
+  function isCalendarCard(cardId: string): boolean {
+    const card = cards().find(c => c.id === cardId);
+    return card?.card_type === 'calendar';
+  }
+
+  // Scroll focused item into view after navigation
+  function scrollFocusedIntoView() {
+    requestAnimationFrame(() => {
+      const focused = document.querySelector('.thread.focused, .calendar-event-item.focused');
+      if (focused) {
+        focused.scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'nearest' });
+      }
+    });
   }
 
   // Global keyboard shortcuts
@@ -3260,6 +3299,7 @@ function App() {
       } else if (focusedCardId()) {
         setFocusedCardId(null);
         setFocusedThreadIndex(-1);
+        setFocusedEventIndex(-1);
       }
       return;
     }
@@ -3273,81 +3313,139 @@ function App() {
       return;
     }
 
-    // Card navigation - h/l for left/right between cards
-    if (e.key === 'h' || e.key === 'l') {
+    // Card navigation - h/l/ArrowLeft/ArrowRight for left/right between cards
+    if (e.key === 'h' || e.key === 'l' || e.key === 'ArrowLeft' || e.key === 'ArrowRight') {
       e.preventDefault();
       const cardsList = cards().filter(c => !collapsedCards()[c.id]);
       if (cardsList.length === 0) return;
 
+      const isRight = e.key === 'l' || e.key === 'ArrowRight';
       let cardId = focusedCardId();
 
       // If no focus, start at first or last card
       if (!cardId) {
-        const targetCard = e.key === 'l' ? cardsList[0] : cardsList[cardsList.length - 1];
+        const targetCard = isRight ? cardsList[0] : cardsList[cardsList.length - 1];
         setFocusedCardId(targetCard.id);
-        setFocusedThreadIndex(0);
+        // Set appropriate focus index based on card type
+        if (isCalendarCard(targetCard.id)) {
+          setFocusedEventIndex(0);
+          setFocusedThreadIndex(-1);
+        } else {
+          setFocusedThreadIndex(0);
+          setFocusedEventIndex(-1);
+        }
+        scrollFocusedIntoView();
         return;
       }
 
       const cardIndex = cardsList.findIndex(c => c.id === cardId);
-      const newCardIndex = e.key === 'l' ? cardIndex + 1 : cardIndex - 1;
+      const newCardIndex = isRight ? cardIndex + 1 : cardIndex - 1;
 
       if (newCardIndex >= 0 && newCardIndex < cardsList.length) {
-        setFocusedCardId(cardsList[newCardIndex].id);
-        setFocusedThreadIndex(0);
+        const newCardId = cardsList[newCardIndex].id;
+        setFocusedCardId(newCardId);
+        // Set appropriate focus index based on card type
+        if (isCalendarCard(newCardId)) {
+          setFocusedEventIndex(0);
+          setFocusedThreadIndex(-1);
+        } else {
+          setFocusedThreadIndex(0);
+          setFocusedEventIndex(-1);
+        }
+        scrollFocusedIntoView();
       }
       return;
     }
 
-    // Thread navigation - j/k for up/down
-    if (e.key === 'j' || e.key === 'k') {
+    // Item navigation - j/k/ArrowUp/ArrowDown for up/down within cards (threads or events)
+    if (e.key === 'j' || e.key === 'k' || e.key === 'ArrowDown' || e.key === 'ArrowUp') {
       e.preventDefault();
       const cardsList = cards().filter(c => !collapsedCards()[c.id]);
       if (cardsList.length === 0) return;
 
+      const isDown = e.key === 'j' || e.key === 'ArrowDown';
       let cardId = focusedCardId();
-      let idx = focusedThreadIndex();
 
-      // If no focus, start at first card first thread
+      // If no focus, start at first card
       if (!cardId) {
         cardId = cardsList[0].id;
-        idx = e.key === 'j' ? 0 : -1;
+        setFocusedCardId(cardId);
+        if (isCalendarCard(cardId)) {
+          setFocusedEventIndex(isDown ? 0 : -1);
+          setFocusedThreadIndex(-1);
+        } else {
+          setFocusedThreadIndex(isDown ? 0 : -1);
+          setFocusedEventIndex(-1);
+        }
+        scrollFocusedIntoView();
+        return;
       }
 
-      const threads = getCardThreadsFlat(cardId);
-      const newIdx = e.key === 'j' ? idx + 1 : idx - 1;
+      // Get items based on card type
+      const isCalendar = isCalendarCard(cardId);
+      const items = isCalendar ? getCardEventsFlat(cardId) : getCardThreadsFlat(cardId);
+      const idx = isCalendar ? focusedEventIndex() : focusedThreadIndex();
+      const newIdx = isDown ? idx + 1 : idx - 1;
 
-      if (newIdx >= 0 && newIdx < threads.length) {
+      if (newIdx >= 0 && newIdx < items.length) {
         // Move within same card
-        setFocusedCardId(cardId);
-        setFocusedThreadIndex(newIdx);
-      } else if (e.key === 'j' && newIdx >= threads.length) {
+        if (isCalendar) {
+          setFocusedEventIndex(newIdx);
+        } else {
+          setFocusedThreadIndex(newIdx);
+        }
+        scrollFocusedIntoView();
+      } else if (isDown && newIdx >= items.length) {
         // Move to next card
         const cardIndex = cardsList.findIndex(c => c.id === cardId);
         if (cardIndex < cardsList.length - 1) {
           const nextCardId = cardsList[cardIndex + 1].id;
           setFocusedCardId(nextCardId);
-          setFocusedThreadIndex(0);
+          if (isCalendarCard(nextCardId)) {
+            setFocusedEventIndex(0);
+            setFocusedThreadIndex(-1);
+          } else {
+            setFocusedThreadIndex(0);
+            setFocusedEventIndex(-1);
+          }
+          scrollFocusedIntoView();
         }
-      } else if (e.key === 'k' && newIdx < 0 && idx >= 0) {
+      } else if (!isDown && newIdx < 0 && idx >= 0) {
         // Move to previous card
         const cardIndex = cardsList.findIndex(c => c.id === cardId);
         if (cardIndex > 0) {
           const prevCardId = cardsList[cardIndex - 1].id;
-          const prevThreads = getCardThreadsFlat(prevCardId);
           setFocusedCardId(prevCardId);
-          setFocusedThreadIndex(prevThreads.length - 1);
+          if (isCalendarCard(prevCardId)) {
+            const prevItems = getCardEventsFlat(prevCardId);
+            setFocusedEventIndex(prevItems.length - 1);
+            setFocusedThreadIndex(-1);
+          } else {
+            const prevItems = getCardThreadsFlat(prevCardId);
+            setFocusedThreadIndex(prevItems.length - 1);
+            setFocusedEventIndex(-1);
+          }
+          scrollFocusedIntoView();
         }
       }
       return;
     }
 
-    // Enter to open thread view
+    // Enter to open thread or event view
     if (e.key === 'Enter') {
-      const thread = getFocusedThread();
       const cardId = focusedCardId();
-      if (thread && cardId) {
+      if (!cardId) return;
+
+      const thread = getFocusedThread();
+      if (thread) {
         openThread(thread.gmail_thread_id, cardId);
+        return;
+      }
+
+      const event = getFocusedEvent();
+      if (event) {
+        openEvent(event, cardId);
+        return;
       }
       return;
     }
@@ -3386,6 +3484,16 @@ function App() {
       if (e.key === 'f') {
         e.preventDefault();
         handleForward(thread.gmail_thread_id, cardId);
+        return;
+      }
+    }
+
+    // Quick actions on focused event
+    const event = getFocusedEvent();
+    if (event && cardId) {
+      if (e.key === 'r') {
+        e.preventDefault();
+        setQuickReplyEventId(event.id);
         return;
       }
     }
@@ -6668,10 +6776,11 @@ function App() {
                                       {(event) => (
                                         <>
                                         <div
-                                          class={`calendar-event-item ${event.response_status === "declined" ? "declined" : ""} ${selectedEvents()[card.id]?.has(event.id) ? "selected" : ""} ${quickReplyEventId() === event.id ? "replying" : ""}`}
+                                          class={`calendar-event-item ${event.response_status === "declined" ? "declined" : ""} ${selectedEvents()[card.id]?.has(event.id) ? "selected" : ""} ${isEventFocused(card.id, event.id) ? "focused" : ""} ${quickReplyEventId() === event.id ? "replying" : ""}`}
                                           onClick={() => openEvent(event, card.id)}
                                           onMouseEnter={() => showEventHoverActions(card.id, event.id)}
                                           onMouseLeave={hideEventHoverActions}
+                                          tabindex="0"
                                         >
                                           <div class="calendar-event-row">
                                             <span class="calendar-event-title">{event.title}</span>
@@ -6722,7 +6831,7 @@ function App() {
                                                 toggleEventSelection(card.id, event.id, e);
                                               }}
                                             />
-                                            <Show when={hoveredEvent() === event.id && eventActionsWheelOpen()}>
+                                            <Show when={(hoveredEvent() === event.id && eventActionsWheelOpen()) || isEventFocused(card.id, event.id)}>
                                               <ActionsWheel
                                                 cardId={card.id}
                                                 event={event}
