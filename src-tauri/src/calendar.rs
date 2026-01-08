@@ -773,7 +773,7 @@ impl CalendarQuery {
     pub fn get_time_range(&self, timezone: Option<&str>) -> (DateTime<Utc>, DateTime<Utc>) {
         let now = Utc::now();
 
-        // Calculate today's start using calendar timezone if provided, otherwise local
+        // Use calendar timezone for "today", fall back to local
         let today_start = if let Some(tz_str) = timezone {
             if let Ok(tz) = tz_str.parse::<Tz>() {
                 let tz_now = now.with_timezone(&tz);
@@ -783,7 +783,6 @@ impl CalendarQuery {
                     .map(|dt| dt.with_timezone(&Utc))
                     .unwrap_or_else(|| now.date_naive().and_hms_opt(0, 0, 0).unwrap().and_utc())
             } else {
-                // Invalid timezone string, fall back to local
                 let local_now = Local::now();
                 let local_today = local_now.date_naive();
                 Local.from_local_datetime(&local_today.and_hms_opt(0, 0, 0).unwrap())
@@ -792,7 +791,6 @@ impl CalendarQuery {
                     .with_timezone(&Utc)
             }
         } else {
-            // No timezone provided, use local
             let local_now = Local::now();
             let local_today = local_now.date_naive();
             Local.from_local_datetime(&local_today.and_hms_opt(0, 0, 0).unwrap())

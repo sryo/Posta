@@ -3204,13 +3204,12 @@ function App() {
     return card?.card_type === 'calendar';
   }
 
-  // Scroll focused item into view after navigation
   function scrollFocusedIntoView() {
     requestAnimationFrame(() => {
+      const focusedCard = document.querySelector('.card-wrapper:has(.card.card-focused)');
+      focusedCard?.scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'center' });
       const focused = document.querySelector('.thread.focused, .calendar-event-item.focused');
-      if (focused) {
-        focused.scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'nearest' });
-      }
+      focused?.scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'nearest' });
     });
   }
 
@@ -3322,11 +3321,26 @@ function App() {
       const isRight = e.key === 'l' || e.key === 'ArrowRight';
       let cardId = focusedCardId();
 
-      // If no focus, start at first or last card
       if (!cardId) {
+        // From add card form, go back to last card
+        if (addingCard() && !isRight) {
+          setAddingCard(false);
+          if (cardsList.length > 0) {
+            const lastCard = cardsList[cardsList.length - 1];
+            setFocusedCardId(lastCard.id);
+            if (isCalendarCard(lastCard.id)) {
+              setFocusedEventIndex(0);
+              setFocusedThreadIndex(-1);
+            } else {
+              setFocusedThreadIndex(0);
+              setFocusedEventIndex(-1);
+            }
+            scrollFocusedIntoView();
+          }
+          return;
+        }
         const targetCard = isRight ? cardsList[0] : cardsList[cardsList.length - 1];
         setFocusedCardId(targetCard.id);
-        // Set appropriate focus index based on card type
         if (isCalendarCard(targetCard.id)) {
           setFocusedEventIndex(0);
           setFocusedThreadIndex(-1);
@@ -3344,7 +3358,6 @@ function App() {
       if (newCardIndex >= 0 && newCardIndex < cardsList.length) {
         const newCardId = cardsList[newCardIndex].id;
         setFocusedCardId(newCardId);
-        // Set appropriate focus index based on card type
         if (isCalendarCard(newCardId)) {
           setFocusedEventIndex(0);
           setFocusedThreadIndex(-1);
@@ -3353,6 +3366,30 @@ function App() {
           setFocusedEventIndex(-1);
         }
         scrollFocusedIntoView();
+      } else if (isRight && newCardIndex >= cardsList.length && !addingCard()) {
+        // Past last card - open add card form
+        setFocusedCardId(null);
+        setFocusedThreadIndex(-1);
+        setFocusedEventIndex(-1);
+        setNewCardColor(null);
+        setQueryPreviewThreads([]);
+        setQueryPreviewCalendarEvents([]);
+        setQueryPreviewLoading(false);
+        setAddingCard(true);
+      } else if (!isRight && newCardIndex < 0 && addingCard()) {
+        setAddingCard(false);
+        if (cardsList.length > 0) {
+          const lastCard = cardsList[cardsList.length - 1];
+          setFocusedCardId(lastCard.id);
+          if (isCalendarCard(lastCard.id)) {
+            setFocusedEventIndex(0);
+            setFocusedThreadIndex(-1);
+          } else {
+            setFocusedThreadIndex(0);
+            setFocusedEventIndex(-1);
+          }
+          scrollFocusedIntoView();
+        }
       }
       return;
     }
@@ -4178,7 +4215,6 @@ function App() {
     const threadId = activeThreadId();
     if (!threadId) return;
 
-    // Set up inline reply below the message
     setReplyingToThread({ threadId, messageId });
     setComposeTo(to);
     setComposeCc(cc);
@@ -4189,19 +4225,15 @@ function App() {
     setFocusComposeBody(true);
     setComposing(true);
 
-    // Focus the message being replied to
     const thread = activeThread();
     if (thread) {
       const messageIndex = thread.messages.findIndex(m => m.id === messageId);
-      if (messageIndex >= 0) {
-        setFocusedMessageIndex(messageIndex);
-      }
+      if (messageIndex >= 0) setFocusedMessageIndex(messageIndex);
     }
   }
 
   function handleForwardFromThread(subject: string, body: string) {
     const threadId = activeThreadId();
-    // Set up inline forward below the message
     setForwardingThread({ threadId: threadId || '', subject, body });
     setComposeTo("");
     setComposeCc("");
