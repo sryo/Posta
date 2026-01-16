@@ -43,6 +43,9 @@
     "homepage": "https://github.com/sryo/Posta",
     "macOS": {
       "minimumSystemVersion": "10.15"
+    },
+    "windows": {
+      "targets": ["nsis"]
     }
   },
   "plugins": {
