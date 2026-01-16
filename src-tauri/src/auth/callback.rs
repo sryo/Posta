@@ -115,52 +115,34 @@ pub fn wait_for_callback(timeout_secs: u64) -> Result<CallbackResult, String> {
         .map_err(|_| "Timeout waiting for OAuth callback".to_string())?
 }
 
-fn extract_code_and_state(request: &str) -> Option<(String, Option<String>)> {
-    // Parse: GET /callback?code=xxx&state=yyy HTTP/1.1
+/// Extract query string from HTTP request line (e.g., "GET /callback?code=xxx HTTP/1.1")
+fn extract_query_string(request: &str) -> Option<&str> {
     let parts: Vec<&str> = request.split_whitespace().collect();
-    if parts.len() < 2 {
-        return None;
-    }
-
     let path = parts.get(1)?;
     let query_start = path.find('?')?;
-    let query = &path[query_start + 1..];
-
-    let mut code = None;
-    let mut state = None;
-
-    for param in query.split('&') {
-        let kv: Vec<&str> = param.splitn(2, '=').collect();
-        if kv.len() == 2 {
-            match kv[0] {
-                "code" => code = urlencoding::decode(kv[1]).ok().map(|s| s.to_string()),
-                "state" => state = urlencoding::decode(kv[1]).ok().map(|s| s.to_string()),
-                _ => {}
-            }
-        }
-    }
-
-    code.map(|c| (c, state))
+    Some(&path[query_start + 1..])
 }
 
-fn extract_error_from_request(request: &str) -> Option<String> {
-    let parts: Vec<&str> = request.split_whitespace().collect();
-    if parts.len() < 2 {
-        return None;
-    }
-
-    let path = parts.get(1)?;
-    let query_start = path.find('?')?;
-    let query = &path[query_start + 1..];
-
+/// Get a query parameter value by key
+fn get_query_param(query: &str, key: &str) -> Option<String> {
     for param in query.split('&') {
         let kv: Vec<&str> = param.splitn(2, '=').collect();
-        if kv.len() == 2 && kv[0] == "error_description" {
-            return Some(urlencoding::decode(kv[1]).ok()?.to_string());
-        }
-        if kv.len() == 2 && kv[0] == "error" {
-            return Some(urlencoding::decode(kv[1]).ok()?.to_string());
+        if kv.len() == 2 && kv[0] == key {
+            return urlencoding::decode(kv[1]).ok().map(|s| s.to_string());
         }
     }
     None
+}
+
+fn extract_code_and_state(request: &str) -> Option<(String, Option<String>)> {
+    let query = extract_query_string(request)?;
+    let code = get_query_param(query, "code")?;
+    let state = get_query_param(query, "state");
+    Some((code, state))
+}
+
+fn extract_error_from_request(request: &str) -> Option<String> {
+    let query = extract_query_string(request)?;
+    get_query_param(query, "error_description")
+        .or_else(|| get_query_param(query, "error"))
 }

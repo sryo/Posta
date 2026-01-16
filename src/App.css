@@ -2607,7 +2607,9 @@ button:disabled:hover {
 .thread:hover .thread-checkbox-wrap,
 .thread.selected .thread-checkbox-wrap,
 .thread.focused .thread-checkbox-wrap,
-.calendar-event-item:hover .thread-checkbox-wrap {
+.calendar-event-item:hover .thread-checkbox-wrap,
+.calendar-event-item.selected .thread-checkbox-wrap,
+.calendar-event-item.focused .thread-checkbox-wrap {
     opacity: 1;
 }
 
@@ -2643,8 +2645,17 @@ button:disabled:hover {
 /* Hide time and attachment icon when showing checkbox */
 .thread:hover .thread-time,
 .thread.selected .thread-time,
+.thread.focused .thread-time,
 .thread:hover .thread-indicator,
-.thread.selected .thread-indicator {
+.thread.selected .thread-indicator,
+.thread.focused .thread-indicator {
+    opacity: 0;
+}
+
+/* Hide event time when showing checkbox */
+.calendar-event-item:hover .calendar-event-time-compact,
+.calendar-event-item.selected .calendar-event-time-compact,
+.calendar-event-item.focused .calendar-event-time-compact {
     opacity: 0;
 }
 

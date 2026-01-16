@@ -122,6 +122,7 @@ import {
   formatEmailDate,
   formatCalendarEventDate,
   decodeHtmlEntities,
+  getResponseStatusLabel,
 } from "./utils";
 import "./App.css";
 import {
@@ -1707,16 +1708,6 @@ const EventView = (props: {
     return `${startDate}, ${startTimeStr}${endTimeStr ? ` - ${endTimeStr}` : ''}`;
   };
 
-  const getResponseLabel = (status: string | null) => {
-    switch (status) {
-      case "accepted": return "Going";
-      case "tentative": return "Maybe";
-      case "declined": return "Declined";
-      case "needsAction": return "Pending";
-      default: return status || "No response";
-    }
-  };
-
   return (
     <div class={`thread-overlay ${closing() ? 'closing' : ''}`} style={props.focusColor ? { '--message-focused-color': props.focusColor } as any : undefined}>
       <div class="thread-floating-bar">
@@ -1876,7 +1867,7 @@ const EventView = (props: {
                     <div class="event-rsvp-section">
                       <div class="event-rsvp-current">
                         Your response: <span class={`event-rsvp-status ${props.event!.response_status}`}>
-                          {getResponseLabel(props.event!.response_status)}
+                          {getResponseStatusLabel(props.event!.response_status)}
                         </span>
                       </div>
                       <div class="event-rsvp-buttons">
@@ -1918,7 +1909,7 @@ const EventView = (props: {
                                 {attendee.is_organizer && <span class="event-attendee-badge">Organizer</span>}
                               </span>
                               <span class={`event-attendee-status ${attendee.response_status || ''}`}>
-                                {getResponseLabel(attendee.response_status)}
+                                {getResponseStatusLabel(attendee.response_status)}
                               </span>
                             </div>
                           )}
@@ -2233,6 +2224,7 @@ function App() {
   const [toastVisible, setToastVisible] = createSignal(false);
   const [toastClosing, setToastClosing] = createSignal(false);
   const [simpleToastMessage, setSimpleToastMessage] = createSignal<string | null>(null);
+  const [toastKey, setToastKey] = createSignal(0); // Key to force toast remount for animation restart
   let toastTimeoutId: number | undefined;
 
   // Undo send state
@@ -2486,13 +2478,6 @@ function App() {
       clearTimeout(hoverActionsTimeout);
       hoverActionsTimeout = undefined;
     }
-    // If threads are selected, don't show hover actions on non-selected threads
-    const hasSelection = (selectedThreads()[cardId]?.size || 0) > 0;
-    const isSelected = selectedThreads()[cardId]?.has(threadId);
-
-    if (hasSelection && !isSelected) {
-      return;
-    }
 
     // Close event wheel when showing thread wheel
     setEventActionsWheelOpen(false);
@@ -2513,13 +2498,6 @@ function App() {
     if (hoverEventActionsTimeout) {
       clearTimeout(hoverEventActionsTimeout);
       hoverEventActionsTimeout = undefined;
-    }
-    // If events are selected, don't show hover actions on non-selected events
-    const hasSelection = (selectedEvents()[cardId]?.size || 0) > 0;
-    const isSelected = selectedEvents()[cardId]?.has(eventId);
-
-    if (hasSelection && !isSelected) {
-      return;
     }
 
     // Close thread wheel when showing event wheel
@@ -3499,7 +3477,8 @@ function App() {
       }
       if (e.key === 's') {
         e.preventDefault();
-        handleThreadAction('star', [thread.gmail_thread_id], cardId);
+        const isStarred = thread.labels?.includes("STARRED") ?? false;
+        handleThreadAction(isStarred ? 'unstar' : 'star', [thread.gmail_thread_id], cardId);
         return;
       }
       if (e.key === 'd' || e.key === '#') {
@@ -3515,7 +3494,14 @@ function App() {
       }
       if (e.key === 'u') {
         e.preventDefault();
-        handleThreadAction('unread', [thread.gmail_thread_id], cardId);
+        const isRead = (thread.unread_count ?? 0) === 0;
+        handleThreadAction(isRead ? 'unread' : 'read', [thread.gmail_thread_id], cardId);
+        return;
+      }
+      if (e.key === 'i') {
+        e.preventDefault();
+        const isImportant = thread.labels?.includes("IMPORTANT") ?? false;
+        handleThreadAction(isImportant ? 'notImportant' : 'important', [thread.gmail_thread_id], cardId);
         return;
       }
       if (e.key === 'f') {
@@ -3547,8 +3533,22 @@ function App() {
   });
 
   function handleGlobalClick(e: MouseEvent) {
-    // Close account chooser when clicking outside
     const target = e.target as HTMLElement;
+
+    // Intercept clicks on links to open in external browser
+    const link = target.closest('a') as HTMLAnchorElement | null;
+    if (link && link.href) {
+      const href = link.href;
+      // Only intercept http/https links (not javascript:, mailto:, etc.)
+      if (href.startsWith('http://') || href.startsWith('https://')) {
+        e.preventDefault();
+        e.stopPropagation();
+        openUrl(href);
+        return;
+      }
+    }
+
+    // Close account chooser when clicking outside
     if (accountChooserOpen() && !target.closest('.account-chooser-container')) {
       setAccountChooserOpen(false);
     }
@@ -5613,6 +5613,7 @@ function App() {
     clearTimeout(toastTimeoutId);
     setSimpleToastMessage(message || null);
     setToastClosing(false);
+    setToastKey(k => k + 1); // Increment key to force remount and restart animation
     setToastVisible(true);
     toastTimeoutId = window.setTimeout(() => {
       hideToast();
@@ -6703,10 +6704,7 @@ function App() {
                                           </Show>
                                           <Show when={event.response_status}>
                                             <div class={`calendar-event-response ${event.response_status}`}>
-                                              {event.response_status === "accepted" ? "Going" :
-                                                event.response_status === "tentative" ? "Maybe" :
-                                                  event.response_status === "declined" ? "Declined" :
-                                                    event.response_status === "needsAction" ? "Pending" : event.response_status}
+                                              {getResponseStatusLabel(event.response_status)}
                                             </div>
                                           </Show>
                                         </div>
@@ -6831,10 +6829,7 @@ function App() {
                                           </Show>
                                           <Show when={event.response_status}>
                                             <div class={`calendar-event-response ${event.response_status}`}>
-                                              {event.response_status === "accepted" ? "Going" :
-                                                event.response_status === "tentative" ? "Maybe" :
-                                                  event.response_status === "declined" ? "Declined" :
-                                                    event.response_status === "needsAction" ? "Pending" : event.response_status}
+                                              {getResponseStatusLabel(event.response_status)}
                                             </div>
                                           </Show>
                                           <Show when={event.hangout_link}>
@@ -6867,7 +6862,7 @@ function App() {
                                               <ActionsWheel
                                                 cardId={card.id}
                                                 event={event}
-                                                selectedCount={selectedEvents()[card.id]?.size || 0}
+                                                selectedCount={selectedEvents()[card.id]?.has(event.id) ? (selectedEvents()[card.id]?.size || 0) : 0}
                                                 open={true}
                                                 onClose={() => setEventActionsWheelOpen(false)}
                                               />
@@ -7059,7 +7054,7 @@ function App() {
                                                   cardId={card.id}
                                                   threadId={thread.gmail_thread_id}
                                                   thread={thread}
-                                                  selectedCount={selectedThreads()[card.id]?.size || 0}
+                                                  selectedCount={selectedThreads()[card.id]?.has(thread.gmail_thread_id) ? (selectedThreads()[card.id]?.size || 0) : 0}
                                                   open={true}
                                                   onClose={() => setActionsWheelOpen(false)}
                                                 />
@@ -7192,10 +7187,7 @@ function App() {
                                   </Show>
                                   <Show when={event.response_status}>
                                     <div class={`calendar-event-response ${event.response_status}`}>
-                                      {event.response_status === "accepted" ? "Going" :
-                                        event.response_status === "tentative" ? "Maybe" :
-                                          event.response_status === "declined" ? "Declined" :
-                                            event.response_status === "needsAction" ? "Pending" : event.response_status}
+                                      {getResponseStatusLabel(event.response_status)}
                                     </div>
                                   </Show>
                                 </div>
@@ -8131,23 +8123,23 @@ function App() {
         })()}
       </Show>
 
-      {/* Undo Toast */}
-      <Show when={toastVisible()}>
-        <div class={`undo-toast ${toastClosing() ? 'closing' : ''}`}>
-          <Show when={!simpleToastMessage()}>
+      {/* Undo Toast - For with key forces remount to restart progress bar animation */}
+      <For each={toastVisible() ? [toastKey()] : []}>
+        {() => (
+          <div class={`undo-toast ${toastClosing() ? 'closing' : ''}`}>
             <div class="toast-progress"></div>
-          </Show>
-          <div class="toast-content">
-            <span class="toast-message">{simpleToastMessage() || (lastAction() ? getActionLabel(lastAction()!.action, lastAction()!.threadIds.length) : '')}</span>
-            <Show when={!simpleToastMessage() && lastAction()}>
-              <button class="toast-undo-btn" onClick={undoLastAction}>Undo <span class="shortcut-hint">z</span></button>
-            </Show>
-            <button class="toast-close-btn" onClick={hideToast} title="Dismiss">
-              <CloseIcon />
-            </button>
+            <div class="toast-content">
+              <span class="toast-message">{simpleToastMessage() || (lastAction() ? getActionLabel(lastAction()!.action, lastAction()!.threadIds.length) : '')}</span>
+              <Show when={!simpleToastMessage() && lastAction()}>
+                <button class="toast-undo-btn" onClick={undoLastAction}>Undo <span class="shortcut-hint">z</span></button>
+              </Show>
+              <button class="toast-close-btn" onClick={hideToast} title="Dismiss">
+                <CloseIcon />
+              </button>
+            </div>
           </div>
-        </div>
-      </Show>
+        )}
+      </For>
 
       {/* Send Toast with Undo */}
       <Show when={sendToastVisible()}>

@@ -35,6 +35,50 @@ impl Default for AppState {
     }
 }
 
+// --- Helper functions to reduce boilerplate ---
+
+/// Get app data directory from handle
+fn get_app_data_dir(app_handle: &tauri::AppHandle) -> Result<std::path::PathBuf, String> {
+    app_handle
+        .path()
+        .app_data_dir()
+        .map_err(|e| format!("Failed to get app data dir: {}", e))
+}
+
+/// Execute a closure with database access
+fn with_db<T, F>(state: &AppState, f: F) -> Result<T, String>
+where
+    F: FnOnce(&CacheDb) -> Result<T, String>,
+{
+    let db_guard = state.db.lock().map_err(|_| "Lock error")?;
+    let db = db_guard.as_ref().ok_or("Database not initialized")?;
+    f(db)
+}
+
+/// Verify that an account exists
+fn verify_account_exists(state: &AppState, account_id: &str) -> Result<(), String> {
+    with_db(state, |db| {
+        let accounts = db.get_accounts().map_err(|e| e.to_string())?;
+        if accounts.iter().any(|a| a.id == account_id) {
+            Ok(())
+        } else {
+            Err("Account not found".to_string())
+        }
+    })
+}
+
+/// Get email address for an account
+fn get_account_email(state: &AppState, account_id: &str) -> Result<String, String> {
+    with_db(state, |db| {
+        let accounts = db.get_accounts().map_err(|e| e.to_string())?;
+        accounts
+            .into_iter()
+            .find(|a| a.id == account_id)
+            .map(|a| a.email)
+            .ok_or_else(|| "Account not found".to_string())
+    })
+}
+
 // Sync all cards to iCloud after any card operation
 fn sync_cards_to_icloud(state: &AppState) {
     let db_guard = match state.db.lock() {
@@ -86,10 +130,7 @@ pub struct AuthUrl {
 
 #[tauri::command]
 pub fn init_app(app_handle: tauri::AppHandle, state: State<'_, AppState>) -> Result<(), String> {
-    let app_dir = app_handle
-        .path()
-        .app_data_dir()
-        .map_err(|e| format!("Failed to get app data dir: {}", e))?;
+    let app_dir = get_app_data_dir(&app_handle)?;
 
     tracing::info!("App data dir: {:?}", app_dir);
 
@@ -127,11 +168,7 @@ pub fn init_app(app_handle: tauri::AppHandle, state: State<'_, AppState>) -> Res
 
 #[tauri::command]
 pub async fn configure_auth(config: AuthConfig, app_handle: tauri::AppHandle, state: State<'_, AppState>) -> Result<(), String> {
-    // Get app data directory
-    let app_data_dir = app_handle
-        .path()
-        .app_data_dir()
-        .map_err(|e| format!("Failed to get app data dir: {}", e))?;
+    let app_data_dir = get_app_data_dir(&app_handle)?;
 
     // Store credentials securely
     auth::store_oauth_credentials(&config.client_id, &config.client_secret, &app_data_dir)
@@ -150,10 +187,7 @@ pub struct StoredCredentials {
 
 #[tauri::command]
 pub fn get_stored_credentials(app_handle: tauri::AppHandle) -> Result<Option<AuthConfig>, String> {
-    let app_data_dir = app_handle
-        .path()
-        .app_data_dir()
-        .map_err(|e| format!("Failed to get app data dir: {}", e))?;
+    let app_data_dir = get_app_data_dir(&app_handle)?;
 
     match auth::get_oauth_credentials(&app_data_dir) {
         Ok(creds) => Ok(Some(AuthConfig {
@@ -210,10 +244,7 @@ pub async fn run_oauth_flow(
     app_handle: tauri::AppHandle,
     state: State<'_, AppState>,
 ) -> Result<Account, String> {
-    let _app_data_dir = app_handle
-        .path()
-        .app_data_dir()
-        .map_err(|e| format!("Failed to get app data dir: {}", e))?;
+    let _app_data_dir = get_app_data_dir(&app_handle)?;
 
     // Start OAuth flow and get authorization URL
     let (auth_url, _csrf_token) = {
@@ -269,10 +300,7 @@ async fn finalize_oauth(
     let account = Account::new(user_info.email, user_info.picture);
 
     // Get app data directory for secure storage
-    let app_data_dir = app_handle
-        .path()
-        .app_data_dir()
-        .map_err(|e| format!("Failed to get app data dir: {}", e))?;
+    let app_data_dir = get_app_data_dir(&app_handle)?;
 
     // Store refresh token securely
     auth::store_refresh_token(&account.id, refresh_token, &app_data_dir)
@@ -327,10 +355,7 @@ pub fn get_accounts(state: State<'_, AppState>) -> Result<Vec<Account>, String> 
 
 #[tauri::command]
 pub fn delete_account(account_id: String, app_handle: tauri::AppHandle, state: State<'_, AppState>) -> Result<(), String> {
-    let app_data_dir = app_handle
-        .path()
-        .app_data_dir()
-        .map_err(|e| format!("Failed to get app data dir: {}", e))?;
+    let app_data_dir = get_app_data_dir(&app_handle)?;
 
     // Delete from database
     {
@@ -354,9 +379,7 @@ pub fn update_account_signature(account_id: String, signature: Option<String>, s
 
 #[tauri::command]
 pub fn get_cards(account_id: String, state: State<'_, AppState>) -> Result<Vec<Card>, String> {
-    let db_guard = state.db.lock().map_err(|_| "Lock error")?;
-    let db = db_guard.as_ref().ok_or("Database not initialized")?;
-    db.get_cards(&account_id).map_err(|e| e.to_string())
+    with_db(&state, |db| db.get_cards(&account_id).map_err(|e| e.to_string()))
 }
 
 #[tauri::command]
@@ -476,10 +499,7 @@ pub async fn fetch_threads(
     app_handle: tauri::AppHandle,
     state: State<'_, AppState>,
 ) -> Result<Vec<ThreadGroup>, String> {
-    let app_data_dir = app_handle
-        .path()
-        .app_data_dir()
-        .map_err(|e| format!("Failed to get app data dir: {}", e))?;
+    let app_data_dir = get_app_data_dir(&app_handle)?;
 
     let (account, card) = get_account_and_card(&state, &account_id, &card_id)?;
     let access_token = get_access_token(&state, &account.id, &app_data_dir).await?;
@@ -500,10 +520,7 @@ pub async fn fetch_threads_paginated(
     page_token: Option<String>,
     app_handle: tauri::AppHandle, state: State<'_, AppState>,
 ) -> Result<SearchResult, String> {
-    let app_data_dir = app_handle
-        .path()
-        .app_data_dir()
-        .map_err(|e| format!("Failed to get app data dir: {}", e))?;
+    let app_data_dir = get_app_data_dir(&app_handle)?;
 
     tracing::info!("fetch_threads_paginated for card: {}, page_token: {:?}", card_id, page_token);
 
@@ -535,10 +552,7 @@ pub async fn sync_threads_incremental(
     account_id: String,
     app_handle: tauri::AppHandle, state: State<'_, AppState>,
 ) -> Result<IncrementalSyncResult, String> {
-    let app_data_dir = app_handle
-        .path()
-        .app_data_dir()
-        .map_err(|e| format!("Failed to get app data dir: {}", e))?;
+    let app_data_dir = get_app_data_dir(&app_handle)?;
 
     tracing::info!("sync_threads_incremental for account: {}", account_id);
 
@@ -651,21 +665,9 @@ pub async fn modify_threads(
     remove_labels: Vec<String>,
     app_handle: tauri::AppHandle, state: State<'_, AppState>,
 ) -> Result<(), String> {
-    let app_data_dir = app_handle
-        .path()
-        .app_data_dir()
-        .map_err(|e| format!("Failed to get app data dir: {}", e))?;
+    let app_data_dir = get_app_data_dir(&app_handle)?;
 
-    // Verify account exists
-    {
-        let db_guard = state.db.lock().map_err(|_| "Lock error")?;
-        let db = db_guard.as_ref().ok_or("Database not initialized")?;
-        let accounts = db.get_accounts().map_err(|e| e.to_string())?;
-
-        if !accounts.iter().any(|a| a.id == account_id) {
-             return Err("Account not found".to_string());
-        }
-    }
+    verify_account_exists(&state, &account_id)?;
 
     let access_token = get_access_token(&state, &account_id, &app_data_dir).await?;
     let gmail = std::sync::Arc::new(GmailClient::new(access_token));
@@ -703,21 +705,9 @@ pub async fn search_threads_preview(
     query: String,
     app_handle: tauri::AppHandle, state: State<'_, AppState>,
 ) -> Result<Vec<ThreadGroup>, String> {
-    let app_data_dir = app_handle
-        .path()
-        .app_data_dir()
-        .map_err(|e| format!("Failed to get app data dir: {}", e))?;
+    let app_data_dir = get_app_data_dir(&app_handle)?;
 
-    // Verify account exists
-    {
-        let db_guard = state.db.lock().map_err(|_| "Lock error")?;
-        let db = db_guard.as_ref().ok_or("Database not initialized")?;
-        let accounts = db.get_accounts().map_err(|e| e.to_string())?;
-
-        if !accounts.iter().any(|a| a.id == account_id) {
-             return Err("Account not found".to_string());
-        }
-    }
+    verify_account_exists(&state, &account_id)?;
 
     let access_token = get_access_token(&state, &account_id, &app_data_dir).await?;
     let gmail = GmailClient::new(access_token);
@@ -735,21 +725,9 @@ pub async fn get_thread_details(
     thread_id: String,
     app_handle: tauri::AppHandle, state: State<'_, AppState>,
 ) -> Result<crate::gmail::FullThread, String> {
-    let app_data_dir = app_handle
-        .path()
-        .app_data_dir()
-        .map_err(|e| format!("Failed to get app data dir: {}", e))?;
+    let app_data_dir = get_app_data_dir(&app_handle)?;
 
-    // Verify account exists
-    {
-        let db_guard = state.db.lock().map_err(|_| "Lock error")?;
-        let db = db_guard.as_ref().ok_or("Database not initialized")?;
-        let accounts = db.get_accounts().map_err(|e| e.to_string())?;
-        
-        if !accounts.iter().any(|a| a.id == account_id) {
-             return Err("Account not found".to_string());
-        }
-    }
+    verify_account_exists(&state, &account_id)?;
 
     let access_token = get_access_token(&state, &account_id, &app_data_dir).await?;
     let gmail = GmailClient::new(access_token);
@@ -769,21 +747,9 @@ pub async fn send_email(
     is_html: Option<bool>,
     app_handle: tauri::AppHandle, state: State<'_, AppState>,
 ) -> Result<(), String> {
-    let app_data_dir = app_handle
-        .path()
-        .app_data_dir()
-        .map_err(|e| format!("Failed to get app data dir: {}", e))?;
+    let app_data_dir = get_app_data_dir(&app_handle)?;
 
-    // Verify account exists
-    {
-        let db_guard = state.db.lock().map_err(|_| "Lock error")?;
-        let db = db_guard.as_ref().ok_or("Database not initialized")?;
-        let accounts = db.get_accounts().map_err(|e| e.to_string())?;
-
-        if !accounts.iter().any(|a| a.id == account_id) {
-             return Err("Account not found".to_string());
-        }
-    }
+    verify_account_exists(&state, &account_id)?;
 
     let access_token = get_access_token(&state, &account_id, &app_data_dir).await?;
     let gmail = GmailClient::new(access_token);
@@ -805,21 +771,9 @@ pub async fn reply_to_thread(
     is_html: Option<bool>,
     app_handle: tauri::AppHandle, state: State<'_, AppState>,
 ) -> Result<(), String> {
-    let app_data_dir = app_handle
-        .path()
-        .app_data_dir()
-        .map_err(|e| format!("Failed to get app data dir: {}", e))?;
+    let app_data_dir = get_app_data_dir(&app_handle)?;
 
-    // Verify account exists
-    {
-        let db_guard = state.db.lock().map_err(|_| "Lock error")?;
-        let db = db_guard.as_ref().ok_or("Database not initialized")?;
-        let accounts = db.get_accounts().map_err(|e| e.to_string())?;
-
-        if !accounts.iter().any(|a| a.id == account_id) {
-             return Err("Account not found".to_string());
-        }
-    }
+    verify_account_exists(&state, &account_id)?;
 
     let access_token = get_access_token(&state, &account_id, &app_data_dir).await?;
     let gmail = GmailClient::new(access_token);
@@ -837,23 +791,8 @@ pub async fn send_reaction(
     app_handle: tauri::AppHandle,
     state: State<'_, AppState>,
 ) -> Result<(), String> {
-    let app_data_dir = app_handle
-        .path()
-        .app_data_dir()
-        .map_err(|e| format!("Failed to get app data dir: {}", e))?;
-
-    // Get account email
-    let from_email = {
-        let db_guard = state.db.lock().map_err(|_| "Lock error")?;
-        let db = db_guard.as_ref().ok_or("Database not initialized")?;
-        let accounts = db.get_accounts().map_err(|e| e.to_string())?;
-        accounts
-            .iter()
-            .find(|a| a.id == account_id)
-            .map(|a| a.email.clone())
-            .ok_or("Account not found")?
-    };
-
+    let app_data_dir = get_app_data_dir(&app_handle)?;
+    let from_email = get_account_email(&state, &account_id)?;
     let access_token = get_access_token(&state, &account_id, &app_data_dir).await?;
     let gmail = GmailClient::new(access_token);
 
@@ -872,18 +811,17 @@ pub fn get_cached_card_threads(
     card_id: String,
     state: State<'_, AppState>,
 ) -> Result<Option<CachedCardThreads>, String> {
-    let db_guard = state.db.lock().map_err(|_| "Lock error")?;
-    let db = db_guard.as_ref().ok_or("Database not initialized")?;
-
-    match db.get_card_threads(&card_id) {
-        Ok(Some((groups, next_page_token, cached_at))) => Ok(Some(CachedCardThreads {
-            groups,
-            next_page_token,
-            cached_at,
-        })),
-        Ok(None) => Ok(None),
-        Err(e) => Err(e.to_string()),
-    }
+    with_db(&state, |db| {
+        match db.get_card_threads(&card_id) {
+            Ok(Some((groups, next_page_token, cached_at))) => Ok(Some(CachedCardThreads {
+                groups,
+                next_page_token,
+                cached_at,
+            })),
+            Ok(None) => Ok(None),
+            Err(e) => Err(e.to_string()),
+        }
+    })
 }
 
 #[tauri::command]
@@ -893,20 +831,15 @@ pub fn save_cached_card_threads(
     next_page_token: Option<String>,
     state: State<'_, AppState>,
 ) -> Result<(), String> {
-    let db_guard = state.db.lock().map_err(|_| "Lock error")?;
-    let db = db_guard.as_ref().ok_or("Database not initialized")?;
-
-    db.save_card_threads(&card_id, &groups, next_page_token.as_deref())
-        .map_err(|e| e.to_string())
+    with_db(&state, |db| {
+        db.save_card_threads(&card_id, &groups, next_page_token.as_deref())
+            .map_err(|e| e.to_string())
+    })
 }
 
 #[tauri::command]
 pub fn clear_card_cache(card_id: String, state: State<'_, AppState>) -> Result<(), String> {
-    let db_guard = state.db.lock().map_err(|_| "Lock error")?;
-    let db = db_guard.as_ref().ok_or("Database not initialized")?;
-
-
-    db.clear_card_cache(&card_id).map_err(|e| e.to_string())
+    with_db(&state, |db| db.clear_card_cache(&card_id).map_err(|e| e.to_string()))
 }
 
 #[derive(Debug, Serialize)]
@@ -920,17 +853,16 @@ pub fn get_cached_card_events(
     card_id: String,
     state: State<'_, AppState>,
 ) -> Result<Option<CachedCardEvents>, String> {
-    let db_guard = state.db.lock().map_err(|_| "Lock error")?;
-    let db = db_guard.as_ref().ok_or("Database not initialized")?;
-
-    match db.get_card_events(&card_id) {
-        Ok(Some((events, cached_at))) => Ok(Some(CachedCardEvents {
-            events,
-            cached_at,
-        })),
-        Ok(None) => Ok(None),
-        Err(e) => Err(e.to_string()),
-    }
+    with_db(&state, |db| {
+        match db.get_card_events(&card_id) {
+            Ok(Some((events, cached_at))) => Ok(Some(CachedCardEvents {
+                events,
+                cached_at,
+            })),
+            Ok(None) => Ok(None),
+            Err(e) => Err(e.to_string()),
+        }
+    })
 }
 
 #[tauri::command]
@@ -939,11 +871,10 @@ pub fn save_cached_card_events(
     events: Vec<crate::models::GoogleCalendarEvent>,
     state: State<'_, AppState>,
 ) -> Result<(), String> {
-    let db_guard = state.db.lock().map_err(|_| "Lock error")?;
-    let db = db_guard.as_ref().ok_or("Database not initialized")?;
-
-    db.save_card_events(&card_id, &events)
-        .map_err(|e| e.to_string())
+    with_db(&state, |db| {
+        db.save_card_events(&card_id, &events)
+            .map_err(|e| e.to_string())
+    })
 }
 
 #[tauri::command]
@@ -954,21 +885,9 @@ pub async fn download_attachment(
     app_handle: tauri::AppHandle,
     state: State<'_, AppState>,
 ) -> Result<String, String> {
-    let app_data_dir = app_handle
-        .path()
-        .app_data_dir()
-        .map_err(|e| format!("Failed to get app data dir: {}", e))?;
+    let app_data_dir = get_app_data_dir(&app_handle)?;
 
-    // Verify account exists
-    {
-        let db_guard = state.db.lock().map_err(|_| "Lock error")?;
-        let db = db_guard.as_ref().ok_or("Database not initialized")?;
-        let accounts = db.get_accounts().map_err(|e| e.to_string())?;
-
-        if !accounts.iter().any(|a| a.id == account_id) {
-            return Err("Account not found".to_string());
-        }
-    }
+    verify_account_exists(&state, &account_id)?;
 
     let access_token = get_access_token(&state, &account_id, &app_data_dir).await?;
     let gmail = GmailClient::new(access_token);
@@ -1016,27 +935,14 @@ pub async fn open_attachment(
     inline_data: Option<String>,
     app_handle: tauri::AppHandle, state: State<'_, AppState>,
 ) -> Result<(), String> {
-    let app_data_dir = app_handle
-        .path()
-        .app_data_dir()
-        .map_err(|e| format!("Failed to get app data dir: {}", e))?;
+    let app_data_dir = get_app_data_dir(&app_handle)?;
 
     // Get base64 data either from inline or by downloading
     let base64_data = if let Some(data) = inline_data {
         data
     } else {
         let attachment_id = attachment_id.ok_or("No attachment ID or inline data")?;
-
-        // Verify account exists
-        {
-            let db_guard = state.db.lock().map_err(|_| "Lock error")?;
-            let db = db_guard.as_ref().ok_or("Database not initialized")?;
-            let accounts = db.get_accounts().map_err(|e| e.to_string())?;
-
-            if !accounts.iter().any(|a| a.id == account_id) {
-                return Err("Account not found".to_string());
-            }
-        }
+        verify_account_exists(&state, &account_id)?;
 
         let access_token = get_access_token(&state, &account_id, &app_data_dir).await?;
         let gmail = GmailClient::new(access_token);
@@ -1080,21 +986,9 @@ pub async fn list_labels(
     account_id: String,
     app_handle: tauri::AppHandle, state: State<'_, AppState>,
 ) -> Result<Vec<GmailLabel>, String> {
-    let app_data_dir = app_handle
-        .path()
-        .app_data_dir()
-        .map_err(|e| format!("Failed to get app data dir: {}", e))?;
+    let app_data_dir = get_app_data_dir(&app_handle)?;
 
-    // Verify account exists
-    {
-        let db_guard = state.db.lock().map_err(|_| "Lock error")?;
-        let db = db_guard.as_ref().ok_or("Database not initialized")?;
-        let accounts = db.get_accounts().map_err(|e| e.to_string())?;
-
-        if !accounts.iter().any(|a| a.id == account_id) {
-            return Err("Account not found".to_string());
-        }
-    }
+    verify_account_exists(&state, &account_id)?;
 
     let access_token = get_access_token(&state, &account_id, &app_data_dir).await?;
     let gmail = GmailClient::new(access_token);
@@ -1114,21 +1008,9 @@ pub async fn save_draft(
     thread_id: Option<String>,
     app_handle: tauri::AppHandle, state: State<'_, AppState>,
 ) -> Result<GmailDraft, String> {
-    let app_data_dir = app_handle
-        .path()
-        .app_data_dir()
-        .map_err(|e| format!("Failed to get app data dir: {}", e))?;
+    let app_data_dir = get_app_data_dir(&app_handle)?;
 
-    // Verify account exists
-    {
-        let db_guard = state.db.lock().map_err(|_| "Lock error")?;
-        let db = db_guard.as_ref().ok_or("Database not initialized")?;
-        let accounts = db.get_accounts().map_err(|e| e.to_string())?;
-
-        if !accounts.iter().any(|a| a.id == account_id) {
-            return Err("Account not found".to_string());
-        }
-    }
+    verify_account_exists(&state, &account_id)?;
 
     let access_token = get_access_token(&state, &account_id, &app_data_dir).await?;
     let gmail = GmailClient::new(access_token);
@@ -1153,21 +1035,9 @@ pub async fn delete_draft(
     draft_id: String,
     app_handle: tauri::AppHandle, state: State<'_, AppState>,
 ) -> Result<(), String> {
-    let app_data_dir = app_handle
-        .path()
-        .app_data_dir()
-        .map_err(|e| format!("Failed to get app data dir: {}", e))?;
+    let app_data_dir = get_app_data_dir(&app_handle)?;
 
-    // Verify account exists
-    {
-        let db_guard = state.db.lock().map_err(|_| "Lock error")?;
-        let db = db_guard.as_ref().ok_or("Database not initialized")?;
-        let accounts = db.get_accounts().map_err(|e| e.to_string())?;
-
-        if !accounts.iter().any(|a| a.id == account_id) {
-            return Err("Account not found".to_string());
-        }
-    }
+    verify_account_exists(&state, &account_id)?;
 
     let access_token = get_access_token(&state, &account_id, &app_data_dir).await?;
     let gmail = GmailClient::new(access_token);
@@ -1182,10 +1052,7 @@ pub async fn rsvp_calendar_event(
     status: String, // "accepted", "tentative", or "declined"
     app_handle: tauri::AppHandle, state: State<'_, AppState>,
 ) -> Result<(), String> {
-    let app_data_dir = app_handle
-        .path()
-        .app_data_dir()
-        .map_err(|e| format!("Failed to get app data dir: {}", e))?;
+    let app_data_dir = get_app_data_dir(&app_handle)?;
 
     // Validate status
     let valid_statuses = ["accepted", "tentative", "declined"];
@@ -1193,17 +1060,7 @@ pub async fn rsvp_calendar_event(
         return Err(format!("Invalid status: {}. Must be one of: accepted, tentative, declined", status));
     }
 
-    // Get account email
-    let user_email = {
-        let db_guard = state.db.lock().map_err(|_| "Lock error")?;
-        let db = db_guard.as_ref().ok_or("Database not initialized")?;
-        let accounts = db.get_accounts().map_err(|e| e.to_string())?;
-        accounts
-            .into_iter()
-            .find(|a| a.id == account_id)
-            .ok_or("Account not found")?
-            .email
-    };
+    let user_email = get_account_email(&state, &account_id)?;
 
     let access_token = get_access_token(&state, &account_id, &app_data_dir).await?;
     let gmail = GmailClient::new(access_token);
@@ -1217,22 +1074,9 @@ pub async fn get_calendar_rsvp_status(
     event_uid: String,
     app_handle: tauri::AppHandle, state: State<'_, AppState>,
 ) -> Result<Option<String>, String> {
-    let app_data_dir = app_handle
-        .path()
-        .app_data_dir()
-        .map_err(|e| format!("Failed to get app data dir: {}", e))?;
+    let app_data_dir = get_app_data_dir(&app_handle)?;
 
-    // Get account email
-    let user_email = {
-        let db_guard = state.db.lock().map_err(|_| "Lock error")?;
-        let db = db_guard.as_ref().ok_or("Database not initialized")?;
-        let accounts = db.get_accounts().map_err(|e| e.to_string())?;
-        accounts
-            .into_iter()
-            .find(|a| a.id == account_id)
-            .ok_or("Account not found")?
-            .email
-    };
+    let user_email = get_account_email(&state, &account_id)?;
 
     let access_token = get_access_token(&state, &account_id, &app_data_dir).await?;
     let gmail = GmailClient::new(access_token);
@@ -1361,21 +1205,9 @@ pub async fn fetch_contacts(
     app_handle: tauri::AppHandle,
     state: State<'_, AppState>,
 ) -> Result<Vec<crate::people::Contact>, String> {
-    let app_data_dir = app_handle
-        .path()
-        .app_data_dir()
-        .map_err(|e| format!("Failed to get app data dir: {}", e))?;
+    let app_data_dir = get_app_data_dir(&app_handle)?;
 
-    // Verify account exists
-    {
-        let db_guard = state.db.lock().map_err(|_| "Lock error")?;
-        let db = db_guard.as_ref().ok_or("Database not initialized")?;
-        let accounts = db.get_accounts().map_err(|e| e.to_string())?;
-
-        if !accounts.iter().any(|a| a.id == account_id) {
-            return Err("Account not found".to_string());
-        }
-    }
+    verify_account_exists(&state, &account_id)?;
 
     let access_token = get_access_token(&state, &account_id, &app_data_dir).await?;
     let people = crate::people::PeopleClient::new(access_token);
@@ -1390,21 +1222,9 @@ pub async fn search_contacts(
     query: String,
     app_handle: tauri::AppHandle, state: State<'_, AppState>,
 ) -> Result<Vec<crate::people::Contact>, String> {
-    let app_data_dir = app_handle
-        .path()
-        .app_data_dir()
-        .map_err(|e| format!("Failed to get app data dir: {}", e))?;
+    let app_data_dir = get_app_data_dir(&app_handle)?;
 
-    // Verify account exists
-    {
-        let db_guard = state.db.lock().map_err(|_| "Lock error")?;
-        let db = db_guard.as_ref().ok_or("Database not initialized")?;
-        let accounts = db.get_accounts().map_err(|e| e.to_string())?;
-
-        if !accounts.iter().any(|a| a.id == account_id) {
-            return Err("Account not found".to_string());
-        }
-    }
+    verify_account_exists(&state, &account_id)?;
 
     let access_token = get_access_token(&state, &account_id, &app_data_dir).await?;
     let people = crate::people::PeopleClient::new(access_token);
@@ -1419,21 +1239,9 @@ pub async fn list_calendars(
     account_id: String,
     app_handle: tauri::AppHandle, state: State<'_, AppState>,
 ) -> Result<Vec<crate::calendar::CalendarInfo>, String> {
-    let app_data_dir = app_handle
-        .path()
-        .app_data_dir()
-        .map_err(|e| format!("Failed to get app data dir: {}", e))?;
+    let app_data_dir = get_app_data_dir(&app_handle)?;
 
-    // Verify account exists
-    {
-        let db_guard = state.db.lock().map_err(|_| "Lock error")?;
-        let db = db_guard.as_ref().ok_or("Database not initialized")?;
-        let accounts = db.get_accounts().map_err(|e| e.to_string())?;
-
-        if !accounts.iter().any(|a| a.id == account_id) {
-            return Err("Account not found".to_string());
-        }
-    }
+    verify_account_exists(&state, &account_id)?;
 
     let access_token = get_access_token(&state, &account_id, &app_data_dir).await?;
     let calendar = crate::calendar::CalendarClient::new(access_token);
@@ -1447,21 +1255,9 @@ pub async fn fetch_calendar_events(
     query: String,
     app_handle: tauri::AppHandle, state: State<'_, AppState>,
 ) -> Result<Vec<crate::calendar::CalendarEvent>, String> {
-    let app_data_dir = app_handle
-        .path()
-        .app_data_dir()
-        .map_err(|e| format!("Failed to get app data dir: {}", e))?;
+    let app_data_dir = get_app_data_dir(&app_handle)?;
 
-    // Verify account exists
-    {
-        let db_guard = state.db.lock().map_err(|_| "Lock error")?;
-        let db = db_guard.as_ref().ok_or("Database not initialized")?;
-        let accounts = db.get_accounts().map_err(|e| e.to_string())?;
-
-        if !accounts.iter().any(|a| a.id == account_id) {
-            return Err("Account not found".to_string());
-        }
-    }
+    verify_account_exists(&state, &account_id)?;
 
     let access_token = get_access_token(&state, &account_id, &app_data_dir).await?;
     let calendar = crate::calendar::CalendarClient::new(access_token);
@@ -1485,10 +1281,7 @@ pub async fn create_calendar_event(
     app_handle: tauri::AppHandle,
     state: State<'_, AppState>,
 ) -> Result<crate::models::GoogleCalendarEvent, String> {
-    let app_data_dir = app_handle
-        .path()
-        .app_data_dir()
-        .map_err(|e| format!("Failed to get app data dir: {}", e))?;
+    let app_data_dir = get_app_data_dir(&app_handle)?;
 
     let access_token = get_access_token(&state, &account_id, &app_data_dir).await?;
     let calendar = crate::calendar::CalendarClient::new(access_token);
@@ -1517,10 +1310,7 @@ pub async fn move_calendar_event(
     app_handle: tauri::AppHandle,
     state: State<'_, AppState>,
 ) -> Result<crate::models::GoogleCalendarEvent, String> {
-    let app_data_dir = app_handle
-        .path()
-        .app_data_dir()
-        .map_err(|e| format!("Failed to get app data dir: {}", e))?;
+    let app_data_dir = get_app_data_dir(&app_handle)?;
 
     let access_token = get_access_token(&state, &account_id, &app_data_dir).await?;
     let calendar = crate::calendar::CalendarClient::new(access_token);
@@ -1538,10 +1328,7 @@ pub async fn delete_calendar_event(
     app_handle: tauri::AppHandle,
     state: State<'_, AppState>,
 ) -> Result<(), String> {
-    let app_data_dir = app_handle
-        .path()
-        .app_data_dir()
-        .map_err(|e| format!("Failed to get app data dir: {}", e))?;
+    let app_data_dir = get_app_data_dir(&app_handle)?;
 
     let access_token = get_access_token(&state, &account_id, &app_data_dir).await?;
     let calendar = crate::calendar::CalendarClient::new(access_token);
@@ -1565,10 +1352,7 @@ pub async fn update_calendar_event(
     app_handle: tauri::AppHandle,
     state: State<'_, AppState>,
 ) -> Result<crate::models::GoogleCalendarEvent, String> {
-    let app_data_dir = app_handle
-        .path()
-        .app_data_dir()
-        .map_err(|e| format!("Failed to get app data dir: {}", e))?;
+    let app_data_dir = get_app_data_dir(&app_handle)?;
 
     let access_token = get_access_token(&state, &account_id, &app_data_dir).await?;
     let calendar = crate::calendar::CalendarClient::new(access_token);
@@ -1596,26 +1380,13 @@ pub async fn suggest_replies(
     api_key: String,
     app_handle: tauri::AppHandle, state: State<'_, AppState>,
 ) -> Result<Vec<String>, String> {
-    let app_data_dir = app_handle
-        .path()
-        .app_data_dir()
-        .map_err(|e| format!("Failed to get app data dir: {}", e))?;
+    let app_data_dir = get_app_data_dir(&app_handle)?;
 
     if api_key.is_empty() {
         return Err("Gemini API key is required for smart replies.".to_string());
     }
 
-    // Get user email for context
-    let user_email = {
-        let db_guard = state.db.lock().map_err(|_| "Lock error")?;
-        let db = db_guard.as_ref().ok_or("Database not initialized")?;
-        let accounts = db.get_accounts().map_err(|e| e.to_string())?;
-
-        accounts.iter()
-            .find(|a| a.id == account_id)
-            .map(|a| a.email.clone())
-            .ok_or("Account not found")?
-    };
+    let user_email = get_account_email(&state, &account_id)?;
 
     let access_token = get_access_token(&state, &account_id, &app_data_dir).await?;
 

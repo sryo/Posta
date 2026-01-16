@@ -1,5 +1,59 @@
 // Utility functions
 
+// --- Base64 helpers ---
+
+/**
+ * Normalize URL-safe base64 to standard base64
+ */
+export function normalizeBase64Url(base64: string): string {
+  return base64.replace(/-/g, '+').replace(/_/g, '/');
+}
+
+/**
+ * Convert base64 (URL-safe or standard) to Uint8Array
+ */
+export function base64ToBytes(base64: string): Uint8Array {
+  const normalized = normalizeBase64Url(base64);
+  const binaryStr = atob(normalized);
+  return Uint8Array.from(binaryStr, c => c.charCodeAt(0));
+}
+
+// --- Date comparison helpers ---
+
+/**
+ * Check if two dates are the same day
+ */
+export function isSameDay(date1: Date, date2: Date): boolean {
+  return date1.toDateString() === date2.toDateString();
+}
+
+/**
+ * Get date label: 'today' | 'yesterday' | 'thisYear' | 'otherYear'
+ */
+export function getRelativeDateLabel(date: Date, now: Date = new Date()): 'today' | 'yesterday' | 'thisYear' | 'otherYear' {
+  if (isSameDay(date, now)) return 'today';
+  const yesterday = new Date(now);
+  yesterday.setDate(yesterday.getDate() - 1);
+  if (isSameDay(date, yesterday)) return 'yesterday';
+  if (date.getFullYear() === now.getFullYear()) return 'thisYear';
+  return 'otherYear';
+}
+
+// --- Calendar response status helpers ---
+
+/**
+ * Get human-readable label for calendar response status
+ */
+export function getResponseStatusLabel(status: string | null | undefined): string {
+  switch (status) {
+    case 'accepted': return 'Going';
+    case 'tentative': return 'Maybe';
+    case 'declined': return 'Declined';
+    case 'needsAction': return 'Pending';
+    default: return status || 'No response';
+  }
+}
+
 /**
  * Decode HTML entities like &amp; &#39; etc.
  */
@@ -13,10 +67,7 @@ export function decodeHtmlEntities(text: string): string {
  * Decode base64 URL-safe string as UTF-8
  */
 export function decodeBase64Utf8(base64: string): string {
-  const normalized = base64.replace(/-/g, '+').replace(/_/g, '/');
-  const binaryStr = atob(normalized);
-  const bytes = Uint8Array.from(binaryStr, c => c.charCodeAt(0));
-  return new TextDecoder('utf-8').decode(bytes);
+  return new TextDecoder('utf-8').decode(base64ToBytes(base64));
 }
 
 /**
@@ -50,10 +101,7 @@ export function formatFileSize(bytes: number): string {
  */
 export function formatTime(timestamp: number): string {
   const date = new Date(timestamp);
-  const now = new Date();
-  const isToday = date.toDateString() === now.toDateString();
-
-  if (isToday) {
+  if (isSameDay(date, new Date())) {
     return date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
   }
   return date.toLocaleDateString([], { month: "short", day: "numeric" });
@@ -116,14 +164,7 @@ export function getInitial(email: string): string {
  * Convert base64 to Blob
  */
 export function base64ToBlob(base64: string, mimeType: string): Blob {
-  const normalized = base64.replace(/-/g, '+').replace(/_/g, '/');
-  const byteCharacters = atob(normalized);
-  const byteNumbers = new Array(byteCharacters.length);
-  for (let i = 0; i < byteCharacters.length; i++) {
-    byteNumbers[i] = byteCharacters.charCodeAt(i);
-  }
-  const byteArray = new Uint8Array(byteNumbers);
-  return new Blob([byteArray], { type: mimeType });
+  return new Blob([base64ToBytes(base64)], { type: mimeType });
 }
 
 /**
@@ -212,27 +253,17 @@ export function formatEmailDate(dateStr: string): string {
   if (!dateStr) return '';
 
   const date = new Date(dateStr);
-  if (isNaN(date.getTime())) return dateStr; // Return original if parsing fails
-
-  const now = new Date();
-  const isToday = date.toDateString() === now.toDateString();
-  const yesterday = new Date(now);
-  yesterday.setDate(yesterday.getDate() - 1);
-  const isYesterday = date.toDateString() === yesterday.toDateString();
-  const isThisYear = date.getFullYear() === now.getFullYear();
+  if (isNaN(date.getTime())) return dateStr;
 
   const timeStr = date.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+  const label = getRelativeDateLabel(date);
 
-  if (isToday) {
-    return `Today at ${timeStr}`;
+  switch (label) {
+    case 'today': return `Today at ${timeStr}`;
+    case 'yesterday': return `Yesterday at ${timeStr}`;
+    case 'thisYear': return date.toLocaleDateString([], { month: 'short', day: 'numeric' }) + ` at ${timeStr}`;
+    default: return date.toLocaleDateString([], { month: 'short', day: 'numeric', year: 'numeric' }) + ` at ${timeStr}`;
   }
-  if (isYesterday) {
-    return `Yesterday at ${timeStr}`;
-  }
-  if (isThisYear) {
-    return date.toLocaleDateString([], { month: 'short', day: 'numeric' }) + ` at ${timeStr}`;
-  }
-  return date.toLocaleDateString([], { month: 'short', day: 'numeric', year: 'numeric' }) + ` at ${timeStr}`;
 }
 
 /**
