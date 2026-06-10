@@ -17,6 +17,18 @@ const DOMPURIFY_CONFIG = {
   FORBID_ATTR: ['onerror', 'onload', 'onclick', 'onmouseover']
 };
 
+// Only allow target="_blank", and force noopener/noreferrer on it so email
+// links can't reach back into the opener or leak the referrer
+DOMPurify.addHook('afterSanitizeAttributes', (node) => {
+  if (node.hasAttribute('target')) {
+    if (node.getAttribute('target') === '_blank') {
+      node.setAttribute('rel', 'noopener noreferrer');
+    } else {
+      node.removeAttribute('target');
+    }
+  }
+});
+
 export interface MessageBodyProps {
   body: string;
   cidAttachmentData?: Record<string, string>;

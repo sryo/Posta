@@ -98,11 +98,10 @@ export function extractMessageBody(payload: any, snippet?: string): string {
   return snippet || '(No content)';
 }
 
-// Strip HTML to plain text
+// Strip HTML to plain text. DOMParser produces an inert document: scripts,
+// event handlers, and resource loads never execute, unlike div.innerHTML.
 export function stripHtml(html: string): string {
-  const temp = document.createElement('div');
-  temp.innerHTML = html;
-  return temp.textContent || temp.innerText || '';
+  return new DOMParser().parseFromString(html, 'text/html').body.textContent ?? '';
 }
 
 // Build quoted reply body
@@ -110,14 +109,14 @@ export function buildQuotedBody(date: string, from: string, plainBody: string): 
   return `\n\nOn ${date}, ${from} wrote:\n> ${plainBody.split('\n').join('\n> ')}`;
 }
 
-// Add Re: prefix if not already present
+// Add Re: prefix if not already present (case-insensitive)
 export function addReplyPrefix(subject: string): string {
-  return subject.startsWith('Re:') ? subject : `Re: ${subject}`;
+  return /^\s*re:/i.test(subject) ? subject : `Re: ${subject}`;
 }
 
-// Add Fwd: prefix if not already present
+// Add Fwd: prefix if not already present (case-insensitive, also matches FW:/FWD:)
 export function addForwardPrefix(subject: string): string {
-  return subject.startsWith('Fwd:') ? subject : `Fwd: ${subject}`;
+  return /^\s*fwd?:/i.test(subject) ? subject : `Fwd: ${subject}`;
 }
 
 /**
@@ -258,13 +257,41 @@ export function isValidEmail(email: string): boolean {
 }
 
 /**
+ * Split a comma-separated address list into individual addresses,
+ * ignoring commas inside quoted display names or angle brackets
+ * (e.g. `"Doe, John" <a@b.c>, x@y.z` yields 2 entries, not 3)
+ */
+export function splitEmailList(emailStr: string): string[] {
+  const parts: string[] = [];
+  let current = '';
+  let inQuotes = false;
+  let inAngle = false;
+  for (const ch of emailStr) {
+    if (ch === '"' && !inAngle) {
+      inQuotes = !inQuotes;
+    } else if (ch === '<' && !inQuotes) {
+      inAngle = true;
+    } else if (ch === '>' && !inQuotes) {
+      inAngle = false;
+    } else if (ch === ',' && !inQuotes && !inAngle) {
+      parts.push(current);
+      current = '';
+      continue;
+    }
+    current += ch;
+  }
+  parts.push(current);
+  return parts.map(p => p.trim()).filter(p => p);
+}
+
+/**
  * Validate a comma-separated list of emails (for To, Cc, Bcc fields)
  * Returns { valid: boolean, invalidEmails: string[] }
  */
 export function validateEmailList(emailStr: string): { valid: boolean; invalidEmails: string[] } {
   if (!emailStr.trim()) return { valid: true, invalidEmails: [] };
 
-  const emails = emailStr.split(',').map(e => e.trim()).filter(e => e);
+  const emails = splitEmailList(emailStr);
   const invalidEmails: string[] = [];
 
   for (const email of emails) {

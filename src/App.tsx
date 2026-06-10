@@ -1,5 +1,5 @@
 import { createSignal, onMount, onCleanup, Show, For, createMemo, createEffect } from "solid-js";
-import { createStore, produce, reconcile } from "solid-js/store";
+import { createStore, produce, reconcile, unwrap } from "solid-js/store";
 import DOMPurify from 'dompurify';
 import { DOMPURIFY_CONFIG } from './components/MessageBody';
 import { getCurrentWindow } from '@tauri-apps/api/window';
@@ -76,6 +76,8 @@ import {
   truncateMiddle,
   getInitial,
   extractEmail,
+  extractMessageBody,
+  stripHtml,
   parseContact,
   getAvatarColor,
   validateEmailList,
@@ -214,6 +216,7 @@ function App() {
     action: string;
     threadIds: string[];
     cardId: string;
+    cardIds: string[]; // every card the optimistic update touched
     addedLabels: string[];
     removedLabels: string[];
     timestamp: number;
@@ -226,18 +229,21 @@ function App() {
     key: number;
   } | null>(null);
   let toastTimeoutId: number | undefined;
+  let toastHideTimeoutId: number | undefined;
 
   // Undo send state
   interface PendingSend {
+    accountId: string;
     to: string;
     cc: string;
     bcc: string;
     subject: string;
     body: string;
     attachments: SendAttachment[];
-    reply?: { threadId: string; messageId: string };
+    reply?: { threadId: string; messageId?: string };
     isHtml?: boolean;
     timeoutId: number;
+    progressIntervalId: number;
   }
   const [pendingSend, setPendingSend] = createSignal<PendingSend | null>(null);
   const [sendToastVisible, setSendToastVisible] = createSignal(false);
@@ -615,7 +621,7 @@ function App() {
   const [autocompleteIndex, setAutocompleteIndex] = createSignal(0);
   const [composeFabHovered, setComposeFabHovered] = createSignal(false);
   const [forwardingThread, setForwardingThread] = createSignal<{ threadId: string; subject: string; body: string } | null>(null);
-  const [replyingToThread, setReplyingToThread] = createSignal<{ threadId: string; messageId: string } | null>(null);
+  const [replyingToThread, setReplyingToThread] = createSignal<{ threadId: string; messageId?: string } | null>(null);
   const [replyingToEvent, setReplyingToEvent] = createSignal<{ eventId: string } | null>(null);
   const [forwardingEvent, setForwardingEvent] = createSignal<{ eventId: string } | null>(null);
   const [focusComposeBody, setFocusComposeBody] = createSignal(false);
@@ -626,6 +632,9 @@ function App() {
   const [gmailDraftId, setGmailDraftId] = createSignal<string | null>(null);
   let fabHoverTimeout: number | undefined;
   let draftSaveTimeout: number | undefined;
+  // Bumped whenever the draft is cleared (send/close); an in-flight saveDraft
+  // compares against it so a stale resolve can't resurrect the draft
+  let draftEpoch = 0;
 
   // Draft management
   interface Draft {
@@ -673,6 +682,7 @@ function App() {
 
     // Try to sync to Gmail
     setDraftSaving(true);
+    const epoch = draftEpoch;
     try {
       const result = await invoke<{ id: string }>("save_draft", {
         accountId: account.id,
@@ -684,6 +694,11 @@ function App() {
         body: draft.body,
         threadId: draft.threadId || null,
       });
+      if (epoch !== draftEpoch) {
+        // Draft was cleared (send/close) while the save was in flight;
+        // don't resurrect it
+        return;
+      }
       setGmailDraftId(result.id);
       // Update local storage with Gmail draft ID
       draft.gmailDraftId = result.id;
@@ -718,6 +733,7 @@ function App() {
   }
 
   async function clearDraft() {
+    draftEpoch++;
     const key = getDraftKey();
     const account = selectedAccount();
     const draftId = gmailDraftId();
@@ -783,7 +799,7 @@ function App() {
   // Settings form
   const [clientId, setClientId] = createSignal("");
   const [clientSecret, setClientSecret] = createSignal("");
-  const [geminiApiKey, setGeminiApiKey] = createSignal(localStorage.getItem("gemini_api_key") || "");
+  const [geminiApiKey, setGeminiApiKey] = createSignal(safeGetItem("gemini_api_key") || "");
   const [smartRepliesOpen, setSmartRepliesOpen] = createSignal(false);
 
   // Preset selection for new accounts
@@ -867,7 +883,15 @@ function App() {
       // Check if there were any changes
       const hasChanges = result.modified_threads.length > 0 || result.deleted_thread_ids.length > 0;
 
-      if (hasChanges) {
+      if (result.is_full_sync) {
+        // History ID was reset; incremental results are unusable.
+        // Refetch all non-collapsed email cards and go back to fast polling.
+        setPollInterval(BASE_POLL_INTERVAL);
+        const nonCollapsedCards = cards().filter(c => !c.collapsed && c.account_id === account.id && c.card_type !== "calendar");
+        for (const card of nonCollapsedCards) {
+          fetchAndCacheThreads(account.id, card.id);
+        }
+      } else if (hasChanges) {
         // Reset to fast polling when changes detected
         setPollInterval(BASE_POLL_INTERVAL);
 
@@ -936,12 +960,14 @@ function App() {
   }
 
   // Schedule next poll
+  let pollDisposed = false;
   function schedulePoll() {
     if (pollTimeoutId) {
       clearTimeout(pollTimeoutId);
     }
     pollTimeoutId = window.setTimeout(async () => {
       await performIncrementalSync();
+      if (pollDisposed) return; // Unmounted while syncing; don't re-arm
       schedulePoll(); // Schedule next poll after this one completes
     }, pollInterval());
   }
@@ -951,6 +977,9 @@ function App() {
     setPollInterval(BASE_POLL_INTERVAL);
     setCurrentTime(Date.now());
     performIncrementalSync();
+    // Re-arm the timer so the fast interval applies now, not after the
+    // previously scheduled (possibly backed-off) timeout fires
+    schedulePoll();
   }
 
   // Drag and drop
@@ -995,18 +1024,20 @@ function App() {
 
   // Update dock badge with total unread count
   createEffect(() => {
-    let totalUnread = 0;
+    // A thread can match several cards; count it once
+    const unreadThreadIds = new Set<string>();
 
     for (const groups of Object.values(cardThreads)) {
       for (const group of groups) {
         for (const thread of group.threads) {
           if (thread.unread_count > 0) {
-            totalUnread++;
+            unreadThreadIds.add(thread.gmail_thread_id);
           }
         }
       }
     }
 
+    const totalUnread = unreadThreadIds.size;
     // Update badge (undefined removes it)
     getCurrentWindow().setBadgeCount(totalUnread > 0 ? totalUnread : undefined).catch(() => {
       // Badge not supported on this platform
@@ -1139,6 +1170,7 @@ function App() {
   const timeUpdateInterval = setInterval(() => setCurrentTime(Date.now()), 15000);
 
   onCleanup(() => {
+    pollDisposed = true;
     if (pollTimeoutId) {
       clearTimeout(pollTimeoutId);
     }
@@ -1840,6 +1872,7 @@ function App() {
 
   function closeCompose() {
     setClosingCompose(true);
+    if (draftSaveTimeout) clearTimeout(draftSaveTimeout);
     clearDraft(); // Clear draft from localStorage and Gmail when compose closes
     setTimeout(() => {
       setComposeTo("");
@@ -2010,8 +2043,10 @@ function App() {
 
     setComposeEmailError(null);
 
-    // Queue the send with undo capability
+    // Queue the send with undo capability. Capture the account now so
+    // switching accounts during the undo window can't change the sender.
     const pending: PendingSend = {
+      accountId: account.id,
       to: composeTo(),
       cc: composeCc(),
       bcc: composeBcc(),
@@ -2021,9 +2056,11 @@ function App() {
       reply: replyingToThread() ? { ...replyingToThread()! } : undefined,
       isHtml: composeIsHtml(),
       timeoutId: 0,
+      progressIntervalId: 0,
     };
 
     // Clear draft and close compose immediately
+    if (draftSaveTimeout) clearTimeout(draftSaveTimeout);
     clearDraft();
     closeCompose();
 
@@ -2033,27 +2070,26 @@ function App() {
     setSendToastVisible(true);
 
     // Progress animation
-    const progressInterval = setInterval(() => {
+    const progressInterval = window.setInterval(() => {
       setSendProgress(p => Math.min(p + 2, 100));
     }, SEND_DELAY_MS / 50);
 
     // Schedule actual send
     const timeoutId = window.setTimeout(async () => {
       clearInterval(progressInterval);
+      // Past the undo window: make undoSend a no-op (and hide the Undo
+      // button) before the network call starts, so a late click can't
+      // reopen compose while the mail still goes out
+      setPendingSend(null);
       await executeActualSend(pending);
     }, SEND_DELAY_MS);
 
     pending.timeoutId = timeoutId;
+    pending.progressIntervalId = progressInterval;
     setPendingSend(pending);
   }
 
   async function executeActualSend(pending: PendingSend) {
-    const account = selectedAccount();
-    if (!account) {
-      hideSendToast();
-      return;
-    }
-
     try {
       // Convert plain text to HTML if sending as HTML
       let body = pending.body;
@@ -2069,7 +2105,7 @@ function App() {
 
       if (pending.reply) {
         await replyToThread(
-          account.id,
+          pending.accountId,
           pending.reply.threadId,
           pending.to,
           pending.cc,
@@ -2081,7 +2117,7 @@ function App() {
           pending.isHtml
         );
       } else {
-        await sendEmail(account.id, pending.to, pending.cc, pending.bcc, pending.subject, body, pending.attachments, pending.isHtml);
+        await sendEmail(pending.accountId, pending.to, pending.cc, pending.bcc, pending.subject, body, pending.attachments, pending.isHtml);
       }
       hideSendToast();
     } catch (e) {
@@ -2095,8 +2131,9 @@ function App() {
     const pending = pendingSend();
     if (!pending) return;
 
-    // Cancel the scheduled send
+    // Cancel the scheduled send and the progress animation
     clearTimeout(pending.timeoutId);
+    clearInterval(pending.progressIntervalId);
 
     // Restore compose with the pending email data
     setComposeTo(pending.to);
@@ -2205,7 +2242,7 @@ function App() {
     }
   }
 
-  function handleForward(threadId: string, cardId: string) {
+  async function handleForward(threadId: string, cardId: string) {
     // Find the thread
     const threads = getCardThreadsFlat(cardId);
     const thread = threads.find(t => t.gmail_thread_id === threadId);
@@ -2213,7 +2250,28 @@ function App() {
 
     // Build forwarded subject and body
     const fwdSubject = thread.subject.startsWith("Fwd:") ? thread.subject : `Fwd: ${thread.subject}`;
-    const quotedBody = `\n\n---------- Forwarded message ----------\nFrom: ${thread.participants[0] || 'Unknown'}\nSubject: ${thread.subject}\n\n${thread.snippet}`;
+
+    // Quote the full last message like the ThreadView forward path; fall
+    // back to the snippet if the fetch fails
+    let from = thread.participants[0] || 'Unknown';
+    let date = '';
+    let body = thread.snippet;
+    const account = selectedAccount();
+    if (account) {
+      try {
+        const details = await getThreadDetails(account.id, threadId);
+        const lastMsg = details.messages[details.messages.length - 1];
+        if (lastMsg) {
+          const headers = lastMsg.payload?.headers || [];
+          from = headers.find(h => h.name === 'From')?.value || from;
+          date = headers.find(h => h.name === 'Date')?.value || '';
+          body = stripHtml(extractMessageBody(lastMsg.payload, lastMsg.snippet));
+        }
+      } catch (e) {
+        console.error("Failed to fetch thread for forward:", e);
+      }
+    }
+    const quotedBody = `\n\n---------- Forwarded message ----------\nFrom: ${from}\nDate: ${date}\nSubject: ${thread.subject}\n\n${body}`;
 
     // Open compose panel with forward content
     setForwardingThread({ threadId, subject: fwdSubject, body: quotedBody });
@@ -2225,7 +2283,7 @@ function App() {
     setComposing(true);
   }
 
-  function handleReplyFromThread(to: string, cc: string, subject: string, quotedBody: string, messageId: string, isHtml: boolean) {
+  function handleReplyFromThread(to: string, cc: string, subject: string, quotedBody: string, messageId: string | undefined, isHtml: boolean) {
     const threadId = activeThreadId();
     if (!threadId) return;
 
@@ -2240,8 +2298,12 @@ function App() {
     setComposing(true);
 
     const thread = activeThread();
-    if (thread) {
-      const messageIndex = thread.messages.findIndex(m => m.id === messageId);
+    if (thread && messageId) {
+      // ThreadView may report either the Gmail API id or the RFC Message-ID
+      const messageIndex = thread.messages.findIndex(m =>
+        m.id === messageId ||
+        m.payload?.headers?.find(h => h.name === 'Message-ID')?.value === messageId
+      );
       if (messageIndex >= 0) setFocusedMessageIndex(messageIndex);
     }
   }
@@ -2439,27 +2501,44 @@ function App() {
       return msg.snippet || '(No content)';
     };
 
+    const accountEmail = account.email.toLowerCase();
+    const cardThreadList = getCardThreadsFlat(cardId);
+
     try {
       const results = await Promise.allSettled(
         threadIds.map(async (threadId) => {
           const details = await getThreadDetails(account.id, threadId);
           if (details.messages && details.messages.length > 0) {
-            const lastMsg = details.messages[details.messages.length - 1];
-            const headers = lastMsg.payload?.headers || [];
+            // Reply to the last message NOT sent by the current account;
+            // if the user replied last, targeting that message would make
+            // the batch reply address the user themselves
+            const replyMsg = [...details.messages].reverse().find(m => {
+              const msgFrom = m.payload?.headers?.find(h => h.name === 'From')?.value;
+              return !!msgFrom && extractEmail(msgFrom).toLowerCase() !== accountEmail;
+            }) || details.messages[details.messages.length - 1];
+            const headers = replyMsg.payload?.headers || [];
             const from = headers.find(h => h.name === 'From')?.value || 'Unknown';
             const subject = headers.find(h => h.name === 'Subject')?.value || '(No subject)';
-            const date = lastMsg.internalDate
-              ? new Date(parseInt(lastMsg.internalDate)).toLocaleDateString()
+            const date = replyMsg.internalDate
+              ? new Date(parseInt(replyMsg.internalDate)).toLocaleDateString()
               : '';
+            let to = extractEmail(from);
+            if (!to || to.toLowerCase() === accountEmail) {
+              // Every message is from the user; fall back to thread participants
+              const cardThread = cardThreadList.find(t => t.gmail_thread_id === threadId);
+              const participant = cardThread?.participants.find(p => extractEmail(p).toLowerCase() !== accountEmail)
+                || cardThread?.participants[0];
+              if (participant) to = extractEmail(participant);
+            }
             return {
               threadId,
               subject,
-              snippet: lastMsg.snippet || '',
-              body: extractBody(lastMsg),
+              snippet: replyMsg.snippet || '',
+              body: extractBody(replyMsg),
               from,
               date,
-              messageId: lastMsg.id,
-              to: extractEmail(from),
+              messageId: replyMsg.id,
+              to,
             } as BatchReplyThread;
           }
           return null;
@@ -2542,8 +2621,8 @@ function App() {
     delete newAttachments[threadId];
     setBatchReplyAttachments(newAttachments);
 
-    // Close if no more threads
-    if (batchReplyThreads().length <= 1) {
+    // Close if no more threads (the list above was already filtered)
+    if (batchReplyThreads().length === 0) {
       closeBatchReply();
     }
   }
@@ -2577,8 +2656,8 @@ function App() {
         fetchAndCacheThreads(account.id, cardId);
       }
 
-      // Close if no more threads
-      if (batchReplyThreads().length <= 1) {
+      // Close if no more threads (the list above was already filtered)
+      if (batchReplyThreads().length === 0) {
         closeBatchReply();
         // Clear selection
         if (cardId) {
@@ -2587,7 +2666,7 @@ function App() {
       }
     } catch (e) {
       console.error('Failed to send reply:', e);
-      alert(`Failed to send: ${e}`);
+      showToast(`Failed to send: ${e}`);
     } finally {
       setBatchReplySending({ ...batchReplySending(), [threadId]: false });
     }
@@ -2683,7 +2762,7 @@ function App() {
       saveCollapsedState(remainingCollapsed);
     } catch (err) {
       console.error("Failed to delete card:", err);
-      alert(`Failed to delete card: ${err}`);
+      showToast(`Failed to delete card: ${err}`);
     }
   }
 
@@ -2910,12 +2989,21 @@ function App() {
     // Skip for calendar cards (they don't use thread caching)
     if (isCalendarCard(cardId)) return;
 
+    // Capture pagination state so a page-1 fetch that resolves after the
+    // user paginated doesn't wipe appended pages or rewind the page token
+    const tokenBeforeFetch = cardPageTokens[cardId];
     try {
       const result = await fetchThreadsPaginated(accountId, cardId, null);
       // Skip update if a recent action happened (prevents overwriting optimistic updates)
       const recent = lastAction();
       if (recent && Date.now() - recent.timestamp < 3000) {
         // Just update cache, don't touch UI state
+        await saveCachedCardThreads(cardId, result.groups, result.next_page_token);
+        return;
+      }
+      if (cardPageTokens[cardId] !== tokenBeforeFetch || loadingMore[cardId]) {
+        // Card paginated while this fetch was in flight; refresh the
+        // page-1 cache but leave UI state alone
         await saveCachedCardThreads(cardId, result.groups, result.next_page_token);
         return;
       }
@@ -3258,30 +3346,31 @@ function App() {
 
   function mergeThreadGroups(existing: ThreadGroup[], incoming: ThreadGroup[]): ThreadGroup[] {
     const groups: Record<string, ThreadGroup> = {};
+    // Dedupe globally: the same thread must not appear in two date groups.
+    // Incoming copies are fresher, so claim their ids first and drop stale
+    // copies from the existing groups.
+    const seen = new Set<string>();
 
-    // Add existing threads
-    for (const group of existing) {
-      groups[group.label] = { ...group, threads: [...group.threads] };
+    for (const group of incoming) {
+      const threads = group.threads.filter(t => !seen.has(t.gmail_thread_id));
+      threads.forEach(t => seen.add(t.gmail_thread_id));
+      groups[group.label] = { ...group, threads };
     }
 
-    // Merge incoming threads
-    for (const group of incoming) {
+    for (const group of existing) {
+      const threads = group.threads.filter(t => !seen.has(t.gmail_thread_id));
+      threads.forEach(t => seen.add(t.gmail_thread_id));
       if (groups[group.label]) {
-        // Add new threads, avoiding duplicates
-        const existingIds = new Set(groups[group.label].threads.map(t => t.gmail_thread_id));
-        for (const thread of group.threads) {
-          if (!existingIds.has(thread.gmail_thread_id)) {
-            groups[group.label].threads.push(thread);
-          }
-        }
+        // Keep load order within a group: previously loaded pages first
+        groups[group.label] = { ...groups[group.label], threads: [...threads, ...groups[group.label].threads] };
       } else {
-        groups[group.label] = { ...group, threads: [...group.threads] };
+        groups[group.label] = { ...group, threads };
       }
     }
 
-    // Return in date order
+    // Return in date order, dropping groups emptied by deduplication
     const order = ["Today", "Yesterday", "This week", "Last 30 days", "Older"];
-    return order.filter(label => groups[label]).map(label => groups[label]);
+    return order.filter(label => groups[label] && groups[label].threads.length > 0).map(label => groups[label]);
   }
 
   async function refreshCard(cardId: string, e: MouseEvent) {
@@ -3636,6 +3725,14 @@ function App() {
 
   function showToast(message?: string) {
     clearTimeout(toastTimeoutId);
+    // Cancel a pending hide so it can't null out this newer toast
+    clearTimeout(toastHideTimeoutId);
+    if (message) {
+      // Plain message toast: drop any pending undo so `z` (or the Undo
+      // button) can't replay an older, unrelated action. The action-undo
+      // toast path calls showToast() with no message after setLastAction.
+      setLastAction(null);
+    }
     setToast(prev => ({
       message: message || null,
       visible: true,
@@ -3649,7 +3746,7 @@ function App() {
 
   function hideToast() {
     setToast(t => t ? { ...t, closing: true } : null);
-    setTimeout(() => {
+    toastHideTimeoutId = window.setTimeout(() => {
       setToast(null);
       setLastAction(null); // Expire undo when toast closes
     }, 200);
@@ -3665,8 +3762,12 @@ function App() {
     // Reverse the labels: add what was removed, remove what was added
     try {
       await modifyThreads(account.id, action.threadIds, action.removedLabels, action.addedLabels);
-      // Reload the card to get fresh data
-      loadCardThreads(action.cardId);
+      // Refresh every card the optimistic update touched, not just the
+      // one the action originated from
+      const cardsToRefresh = action.cardIds.length > 0 ? action.cardIds : [action.cardId];
+      for (const cId of cardsToRefresh) {
+        fetchAndCacheThreads(account.id, cId);
+      }
     } catch (e) {
       console.error("Failed to undo action", e);
       setError(String(e));
@@ -3740,11 +3841,19 @@ function App() {
         break;
     }
 
-    // Optimistic Update - update ALL cards that contain these threads
+    // Optimistic Update - update ALL cards that contain these threads.
+    // Snapshot the affected cards first so the update can be rolled back
+    // if the API call fails.
     const updatedCardThreads: Record<string, ThreadGroup[]> = {};
+    const snapshot: Record<string, ThreadGroup[]> = {};
+    const affectedCardIds: string[] = [];
 
     for (const [cId, groups] of Object.entries(cardThreads)) {
       if (!groups) continue;
+      if (groups.some(g => g.threads.some(t => threadIds.includes(t.gmail_thread_id)))) {
+        snapshot[cId] = structuredClone(unwrap(groups));
+        affectedCardIds.push(cId);
+      }
       updatedCardThreads[cId] = groups.map(group => ({
         ...group,
         threads: group.threads.map(t => {
@@ -3772,13 +3881,6 @@ function App() {
     setCardThreads(reconcile(updatedCardThreads));
     setActionsWheelOpen(false);
 
-    // Update cache with optimistic changes
-    for (const [cId, groups] of Object.entries(updatedCardThreads)) {
-      if (groups) {
-        saveCachedCardThreads(cId, groups, cardPageTokens[cId] || null);
-      }
-    }
-
     // Clear selection after bulk action
     if (threadIds.length > 1) {
       setSelectedThreads({ ...selectedThreads(), [cardId]: new Set() });
@@ -3786,11 +3888,16 @@ function App() {
 
     try {
       await modifyThreads(account.id, threadIds, addLabels, removeLabels);
+      // Persist the optimistic changes only after the server accepted them
+      for (const cId of affectedCardIds) {
+        saveCachedCardThreads(cId, updatedCardThreads[cId], cardPageTokens[cId] || null);
+      }
       // Store undo state and show toast
       setLastAction({
         action,
         threadIds,
         cardId,
+        cardIds: affectedCardIds,
         addedLabels: addLabels,
         removedLabels: removeLabels,
         timestamp: Date.now()
@@ -3798,6 +3905,12 @@ function App() {
       showToast();
     } catch (e) {
       console.error("Failed to modify threads", e);
+      // Roll back the optimistic update; the cache was never written
+      setCardThreads(produce(s => {
+        for (const cId of affectedCardIds) {
+          s[cId] = snapshot[cId];
+        }
+      }));
       setError(String(e));
     }
   }
@@ -5037,6 +5150,7 @@ function App() {
         <ThreadView
           thread={activeThread()}
           accountId={selectedAccount()?.id || ''}
+          currentUserEmail={selectedAccount()?.email}
           loading={threadLoading()}
           error={threadError()}
           card={activeThreadCardId() ? (() => {
@@ -5631,7 +5745,7 @@ function App() {
                   value={geminiApiKey()}
                   onInput={(e) => {
                     setGeminiApiKey(e.currentTarget.value);
-                    localStorage.setItem("gemini_api_key", e.currentTarget.value);
+                    safeSetItem("gemini_api_key", e.currentTarget.value);
                   }}
                   placeholder="AIza..."
                 />
@@ -5789,7 +5903,9 @@ function App() {
           <div class="toast-progress send-progress" style={{ width: `${sendProgress()}%` }}></div>
           <div class="toast-content">
             <span class="toast-message">Sending message...</span>
-            <button class="toast-undo-btn" onClick={undoSend}>Undo</button>
+            <Show when={pendingSend()}>
+              <button class="toast-undo-btn" onClick={undoSend}>Undo</button>
+            </Show>
           </div>
         </div>
       </Show>

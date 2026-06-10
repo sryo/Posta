@@ -14,6 +14,7 @@ import {
   buildQuotedBody,
   addReplyPrefix,
   addForwardPrefix,
+  splitEmailList,
 } from "../utils";
 import {
   ArchiveIcon,
@@ -36,6 +37,12 @@ import { MessageActionsWheel } from "./MessageActionsWheel";
 import { COLOR_HEX } from "../shared/constants";
 import type { InlineComposeProps } from "./types";
 
+// Case-insensitive header lookup (Gmail preserves original casing, e.g. "message-id" vs "Message-ID")
+const findHeader = (headers: { name: string; value: string }[] | undefined, name: string): string | undefined => {
+  const lower = name.toLowerCase();
+  return headers?.find(h => h.name?.toLowerCase() === lower)?.value;
+};
+
 export const ThreadView = (props: {
   thread: FullThread | null,
   loading: boolean,
@@ -48,12 +55,16 @@ export const ThreadView = (props: {
   onOpenAttachment: (messageId: string, attachmentId: string | undefined, filename: string, mimeType: string, inlineData?: string) => void,
   onDownloadAttachment: (messageId: string, attachmentId: string | undefined, filename: string, mimeType: string, inlineData?: string) => void,
   onShowAttachmentMenu: (att: { messageId: string; attachmentId: string; filename: string; mimeType: string; inlineData: string | null }) => void,
-  onReply: (to: string, cc: string, subject: string, quotedBody: string, messageId: string, isHtml: boolean) => void,
+  // messageId is the RFC 2822 Message-ID header value (undefined when the
+  // header is missing; the backend resolves missing ids itself)
+  onReply: (to: string, cc: string, subject: string, quotedBody: string, messageId: string | undefined, isHtml: boolean) => void,
   onForward: (subject: string, body: string) => void,
   // Toolbar action props
   onAction: (action: string) => void,
   onOpenLabels: () => void,
   accountId: string,
+  // Signed-in account's email; used to exclude self from reply-all recipients
+  currentUserEmail?: string,
   isStarred: boolean,
   isRead: boolean,
   isImportant: boolean,
@@ -87,7 +98,7 @@ export const ThreadView = (props: {
     if (!fromHeader) return;
 
     const toEmail = extractEmail(fromHeader);
-    const messageIdHeader = msg.payload?.headers?.find(h => h.name === 'Message-ID')?.value || msgId;
+    const messageIdHeader = findHeader(msg.payload?.headers, 'Message-ID') || msgId;
 
     setSendingReaction(true);
 
@@ -335,25 +346,27 @@ export const ThreadView = (props: {
                   return !!findContent(msg.payload?.parts, 'text/html');
                 };
 
+                const getRfcMessageId = () => findHeader(headers, 'Message-ID');
+                // Reply-To takes precedence over From when present
+                const getReplyTo = () => extractEmail(findHeader(headers, 'Reply-To') || from);
+
                 const handleReply = () => {
-                  const replyTo = extractEmail(from);
                   const quotedBody = buildQuotedBody(date, from, getPlainTextBody());
-                  props.onReply(replyTo, "", getReplySubject(), quotedBody, msg.id, isOriginalHtml());
+                  props.onReply(getReplyTo(), "", getReplySubject(), quotedBody, getRfcMessageId(), isOriginalHtml());
                 };
 
                 const handleReplyAll = () => {
-                  const replyTo = extractEmail(from);
-                  const toHeader = headers.find(h => h.name === 'To')?.value || '';
-                  const ccHeader = headers.find(h => h.name === 'Cc')?.value || '';
-                  const allRecipients = [toHeader, ccHeader]
-                    .filter(Boolean)
-                    .join(', ')
-                    .split(',')
-                    .map(e => extractEmail(e.trim()))
-                    .filter(e => e && e !== replyTo);
+                  const replyTo = getReplyTo();
+                  const excluded = new Set([replyTo.toLowerCase(), extractEmail(from).toLowerCase()]);
+                  if (props.currentUserEmail) excluded.add(props.currentUserEmail.toLowerCase());
+                  const toHeader = findHeader(headers, 'To') || '';
+                  const ccHeader = findHeader(headers, 'Cc') || '';
+                  const allRecipients = splitEmailList([toHeader, ccHeader].filter(Boolean).join(', '))
+                    .map(e => extractEmail(e))
+                    .filter(e => e && !excluded.has(e.toLowerCase()));
                   const ccList = allRecipients.join(', ');
                   const quotedBody = buildQuotedBody(date, from, getPlainTextBody());
-                  props.onReply(replyTo, ccList, getReplySubject(), quotedBody, msg.id, isOriginalHtml());
+                  props.onReply(replyTo, ccList, getReplySubject(), quotedBody, getRfcMessageId(), isOriginalHtml());
                 };
 
                 const handleForward = () => {
@@ -364,7 +377,12 @@ export const ThreadView = (props: {
                   props.onForward(fwdSubject, fwdBody);
                 };
 
-                const isReplyingToThis = () => props.inlineCompose?.replyToMessageId === msg.id;
+                // Match either the Gmail API id or the RFC Message-ID, since
+                // onReply now reports the RFC id back through inlineCompose
+                const isReplyingToThis = () => {
+                  const rid = props.inlineCompose?.replyToMessageId;
+                  return rid != null && (rid === msg.id || rid === getRfcMessageId());
+                };
                 const isForwardingFromThis = () => props.inlineCompose?.isForward && index() === props.thread!.messages.length - 1;
                 const showInlineCompose = () => isReplyingToThis() || isForwardingFromThis();
 
@@ -500,7 +518,7 @@ export const ThreadView = (props: {
               const headers = lastMsg.payload?.headers || [];
               const from = headers.find(h => h.name === 'From')?.value || 'Unknown';
               const date = headers.find(h => h.name === 'Date')?.value || '';
-              const replyTo = extractEmail(from);
+              const replyTo = extractEmail(findHeader(headers, 'Reply-To') || from);
 
               const subject = addReplyPrefix(headers.find(h => h.name === 'Subject')?.value || '');
               const body = extractMessageBody(lastMsg.payload, lastMsg.snippet);
@@ -509,7 +527,7 @@ export const ThreadView = (props: {
               const fullBody = `${suggestion}${quotedBody}`;
 
               const isHtml = lastMsg.payload?.mimeType === 'text/html' || !!findContent(lastMsg.payload?.parts, 'text/html');
-              props.onReply(replyTo, "", subject, fullBody, lastMsg.id, isHtml);
+              props.onReply(replyTo, "", subject, fullBody, findHeader(headers, 'Message-ID'), isHtml);
             }}
           />
         </Show>
