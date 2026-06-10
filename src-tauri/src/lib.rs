@@ -140,6 +140,7 @@ pub fn run() {
             commands::clear_card_cache,
             commands::download_attachment,
             commands::open_attachment,
+            commands::save_attachment,
             commands::list_labels,
             commands::save_draft,
             commands::delete_draft,

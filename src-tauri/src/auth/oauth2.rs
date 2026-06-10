@@ -28,6 +28,7 @@ pub enum AuthError {
 struct TokenResponse {
     access_token: String,
     refresh_token: Option<String>,
+    expires_in: Option<u64>,
 }
 
 pub struct GmailAuth {
@@ -51,21 +52,13 @@ impl GmailAuth {
     }
 
     fn generate_pkce() -> (String, String) {
-        use std::collections::hash_map::DefaultHasher;
-        use std::hash::{Hash, Hasher};
-        use std::time::{SystemTime, UNIX_EPOCH};
-
-        // Generate verifier (43-128 chars, URL-safe base64)
-        let timestamp = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let random: u64 = rand::random();
-
-        let mut hasher = DefaultHasher::new();
-        timestamp.hash(&mut hasher);
-        random.hash(&mut hasher);
-        let verifier = format!("{:016x}{:016x}{:016x}{:016x}", hasher.finish(), random, timestamp as u64, rand::random::<u64>());
+        // Verifier: 64 URL-safe hex chars (RFC 7636 requires 43-128) built
+        // from two v4 UUIDs, which use a cryptographic RNG
+        let verifier = format!(
+            "{}{}",
+            uuid::Uuid::new_v4().simple(),
+            uuid::Uuid::new_v4().simple()
+        );
 
         // Generate challenge (SHA256 of verifier, base64url encoded)
         use sha2::{Digest, Sha256};
@@ -99,22 +92,25 @@ impl GmailAuth {
         Ok((auth_url, state))
     }
 
-    pub async fn exchange_code(&self, code: String, received_state: Option<&str>) -> Result<(String, String), AuthError> {
-        let pending = self
-            .pending_auth
-            .lock()
-            .await
-            .take()
-            .ok_or_else(|| AuthError::OAuth2("No pending auth flow".to_string()))?;
+    /// Exchange the authorization code for tokens.
+    /// Returns (access_token, refresh_token, expires_in_secs).
+    pub async fn exchange_code(&self, code: String, received_state: Option<&str>) -> Result<(String, String, Option<u64>), AuthError> {
+        // Verify state BEFORE consuming the pending flow, so a stray callback
+        // with a bad state doesn't destroy a still-valid flow
+        let verifier = {
+            let mut guard = self.pending_auth.lock().await;
+            let pending = guard
+                .as_ref()
+                .ok_or_else(|| AuthError::OAuth2("No pending auth flow".to_string()))?;
 
-        // Verify state to prevent CSRF attacks
-        if let Some(received) = received_state {
-            if received != pending.state {
-                return Err(AuthError::OAuth2("State mismatch - possible CSRF attack".to_string()));
+            if let Some(received) = received_state {
+                if received != pending.state {
+                    return Err(AuthError::OAuth2("State mismatch - possible CSRF attack".to_string()));
+                }
             }
-        }
 
-        let verifier = pending.verifier;
+            guard.take().map(|p| p.verifier).unwrap_or_default()
+        };
 
         tracing::info!("Exchanging code for tokens...");
         tracing::debug!("Code: {}...", &code[..20.min(code.len())]);
@@ -152,10 +148,11 @@ impl GmailAuth {
             .refresh_token
             .ok_or_else(|| AuthError::OAuth2("No refresh token received. Make sure to use 'prompt=consent' and 'access_type=offline'.".to_string()))?;
 
-        Ok((token_resp.access_token, refresh_token))
+        Ok((token_resp.access_token, refresh_token, token_resp.expires_in))
     }
 
-    pub async fn refresh_access_token(&self, refresh_token: &str) -> Result<String, AuthError> {
+    /// Refresh the access token. Returns (access_token, expires_in_secs).
+    pub async fn refresh_access_token(&self, refresh_token: &str) -> Result<(String, Option<u64>), AuthError> {
         let client = reqwest::Client::new();
         let resp = client
             .post(GOOGLE_TOKEN_URL)
@@ -174,7 +171,7 @@ impl GmailAuth {
         }
 
         let token_resp: TokenResponse = resp.json().await?;
-        Ok(token_resp.access_token)
+        Ok((token_resp.access_token, token_resp.expires_in))
     }
 }
 

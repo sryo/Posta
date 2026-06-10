@@ -136,6 +136,27 @@ impl CacheDb {
         rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
     }
 
+    pub fn get_account_by_email(&self, email: &str) -> Result<Option<Account>, CacheError> {
+        let conn = self.conn.lock().map_err(|_| CacheError::Lock)?;
+        let mut stmt = conn.prepare(
+            "SELECT id, email, picture, signature, refresh_token_ref FROM accounts WHERE email = ?1",
+        )?;
+        let result = stmt.query_row(params![email], |row| {
+            Ok(Account {
+                id: row.get(0)?,
+                email: row.get(1)?,
+                picture: row.get(2)?,
+                signature: row.get(3)?,
+                refresh_token_ref: row.get(4)?,
+            })
+        });
+        match result {
+            Ok(account) => Ok(Some(account)),
+            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+            Err(e) => Err(e.into()),
+        }
+    }
+
     pub fn insert_account(&self, account: &Account) -> Result<(), CacheError> {
         let conn = self.conn.lock().map_err(|_| CacheError::Lock)?;
         conn.execute(

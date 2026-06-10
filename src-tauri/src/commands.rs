@@ -1,6 +1,6 @@
 // Tauri command handlers
 
-use crate::auth::{self, wait_for_callback, GmailAuth};
+use crate::auth::{self, CallbackServer, GmailAuth};
 use crate::ai::GeminiClient;
 use crate::cache::CacheDb;
 use crate::gmail::{GmailClient, GmailDraft, GmailLabel, SearchResult};
@@ -8,7 +8,10 @@ use crate::icloud::ICloudKVStore;
 use crate::models::{Account, Card, SendAttachment, ThreadGroup};
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 use tauri::{Manager, State};
 
 use tokio::sync::Mutex;
@@ -17,6 +20,10 @@ pub struct AppState {
     pub db: Arc<std::sync::Mutex<Option<CacheDb>>>,
     pub auth: Arc<Mutex<Option<GmailAuth>>>,
     pub icloud: Arc<std::sync::Mutex<ICloudKVStore>>,
+    /// Cancel flag for the in-flight OAuth flow, so a retry can release port 8420
+    pub oauth_cancel: Arc<std::sync::Mutex<Option<Arc<AtomicBool>>>>,
+    /// Cached access tokens per account_id; never hold this lock across an await
+    pub token_cache: Arc<std::sync::Mutex<HashMap<String, (String, Instant)>>>,
 }
 
 impl AppState {
@@ -25,6 +32,8 @@ impl AppState {
             db: Arc::new(std::sync::Mutex::new(None)),
             auth: Arc::new(Mutex::new(None)),
             icloud: Arc::new(std::sync::Mutex::new(ICloudKVStore::new())),
+            oauth_cancel: Arc::new(std::sync::Mutex::new(None)),
+            token_cache: Arc::new(std::sync::Mutex::new(HashMap::new())),
         }
     }
 }
@@ -179,12 +188,6 @@ pub async fn configure_auth(config: AuthConfig, app_handle: tauri::AppHandle, st
     Ok(())
 }
 
-#[derive(Debug, Serialize)]
-pub struct StoredCredentials {
-    pub client_id: String,
-    pub client_secret: String,
-}
-
 #[tauri::command]
 pub fn get_stored_credentials(app_handle: tauri::AppHandle) -> Result<Option<AuthConfig>, String> {
     let app_data_dir = get_app_data_dir(&app_handle)?;
@@ -225,7 +228,7 @@ pub async fn complete_oauth_flow(
     state: State<'_, AppState>,
 ) -> Result<Account, String> {
     // Exchange code for tokens, verifying state to prevent CSRF
-    let (access_token, refresh_token) = {
+    let (access_token, refresh_token, expires_in) = {
         let auth_guard = state.auth.lock().await;
         let auth = auth_guard.as_ref().ok_or("Auth not configured")?;
         auth.exchange_code(code, received_state.as_deref())
@@ -233,7 +236,7 @@ pub async fn complete_oauth_flow(
             .map_err(|e| e.to_string())?
     };
 
-    finalize_oauth(&access_token, &refresh_token, &app_handle, &state).await
+    finalize_oauth(&access_token, &refresh_token, expires_in, &app_handle, &state).await
 }
 
 
@@ -245,6 +248,37 @@ pub async fn run_oauth_flow(
     state: State<'_, AppState>,
 ) -> Result<Account, String> {
     let _app_data_dir = get_app_data_dir(&app_handle)?;
+
+    // Cancel any previous in-flight flow so it releases port 8420 promptly
+    let cancel_flag = {
+        let mut slot = state.oauth_cancel.lock().map_err(|_| "Lock error")?;
+        if let Some(prev) = slot.take() {
+            prev.store(true, Ordering::SeqCst);
+        }
+        let flag = Arc::new(AtomicBool::new(false));
+        *slot = Some(flag.clone());
+        flag
+    };
+
+    // Bind the callback listener BEFORE opening the browser so the redirect
+    // can't race the bind. Retry briefly: a just-cancelled flow may still be
+    // releasing the port (its wait loop polls every ~100ms).
+    let server = tokio::task::spawn_blocking(|| {
+        let mut last_err = String::new();
+        for _ in 0..20 {
+            match CallbackServer::bind() {
+                Ok(server) => return Ok(server),
+                Err(e) => {
+                    last_err = e;
+                    std::thread::sleep(Duration::from_millis(100));
+                }
+            }
+        }
+        Err(last_err)
+    })
+    .await
+    .map_err(|e| format!("Task error: {}", e))?
+    .map_err(|e| format!("OAuth callback error: {}", e))?;
 
     // Start OAuth flow and get authorization URL
     let (auth_url, _csrf_token) = {
@@ -263,13 +297,23 @@ pub async fn run_oauth_flow(
         .map_err(|e| format!("Failed to open browser: {}", e))?;
 
     // Wait for callback in a blocking thread
-    let callback_result = tokio::task::spawn_blocking(move || wait_for_callback(120))
+    let wait_cancel = cancel_flag.clone();
+    let callback_result = tokio::task::spawn_blocking(move || server.wait_for_callback(120, wait_cancel))
         .await
-        .map_err(|e| format!("Task error: {}", e))?
-        .map_err(|e| format!("OAuth callback error: {}", e))?;
+        .map_err(|e| format!("Task error: {}", e))?;
+
+    // Release the cancel slot if it still belongs to this flow
+    {
+        let mut slot = state.oauth_cancel.lock().map_err(|_| "Lock error")?;
+        if slot.as_ref().is_some_and(|f| Arc::ptr_eq(f, &cancel_flag)) {
+            *slot = None;
+        }
+    }
+
+    let callback_result = callback_result.map_err(|e| format!("OAuth callback error: {}", e))?;
 
     // Exchange code for tokens
-    let (access_token, refresh_token) = {
+    let (access_token, refresh_token, expires_in) = {
         let auth_guard = state.auth.lock().await;
         let auth = auth_guard.as_ref().ok_or("Auth not configured")?;
         auth.exchange_code(callback_result.code, callback_result.state.as_deref())
@@ -278,7 +322,7 @@ pub async fn run_oauth_flow(
     };
 
     // Finalize the OAuth flow and return account
-    finalize_oauth(&access_token, &refresh_token, &app_handle, &state).await
+    finalize_oauth(&access_token, &refresh_token, expires_in, &app_handle, &state).await
 }
 
 struct UserInfo {
@@ -290,14 +334,25 @@ struct UserInfo {
 async fn finalize_oauth(
     access_token: &str,
     refresh_token: &str,
+    expires_in: Option<u64>,
     app_handle: &tauri::AppHandle,
     state: &State<'_, AppState>,
 ) -> Result<Account, String> {
     // Get user info from Google API
     let user_info = get_user_info(access_token).await?;
 
-    // Create account
-    let account = Account::new(user_info.email, user_info.picture);
+    // Reuse the existing account id on re-login so cards keep pointing at it;
+    // only mint a new UUID for genuinely new emails
+    let existing = with_db(&state, |db| {
+        db.get_account_by_email(&user_info.email).map_err(|e| e.to_string())
+    })?;
+    let account = match existing {
+        Some(mut account) => {
+            account.picture = user_info.picture;
+            account
+        }
+        None => Account::new(user_info.email, user_info.picture),
+    };
 
     // Get app data directory for secure storage
     let app_data_dir = get_app_data_dir(&app_handle)?;
@@ -307,11 +362,15 @@ async fn finalize_oauth(
         .map_err(|e| e.to_string())?;
 
     // Save account to database
-    {
-        let db_guard = state.db.lock().map_err(|_| "Lock error")?;
-        let db = db_guard.as_ref().ok_or("Database not initialized")?;
-        db.insert_account(&account).map_err(|e| e.to_string())?;
-    }
+    with_db(&state, |db| db.insert_account(&account).map_err(|e| e.to_string()))?;
+
+    // Cache the fresh access token, replacing any stale entry for this account
+    let expiry = Instant::now() + Duration::from_secs(expires_in.unwrap_or(3600));
+    state
+        .token_cache
+        .lock()
+        .map_err(|_| "Lock error")?
+        .insert(account.id.clone(), (access_token.to_string(), expiry));
 
     Ok(account)
 }
@@ -348,9 +407,7 @@ async fn get_user_info(access_token: &str) -> Result<UserInfo, String> {
 
 #[tauri::command]
 pub fn get_accounts(state: State<'_, AppState>) -> Result<Vec<Account>, String> {
-    let db_guard = state.db.lock().map_err(|_| "Lock error")?;
-    let db = db_guard.as_ref().ok_or("Database not initialized")?;
-    db.get_accounts().map_err(|e| e.to_string())
+    with_db(&state, |db| db.get_accounts().map_err(|e| e.to_string()))
 }
 
 #[tauri::command]
@@ -358,23 +415,22 @@ pub fn delete_account(account_id: String, app_handle: tauri::AppHandle, state: S
     let app_data_dir = get_app_data_dir(&app_handle)?;
 
     // Delete from database
-    {
-        let db_guard = state.db.lock().map_err(|_| "Lock error")?;
-        let db = db_guard.as_ref().ok_or("Database not initialized")?;
-        db.delete_account(&account_id).map_err(|e| e.to_string())?;
-    }
+    with_db(&state, |db| db.delete_account(&account_id).map_err(|e| e.to_string()))?;
 
     // Delete stored refresh token
     auth::delete_refresh_token(&account_id, &app_data_dir).map_err(|e| e.to_string())?;
+
+    // Drop any cached access token for this account
+    if let Ok(mut cache) = state.token_cache.lock() {
+        cache.remove(&account_id);
+    }
 
     Ok(())
 }
 
 #[tauri::command]
 pub fn update_account_signature(account_id: String, signature: Option<String>, state: State<'_, AppState>) -> Result<(), String> {
-    let db_guard = state.db.lock().map_err(|_| "Lock error")?;
-    let db = db_guard.as_ref().ok_or("Database not initialized")?;
-    db.update_account_signature(&account_id, signature.as_deref()).map_err(|e| e.to_string())
+    with_db(&state, |db| db.update_account_signature(&account_id, signature.as_deref()).map_err(|e| e.to_string()))
 }
 
 #[tauri::command]
@@ -392,10 +448,7 @@ pub fn create_card(
     card_type: Option<String>,
     state: State<'_, AppState>,
 ) -> Result<Card, String> {
-    let card = {
-        let db_guard = state.db.lock().map_err(|_| "Lock error")?;
-        let db = db_guard.as_ref().ok_or("Database not initialized")?;
-
+    let card = with_db(&state, |db| {
         let cards = db.get_cards(&account_id).map_err(|e| e.to_string())?;
         let position = cards.len() as i32;
 
@@ -408,8 +461,8 @@ pub fn create_card(
         card.color = color;
         card.group_by = group_by.unwrap_or_else(|| "date".to_string());
         db.insert_card(&card).map_err(|e| e.to_string())?;
-        card
-    };
+        Ok(card)
+    })?;
 
     sync_cards_to_icloud(&state);
     Ok(card)
@@ -417,11 +470,7 @@ pub fn create_card(
 
 #[tauri::command]
 pub fn update_card(card: Card, state: State<'_, AppState>) -> Result<(), String> {
-    {
-        let db_guard = state.db.lock().map_err(|_| "Lock error")?;
-        let db = db_guard.as_ref().ok_or("Database not initialized")?;
-        db.update_card(&card).map_err(|e| e.to_string())?;
-    }
+    with_db(&state, |db| db.update_card(&card).map_err(|e| e.to_string()))?;
 
     sync_cards_to_icloud(&state);
     Ok(())
@@ -429,11 +478,7 @@ pub fn update_card(card: Card, state: State<'_, AppState>) -> Result<(), String>
 
 #[tauri::command]
 pub fn delete_card(id: String, state: State<'_, AppState>) -> Result<(), String> {
-    {
-        let db_guard = state.db.lock().map_err(|_| "Lock error")?;
-        let db = db_guard.as_ref().ok_or("Database not initialized")?;
-        db.delete_card(&id).map_err(|e| e.to_string())?;
-    }
+    with_db(&state, |db| db.delete_card(&id).map_err(|e| e.to_string()))?;
 
     sync_cards_to_icloud(&state);
     Ok(())
@@ -441,11 +486,7 @@ pub fn delete_card(id: String, state: State<'_, AppState>) -> Result<(), String>
 
 #[tauri::command]
 pub fn reorder_cards(orders: Vec<(String, i32)>, state: State<'_, AppState>) -> Result<(), String> {
-    {
-        let db_guard = state.db.lock().map_err(|_| "Lock error")?;
-        let db = db_guard.as_ref().ok_or("Database not initialized")?;
-        db.reorder_cards(&orders).map_err(|e| e.to_string())?;
-    }
+    with_db(&state, |db| db.reorder_cards(&orders).map_err(|e| e.to_string()))?;
 
     sync_cards_to_icloud(&state);
     Ok(())
@@ -457,39 +498,58 @@ fn get_account_and_card(
     account_id: &str,
     card_id: &str,
 ) -> Result<(Account, Card), String> {
-    let db_guard = state.db.lock().map_err(|_| "Lock error")?;
-    let db = db_guard.as_ref().ok_or("Database not initialized")?;
+    with_db(state, |db| {
+        let accounts = db.get_accounts().map_err(|e| e.to_string())?;
+        let account = accounts
+            .into_iter()
+            .find(|a| a.id == account_id)
+            .ok_or("Account not found")?;
 
-    let accounts = db.get_accounts().map_err(|e| e.to_string())?;
-    let account = accounts
-        .into_iter()
-        .find(|a| a.id == account_id)
-        .ok_or("Account not found")?;
+        let cards = db.get_cards(account_id).map_err(|e| e.to_string())?;
+        let card = cards
+            .into_iter()
+            .find(|c| c.id == card_id)
+            .ok_or("Card not found")?;
 
-    let cards = db.get_cards(account_id).map_err(|e| e.to_string())?;
-    let card = cards
-        .into_iter()
-        .find(|c| c.id == card_id)
-        .ok_or("Card not found")?;
-
-    Ok((account, card))
+        Ok((account, card))
+    })
 }
 
 /// Helper to get a valid access token for an account (refreshing if needed)
 async fn get_access_token(state: &AppState, account_id: &str, app_data_dir: &std::path::Path) -> Result<String, String> {
+    // Serve from cache if the token is good for at least another 60s
+    {
+        let cache = state.token_cache.lock().map_err(|_| "Lock error")?;
+        if let Some((token, expiry)) = cache.get(account_id) {
+            if expiry.saturating_duration_since(Instant::now()) > Duration::from_secs(60) {
+                return Ok(token.clone());
+            }
+        }
+    }
+
     // Get stored refresh token
     let refresh_token = auth::get_refresh_token(account_id, app_data_dir).map_err(|e| e.to_string())?;
 
-    // Get auth instance
-    let auth_guard = state.auth.lock().await;
-    let auth = auth_guard
-        .as_ref()
-        .ok_or("Auth not configured. Please configure auth first.")?;
-
     // Refresh the access token
-    auth.refresh_access_token(&refresh_token)
-        .await
-        .map_err(|e| e.to_string())
+    let (access_token, expires_in) = {
+        let auth_guard = state.auth.lock().await;
+        let auth = auth_guard
+            .as_ref()
+            .ok_or("Auth not configured. Please configure auth first.")?;
+
+        auth.refresh_access_token(&refresh_token)
+            .await
+            .map_err(|e| e.to_string())?
+    };
+
+    let expiry = Instant::now() + Duration::from_secs(expires_in.unwrap_or(3600));
+    state
+        .token_cache
+        .lock()
+        .map_err(|_| "Lock error")?
+        .insert(account_id.to_string(), (access_token.clone(), expiry));
+
+    Ok(access_token)
 }
 
 #[tauri::command]
@@ -925,28 +985,27 @@ fn get_extension_for_mime(mime_type: &str) -> Option<&'static str> {
     }
 }
 
-#[tauri::command]
-pub async fn open_attachment(
-    account_id: String,
-    message_id: String,
+/// Fetch attachment bytes (inline or via Gmail API) and normalize the filename
+async fn resolve_attachment_file(
+    account_id: &str,
+    message_id: &str,
     attachment_id: Option<String>,
-    filename: String,
-    mime_type: Option<String>,
+    filename: &str,
+    mime_type: Option<&str>,
     inline_data: Option<String>,
-    app_handle: tauri::AppHandle, state: State<'_, AppState>,
-) -> Result<(), String> {
-    let app_data_dir = get_app_data_dir(&app_handle)?;
-
-    // Get base64 data either from inline or by downloading
+    app_handle: &tauri::AppHandle,
+    state: &State<'_, AppState>,
+) -> Result<(String, Vec<u8>), String> {
     let base64_data = if let Some(data) = inline_data {
         data
     } else {
         let attachment_id = attachment_id.ok_or("No attachment ID or inline data")?;
-        verify_account_exists(&state, &account_id)?;
+        verify_account_exists(state, account_id)?;
 
-        let access_token = get_access_token(&state, &account_id, &app_data_dir).await?;
+        let app_data_dir = get_app_data_dir(app_handle)?;
+        let access_token = get_access_token(state, account_id, &app_data_dir).await?;
         let gmail = GmailClient::new(access_token);
-        gmail.get_attachment(&message_id, &attachment_id).await?
+        gmail.get_attachment(message_id, &attachment_id).await?
     };
 
     // Decode base64 - Gmail uses URL-safe encoding, handle with/without padding
@@ -957,28 +1016,81 @@ pub async fn open_attachment(
 
     // Ensure filename has extension based on mime type
     let final_filename = if !filename.contains('.') {
-        if let Some(ref mt) = mime_type {
-            if let Some(ext) = get_extension_for_mime(mt) {
-                format!("{}.{}", filename, ext)
-            } else {
-                filename.clone()
-            }
-        } else {
-            filename.clone()
-        }
+        mime_type
+            .and_then(get_extension_for_mime)
+            .map(|ext| format!("{}.{}", filename, ext))
+            .unwrap_or_else(|| filename.to_string())
     } else {
-        filename.clone()
+        filename.to_string()
     };
 
-    // Save to temp file
-    let temp_dir = std::env::temp_dir();
-    let temp_path = temp_dir.join(&final_filename);
+    Ok((final_filename, bytes))
+}
+
+#[tauri::command]
+pub async fn open_attachment(
+    account_id: String,
+    message_id: String,
+    attachment_id: Option<String>,
+    filename: String,
+    mime_type: Option<String>,
+    inline_data: Option<String>,
+    app_handle: tauri::AppHandle, state: State<'_, AppState>,
+) -> Result<(), String> {
+    let (final_filename, bytes) = resolve_attachment_file(
+        &account_id, &message_id, attachment_id, &filename,
+        mime_type.as_deref(), inline_data, &app_handle, &state,
+    ).await?;
+
+    let temp_path = std::env::temp_dir().join(&final_filename);
     std::fs::write(&temp_path, &bytes).map_err(|e| format!("Failed to write temp file: {}", e))?;
 
     // Open with system default application
     open::that(&temp_path).map_err(|e| format!("Failed to open file: {}", e))?;
 
     Ok(())
+}
+
+/// Save an attachment to the user's Downloads folder, returning the saved path
+#[tauri::command]
+pub async fn save_attachment(
+    account_id: String,
+    message_id: String,
+    attachment_id: Option<String>,
+    filename: String,
+    mime_type: Option<String>,
+    inline_data: Option<String>,
+    app_handle: tauri::AppHandle, state: State<'_, AppState>,
+) -> Result<String, String> {
+    let (final_filename, bytes) = resolve_attachment_file(
+        &account_id, &message_id, attachment_id, &filename,
+        mime_type.as_deref(), inline_data, &app_handle, &state,
+    ).await?;
+
+    let download_dir = app_handle
+        .path()
+        .download_dir()
+        .map_err(|e| format!("Failed to get downloads dir: {}", e))?;
+
+    // Avoid clobbering an existing file: name.ext, name (1).ext, name (2).ext...
+    let (stem, ext) = match final_filename.rsplit_once('.') {
+        Some((s, e)) if !s.is_empty() => (s.to_string(), Some(e.to_string())),
+        _ => (final_filename.clone(), None),
+    };
+    let mut path = download_dir.join(&final_filename);
+    let mut counter = 1;
+    while path.exists() {
+        let candidate = match &ext {
+            Some(e) => format!("{} ({}).{}", stem, counter, e),
+            None => format!("{} ({})", stem, counter),
+        };
+        path = download_dir.join(candidate);
+        counter += 1;
+    }
+
+    std::fs::write(&path, &bytes).map_err(|e| format!("Failed to write file: {}", e))?;
+
+    Ok(path.to_string_lossy().to_string())
 }
 
 #[tauri::command]
@@ -1063,9 +1175,9 @@ pub async fn rsvp_calendar_event(
     let user_email = get_account_email(&state, &account_id)?;
 
     let access_token = get_access_token(&state, &account_id, &app_data_dir).await?;
-    let gmail = GmailClient::new(access_token);
+    let calendar = crate::calendar::CalendarClient::new(access_token);
 
-    crate::gmail::rsvp_calendar_event(&gmail, &user_email, &event_uid, &status).await
+    calendar.rsvp_calendar_event(&user_email, &event_uid, &status).await
 }
 
 #[tauri::command]
@@ -1079,9 +1191,9 @@ pub async fn get_calendar_rsvp_status(
     let user_email = get_account_email(&state, &account_id)?;
 
     let access_token = get_access_token(&state, &account_id, &app_data_dir).await?;
-    let gmail = GmailClient::new(access_token);
+    let calendar = crate::calendar::CalendarClient::new(access_token);
 
-    Ok(crate::gmail::get_calendar_event_status(&gmail, &user_email, &event_uid).await)
+    Ok(calendar.get_calendar_event_status(&user_email, &event_uid).await)
 }
 
 // iCloud sync commands
