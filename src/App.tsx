@@ -3045,6 +3045,9 @@ function App() {
   function groupCalendarEvents(events: GoogleCalendarEvent[], groupBy: GroupBy): CalendarEventGroup[] {
     if (groupBy === "date") {
       const groups: Record<string, GoogleCalendarEvent[]> = {};
+      // Each label's actual day, for chronological group ordering (sorting by
+      // first event start_time misorders groups once multi-day events repeat)
+      const groupDays: Record<string, number> = {};
 
       // Setup date boundaries
       const now = new Date();
@@ -3054,73 +3057,72 @@ function App() {
       const yesterday = new Date(today);
       yesterday.setDate(yesterday.getDate() - 1);
 
-      for (const event of events) {
-        let date: Date;
-        if (event.all_day) {
-          const d = new Date(event.start_time);
-          date = new Date(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate());
-        } else {
-          date = new Date(event.start_time);
+      // Compare calendar days by components; midnight-to-midnight ms math
+      // breaks on DST-transition days (23h/25h)
+      const sameDay = (a: Date, b: Date) =>
+        a.getFullYear() === b.getFullYear() && a.getMonth() === b.getMonth() && a.getDate() === b.getDate();
+
+      const labelFor = (day: Date) =>
+        sameDay(day, today) ? "Today"
+          : sameDay(day, tomorrow) ? "Tomorrow"
+            : sameDay(day, yesterday) ? "Yesterday"
+              : day.toLocaleDateString(undefined, { weekday: 'long', month: 'short', day: 'numeric' });
+
+      const addToDay = (event: GoogleCalendarEvent, day: Date) => {
+        const label = labelFor(day);
+        if (!groups[label]) {
+          groups[label] = [];
+          groupDays[label] = day.getTime();
         }
-        const eventDay = new Date(date.getFullYear(), date.getMonth(), date.getDate());
-
-        // Check if event is currently happening (Ongoing)
-        // If an event spans multiple days and started in the past but is active now, 
-        // we might want to show it in "Today" or a special "Ongoing" section.
-        // For now, we stick to start date but handle "Yesterday" explicitly.
-
-        let label: string;
-        // Compare calendar days by components; midnight-to-midnight ms math
-        // breaks on DST-transition days (23h/25h)
-        const sameDay = (a: Date, b: Date) =>
-          a.getFullYear() === b.getFullYear() && a.getMonth() === b.getMonth() && a.getDate() === b.getDate();
-
-        if (sameDay(eventDay, today)) {
-          label = "Today";
-        } else if (sameDay(eventDay, tomorrow)) {
-          label = "Tomorrow";
-        } else if (sameDay(eventDay, yesterday)) {
-          label = "Yesterday";
-        } else {
-          label = date.toLocaleDateString(undefined, { weekday: 'long', month: 'short', day: 'numeric' });
-        }
-
-        if (!groups[label]) groups[label] = [];
         groups[label].push(event);
-      }
+      };
 
-      // Sort groups logically: Yesterday -> Today -> Tomorrow -> Dates
-      // But map returns array.
-      // We want chronological order of keys?
-      // Object.entries order is not guaranteed chronologically for arbitrary strings.
-      // We should sort by date of the first event in the group.
+      for (const event of events) {
+        // First/last calendar day the event covers (local; UTC components for
+        // all-day, whose timestamps are UTC midnight with an exclusive end)
+        let firstDay: Date;
+        let lastDay: Date;
+        if (event.all_day) {
+          const s = new Date(event.start_time);
+          firstDay = new Date(s.getUTCFullYear(), s.getUTCMonth(), s.getUTCDate());
+          if (event.end_time) {
+            const e = new Date(event.end_time - 86400000);
+            lastDay = new Date(e.getUTCFullYear(), e.getUTCMonth(), e.getUTCDate());
+          } else {
+            lastDay = firstDay;
+          }
+        } else {
+          const s = new Date(event.start_time);
+          firstDay = new Date(s.getFullYear(), s.getMonth(), s.getDate());
+          if (event.end_time && event.end_time > event.start_time) {
+            // -1ms so an event ending exactly at midnight stays on its own day
+            const e = new Date(event.end_time - 1);
+            lastDay = new Date(e.getFullYear(), e.getMonth(), e.getDate());
+          } else {
+            lastDay = firstDay;
+          }
+        }
+        if (lastDay < firstDay) lastDay = firstDay;
+
+        // Ongoing/multi-day events appear under their start day and every
+        // remaining day they span from today on (capped so month-long events
+        // don't flood the list)
+        addToDay(event, firstDay);
+        const horizon = new Date(today.getFullYear(), today.getMonth(), today.getDate() + 31);
+        const from = firstDay < today
+          ? today
+          : new Date(firstDay.getFullYear(), firstDay.getMonth(), firstDay.getDate() + 1);
+        for (let day = from; day <= lastDay && day <= horizon; day = new Date(day.getFullYear(), day.getMonth(), day.getDate() + 1)) {
+          addToDay(event, day);
+        }
+      }
 
       return Object.entries(groups)
         .map(([label, events]) => ({
           label,
           events: events.sort((a, b) => a.start_time - b.start_time),
         }))
-        .sort((a, b) => {
-          // Special handling for key labels
-          const score = (lbl: string) => {
-            if (lbl === "Yesterday") return 1;
-            if (lbl === "Today") return 2;
-            if (lbl === "Tomorrow") return 3;
-            return 4; // Dates
-          };
-
-          const scoreA = score(a.label);
-          const scoreB = score(b.label);
-
-          if (scoreA !== scoreB) {
-            return scoreA - scoreB;
-          }
-
-          // Sort by start time of first event
-          const startA = a.events[0]?.start_time || 0;
-          const startB = b.events[0]?.start_time || 0;
-          return startA - startB;
-        });
+        .sort((a, b) => groupDays[a.label] - groupDays[b.label]);
     }
 
     if (groupBy === "organizer") {
