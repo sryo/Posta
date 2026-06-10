@@ -1,48 +1,7 @@
-import { createSignal, onMount, onCleanup, Show, For, createMemo, createEffect, type JSX } from "solid-js";
+import { createSignal, onMount, onCleanup, Show, For, createMemo, createEffect } from "solid-js";
+import { createStore, produce, reconcile } from "solid-js/store";
 import DOMPurify from 'dompurify';
-import { MessageBody, DOMPURIFY_CONFIG } from './components/MessageBody';
-
-// Safe localStorage helpers (handles private browsing, quota exceeded, etc.)
-function safeGetItem(key: string): string | null {
-  try {
-    return localStorage.getItem(key);
-  } catch {
-    return null;
-  }
-}
-
-function safeSetItem(key: string, value: string): void {
-  try {
-    localStorage.setItem(key, value);
-  } catch {
-    // Silently fail - localStorage unavailable or quota exceeded
-  }
-}
-
-function safeRemoveItem(key: string): void {
-  try {
-    localStorage.removeItem(key);
-  } catch {
-    // Silently fail
-  }
-}
-
-function safeGetJSON<T>(key: string, defaultValue: T): T {
-  try {
-    const item = localStorage.getItem(key);
-    return item ? JSON.parse(item) : defaultValue;
-  } catch {
-    return defaultValue;
-  }
-}
-
-function safeSetJSON(key: string, value: unknown): void {
-  try {
-    localStorage.setItem(key, JSON.stringify(value));
-  } catch {
-    // Silently fail
-  }
-}
+import { DOMPURIFY_CONFIG } from './components/MessageBody';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import { listen } from '@tauri-apps/api/event';
 import { invoke } from "@tauri-apps/api/core";
@@ -84,6 +43,7 @@ import {
   clearCardCache,
   openAttachment as openAttachmentApi,
   downloadAttachment as downloadAttachmentApi,
+  saveAttachment as saveAttachmentApi,
   type SendAttachment,
   listLabels,
   type GmailLabel,
@@ -102,7 +62,7 @@ import {
   getCachedCardEvents,
   saveCachedCardEvents,
   createCalendarEvent,
-  type Attachment,
+  type EventInput,
   sendReaction,
 } from "./api/tauri";
 import { Menu, MenuItem, PredefinedMenuItem } from "@tauri-apps/api/menu";
@@ -119,2005 +79,38 @@ import {
   parseContact,
   getAvatarColor,
   validateEmailList,
-  formatEmailDate,
   formatCalendarEventDate,
   decodeHtmlEntities,
   getResponseStatusLabel,
+  normalizeBase64Url,
+  addReplyPrefix,
 } from "./utils";
 import "./App.css";
 import {
   ChevronIcon,
-  ChevronLeftIcon,
-  ChevronRightIcon,
   RefreshIcon,
   PlusIcon,
   GoogleLogo,
   SettingsIcon,
   ComposeIcon,
   CloseIcon,
-  ClearIcon,
   AttachmentIcon,
-  ReplyIcon,
-  ReplyAllIcon,
-  ForwardIcon,
-  ArchiveIcon,
-  InboxIcon,
-  StarIcon,
-  StarFilledIcon,
-  TrashIcon,
-  EditIcon,
   SearchIcon,
-  SpamIcon,
-  ThumbsUpIcon,
-  ThumbsUpFilledIcon,
-  ThumbsDownIcon,
-  EyeOpenIcon,
-  EyeClosedIcon,
-  LabelIcon,
   PaletteIcon,
   CalendarIcon,
   LocationIcon,
   ClockIcon,
-  VideoIcon,
-  CheckIcon,
 } from "./components/Icons";
-import { SmartReplies } from "./components/SmartReplies";
 import { ReactionButton } from "./components/ReactionButton";
-
-// Shared compose components
-const ComposeTextarea = (props: {
-  value: string,
-  onChange: (value: string) => void,
-  onSend: () => void,
-  onCancel: () => void,
-  placeholder?: string,
-  disabled?: boolean,
-  autofocus?: boolean,
-  class?: string,
-}) => {
-  return (
-    <textarea
-      class={props.class || "compose-textarea"}
-      placeholder={props.placeholder || "Write your message..."}
-      value={props.value}
-      onInput={(e) => props.onChange(e.currentTarget.value)}
-      disabled={props.disabled}
-      ref={(el) => props.autofocus && setTimeout(() => el?.focus(), 50)}
-      onKeyDown={(e) => {
-        if (e.key === 'Escape') {
-          props.onCancel();
-        } else if (e.key === 'Enter' && (e.metaKey || e.ctrlKey) && props.value.trim()) {
-          e.preventDefault();
-          props.onSend();
-        }
-      }}
-    />
-  );
-};
-
-const ComposeSendButton = (props: {
-  onClick: () => void,
-  disabled?: boolean,
-  sending?: boolean,
-  label?: string,
-  showShortcut?: boolean,
-  class?: string,
-}) => {
-  return (
-    <button
-      class={`btn btn-primary ${props.sending ? 'sending' : ''} ${props.class || ''}`}
-      disabled={props.disabled || props.sending}
-      onClick={props.onClick}
-    >
-      {props.sending ? 'Sending...' : (
-        <>
-          {props.label || 'Send'}
-          {props.showShortcut !== false && <span class="shortcut-hint">⌘↵</span>}
-        </>
-      )}
-    </button>
-  );
-};
-
-const CloseButton = (props: {
-  onClick: () => void,
-  showHint?: boolean,
-  title?: string,
-  class?: string,
-}) => {
-  return (
-    <button
-      class={`close-btn ${props.class || ''}`}
-      onClick={props.onClick}
-      title={props.title || "Close (Esc)"}
-    >
-      <CloseIcon />
-      {props.showHint !== false && <span class="shortcut-hint">ESC</span>}
-    </button>
-  );
-};
-
-// Shared Compose Form component
-interface ComposeFormProps {
-  // Mode and display
-  mode: 'new' | 'reply' | 'forward' | 'batchReply';
-  title?: string;
-  showHeader?: boolean;
-  showSubject?: boolean;
-  showFields?: boolean; // Show To/Cc/Bcc fields (default true)
-  // Field values (optional when showFields=false)
-  to?: string;
-  setTo?: (v: string) => void;
-  cc?: string;
-  setCc?: (v: string) => void;
-  bcc?: string;
-  setBcc?: (v: string) => void;
-  showCcBcc?: boolean;
-  setShowCcBcc?: (v: boolean) => void;
-  subject?: string;
-  setSubject?: (v: string) => void;
-  body: string;
-  setBody: (v: string) => void;
-  placeholder?: string;
-  // Attachments
-  attachments: SendAttachment[];
-  onRemoveAttachment: (i: number) => void;
-  onFileSelect: (e: Event) => void;
-  fileInputId: string;
-  // Status
-  error?: string | null;
-  draftSaving?: boolean;
-  draftSaved?: boolean;
-  sending?: boolean;
-  // Actions
-  onSend: () => void;
-  onClose: () => void;
-  onInput?: () => void;
-  onSkip?: () => void; // For batch reply
-  canSend?: boolean; // Override send button enabled state
-  // Focus
-  focusBody?: boolean;
-  focusTo?: boolean;
-  // Autocomplete (optional, for new email)
-  autocomplete?: {
-    show: boolean;
-    candidates: { email: string; name?: string }[];
-    selectedIndex: number;
-    setSelectedIndex: (i: number) => void;
-    onSelect: (email: string) => void;
-    setShow: (v: boolean) => void;
-  };
-}
-
-const ComposeForm = (props: ComposeFormProps) => {
-  const defaultTitle = props.mode === 'new' ? 'New message'
-    : props.mode === 'forward' ? 'Forward'
-      : props.mode === 'batchReply' ? 'Reply'
-        : 'Reply';
-
-  // Determine if send is enabled (for keyboard shortcut and button)
-  const canSend = () => props.canSend !== undefined ? props.canSend : (props.to || '').trim().length > 0;
-
-  const handleKeyDown = (e: KeyboardEvent) => {
-    if (e.key === 'Escape') {
-      if (props.autocomplete?.show) {
-        props.autocomplete.setShow(false);
-      } else {
-        props.onClose();
-      }
-    } else if (e.key === 'Enter' && (e.metaKey || e.ctrlKey) && canSend()) {
-      e.preventDefault();
-      props.onSend();
-    }
-  };
-
-  const handleToKeyDown = (e: KeyboardEvent) => {
-    const ac = props.autocomplete;
-    if (ac && ac.show && ac.candidates.length > 0) {
-      if (e.key === 'ArrowDown') {
-        e.preventDefault();
-        ac.setSelectedIndex((ac.selectedIndex + 1) % ac.candidates.length);
-        return;
-      } else if (e.key === 'ArrowUp') {
-        e.preventDefault();
-        ac.setSelectedIndex((ac.selectedIndex - 1 + ac.candidates.length) % ac.candidates.length);
-        return;
-      } else if (e.key === 'Enter' && !(e.metaKey || e.ctrlKey)) {
-        e.preventDefault();
-        ac.onSelect(ac.candidates[ac.selectedIndex].email);
-        return;
-      }
-    }
-    handleKeyDown(e);
-  };
-
-  // Shared field components (only rendered when showFields !== false)
-  const ToField = () => (
-    <div class="compose-field" style={props.autocomplete ? "position: relative;" : undefined}>
-      <label>To</label>
-      <div class="compose-to-row">
-        <input
-          ref={(el) => setTimeout(() => { if (props.focusTo !== false && !props.focusBody) el?.focus(); }, 50)}
-          type="email"
-          value={props.to || ''}
-          onInput={(e) => { props.setTo?.(e.currentTarget.value); props.onInput?.(); }}
-          onFocus={() => props.autocomplete?.setShow(true)}
-          onBlur={() => props.autocomplete && setTimeout(() => props.autocomplete!.setShow(false), 150)}
-          onKeyDown={handleToKeyDown}
-          placeholder="Recipients"
-        />
-        <Show when={!props.showCcBcc && props.setShowCcBcc}>
-          <button type="button" class="cc-bcc-toggle" onClick={() => props.setShowCcBcc!(true)}>Cc/Bcc</button>
-        </Show>
-      </div>
-      <Show when={props.autocomplete?.show && props.autocomplete.candidates.length > 0}>
-        <div class="compose-autocomplete">
-          <For each={props.autocomplete!.candidates}>
-            {(contact, i) => (
-              <div
-                class={`compose-autocomplete-item ${i() === props.autocomplete!.selectedIndex ? 'selected' : ''}`}
-                onMouseDown={() => props.autocomplete!.onSelect(contact.email)}
-                onMouseEnter={() => props.autocomplete!.setSelectedIndex(i())}
-              >
-                <div class="compose-autocomplete-avatar" style={{ background: getAvatarColor(contact.name || contact.email) }}>
-                  {(contact.name || contact.email).charAt(0).toUpperCase()}
-                </div>
-                <div class="compose-autocomplete-info">
-                  <Show when={contact.name}>
-                    <div class="compose-autocomplete-name">{contact.name}</div>
-                  </Show>
-                  <div class="compose-autocomplete-email">{contact.email}</div>
-                </div>
-              </div>
-            )}
-          </For>
-        </div>
-      </Show>
-    </div>
-  );
-
-  const CcBccFields = () => (
-    <Show when={props.showCcBcc && props.setCc && props.setBcc}>
-      <div class="compose-field">
-        <label>Cc</label>
-        <input
-          type="text"
-          value={props.cc || ''}
-          onInput={(e) => { props.setCc!(e.currentTarget.value); props.onInput?.(); }}
-          onKeyDown={handleKeyDown}
-          placeholder="Cc recipients"
-        />
-      </div>
-      <div class="compose-field">
-        <label>Bcc</label>
-        <input
-          type="text"
-          value={props.bcc || ''}
-          onInput={(e) => { props.setBcc!(e.currentTarget.value); props.onInput?.(); }}
-          onKeyDown={handleKeyDown}
-          placeholder="Bcc recipients"
-        />
-      </div>
-    </Show>
-  );
-
-  const SubjectField = () => (
-    <Show when={props.showSubject && props.setSubject}>
-      <div class="compose-field">
-        <label>Subject</label>
-        <input
-          type="text"
-          value={props.subject || ''}
-          onInput={(e) => { props.setSubject!(e.currentTarget.value); props.onInput?.(); }}
-          onKeyDown={handleKeyDown}
-          placeholder="Subject"
-        />
-      </div>
-    </Show>
-  );
-
-  const BodyTextarea = () => (
-    <div class="compose-content">
-      <textarea
-        ref={(el) => {
-          if (props.focusBody && el) {
-            // Use requestAnimationFrame to ensure the value is rendered first
-            requestAnimationFrame(() => {
-              el.focus();
-              el.setSelectionRange(0, 0);
-              el.scrollTop = 0;
-            });
-          }
-        }}
-        value={props.body}
-        onInput={(e) => { props.setBody(e.currentTarget.value); props.onInput?.(); }}
-        onKeyDown={handleKeyDown}
-        placeholder={props.placeholder || (props.mode === 'new' ? "Write something..." : "Write your reply...")}
-      />
-    </div>
-  );
-
-  const Attachments = () => (
-    <Show when={props.attachments.length > 0}>
-      <div class="compose-attachments">
-        <For each={props.attachments}>
-          {(attachment, i) => (
-            <div class="compose-attachment">
-              <span class="attachment-name" title={attachment.filename}>
-                {truncateMiddle(attachment.filename, 20)}
-              </span>
-              <button class="attachment-remove" onClick={() => props.onRemoveAttachment(i())} title="Remove">
-                <CloseIcon />
-              </button>
-            </div>
-          )}
-        </For>
-      </div>
-    </Show>
-  );
-
-  const Footer = () => (
-    <div class="compose-footer">
-      <input
-        type="file"
-        id={props.fileInputId}
-        onChange={props.onFileSelect}
-        multiple
-        style={{ display: 'none' }}
-      />
-      <button
-        class="compose-attach-btn"
-        onClick={() => (document.getElementById(props.fileInputId) as HTMLInputElement)?.click()}
-        title="Attach files"
-      >
-        <AttachmentIcon />
-      </button>
-      <Show when={props.error}>
-        <div class="compose-error">{props.error}</div>
-      </Show>
-      <Show when={props.draftSaving && !props.error}>
-        <div class="draft-saved">Saving...</div>
-      </Show>
-      <Show when={props.draftSaved && !props.draftSaving && !props.error}>
-        <div class="draft-saved">Draft saved</div>
-      </Show>
-      <div class="compose-spacer" />
-      <button
-        class={`btn btn-primary ${props.sending ? 'sending' : ''}`}
-        disabled={!canSend() || props.sending}
-        onClick={props.onSend}
-      >
-        {props.sending ? 'Sending...' : <>Send <span class="shortcut-hint">⌘↵</span></>}
-      </button>
-    </div>
-  );
-
-  return (
-    <>
-      <Show when={props.showHeader !== false}>
-        <div class="compose-header">
-          <h3>{props.title || defaultTitle}</h3>
-          <Show when={props.onSkip}>
-            <button class="btn btn-sm batch-reply-skip" onClick={props.onSkip} title="Skip this thread">
-              Skip
-            </button>
-          </Show>
-          <Show when={!props.onSkip}>
-            <CloseButton onClick={props.onClose} />
-          </Show>
-        </div>
-      </Show>
-      <div class="compose-body">
-        <Show when={props.showFields !== false}>
-          <ToField />
-          <CcBccFields />
-          <SubjectField />
-        </Show>
-        <BodyTextarea />
-      </div>
-      <Attachments />
-      <Footer />
-    </>
-  );
-};
-
-const CreateEventForm = (props: {
-  show: boolean;
-  closing?: boolean;
-  onClose: () => void;
-  summary: string;
-  setSummary: (v: string) => void;
-  description: string;
-  setDescription: (v: string) => void;
-  location: string;
-  setLocation: (v: string) => void;
-  startDate: string;
-  setStartDate: (v: string) => void;
-  startTime: string;
-  setStartTime: (v: string) => void;
-  endDate: string;
-  setEndDate: (v: string) => void;
-  endTime: string;
-  setEndTime: (v: string) => void;
-  allDay: boolean;
-  setAllDay: (v: boolean) => void;
-  attendees: string;
-  setAttendees: (v: string) => void;
-  recurrence: string | null;
-  setRecurrence: (v: string | null) => void;
-  saving: boolean;
-  onSave: () => void;
-  error: string | null;
-  inline?: boolean;
-  isEditing?: boolean;
-}) => {
-  if (!props.show) return null;
-
-  // Helpers for custom scheduler UI
-  const [viewDate, setViewDate] = createSignal(new Date(props.startDate)); // For navigating months
-
-  const getDaysInWindow = () => {
-    const days = [];
-    const start = new Date(viewDate());
-    for (let i = 0; i < 7; i++) {
-      const day = new Date(start);
-      day.setDate(start.getDate() + i);
-      days.push(day);
-    }
-    return days;
-  };
-
-  const shiftViewDate = (days: number) => {
-    const newDate = new Date(viewDate());
-    newDate.setDate(newDate.getDate() + days);
-    setViewDate(newDate);
-  }
-
-  // Recurrence options
-  const recurrenceOptions = [
-    { label: "No repeat", value: null },
-    { label: "Daily", value: "FREQ=DAILY" },
-    { label: "Weekly", value: "FREQ=WEEKLY" },
-    { label: "Monthly", value: "FREQ=MONTHLY" },
-    { label: "Yearly", value: "FREQ=YEARLY" },
-    { label: "Weekdays", value: "FREQ=WEEKLY;BYDAY=MO,TU,WE,TH,FR" }
-  ];
-
-
-  // Auto-scroll to selected times when form opens
-  createEffect(() => {
-    if (props.show) {
-      // Wait for DOM to be ready
-      setTimeout(() => {
-        const startContainer = document.querySelector('.time-picker-start') as HTMLDivElement;
-        const endContainer = document.querySelector('.time-picker-end') as HTMLDivElement;
-
-        if (startContainer) {
-          const selectedEl = startContainer.querySelector('[data-selected="true"]') as HTMLElement;
-          if (selectedEl) {
-            selectedEl.scrollIntoView({ block: 'center' });
-          }
-        }
-
-        if (endContainer) {
-          const selectedEl = endContainer.querySelector('[data-selected="true"]') as HTMLElement;
-          if (selectedEl) {
-            selectedEl.scrollIntoView({ block: 'center' });
-          }
-        }
-      }, 150);
-    }
-  });
-
-  // Validate end time isn't before start time
-  const handleStartTimeChange = (time: string) => {
-    props.setStartTime(time);
-    // If end time is now before start time, adjust it
-    const startIdx = timeSlots.indexOf(time);
-    const endIdx = timeSlots.indexOf(props.endTime);
-    if (endIdx <= startIdx) {
-      // Set end time to 30 mins after start
-      const newEndIdx = Math.min(startIdx + 1, timeSlots.length - 1);
-      props.setEndTime(timeSlots[newEndIdx]);
-    }
-  };
-
-  const handleEndTimeChange = (time: string) => {
-    const startIdx = timeSlots.indexOf(props.startTime);
-    const endIdx = timeSlots.indexOf(time);
-    // Only allow if end is after start
-    if (endIdx > startIdx) {
-      props.setEndTime(time);
-    }
-  };
-
-  const handleMonthSelect = (month: number) => {
-    const newDate = new Date(viewDate());
-    newDate.setMonth(month);
-    newDate.setDate(1);
-    setViewDate(newDate);
-  };
-
-  const handleYearSelect = (year: number) => {
-    const newDate = new Date(viewDate());
-    newDate.setFullYear(year);
-    newDate.setDate(1);
-    setViewDate(newDate);
-  };
-
-  const months = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
-  const currentYear = new Date().getFullYear();
-  const years = Array.from({ length: 5 }, (_, i) => currentYear + i);
-
-  // Time Helpers
-  const timeSlots: string[] = [];
-  for (let h = 0; h < 24; h++) {
-    for (let m = 0; m < 60; m += 30) {
-      const hh = h.toString().padStart(2, '0');
-      const mm = m.toString().padStart(2, '0');
-      timeSlots.push(`${hh}:${mm}`);
-    }
-  }
-
-  const formatDateStr = (d: Date) => {
-    const year = d.getFullYear();
-    const month = String(d.getMonth() + 1).padStart(2, '0');
-    const day = String(d.getDate()).padStart(2, '0');
-    return `${year}-${month}-${day}`;
-  };
-
-  const isSelectedDate = (d: Date) => formatDateStr(d) === props.startDate;
-
-  const handleDateSelect = (d: Date) => {
-    const dateStr = formatDateStr(d);
-    props.setStartDate(dateStr);
-    props.setEndDate(dateStr); // Default to single day event
-  };
-
-  const formatDateDisplay = (d: Date) => {
-    const days = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
-    return {
-      day: days[d.getDay()],
-      date: d.getDate()
-    };
-  };
-
-  const formContent = () => (
-    <>
-      <div class={props.inline ? "inline-event-body" : "compose-body"} style={{ flex: 1, "overflow-y": "auto" }}>
-        <div class="compose-field">
-          <input
-            type="text"
-            value={props.summary}
-            onInput={(e) => props.setSummary(e.currentTarget.value)}
-            placeholder="Event title"
-            autofocus
-          />
-        </div>
-
-        {/* Custom Scheduler UI */}
-        <div class="scheduler-ui" style={{ padding: "10px 0", "border-bottom": "1px solid var(--border)" }}>
-
-          {/* Month Header */}
-          <div class="scheduler-header" style={{ display: "flex", "justify-content": "space-between", "align-items": "center", padding: "0 15px 10px" }}>
-            <div style={{ display: "flex", gap: "5px", "align-items": "center" }}>
-              <select
-                value={viewDate().getMonth()}
-                onChange={(e) => handleMonthSelect(parseInt(e.currentTarget.value))}
-                style={{ "font-weight": "600", "font-size": "14px", background: "transparent", border: "none", color: "var(--text)", cursor: "pointer" }}
-              >
-                <For each={months}>
-                  {(m, i) => <option value={i()}>{m}</option>}
-                </For>
-              </select>
-              <select
-                value={viewDate().getFullYear()}
-                onChange={(e) => handleYearSelect(parseInt(e.currentTarget.value))}
-                style={{ "font-weight": "600", "font-size": "14px", background: "transparent", border: "none", color: "var(--text)", cursor: "pointer" }}
-              >
-                <For each={years}>
-                  {(y) => <option value={y}>{y}</option>}
-                </For>
-              </select>
-            </div>
-            <div style={{ display: "flex", gap: "5px" }}>
-              <button class="btn btn-sm btn-ghost" onClick={() => shiftViewDate(-7)} title="Previous Week"><ChevronLeftIcon /></button>
-              <button class="btn btn-sm btn-ghost" onClick={() => shiftViewDate(7)} title="Next Week"><ChevronRightIcon /></button>
-            </div>
-          </div>
-
-          {/* Horizontal Days */}
-          <div class="scheduler-days" style={{ display: "flex", gap: "10px", "overflow-x": "auto", padding: "0 15px 15px", "scrollbar-width": "none" }}>
-            <For each={getDaysInWindow()}>
-              {(day) => {
-                const info = formatDateDisplay(day);
-                const selected = () => isSelectedDate(day);
-                return (
-                  <div
-                    class={`scheduler-day-card ${selected() ? 'selected' : ''}`}
-                    onClick={() => handleDateSelect(day)}
-                    style={{
-                      display: "flex", "flex-direction": "column", "align-items": "center", "justify-content": "center",
-                      width: "60px", height: "70px",
-                      border: selected() ? "2px solid var(--accent)" : "1px solid var(--border)",
-                      "border-radius": "8px",
-                      "background-color": selected() ? "var(--accent)" : "var(--card-bg)",
-                      cursor: "pointer",
-                      "flex-shrink": 0
-                    }}
-                  >
-                    <span style={{ "font-size": "12px", color: selected() ? "#fff" : "var(--text-secondary)" }}>{info.day}</span>
-                    <span style={{ "font-size": "20px", "font-weight": "600", color: selected() ? "#fff" : "var(--text)" }}>{info.date}</span>
-                  </div>
-                );
-              }}
-            </For>
-          </div>
-
-
-          {/* All day toggle */}
-          <div style={{ display: "flex", "justify-content": "flex-start", padding: "0 15px", "margin-bottom": "8px" }}>
-            <label style={{ display: "flex", "align-items": "center", gap: "5px", cursor: "pointer", "font-size": "12px", color: "var(--text-secondary)" }}>
-              <input type="checkbox" checked={props.allDay} onChange={(e) => props.setAllDay(e.currentTarget.checked)} />
-              All day
-            </label>
-          </div>
-
-          {/* Vertical Time Lists + Repeat */}
-          <Show when={!props.allDay}>
-            <div class="scheduler-times" style={{ display: "flex", gap: "15px", padding: "0 15px", height: "200px" }}>
-              <div style={{ flex: 1, display: "flex", "flex-direction": "column" }}>
-                <div style={{ display: "flex", "align-items": "center", height: "17px", "margin-bottom": "5px" }}>
-                  <label style={{ "font-size": "12px", color: "var(--text-secondary)" }}>Start</label>
-                </div>
-                <div class="time-picker-start" style={{ flex: 1, "overflow-y": "auto", border: "1px solid var(--border)", "border-radius": "6px" }}>
-                  <For each={timeSlots}>
-                    {(t) => (
-                      <div
-                        onClick={() => handleStartTimeChange(t)}
-                        data-selected={props.startTime === t}
-                        style={{
-                          "padding": "6px 10px",
-                          "cursor": "pointer",
-                          "background-color": props.startTime === t ? "var(--accent)" : "transparent",
-                          "color": props.startTime === t ? "#fff" : "var(--text)",
-                          "border-radius": "6px",
-                          "font-size": "13px",
-                          "text-align": "center"
-                        }}
-                      >
-                        {t}
-                      </div>
-                    )}
-                  </For>
-                </div>
-              </div>
-              <div style={{ flex: 1, display: "flex", "flex-direction": "column" }}>
-                <div style={{ display: "flex", "align-items": "center", height: "17px", "margin-bottom": "5px" }}>
-                  <label style={{ "font-size": "12px", color: "var(--text-secondary)" }}>End</label>
-                </div>
-                <div class="time-picker-end" style={{ flex: 1, "overflow-y": "auto", border: "1px solid var(--border)", "border-radius": "6px" }}>
-                  <For each={timeSlots}>
-                    {(t) => (
-                      <div
-                        onClick={() => handleEndTimeChange(t)}
-                        data-selected={props.endTime === t}
-                        style={{
-                          "padding": "6px 10px",
-                          "cursor": "pointer",
-                          "background-color": props.endTime === t ? "var(--accent)" : "transparent",
-                          "color": props.endTime === t ? "#fff" : "var(--text)",
-                          "border-radius": "6px",
-                          "font-size": "13px",
-                          "text-align": "center"
-                        }}
-                      >
-                        {t}
-                      </div>
-                    )}
-                  </For>
-                </div>
-              </div>
-              <div style={{ flex: 1, display: "flex", "flex-direction": "column" }}>
-                <div style={{ display: "flex", "align-items": "center", height: "17px", "margin-bottom": "5px" }}>
-                  <label style={{ "font-size": "12px", color: "var(--text-secondary)" }}>Repeat</label>
-                </div>
-                <div style={{ flex: 1, "overflow-y": "auto", border: "1px solid var(--border)", "border-radius": "6px" }}>
-                  <For each={recurrenceOptions}>
-                    {(opt) => (
-                      <div
-                        onClick={() => props.setRecurrence(opt.value)}
-                        style={{
-                          "padding": "6px 10px",
-                          "cursor": "pointer",
-                          "background-color": props.recurrence === opt.value ? "var(--accent)" : "transparent",
-                          "color": props.recurrence === opt.value ? "#fff" : "var(--text)",
-                          "border-radius": "6px",
-                          "font-size": "13px",
-                          "text-align": "center"
-                        }}
-                      >
-                        {opt.label}
-                      </div>
-                    )}
-                  </For>
-                </div>
-              </div>
-            </div>
-          </Show>
-        </div>
-
-        <div class="compose-field">
-          <input
-            type="text"
-            value={props.location}
-            onInput={(e) => props.setLocation(e.currentTarget.value)}
-            placeholder="Location"
-          />
-        </div>
-        <div class="compose-field">
-          <input
-            type="text"
-            value={props.attendees}
-            onInput={(e) => props.setAttendees(e.currentTarget.value)}
-            placeholder="Guests (comma separated emails)"
-          />
-        </div>
-        <div class="compose-content">
-          <textarea
-            value={props.description}
-            onInput={(e) => props.setDescription(e.currentTarget.value)}
-            placeholder="Description"
-            style={{ "min-height": "100px" }}
-          />
-        </div>
-      </div>
-      <div class={props.inline ? "inline-event-footer" : "compose-footer"}>
-        <Show when={props.error}><div class="compose-error">{props.error}</div></Show>
-        <div class="compose-spacer" />
-        <button class="btn btn-secondary" onClick={props.onClose} style={{ "margin-right": "8px" }}>
-          Cancel
-        </button>
-        <button class="btn btn-primary" disabled={props.saving || !props.summary} onClick={props.onSave} title="Save event (⌘Enter)">
-          {props.saving ? "Saving..." : <>{props.isEditing ? "Update" : "Save"} <span class="shortcut-hint">⌘↵</span></>}
-        </button>
-      </div>
-    </>
-  );
-
-  if (props.inline) {
-    return (
-      <div class="inline-event-form">
-        {formContent()}
-      </div>
-    );
-  }
-
-  return (
-    <div class={`compose-panel event-compose ${props.closing ? 'closing' : ''}`} style={{ height: "auto", "max-height": "90vh", display: "flex", "flex-direction": "column" }}>
-      <div class="compose-header">
-        <h3>{props.isEditing ? "Edit event" : "New event"}</h3>
-        <CloseButton onClick={props.onClose} />
-      </div>
-      {formContent()}
-    </div>
-  );
-};
-
-const CARD_COLORS = ["red", "orange", "yellow", "green", "cyan", "blue", "purple", "pink"] as const;
-const COLOR_HEX: Record<string, string> = {
-  red: "#E53935",
-  orange: "#FB8C00",
-  yellow: "#FDD835",
-  green: "#43A047",
-  cyan: "#00ACC1",
-  blue: "#1E88E5",
-  purple: "#5E35B1",
-  pink: "#D81B60",
-};
-
-// Message Actions Wheel Component - shared between ThreadView and EventView
-const MessageActionsWheel = (props: {
-  onReply: () => void;
-  onReplyAll: () => void;
-  onForward: () => void;
-  open: boolean;
-  showHints?: boolean;
-  onMouseEnter?: () => void;
-  onMouseLeave?: () => void;
-}) => {
-  const actions = [
-    { title: 'Reply', keyHint: 'R', icon: ReplyIcon, onClick: props.onReply },
-    { title: 'Reply All', keyHint: 'A', icon: ReplyAllIcon, onClick: props.onReplyAll },
-    { title: 'Forward', keyHint: 'F', icon: ForwardIcon, onClick: props.onForward },
-  ];
-
-  const innerRadius = 38;
-  const numActions = actions.length;
-
-  return (
-    <div
-      class={`message-actions-wheel ${props.open ? 'open' : ''}`}
-      onMouseEnter={props.onMouseEnter}
-      onMouseLeave={props.onMouseLeave}
-    >
-      <For each={actions}>
-        {(action, i) => {
-          // Arc on RIGHT side: from -60deg (top-right) to +60deg (bottom-right)
-          const angle = (-Math.PI / 3) + (i() / (numActions - 1)) * (2 * Math.PI / 3);
-          const x = innerRadius * Math.cos(angle);
-          const y = innerRadius * Math.sin(angle);
-
-          return (
-            <button
-              class="message-action-btn"
-              style={{
-                left: `calc(50% + ${x.toFixed(1)}px - 13px)`,
-                top: `calc(50% + ${y.toFixed(1)}px - 13px)`
-              }}
-              onClick={(e) => { e.stopPropagation(); action.onClick(); }}
-              title={action.title}
-            >
-              <div style={{ width: '14px', height: '14px' }}>
-                <action.icon />
-              </div>
-              <Show when={props.showHints}>
-                <span class="action-key-hint">{action.keyHint}</span>
-              </Show>
-            </button>
-          );
-        }}
-      </For>
-    </div>
-  );
-};
-
-interface InlineComposeProps {
-  replyToMessageId: string | null;
-  isForward: boolean;
-  to: string;
-  setTo: (v: string) => void;
-  cc: string;
-  setCc: (v: string) => void;
-  bcc: string;
-  setBcc: (v: string) => void;
-  showCcBcc: boolean;
-  setShowCcBcc: (v: boolean) => void;
-  subject: string;
-  setSubject: (v: string) => void;
-  body: string;
-  setBody: (v: string) => void;
-  attachments: SendAttachment[];
-  onRemoveAttachment: (i: number) => void;
-  onFileSelect: (e: Event) => void;
-  error: string | null;
-  draftSaving: boolean;
-  draftSaved: boolean;
-  sending?: boolean;
-  onSend: () => void;
-  onClose: () => void;
-  onInput: () => void;
-  focusBody: boolean;
-  // Resize props
-  messageWidth: number;
-  resizing: boolean;
-  onResizeStart: (e: MouseEvent) => void;
-}
-
-interface InlineEditEventProps {
-  summary: string;
-  setSummary: (v: string) => void;
-  description: string;
-  setDescription: (v: string) => void;
-  location: string;
-  setLocation: (v: string) => void;
-  startDate: string;
-  setStartDate: (v: string) => void;
-  startTime: string;
-  setStartTime: (v: string) => void;
-  endDate: string;
-  setEndDate: (v: string) => void;
-  endTime: string;
-  setEndTime: (v: string) => void;
-  allDay: boolean;
-  setAllDay: (v: boolean) => void;
-  attendees: string;
-  setAttendees: (v: string) => void;
-  recurrence: string | null;
-  setRecurrence: (v: string | null) => void;
-  saving: boolean;
-  onSave: () => void;
-  onClose: () => void;
-  error: string | null;
-  // Resize props
-  resizing: boolean;
-  onResizeStart: (e: MouseEvent) => void;
-}
-
-const ThreadView = (props: {
-  thread: FullThread | null,
-  loading: boolean,
-  error: string | null,
-  card: { name: string; color: string | null } | null,
-  focusColor: string | null,
-  onClose: () => void,
-  focusedMessageIndex: number,
-  onFocusChange: (index: number) => void,
-  onOpenAttachment: (messageId: string, attachmentId: string | undefined, filename: string, mimeType: string, inlineData?: string) => void,
-  onDownloadAttachment: (messageId: string, attachmentId: string | undefined, filename: string, mimeType: string, inlineData?: string) => void,
-  onShowAttachmentMenu: (att: { messageId: string; attachmentId: string; filename: string; mimeType: string; inlineData: string | null }) => void,
-  onReply: (to: string, cc: string, subject: string, quotedBody: string, messageId: string, isHtml: boolean) => void,
-  onForward: (subject: string, body: string) => void,
-  // Toolbar action props
-  onAction: (action: string) => void,
-  onOpenLabels: () => void,
-  accountId: string,
-  isStarred: boolean,
-  isRead: boolean,
-  isImportant: boolean,
-  isInInbox: boolean,
-  labelCount: number,
-  // Inline compose
-  inlineCompose: InlineComposeProps | null,
-  // Attachments from thread listing (with inline_data for thumbnails)
-  threadAttachments?: Attachment[],
-  // CID attachment data fetched on-demand (cid -> base64 data)
-  cidAttachmentData?: Record<string, string>,
-}) => {
-  let messageRefs: (HTMLDivElement | undefined)[] = [];
-  let contentRef: HTMLDivElement | undefined;
-  const [hoveredMessageId, setHoveredMessageId] = createSignal<string | null>(null);
-  const [wheelOpen, setWheelOpen] = createSignal(false);
-  const [hoveredLinkUrl, setHoveredLinkUrl] = createSignal<string | null>(null);
-  const [closing, setClosing] = createSignal(false);
-  const [sendingReaction, setSendingReaction] = createSignal(false);
-  let hoverTimeout: number | undefined;
-
-  // Handle sending a reaction
-  const handleSendReaction = async (msgId: string, emoji: string) => {
-    if (!props.thread || sendingReaction()) return;
-
-    const msg = props.thread.messages.find(m => m.id === msgId);
-    if (!msg) return;
-
-    // Get the sender's email to send the reaction to
-    const fromHeader = msg.payload?.headers?.find(h => h.name === 'From')?.value;
-    if (!fromHeader) return;
-
-    const toEmail = extractEmail(fromHeader);
-    const messageIdHeader = msg.payload?.headers?.find(h => h.name === 'Message-ID')?.value || msgId;
-
-    setSendingReaction(true);
-
-    try {
-      await sendReaction(props.accountId, props.thread.id, messageIdHeader, emoji, toEmail);
-    } catch (e) {
-      console.error('Failed to send reaction:', e);
-    } finally {
-      setSendingReaction(false);
-    }
-  };
-
-  const handleClose = () => {
-    setClosing(true);
-    setTimeout(() => props.onClose(), 200); // Match animation duration
-  };
-
-  // Scroll to newest message when thread loads
-  createEffect(() => {
-    if (props.thread && contentRef) {
-      requestAnimationFrame(() => {
-        const lastIndex = props.thread!.messages.length - 1;
-        const lastMessage = messageRefs[lastIndex];
-        if (lastMessage) {
-          lastMessage.scrollIntoView({ block: 'start' });
-        } else {
-          contentRef!.scrollTop = contentRef!.scrollHeight;
-        }
-      });
-    }
-  });
-
-  // Link hover detection via event delegation
-  const handleLinkHover = (e: MouseEvent) => {
-    const target = e.target as HTMLElement;
-    const link = target.closest('a');
-    if (link && link.href) {
-      setHoveredLinkUrl(link.href);
-    } else {
-      setHoveredLinkUrl(null);
-    }
-  };
-
-  const showMessageWheel = (msgId: string) => {
-    if (hoverTimeout) clearTimeout(hoverTimeout);
-    setHoveredMessageId(msgId);
-    setWheelOpen(true);
-  };
-
-  const hideMessageWheel = () => {
-    hoverTimeout = window.setTimeout(() => {
-      setWheelOpen(false);
-      setHoveredMessageId(null);
-    }, 150);
-  };
-
-  const handleKeyDown = (e: KeyboardEvent) => {
-    if (e.key === 'Escape') {
-      handleClose();
-      return;
-    }
-
-    // Toolbar action shortcuts (only when not in input)
-    const isTyping = document.activeElement?.tagName === 'INPUT' || document.activeElement?.tagName === 'TEXTAREA';
-    if (!isTyping && props.thread) {
-      if (e.key === 'a') { e.preventDefault(); props.onAction(props.isInInbox ? 'archive' : 'inbox'); return; }
-      if (e.key === 's') { e.preventDefault(); props.onAction(props.isStarred ? 'unstar' : 'star'); return; }
-      if (e.key === 'd') { e.preventDefault(); props.onAction('trash'); return; }
-      if (e.key === 'l') { e.preventDefault(); props.onOpenLabels(); return; }
-    }
-
-    // j/k for message navigation
-    if (props.thread && (e.key === 'j' || e.key === 'k')) {
-      e.preventDefault();
-      const maxIndex = props.thread.messages.length - 1;
-      let newIndex = props.focusedMessageIndex;
-
-      if (e.key === 'j') {
-        newIndex = Math.min(props.focusedMessageIndex + 1, maxIndex);
-      } else if (e.key === 'k') {
-        newIndex = Math.max(props.focusedMessageIndex - 1, 0);
-      }
-
-      if (newIndex !== props.focusedMessageIndex) {
-        props.onFocusChange(newIndex);
-        // Scroll to focused message
-        messageRefs[newIndex]?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
-      }
-    }
-  };
-
-  onMount(() => document.addEventListener('keydown', handleKeyDown));
-  onCleanup(() => document.removeEventListener('keydown', handleKeyDown));
-
-  return (
-    <div class={`thread-overlay ${closing() ? 'closing' : ''}`} style={props.focusColor ? { '--message-focused-color': props.focusColor } as any : undefined}>
-      <div class="thread-floating-bar">
-        {/* Row 1: Close + Subject + Card indicator */}
-        <div class="thread-floating-bar-row">
-          <CloseButton onClick={handleClose} />
-          <div class="thread-bar-subject">
-            <Show when={props.thread} fallback={<span>Loading...</span>}>
-              <h2>{props.thread?.messages[0]?.payload?.headers?.find(h => h.name === 'Subject')?.value || '(No Subject)'}</h2>
-            </Show>
-          </div>
-          <Show when={props.card}>
-            <div
-              class="thread-bar-card"
-              style={props.card?.color ? {
-                background: COLOR_HEX[props.card.color] + '20',
-                color: COLOR_HEX[props.card.color]
-              } : {
-                background: 'var(--bg-tertiary)',
-                color: 'var(--text-secondary)'
-              }}
-            >
-              {props.card?.name}
-            </div>
-          </Show>
-        </div>
-
-        {/* Row 2: Actions */}
-        <Show when={props.thread}>
-          <div class="thread-floating-bar-row thread-bar-actions">
-            <button class="thread-toolbar-btn" onClick={() => props.onAction(props.isInInbox ? 'archive' : 'inbox')} title={props.isInInbox ? 'Archive' : 'Move to Inbox'}>
-              {props.isInInbox ? <ArchiveIcon /> : <InboxIcon />}
-              <span class="thread-toolbar-label">{props.isInInbox ? 'Archive' : 'Inbox'}</span>
-              <span class="shortcut-hint">A</span>
-            </button>
-
-            <button class="thread-toolbar-btn" onClick={() => props.onAction(props.isStarred ? 'unstar' : 'star')} title={props.isStarred ? "Unstar" : "Star"}>
-              {props.isStarred ? <StarFilledIcon /> : <StarIcon />}
-              <span class="thread-toolbar-label">{props.isStarred ? 'Unstar' : 'Star'}</span>
-              <span class="shortcut-hint">S</span>
-            </button>
-
-            <button class="thread-toolbar-btn" onClick={() => props.onAction(props.isRead ? 'unread' : 'read')} title={props.isRead ? "Mark unread" : "Mark read"}>
-              {props.isRead ? <EyeClosedIcon /> : <EyeOpenIcon />}
-              <span class="thread-toolbar-label">{props.isRead ? 'Unread' : 'Read'}</span>
-              <span class="shortcut-hint">U</span>
-            </button>
-
-            <button class="thread-toolbar-btn" onClick={() => props.onAction(props.isImportant ? 'notImportant' : 'important')} title={props.isImportant ? "Unmark important" : "Mark important"}>
-              {props.isImportant ? <ThumbsUpFilledIcon /> : <ThumbsUpIcon />}
-              <span class="thread-toolbar-label">{props.isImportant ? 'Unmark' : 'Important'}</span>
-              <span class="shortcut-hint">I</span>
-            </button>
-
-            <div class="thread-toolbar-divider" />
-
-            <button class="thread-toolbar-btn" onClick={props.onOpenLabels} title="Manage labels">
-              <LabelIcon />
-              <span class="thread-toolbar-label">Labels{props.labelCount > 0 ? ` (${props.labelCount})` : ''}</span>
-              <span class="shortcut-hint">L</span>
-            </button>
-
-            <div class="thread-toolbar-divider" />
-
-            <button class="thread-toolbar-btn thread-toolbar-btn-danger" onClick={() => props.onAction('spam')} title="Report spam">
-              <SpamIcon />
-              <span class="thread-toolbar-label">Spam</span>
-              <span class="shortcut-hint">!</span>
-            </button>
-
-            <button class="thread-toolbar-btn thread-toolbar-btn-danger" onClick={() => props.onAction('trash')} title="Delete">
-              <TrashIcon />
-              <span class="thread-toolbar-label">Delete</span>
-              <span class="shortcut-hint">#</span>
-            </button>
-          </div>
-        </Show>
-      </div>
-
-      <div class="thread-content" ref={contentRef} onMouseOver={handleLinkHover} onMouseOut={() => setHoveredLinkUrl(null)}>
-        <Show when={props.loading}>
-          <div class="thread-skeleton">
-            <div class="skeleton-message">
-              <div class="skeleton-header">
-                <div class="skeleton-avatar"></div>
-                <div class="skeleton-meta">
-                  <div class="skeleton-line skeleton-name"></div>
-                  <div class="skeleton-line skeleton-date"></div>
-                </div>
-              </div>
-              <div class="skeleton-body">
-                <div class="skeleton-line"></div>
-                <div class="skeleton-line"></div>
-                <div class="skeleton-line skeleton-short"></div>
-              </div>
-            </div>
-          </div>
-        </Show>
-
-        <Show when={props.error}>
-          <div class="error-message">{props.error}</div>
-        </Show>
-
-        <Show when={props.thread}>
-          <div class="messages-list">
-            <For each={props.thread!.messages}>
-              {(msg, index) => {
-                const headers = msg.payload?.headers || [];
-                const from = headers.find(h => h.name === 'From')?.value || 'Unknown';
-                const date = headers.find(h => h.name === 'Date')?.value || '';
-
-                const getBody = () => {
-                  if (msg.payload?.body?.data) return decodeBase64Utf8(msg.payload.body.data);
-
-                  // Prefer HTML, fall back to plain text
-                  const htmlContent = findContent(msg.payload?.parts, 'text/html');
-                  if (htmlContent) return htmlContent;
-
-                  const textContent = findContent(msg.payload?.parts, 'text/plain');
-                  if (textContent) return textContent;
-
-                  // Last resort: use snippet if available
-                  if (msg.snippet) return msg.snippet;
-
-                  return "(No content)";
-                };
-
-                // Extract attachments from message parts, enriched with inline_data from threadAttachments
-                const getAttachments = () => {
-                  const attachments: { filename: string; mimeType: string; size: number; attachmentId?: string; inlineData?: string }[] = [];
-                  const findAttachments = (parts: any[]) => {
-                    parts?.forEach(part => {
-                      if (part.filename && part.filename.length > 0) {
-                        const attachmentId = part.body?.attachmentId;
-                        // Look up inline_data from threadAttachments if available
-                        const threadAtt = props.threadAttachments?.find(
-                          a => a.message_id === msg.id && (a.attachment_id === attachmentId || a.filename === part.filename)
-                        );
-                        attachments.push({
-                          filename: part.filename,
-                          mimeType: part.mimeType || 'application/octet-stream',
-                          size: part.body?.size || 0,
-                          attachmentId,
-                          inlineData: threadAtt?.inline_data || part.body?.data,
-                        });
-                      }
-                      if (part.parts) findAttachments(part.parts);
-                    });
-                  };
-                  findAttachments(msg.payload?.parts || []);
-                  return attachments;
-                };
-
-                const attachments = getAttachments();
-                const isImage = (mime: string) => mime.startsWith('image/');
-                const isPdf = (mime: string) => mime === 'application/pdf';
-
-                // Build CID map for inline images (Content-ID -> data URL)
-                const getCidMap = (): Map<string, string> => {
-                  const cidMap = new Map<string, string>();
-
-                  // First, use fetched CID data (from downloadAttachment calls)
-                  if (props.cidAttachmentData) {
-                    for (const [cid, data] of Object.entries(props.cidAttachmentData)) {
-                      if (data) {
-                        const base64Data = data.replace(/-/g, '+').replace(/_/g, '/');
-                        // Find the mimeType for this CID from message parts
-                        let mimeType = 'image/png';
-                        const findMimeType = (parts: any[]) => {
-                          parts?.forEach(part => {
-                            const contentIdHeader = part.headers?.find((h: any) =>
-                              h.name?.toLowerCase() === 'content-id'
-                            );
-                            if (contentIdHeader) {
-                              const partCid = contentIdHeader.value?.replace(/^<|>$/g, '') || '';
-                              if (partCid === cid && part.mimeType) {
-                                mimeType = part.mimeType;
-                              }
-                            }
-                            if (part.parts) findMimeType(part.parts);
-                          });
-                        };
-                        findMimeType(msg.payload?.parts || []);
-                        cidMap.set(cid, `data:${mimeType};base64,${base64Data}`);
-                      }
-                    }
-                  }
-
-                  // Then scan message parts for Content-ID headers with inline data
-                  const findCidImages = (parts: any[]) => {
-                    parts?.forEach(part => {
-                      const contentIdHeader = part.headers?.find((h: any) =>
-                        h.name?.toLowerCase() === 'content-id'
-                      );
-                      if (contentIdHeader && part.mimeType?.startsWith('image/')) {
-                        const cid = contentIdHeader.value?.replace(/^<|>$/g, '') || '';
-                        if (cid && !cidMap.has(cid)) {
-                          // Get data from part body or from threadAttachments
-                          const attachmentId = part.body?.attachmentId;
-                          let data = part.body?.data;
-
-                          if (!data && attachmentId) {
-                            const threadAtt = props.threadAttachments?.find(
-                              a => a.message_id === msg.id && a.attachment_id === attachmentId
-                            );
-                            data = threadAtt?.inline_data;
-                          }
-
-                          if (data) {
-                            const base64Data = data.replace(/-/g, '+').replace(/_/g, '/');
-                            cidMap.set(cid, `data:${part.mimeType};base64,${base64Data}`);
-                          }
-                        }
-                      }
-                      if (part.parts) findCidImages(part.parts);
-                    });
-                  };
-                  findCidImages(msg.payload?.parts || []);
-
-                  // Also check threadAttachments with content_id (as backup)
-                  props.threadAttachments?.forEach(att => {
-                    if (att.message_id === msg.id && att.content_id && att.inline_data && att.mime_type.startsWith('image/')) {
-                      if (!cidMap.has(att.content_id)) {
-                        const base64Data = att.inline_data.replace(/-/g, '+').replace(/_/g, '/');
-                        cidMap.set(att.content_id, `data:${att.mime_type};base64,${base64Data}`);
-                      }
-                    }
-                  });
-
-                  return cidMap;
-                };
-                const cidMap = getCidMap();
-
-                // Replace cid: URLs in HTML with data URLs
-                const replaceCidUrls = (html: string): string => {
-                  if (cidMap.size === 0) return html;
-                  return html.replace(/src=["']cid:([^"']+)["']/gi, (match, cid) => {
-                    const dataUrl = cidMap.get(cid);
-                    return dataUrl ? `src="${dataUrl}"` : match;
-                  });
-                };
-
-                const getSubject = () => {
-                  const subj = headers.find(h => h.name === 'Subject')?.value || '';
-                  return subj.startsWith('Re:') ? subj : `Re: ${subj}`;
-                };
-
-                const getPlainTextBody = () => {
-                  const body = getBody();
-                  // Strip HTML tags for quoting
-                  const temp = document.createElement('div');
-                  temp.innerHTML = body;
-                  return temp.textContent || temp.innerText || '';
-                };
-
-                // Detect if original message was HTML
-                const isOriginalHtml = () => {
-                  // Check payload mimeType first
-                  if (msg.payload?.mimeType === 'text/html') return true;
-                  // Then check parts
-                  return !!findContent(msg.payload?.parts, 'text/html');
-                };
-
-                const handleReply = () => {
-                  const replyTo = extractEmail(from);
-                  const subject = getSubject();
-                  const plainBody = getPlainTextBody();
-                  const quotedBody = `\n\nOn ${date}, ${from} wrote:\n> ${plainBody.split('\n').join('\n> ')}`;
-                  props.onReply(replyTo, "", subject, quotedBody, msg.id, isOriginalHtml());
-                };
-
-                const handleReplyAll = () => {
-                  const replyTo = extractEmail(from);
-                  const toHeader = headers.find(h => h.name === 'To')?.value || '';
-                  const ccHeader = headers.find(h => h.name === 'Cc')?.value || '';
-                  // Combine To and CC, excluding the sender
-                  const allRecipients = [toHeader, ccHeader]
-                    .filter(Boolean)
-                    .join(', ')
-                    .split(',')
-                    .map(e => extractEmail(e.trim()))
-                    .filter(e => e && e !== replyTo);
-                  const ccList = allRecipients.join(', ');
-                  const subject = getSubject();
-                  const plainBody = getPlainTextBody();
-                  const quotedBody = `\n\nOn ${date}, ${from} wrote:\n> ${plainBody.split('\n').join('\n> ')}`;
-                  props.onReply(replyTo, ccList, subject, quotedBody, msg.id, isOriginalHtml());
-                };
-
-                const handleForward = () => {
-                  const origSubject = headers.find(h => h.name === 'Subject')?.value || '';
-                  const fwdSubject = origSubject.startsWith('Fwd:') ? origSubject : `Fwd: ${origSubject}`;
-                  const plainBody = getPlainTextBody();
-                  const fwdBody = `\n\n---------- Forwarded message ----------\nFrom: ${from}\nDate: ${date}\nSubject: ${origSubject}\n\n${plainBody}`;
-                  props.onForward(fwdSubject, fwdBody);
-                };
-
-                const isReplyingToThis = () => props.inlineCompose?.replyToMessageId === msg.id;
-                const isForwardingFromThis = () => props.inlineCompose?.isForward && index() === props.thread!.messages.length - 1;
-                const showInlineCompose = () => isReplyingToThis() || isForwardingFromThis();
-
-                return (
-                  <div
-                    class={`message-row ${showInlineCompose() ? 'with-compose' : ''} ${props.inlineCompose?.resizing ? 'resizing' : ''}`}
-                    onMouseEnter={() => showMessageWheel(msg.id)}
-                    onMouseLeave={hideMessageWheel}
-                  >
-                    <div
-                      class={`message-card ${props.focusedMessageIndex === index() ? 'message-focused' : ''}`}
-                      ref={(el) => { messageRefs[index()] = el; }}
-                    >
-                      <div class="message-header">
-                        <div class="message-sender">{from}</div>
-                        <div class="message-header-actions">
-                          <ReactionButton
-                            onSelect={(emoji) => handleSendReaction(msg.id, emoji)}
-                            sending={sendingReaction()}
-                          />
-                          <div class="message-date">{formatEmailDate(date)}</div>
-                        </div>
-                      </div>
-                      {/* Message Actions Wheel - show for focused or hovered message */}
-                      <Show when={((hoveredMessageId() === msg.id && wheelOpen()) || props.focusedMessageIndex === index()) && !showInlineCompose()}>
-                        <MessageActionsWheel
-                          onReply={handleReply}
-                          onReplyAll={handleReplyAll}
-                          onForward={handleForward}
-                          open={true}
-                          showHints={props.focusedMessageIndex === index()}
-                          onMouseEnter={() => showMessageWheel(msg.id)}
-                          onMouseLeave={hideMessageWheel}
-                        />
-                      </Show>
-                      <MessageBody
-                        body={getBody()}
-                        cidAttachmentData={props.cidAttachmentData}
-                        msgPayloadParts={msg.payload?.parts}
-                        msgId={msg.id}
-                        threadAttachments={props.threadAttachments}
-                      />
-                      <Show when={attachments.length > 0}>
-                        <div class="message-attachments">
-                          <For each={attachments}>
-                            {(att) => {
-                              const handleContextMenu = (e: MouseEvent) => {
-                                e.preventDefault();
-                                props.onShowAttachmentMenu({
-                                  messageId: msg.id,
-                                  attachmentId: att.attachmentId || "",
-                                  filename: att.filename,
-                                  mimeType: att.mimeType,
-                                  inlineData: att.inlineData || null
-                                });
-                              };
-                              const hasThumb = att.inlineData && isImage(att.mimeType);
-                              return (
-                                <div
-                                  class="attachment-thumb clickable"
-                                  title={`${att.filename} (${formatFileSize(att.size)})`}
-                                  onClick={() => props.onOpenAttachment(msg.id, att.attachmentId, att.filename, att.mimeType, att.inlineData)}
-                                  onContextMenu={handleContextMenu}
-                                >
-                                  {hasThumb ? (
-                                    <img
-                                      class="attachment-preview"
-                                      src={`data:${att.mimeType};base64,${att.inlineData!.replace(/-/g, '+').replace(/_/g, '/')}`}
-                                      alt={att.filename}
-                                    />
-                                  ) : (
-                                    <div class={`attachment-icon ${isImage(att.mimeType) ? 'image' : isPdf(att.mimeType) ? 'pdf' : 'file'}`}>
-                                      {isImage(att.mimeType) ? '🖼️' : isPdf(att.mimeType) ? '📄' : '📎'}
-                                    </div>
-                                  )}
-                                  <div class="attachment-info">
-                                    <div class="attachment-name">{truncateMiddle(att.filename, 20)}</div>
-                                    <div class="attachment-size">{formatFileSize(att.size)}</div>
-                                  </div>
-                                </div>
-                              );
-                            }}
-                          </For>
-                        </div>
-                      </Show>
-                    </div>
-                    {/* Resize handle and inline compose form */}
-                    <Show when={showInlineCompose() && props.inlineCompose}>
-                      <div
-                        class="inline-resize-handle"
-                        onMouseDown={props.inlineCompose!.onResizeStart}
-                      />
-                      <div class="inline-compose">
-                        <ComposeForm
-                          mode={props.inlineCompose!.isForward ? 'forward' : 'reply'}
-                          to={props.inlineCompose!.to}
-                          setTo={props.inlineCompose!.setTo}
-                          cc={props.inlineCompose!.cc}
-                          setCc={props.inlineCompose!.setCc}
-                          bcc={props.inlineCompose!.bcc}
-                          setBcc={props.inlineCompose!.setBcc}
-                          showCcBcc={props.inlineCompose!.showCcBcc}
-                          setShowCcBcc={props.inlineCompose!.setShowCcBcc}
-                          body={props.inlineCompose!.body}
-                          setBody={props.inlineCompose!.setBody}
-                          attachments={props.inlineCompose!.attachments}
-                          onRemoveAttachment={props.inlineCompose!.onRemoveAttachment}
-                          onFileSelect={props.inlineCompose!.onFileSelect}
-                          fileInputId={`inline-file-input-${msg.id}`}
-                          error={props.inlineCompose!.error}
-                          draftSaving={props.inlineCompose!.draftSaving}
-                          draftSaved={props.inlineCompose!.draftSaved}
-                          sending={props.inlineCompose!.sending}
-                          onSend={props.inlineCompose!.onSend}
-                          onClose={props.inlineCompose!.onClose}
-                          onInput={props.inlineCompose!.onInput}
-                          focusBody={props.inlineCompose!.focusBody}
-                        />
-                      </div>
-                    </Show>
-                  </div>
-                );
-              }}
-            </For>
-          </div>
-          <SmartReplies
-            accountId={props.accountId}
-            threadId={props.thread!.id}
-            onSelect={(suggestion) => {
-              const lastMsg = props.thread!.messages[props.thread!.messages.length - 1];
-              if (!lastMsg) return;
-
-              const headers = lastMsg.payload?.headers || [];
-              const from = headers.find(h => h.name === 'From')?.value || 'Unknown';
-              const date = headers.find(h => h.name === 'Date')?.value || '';
-              const replyTo = extractEmail(from);
-
-              const getSubject = () => {
-                const subj = headers.find(h => h.name === 'Subject')?.value || '';
-                return subj.startsWith('Re:') ? subj : `Re: ${subj}`;
-              };
-
-              const getBody = () => {
-                const payload = lastMsg.payload;
-                if (payload?.body?.data) return decodeBase64Utf8(payload.body.data);
-
-                const htmlContent = findContent(payload?.parts, 'text/html');
-                if (htmlContent) return htmlContent;
-                const textContent = findContent(payload?.parts, 'text/plain');
-                if (textContent) return textContent;
-                if (lastMsg.snippet) return lastMsg.snippet;
-                return "";
-              };
-
-              const body = getBody();
-              const temp = document.createElement('div');
-              temp.innerHTML = DOMPurify.sanitize(body, DOMPURIFY_CONFIG);
-              const plainBody = temp.textContent || temp.innerText || '';
-
-              const quotedBody = `\n\nOn ${date}, ${from} wrote:\n> ${plainBody.split('\n').join('\n> ')}`;
-              const fullBody = `${suggestion}${quotedBody}`;
-
-              const isHtml = lastMsg.payload?.mimeType === 'text/html' || !!findContent(lastMsg.payload?.parts, 'text/html');
-              props.onReply(replyTo, "", getSubject(), fullBody, lastMsg.id, isHtml);
-            }}
-          />
-        </Show>
-      </div>
-
-
-      {/* Link hover status bar */}
-      <Show when={hoveredLinkUrl()}>
-        <div class="link-status-bar">{hoveredLinkUrl()}</div>
-      </Show>
-    </div>
-  );
-};
-
-// Event View Component
-const EventView = (props: {
-  event: GoogleCalendarEvent | null;
-  card: { name: string; color: string | null } | null;
-  focusColor: string | null;
-  onClose: () => void;
-  onRsvp: (status: "accepted" | "declined" | "tentative") => void;
-  onReplyOrganizer: () => void;
-  onReplyAll: () => void;
-  onForward: () => void;
-  onEdit: () => void;
-  onDelete: () => void;
-  onOpenCalendars: () => void;
-  calendarDrawerOpen: boolean;
-  onCloseCalendarDrawer: () => void;
-  calendars: { id: string; name: string; is_primary: boolean }[];
-  calendarsLoading: boolean;
-  onMoveToCalendar: (calendarId: string) => void;
-  rsvpLoading: boolean;
-  inlineCompose: InlineComposeProps | null;
-  inlineEdit: InlineEditEventProps | null;
-}) => {
-  const [closing, setClosing] = createSignal(false);
-
-  const handleClose = () => {
-    setClosing(true);
-    setTimeout(() => props.onClose(), 200);
-  };
-
-  const formatEventDateTime = (startTime: number, endTime: number | null, allDay: boolean) => {
-    const start = new Date(startTime);
-    const end = endTime ? new Date(endTime) : null;
-    const dateOpts: Intl.DateTimeFormatOptions = { weekday: 'long', month: 'long', day: 'numeric', year: 'numeric' };
-    const timeOpts: Intl.DateTimeFormatOptions = { hour: 'numeric', minute: '2-digit' };
-
-    if (allDay) {
-      if (end && end.getTime() - start.getTime() > 86400000) {
-        return `${start.toLocaleDateString(undefined, dateOpts)} - ${end.toLocaleDateString(undefined, dateOpts)} (All day)`;
-      }
-      return `${start.toLocaleDateString(undefined, dateOpts)} (All day)`;
-    }
-
-    const startDate = start.toLocaleDateString(undefined, dateOpts);
-    const startTimeStr = start.toLocaleTimeString(undefined, timeOpts);
-    const endTimeStr = end ? end.toLocaleTimeString(undefined, timeOpts) : '';
-
-    if (end && start.toDateString() !== end.toDateString()) {
-      return `${startDate} ${startTimeStr} - ${end.toLocaleDateString(undefined, dateOpts)} ${endTimeStr}`;
-    }
-    return `${startDate}, ${startTimeStr}${endTimeStr ? ` - ${endTimeStr}` : ''}`;
-  };
-
-  return (
-    <div class={`thread-overlay ${closing() ? 'closing' : ''}`} style={props.focusColor ? { '--message-focused-color': props.focusColor } as any : undefined}>
-      <div class="thread-floating-bar">
-        {/* Row 1: Close + Title + Card indicator */}
-        <div class="thread-floating-bar-row">
-          <CloseButton onClick={handleClose} />
-          <div class="thread-bar-subject">
-            <Show when={props.event} fallback={<span>Loading...</span>}>
-              <h2>{props.event?.title || '(No title)'}</h2>
-            </Show>
-          </div>
-          <Show when={props.card}>
-            <div
-              class="thread-bar-card"
-              style={props.card?.color ? {
-                background: COLOR_HEX[props.card.color] + '20',
-                color: COLOR_HEX[props.card.color]
-              } : {
-                background: 'var(--bg-tertiary)',
-                color: 'var(--text-secondary)'
-              }}
-            >
-              {props.card?.name}
-            </div>
-          </Show>
-        </div>
-
-        {/* Row 2: Actions */}
-        <Show when={props.event}>
-          <div class="thread-floating-bar-row thread-bar-actions">
-            {/* Reply to organizer */}
-            <Show when={props.event!.organizer}>
-              <button
-                class="thread-toolbar-btn"
-                onClick={props.onReplyOrganizer}
-                title="Reply to organizer"
-              >
-                <ReplyIcon />
-                <span class="thread-toolbar-label">Reply</span>
-                <span class="shortcut-hint">R</span>
-              </button>
-            </Show>
-
-            <Show when={props.event!.hangout_link}>
-              <div class="thread-toolbar-divider" />
-              <button
-                class="thread-toolbar-btn"
-                onClick={() => props.event!.hangout_link && openUrl(props.event!.hangout_link)}
-                title="Join video call"
-              >
-                <VideoIcon />
-                <span class="thread-toolbar-label">Join</span>
-                <span class="shortcut-hint">J</span>
-              </button>
-            </Show>
-
-            <Show when={props.event!.html_link}>
-              <button
-                class="thread-toolbar-btn"
-                onClick={() => props.event!.html_link && openUrl(props.event!.html_link)}
-                title="Open in Google Calendar"
-              >
-                <CalendarIcon />
-                <span class="thread-toolbar-label">Open</span>
-                <span class="shortcut-hint">O</span>
-              </button>
-            </Show>
-
-            <button class="thread-toolbar-btn" onClick={props.onOpenCalendars} title="Move to calendar">
-              <CalendarIcon />
-              <span class="thread-toolbar-label">Move</span>
-              <span class="shortcut-hint">C</span>
-            </button>
-
-            <Show when={props.event!.can_edit}>
-              <div class="thread-toolbar-divider" />
-
-              <button
-                class="thread-toolbar-btn"
-                onClick={props.onEdit}
-                title="Edit event"
-              >
-                <EditIcon />
-                <span class="thread-toolbar-label">Edit</span>
-                <span class="shortcut-hint">E</span>
-              </button>
-
-              <button
-                class="thread-toolbar-btn thread-toolbar-btn-danger"
-                onClick={props.onDelete}
-                title="Delete event"
-              >
-                <TrashIcon />
-                <span class="thread-toolbar-label">Delete</span>
-                <span class="shortcut-hint">#</span>
-              </button>
-            </Show>
-          </div>
-        </Show>
-      </div>
-
-      <div class="thread-content">
-        <Show when={props.event}>
-          <div class="messages-list">
-              <div class={`message-row ${props.inlineCompose || props.inlineEdit ? 'with-compose' : ''} ${props.inlineCompose?.resizing || props.inlineEdit?.resizing ? 'resizing' : ''}`}>
-                <div class="message-card message-focused">
-                  {/* Event Header */}
-                  <div class="message-header">
-                    <div class="message-sender">{props.event!.organizer || 'Unknown organizer'}</div>
-                    <div class="message-date">{formatEventDateTime(props.event!.start_time, props.event!.end_time, props.event!.all_day)}</div>
-                  </div>
-
-                  {/* Message Actions Wheel - hide when composing or editing */}
-                  <Show when={!props.inlineCompose && !props.inlineEdit}>
-                    <MessageActionsWheel
-                      onReply={props.onReplyOrganizer}
-                      onReplyAll={props.onReplyAll}
-                      onForward={props.onForward}
-                      open={true}
-                      showHints={true}
-                    />
-                  </Show>
-
-                  {/* Calendar Name */}
-                  <div class="event-info-row">
-                    <CalendarIcon />
-                    <span>{props.event!.calendar_name}</span>
-                  </div>
-
-                  {/* Location */}
-                  <Show when={props.event!.location}>
-                    <div class="event-info-row">
-                      <LocationIcon />
-                      <span>{props.event!.location}</span>
-                    </div>
-                  </Show>
-
-                  {/* Video call */}
-                  <Show when={props.event!.hangout_link}>
-                    <div class="event-info-row">
-                      <VideoIcon />
-                      <a href="#" onClick={(e) => { e.preventDefault(); props.event!.hangout_link && openUrl(props.event!.hangout_link); }}>
-                        Join video call
-                      </a>
-                    </div>
-                  </Show>
-
-                  {/* Description */}
-                  <Show when={props.event!.description}>
-                    <div class="message-body">
-                      <div innerHTML={DOMPurify.sanitize(props.event!.description!.replace(/\n/g, '<br>'), DOMPURIFY_CONFIG)} />
-                    </div>
-                  </Show>
-
-                  {/* RSVP Section */}
-                  <Show when={props.event!.response_status}>
-                    <div class="event-rsvp-section">
-                      <div class="event-rsvp-current">
-                        Your response: <span class={`event-rsvp-status ${props.event!.response_status}`}>
-                          {getResponseStatusLabel(props.event!.response_status)}
-                        </span>
-                      </div>
-                      <div class="event-rsvp-buttons">
-                        <button
-                          class={`event-rsvp-btn ${props.event!.response_status === 'accepted' ? 'active' : ''}`}
-                          onClick={() => props.onRsvp('accepted')}
-                          disabled={props.rsvpLoading}
-                        >
-                          Yes
-                        </button>
-                        <button
-                          class={`event-rsvp-btn ${props.event!.response_status === 'tentative' ? 'active' : ''}`}
-                          onClick={() => props.onRsvp('tentative')}
-                          disabled={props.rsvpLoading}
-                        >
-                          Maybe
-                        </button>
-                        <button
-                          class={`event-rsvp-btn ${props.event!.response_status === 'declined' ? 'active' : ''}`}
-                          onClick={() => props.onRsvp('declined')}
-                          disabled={props.rsvpLoading}
-                        >
-                          No
-                        </button>
-                      </div>
-                    </div>
-                  </Show>
-
-                  {/* Attendees */}
-                  <Show when={props.event!.attendees.length > 0}>
-                    <div class="event-attendees-section">
-                      <div class="event-attendees-label">{props.event!.attendees.length} guests</div>
-                      <div class="event-attendees-list">
-                        <For each={props.event!.attendees}>
-                          {(attendee) => (
-                            <div class={`event-attendee ${attendee.response_status || ''}`}>
-                              <span class="event-attendee-name">
-                                {attendee.display_name || attendee.email}
-                                {attendee.is_organizer && <span class="event-attendee-badge">Organizer</span>}
-                              </span>
-                              <span class={`event-attendee-status ${attendee.response_status || ''}`}>
-                                {getResponseStatusLabel(attendee.response_status)}
-                              </span>
-                            </div>
-                          )}
-                        </For>
-                      </div>
-                    </div>
-                  </Show>
-                </div>
-
-              {/* Resize handle and inline compose form */}
-              <Show when={props.inlineCompose}>
-                <div
-                  class="inline-resize-handle"
-                  onMouseDown={props.inlineCompose!.onResizeStart}
-                />
-                <div class="inline-compose">
-                  <ComposeForm
-                    mode={props.inlineCompose!.isForward ? 'forward' : 'reply'}
-                    to={props.inlineCompose!.to}
-                    setTo={props.inlineCompose!.setTo}
-                    cc={props.inlineCompose!.cc}
-                    setCc={props.inlineCompose!.setCc}
-                    bcc={props.inlineCompose!.bcc}
-                    setBcc={props.inlineCompose!.setBcc}
-                    showCcBcc={props.inlineCompose!.showCcBcc}
-                    setShowCcBcc={props.inlineCompose!.setShowCcBcc}
-                    body={props.inlineCompose!.body}
-                    setBody={props.inlineCompose!.setBody}
-                    attachments={props.inlineCompose!.attachments}
-                    onRemoveAttachment={props.inlineCompose!.onRemoveAttachment}
-                    onFileSelect={props.inlineCompose!.onFileSelect}
-                    fileInputId={`inline-file-input-event-${props.event!.id}`}
-                    error={props.inlineCompose!.error}
-                    draftSaving={props.inlineCompose!.draftSaving}
-                    draftSaved={props.inlineCompose!.draftSaved}
-                    sending={props.inlineCompose!.sending}
-                    onSend={props.inlineCompose!.onSend}
-                    onClose={props.inlineCompose!.onClose}
-                    onInput={props.inlineCompose!.onInput}
-                    focusBody={props.inlineCompose!.focusBody}
-                  />
-                </div>
-              </Show>
-
-              {/* Inline edit form */}
-              <Show when={props.inlineEdit}>
-                <div
-                  class="inline-resize-handle"
-                  onMouseDown={props.inlineEdit!.onResizeStart}
-                />
-                <div class="inline-compose">
-                  <CreateEventForm
-                    show={true}
-                    inline={true}
-                    isEditing={true}
-                    onClose={props.inlineEdit!.onClose}
-                    summary={props.inlineEdit!.summary}
-                    setSummary={props.inlineEdit!.setSummary}
-                    description={props.inlineEdit!.description}
-                    setDescription={props.inlineEdit!.setDescription}
-                    location={props.inlineEdit!.location}
-                    setLocation={props.inlineEdit!.setLocation}
-                    startDate={props.inlineEdit!.startDate}
-                    setStartDate={props.inlineEdit!.setStartDate}
-                    startTime={props.inlineEdit!.startTime}
-                    setStartTime={props.inlineEdit!.setStartTime}
-                    endDate={props.inlineEdit!.endDate}
-                    setEndDate={props.inlineEdit!.setEndDate}
-                    endTime={props.inlineEdit!.endTime}
-                    setEndTime={props.inlineEdit!.setEndTime}
-                    allDay={props.inlineEdit!.allDay}
-                    setAllDay={props.inlineEdit!.setAllDay}
-                    attendees={props.inlineEdit!.attendees}
-                    setAttendees={props.inlineEdit!.setAttendees}
-                    recurrence={props.inlineEdit!.recurrence}
-                    setRecurrence={props.inlineEdit!.setRecurrence}
-                    saving={props.inlineEdit!.saving}
-                    onSave={props.inlineEdit!.onSave}
-                    error={props.inlineEdit!.error}
-                  />
-                </div>
-              </Show>
-              </div>
-          </div>
-        </Show>
-      </div>
-
-      {/* Calendar Drawer */}
-      <Show when={props.calendarDrawerOpen}>
-        <div class="label-drawer-overlay" onClick={props.onCloseCalendarDrawer}></div>
-        <div class="label-drawer">
-          <div class="label-drawer-header">
-            <h3>Move to Calendar</h3>
-            <CloseButton onClick={props.onCloseCalendarDrawer} />
-          </div>
-
-          <div class="label-drawer-body">
-            <Show when={props.calendarsLoading}>
-              <div class="label-drawer-loading">Loading calendars...</div>
-            </Show>
-
-            <Show when={!props.calendarsLoading}>
-              <For each={props.calendars}>
-                {(cal) => {
-                  const isCurrent = () => props.event?.calendar_id === cal.id;
-
-                  return (
-                    <label class={`label-item ${isCurrent() ? 'label-item-selected' : ''}`}>
-                      <input
-                        type="radio"
-                        name="event-calendar"
-                        checked={isCurrent()}
-                        onChange={() => props.onMoveToCalendar(cal.id)}
-                      />
-                      <span class="label-name">{cal.name}</span>
-                      <Show when={cal.is_primary}>
-                        <span class="label-badge">Primary</span>
-                      </Show>
-                    </label>
-                  );
-                }}
-              </For>
-
-              <Show when={!props.calendarsLoading && props.calendars.length === 0}>
-                <div class="label-drawer-empty">No calendars found</div>
-              </Show>
-            </Show>
-          </div>
-
-          <div class="label-drawer-footer">
-            <span class="shortcut-hint">Press C to toggle calendars</span>
-          </div>
-        </div>
-      </Show>
-    </div>
-  );
-};
-
-type CardColor = typeof CARD_COLORS[number] | null;
-
-// Background colors with light/dark mode support (same base colors, lower opacity)
-const BG_COLORS = [
-  { light: "rgba(229, 57, 53, 0.18)", dark: "rgba(229, 57, 53, 0.25)", hex: "#E53935" },
-  { light: "rgba(251, 140, 0, 0.18)", dark: "rgba(251, 140, 0, 0.25)", hex: "#FB8C00" },
-  { light: "rgba(253, 216, 53, 0.20)", dark: "rgba(253, 216, 53, 0.22)", hex: "#FDD835" },
-  { light: "rgba(67, 160, 71, 0.18)", dark: "rgba(67, 160, 71, 0.25)", hex: "#43A047" },
-  { light: "rgba(0, 172, 193, 0.18)", dark: "rgba(0, 172, 193, 0.25)", hex: "#00ACC1" },
-  { light: "rgba(30, 136, 229, 0.18)", dark: "rgba(30, 136, 229, 0.25)", hex: "#1E88E5" },
-  { light: "rgba(94, 53, 177, 0.18)", dark: "rgba(94, 53, 177, 0.25)", hex: "#5E35B1" },
-  { light: "rgba(216, 27, 96, 0.18)", dark: "rgba(216, 27, 96, 0.25)", hex: "#D81B60" },
-];
-type GroupBy = "date" | "sender" | "label" | "organizer" | "calendar";
-const EMAIL_GROUP_BY_OPTIONS: { value: GroupBy; label: string }[] = [
-  { value: "date", label: "Date" },
-  { value: "sender", label: "Sender" },
-  { value: "label", label: "Label" },
-];
-const CALENDAR_GROUP_BY_OPTIONS: { value: GroupBy; label: string }[] = [
-  { value: "date", label: "Date" },
-  { value: "organizer", label: "Organizer" },
-  { value: "calendar", label: "Calendar" },
-];
-
-type ActionSettings = Record<string, boolean>;
-
-// Gmail search operators for autocomplete
-const GMAIL_OPERATORS: { op: string; desc: string; values?: string[] }[] = [
-  { op: "from:", desc: "Sender address" },
-  { op: "to:", desc: "Recipient address" },
-  { op: "cc:", desc: "CC recipient" },
-  { op: "bcc:", desc: "BCC recipient" },
-  { op: "subject:", desc: "Words in subject" },
-  { op: "label:", desc: "Messages with label" },
-  { op: "has:attachment", desc: "Has attachments" },
-  { op: "has:drive", desc: "Has Google Drive files" },
-  { op: "has:document", desc: "Has Google Docs" },
-  { op: "has:spreadsheet", desc: "Has Google Sheets" },
-  { op: "has:presentation", desc: "Has Google Slides" },
-  { op: "has:youtube", desc: "Has YouTube videos" },
-  { op: "is:unread", desc: "Unread messages" },
-  { op: "is:read", desc: "Read messages" },
-  { op: "is:starred", desc: "Starred messages" },
-  { op: "is:important", desc: "Important messages" },
-  { op: "is:snoozed", desc: "Snoozed messages" },
-  { op: "is:muted", desc: "Muted conversations" },
-  { op: "in:inbox", desc: "In inbox" },
-  { op: "in:sent", desc: "In sent" },
-  { op: "in:drafts", desc: "In drafts" },
-  { op: "in:spam", desc: "In spam" },
-  { op: "in:trash", desc: "In trash" },
-  { op: "in:anywhere", desc: "All mail including spam/trash" },
-  { op: "category:primary", desc: "Primary category" },
-  { op: "category:social", desc: "Social category" },
-  { op: "category:promotions", desc: "Promotions category" },
-  { op: "category:updates", desc: "Updates category" },
-  { op: "category:forums", desc: "Forums category" },
-  { op: "filename:", desc: "Attachment filename" },
-  { op: "larger:", desc: "Larger than size (e.g. 5M)" },
-  { op: "smaller:", desc: "Smaller than size" },
-  { op: "older_than:", desc: "Older than (e.g. 1y, 2m, 3d)" },
-  { op: "newer_than:", desc: "Newer than" },
-  { op: "after:", desc: "After date (YYYY/MM/DD)" },
-  { op: "before:", desc: "Before date" },
-  { op: "deliveredto:", desc: "Delivered to address" },
-  { op: "list:", desc: "Mailing list" },
-];
-
-
+import { ComposeTextarea, ComposeSendButton, CloseButton } from "./components/ComposeAtoms";
+import { ComposeForm } from "./components/ComposeForm";
+import { CreateEventForm } from "./components/CreateEventForm";
+import { ThreadView } from "./components/ThreadView";
+import { EventView } from "./components/EventView";
+import { ActionsWheel } from "./components/ActionsWheel";
+import { CardForm } from "./components/CardForm";
+import { safeGetItem, safeSetItem, safeRemoveItem, safeGetJSON, safeSetJSON } from "./shared/storage";
+import { BG_COLORS, GMAIL_OPERATORS, type ActionSettings, type CardColor, type GroupBy } from "./shared/constants";
 
 function App() {
   const [loading, setLoading] = createSignal(true);
@@ -2154,18 +147,18 @@ function App() {
   const [selectedAccount, setSelectedAccount] = createSignal<Account | null>(null);
   const [cards, setCards] = createSignal<Card[]>([]);
   const [authLoading, setAuthLoading] = createSignal(false);
-  const [cardThreads, setCardThreads] = createSignal<Record<string, ThreadGroup[]>>({});
-  const [cardCalendarEvents, setCardCalendarEvents] = createSignal<Record<string, GoogleCalendarEvent[]>>({});
-  const [loadingThreads, setLoadingThreads] = createSignal<Record<string, boolean>>({});
-  const [cardErrors, setCardErrors] = createSignal<Record<string, string | null>>({});
-  const [collapsedCards, setCollapsedCards] = createSignal<Record<string, boolean>>({});
-  const [cardPageTokens, setCardPageTokens] = createSignal<Record<string, string | null>>({});
-  const [cardHasMore, setCardHasMore] = createSignal<Record<string, boolean>>({});
-  const [loadingMore, setLoadingMore] = createSignal<Record<string, boolean>>({});
+  const [cardThreads, setCardThreads] = createStore<Record<string, ThreadGroup[]>>({});
+  const [cardCalendarEvents, setCardCalendarEvents] = createStore<Record<string, GoogleCalendarEvent[]>>({});
+  const [loadingThreads, setLoadingThreads] = createStore<Record<string, boolean>>({});
+  const [cardErrors, setCardErrors] = createStore<Record<string, string | null>>({});
+  const [collapsedCards, setCollapsedCards] = createStore<Record<string, boolean>>({});
+  const [cardPageTokens, setCardPageTokens] = createStore<Record<string, string | null>>({});
+  const [cardHasMore, setCardHasMore] = createStore<Record<string, boolean>>({});
+  const [loadingMore, setLoadingMore] = createStore<Record<string, boolean>>({});
 
   // Sync status tracking
-  const [lastSyncTimes, setLastSyncTimes] = createSignal<Record<string, number>>({});
-  const [syncErrors, setSyncErrors] = createSignal<Record<string, string | null>>({});
+  const [lastSyncTimes, setLastSyncTimes] = createStore<Record<string, number>>({});
+  const [syncErrors, setSyncErrors] = createStore<Record<string, string | null>>({});
   // Current time signal for reactive relative time displays (updates every 30s)
   const [currentTime, setCurrentTime] = createSignal(Date.now());
 
@@ -2173,16 +166,20 @@ function App() {
   const [googleContacts, setGoogleContacts] = createSignal<Contact[]>([]);
 
   // RSVP status tracking (thread ID -> "accepted" | "tentative" | "declined" | "needsAction")
-  const [rsvpStatus, setRsvpStatus] = createSignal<Record<string, string>>({});
-  const [rsvpLoading, setRsvpLoading] = createSignal<Record<string, boolean>>({});
+  const [rsvpStatus, setRsvpStatus] = createStore<Record<string, string>>({});
+  const [rsvpLoading, setRsvpLoading] = createStore<Record<string, boolean>>({});
 
-  // Fetch RSVP status for a calendar event
+  // Fetch RSVP status for a calendar event (at most once per thread, guarded
+  // against re-fires from re-renders while the request is in flight or failed)
+  const rsvpStatusRequested = new Set<string>();
   const fetchRsvpStatus = async (threadId: string, eventUid: string) => {
     if (!selectedAccount() || !eventUid) return;
+    if (rsvpStatusRequested.has(threadId)) return;
+    rsvpStatusRequested.add(threadId);
     try {
       const status = await getCalendarRsvpStatus(selectedAccount()!.id, eventUid);
       if (status) {
-        setRsvpStatus(prev => ({ ...prev, [threadId]: status }));
+        setRsvpStatus(threadId, status);
       }
     } catch (e) {
       console.error("Failed to fetch RSVP status:", e);
@@ -2196,18 +193,18 @@ function App() {
     const apiStatus = status === "yes" ? "accepted" : status === "maybe" ? "tentative" : "declined";
 
     // Set loading
-    setRsvpLoading(prev => ({ ...prev, [threadId]: true }));
+    setRsvpLoading(threadId, true);
 
     try {
       await rsvpCalendarEvent(selectedAccount()!.id, eventUid, apiStatus);
 
       // Update local state on success
-      setRsvpStatus(prev => ({ ...prev, [threadId]: apiStatus }));
+      setRsvpStatus(threadId, apiStatus);
     } catch (e) {
       console.error("Failed to update RSVP:", e);
       showToast(`Failed to update RSVP: ${e}`);
     } finally {
-      setRsvpLoading(prev => ({ ...prev, [threadId]: false }));
+      setRsvpLoading(threadId, false);
     }
   };
 
@@ -2221,10 +218,12 @@ function App() {
     timestamp: number;
   }
   const [lastAction, setLastAction] = createSignal<UndoableAction | null>(null);
-  const [toastVisible, setToastVisible] = createSignal(false);
-  const [toastClosing, setToastClosing] = createSignal(false);
-  const [simpleToastMessage, setSimpleToastMessage] = createSignal<string | null>(null);
-  const [toastKey, setToastKey] = createSignal(0); // Key to force toast remount for animation restart
+  const [toast, setToast] = createSignal<{
+    message: string | null;
+    visible: boolean;
+    closing: boolean;
+    key: number;
+  } | null>(null);
   let toastTimeoutId: number | undefined;
 
   // Undo send state
@@ -2451,16 +450,33 @@ function App() {
   }
 
   // Quick Reply
-  const [quickReplyThreadId, setQuickReplyThreadId] = createSignal<string | null>(null);
+  const [quickReply, setQuickReply] = createSignal<{
+    threadId: string | null;
+    text: string;
+    sending: boolean;
+  }>({ threadId: null, text: "", sending: false });
   const [quickReplyCardId, setQuickReplyCardId] = createSignal<string | null>(null);
-  const [quickReplyText, setQuickReplyText] = createSignal("");
-  const [quickReplySending, setQuickReplySending] = createSignal(false);
 
   // Quick Reaction (for thread list)
   const [quickReactionSending, setQuickReactionSending] = createSignal(false);
 
   // Event quick reply
   const [quickReplyEventId, setQuickReplyEventId] = createSignal<string | null>(null);
+
+  // Open quick reply for a thread/event, closing the other target and clearing
+  // draft text whenever the target changes so text never leaks between them
+  function openThreadQuickReply(threadId: string, cardId: string) {
+    setQuickReplyEventId(null);
+    setQuickReply(qr => ({ ...qr, threadId, text: qr.threadId === threadId ? qr.text : "" }));
+    setQuickReplyCardId(cardId);
+  }
+
+  function openEventQuickReply(eventId: string) {
+    const sameTarget = quickReplyEventId() === eventId;
+    setQuickReply(qr => ({ ...qr, threadId: null, text: sameTarget ? qr.text : "" }));
+    setQuickReplyCardId(null);
+    setQuickReplyEventId(eventId);
+  }
 
   // Thread actions wheel
   const [hoveredThread, setHoveredThread] = createSignal<string | null>(null);
@@ -2473,7 +489,7 @@ function App() {
   const [eventActionsWheelOpen, setEventActionsWheelOpen] = createSignal(false);
   let hoverEventActionsTimeout: number | undefined;
 
-  function showThreadHoverActions(cardId: string, threadId: string) {
+  function showThreadHoverActions(threadId: string) {
     if (hoverActionsTimeout) {
       clearTimeout(hoverActionsTimeout);
       hoverActionsTimeout = undefined;
@@ -2494,7 +510,7 @@ function App() {
     }, 100);
   }
 
-  function showEventHoverActions(cardId: string, eventId: string) {
+  function showEventHoverActions(eventId: string) {
     if (hoverEventActionsTimeout) {
       clearTimeout(hoverEventActionsTimeout);
       hoverEventActionsTimeout = undefined;
@@ -2526,9 +542,24 @@ function App() {
   const [composing, setComposing] = createSignal(false);
   // Event creation state
   const [creatingEvent, setCreatingEvent] = createSignal(false);
-  const [newEventSummary, setNewEventSummary] = createSignal("");
-  const [newEventDescription, setNewEventDescription] = createSignal("");
-  const [newEventLocation, setNewEventLocation] = createSignal("");
+
+  interface EventFormState {
+    summary: string;
+    description: string;
+    location: string;
+    startDate: string;
+    startTime: string;
+    endDate: string;
+    endTime: string;
+    allDay: boolean;
+    attendees: string;
+    recurrence: string | null;
+    saving: boolean;
+    error: string | null;
+    editing: { id: string; calendarId: string } | null;
+    closing: boolean;
+  }
+
   // Smart defaults: round up to next 30-min interval, end 30 mins later
   const getSmartEventDefaults = () => {
     const now = new Date();
@@ -2547,37 +578,29 @@ function App() {
       endTime: `${String(endTime.getHours()).padStart(2, '0')}:${String(endTime.getMinutes()).padStart(2, '0')}`
     };
   };
-  const eventDefaults = getSmartEventDefaults();
-  const [newEventStartDate, setNewEventStartDate] = createSignal(eventDefaults.date);
-  const [newEventStartTime, setNewEventStartTime] = createSignal(eventDefaults.startTime);
-  const [newEventEndDate, setNewEventEndDate] = createSignal(eventDefaults.date);
-  const [newEventEndTime, setNewEventEndTime] = createSignal(eventDefaults.endTime);
-  const [newEventAllDay, setNewEventAllDay] = createSignal(false);
-  const [newEventAttendees, setNewEventAttendees] = createSignal("");
-  const [newEventRecurrence, setNewEventRecurrence] = createSignal<string | null>(null);
-  const [newEventSaving, setNewEventSaving] = createSignal(false);
-  const [newEventError, setNewEventError] = createSignal<string | null>(null);
-  const [editingEvent, setEditingEvent] = createSignal<{ id: string; calendarId: string } | null>(null);
+
+  const defaultEventForm = (): EventFormState => {
+    const defaults = getSmartEventDefaults();
+    return {
+      summary: "", description: "", location: "",
+      startDate: defaults.date, startTime: defaults.startTime,
+      endDate: defaults.date, endTime: defaults.endTime,
+      allDay: false, attendees: "", recurrence: null,
+      saving: false, error: null, editing: null, closing: false,
+    };
+  };
+
+  const [eventForm, setEventForm] = createSignal<EventFormState>(defaultEventForm());
+
   const resetEventFormToNow = () => {
     const defaults = getSmartEventDefaults();
-    setNewEventStartDate(defaults.date);
-    setNewEventStartTime(defaults.startTime);
-    setNewEventEndDate(defaults.date);
-    setNewEventEndTime(defaults.endTime);
+    setEventForm(f => ({ ...f, startDate: defaults.date, startTime: defaults.startTime, endDate: defaults.date, endTime: defaults.endTime }));
   };
-  const [closingEvent, setClosingEvent] = createSignal(false);
   const closeEventForm = () => {
-    setClosingEvent(true);
+    setEventForm(f => ({ ...f, closing: true }));
     setTimeout(() => {
       setCreatingEvent(false);
-      setClosingEvent(false);
-      setEditingEvent(null);
-      setNewEventSummary("");
-      setNewEventDescription("");
-      setNewEventLocation("");
-      setNewEventAttendees("");
-      setNewEventRecurrence(null);
-      setNewEventError(null);
+      setEventForm(defaultEventForm());
     }, 200);
   };
   const [closingCompose, setClosingCompose] = createSignal(false);
@@ -2833,11 +856,11 @@ function App() {
         .filter(c => !c.collapsed && c.account_id === account.id)
         .map(c => c.id);
       if (nonCollapsedCardIds.length > 0) {
-        const updatedTimes = { ...lastSyncTimes() };
-        for (const cardId of nonCollapsedCardIds) {
-          updatedTimes[cardId] = now;
-        }
-        setLastSyncTimes(updatedTimes);
+        setLastSyncTimes(produce(s => {
+          for (const cardId of nonCollapsedCardIds) {
+            s[cardId] = now;
+          }
+        }));
       }
 
       // Check if there were any changes
@@ -2866,12 +889,11 @@ function App() {
   function applyIncrementalChanges(modifiedThreads: Thread[], deletedThreadIds: string[]) {
     if (modifiedThreads.length === 0 && deletedThreadIds.length === 0) return;
 
-    const currentCardThreads = cardThreads();
     const updatedCardThreads: Record<string, ThreadGroup[]> = {};
     const matchedThreadIds = new Set<string>();
 
-    for (const cardId of Object.keys(currentCardThreads)) {
-      const groups = currentCardThreads[cardId];
+    for (const cardId of Object.keys(cardThreads)) {
+      const groups = cardThreads[cardId];
       if (!groups) continue;
 
       const updatedGroups = groups.map(group => {
@@ -2896,7 +918,7 @@ function App() {
       updatedCardThreads[cardId] = updatedGroups.filter(g => g.threads.length > 0);
     }
 
-    setCardThreads(prev => ({ ...prev, ...updatedCardThreads }));
+    setCardThreads(produce(s => { Object.assign(s, updatedCardThreads); }));
 
     // Check for new threads that weren't in any card
     const unmatchedThreads = modifiedThreads.filter(t => !matchedThreadIds.has(t.gmail_thread_id));
@@ -2972,10 +994,9 @@ function App() {
 
   // Update dock badge with total unread count
   createEffect(() => {
-    const threads = cardThreads();
     let totalUnread = 0;
 
-    for (const groups of Object.values(threads)) {
+    for (const groups of Object.values(cardThreads)) {
       for (const group of groups) {
         for (const thread of group.threads) {
           if (thread.unread_count > 0) {
@@ -2990,6 +1011,8 @@ function App() {
       // Badge not supported on this platform
     });
   });
+
+  let unlistenMailto: (() => void) | undefined;
 
   onMount(async () => {
     // Apply saved card width
@@ -3054,7 +1077,7 @@ function App() {
         const savedCollapsed = safeGetJSON<Record<string, boolean>>("collapsedCards", {});
         const collapsed: Record<string, boolean> = {};
         cardList.forEach(c => { collapsed[c.id] = savedCollapsed[c.id] ?? false; });
-        setCollapsedCards(collapsed);
+        setCollapsedCards(reconcile(collapsed));
 
         // Auto-fetch threads for all cards
         for (const card of cardList) {
@@ -3076,7 +1099,7 @@ function App() {
       }
 
       // Listen for mailto: deep-link events
-      const unlistenMailto = await listen<{
+      unlistenMailto = await listen<{
         to: string;
         cc: string;
         bcc: string;
@@ -3099,11 +1122,6 @@ function App() {
         setForwardingThread(null);
         setComposing(true);
       });
-
-      // Store unlisten function for cleanup
-      onCleanup(() => {
-        unlistenMailto();
-      });
     } catch (e) {
       setError(String(e));
     } finally {
@@ -3117,7 +1135,7 @@ function App() {
   });
 
   // Update currentTime every second to keep relative timestamps fresh
-  const timeUpdateInterval = setInterval(() => setCurrentTime(Date.now()), 1000);
+  const timeUpdateInterval = setInterval(() => setCurrentTime(Date.now()), 15000);
 
   onCleanup(() => {
     if (pollTimeoutId) {
@@ -3128,6 +1146,7 @@ function App() {
     }
     clearInterval(timeUpdateInterval);
     window.removeEventListener("focus", handleWindowFocus);
+    unlistenMailto?.();
   });
 
   // Helper to get all threads from a card as a flat array
@@ -3205,7 +1224,7 @@ function App() {
     }
 
     // Cmd/Ctrl+Enter to save event (works even when typing)
-    if (e.key === 'Enter' && (e.metaKey || e.ctrlKey) && creatingEvent() && newEventSummary() && !newEventSaving()) {
+    if (e.key === 'Enter' && (e.metaKey || e.ctrlKey) && creatingEvent() && eventForm().summary && !eventForm().saving) {
       e.preventDefault();
       handleCreateEvent();
       return;
@@ -3240,7 +1259,7 @@ function App() {
     }
 
     // z to undo last action (when toast is visible)
-    if (e.key === 'z' && toastVisible() && lastAction()) {
+    if (e.key === 'z' && toast()?.visible && lastAction()) {
       e.preventDefault();
       undoLastAction();
       return;
@@ -3293,7 +1312,7 @@ function App() {
     // Card navigation - h/l/ArrowLeft/ArrowRight for left/right between cards
     if (e.key === 'h' || e.key === 'l' || e.key === 'ArrowLeft' || e.key === 'ArrowRight') {
       e.preventDefault();
-      const cardsList = cards().filter(c => !collapsedCards()[c.id]);
+      const cardsList = cards().filter(c => !collapsedCards[c.id]);
       if (cardsList.length === 0) return;
 
       const isRight = e.key === 'l' || e.key === 'ArrowRight';
@@ -3375,7 +1394,7 @@ function App() {
     // Item navigation - j/k/ArrowUp/ArrowDown for up/down within cards (threads or events)
     if (e.key === 'j' || e.key === 'k' || e.key === 'ArrowDown' || e.key === 'ArrowUp') {
       e.preventDefault();
-      const cardsList = cards().filter(c => !collapsedCards()[c.id]);
+      const cardsList = cards().filter(c => !collapsedCards[c.id]);
       if (cardsList.length === 0) return;
 
       const isDown = e.key === 'j' || e.key === 'ArrowDown';
@@ -3488,8 +1507,7 @@ function App() {
       }
       if (e.key === 'r') {
         e.preventDefault();
-        setQuickReplyThreadId(thread.gmail_thread_id);
-        setQuickReplyCardId(cardId);
+        openThreadQuickReply(thread.gmail_thread_id, cardId);
         return;
       }
       if (e.key === 'u') {
@@ -3516,7 +1534,7 @@ function App() {
     if (event && cardId) {
       if (e.key === 'r') {
         e.preventDefault();
-        setQuickReplyEventId(event.id);
+        openEventQuickReply(event.id);
         return;
       }
     }
@@ -3554,6 +1572,20 @@ function App() {
     }
   }
 
+  // Insert a freshly authenticated account, replacing any stale entry with the
+  // same email (re-login can mint a new account id for the same mailbox)
+  function upsertAccount(account: Account) {
+    const existing = accounts().find(a => a.email === account.email);
+    if (existing) {
+      setAccounts(accounts().map(a => (a.email === account.email ? account : a)));
+      if (selectedAccount()?.email === account.email) {
+        setSelectedAccount(account);
+      }
+    } else {
+      setAccounts([...accounts(), account]);
+    }
+  }
+
   async function handleSignIn() {
     const storedCreds = await getStoredCredentials();
 
@@ -3572,17 +1604,9 @@ function App() {
         client_secret: storedCreds.client_secret,
       });
 
-      const result = await runOAuthFlow();
-
-      if (typeof result === 'string') {
-        // iOS flow: result is the auth URL
-        await openUrl(result);
-        return;
-      }
-
-      const account = result;
+      const account = await runOAuthFlow();
       console.log("Sign in complete, account:", account.id, account.email);
-      setAccounts([...accounts(), account]);
+      upsertAccount(account);
       setSelectedAccount(account);
 
       // Try to restore cards from iCloud (remaps orphaned cards to new account)
@@ -3640,10 +1664,7 @@ function App() {
 
       const account = await runOAuthFlow();
 
-      const exists = accounts().find(a => a.id === account.id);
-      if (!exists) {
-        setAccounts([...accounts(), account]);
-      }
+      upsertAccount(account);
       setSelectedAccount(account);
 
       try {
@@ -3685,7 +1706,7 @@ function App() {
       // Initialize collapsed state
       const collapsed: Record<string, boolean> = {};
       newCards.forEach(c => { collapsed[c.id] = false; });
-      setCollapsedCards(collapsed);
+      setCollapsedCards(reconcile(collapsed));
 
       setShowPresetSelection(false);
 
@@ -3700,11 +1721,9 @@ function App() {
     try {
       // Delete all existing cards
       const currentCards = cards();
-      for (const card of currentCards) {
-        await deleteCard(card.id);
-      }
+      await Promise.allSettled(currentCards.map(card => deleteCard(card.id)));
       setCards([]);
-      setCollapsedCards({});
+      setCollapsedCards(reconcile({}));
 
       // Close restore prompt and show preset selection
       setShowRestorePrompt(false);
@@ -3731,8 +1750,7 @@ function App() {
       try {
         const account = await runOAuthFlow();
 
-
-        setAccounts([...accounts(), account]);
+        upsertAccount(account);
         setSelectedAccount(account);
 
         // Try to restore cards from iCloud (remaps orphaned cards to new account)
@@ -3769,7 +1787,7 @@ function App() {
       setAccounts(accounts().filter(a => a.id !== account.id));
       setSelectedAccount(null);
       setCards([]);
-      setCardThreads({});
+      setCardThreads(reconcile({}));
       // Clean up localStorage
       safeRemoveItem("cardColors");
       safeRemoveItem("collapsedCards");
@@ -3790,7 +1808,7 @@ function App() {
 
       const card = await createCard(account.id, newCardName(), query, newCardColor() || null, newCardGroupBy(), cardType);
       setCards([...cards(), card]);
-      setCollapsedCards({ ...collapsedCards(), [card.id]: false });
+      setCollapsedCards(card.id, false);
       setNewCardName("");
       setNewCardQuery("");
       setNewCardColor(null);
@@ -3886,35 +1904,47 @@ function App() {
     const account = selectedAccount();
     if (!account) return;
 
-    if (!newEventSummary()) {
-      setNewEventError("Title is required");
+    const form = eventForm();
+
+    if (!form.summary) {
+      setEventForm(f => ({ ...f, error: "Title is required" }));
       return;
     }
 
-    setNewEventSaving(true);
-    setNewEventError(null);
+    setEventForm(f => ({ ...f, saving: true, error: null }));
 
-    const editing = editingEvent();
+    const editing = form.editing;
 
     try {
       let start: number, end: number;
-      if (newEventAllDay()) {
-        const sParts = newEventStartDate().split('-');
+      if (form.allDay) {
+        const sParts = form.startDate.split('-');
         start = Date.UTC(parseInt(sParts[0]), parseInt(sParts[1]) - 1, parseInt(sParts[2]), 12, 0, 0);
 
-        const eParts = newEventEndDate().split('-');
+        const eParts = form.endDate.split('-');
         end = Date.UTC(parseInt(eParts[0]), parseInt(eParts[1]) - 1, parseInt(eParts[2]), 12, 0, 0);
       } else {
-        const s = new Date(`${newEventStartDate()}T${newEventStartTime()}`);
+        const s = new Date(`${form.startDate}T${form.startTime}`);
         start = s.getTime();
-        const e = new Date(`${newEventEndDate()}T${newEventEndTime()}`);
+        const e = new Date(`${form.endDate}T${form.endTime}`);
         end = e.getTime();
       }
 
-      const attendeesList = newEventAttendees()
+      const attendeesList = form.attendees
         .split(',')
         .map(s => s.trim())
         .filter(s => s.length > 0);
+
+      const eventInput: EventInput = {
+        summary: form.summary,
+        description: form.description || null,
+        location: form.location || null,
+        startTime: start,
+        endTime: end,
+        allDay: form.allDay,
+        attendees: attendeesList.length > 0 ? attendeesList : null,
+        recurrence: form.recurrence ? [form.recurrence] : null,
+      };
 
       if (editing) {
         // Update existing event
@@ -3922,39 +1952,19 @@ function App() {
           account.id,
           editing.calendarId,
           editing.id,
-          newEventSummary(),
-          newEventDescription() || null,
-          newEventLocation() || null,
-          start,
-          end,
-          newEventAllDay(),
-          attendeesList.length > 0 ? attendeesList : null,
-          newEventRecurrence() ? [newEventRecurrence()!] : null
+          eventInput
         );
       } else {
         // Create new event
         await createCalendarEvent(
           account.id,
           null,
-          newEventSummary(),
-          newEventDescription() || null,
-          newEventLocation() || null,
-          start,
-          end,
-          newEventAllDay(),
-          attendeesList.length > 0 ? attendeesList : null,
-          newEventRecurrence() ? [newEventRecurrence()!] : null
+          eventInput
         );
       }
 
       setCreatingEvent(false);
-      setEditingEvent(null);
-      setNewEventSummary("");
-      setNewEventDescription("");
-      setNewEventLocation("");
-      setNewEventLocation("");
-      setNewEventAttendees("");
-      setNewEventRecurrence(null);
+      setEventForm(defaultEventForm());
 
       // Refresh calendar cards
       cards().forEach(card => {
@@ -3967,9 +1977,9 @@ function App() {
 
     } catch (e) {
       console.error(e);
-      setNewEventError((editing ? "Failed to update event: " : "Failed to create event: ") + String(e));
+      setEventForm(f => ({ ...f, error: (editing ? "Failed to update event: " : "Failed to create event: ") + String(e) }));
     } finally {
-      setNewEventSaving(false);
+      setEventForm(f => ({ ...f, saving: false }));
     }
   }
 
@@ -4115,9 +2125,9 @@ function App() {
 
   async function handleQuickReply() {
     const account = selectedAccount();
-    const threadId = quickReplyThreadId();
+    const threadId = quickReply().threadId;
     const cardId = quickReplyCardId();
-    const text = quickReplyText();
+    const text = quickReply().text;
     if (!account || !threadId || !cardId || !text.trim()) return;
 
     // Get thread info for reply
@@ -4129,38 +2139,37 @@ function App() {
     const replyTo = thread.participants[0] || "";
     const subject = thread.subject.startsWith("Re:") ? thread.subject : `Re: ${thread.subject}`;
 
-    setQuickReplySending(true);
+    setQuickReply(qr => ({ ...qr, sending: true }));
     try {
       await replyToThread(account.id, threadId, replyTo, "", "", subject, text, undefined, [], false);
-      setQuickReplyThreadId(null);
+      setQuickReply({ threadId: null, text: "", sending: false });
       setQuickReplyCardId(null);
-      setQuickReplyText("");
     } catch (e) {
       console.error("Failed to send reply:", e);
       setError(`Failed to send reply: ${e}`);
     } finally {
-      setQuickReplySending(false);
+      setQuickReply(qr => ({ ...qr, sending: false }));
     }
   }
 
   async function handleEventQuickReply(event: GoogleCalendarEvent) {
     const account = selectedAccount();
-    const text = quickReplyText();
+    const text = quickReply().text;
     if (!account || !event.organizer || !text.trim()) return;
 
     const subject = `Re: ${event.title}`;
 
-    setQuickReplySending(true);
+    setQuickReply(qr => ({ ...qr, sending: true }));
     try {
       await sendEmail(account.id, event.organizer, "", "", subject, text);
       setQuickReplyEventId(null);
-      setQuickReplyText("");
+      setQuickReply(qr => ({ ...qr, text: "", sending: false }));
       showToast("Reply sent");
     } catch (e) {
       console.error("Failed to send reply:", e);
       setError(`Failed to send reply: ${e}`);
     } finally {
-      setQuickReplySending(false);
+      setQuickReply(qr => ({ ...qr, sending: false }));
     }
   }
 
@@ -4426,10 +2435,8 @@ function App() {
     };
 
     try {
-      const threads: BatchReplyThread[] = [];
-
-      for (const threadId of threadIds) {
-        try {
+      const results = await Promise.allSettled(
+        threadIds.map(async (threadId) => {
           const details = await getThreadDetails(account.id, threadId);
           if (details.messages && details.messages.length > 0) {
             const lastMsg = details.messages[details.messages.length - 1];
@@ -4439,8 +2446,7 @@ function App() {
             const date = lastMsg.internalDate
               ? new Date(parseInt(lastMsg.internalDate)).toLocaleDateString()
               : '';
-
-            threads.push({
+            return {
               threadId,
               subject,
               snippet: lastMsg.snippet || '',
@@ -4449,12 +2455,16 @@ function App() {
               date,
               messageId: lastMsg.id,
               to: extractEmail(from),
-            });
+            } as BatchReplyThread;
           }
-        } catch (e) {
-          console.error(`Failed to fetch thread ${threadId}:`, e);
-        }
-      }
+          return null;
+        })
+      );
+
+      const threads = results
+        .filter((r): r is PromiseFulfilledResult<BatchReplyThread | null> => r.status === 'fulfilled')
+        .map(r => r.value)
+        .filter((t): t is BatchReplyThread => t !== null);
 
       setBatchReplyThreads(threads);
     } finally {
@@ -4544,7 +2554,7 @@ function App() {
     setBatchReplySending({ ...batchReplySending(), [threadId]: true });
 
     try {
-      const replySubject = thread.subject.startsWith('Re:') ? thread.subject : `Re: ${thread.subject}`;
+      const replySubject = addReplyPrefix(thread.subject);
       await replyToThread(account.id, threadId, thread.to, "", "", replySubject, message, undefined, attachments, false);
 
       // Remove from batch reply list
@@ -4585,14 +2595,12 @@ function App() {
     // Only send threads that have messages
     const toSend = threads.filter(t => messages[t.threadId]?.trim());
 
-    for (const thread of toSend) {
-      await sendBatchReply(thread.threadId);
-    }
+    await Promise.allSettled(toSend.map(thread => sendBatchReply(thread.threadId)));
   }
 
   function saveCollapsedState(collapsed: Record<string, boolean>) {
-    setCollapsedCards(collapsed);
-    safeSetJSON("collapsedCards", collapsed);
+    setCollapsedCards(reconcile(collapsed));
+    safeSetJSON("collapsedCards", { ...collapsed });
   }
 
   function startEditCard(card: Card, e: MouseEvent) {
@@ -4609,7 +2617,7 @@ function App() {
     setEditCardName(card.name);
     setEditCardQuery(card.query);
     setEditCardColor((card.color as CardColor) || null);
-    setEditCardGroupBy((card.group_by as GroupBy) || "date");
+    setEditCardGroupBy(card.group_by || "date");
     setEditColorPickerOpen(false);
     // Fetch initial preview
     fetchQueryPreview(card.query);
@@ -4643,21 +2651,9 @@ function App() {
       // If query changed, clear cache and refresh
       if (queryChanged) {
         await clearCardCache(cardId);
-        setCardThreads(prev => {
-          const updated = { ...prev };
-          delete updated[cardId];
-          return updated;
-        });
-        setCardPageTokens(prev => {
-          const updated = { ...prev };
-          delete updated[cardId];
-          return updated;
-        });
-        setCardCalendarEvents(prev => {
-          const updated = { ...prev };
-          delete updated[cardId];
-          return updated;
-        });
+        setCardThreads(produce(s => { delete s[cardId]; }));
+        setCardPageTokens(produce(s => { delete s[cardId]; }));
+        setCardCalendarEvents(produce(s => { delete s[cardId]; }));
         // Force refresh since we just cleared the cache
         loadCardThreads(cardId, false, true);
       }
@@ -4678,8 +2674,7 @@ function App() {
       setCards(cards().filter(c => c.id !== cardId));
       setEditingCardId(null);
       // Clean up collapsed state
-      const newCollapsed = { ...collapsedCards() };
-      const { [cardId]: _, ...remainingCollapsed } = newCollapsed;
+      const { [cardId]: _, ...remainingCollapsed } = { ...collapsedCards };
       saveCollapsedState(remainingCollapsed);
     } catch (err) {
       console.error("Failed to delete card:", err);
@@ -4688,19 +2683,45 @@ function App() {
   }
 
   async function toggleCardCollapse(cardId: string) {
-    const isCollapsed = collapsedCards()[cardId];
-    const newCollapsed = { ...collapsedCards(), [cardId]: !isCollapsed };
+    const isCollapsed = collapsedCards[cardId];
+    const newCollapsed = { ...collapsedCards, [cardId]: !isCollapsed };
     saveCollapsedState(newCollapsed);
 
     const account = selectedAccount();
-    if (isCollapsed && account && !cardThreads()[cardId]) {
+    if (isCollapsed && account && !cardThreads[cardId]) {
       loadCardThreads(cardId);
     }
   }
 
-  function isCalendarCard(cardId: string): boolean {
-    const card = cards().find(c => c.id === cardId);
-    return card?.card_type === "calendar";
+
+  async function switchAccount(account: Account) {
+    if (selectedAccount()?.id === account.id) return;
+
+    setSelectedAccount(account);
+    setCardThreads(reconcile({}));
+    setCardCalendarEvents(reconcile({}));
+
+    try {
+      const cardList = await getCards(account.id);
+      setCards(cardList);
+
+      const savedCollapsed = safeGetJSON<Record<string, boolean>>("collapsedCards", {});
+      const collapsed: Record<string, boolean> = {};
+      cardList.forEach(c => { collapsed[c.id] = savedCollapsed[c.id] ?? false; });
+      setCollapsedCards(reconcile(collapsed));
+
+      for (const card of cardList) {
+        if (!collapsed[card.id]) {
+          loadCardThreads(card.id);
+        }
+      }
+
+      fetchContacts(account.id)
+        .then(contacts => setGoogleContacts(contacts))
+        .catch(e => console.warn("Failed to fetch contacts (user may need to re-auth):", e));
+    } catch (e) {
+      setError(String(e));
+    }
   }
 
   async function loadCardThreads(cardId: string, append = false, forceRefresh = false) {
@@ -4715,16 +2736,16 @@ function App() {
     }
 
     // Prevent concurrent pagination requests for the same card
-    if (append && loadingMore()[cardId]) return;
+    if (append && loadingMore[cardId]) return;
 
     // Prevent concurrent initial loads (unless force refresh)
-    if (!append && !forceRefresh && loadingThreads()[cardId]) return;
+    if (!append && !forceRefresh && loadingThreads[cardId]) return;
 
     if (append) {
-      setLoadingMore({ ...loadingMore(), [cardId]: true });
+      setLoadingMore(cardId, true);
     } else {
-      setLoadingThreads({ ...loadingThreads(), [cardId]: true });
-      setCardErrors({ ...cardErrors(), [cardId]: null });
+      setLoadingThreads(cardId, true);
+      setCardErrors(cardId, null);
     }
 
     try {
@@ -4733,12 +2754,12 @@ function App() {
         const cached = await getCachedCardThreads(cardId);
         if (cached && cached.groups.length > 0) {
           // Show cached data immediately
-          setCardThreads({ ...cardThreads(), [cardId]: cached.groups });
-          setCardPageTokens({ ...cardPageTokens(), [cardId]: cached.next_page_token });
-          setCardHasMore({ ...cardHasMore(), [cardId]: !!cached.next_page_token });
+          setCardThreads(cardId, cached.groups);
+          setCardPageTokens(cardId, cached.next_page_token);
+          setCardHasMore(cardId, !!cached.next_page_token);
           // cached_at is in seconds (Unix timestamp), convert to milliseconds
-          setLastSyncTimes({ ...lastSyncTimes(), [cardId]: cached.cached_at * 1000 });
-          setLoadingThreads({ ...loadingThreads(), [cardId]: false });
+          setLastSyncTimes(cardId, cached.cached_at * 1000);
+          setLoadingThreads(cardId, false);
 
           // Fetch fresh data in background (don't await)
           fetchAndCacheThreads(account.id, cardId);
@@ -4746,26 +2767,26 @@ function App() {
         }
       }
 
-      const pageToken = append ? cardPageTokens()[cardId] : null;
+      const pageToken = append ? cardPageTokens[cardId] : null;
       const result = await fetchThreadsPaginated(account.id, cardId, pageToken);
 
       if (append) {
         // Merge new threads into existing groups
-        const existingGroups = cardThreads()[cardId] || [];
+        const existingGroups = cardThreads[cardId] || [];
         const mergedGroups = mergeThreadGroups(existingGroups, result.groups);
-        setCardThreads({ ...cardThreads(), [cardId]: mergedGroups });
+        setCardThreads(cardId, mergedGroups);
         // Save merged groups to cache
         await saveCachedCardThreads(cardId, mergedGroups, result.next_page_token);
       } else {
-        setCardThreads({ ...cardThreads(), [cardId]: result.groups });
+        setCardThreads(cardId, result.groups);
         // Save to cache
         await saveCachedCardThreads(cardId, result.groups, result.next_page_token);
       }
 
-      setCardPageTokens({ ...cardPageTokens(), [cardId]: result.next_page_token });
-      setCardHasMore({ ...cardHasMore(), [cardId]: result.has_more });
-      setLastSyncTimes({ ...lastSyncTimes(), [cardId]: Date.now() });
-      setSyncErrors({ ...syncErrors(), [cardId]: null });
+      setCardPageTokens(cardId, result.next_page_token);
+      setCardHasMore(cardId, result.has_more);
+      setLastSyncTimes(cardId, Date.now());
+      setSyncErrors(cardId, null);
     } catch (e) {
       const errorMsg = String(e);
       console.error("loadCardThreads error:", errorMsg);
@@ -4784,14 +2805,14 @@ function App() {
           }, 1500);
         }
       } else {
-        setCardErrors({ ...cardErrors(), [cardId]: errorMsg });
-        setSyncErrors({ ...syncErrors(), [cardId]: errorMsg });
+        setCardErrors(cardId, errorMsg);
+        setSyncErrors(cardId, errorMsg);
       }
     } finally {
       if (append) {
-        setLoadingMore({ ...loadingMore(), [cardId]: false });
+        setLoadingMore(cardId, false);
       } else {
-        setLoadingThreads({ ...loadingThreads(), [cardId]: false });
+        setLoadingThreads(cardId, false);
       }
     }
   }
@@ -4805,10 +2826,10 @@ function App() {
     if (!card) return;
 
     // Prevent concurrent loads (unless force refresh)
-    if (!forceRefresh && loadingThreads()[cardId]) return;
+    if (!forceRefresh && loadingThreads[cardId]) return;
 
-    setLoadingThreads({ ...loadingThreads(), [cardId]: true });
-    setCardErrors({ ...cardErrors(), [cardId]: null });
+    setLoadingThreads(cardId, true);
+    setCardErrors(cardId, null);
 
     try {
       // For initial load (not force refresh), try cache first
@@ -4816,10 +2837,10 @@ function App() {
         const cached = await getCachedCardEvents(cardId);
         if (cached && cached.events.length > 0) {
           // Show cached data immediately
-          setCardCalendarEvents({ ...cardCalendarEvents(), [cardId]: cached.events });
+          setCardCalendarEvents(cardId, cached.events);
           // cached_at is in seconds
-          setLastSyncTimes({ ...lastSyncTimes(), [cardId]: cached.cached_at * 1000 });
-          setLoadingThreads({ ...loadingThreads(), [cardId]: false });
+          setLastSyncTimes(cardId, cached.cached_at * 1000);
+          setLoadingThreads(cardId, false);
 
           // Fetch fresh data in background
           fetchAndCacheCalendarEvents(account.id, cardId, card.query);
@@ -4845,19 +2866,19 @@ function App() {
           }, 1500);
         }
       } else {
-        setCardErrors({ ...cardErrors(), [cardId]: errorMsg });
-        setSyncErrors({ ...syncErrors(), [cardId]: errorMsg });
+        setCardErrors(cardId, errorMsg);
+        setSyncErrors(cardId, errorMsg);
       }
     } finally {
-      if (!cardCalendarEvents()[cardId]) {
+      if (!cardCalendarEvents[cardId]) {
         // Only turn off loading if we didn't populate from cache (if we did, it's already off)
         // or if we waited for fetch.
         // Actually, if we populated from cache, we returned early.
         // If we didn't, we are here.
-        setLoadingThreads({ ...loadingThreads(), [cardId]: false });
+        setLoadingThreads(cardId, false);
       } else {
         // If we have data (from await fetch), ensure loading is off
-        setLoadingThreads({ ...loadingThreads(), [cardId]: false });
+        setLoadingThreads(cardId, false);
       }
     }
   }
@@ -4865,15 +2886,15 @@ function App() {
   async function fetchAndCacheCalendarEvents(accountId: string, cardId: string, query: string) {
     try {
       const events = await fetchCalendarEvents(accountId, query);
-      setCardCalendarEvents({ ...cardCalendarEvents(), [cardId]: events });
+      setCardCalendarEvents(cardId, events);
       await saveCachedCardEvents(cardId, events);
-      setLastSyncTimes({ ...lastSyncTimes(), [cardId]: Date.now() });
-      setSyncErrors({ ...syncErrors(), [cardId]: null });
+      setLastSyncTimes(cardId, Date.now());
+      setSyncErrors(cardId, null);
     } catch (e) {
       console.error("Failed to fetch calendar events:", e);
-      setSyncErrors({ ...syncErrors(), [cardId]: String(e) });
+      setSyncErrors(cardId, String(e));
       // If foreground load failed, rethrow to be caught by loadCalendarEvents
-      if (loadingThreads()[cardId]) {
+      if (loadingThreads[cardId]) {
         throw e;
       }
     }
@@ -4893,29 +2914,21 @@ function App() {
         await saveCachedCardThreads(cardId, result.groups, result.next_page_token);
         return;
       }
-      setCardThreads({ ...cardThreads(), [cardId]: result.groups });
-      setCardPageTokens({ ...cardPageTokens(), [cardId]: result.next_page_token });
-      setCardHasMore({ ...cardHasMore(), [cardId]: result.has_more });
+      setCardThreads(cardId, result.groups);
+      setCardPageTokens(cardId, result.next_page_token);
+      setCardHasMore(cardId, result.has_more);
       await saveCachedCardThreads(cardId, result.groups, result.next_page_token);
-      setLastSyncTimes({ ...lastSyncTimes(), [cardId]: Date.now() });
-      setSyncErrors({ ...syncErrors(), [cardId]: null });
+      setLastSyncTimes(cardId, Date.now());
+      setSyncErrors(cardId, null);
     } catch (e) {
       // Background refresh failed - set sync error but keep cached data shown
-      setSyncErrors({ ...syncErrors(), [cardId]: String(e) });
+      setSyncErrors(cardId, String(e));
     }
   }
 
   function getGroupByForCard(cardId: string): GroupBy {
     const card = cards().find(c => c.id === cardId);
-    return (card?.group_by as GroupBy) || "date";
-  }
-
-  async function setGroupByForCard(cardId: string, groupBy: GroupBy) {
-    const card = cards().find(c => c.id === cardId);
-    if (!card) return;
-    const updatedCard = { ...card, group_by: groupBy };
-    await updateCard(updatedCard);
-    setCards(cards().map(c => c.id === cardId ? updatedCard : c));
+    return card?.group_by || "date";
   }
 
   function updateCardWidth(width: number, persist = true) {
@@ -5179,7 +3192,7 @@ function App() {
   }
 
   function getDisplayGroups(cardId: string): ThreadGroup[] {
-    const threads = cardThreads()[cardId];
+    const threads = cardThreads[cardId];
     if (!threads) return [];
     const groupBy = getGroupByForCard(cardId);
     let groups = regroupThreads(threads, groupBy);
@@ -5201,7 +3214,7 @@ function App() {
   }
 
   function getCalendarEventGroups(cardId: string): CalendarEventGroup[] {
-    const events = cardCalendarEvents()[cardId];
+    const events = cardCalendarEvents[cardId];
     if (!events) return [];
     const groupBy = getGroupByForCard(cardId);
     let groups = groupCalendarEvents(events, groupBy);
@@ -5224,7 +3237,7 @@ function App() {
   }
 
   function getCardUnreadCount(cardId: string): number {
-    const groups = cardThreads()[cardId];
+    const groups = cardThreads[cardId];
     if (!groups) return 0;
     return groups.reduce((total, group) =>
       total + group.threads.filter(t => t.unread_count > 0).length, 0);
@@ -5301,15 +3314,15 @@ function App() {
 
     showToast(`Downloading ${filename}...`);
     try {
-      // For download, we save to Downloads folder instead of temp
-      await openAttachmentApi(
+      const savedPath = await saveAttachmentApi(
         account.id,
         messageId,
         attachmentId || null,
         filename,
-        mimeType,
+        mimeType || null,
         inlineData || null
       );
+      showToast(`Saved to ${savedPath}`);
     } catch (e) {
       console.error('Failed to download attachment:', e);
       setError(`Failed to download attachment: ${e}`);
@@ -5328,8 +3341,8 @@ function App() {
       setActionsWheelOpen(false);
       setHoveredThread(null);
     }
-    if (!target.closest('.quick-reply-box') && !quickReplyText().trim()) {
-      setQuickReplyThreadId(null);
+    if (!target.closest('.quick-reply-box') && !quickReply().text.trim()) {
+      setQuickReply(qr => ({ ...qr, threadId: null }));
       setQuickReplyEventId(null);
     }
     if (!target.closest('.action-config-menu')) {
@@ -5348,7 +3361,6 @@ function App() {
 
   // Get all unique participants from loaded threads and Google contacts
   function getContactCandidates(): RecentContact[] {
-    const threads = cardThreads();
     const account = selectedAccount();
     const myEmail = account?.email?.toLowerCase();
     const contactMap = new Map<string, { email: string; name?: string; lastSeen: number; count: number; fromGoogle: boolean }>();
@@ -5372,7 +3384,7 @@ function App() {
     }
 
     // Then add thread-derived contacts (with recency/frequency)
-    Object.values(threads).forEach(groups => {
+    Object.values(cardThreads).forEach(groups => {
       groups.forEach(group => {
         group.threads.forEach(thread => {
           thread.participants.forEach(participant => {
@@ -5452,7 +3464,7 @@ function App() {
         const searchPart = currentToken.slice(op.length).toLowerCase();
         if (searchPart) {
           // Suggest contacts matching the email or name
-          const contacts = getContactCandidates();
+          const contacts = contactCandidates();
           for (const contact of contacts) {
             const matchesEmail = contact.email.toLowerCase().includes(searchPart);
             const matchesName = contact.name?.toLowerCase().includes(searchPart);
@@ -5517,7 +3529,7 @@ function App() {
     setCidAttachmentData({});
 
     // Check if thread is unread and mark as read
-    const groups = cardThreads()[cardId] || [];
+    const groups = cardThreads[cardId] || [];
     for (const group of groups) {
       const thread = group.threads.find(t => t.gmail_thread_id === threadId);
       if (thread && thread.unread_count > 0) {
@@ -5611,20 +3623,21 @@ function App() {
 
   function showToast(message?: string) {
     clearTimeout(toastTimeoutId);
-    setSimpleToastMessage(message || null);
-    setToastClosing(false);
-    setToastKey(k => k + 1); // Increment key to force remount and restart animation
-    setToastVisible(true);
+    setToast(prev => ({
+      message: message || null,
+      visible: true,
+      closing: false,
+      key: (prev?.key ?? 0) + 1, // Increment key to force remount and restart animation
+    }));
     toastTimeoutId = window.setTimeout(() => {
       hideToast();
     }, 5000);
   }
 
   function hideToast() {
-    setToastClosing(true);
+    setToast(t => t ? { ...t, closing: true } : null);
     setTimeout(() => {
-      setToastVisible(false);
-      setToastClosing(false);
+      setToast(null);
       setLastAction(null); // Expire undo when toast closes
     }, 200);
   }
@@ -5715,10 +3728,9 @@ function App() {
     }
 
     // Optimistic Update - update ALL cards that contain these threads
-    const allCardThreads = cardThreads();
     const updatedCardThreads: Record<string, ThreadGroup[]> = {};
 
-    for (const [cId, groups] of Object.entries(allCardThreads)) {
+    for (const [cId, groups] of Object.entries(cardThreads)) {
       if (!groups) continue;
       updatedCardThreads[cId] = groups.map(group => ({
         ...group,
@@ -5744,13 +3756,13 @@ function App() {
       }));
     }
 
-    setCardThreads(updatedCardThreads);
+    setCardThreads(reconcile(updatedCardThreads));
     setActionsWheelOpen(false);
 
     // Update cache with optimistic changes
     for (const [cId, groups] of Object.entries(updatedCardThreads)) {
       if (groups) {
-        saveCachedCardThreads(cId, groups, cardPageTokens()[cId] || null);
+        saveCachedCardThreads(cId, groups, cardPageTokens[cId] || null);
       }
     }
 
@@ -5776,282 +3788,6 @@ function App() {
       setError(String(e));
     }
   }
-
-  // Half Pie Menu Component
-  const ActionsWheel = (props: {
-    cardId: string;
-    threadId?: string | null;
-    thread?: Thread | null;
-    event?: GoogleCalendarEvent | null;
-    selectedCount: number;
-    open: boolean;
-    onClose: () => void;
-  }) => {
-    const settings = actionSettings();
-    const actions: { cls: string; title: string, keyHint?: string, icon: () => JSX.Element, onClick: (e: MouseEvent) => void }[] = [];
-    const containerRef = (el: HTMLDivElement) => {
-      // Simple animation trigger
-      setTimeout(() => el.classList.add('open'), 10);
-    };
-
-    // Event actions (when event prop is provided)
-    if (props.event) {
-      const evt = props.event;
-      const cId = props.cardId;
-      const evtSelectedCount = selectedEvents()[cId]?.size || 0;
-      const evtSettings = eventActionSettings();
-      const evtOrder = eventActionOrder();
-
-      // Event action definitions
-      const eventActionDefs: Record<string, { cls: string; title: string; keyHint?: string; icon: () => JSX.Element; onClick: (e: MouseEvent) => void; available: boolean }> = {
-        quickReply: {
-          cls: 'bulk-reply',
-          title: 'Reply to organizer',
-          keyHint: 'r',
-          icon: ReplyIcon,
-          onClick: (e) => { e.stopPropagation(); setQuickReplyEventId(evt.id); },
-          available: !!evt.organizer
-        },
-        joinMeeting: {
-          cls: 'event-join',
-          title: 'Join meeting',
-          keyHint: 'j',
-          icon: VideoIcon,
-          onClick: (e) => { e.stopPropagation(); evt.hangout_link && openUrl(evt.hangout_link); },
-          available: !!evt.hangout_link
-        },
-        openCalendar: {
-          cls: 'event-open',
-          title: 'Open in Calendar',
-          keyHint: 'o',
-          icon: CalendarIcon,
-          onClick: (e) => { e.stopPropagation(); evt.html_link && openUrl(evt.html_link); },
-          available: !!evt.html_link
-        },
-        rsvpYes: {
-          cls: evt.response_status === 'accepted' ? 'event-rsvp-active' : 'event-rsvp',
-          title: 'RSVP Yes',
-          keyHint: 'y',
-          icon: CheckIcon,
-          onClick: async (e) => {
-            e.stopPropagation();
-            const account = selectedAccount();
-            if (!account) return;
-            try {
-              await rsvpCalendarEvent(account.id, evt.id, 'accepted');
-              showToast('RSVP: Yes');
-              props.onClose();
-            } catch (err) {
-              showToast('Failed to RSVP');
-            }
-          },
-          available: true
-        },
-        rsvpNo: {
-          cls: evt.response_status === 'declined' ? 'event-rsvp-active' : 'event-rsvp',
-          title: 'RSVP No',
-          keyHint: 'n',
-          icon: ThumbsDownIcon,
-          onClick: async (e) => {
-            e.stopPropagation();
-            const account = selectedAccount();
-            if (!account) return;
-            try {
-              await rsvpCalendarEvent(account.id, evt.id, 'declined');
-              showToast('RSVP: No');
-              props.onClose();
-            } catch (err) {
-              showToast('Failed to RSVP');
-            }
-          },
-          available: true
-        },
-        delete: {
-          cls: 'bulk-danger',
-          title: 'Delete',
-          keyHint: 'd',
-          icon: TrashIcon,
-          onClick: async (e) => {
-            e.stopPropagation();
-            // Decline and remove from view
-            const account = selectedAccount();
-            if (!account) return;
-            try {
-              await rsvpCalendarEvent(account.id, evt.id, 'declined');
-              showToast('Event declined');
-              props.onClose();
-            } catch (err) {
-              showToast('Failed to decline event');
-            }
-          },
-          available: true
-        }
-      };
-
-      // Add actions in order, respecting settings
-      for (const key of evtOrder) {
-        const def = eventActionDefs[key];
-        if (!def || !def.available) continue;
-        // Check if enabled (quickReply defaults to true)
-        if (key === 'quickReply') {
-          if (evtSettings[key] === false) continue;
-        } else {
-          if (!evtSettings[key]) continue;
-        }
-        actions.push({ cls: def.cls, title: def.title, keyHint: def.keyHint, icon: def.icon, onClick: def.onClick });
-      }
-
-      // Clear selection (if events are selected)
-      if (evtSelectedCount > 0) {
-        actions.push({
-          cls: 'bulk-clear',
-          title: 'Clear',
-          keyHint: 'ESC',
-          icon: ClearIcon,
-          onClick: (e) => { e.stopPropagation(); setSelectedEvents({ ...selectedEvents(), [cId]: new Set() }); }
-        });
-      }
-    }
-
-    // Thread actions (when thread prop is provided)
-    if (props.thread && props.threadId) {
-      // Get thread state for icon selection
-      const isStarred = props.thread.labels?.includes("STARRED") ?? false;
-      const isImportant = props.thread.labels?.includes("IMPORTANT") ?? false;
-      const isRead = (props.thread.unread_count ?? 0) === 0;
-      const isInInbox = props.thread.labels?.includes("INBOX") ?? true;
-
-      const order = actionOrder();
-
-      // Action definitions - use order from settings
-      const actionDefs: Record<string, { cls: string; title: string; keyHint?: string; icon: () => JSX.Element; onClick: (e: MouseEvent) => void; bulkTitle?: string; bulkIcon?: () => JSX.Element; bulkOnClick?: (e: MouseEvent) => void }> = {};
-      const cId = props.cardId;
-      const tId = props.threadId;
-      const getSelection = () => Array.from(selectedThreads()[cId] || []);
-
-      actionDefs.quickReply = {
-        cls: 'bulk-reply', title: 'Reply', keyHint: 'r', icon: ReplyIcon,
-        onClick: (e) => { e.stopPropagation(); setQuickReplyThreadId(tId); setQuickReplyCardId(cId); },
-        bulkTitle: 'Batch Reply', bulkOnClick: (e) => { e.stopPropagation(); startBatchReply(cId, getSelection()); props.onClose(); }
-      };
-      actionDefs.quickForward = {
-        cls: 'bulk-forward', title: 'Forward', keyHint: 'f', icon: ForwardIcon,
-        onClick: (e) => { e.stopPropagation(); handleForward(tId, cId); }
-      };
-      actionDefs.archive = {
-        cls: 'bulk-archive', title: isInInbox ? 'Archive' : 'Move to Inbox', keyHint: 'a', icon: isInInbox ? ArchiveIcon : InboxIcon,
-        onClick: (e) => { e.stopPropagation(); handleThreadAction(isInInbox ? 'archive' : 'inbox', [tId], cId); },
-        bulkTitle: 'Archive', bulkIcon: ArchiveIcon, bulkOnClick: (e) => { e.stopPropagation(); handleThreadAction('archive', getSelection(), cId); }
-      };
-      actionDefs.star = {
-        cls: 'bulk-star', title: isStarred ? 'Unstar' : 'Star', keyHint: 's', icon: isStarred ? StarFilledIcon : StarIcon,
-        onClick: (e) => { e.stopPropagation(); handleThreadAction(isStarred ? 'unstar' : 'star', [tId], cId); },
-        bulkTitle: 'Star', bulkIcon: StarIcon, bulkOnClick: (e) => { e.stopPropagation(); handleThreadAction('star', getSelection(), cId); }
-      };
-      actionDefs.markRead = {
-        cls: 'bulk-read', title: isRead ? 'Mark unread' : 'Mark read', keyHint: 'u', icon: isRead ? EyeClosedIcon : EyeOpenIcon,
-        onClick: (e) => { e.stopPropagation(); handleThreadAction(isRead ? 'unread' : 'read', [tId], cId); },
-        bulkTitle: 'Mark read', bulkIcon: EyeOpenIcon, bulkOnClick: (e) => { e.stopPropagation(); handleThreadAction('read', getSelection(), cId); }
-      };
-      actionDefs.markImportant = {
-        cls: 'bulk-important', title: isImportant ? 'Unmark important' : 'Mark important', keyHint: 'i', icon: isImportant ? ThumbsUpFilledIcon : ThumbsUpIcon,
-        onClick: (e) => { e.stopPropagation(); handleThreadAction(isImportant ? 'notImportant' : 'important', [tId], cId); },
-        bulkTitle: 'Mark important', bulkIcon: ThumbsUpIcon, bulkOnClick: (e) => { e.stopPropagation(); handleThreadAction('important', getSelection(), cId); }
-      };
-      actionDefs.spam = {
-        cls: 'bulk-spam', title: 'Report spam', keyHint: 'x', icon: SpamIcon,
-        onClick: (e) => { e.stopPropagation(); handleThreadAction('spam', [tId], cId); },
-        bulkOnClick: (e) => { e.stopPropagation(); handleThreadAction('spam', getSelection(), cId); }
-      };
-      actionDefs.trash = {
-        cls: 'bulk-danger', title: 'Delete', keyHint: 'd', icon: TrashIcon,
-        onClick: (e) => { e.stopPropagation(); handleThreadAction('trash', [tId], cId); },
-        bulkOnClick: (e) => { e.stopPropagation(); handleThreadAction('trash', getSelection(), cId); }
-      };
-
-      if (props.selectedCount > 0) {
-        // Bulk Actions - follow same order as single thread actions
-        for (const key of order) {
-          if (key === 'quickForward') continue; // No forward in bulk
-          const def = actionDefs[key];
-          if (!def) continue;
-          // For quickReply, check if enabled (default true)
-          if (key === 'quickReply') {
-            if (settings[key] === false) continue;
-          } else {
-            if (!settings[key]) continue;
-          }
-          actions.push({
-            cls: def.cls,
-            title: def.bulkTitle || def.title,
-            keyHint: def.keyHint,
-            icon: def.bulkIcon || def.icon,
-            onClick: def.bulkOnClick || def.onClick
-          });
-        }
-        // Clear at end
-        actions.push({ cls: 'bulk-clear', title: 'Clear', keyHint: 'ESC', icon: ClearIcon, onClick: (e) => { e.stopPropagation(); setSelectedThreads({ ...selectedThreads(), [cId]: new Set() }); } });
-      } else {
-        // Single Thread Actions - use order
-        for (const key of order) {
-          const def = actionDefs[key];
-          if (!def) continue;
-          // Check settings (quickReply/quickForward default to true if not set)
-          if (key === 'quickReply' || key === 'quickForward') {
-            if (settings[key] === false) continue;
-          } else {
-            if (!settings[key]) continue;
-          }
-          actions.push({ cls: def.cls, title: def.title, keyHint: def.keyHint, icon: def.icon, onClick: def.onClick });
-        }
-      }
-    }
-
-    if (actions.length === 0) return null;
-
-    // Positioning Logic
-    const innerRadius = 38;
-    const numActions = actions.length;
-
-    return (
-      <div class={`bulk-actions-wheel ${props.open ? 'open' : ''}`} ref={containerRef}>
-        {props.selectedCount > 0 && <span class="bulk-count">{props.selectedCount}</span>}
-        <For each={actions}>
-          {(action, i) => {
-            let x = -innerRadius;
-            let y = 0;
-            if (numActions > 1) {
-              // 120 degree arc from 4pi/3 down to 2pi/3.
-              // In DOM coords (y increases downward):
-              // i=0 -> 4pi/3 (240 deg) -> top-left
-              // i=max -> 2pi/3 (120 deg) -> bottom-left
-              // This matches context menu order: first item at top
-              const angle = (4 * Math.PI / 3) - (i() / (numActions - 1)) * (2 * Math.PI / 3);
-              x = innerRadius * Math.cos(angle);
-              y = innerRadius * Math.sin(angle);
-            }
-
-            return (
-              <button
-                class={`bulk-btn ${action.cls}`}
-                style={{
-                  left: `calc(50% + ${x.toFixed(1)}px - 14px)`,
-                  top: `calc(50% + ${y.toFixed(1)}px - 14px)`
-                }}
-                onClick={action.onClick}
-                title={action.title}
-              >
-                <div style={{ width: '14px', height: '14px' }}>
-                  <action.icon />
-                </div>
-                {action.keyHint && <span class="action-key-hint">{action.keyHint}</span>}
-              </button>
-            );
-          }}
-        </For>
-      </div>
-    );
-  };
 
   function toggleThreadSelection(cardId: string, threadId: string, e?: MouseEvent) {
     // Show actions on the selected thread
@@ -6157,181 +3893,6 @@ function App() {
     setShowAutocomplete(false);
   }
 
-  // Shared card form component for new and edit modes
-  const CardForm = (props: {
-    mode: 'new' | 'edit';
-    name: string;
-    setName: (v: string) => void;
-    query: string;
-    setQuery: (v: string) => void;
-    color: CardColor;
-    setColor: (v: CardColor) => void;
-    groupBy: GroupBy;
-    setGroupBy: (v: GroupBy) => void;
-    colorPickerOpen: boolean;
-    setColorPickerOpen: (v: boolean) => void;
-    onSave: () => void;
-    onCancel: () => void;
-    onDelete?: () => void;
-    saveDisabled: boolean;
-  }) => {
-    return (
-      <div class="card-form">
-        <div class="card-form-group">
-          <label>Name</label>
-          <div class="name-color-row">
-            <input
-              type="text"
-              value={props.name}
-              onInput={(e) => props.setName(e.currentTarget.value)}
-              onKeyDown={(e) => {
-                if (e.key === 'Escape') props.onCancel();
-                else if (e.key === 'Enter' && (e.metaKey || e.ctrlKey) && !props.saveDisabled) {
-                  e.preventDefault();
-                  props.onSave();
-                }
-              }}
-              placeholder="Inbox, Starred..."
-              autofocus={props.mode === 'edit'}
-              ref={props.mode === 'new' ? (el) => setTimeout(() => el?.focus(), 50) : undefined}
-            />
-            <div class={`color-picker ${props.colorPickerOpen ? 'open' : ''}`}>
-              <div
-                class={`color-picker-selected ${props.color === null ? 'no-color' : ''}`}
-                style={props.color ? { background: COLOR_HEX[props.color] } : {}}
-                onClick={(e) => { e.stopPropagation(); props.setColorPickerOpen(!props.colorPickerOpen); }}
-                title="Card color"
-              >
-                <Show when={props.color === null}>
-                  <PaletteIcon />
-                </Show>
-              </div>
-              <div
-                class="color-option no-color-option"
-                onClick={() => { props.setColor(null); props.setColorPickerOpen(false); }}
-              ></div>
-              <For each={CARD_COLORS}>
-                {(color) => (
-                  <div
-                    class={`color-option ${color}`}
-                    onClick={() => { props.setColor(color); props.setColorPickerOpen(false); }}
-                  ></div>
-                )}
-              </For>
-            </div>
-          </div>
-        </div>
-        <div class="card-form-group">
-          <label class="query-label">
-            Query
-            <button
-              type="button"
-              class="query-help-btn"
-              onClick={() => setQueryHelpOpen(true)}
-              title="Query operators help"
-            >
-              ?
-            </button>
-          </label>
-          <input
-            type="text"
-            ref={setQueryInputRef}
-            value={props.query}
-            onInput={(e) => {
-              const value = e.currentTarget.value;
-              props.setQuery(value);
-              const suggestions = getQuerySuggestions(value);
-              setQueryAutocompleteOpen(suggestions.length > 0);
-              setQueryAutocompleteIndex(0);
-              updateDropdownPosition();
-              debounceQueryPreview(value);
-            }}
-            onFocus={() => {
-              setActiveQueryGetter(() => () => props.query);
-              setActiveQuerySetter(() => props.setQuery);
-              const suggestions = getQuerySuggestions(props.query);
-              setQueryAutocompleteOpen(suggestions.length > 0);
-              updateDropdownPosition();
-            }}
-            onBlur={() => setTimeout(() => setQueryAutocompleteOpen(false), 150)}
-            onKeyDown={(e) => {
-              const suggestions = getQuerySuggestions(props.query);
-              if (e.key === 'Escape') {
-                if (queryAutocompleteOpen()) {
-                  setQueryAutocompleteOpen(false);
-                } else {
-                  props.onCancel();
-                }
-                return;
-              }
-              if (e.key === 'Enter' && (e.metaKey || e.ctrlKey) && !props.saveDisabled) {
-                e.preventDefault();
-                props.onSave();
-                return;
-              }
-              if (!queryAutocompleteOpen() || suggestions.length === 0) return;
-              if (e.key === 'ArrowDown') {
-                e.preventDefault();
-                setQueryAutocompleteIndex((queryAutocompleteIndex() + 1) % suggestions.length);
-              } else if (e.key === 'ArrowUp') {
-                e.preventDefault();
-                setQueryAutocompleteIndex((queryAutocompleteIndex() - 1 + suggestions.length) % suggestions.length);
-              } else if (e.key === 'Enter' || e.key === 'Tab') {
-                if (suggestions[queryAutocompleteIndex()]) {
-                  e.preventDefault();
-                  applyQuerySuggestion(suggestions[queryAutocompleteIndex()]);
-                }
-              }
-            }}
-            placeholder="is:inbox, from:boss, newer_than:7d"
-          />
-        </div>
-        <div class="card-form-group">
-          <label>Group</label>
-          <div class="group-by-buttons">
-            <For each={props.query.toLowerCase().includes("calendar:") ? CALENDAR_GROUP_BY_OPTIONS : EMAIL_GROUP_BY_OPTIONS}>
-              {(option) => (
-                <button
-                  class={`group-by-btn ${props.groupBy === option.value ? 'active' : ''}`}
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    props.setGroupBy(option.value);
-                  }}
-                  type="button"
-                >
-                  {option.label}
-                </button>
-              )}
-            </For>
-          </div>
-        </div>
-        <div class="card-form-actions">
-          <Show when={props.onDelete}>
-            <button class="btn btn-danger" onClick={(e) => {
-              e.preventDefault();
-              e.stopPropagation();
-              props.onDelete?.();
-            }}>
-              <TrashIcon /> Delete
-            </button>
-            <div style="flex: 1"></div>
-          </Show>
-          <button class="btn" onClick={props.onCancel} title="Cancel (Esc)">
-            Cancel <span class="shortcut-hint">ESC</span>
-          </button>
-          <button
-            class="btn btn-primary"
-            onClick={props.onSave}
-            disabled={props.saveDisabled}
-            title={`${props.mode === 'new' ? 'Add' : 'Save'} (⌘Enter)`}
-          >
-            {props.mode === 'new' ? 'Add' : 'Save'} <span class="shortcut-hint">⌘↵</span>
-          </button>
-        </div>
-      </div>
-    );
-  };
-
   return (
     <div class="app" onClick={handleAppClick}>
       {/* Drag region for frameless window */}
@@ -6388,9 +3949,9 @@ function App() {
                 >
                   <ComposeIcon />
                 </button>
-                <Show when={getContactCandidates().length > 0}>
+                <Show when={contactCandidates().length > 0}>
                   <div class={`compose-suggestions ${composeFabHovered() ? 'visible' : ''}`}>
-                    <For each={getContactCandidates().slice(0, 5)}>
+                    <For each={contactCandidates().slice(0, 5)}>
                       {(contact) => (
                         <div
                           class="compose-suggestion-avatar"
@@ -6478,11 +4039,9 @@ function App() {
                         {(account) => (
                           <button
                             class={`account-chooser-item ${account.id === selectedAccount()?.id ? 'active' : ''}`}
-                            onClick={async () => {
-                              setSelectedAccount(account);
-                              setCards(await getCards(account.id));
-                              setCardThreads({});
+                            onClick={() => {
                               setAccountChooserOpen(false);
+                              switchAccount(account);
                             }}
                           >
                             {account.picture ? (
@@ -6587,7 +4146,7 @@ function App() {
                       }}
                     >
                       <div
-                        class={`card ${collapsedCards()[card.id] ? 'collapsed' : ''} ${editingCardId() === card.id ? 'editing' : ''}`}
+                        class={`card ${collapsedCards[card.id] ? 'collapsed' : ''} ${editingCardId() === card.id ? 'editing' : ''}`}
                         classList={{ 'dragging': sortable.isActiveDraggable }}
                         data-id={card.id}
                         data-color={editingCardId() === card.id ? (editCardColor() || undefined) : (card.color || undefined)}
@@ -6611,6 +4170,18 @@ function App() {
                             onCancel={cancelEditCard}
                             onDelete={() => handleDeleteCard(card.id)}
                             saveDisabled={!editCardName() || !editCardQuery()}
+                            setQueryHelpOpen={setQueryHelpOpen}
+                            setQueryInputRef={setQueryInputRef}
+                            getQuerySuggestions={getQuerySuggestions}
+                            queryAutocompleteOpen={queryAutocompleteOpen}
+                            setQueryAutocompleteOpen={setQueryAutocompleteOpen}
+                            queryAutocompleteIndex={queryAutocompleteIndex}
+                            setQueryAutocompleteIndex={setQueryAutocompleteIndex}
+                            updateDropdownPosition={updateDropdownPosition}
+                            debounceQueryPreview={debounceQueryPreview}
+                            setActiveQueryGetter={setActiveQueryGetter}
+                            setActiveQuerySetter={setActiveQuerySetter}
+                            applyQuerySuggestion={applyQuerySuggestion}
                           />
                         </Show>
                         <Show when={editingCardId() !== card.id}>
@@ -6623,16 +4194,16 @@ function App() {
                               <ChevronIcon />
                             </button>
                             <span class="card-title">{card.name}</span>
-                            <Show when={lastSyncTimes()[card.id] && !loadingThreads()[card.id]}>
+                            <Show when={lastSyncTimes[card.id] && !loadingThreads[card.id]}>
                               {(() => {
-                                const state = getSyncState(lastSyncTimes()[card.id], currentTime());
-                                const hasError = syncErrors()[card.id];
+                                const state = getSyncState(lastSyncTimes[card.id], currentTime());
+                                const hasError = syncErrors[card.id];
                                 return (
                                   <span
                                     class={`sync-status ${hasError ? 'sync-error' : ''} ${state === 'fresh' ? 'sync-fresh' : ''} ${state === 'stale' ? 'sync-stale' : ''}`}
-                                    title={hasError ? `Sync failed: ${hasError}` : `Last synced: ${formatSyncTime(lastSyncTimes()[card.id], currentTime())}`}
+                                    title={hasError ? `Sync failed: ${hasError}` : `Last synced: ${formatSyncTime(lastSyncTimes[card.id], currentTime())}`}
                                   >
-                                    {hasError ? 'sync failed' : formatSyncTime(lastSyncTimes()[card.id], currentTime())}
+                                    {hasError ? 'sync failed' : formatSyncTime(lastSyncTimes[card.id], currentTime())}
                                   </span>
                                 );
                               })()}
@@ -6642,9 +4213,9 @@ function App() {
                             </Show>
                             <div class="card-actions">
                               <button
-                                class={`icon-btn ${loadingThreads()[card.id] || loadingMore()[card.id] ? 'spinning' : ''} `}
+                                class={`icon-btn ${loadingThreads[card.id] || loadingMore[card.id] ? 'spinning' : ''} `}
                                 onClick={(e) => refreshCard(card.id, e)}
-                                disabled={loadingThreads()[card.id]}
+                                disabled={loadingThreads[card.id]}
                                 title="Refresh"
                               >
                                 <RefreshIcon />
@@ -6665,7 +4236,7 @@ function App() {
                             if (editingCardId() === card.id) return; // No scroll loading during edit
                             const target = e.currentTarget;
                             const nearBottom = target.scrollTop + target.clientHeight >= target.scrollHeight - 50;
-                            if (nearBottom && cardHasMore()[card.id] && !loadingMore()[card.id] && !loadingThreads()[card.id]) {
+                            if (nearBottom && cardHasMore[card.id] && !loadingMore[card.id] && !loadingThreads[card.id]) {
                               loadCardThreads(card.id, true);
                             }
                           }}
@@ -6751,7 +4322,7 @@ function App() {
                                                 {(attachment) => (
                                                   <img
                                                     class="thread-image-thumb clickable"
-                                                    src={`data:${attachment.mime_type};base64,${attachment.inline_data?.replace(/-/g, '+').replace(/_/g, '/')}`}
+                                                    src={`data:${attachment.mime_type};base64,${normalizeBase64Url(attachment.inline_data || '')}`}
                                                     alt={attachment.filename}
                                                     title={attachment.filename}
                                                     onClick={() => openAttachment(attachment.message_id, attachment.attachment_id, attachment.filename, attachment.mime_type, attachment.inline_data)}
@@ -6782,19 +4353,19 @@ function App() {
                           {/* Normal view when not editing */}
                           <Show when={editingCardId() !== card.id}>
                             {/* Only show loading if no cached data */}
-                            <Show when={loadingThreads()[card.id] && !cardThreads()[card.id] && !cardCalendarEvents()[card.id]}>
+                            <Show when={loadingThreads[card.id] && !cardThreads[card.id] && !cardCalendarEvents[card.id]}>
                               <div class="loading">Loading...</div>
                             </Show>
-                            <Show when={!loadingThreads()[card.id] && cardErrors()[card.id] && !cardThreads()[card.id] && !cardCalendarEvents()[card.id]}>
+                            <Show when={!loadingThreads[card.id] && cardErrors[card.id] && !cardThreads[card.id] && !cardCalendarEvents[card.id]}>
                               <div class="card-error">
                                 <span class="error-icon">⚠</span>
-                                <span class="error-text">{cardErrors()[card.id]}</span>
+                                <span class="error-text">{cardErrors[card.id]}</span>
                                 <button class="retry-btn" onClick={(e) => refreshCard(card.id, e)}>Try again</button>
                               </div>
                             </Show>
 
                             {/* Calendar card: show calendar events */}
-                            <Show when={card.card_type === "calendar" && cardCalendarEvents()[card.id]}>
+                            <Show when={card.card_type === "calendar" && cardCalendarEvents[card.id]}>
                               <Show when={getCalendarEventGroups(card.id).length === 0}>
                                 <div class="empty">No events</div>
                               </Show>
@@ -6808,7 +4379,7 @@ function App() {
                                         <div
                                           class={`calendar-event-item ${event.response_status === "declined" ? "declined" : ""} ${selectedEvents()[card.id]?.has(event.id) ? "selected" : ""} ${isEventFocused(card.id, event.id) ? "focused" : ""} ${quickReplyEventId() === event.id ? "replying" : ""}`}
                                           onClick={() => openEvent(event, card.id)}
-                                          onMouseEnter={() => showEventHoverActions(card.id, event.id)}
+                                          onMouseEnter={() => showEventHoverActions(event.id)}
                                           onMouseLeave={hideEventHoverActions}
                                           tabindex="0"
                                         >
@@ -6865,6 +4436,21 @@ function App() {
                                                 selectedCount={selectedEvents()[card.id]?.has(event.id) ? (selectedEvents()[card.id]?.size || 0) : 0}
                                                 open={true}
                                                 onClose={() => setEventActionsWheelOpen(false)}
+                                                selectedAccount={selectedAccount}
+                                                actionSettings={actionSettings}
+                                                actionOrder={actionOrder}
+                                                eventActionSettings={eventActionSettings}
+                                                eventActionOrder={eventActionOrder}
+                                                selectedThreads={selectedThreads}
+                                                setSelectedThreads={setSelectedThreads}
+                                                selectedEvents={selectedEvents}
+                                                setSelectedEvents={setSelectedEvents}
+                                                openThreadQuickReply={openThreadQuickReply}
+                                                openEventQuickReply={openEventQuickReply}
+                                                startBatchReply={startBatchReply}
+                                                handleForward={handleForward}
+                                                handleThreadAction={handleThreadAction}
+                                                showToast={showToast}
                                               />
                                             </Show>
                                           </div>
@@ -6876,19 +4462,19 @@ function App() {
                                             <ComposeTextarea
                                               class="quick-reply-input"
                                               placeholder={`Reply to ${event.organizer || 'organizer'}...`}
-                                              value={quickReplyText()}
-                                              onChange={setQuickReplyText}
+                                              value={quickReply().text}
+                                              onChange={(val: string) => setQuickReply(qr => ({ ...qr, text: val }))}
                                               onSend={() => handleEventQuickReply(event)}
-                                              onCancel={() => { setQuickReplyEventId(null); setQuickReplyText(""); }}
-                                              disabled={quickReplySending()}
+                                              onCancel={() => { setQuickReplyEventId(null); setQuickReply(qr => ({ ...qr, text: "" })); }}
+                                              disabled={quickReply().sending}
                                               autofocus
                                             />
                                             <div class="quick-reply-actions">
-                                              <button class="btn" onClick={() => { setQuickReplyEventId(null); setQuickReplyText(""); }} disabled={quickReplySending()}>Cancel <span class="shortcut-hint">ESC</span></button>
+                                              <button class="btn" onClick={() => { setQuickReplyEventId(null); setQuickReply(qr => ({ ...qr, text: "" })); }} disabled={quickReply().sending}>Cancel <span class="shortcut-hint">ESC</span></button>
                                               <ComposeSendButton
                                                 onClick={() => handleEventQuickReply(event)}
-                                                disabled={!quickReplyText().trim()}
-                                                sending={quickReplySending()}
+                                                disabled={!quickReply().text.trim()}
+                                                sending={quickReply().sending}
                                               />
                                             </div>
                                           </div>
@@ -6902,7 +4488,7 @@ function App() {
                             </Show>
 
                             {/* Email card: show threads */}
-                            <Show when={card.card_type !== "calendar" && cardThreads()[card.id]}>
+                            <Show when={card.card_type !== "calendar" && cardThreads[card.id]}>
                               <Show when={getDisplayGroups(card.id).length === 0}>
                                 <div class="empty">All clear</div>
                               </Show>
@@ -6911,11 +4497,19 @@ function App() {
                                   <>
                                     <div class="date-header">{group.label}</div>
                                     <For each={group.threads}>
-                                      {(thread) => (
+                                      {(thread) => {
+                                        // Load RSVP status once per invite row (guarded inside fetchRsvpStatus)
+                                        createEffect(() => {
+                                          const uid = thread.calendar_event?.uid;
+                                          if (thread.calendar_event?.method === "REQUEST" && uid) {
+                                            fetchRsvpStatus(thread.gmail_thread_id, uid);
+                                          }
+                                        });
+                                        return (
                                         <>
                                           <div
-                                            class={`thread ${thread.unread_count > 0 ? 'unread' : ''} ${selectedThreads()[card.id]?.has(thread.gmail_thread_id) ? 'selected' : ''} ${isThreadFocused(card.id, thread.gmail_thread_id) ? 'focused' : ''} ${quickReplyThreadId() === thread.gmail_thread_id ? 'replying' : ''}`}
-                                            onMouseEnter={() => showThreadHoverActions(card.id, thread.gmail_thread_id)}
+                                            class={`thread ${thread.unread_count > 0 ? 'unread' : ''} ${selectedThreads()[card.id]?.has(thread.gmail_thread_id) ? 'selected' : ''} ${isThreadFocused(card.id, thread.gmail_thread_id) ? 'focused' : ''} ${quickReply().threadId === thread.gmail_thread_id ? 'replying' : ''}`}
+                                            onMouseEnter={() => showThreadHoverActions(thread.gmail_thread_id)}
                                             onMouseLeave={() => hideThreadHoverActions()}
                                             onClick={() => openThread(thread.gmail_thread_id, card.id)}
                                             role="article"
@@ -6953,27 +4547,20 @@ function App() {
                                                   </div>
                                                 </Show>
                                                 <Show when={thread.calendar_event!.method === "REQUEST" && thread.calendar_event!.uid}>
-                                                  {(() => {
-                                                    // Fetch RSVP status if not already loaded
-                                                    if (!rsvpStatus()[thread.gmail_thread_id] && thread.calendar_event?.uid) {
-                                                      fetchRsvpStatus(thread.gmail_thread_id, thread.calendar_event.uid);
-                                                    }
-                                                    return null;
-                                                  })()}
                                                   <div class="calendar-rsvp" onClick={(e) => e.stopPropagation()}>
                                                     <button
-                                                      class={rsvpStatus()[thread.gmail_thread_id] === "accepted" ? "selected" : ""}
-                                                      disabled={rsvpLoading()[thread.gmail_thread_id]}
+                                                      class={rsvpStatus[thread.gmail_thread_id] === "accepted" ? "selected" : ""}
+                                                      disabled={rsvpLoading[thread.gmail_thread_id]}
                                                       onClick={() => handleRsvp(thread.gmail_thread_id, thread.calendar_event!.uid, "yes")}
                                                     >Yes</button>
                                                     <button
-                                                      class={rsvpStatus()[thread.gmail_thread_id] === "tentative" ? "selected" : ""}
-                                                      disabled={rsvpLoading()[thread.gmail_thread_id]}
+                                                      class={rsvpStatus[thread.gmail_thread_id] === "tentative" ? "selected" : ""}
+                                                      disabled={rsvpLoading[thread.gmail_thread_id]}
                                                       onClick={() => handleRsvp(thread.gmail_thread_id, thread.calendar_event!.uid, "maybe")}
                                                     >Maybe</button>
                                                     <button
-                                                      class={rsvpStatus()[thread.gmail_thread_id] === "declined" ? "selected" : ""}
-                                                      disabled={rsvpLoading()[thread.gmail_thread_id]}
+                                                      class={rsvpStatus[thread.gmail_thread_id] === "declined" ? "selected" : ""}
+                                                      disabled={rsvpLoading[thread.gmail_thread_id]}
                                                       onClick={() => handleRsvp(thread.gmail_thread_id, thread.calendar_event!.uid, "no")}
                                                     >No</button>
                                                   </div>
@@ -7002,7 +4589,7 @@ function App() {
                                                       {(attachment) => (
                                                         <img
                                                           class="thread-image-thumb clickable"
-                                                          src={`data:${attachment.mime_type};base64,${attachment.inline_data?.replace(/-/g, '+').replace(/_/g, '/')}`}
+                                                          src={`data:${attachment.mime_type};base64,${normalizeBase64Url(attachment.inline_data || '')}`}
                                                           alt={attachment.filename}
                                                           title={attachment.filename}
                                                           onClick={() => openAttachment(attachment.message_id, attachment.attachment_id, attachment.filename, attachment.mime_type, attachment.inline_data)}
@@ -7057,21 +4644,36 @@ function App() {
                                                   selectedCount={selectedThreads()[card.id]?.has(thread.gmail_thread_id) ? (selectedThreads()[card.id]?.size || 0) : 0}
                                                   open={true}
                                                   onClose={() => setActionsWheelOpen(false)}
+                                                  selectedAccount={selectedAccount}
+                                                  actionSettings={actionSettings}
+                                                  actionOrder={actionOrder}
+                                                  eventActionSettings={eventActionSettings}
+                                                  eventActionOrder={eventActionOrder}
+                                                  selectedThreads={selectedThreads}
+                                                  setSelectedThreads={setSelectedThreads}
+                                                  selectedEvents={selectedEvents}
+                                                  setSelectedEvents={setSelectedEvents}
+                                                  openThreadQuickReply={openThreadQuickReply}
+                                                  openEventQuickReply={openEventQuickReply}
+                                                  startBatchReply={startBatchReply}
+                                                  handleForward={handleForward}
+                                                  handleThreadAction={handleThreadAction}
+                                                  showToast={showToast}
                                                 />
                                               </Show>
                                             </div>
                                             <div class="thread-actions-wheel-placeholder"></div>
                                           </div>
-                                          <Show when={quickReplyThreadId() === thread.gmail_thread_id}>
+                                          <Show when={quickReply().threadId === thread.gmail_thread_id}>
                                             <div class="quick-reply-box" onClick={(e) => e.stopPropagation()}>
                                               <ComposeTextarea
                                                 class="quick-reply-input"
                                                 placeholder="Write a reply..."
-                                                value={quickReplyText()}
-                                                onChange={setQuickReplyText}
+                                                value={quickReply().text}
+                                                onChange={(val: string) => setQuickReply(qr => ({ ...qr, text: val }))}
                                                 onSend={handleQuickReply}
-                                                onCancel={() => { setQuickReplyThreadId(null); setQuickReplyText(""); }}
-                                                disabled={quickReplySending()}
+                                                onCancel={() => setQuickReply({ threadId: null, text: "", sending: false })}
+                                                disabled={quickReply().sending}
                                                 autofocus
                                               />
                                               <div class="quick-reply-actions">
@@ -7079,23 +4681,24 @@ function App() {
                                                   onSelect={(emoji) => handleQuickReaction(thread.gmail_thread_id, emoji)}
                                                   sending={quickReactionSending()}
                                                 />
-                                                <button class="btn" onClick={() => { setQuickReplyThreadId(null); setQuickReplyText(""); }} disabled={quickReplySending()}>Cancel <span class="shortcut-hint">ESC</span></button>
+                                                <button class="btn" onClick={() => setQuickReply({ threadId: null, text: "", sending: false })} disabled={quickReply().sending}>Cancel <span class="shortcut-hint">ESC</span></button>
                                                 <ComposeSendButton
                                                   onClick={handleQuickReply}
-                                                  disabled={!quickReplyText().trim()}
-                                                  sending={quickReplySending()}
+                                                  disabled={!quickReply().text.trim()}
+                                                  sending={quickReply().sending}
                                                 />
                                               </div>
                                             </div>
                                           </Show>
                                         </>
-                                      )}
+                                        );
+                                      }}
                                     </For>
                                   </>
                                 )}
                               </For>
                               {/* Loading more indicator for infinite scroll */}
-                              <Show when={loadingMore()[card.id]}>
+                              <Show when={loadingMore[card.id]}>
                                 <div class="loading">Loading more...</div>
                               </Show>
                             </Show>
@@ -7152,6 +4755,18 @@ function App() {
                     onSave={handleAddCard}
                     onCancel={cancelAddCard}
                     saveDisabled={!newCardName() || !newCardQuery()}
+                    setQueryHelpOpen={setQueryHelpOpen}
+                    setQueryInputRef={setQueryInputRef}
+                    getQuerySuggestions={getQuerySuggestions}
+                    queryAutocompleteOpen={queryAutocompleteOpen}
+                    setQueryAutocompleteOpen={setQueryAutocompleteOpen}
+                    queryAutocompleteIndex={queryAutocompleteIndex}
+                    setQueryAutocompleteIndex={setQueryAutocompleteIndex}
+                    updateDropdownPosition={updateDropdownPosition}
+                    debounceQueryPreview={debounceQueryPreview}
+                    setActiveQueryGetter={setActiveQueryGetter}
+                    setActiveQuerySetter={setActiveQuerySetter}
+                    applyQuerySuggestion={applyQuerySuggestion}
                   />
                   {/* Query preview for new card */}
                   <div class="card-body">
@@ -7228,7 +4843,7 @@ function App() {
                                         {(attachment) => (
                                           <img
                                             class="thread-image-thumb"
-                                            src={`data:${attachment.mime_type};base64,${attachment.inline_data?.replace(/-/g, '+').replace(/_/g, '/')}`}
+                                            src={`data:${attachment.mime_type};base64,${normalizeBase64Url(attachment.inline_data || '')}`}
                                             alt={attachment.filename}
                                             title={attachment.filename}
                                           />
@@ -7311,31 +4926,31 @@ function App() {
       <Show when={creatingEvent()}>
         <CreateEventForm
           show={true}
-          closing={closingEvent()}
+          closing={eventForm().closing}
           onClose={closeEventForm}
-          summary={newEventSummary()}
-          setSummary={setNewEventSummary}
-          description={newEventDescription()}
-          setDescription={setNewEventDescription}
-          location={newEventLocation()}
-          setLocation={setNewEventLocation}
-          startDate={newEventStartDate()}
-          setStartDate={setNewEventStartDate}
-          startTime={newEventStartTime()}
-          setStartTime={setNewEventStartTime}
-          endDate={newEventEndDate()}
-          setEndDate={setNewEventEndDate}
-          endTime={newEventEndTime()}
-          setEndTime={setNewEventEndTime}
-          allDay={newEventAllDay()}
-          setAllDay={setNewEventAllDay}
-          attendees={newEventAttendees()}
-          setAttendees={setNewEventAttendees}
-          recurrence={newEventRecurrence()}
-          setRecurrence={setNewEventRecurrence}
-          saving={newEventSaving()}
+          summary={eventForm().summary}
+          setSummary={(v: string) => setEventForm(f => ({ ...f, summary: v }))}
+          description={eventForm().description}
+          setDescription={(v: string) => setEventForm(f => ({ ...f, description: v }))}
+          location={eventForm().location}
+          setLocation={(v: string) => setEventForm(f => ({ ...f, location: v }))}
+          startDate={eventForm().startDate}
+          setStartDate={(v: string) => setEventForm(f => ({ ...f, startDate: v }))}
+          startTime={eventForm().startTime}
+          setStartTime={(v: string) => setEventForm(f => ({ ...f, startTime: v }))}
+          endDate={eventForm().endDate}
+          setEndDate={(v: string) => setEventForm(f => ({ ...f, endDate: v }))}
+          endTime={eventForm().endTime}
+          setEndTime={(v: string) => setEventForm(f => ({ ...f, endTime: v }))}
+          allDay={eventForm().allDay}
+          setAllDay={(v: boolean) => setEventForm(f => ({ ...f, allDay: v }))}
+          attendees={eventForm().attendees}
+          setAttendees={(v: string) => setEventForm(f => ({ ...f, attendees: v }))}
+          recurrence={eventForm().recurrence}
+          setRecurrence={(v: string | null) => setEventForm(f => ({ ...f, recurrence: v }))}
+          saving={eventForm().saving}
           onSave={handleCreateEvent}
-          error={newEventError()}
+          error={eventForm().error}
         />
       </Show>
 
@@ -7466,7 +5081,7 @@ function App() {
             const cardId = activeThreadCardId();
             const threadId = activeThreadId();
             if (!cardId || !threadId) return undefined;
-            const groups = cardThreads()[cardId] || [];
+            const groups = cardThreads[cardId] || [];
             for (const group of groups) {
               const thread = group.threads.find(t => t.gmail_thread_id === threadId);
               if (thread) return thread.attachments;
@@ -7549,12 +5164,34 @@ function App() {
           onClose={closeEvent}
           onRsvp={async (status) => {
             const event = activeEvent();
-            if (!event || !selectedAccount()) return;
+            const account = selectedAccount();
+            if (!event || !account || rsvpLoading[event.id]) return;
+            setRsvpLoading(event.id, true);
             try {
-              closeEvent();
+              try {
+                await rsvpCalendarEvent(account.id, event.id, status);
+              } catch (err) {
+                // Google-origin events are looked up by iCalUID, which is "<id>@google.com"
+                if (String(err).includes("not found")) {
+                  await rsvpCalendarEvent(account.id, `${event.id}@google.com`, status);
+                } else {
+                  throw err;
+                }
+              }
+              setRsvpStatus(event.id, status);
+              setActiveEvent(ev => (ev && ev.id === event.id ? { ...ev, response_status: status } : ev));
+              const cardId = activeEventCardId();
+              if (cardId && cardCalendarEvents[cardId]) {
+                setCardCalendarEvents(cardId, cardCalendarEvents[cardId].map(ev =>
+                  ev.id === event.id ? { ...ev, response_status: status } : ev
+                ));
+              }
               showToast(`Response updated to ${status}`);
             } catch (e) {
               console.error("Failed to update RSVP", e);
+              showToast(`Failed to update RSVP: ${e}`);
+            } finally {
+              setRsvpLoading(event.id, false);
             }
           }}
           onReplyOrganizer={() => {
@@ -7612,31 +5249,22 @@ function App() {
             const event = activeEvent();
             if (!event) return;
             // Pre-fill the event form with current event data
-            setNewEventSummary(event.title || '');
-            setNewEventDescription(event.description || '');
-            setNewEventLocation(event.location || '');
-
-            // Parse start date/time
             const startDate = new Date(event.start_time);
-            setNewEventStartDate(startDate.toISOString().split('T')[0]);
-            setNewEventStartTime(startDate.toTimeString().slice(0, 5));
-
-            // Parse end date/time
-            if (event.end_time) {
-              const endDate = new Date(event.end_time);
-              setNewEventEndDate(endDate.toISOString().split('T')[0]);
-              setNewEventEndTime(endDate.toTimeString().slice(0, 5));
-            } else {
-              setNewEventEndDate(startDate.toISOString().split('T')[0]);
-              setNewEventEndTime(startDate.toTimeString().slice(0, 5));
-            }
-
-            setNewEventAllDay(event.all_day);
-            setNewEventAttendees(event.attendees.map(a => a.email).join(', '));
-            setNewEventRecurrence(null); // Recurrence editing not supported yet
-
-            // Set editing state - inline editing in event view
-            setEditingEvent({ id: event.id, calendarId: event.calendar_id });
+            const endDateVal = event.end_time ? new Date(event.end_time) : startDate;
+            setEventForm(f => ({
+              ...f,
+              summary: event.title || '',
+              description: event.description || '',
+              location: event.location || '',
+              startDate: startDate.toISOString().split('T')[0],
+              startTime: startDate.toTimeString().slice(0, 5),
+              endDate: endDateVal.toISOString().split('T')[0],
+              endTime: endDateVal.toTimeString().slice(0, 5),
+              allDay: event.all_day,
+              attendees: event.attendees.map(a => a.email).join(', '),
+              recurrence: null, // Recurrence editing not supported yet
+              editing: { id: event.id, calendarId: event.calendar_id },
+            }));
           }}
           onDelete={async () => {
             const event = activeEvent();
@@ -7647,11 +5275,8 @@ function App() {
               await deleteCalendarEvent(account.id, event.calendar_id, event.id);
               // Remove event from card's event list
               if (cardId) {
-                const currentEvents = cardCalendarEvents()[cardId] || [];
-                setCardCalendarEvents({
-                  ...cardCalendarEvents(),
-                  [cardId]: currentEvents.filter(e => e.id !== event.id)
-                });
+                const currentEvents = cardCalendarEvents[cardId] || [];
+                setCardCalendarEvents(cardId, currentEvents.filter(e => e.id !== event.id));
               }
               showToast('Event deleted');
               closeEvent();
@@ -7666,7 +5291,7 @@ function App() {
           calendars={availableCalendars()}
           calendarsLoading={calendarsLoading()}
           onMoveToCalendar={handleMoveEventToCalendar}
-          rsvpLoading={false}
+          rsvpLoading={!!(activeEvent() && rsvpLoading[activeEvent()!.id])}
           inlineCompose={composing() && activeEvent() && (replyingToEvent()?.eventId === activeEvent()!.id || forwardingEvent()?.eventId === activeEvent()!.id) ? {
             replyToMessageId: null,
             isForward: !!forwardingEvent(),
@@ -7696,31 +5321,31 @@ function App() {
             resizing: inlineResizing(),
             onResizeStart: handleInlineResizeStart,
           } : null}
-          inlineEdit={editingEvent() && activeEvent() && editingEvent()!.id === activeEvent()!.id ? {
-            summary: newEventSummary(),
-            setSummary: setNewEventSummary,
-            description: newEventDescription(),
-            setDescription: setNewEventDescription,
-            location: newEventLocation(),
-            setLocation: setNewEventLocation,
-            startDate: newEventStartDate(),
-            setStartDate: setNewEventStartDate,
-            startTime: newEventStartTime(),
-            setStartTime: setNewEventStartTime,
-            endDate: newEventEndDate(),
-            setEndDate: setNewEventEndDate,
-            endTime: newEventEndTime(),
-            setEndTime: setNewEventEndTime,
-            allDay: newEventAllDay(),
-            setAllDay: setNewEventAllDay,
-            attendees: newEventAttendees(),
-            setAttendees: setNewEventAttendees,
-            recurrence: newEventRecurrence(),
-            setRecurrence: setNewEventRecurrence,
-            saving: newEventSaving(),
+          inlineEdit={eventForm().editing && activeEvent() && eventForm().editing!.id === activeEvent()!.id ? {
+            summary: eventForm().summary,
+            setSummary: (v: string) => setEventForm(f => ({ ...f, summary: v })),
+            description: eventForm().description,
+            setDescription: (v: string) => setEventForm(f => ({ ...f, description: v })),
+            location: eventForm().location,
+            setLocation: (v: string) => setEventForm(f => ({ ...f, location: v })),
+            startDate: eventForm().startDate,
+            setStartDate: (v: string) => setEventForm(f => ({ ...f, startDate: v })),
+            startTime: eventForm().startTime,
+            setStartTime: (v: string) => setEventForm(f => ({ ...f, startTime: v })),
+            endDate: eventForm().endDate,
+            setEndDate: (v: string) => setEventForm(f => ({ ...f, endDate: v })),
+            endTime: eventForm().endTime,
+            setEndTime: (v: string) => setEventForm(f => ({ ...f, endTime: v })),
+            allDay: eventForm().allDay,
+            setAllDay: (v: boolean) => setEventForm(f => ({ ...f, allDay: v })),
+            attendees: eventForm().attendees,
+            setAttendees: (v: string) => setEventForm(f => ({ ...f, attendees: v })),
+            recurrence: eventForm().recurrence,
+            setRecurrence: (v: string | null) => setEventForm(f => ({ ...f, recurrence: v })),
+            saving: eventForm().saving,
             onSave: handleCreateEvent,
-            onClose: () => setEditingEvent(null),
-            error: newEventError(),
+            onClose: () => setEventForm(f => ({ ...f, editing: null })),
+            error: eventForm().error,
             resizing: inlineResizing(),
             onResizeStart: handleInlineResizeStart,
           } : null}
@@ -8124,13 +5749,13 @@ function App() {
       </Show>
 
       {/* Undo Toast - For with key forces remount to restart progress bar animation */}
-      <For each={toastVisible() ? [toastKey()] : []}>
+      <For each={toast()?.visible ? [toast()!.key] : []}>
         {() => (
-          <div class={`undo-toast ${toastClosing() ? 'closing' : ''}`}>
+          <div class={`undo-toast ${toast()?.closing ? 'closing' : ''}`}>
             <div class="toast-progress"></div>
             <div class="toast-content">
-              <span class="toast-message">{simpleToastMessage() || (lastAction() ? getActionLabel(lastAction()!.action, lastAction()!.threadIds.length) : '')}</span>
-              <Show when={!simpleToastMessage() && lastAction()}>
+              <span class="toast-message">{toast()?.message || (lastAction() ? getActionLabel(lastAction()!.action, lastAction()!.threadIds.length) : '')}</span>
+              <Show when={!toast()?.message && lastAction()}>
                 <button class="toast-undo-btn" onClick={undoLastAction}>Undo <span class="shortcut-hint">z</span></button>
               </Show>
               <button class="toast-close-btn" onClick={hideToast} title="Dismiss">

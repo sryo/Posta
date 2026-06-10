@@ -17,8 +17,8 @@ export interface Card {
   position: number;
   collapsed: boolean;
   color: string | null;
-  group_by: string;
-  card_type: string; // "email" or "calendar"
+  group_by: "date" | "sender" | "label" | "organizer" | "calendar";
+  card_type: "email" | "calendar";
 }
 
 export interface AuthConfig {
@@ -26,6 +26,16 @@ export interface AuthConfig {
   client_secret: string;
 }
 
+export interface EventInput {
+  summary: string;
+  description: string | null;
+  location: string | null;
+  startTime: number;
+  endTime: number;
+  allDay: boolean;
+  attendees: string[] | null;
+  recurrence: string[] | null;
+}
 
 export interface Attachment {
   message_id: string;
@@ -98,10 +108,6 @@ export async function runOAuthFlow(): Promise<Account> {
   return await invoke('run_oauth_flow');
 }
 
-export async function completeOAuthFlow(code: string, state: string | null): Promise<Account> {
-  return invoke("complete_oauth_flow", { code, receivedState: state });
-}
-
 export async function getAccounts(): Promise<Account[]> {
   return invoke("get_accounts");
 }
@@ -139,13 +145,6 @@ export async function deleteCard(id: string): Promise<void> {
 
 export async function reorderCards(orders: [string, number][]): Promise<void> {
   return invoke("reorder_cards", { orders });
-}
-
-export async function fetchThreads(
-  accountId: string,
-  cardId: string
-): Promise<ThreadGroup[]> {
-  return invoke("fetch_threads", { accountId, cardId });
 }
 
 export async function fetchThreadsPaginated(
@@ -253,7 +252,7 @@ export async function sendEmail(
   attachments: SendAttachment[] = [],
   isHtml?: boolean
 ): Promise<void> {
-  return invoke("send_email", { accountId, to, cc, bcc, subject, body, attachments, is_html: isHtml });
+  return invoke("send_email", { accountId, to, cc, bcc, subject, body, attachments, isHtml });
 }
 
 export async function replyToThread(
@@ -268,7 +267,7 @@ export async function replyToThread(
   attachments: SendAttachment[] = [],
   isHtml?: boolean
 ): Promise<void> {
-  return invoke("reply_to_thread", { accountId, threadId, to, cc, bcc, subject, body, messageId, attachments, is_html: isHtml });
+  return invoke("reply_to_thread", { accountId, threadId, to, cc, bcc, subject, body, messageId, attachments, isHtml });
 }
 
 // Cache operations
@@ -328,6 +327,18 @@ export async function openAttachment(
   inlineData: string | null
 ): Promise<void> {
   return invoke("open_attachment", { accountId, messageId, attachmentId, filename, mimeType, inlineData });
+}
+
+/** Saves to the user's Downloads folder; resolves with the saved path. */
+export async function saveAttachment(
+  accountId: string,
+  messageId: string,
+  attachmentId: string | null,
+  filename: string,
+  mimeType: string | null,
+  inlineData: string | null
+): Promise<string> {
+  return invoke("save_attachment", { accountId, messageId, attachmentId, filename, mimeType, inlineData });
 }
 
 // Gmail Labels
@@ -435,26 +446,19 @@ export async function fetchCalendarEvents(
 export async function createCalendarEvent(
   accountId: string,
   calendarId: string | null,
-  summary: string,
-  description: string | null,
-  location: string | null,
-  startTime: number,
-  endTime: number,
-  allDay: boolean,
-  attendees: string[] | null,
-  recurrence: string[] | null
+  event: EventInput
 ): Promise<GoogleCalendarEvent> {
   return invoke("create_calendar_event", {
     accountId,
     calendarId,
-    summary,
-    description,
-    location,
-    startTime: Math.round(startTime),
-    endTime: Math.round(endTime),
-    allDay,
-    attendees,
-    recurrence,
+    summary: event.summary,
+    description: event.description,
+    location: event.location,
+    startTime: Math.round(event.startTime),
+    endTime: Math.round(event.endTime),
+    allDay: event.allDay,
+    attendees: event.attendees,
+    recurrence: event.recurrence,
   });
 }
 
@@ -488,27 +492,20 @@ export async function updateCalendarEvent(
   accountId: string,
   calendarId: string,
   eventId: string,
-  summary: string,
-  description: string | null,
-  location: string | null,
-  startTime: number,
-  endTime: number,
-  allDay: boolean,
-  attendees: string[] | null,
-  recurrence: string[] | null
+  event: EventInput
 ): Promise<GoogleCalendarEvent> {
   return invoke("update_calendar_event", {
     accountId,
     calendarId,
     eventId,
-    summary,
-    description,
-    location,
-    startTime: Math.round(startTime),
-    endTime: Math.round(endTime),
-    allDay,
-    attendees,
-    recurrence,
+    summary: event.summary,
+    description: event.description,
+    location: event.location,
+    startTime: Math.round(event.startTime),
+    endTime: Math.round(event.endTime),
+    allDay: event.allDay,
+    attendees: event.attendees,
+    recurrence: event.recurrence,
   });
 }
 
