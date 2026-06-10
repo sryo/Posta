@@ -31,10 +31,12 @@ struct Part {
 
 impl GeminiClient {
     pub fn new(api_key: String) -> Self {
-        Self {
-            client: reqwest::Client::new(),
-            api_key,
-        }
+        // Without a timeout a hung Gemini request blocks suggest_replies forever
+        let client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(30))
+            .build()
+            .unwrap_or_else(|_| reqwest::Client::new());
+        Self { client, api_key }
     }
 
     pub async fn suggest_replies(&self, email_context: &str, user_email: &str) -> Result<Vec<String>, String> {

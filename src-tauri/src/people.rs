@@ -144,8 +144,9 @@ impl PeopleClient {
             return Ok(Vec::new());
         }
 
+        // searchContacts has no pageToken; 30 is the API's maximum page size
         let url = format!(
-            "{}/people:searchContacts?query={}&readMask=names,emailAddresses,photos&pageSize=10",
+            "{}/people:searchContacts?query={}&readMask=names,emailAddresses,photos&pageSize=30",
             PEOPLE_API_BASE,
             urlencoding::encode(query)
         );

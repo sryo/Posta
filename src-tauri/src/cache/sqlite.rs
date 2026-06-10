@@ -176,10 +176,22 @@ impl CacheDb {
     }
 
     pub fn delete_account(&self, id: &str) -> Result<(), CacheError> {
-        let conn = self.conn.lock().map_err(|_| CacheError::Lock)?;
-        conn.execute("DELETE FROM accounts WHERE id = ?1", params![id])?;
-        // Also delete related cards
-        conn.execute("DELETE FROM cards WHERE account_id = ?1", params![id])?;
+        let mut conn = self.conn.lock().map_err(|_| CacheError::Lock)?;
+        let tx = conn.transaction()?;
+        // Delete card caches before the cards rows they are keyed by
+        tx.execute(
+            "DELETE FROM card_thread_cache WHERE card_id IN (SELECT id FROM cards WHERE account_id = ?1)",
+            params![id],
+        )?;
+        tx.execute(
+            "DELETE FROM card_calendar_cache WHERE card_id IN (SELECT id FROM cards WHERE account_id = ?1)",
+            params![id],
+        )?;
+        tx.execute("DELETE FROM cards WHERE account_id = ?1", params![id])?;
+        tx.execute("DELETE FROM threads WHERE account_id = ?1", params![id])?;
+        tx.execute("DELETE FROM sync_state WHERE account_id = ?1", params![id])?;
+        tx.execute("DELETE FROM accounts WHERE id = ?1", params![id])?;
+        tx.commit()?;
         Ok(())
     }
 
@@ -227,8 +239,12 @@ impl CacheDb {
     }
 
     pub fn delete_card(&self, id: &str) -> Result<(), CacheError> {
-        let conn = self.conn.lock().map_err(|_| CacheError::Lock)?;
-        conn.execute("DELETE FROM cards WHERE id = ?1", params![id])?;
+        let mut conn = self.conn.lock().map_err(|_| CacheError::Lock)?;
+        let tx = conn.transaction()?;
+        tx.execute("DELETE FROM cards WHERE id = ?1", params![id])?;
+        tx.execute("DELETE FROM card_thread_cache WHERE card_id = ?1", params![id])?;
+        tx.execute("DELETE FROM card_calendar_cache WHERE card_id = ?1", params![id])?;
+        tx.commit()?;
         Ok(())
     }
 
@@ -248,15 +264,16 @@ impl CacheDb {
     // Thread cache operations
 
     pub fn cache_threads(&self, threads: &[Thread]) -> Result<(), CacheError> {
-        let conn = self.conn.lock().map_err(|_| CacheError::Lock)?;
+        let mut conn = self.conn.lock().map_err(|_| CacheError::Lock)?;
         let now = chrono::Utc::now().timestamp();
 
+        let tx = conn.transaction()?;
         for thread in threads {
             let date = thread.last_message_date.timestamp();
             let labels = serde_json::to_string(&thread.labels).unwrap_or_default();
             let participants = serde_json::to_string(&thread.participants).unwrap_or_default();
 
-            conn.execute(
+            tx.execute(
                 r#"INSERT OR REPLACE INTO threads
                    (gmail_thread_id, account_id, subject, snippet, last_message_date, unread_count, labels, participants, cached_at)
                    VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)"#,
@@ -273,6 +290,7 @@ impl CacheDb {
                 ],
             )?;
         }
+        tx.commit()?;
 
         Ok(())
     }

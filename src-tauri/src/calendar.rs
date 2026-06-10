@@ -928,14 +928,14 @@ impl CalendarQuery {
             if let Ok(tz) = tz_str.parse::<Tz>() {
                 let tz_now = now.with_timezone(&tz);
                 let tz_today = tz_now.date_naive();
-                tz.from_local_datetime(&tz_today.and_hms_opt(0, 0, 0).unwrap())
+                tz.from_local_datetime(&tz_today.and_hms_opt(0, 0, 0).expect("midnight is a valid time"))
                     .single()
                     .map(|dt| dt.with_timezone(&Utc))
-                    .unwrap_or_else(|| now.date_naive().and_hms_opt(0, 0, 0).unwrap().and_utc())
+                    .unwrap_or_else(|| now.date_naive().and_hms_opt(0, 0, 0).expect("midnight is a valid time").and_utc())
             } else {
                 let local_now = Local::now();
                 let local_today = local_now.date_naive();
-                Local.from_local_datetime(&local_today.and_hms_opt(0, 0, 0).unwrap())
+                Local.from_local_datetime(&local_today.and_hms_opt(0, 0, 0).expect("midnight is a valid time"))
                     .single()
                     .expect("local midnight should be valid")
                     .with_timezone(&Utc)
@@ -943,7 +943,7 @@ impl CalendarQuery {
         } else {
             let local_now = Local::now();
             let local_today = local_now.date_naive();
-            Local.from_local_datetime(&local_today.and_hms_opt(0, 0, 0).unwrap())
+            Local.from_local_datetime(&local_today.and_hms_opt(0, 0, 0).expect("midnight is a valid time"))
                 .single()
                 .expect("local midnight should be valid")
                 .with_timezone(&Utc)
@@ -1084,7 +1084,7 @@ mod tests {
 
         let local_now = Local::now();
         let local_today = local_now.date_naive();
-        let today = Local.from_local_datetime(&local_today.and_hms_opt(0, 0, 0).unwrap())
+        let today = Local.from_local_datetime(&local_today.and_hms_opt(0, 0, 0).expect("midnight is a valid time"))
             .single()
             .unwrap()
             .with_timezone(&Utc);

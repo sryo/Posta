@@ -632,18 +632,37 @@ pub async fn sync_threads_incremental(
             match gmail.get_history_changes(&history_id).await {
                 Ok(changes) => {
                     tracing::info!(
-                        "Incremental sync: {} modified threads, {} deleted messages",
+                        "Incremental sync: {} modified threads, {} deletion candidates, {} deleted messages",
                         changes.modified_thread_ids.len(),
+                        changes.deleted_thread_ids.len(),
                         changes.deleted_message_ids.len()
                     );
 
-                    // Batch fetch the modified threads
-                    let mut modified_threads = Vec::new();
-                    if !changes.modified_thread_ids.is_empty() {
-                        modified_threads = gmail
-                            .batch_get_thread_details(&changes.modified_thread_ids)
+                    // Verify deletion candidates: a thread that still exists only
+                    // lost some messages and must be treated as modified
+                    let mut modified_thread_ids = changes.modified_thread_ids;
+                    let mut deleted_thread_ids = Vec::new();
+                    for thread_id in &changes.deleted_thread_ids {
+                        if gmail
+                            .thread_exists(thread_id)
                             .await
-                            .unwrap_or_default();
+                            .map_err(|e| format!("Failed to verify deleted thread {}: {}", thread_id, e))?
+                        {
+                            modified_thread_ids.push(thread_id.clone());
+                        } else {
+                            deleted_thread_ids.push(thread_id.clone());
+                        }
+                    }
+
+                    // Batch fetch the modified threads; propagate errors so the
+                    // frontend keeps its current data and retries (the history ID
+                    // is not advanced on failure)
+                    let mut modified_threads = Vec::new();
+                    if !modified_thread_ids.is_empty() {
+                        modified_threads = gmail
+                            .batch_get_thread_details(&modified_thread_ids)
+                            .await
+                            .map_err(|e| format!("Failed to fetch modified threads: {}", e))?;
 
                         // Set account_id on all threads
                         for thread in &mut modified_threads {
@@ -661,7 +680,7 @@ pub async fn sync_threads_incremental(
 
                     Ok(IncrementalSyncResult {
                         modified_threads,
-                        deleted_thread_ids: changes.modified_thread_ids, // Thread IDs that had messages deleted
+                        deleted_thread_ids,
                         new_history_id: changes.new_history_id,
                         is_full_sync: false,
                     })
@@ -1251,41 +1270,35 @@ pub fn pull_from_icloud(state: State<'_, AppState>) -> Result<bool, String> {
     for mut card in icloud_cards {
         // Check if this card's account exists locally
         if !local_account_ids.contains(&card.account_id) {
-            let mut remapped = false;
-
             // Try to match by email mapping first
-            if let Some(old_email) = account_mappings.get(&card.account_id) {
-                if let Some(local_account) = local_account_by_email.get(&old_email.to_lowercase()) {
-                    tracing::info!(
-                        "Remapping card {} from {} to {} via email {}",
-                        card.name,
-                        card.account_id,
-                        local_account.id,
-                        old_email
-                    );
-                    card.account_id = local_account.id.clone();
-                    remapped = true;
-                }
-            }
+            let email_match = account_mappings
+                .get(&card.account_id)
+                .and_then(|old_email| local_account_by_email.get(&old_email.to_lowercase()))
+                .map(|local_account| local_account.id.clone());
 
-            // Fallback: If there is exactly one local account, assign orphaned cards to it
-            if !remapped {
-                if accounts.len() == 1 {
-                    tracing::info!(
-                        "Remapping orphaned card {} to single account {}",
-                        card.name,
-                        accounts[0].id
-                    );
-                    card.account_id = accounts[0].id.clone();
-                    remapped = true;
-                } else {
-                    tracing::warn!(
-                        "Skipping card {} - no matching account (have {} accounts)",
-                        card.name,
-                        accounts.len()
-                    );
-                    continue;
-                }
+            if let Some(new_id) = email_match {
+                tracing::info!(
+                    "Remapping card {} from {} to {} via email",
+                    card.name,
+                    card.account_id,
+                    new_id
+                );
+                card.account_id = new_id;
+            } else if accounts.len() == 1 {
+                // Fallback: a single local account adopts orphaned cards
+                tracing::info!(
+                    "Remapping orphaned card {} to single account {}",
+                    card.name,
+                    accounts[0].id
+                );
+                card.account_id = accounts[0].id.clone();
+            } else {
+                tracing::warn!(
+                    "Skipping card {} - no matching account (have {} accounts)",
+                    card.name,
+                    accounts.len()
+                );
+                continue;
             }
         }
 

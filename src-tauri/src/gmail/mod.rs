@@ -708,19 +708,19 @@ impl GmailClient {
         reply_headers: Option<(&str, &str)>, // (In-Reply-To, References)
         is_html: bool,
     ) -> Result<String, String> {
-        let mut message = format!("To: {}\r\n", to);
+        let mut message = format!("To: {}\r\n", encode_address_header(to));
 
         // Add CC if not empty
         if !cc.trim().is_empty() {
-            message.push_str(&format!("Cc: {}\r\n", cc));
+            message.push_str(&format!("Cc: {}\r\n", encode_address_header(cc)));
         }
 
         // Add BCC if not empty
         if !bcc.trim().is_empty() {
-            message.push_str(&format!("Bcc: {}\r\n", bcc));
+            message.push_str(&format!("Bcc: {}\r\n", encode_address_header(bcc)));
         }
 
-        message.push_str(&format!("Subject: {}\r\n", subject));
+        message.push_str(&format!("Subject: {}\r\n", encode_header_value(subject)));
         message.push_str("MIME-Version: 1.0\r\n");
 
         // Add threading headers if this is a reply
@@ -830,10 +830,12 @@ impl GmailClient {
     ) -> Result<(), String> {
         let url = format!("{}/users/me/messages/send", GMAIL_API_BASE);
 
-        // Build reply headers if message_id is present
-        let reply_headers = message_id.map(|id| (id, id));
+        let reply_headers = self.resolve_reply_headers(thread_id, message_id).await;
+        let reply_headers_ref = reply_headers
+            .as_ref()
+            .map(|(in_reply_to, references)| (in_reply_to.as_str(), references.as_str()));
 
-        let message = self.build_mime_message(to, cc, bcc, subject, body, attachments, reply_headers, is_html)?;
+        let message = self.build_mime_message(to, cc, bcc, subject, body, attachments, reply_headers_ref, is_html)?;
 
         // Base64url encode
         use base64::Engine;
@@ -860,6 +862,51 @@ impl GmailClient {
         }
 
         Ok(())
+    }
+
+    /// Resolve RFC 5322 threading headers (In-Reply-To, References) for a reply.
+    ///
+    /// `message_id` may be a real Message-ID header value or a Gmail API hex id;
+    /// for the latter (or when absent) the parent's headers are fetched from the
+    /// thread. Returns None when no usable Message-ID can be found - Gmail-side
+    /// threading still works via the threadId field.
+    async fn resolve_reply_headers(
+        &self,
+        thread_id: &str,
+        message_id: Option<&str>,
+    ) -> Option<(String, String)> {
+        if let Some(id) = message_id {
+            if id.contains('@') {
+                let bracketed = ensure_angle_brackets(id);
+                return Some((bracketed.clone(), bracketed));
+            }
+        }
+
+        let thread = self.get_thread(thread_id).await.ok()?;
+        // Prefer the message matching the provided Gmail hex id; fall back to
+        // the last message in the thread
+        let parent = message_id
+            .and_then(|id| thread.messages.iter().find(|m| m.id == id))
+            .or_else(|| thread.messages.last())?;
+        let headers = parent.payload.as_ref()?.headers.as_ref()?;
+
+        let parent_message_id = headers
+            .iter()
+            .find(|h| h.name.eq_ignore_ascii_case("Message-ID"))
+            .map(|h| ensure_angle_brackets(&h.value))?;
+        let parent_references = headers
+            .iter()
+            .find(|h| h.name.eq_ignore_ascii_case("References"))
+            .map(|h| h.value.trim().to_string())
+            .unwrap_or_default();
+
+        let references = if parent_references.is_empty() {
+            parent_message_id.clone()
+        } else {
+            format!("{} {}", parent_references, parent_message_id)
+        };
+
+        Some((parent_message_id, references))
     }
 
     /// List all labels for the authenticated user
@@ -1050,6 +1097,7 @@ impl GmailClient {
     /// Returns thread IDs that were modified or deleted
     pub async fn get_history_changes(&self, start_history_id: &str) -> Result<HistoryChanges, String> {
         let mut all_modified_thread_ids = std::collections::HashSet::new();
+        let mut deleted_candidate_thread_ids = std::collections::HashSet::new();
         let mut all_deleted_message_ids = std::collections::HashSet::new();
         #[allow(unused_assignments)]
         let mut new_history_id = start_history_id.to_string();
@@ -1103,12 +1151,13 @@ impl GmailClient {
                         }
                     }
 
-                    // Messages deleted
+                    // Messages deleted - the thread is only a deletion *candidate*:
+                    // it may still exist if it has other messages
                     if let Some(messages_deleted) = item.messages_deleted {
                         for msg in messages_deleted {
                             all_deleted_message_ids.insert(msg.message.id);
                             if let Some(thread_id) = msg.message.thread_id {
-                                all_modified_thread_ids.insert(thread_id);
+                                deleted_candidate_thread_ids.insert(thread_id);
                             }
                         }
                     }
@@ -1138,11 +1187,47 @@ impl GmailClient {
             }
         }
 
+        // A thread that also saw additions or label changes still exists - keep it
+        // in the modified set only
+        let deleted_thread_ids: Vec<String> = deleted_candidate_thread_ids
+            .difference(&all_modified_thread_ids)
+            .cloned()
+            .collect();
+
         Ok(HistoryChanges {
             modified_thread_ids: all_modified_thread_ids.into_iter().collect(),
+            deleted_thread_ids,
             deleted_message_ids: all_deleted_message_ids.into_iter().collect(),
             new_history_id,
         })
+    }
+
+    /// Check whether a thread still exists (false when the API returns 404)
+    pub async fn thread_exists(&self, thread_id: &str) -> Result<bool, String> {
+        let url = format!(
+            "{}/users/me/threads/{}?format=minimal&fields=id",
+            GMAIL_API_BASE, thread_id
+        );
+
+        let resp = self
+            .client
+            .get(&url)
+            .bearer_auth(&self.access_token)
+            .send()
+            .await
+            .map_err(|e| format!("Request failed: {}", e))?;
+
+        if resp.status().as_u16() == 404 {
+            return Ok(false);
+        }
+
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let body = resp.text().await.unwrap_or_default();
+            return Err(format!("API error {}: {}", status, body));
+        }
+
+        Ok(true)
     }
 }
 
@@ -1194,6 +1279,9 @@ struct HistoryMessage {
 #[derive(Debug, Serialize)]
 pub struct HistoryChanges {
     pub modified_thread_ids: Vec<String>,
+    /// Threads whose messages were deleted with no other activity; existence
+    /// must still be verified before treating them as gone
+    pub deleted_thread_ids: Vec<String>,
     pub deleted_message_ids: Vec<String>,
     pub new_history_id: String,
 }
@@ -1552,28 +1640,110 @@ fn decode_base64_body(data: &str) -> Option<String> {
 /// Strip HTML tags to create plain text fallback
 fn strip_html_tags(html: &str) -> String {
     let mut result = String::new();
+    let mut tag = String::new();
     let mut in_tag = false;
 
     for c in html.chars() {
         match c {
-            '<' => in_tag = true,
-            '>' => in_tag = false,
-            _ if !in_tag => result.push(c),
-            _ => {}
+            '<' => {
+                in_tag = true;
+                tag.clear();
+            }
+            '>' if in_tag => {
+                in_tag = false;
+                // Line-breaking tags become newlines instead of vanishing
+                let name = tag
+                    .trim_start_matches('/')
+                    .split_whitespace()
+                    .next()
+                    .unwrap_or("")
+                    .trim_end_matches('/')
+                    .to_ascii_lowercase();
+                if name == "br" || name == "p" {
+                    result.push('\n');
+                }
+            }
+            _ if in_tag => tag.push(c),
+            _ => result.push(c),
         }
     }
 
-    // Decode common HTML entities
+    // Decode common HTML entities; &amp; last so "&amp;lt;" decodes to "&lt;"
+    // rather than being double-decoded
     result
         .replace("&nbsp;", " ")
-        .replace("&amp;", "&")
         .replace("&lt;", "<")
         .replace("&gt;", ">")
         .replace("&quot;", "\"")
         .replace("&#39;", "'")
-        .replace("<br>", "\n")
-        .replace("<br/>", "\n")
-        .replace("<br />", "\n")
+        .replace("&amp;", "&")
+}
+
+/// Normalize an RFC Message-ID so it is wrapped in exactly one pair of angle brackets
+fn ensure_angle_brackets(id: &str) -> String {
+    let trimmed = id.trim().trim_start_matches('<').trim_end_matches('>');
+    format!("<{}>", trimmed)
+}
+
+/// RFC 2047 encode a header value when it contains non-ASCII characters
+fn encode_header_value(value: &str) -> String {
+    if value.is_ascii() {
+        return value.to_string();
+    }
+    use base64::Engine;
+    format!(
+        "=?UTF-8?B?{}?=",
+        base64::engine::general_purpose::STANDARD.encode(value.as_bytes())
+    )
+}
+
+/// RFC 2047 encode display names in an address list header, leaving emails untouched
+fn encode_address_header(addresses: &str) -> String {
+    split_address_list(addresses)
+        .iter()
+        .map(|addr| encode_single_address(addr))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+fn encode_single_address(addr: &str) -> String {
+    let Some(pos) = addr.find('<') else {
+        // Bare email address - nothing to encode
+        return addr.to_string();
+    };
+    let name = addr[..pos].trim().trim_matches('"').trim();
+    if name.is_empty() || name.is_ascii() {
+        return addr.to_string();
+    }
+    format!("{} {}", encode_header_value(name), &addr[pos..])
+}
+
+/// Split an address list on commas, respecting quoted display names
+fn split_address_list(input: &str) -> Vec<String> {
+    let mut parts = Vec::new();
+    let mut current = String::new();
+    let mut in_quotes = false;
+    for c in input.chars() {
+        match c {
+            '"' => {
+                in_quotes = !in_quotes;
+                current.push(c);
+            }
+            ',' if !in_quotes => {
+                let part = current.trim();
+                if !part.is_empty() {
+                    parts.push(part.to_string());
+                }
+                current.clear();
+            }
+            _ => current.push(c),
+        }
+    }
+    let last = current.trim();
+    if !last.is_empty() {
+        parts.push(last.to_string());
+    }
+    parts
 }
 
 // ============ Email Reactions ============
@@ -1757,7 +1927,10 @@ impl GmailClient {
         // Headers
         message.push_str(&format!("From: {}\r\n", from_email));
         message.push_str(&format!("To: {}\r\n", to_email));
-        message.push_str(&format!("Subject: Re: {}\r\n", emoji));
+        message.push_str(&format!(
+            "Subject: {}\r\n",
+            encode_header_value(&format!("Re: {}", emoji))
+        ));
         message.push_str("MIME-Version: 1.0\r\n");
         message.push_str(&format!("In-Reply-To: {}\r\n", reply_to_message_id));
         message.push_str(&format!("References: {}\r\n", reply_to_message_id));
@@ -1827,4 +2000,87 @@ pub fn is_mailing_list_message(headers: &[Header]) -> bool {
             || h.name.eq_ignore_ascii_case("List-Id")
             || h.name.eq_ignore_ascii_case("Precedence") && h.value.to_lowercase() == "list"
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn strip_html_converts_breaks_and_paragraphs_to_newlines() {
+        assert_eq!(strip_html_tags("line1<br>line2"), "line1\nline2");
+        assert_eq!(strip_html_tags("line1<br/>line2"), "line1\nline2");
+        assert_eq!(strip_html_tags("line1<br />line2"), "line1\nline2");
+        assert_eq!(strip_html_tags("line1<BR>line2"), "line1\nline2");
+        assert_eq!(strip_html_tags("<p>one</p><p>two</p>"), "\none\n\ntwo\n");
+    }
+
+    #[test]
+    fn strip_html_removes_other_tags() {
+        assert_eq!(strip_html_tags("<b>bold</b> and <i>italic</i>"), "bold and italic");
+        assert_eq!(strip_html_tags("<a href=\"http://x\">link</a>"), "link");
+    }
+
+    #[test]
+    fn strip_html_decodes_entities_without_double_decoding() {
+        assert_eq!(strip_html_tags("a &amp; b"), "a & b");
+        assert_eq!(strip_html_tags("&lt;tag&gt;"), "<tag>");
+        // "&amp;lt;" is the escaped text "&lt;" - it must NOT become "<"
+        assert_eq!(strip_html_tags("&amp;lt;"), "&lt;");
+        assert_eq!(strip_html_tags("&quot;hi&quot; &#39;there&#39;&nbsp;!"), "\"hi\" 'there' !");
+    }
+
+    #[test]
+    fn ensure_angle_brackets_normalizes() {
+        assert_eq!(ensure_angle_brackets("abc@example.com"), "<abc@example.com>");
+        assert_eq!(ensure_angle_brackets("<abc@example.com>"), "<abc@example.com>");
+        assert_eq!(ensure_angle_brackets("  <abc@example.com>  "), "<abc@example.com>");
+    }
+
+    #[test]
+    fn encode_header_value_leaves_ascii_unchanged() {
+        assert_eq!(encode_header_value("Hello world"), "Hello world");
+    }
+
+    #[test]
+    fn encode_header_value_encodes_non_ascii() {
+        let encoded = encode_header_value("Café ☕");
+        assert!(encoded.starts_with("=?UTF-8?B?"));
+        assert!(encoded.ends_with("?="));
+        use base64::Engine;
+        let b64 = &encoded["=?UTF-8?B?".len()..encoded.len() - 2];
+        let decoded = base64::engine::general_purpose::STANDARD.decode(b64).unwrap();
+        assert_eq!(String::from_utf8(decoded).unwrap(), "Café ☕");
+    }
+
+    #[test]
+    fn encode_address_header_encodes_only_display_names() {
+        assert_eq!(
+            encode_address_header("plain@example.com"),
+            "plain@example.com"
+        );
+        assert_eq!(
+            encode_address_header("John Doe <jd@example.com>"),
+            "John Doe <jd@example.com>"
+        );
+        let encoded = encode_address_header("José García <jg@example.com>");
+        assert!(encoded.starts_with("=?UTF-8?B?"));
+        assert!(encoded.ends_with(" <jg@example.com>"));
+    }
+
+    #[test]
+    fn encode_address_header_handles_lists_and_quoted_commas() {
+        assert_eq!(
+            encode_address_header("a@example.com, b@example.com"),
+            "a@example.com, b@example.com"
+        );
+        // Comma inside a quoted display name must not split the address
+        assert_eq!(
+            encode_address_header("\"Doe, John\" <jd@example.com>, x@example.com"),
+            "\"Doe, John\" <jd@example.com>, x@example.com"
+        );
+        let mixed = encode_address_header("Müller <m@example.com>, plain@example.com");
+        assert!(mixed.contains("=?UTF-8?B?"));
+        assert!(mixed.ends_with(", plain@example.com"));
+    }
 }
