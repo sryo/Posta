@@ -57,10 +57,11 @@ export function getResponseStatusLabel(status: string | null | undefined): strin
 /**
  * Decode HTML entities like &amp; &#39; etc.
  */
+let _decodeTextarea: HTMLTextAreaElement | null = null;
 export function decodeHtmlEntities(text: string): string {
-  const textarea = document.createElement('textarea');
-  textarea.innerHTML = text;
-  return textarea.value;
+  if (!_decodeTextarea) _decodeTextarea = document.createElement('textarea');
+  _decodeTextarea.innerHTML = text;
+  return _decodeTextarea.value;
 }
 
 /**
@@ -85,6 +86,38 @@ export function findContent(parts: any[] | undefined, mimeType: string): string 
     }
   }
   return null;
+}
+
+// Extract message body from Gmail payload, preferring HTML over plain text
+export function extractMessageBody(payload: any, snippet?: string): string {
+  if (payload?.body?.data) return decodeBase64Utf8(payload.body.data);
+  const htmlContent = findContent(payload?.parts, 'text/html');
+  if (htmlContent) return htmlContent;
+  const textContent = findContent(payload?.parts, 'text/plain');
+  if (textContent) return textContent;
+  return snippet || '(No content)';
+}
+
+// Strip HTML to plain text
+export function stripHtml(html: string): string {
+  const temp = document.createElement('div');
+  temp.innerHTML = html;
+  return temp.textContent || temp.innerText || '';
+}
+
+// Build quoted reply body
+export function buildQuotedBody(date: string, from: string, plainBody: string): string {
+  return `\n\nOn ${date}, ${from} wrote:\n> ${plainBody.split('\n').join('\n> ')}`;
+}
+
+// Add Re: prefix if not already present
+export function addReplyPrefix(subject: string): string {
+  return subject.startsWith('Re:') ? subject : `Re: ${subject}`;
+}
+
+// Add Fwd: prefix if not already present
+export function addForwardPrefix(subject: string): string {
+  return subject.startsWith('Fwd:') ? subject : `Fwd: ${subject}`;
 }
 
 /**
@@ -164,7 +197,7 @@ export function getInitial(email: string): string {
  * Convert base64 to Blob
  */
 export function base64ToBlob(base64: string, mimeType: string): Blob {
-  return new Blob([base64ToBytes(base64)], { type: mimeType });
+  return new Blob([base64ToBytes(base64).buffer as ArrayBuffer], { type: mimeType });
 }
 
 /**

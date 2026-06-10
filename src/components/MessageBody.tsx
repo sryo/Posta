@@ -1,6 +1,7 @@
 // MessageBody component - handles reactive CID image replacement
 import { createMemo } from "solid-js";
 import DOMPurify from 'dompurify';
+import { normalizeBase64Url } from "../utils";
 
 // Configure DOMPurify with safe defaults for email HTML
 const DOMPURIFY_CONFIG = {
@@ -33,7 +34,7 @@ export const MessageBody = (props: MessageBodyProps) => {
     if (props.cidAttachmentData) {
       for (const [cid, data] of Object.entries(props.cidAttachmentData)) {
         if (data) {
-          const base64Data = data.replace(/-/g, '+').replace(/_/g, '/');
+          const base64Data = normalizeBase64Url(data);
           // Find the mimeType for this CID from message parts
           let mimeType = 'image/png';
           const findMimeType = (parts: any[]) => {
@@ -76,7 +77,7 @@ export const MessageBody = (props: MessageBodyProps) => {
             }
 
             if (data) {
-              const base64Data = data.replace(/-/g, '+').replace(/_/g, '/');
+              const base64Data = normalizeBase64Url(data);
               cidMap.set(cid, `data:${part.mimeType};base64,${base64Data}`);
             }
           }
@@ -90,7 +91,7 @@ export const MessageBody = (props: MessageBodyProps) => {
     props.threadAttachments?.forEach(att => {
       if (att.message_id === props.msgId && att.content_id && att.inline_data && att.mime_type.startsWith('image/')) {
         if (!cidMap.has(att.content_id)) {
-          const base64Data = att.inline_data.replace(/-/g, '+').replace(/_/g, '/');
+          const base64Data = normalizeBase64Url(att.inline_data);
           cidMap.set(att.content_id, `data:${att.mime_type};base64,${base64Data}`);
         }
       }

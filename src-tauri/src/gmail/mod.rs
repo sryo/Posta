@@ -1209,6 +1209,19 @@ fn extract_email_address(from: &str) -> String {
     from.trim().to_string()
 }
 
+/// Extract a property value from an ICS block by name
+fn get_ics_property(block: &str, name: &str) -> Option<String> {
+    for line in block.lines() {
+        let line = line.trim();
+        if line.starts_with(name) {
+            if let Some(colon_pos) = line.find(':') {
+                return Some(line[colon_pos + 1..].to_string());
+            }
+        }
+    }
+    None
+}
+
 /// Parse ICS calendar data and extract the first event
 /// Uses simple text parsing since the icalendar crate has a complex API
 fn parse_ics_content(ics_data: &str) -> Option<CalendarEvent> {
@@ -1217,58 +1230,31 @@ fn parse_ics_content(ics_data: &str) -> Option<CalendarEvent> {
         return None;
     }
 
-    // Helper to extract a property value
-    let get_property = |name: &str| -> Option<String> {
-        for line in ics_data.lines() {
-            let line = line.trim();
-            // Handle properties with parameters like "DTSTART;TZID=..."
-            if line.starts_with(name) {
-                if let Some(colon_pos) = line.find(':') {
-                    return Some(line[colon_pos + 1..].to_string());
-                }
-            }
-        }
-        None
-    };
-
     // Get METHOD from calendar level
-    let method = get_property("METHOD");
+    let method = get_ics_property(ics_data, "METHOD");
 
     // Extract VEVENT block
     let event_start = ics_data.find("BEGIN:VEVENT")?;
     let event_end = ics_data.find("END:VEVENT")?;
     let event_block = &ics_data[event_start..event_end];
 
-    // Helper to get property from event block
-    let get_event_property = |name: &str| -> Option<String> {
-        for line in event_block.lines() {
-            let line = line.trim();
-            if line.starts_with(name) {
-                if let Some(colon_pos) = line.find(':') {
-                    return Some(line[colon_pos + 1..].to_string());
-                }
-            }
-        }
-        None
-    };
-
-    let title = get_event_property("SUMMARY").unwrap_or_else(|| "(No title)".to_string());
-    let uid = get_event_property("UID");
-    let location = get_event_property("LOCATION");
-    let description = get_event_property("DESCRIPTION");
-    let status = get_event_property("STATUS");
+    let title = get_ics_property(event_block, "SUMMARY").unwrap_or_else(|| "(No title)".to_string());
+    let uid = get_ics_property(event_block, "UID");
+    let location = get_ics_property(event_block, "LOCATION");
+    let description = get_ics_property(event_block, "DESCRIPTION");
+    let status = get_ics_property(event_block, "STATUS");
 
     // Parse DTSTART
-    let dtstart = get_event_property("DTSTART")?;
+    let dtstart = get_ics_property(event_block, "DTSTART")?;
     let (start_time, all_day) = parse_ics_datetime(&dtstart)?;
 
     // Parse DTEND (optional)
-    let end_time = get_event_property("DTEND")
+    let end_time = get_ics_property(event_block, "DTEND")
         .and_then(|s| parse_ics_datetime(&s))
         .map(|(ts, _)| ts);
 
     // Parse ORGANIZER (remove mailto: prefix)
-    let organizer = get_event_property("ORGANIZER").map(|s| {
+    let organizer = get_ics_property(event_block, "ORGANIZER").map(|s| {
         s.strip_prefix("mailto:").unwrap_or(&s).to_string()
     });
 
@@ -1458,170 +1444,6 @@ fn group_threads_by_date(threads: Vec<Thread>) -> Vec<ThreadGroup> {
             })
         })
         .collect()
-}
-
-/// Get the user's RSVP status for a calendar event from Calendar API
-/// Returns the response status: "accepted", "tentative", "declined", "needsAction", or None
-pub async fn get_calendar_event_status(
-    client: &GmailClient,
-    user_email: &str,
-    event_uid: &str,
-) -> Option<String> {
-    let search_url = format!(
-        "https://www.googleapis.com/calendar/v3/calendars/primary/events?iCalUID={}",
-        urlencoding::encode(event_uid)
-    );
-
-    let response = client
-        .client
-        .get(&search_url)
-        .bearer_auth(&client.access_token)
-        .send()
-        .await
-        .ok()?;
-
-    if !response.status().is_success() {
-        return None;
-    }
-
-    #[derive(Deserialize)]
-    struct EventsResponse {
-        items: Option<Vec<CalendarEventItem>>,
-    }
-
-    #[derive(Deserialize)]
-    struct CalendarEventItem {
-        attendees: Option<Vec<Attendee>>,
-    }
-
-    #[derive(Deserialize)]
-    struct Attendee {
-        email: String,
-        #[serde(rename = "responseStatus")]
-        response_status: Option<String>,
-    }
-
-    let events_response: EventsResponse = response.json().await.ok()?;
-    let items = events_response.items?;
-    let event = items.first()?;
-    let attendees = event.attendees.as_ref()?;
-
-    // Find the current user's response status
-    for attendee in attendees {
-        if attendee.email.to_lowercase() == user_email.to_lowercase() {
-            return attendee.response_status.clone();
-        }
-    }
-
-    None
-}
-
-/// Send RSVP response to a calendar event via Google Calendar API
-/// status should be "accepted", "tentative", or "declined"
-pub async fn rsvp_calendar_event(
-    client: &GmailClient,
-    user_email: &str,
-    event_uid: &str,
-    status: &str,
-) -> Result<(), String> {
-    // First, find the event by iCalUID
-    let search_url = format!(
-        "https://www.googleapis.com/calendar/v3/calendars/primary/events?iCalUID={}",
-        urlencoding::encode(event_uid)
-    );
-
-    let response = client
-        .client
-        .get(&search_url)
-        .bearer_auth(&client.access_token)
-        .send()
-        .await
-        .map_err(|e| e.to_string())?;
-
-    if !response.status().is_success() {
-        let error_text = response.text().await.unwrap_or_default();
-        return Err(format!("Failed to find calendar event: {}", error_text));
-    }
-
-    #[derive(Deserialize)]
-    struct EventsResponse {
-        items: Option<Vec<CalendarEventItem>>,
-    }
-
-    #[derive(Deserialize)]
-    struct CalendarEventItem {
-        id: String,
-        attendees: Option<Vec<Attendee>>,
-    }
-
-    #[derive(Deserialize, Serialize, Clone)]
-    struct Attendee {
-        email: String,
-        #[serde(rename = "responseStatus", skip_serializing_if = "Option::is_none")]
-        response_status: Option<String>,
-        #[serde(rename = "self", skip_serializing_if = "Option::is_none")]
-        is_self: Option<bool>,
-    }
-
-    let events_response: EventsResponse = response.json().await.map_err(|e| e.to_string())?;
-    let items = events_response.items.unwrap_or_default();
-
-    if items.is_empty() {
-        return Err("Calendar event not found".to_string());
-    }
-
-    let event = &items[0];
-    let event_id = &event.id;
-
-    // Update attendee status
-    let mut attendees: Vec<Attendee> = event.attendees.clone().unwrap_or_default();
-    let mut found_self = false;
-
-    for attendee in attendees.iter_mut() {
-        if attendee.email.to_lowercase() == user_email.to_lowercase() {
-            attendee.response_status = Some(status.to_string());
-            found_self = true;
-            break;
-        }
-    }
-
-    if !found_self {
-        // Add ourselves as an attendee
-        attendees.push(Attendee {
-            email: user_email.to_string(),
-            response_status: Some(status.to_string()),
-            is_self: Some(true),
-        });
-    }
-
-    // Patch the event with updated attendees
-    let patch_url = format!(
-        "https://www.googleapis.com/calendar/v3/calendars/primary/events/{}?sendUpdates=all",
-        event_id
-    );
-
-    #[derive(Serialize)]
-    struct PatchRequest {
-        attendees: Vec<Attendee>,
-    }
-
-    let patch_body = PatchRequest { attendees };
-
-    let patch_response = client
-        .client
-        .patch(&patch_url)
-        .bearer_auth(&client.access_token)
-        .json(&patch_body)
-        .send()
-        .await
-        .map_err(|e| e.to_string())?;
-
-    if !patch_response.status().is_success() {
-        let error_text = patch_response.text().await.unwrap_or_default();
-        return Err(format!("Failed to update RSVP: {}", error_text));
-    }
-
-    Ok(())
 }
 
 /// Extract plain text body from a FullMessage

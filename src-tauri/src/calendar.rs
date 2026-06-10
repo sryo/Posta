@@ -171,9 +171,86 @@ struct AttendeeInput {
     email: String,
 }
 
+#[derive(Deserialize)]
+struct CalEventSearchResponse {
+    items: Option<Vec<CalEventSearchItem>>,
+}
+
+#[derive(Deserialize)]
+struct CalEventSearchItem {
+    #[serde(default)]
+    id: String,
+    attendees: Option<Vec<CalEventAttendee>>,
+}
+
+#[derive(Deserialize, Serialize, Clone)]
+struct CalEventAttendee {
+    email: String,
+    #[serde(rename = "responseStatus", skip_serializing_if = "Option::is_none")]
+    response_status: Option<String>,
+    #[serde(rename = "self", skip_serializing_if = "Option::is_none")]
+    is_self: Option<bool>,
+}
+
 pub struct CalendarClient {
     http_client: reqwest::Client,
     access_token: String,
+}
+
+/// Build a CreateEventRequest from raw parameters (shared by create and update)
+fn build_event_request(
+    summary: String,
+    description: Option<String>,
+    start_time: i64,
+    end_time: i64,
+    all_day: bool,
+    location: Option<String>,
+    attendees: Option<Vec<String>>,
+    recurrence: Option<Vec<String>>,
+) -> Result<CreateEventRequest, String> {
+    let start_dt = DateTime::<Utc>::from_timestamp(start_time / 1000, (start_time % 1000 * 1_000_000) as u32)
+        .ok_or("Invalid start time")?;
+    let end_dt = DateTime::<Utc>::from_timestamp(end_time / 1000, (end_time % 1000 * 1_000_000) as u32)
+        .ok_or("Invalid end time")?;
+
+    let (start, end) = if all_day {
+        (
+            EventDateTimeInput {
+                date: Some(start_dt.format("%Y-%m-%d").to_string()),
+                date_time: None,
+            },
+            EventDateTimeInput {
+                date: Some(end_dt.format("%Y-%m-%d").to_string()),
+                date_time: None,
+            },
+        )
+    } else {
+        (
+            EventDateTimeInput {
+                date_time: Some(start_dt.to_rfc3339()),
+                date: None,
+            },
+            EventDateTimeInput {
+                date_time: Some(end_dt.to_rfc3339()),
+                date: None,
+            },
+        )
+    };
+
+    Ok(CreateEventRequest {
+        summary,
+        description,
+        location,
+        start,
+        end,
+        attendees: attendees.map(|emails| {
+            emails
+                .into_iter()
+                .map(|email| AttendeeInput { email })
+                .collect()
+        }),
+        recurrence,
+    })
 }
 
 impl CalendarClient {
@@ -288,7 +365,7 @@ impl CalendarClient {
         // Determine time range from query using calendar timezone
         let (time_min, time_max) = query.get_time_range(timezone);
 
-        for cal in calendars {
+        let fetch_futures: Vec<_> = calendars.iter().map(|cal| {
             let mut url = format!(
                 "{}/calendars/{}/events?timeMin={}&timeMax={}&maxResults={}&singleEvents=true&orderBy=startTime",
                 CALENDAR_API_BASE,
@@ -298,36 +375,40 @@ impl CalendarClient {
                 max_results
             );
 
-            // Add text search if provided
             if let Some(q) = &query.text {
                 url.push_str(&format!("&q={}", urlencoding::encode(q)));
             }
 
-            let resp = self
-                .http_client
-                .get(&url)
-                .bearer_auth(&self.access_token)
-                .send()
-                .await
-                .map_err(|e| format!("Calendar search failed: {}", e))?;
+            async move {
+                let resp = self
+                    .http_client
+                    .get(&url)
+                    .bearer_auth(&self.access_token)
+                    .send()
+                    .await
+                    .ok()?;
 
-            if !resp.status().is_success() {
-                continue; // Skip calendars with errors
+                if !resp.status().is_success() {
+                    return None;
+                }
+
+                let data: EventsListResponse = resp.json().await.ok()?;
+                Some((data, cal))
             }
+        }).collect();
 
-            let data: EventsListResponse = match resp.json().await {
-                Ok(d) => d,
-                Err(_) => continue,
-            };
+        let results = futures::future::join_all(fetch_futures).await;
 
-            let events: Vec<CalendarEvent> = data
-                .items
-                .unwrap_or_default()
-                .into_iter()
-                .filter_map(|e| self.api_event_to_calendar_event(e, &cal.id, &cal.name, &cal.access_role))
-                .collect();
-
-            all_events.extend(events);
+        for result in results {
+            if let Some((data, cal)) = result {
+                let events: Vec<CalendarEvent> = data
+                    .items
+                    .unwrap_or_default()
+                    .into_iter()
+                    .filter_map(|e| self.api_event_to_calendar_event(e, &cal.id, &cal.name, &cal.access_role))
+                    .collect();
+                all_events.extend(events);
+            }
         }
 
         // Apply additional filters
@@ -365,47 +446,9 @@ impl CalendarClient {
             urlencoding::encode(calendar_id)
         );
 
-        let start_dt = DateTime::<Utc>::from_timestamp(start_time / 1000, (start_time % 1000 * 1_000_000) as u32).ok_or("Invalid start time")?;
-        let end_dt = DateTime::<Utc>::from_timestamp(end_time / 1000, (end_time % 1000 * 1_000_000) as u32).ok_or("Invalid end time")?;
-
-        let (start, end) = if all_day {
-            (
-                EventDateTimeInput {
-                    date: Some(start_dt.format("%Y-%m-%d").to_string()),
-                    date_time: None,
-                },
-                EventDateTimeInput {
-                    date: Some(end_dt.format("%Y-%m-%d").to_string()),
-                    date_time: None,
-                },
-            )
-        } else {
-            (
-                EventDateTimeInput {
-                    date_time: Some(start_dt.to_rfc3339()),
-                    date: None,
-                },
-                EventDateTimeInput {
-                    date_time: Some(end_dt.to_rfc3339()),
-                    date: None,
-                },
-            )
-        };
-
-        let body = CreateEventRequest {
-            summary,
-            description,
-            location,
-            start,
-            end,
-            attendees: attendees.map(|emails| {
-                emails
-                    .into_iter()
-                    .map(|email| AttendeeInput { email })
-                    .collect()
-            }),
-            recurrence,
-        };
+        let body = build_event_request(
+            summary, description, start_time, end_time, all_day, location, attendees, recurrence,
+        )?;
 
         let resp = self
             .http_client
@@ -521,47 +564,9 @@ impl CalendarClient {
             urlencoding::encode(event_id)
         );
 
-        let start_dt = DateTime::<Utc>::from_timestamp(start_time / 1000, (start_time % 1000 * 1_000_000) as u32).ok_or("Invalid start time")?;
-        let end_dt = DateTime::<Utc>::from_timestamp(end_time / 1000, (end_time % 1000 * 1_000_000) as u32).ok_or("Invalid end time")?;
-
-        let (start, end) = if all_day {
-            (
-                EventDateTimeInput {
-                    date: Some(start_dt.format("%Y-%m-%d").to_string()),
-                    date_time: None,
-                },
-                EventDateTimeInput {
-                    date: Some(end_dt.format("%Y-%m-%d").to_string()),
-                    date_time: None,
-                },
-            )
-        } else {
-            (
-                EventDateTimeInput {
-                    date_time: Some(start_dt.to_rfc3339()),
-                    date: None,
-                },
-                EventDateTimeInput {
-                    date_time: Some(end_dt.to_rfc3339()),
-                    date: None,
-                },
-            )
-        };
-
-        let body = CreateEventRequest {
-            summary,
-            description,
-            location,
-            start,
-            end,
-            attendees: attendees.map(|emails| {
-                emails
-                    .into_iter()
-                    .map(|email| AttendeeInput { email })
-                    .collect()
-            }),
-            recurrence,
-        };
+        let body = build_event_request(
+            summary, description, start_time, end_time, all_day, location, attendees, recurrence,
+        )?;
 
         let resp = self
             .http_client
@@ -632,7 +637,7 @@ impl CalendarClient {
         let guests_can_modify = event.guests_can_modify.unwrap_or(false);
         let can_edit = has_calendar_write_access && !is_locked && (is_self_organizer || is_self_creator || (guests_can_modify && is_attendee));
 
-        tracing::info!(
+        tracing::debug!(
             "Event '{}': calendar_access={}, is_self_organizer={}, is_self_creator={}, guests_can_modify={}, is_attendee={}, is_locked={}, can_edit={}",
             event.summary.as_deref().unwrap_or("(no title)"),
             calendar_access_role,
@@ -662,6 +667,132 @@ impl CalendarClient {
             response_status,
             can_edit,
         })
+    }
+
+    /// Get the user's RSVP status for a calendar event from Calendar API
+    /// Returns the response status: "accepted", "tentative", "declined", "needsAction", or None
+    pub async fn get_calendar_event_status(
+        &self,
+        user_email: &str,
+        event_uid: &str,
+    ) -> Option<String> {
+        let search_url = format!(
+            "https://www.googleapis.com/calendar/v3/calendars/primary/events?iCalUID={}",
+            urlencoding::encode(event_uid)
+        );
+
+        let response = self
+            .http_client
+            .get(&search_url)
+            .bearer_auth(&self.access_token)
+            .send()
+            .await
+            .ok()?;
+
+        if !response.status().is_success() {
+            return None;
+        }
+
+        let events_response: CalEventSearchResponse = response.json().await.ok()?;
+        let items = events_response.items?;
+        let event = items.first()?;
+        let attendees = event.attendees.as_ref()?;
+
+        for attendee in attendees {
+            if attendee.email.to_lowercase() == user_email.to_lowercase() {
+                return attendee.response_status.clone();
+            }
+        }
+
+        None
+    }
+
+    /// Send RSVP response to a calendar event via Google Calendar API
+    /// status should be "accepted", "tentative", or "declined"
+    pub async fn rsvp_calendar_event(
+        &self,
+        user_email: &str,
+        event_uid: &str,
+        status: &str,
+    ) -> Result<(), String> {
+        // First, find the event by iCalUID
+        let search_url = format!(
+            "https://www.googleapis.com/calendar/v3/calendars/primary/events?iCalUID={}",
+            urlencoding::encode(event_uid)
+        );
+
+        let response = self
+            .http_client
+            .get(&search_url)
+            .bearer_auth(&self.access_token)
+            .send()
+            .await
+            .map_err(|e| e.to_string())?;
+
+        if !response.status().is_success() {
+            let error_text = response.text().await.unwrap_or_default();
+            return Err(format!("Failed to find calendar event: {}", error_text));
+        }
+
+        let events_response: CalEventSearchResponse = response.json().await.map_err(|e| e.to_string())?;
+        let items = events_response.items.unwrap_or_default();
+
+        if items.is_empty() {
+            return Err("Calendar event not found".to_string());
+        }
+
+        let event = &items[0];
+        let event_id = &event.id;
+
+        // Update attendee status
+        let mut attendees: Vec<CalEventAttendee> = event.attendees.clone().unwrap_or_default();
+        let mut found_self = false;
+
+        for attendee in attendees.iter_mut() {
+            if attendee.email.to_lowercase() == user_email.to_lowercase() {
+                attendee.response_status = Some(status.to_string());
+                found_self = true;
+                break;
+            }
+        }
+
+        if !found_self {
+            // Add ourselves as an attendee
+            attendees.push(CalEventAttendee {
+                email: user_email.to_string(),
+                response_status: Some(status.to_string()),
+                is_self: Some(true),
+            });
+        }
+
+        // Patch the event with updated attendees
+        let patch_url = format!(
+            "https://www.googleapis.com/calendar/v3/calendars/primary/events/{}?sendUpdates=all",
+            event_id
+        );
+
+        #[derive(Serialize)]
+        struct PatchRequest {
+            attendees: Vec<CalEventAttendee>,
+        }
+
+        let patch_body = PatchRequest { attendees };
+
+        let patch_response = self
+            .http_client
+            .patch(&patch_url)
+            .bearer_auth(&self.access_token)
+            .json(&patch_body)
+            .send()
+            .await
+            .map_err(|e| e.to_string())?;
+
+        if !patch_response.status().is_success() {
+            let error_text = patch_response.text().await.unwrap_or_default();
+            return Err(format!("Failed to update RSVP: {}", error_text));
+        }
+
+        Ok(())
     }
 
     fn parse_event_datetime(&self, dt: &Option<EventDateTime>) -> Option<(i64, bool)> {
