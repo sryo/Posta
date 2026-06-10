@@ -850,10 +850,11 @@ function App() {
     try {
       const result = await syncThreadsIncremental(account.id);
 
-      // Update sync times for all non-collapsed cards (sync was successful)
+      // Update sync times for non-collapsed email cards; calendar cards are
+      // not touched by Gmail history sync and must not be stamped as synced
       const now = Date.now();
       const nonCollapsedCardIds = cards()
-        .filter(c => !c.collapsed && c.account_id === account.id)
+        .filter(c => !c.collapsed && c.account_id === account.id && c.card_type !== "calendar")
         .map(c => c.id);
       if (nonCollapsedCardIds.length > 0) {
         setLastSyncTimes(produce(s => {
@@ -1235,6 +1236,19 @@ function App() {
       return;
     }
 
+    // z to undo last action (when toast is visible) — works even with overlays open
+    if (e.key === 'z' && toast()?.visible && lastAction()) {
+      e.preventDefault();
+      undoLastAction();
+      return;
+    }
+
+    // ThreadView/EventView own the keyboard while open; without this, keys
+    // like a/s/d also hit the focused thread *behind* the overlay
+    if (activeThreadId() || activeEvent()) {
+      return;
+    }
+
     // / to open filter
     if (e.key === '/') {
       e.preventDefault();
@@ -1258,13 +1272,6 @@ function App() {
       return;
     }
 
-    // z to undo last action (when toast is visible)
-    if (e.key === 'z' && toast()?.visible && lastAction()) {
-      e.preventDefault();
-      undoLastAction();
-      return;
-    }
-
     if (e.key === 'Escape') {
       // Priority: filter > dropdowns > color pickers > batch reply > compose > card editing > sidebar > action menu > focus
       if (showGlobalFilter()) {
@@ -1280,8 +1287,6 @@ function App() {
         closeBatchReply();
       } else if (composing()) {
         closeCompose();
-      } else if (activeEvent()) {
-        closeEvent();
       } else if (creatingEvent()) {
         closeEventForm();
       } else if (editingCardId()) {
@@ -4925,7 +4930,6 @@ function App() {
       {/* Create Event Panel */}
       <Show when={creatingEvent()}>
         <CreateEventForm
-          show={true}
           closing={eventForm().closing}
           onClose={closeEventForm}
           summary={eventForm().summary}

@@ -1,9 +1,8 @@
-import { createSignal, createEffect, Show, For } from "solid-js";
+import { createSignal, onMount, Show, For } from "solid-js";
 import { ChevronLeftIcon, ChevronRightIcon } from "./Icons";
 import { CloseButton } from "./ComposeAtoms";
 
 export const CreateEventForm = (props: {
-  show: boolean;
   closing?: boolean;
   onClose: () => void;
   summary: string;
@@ -32,10 +31,9 @@ export const CreateEventForm = (props: {
   inline?: boolean;
   isEditing?: boolean;
 }) => {
-  if (!props.show) return null;
-
-  // Helpers for custom scheduler UI
-  const [viewDate, setViewDate] = createSignal(new Date(props.startDate)); // For navigating months
+  // Snapshot is safe: both call sites mount this inside a <Show>, so a fresh
+  // instance is created each time the form opens
+  const [viewDate, setViewDate] = createSignal(new Date(props.startDate));
 
   const getDaysInWindow = () => {
     const days = [];
@@ -66,28 +64,26 @@ export const CreateEventForm = (props: {
 
 
   // Auto-scroll to selected times when form opens
-  createEffect(() => {
-    if (props.show) {
-      // Wait for DOM to be ready
-      setTimeout(() => {
-        const startContainer = document.querySelector('.time-picker-start') as HTMLDivElement;
-        const endContainer = document.querySelector('.time-picker-end') as HTMLDivElement;
+  onMount(() => {
+    // Wait for DOM to be ready
+    setTimeout(() => {
+      const startContainer = document.querySelector('.time-picker-start') as HTMLDivElement;
+      const endContainer = document.querySelector('.time-picker-end') as HTMLDivElement;
 
-        if (startContainer) {
-          const selectedEl = startContainer.querySelector('[data-selected="true"]') as HTMLElement;
-          if (selectedEl) {
-            selectedEl.scrollIntoView({ block: 'center' });
-          }
+      if (startContainer) {
+        const selectedEl = startContainer.querySelector('[data-selected="true"]') as HTMLElement;
+        if (selectedEl) {
+          selectedEl.scrollIntoView({ block: 'center' });
         }
+      }
 
-        if (endContainer) {
-          const selectedEl = endContainer.querySelector('[data-selected="true"]') as HTMLElement;
-          if (selectedEl) {
-            selectedEl.scrollIntoView({ block: 'center' });
-          }
+      if (endContainer) {
+        const selectedEl = endContainer.querySelector('[data-selected="true"]') as HTMLElement;
+        if (selectedEl) {
+          selectedEl.scrollIntoView({ block: 'center' });
         }
-      }, 150);
-    }
+      }
+    }, 150);
   });
 
   // Validate end time isn't before start time

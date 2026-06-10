@@ -145,13 +145,14 @@ export const ThreadView = (props: {
   };
 
   const handleKeyDown = (e: KeyboardEvent) => {
+    const isTyping = document.activeElement?.tagName === 'INPUT' || document.activeElement?.tagName === 'TEXTAREA';
+
     if (e.key === 'Escape') {
+      if (isTyping) return; // input-level handlers (e.g. ComposeForm) own Escape
+      if (props.inlineCompose) { props.inlineCompose.onClose(); return; }
       handleClose();
       return;
     }
-
-    // Toolbar action shortcuts (only when not in input)
-    const isTyping = document.activeElement?.tagName === 'INPUT' || document.activeElement?.tagName === 'TEXTAREA';
     if (!isTyping && props.thread) {
       if (e.key === 'a') { e.preventDefault(); props.onAction(props.isInInbox ? 'archive' : 'inbox'); return; }
       if (e.key === 's') { e.preventDefault(); props.onAction(props.isStarred ? 'unstar' : 'star'); return; }
@@ -160,7 +161,7 @@ export const ThreadView = (props: {
     }
 
     // j/k for message navigation
-    if (props.thread && (e.key === 'j' || e.key === 'k')) {
+    if (!isTyping && props.thread && (e.key === 'j' || e.key === 'k')) {
       e.preventDefault();
       const maxIndex = props.thread.messages.length - 1;
       let newIndex = props.focusedMessageIndex;

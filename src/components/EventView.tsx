@@ -1,4 +1,4 @@
-import { createSignal, Show, For } from "solid-js";
+import { createSignal, onMount, onCleanup, Show, For } from "solid-js";
 import DOMPurify from 'dompurify';
 import { DOMPURIFY_CONFIG } from './MessageBody';
 import { openUrl } from '@tauri-apps/plugin-opener';
@@ -47,6 +47,33 @@ export const EventView = (props: {
     setClosing(true);
     setTimeout(() => props.onClose(), 200);
   };
+
+  // Toolbar shortcuts advertised by the shortcut-hint badges (R/J/O/C/E/#)
+  const handleKeyDown = (e: KeyboardEvent) => {
+    const isTyping = document.activeElement?.tagName === 'INPUT' || document.activeElement?.tagName === 'TEXTAREA';
+
+    if (e.key === 'Escape') {
+      if (isTyping) return; // input-level handlers (e.g. ComposeForm) own Escape
+      if (props.inlineEdit) { props.inlineEdit.onClose(); return; }
+      if (props.inlineCompose) { props.inlineCompose.onClose(); return; }
+      if (props.calendarDrawerOpen) { props.onCloseCalendarDrawer(); return; }
+      handleClose();
+      return;
+    }
+
+    if (isTyping || !props.event || props.inlineCompose || props.inlineEdit) return;
+    const event = props.event;
+
+    if (e.key === 'r' && event.organizer) { e.preventDefault(); props.onReplyOrganizer(); return; }
+    if (e.key === 'j' && event.hangout_link) { e.preventDefault(); openUrl(event.hangout_link); return; }
+    if (e.key === 'o' && event.html_link) { e.preventDefault(); openUrl(event.html_link); return; }
+    if (e.key === 'c') { e.preventDefault(); props.onOpenCalendars(); return; }
+    if (e.key === 'e' && event.can_edit) { e.preventDefault(); props.onEdit(); return; }
+    if ((e.key === 'd' || e.key === '#') && event.can_edit) { e.preventDefault(); props.onDelete(); return; }
+  };
+
+  onMount(() => document.addEventListener('keydown', handleKeyDown));
+  onCleanup(() => document.removeEventListener('keydown', handleKeyDown));
 
   return (
     <div class={`thread-overlay ${closing() ? 'closing' : ''}`} style={props.focusColor ? { '--message-focused-color': props.focusColor } as any : undefined}>
@@ -302,7 +329,6 @@ export const EventView = (props: {
                 />
                 <div class="inline-compose">
                   <CreateEventForm
-                    show={true}
                     inline={true}
                     isEditing={true}
                     onClose={props.inlineEdit!.onClose}
