@@ -214,13 +214,15 @@ fn build_event_request(
         .ok_or("Invalid end time")?;
 
     let (start, end) = if all_day {
+        // The form's end date is inclusive; Google's all-day end date is exclusive
+        let exclusive_end = end_dt + Duration::days(1);
         (
             EventDateTimeInput {
                 date: Some(start_dt.format("%Y-%m-%d").to_string()),
                 date_time: None,
             },
             EventDateTimeInput {
-                date: Some(end_dt.format("%Y-%m-%d").to_string()),
+                date: Some(exclusive_end.format("%Y-%m-%d").to_string()),
                 date_time: None,
             },
         )
@@ -249,7 +251,24 @@ fn build_event_request(
                 .map(|email| AttendeeInput { email })
                 .collect()
         }),
-        recurrence,
+        // Google requires RFC 5545 property names ("RRULE:FREQ=DAILY"); the
+        // form emits bare rule strings ("FREQ=DAILY")
+        recurrence: recurrence.map(|rules| {
+            rules
+                .into_iter()
+                .map(|rule| {
+                    if rule.starts_with("RRULE:")
+                        || rule.starts_with("RDATE")
+                        || rule.starts_with("EXRULE")
+                        || rule.starts_with("EXDATE")
+                    {
+                        rule
+                    } else {
+                        format!("RRULE:{}", rule)
+                    }
+                })
+                .collect()
+        }),
     })
 }
 

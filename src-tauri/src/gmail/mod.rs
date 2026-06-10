@@ -1,7 +1,7 @@
 // Gmail REST API client
 
 use crate::models::{Attachment, CalendarEvent, DateBucket, SendAttachment, Thread, ThreadGroup};
-use chrono::{DateTime, Datelike, Duration, Local, Utc};
+use chrono::{DateTime, Datelike, Duration, Local, TimeZone, Utc};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
@@ -1209,13 +1209,30 @@ fn extract_email_address(from: &str) -> String {
     from.trim().to_string()
 }
 
+/// Check that `line` is property `name`, i.e. the name is followed by ':' or ';'
+/// (a bare prefix match would let DTSTART match DTSTAMP and vice versa)
+fn ics_property_matches(line: &str, name: &str) -> bool {
+    line.starts_with(name)
+        && matches!(line.as_bytes().get(name.len()), Some(b':') | Some(b';'))
+}
+
 /// Extract a property value from an ICS block by name
 fn get_ics_property(block: &str, name: &str) -> Option<String> {
+    get_ics_property_with_params(block, name).map(|(_, value)| value)
+}
+
+/// Extract a property's parameters and value from an ICS block by name.
+/// For "DTSTART;TZID=America/New_York:20240115T100000" returns
+/// ("TZID=America/New_York", "20240115T100000"); params are empty when absent.
+fn get_ics_property_with_params(block: &str, name: &str) -> Option<(String, String)> {
     for line in block.lines() {
         let line = line.trim();
-        if line.starts_with(name) {
+        if ics_property_matches(line, name) {
             if let Some(colon_pos) = line.find(':') {
-                return Some(line[colon_pos + 1..].to_string());
+                let params = line[name.len()..colon_pos]
+                    .trim_start_matches(';')
+                    .to_string();
+                return Some((params, line[colon_pos + 1..].to_string()));
             }
         }
     }
@@ -1245,12 +1262,12 @@ fn parse_ics_content(ics_data: &str) -> Option<CalendarEvent> {
     let status = get_ics_property(event_block, "STATUS");
 
     // Parse DTSTART
-    let dtstart = get_ics_property(event_block, "DTSTART")?;
-    let (start_time, all_day) = parse_ics_datetime(&dtstart)?;
+    let (dtstart_params, dtstart) = get_ics_property_with_params(event_block, "DTSTART")?;
+    let (start_time, all_day) = parse_ics_datetime(&dtstart, &dtstart_params)?;
 
     // Parse DTEND (optional)
-    let end_time = get_ics_property(event_block, "DTEND")
-        .and_then(|s| parse_ics_datetime(&s))
+    let end_time = get_ics_property_with_params(event_block, "DTEND")
+        .and_then(|(params, s)| parse_ics_datetime(&s, &params))
         .map(|(ts, _)| ts);
 
     // Parse ORGANIZER (remove mailto: prefix)
@@ -1285,9 +1302,11 @@ fn parse_ics_content(ics_data: &str) -> Option<CalendarEvent> {
     })
 }
 
-/// Parse an ICS datetime string (e.g., "20240115T100000Z" or "20240115")
+/// Parse an ICS datetime string (e.g., "20240115T100000Z" or "20240115").
+/// `params` are the property parameters (e.g. "TZID=America/New_York"); a
+/// naive datetime is resolved in that zone, falling back to machine-local.
 /// Returns (timestamp_millis, is_all_day)
-fn parse_ics_datetime(s: &str) -> Option<(i64, bool)> {
+fn parse_ics_datetime(s: &str, params: &str) -> Option<(i64, bool)> {
     let s = s.trim();
 
     // All-day event (just date, no time)
@@ -1320,10 +1339,21 @@ fn parse_ics_datetime(s: &str) -> Option<(i64, bool)> {
             let time = chrono::NaiveTime::from_hms_opt(hour, min, sec)?;
             let datetime = chrono::NaiveDateTime::new(date, time);
 
+            let tzid = params
+                .split(';')
+                .find_map(|p| p.strip_prefix("TZID="))
+                .map(|v| v.trim_matches('"'));
+
             let utc = if is_utc {
                 DateTime::<Utc>::from_naive_utc_and_offset(datetime, Utc)
+            } else if let Some(resolved) = tzid
+                .and_then(|tz| tz.parse::<chrono_tz::Tz>().ok())
+                .and_then(|tz| tz.from_local_datetime(&datetime).single())
+            {
+                resolved.with_timezone(&Utc)
             } else {
-                // Assume local time, convert to UTC
+                // No TZID (or unknown zone / ambiguous local time):
+                // assume machine-local time, convert to UTC
                 let local = chrono::Local::now().timezone();
                 let local_dt = datetime.and_local_timezone(local).single()?;
                 local_dt.with_timezone(&Utc)

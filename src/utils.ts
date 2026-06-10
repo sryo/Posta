@@ -300,6 +300,17 @@ export function formatEmailDate(dateStr: string): string {
 }
 
 /**
+ * Format a Date as YYYY-MM-DD for a date input.
+ * Pass utc=true for all-day events, which are stored as UTC midnight.
+ */
+export function toDateInputString(d: Date, utc = false): string {
+  const year = utc ? d.getUTCFullYear() : d.getFullYear();
+  const month = (utc ? d.getUTCMonth() : d.getMonth()) + 1;
+  const day = utc ? d.getUTCDate() : d.getDate();
+  return `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+}
+
+/**
  * Format calendar event date/time for display
  * Shows date, time, and duration (e.g., "Today 2pm (1h)")
  */

@@ -84,6 +84,7 @@ import {
   getResponseStatusLabel,
   normalizeBase64Url,
   addReplyPrefix,
+  toDateInputString,
 } from "./utils";
 import "./App.css";
 import {
@@ -563,17 +564,16 @@ function App() {
   // Smart defaults: round up to next 30-min interval, end 30 mins later
   const getSmartEventDefaults = () => {
     const now = new Date();
-    const minutes = now.getMinutes();
-    const roundedMinutes = minutes <= 30 ? 30 : 60;
     const startTime = new Date(now);
-    startTime.setMinutes(roundedMinutes, 0, 0);
-    if (roundedMinutes === 60) {
-      startTime.setHours(startTime.getHours() + 1);
-      startTime.setMinutes(0, 0, 0);
+    if (now.getMinutes() <= 30) {
+      startTime.setMinutes(30, 0, 0);
+    } else {
+      startTime.setHours(startTime.getHours() + 1, 0, 0, 0);
     }
     const endTime = new Date(startTime.getTime() + 30 * 60 * 1000);
+    // Derive the date from startTime so rounding past midnight advances the day
     return {
-      date: now.toISOString().split('T')[0],
+      date: toDateInputString(startTime),
       startTime: `${String(startTime.getHours()).padStart(2, '0')}:${String(startTime.getMinutes()).padStart(2, '0')}`,
       endTime: `${String(endTime.getHours()).padStart(2, '0')}:${String(endTime.getMinutes()).padStart(2, '0')}`
     };
@@ -3070,13 +3070,16 @@ function App() {
         // For now, we stick to start date but handle "Yesterday" explicitly.
 
         let label: string;
-        const timeDiff = eventDay.getTime() - today.getTime();
+        // Compare calendar days by components; midnight-to-midnight ms math
+        // breaks on DST-transition days (23h/25h)
+        const sameDay = (a: Date, b: Date) =>
+          a.getFullYear() === b.getFullYear() && a.getMonth() === b.getMonth() && a.getDate() === b.getDate();
 
-        if (timeDiff === 0) {
+        if (sameDay(eventDay, today)) {
           label = "Today";
-        } else if (timeDiff === 86400000) { // +1 day
+        } else if (sameDay(eventDay, tomorrow)) {
           label = "Tomorrow";
-        } else if (timeDiff === -86400000) { // -1 day
+        } else if (sameDay(eventDay, yesterday)) {
           label = "Yesterday";
         } else {
           label = date.toLocaleDateString(undefined, { weekday: 'long', month: 'short', day: 'numeric' });
@@ -3093,7 +3096,10 @@ function App() {
       // We should sort by date of the first event in the group.
 
       return Object.entries(groups)
-        .map(([label, events]) => ({ label, events }))
+        .map(([label, events]) => ({
+          label,
+          events: events.sort((a, b) => a.start_time - b.start_time),
+        }))
         .sort((a, b) => {
           // Special handling for key labels
           const score = (lbl: string) => {
@@ -5254,15 +5260,20 @@ function App() {
             if (!event) return;
             // Pre-fill the event form with current event data
             const startDate = new Date(event.start_time);
-            const endDateVal = event.end_time ? new Date(event.end_time) : startDate;
+            let endDateVal = event.end_time ? new Date(event.end_time) : startDate;
+            // All-day end_time is Google's exclusive end (day after the last
+            // day); the form's endDate is inclusive, so step back one day
+            if (event.all_day && event.end_time) {
+              endDateVal = new Date(endDateVal.getTime() - 86400000);
+            }
             setEventForm(f => ({
               ...f,
               summary: event.title || '',
               description: event.description || '',
               location: event.location || '',
-              startDate: startDate.toISOString().split('T')[0],
+              startDate: toDateInputString(startDate, event.all_day),
               startTime: startDate.toTimeString().slice(0, 5),
-              endDate: endDateVal.toISOString().split('T')[0],
+              endDate: toDateInputString(endDateVal, event.all_day),
               endTime: endDateVal.toTimeString().slice(0, 5),
               allDay: event.all_day,
               attendees: event.attendees.map(a => a.email).join(', '),

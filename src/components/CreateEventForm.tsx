@@ -32,8 +32,10 @@ export const CreateEventForm = (props: {
   isEditing?: boolean;
 }) => {
   // Snapshot is safe: both call sites mount this inside a <Show>, so a fresh
-  // instance is created each time the form opens
-  const [viewDate, setViewDate] = createSignal(new Date(props.startDate));
+  // instance is created each time the form opens.
+  // "T00:00" forces local-time parsing; bare "YYYY-MM-DD" parses as UTC
+  // midnight, which is the previous day west of UTC
+  const [viewDate, setViewDate] = createSignal(new Date(props.startDate + "T00:00"));
 
   const getDaysInWindow = () => {
     const days = [];
