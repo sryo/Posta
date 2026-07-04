@@ -1,5 +1,6 @@
 import { createSignal, onMount, Show, For } from "solid-js";
 import { suggestReplies } from "../api/tauri";
+import { safeGetItem } from "../shared/storage";
 
 interface SmartRepliesProps {
     accountId: string;
@@ -12,7 +13,7 @@ export const SmartReplies = (props: SmartRepliesProps) => {
     const [loading, setLoading] = createSignal(false);
     const [error, setError] = createSignal<string | null>(null);
 
-    const apiKey = () => localStorage.getItem("gemini_api_key") || "";
+    const apiKey = () => safeGetItem("gemini_api_key") || "";
 
     const fetchSuggestions = async () => {
         if (!props.threadId || !props.accountId || !apiKey()) return;
@@ -35,10 +36,10 @@ export const SmartReplies = (props: SmartRepliesProps) => {
         }
     });
 
-    // Don't render if no API key configured
-    if (!apiKey()) return null;
-
+    // Gate in JSX rather than an early return: a top-level `return null`
+    // freezes this instance as null forever, while <Show> re-evaluates
     return (
+        <Show when={apiKey()}>
         <div class="smart-replies-container">
             <Show when={loading()}>
                 <div class="smart-replies-loading">
@@ -67,5 +68,6 @@ export const SmartReplies = (props: SmartRepliesProps) => {
                 </div>
             </Show>
         </div>
+        </Show>
     );
 };

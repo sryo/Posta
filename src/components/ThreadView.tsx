@@ -1,4 +1,4 @@
-import { createSignal, createEffect, onMount, onCleanup, Show, For } from "solid-js";
+import { createSignal, createEffect, createMemo, onMount, onCleanup, Show, For } from "solid-js";
 import DOMPurify from 'dompurify';
 import { MessageBody, DOMPURIFY_CONFIG } from './MessageBody';
 import { sendReaction, type FullThread, type Attachment } from "../api/tauri";
@@ -94,7 +94,7 @@ export const ThreadView = (props: {
     if (!msg) return;
 
     // Get the sender's email to send the reaction to
-    const fromHeader = msg.payload?.headers?.find(h => h.name === 'From')?.value;
+    const fromHeader = findHeader(msg.payload?.headers, 'From');
     if (!fromHeader) return;
 
     const toEmail = extractEmail(fromHeader);
@@ -167,7 +167,10 @@ export const ThreadView = (props: {
     if (!isTyping && props.thread) {
       if (e.key === 'a') { e.preventDefault(); props.onAction(props.isInInbox ? 'archive' : 'inbox'); return; }
       if (e.key === 's') { e.preventDefault(); props.onAction(props.isStarred ? 'unstar' : 'star'); return; }
-      if (e.key === 'd') { e.preventDefault(); props.onAction('trash'); return; }
+      if (e.key === 'u') { e.preventDefault(); props.onAction(props.isRead ? 'unread' : 'read'); return; }
+      if (e.key === 'i') { e.preventDefault(); props.onAction(props.isImportant ? 'notImportant' : 'important'); return; }
+      if (e.key === '!') { e.preventDefault(); props.onAction('spam'); return; }
+      if (e.key === '#' || e.key === 'd') { e.preventDefault(); props.onAction('trash'); return; }
       if (e.key === 'l') { e.preventDefault(); props.onOpenLabels(); return; }
     }
 
@@ -202,7 +205,7 @@ export const ThreadView = (props: {
           <CloseButton onClick={handleClose} />
           <div class="thread-bar-subject">
             <Show when={props.thread} fallback={<span>Loading...</span>}>
-              <h2>{props.thread?.messages[0]?.payload?.headers?.find(h => h.name === 'Subject')?.value || '(No Subject)'}</h2>
+              <h2>{findHeader(props.thread?.messages[0]?.payload?.headers, 'Subject') || '(No Subject)'}</h2>
             </Show>
           </div>
           <Show when={props.card}>
@@ -302,8 +305,8 @@ export const ThreadView = (props: {
             <For each={props.thread!.messages}>
               {(msg, index) => {
                 const headers = msg.payload?.headers || [];
-                const from = headers.find(h => h.name === 'From')?.value || 'Unknown';
-                const date = headers.find(h => h.name === 'Date')?.value || '';
+                const from = findHeader(headers, 'From') || 'Unknown';
+                const date = findHeader(headers, 'Date') || '';
 
                 const getBody = () => extractMessageBody(msg.payload, msg.snippet);
 
@@ -333,11 +336,15 @@ export const ThreadView = (props: {
                   return attachments;
                 };
 
-                const attachments = getAttachments();
+                // Memo (not snapshot): threadAttachments is a live getter that
+                // re-reads cardThreads, so inline_data arriving after this row
+                // mounts must re-render the thumbnails (same reason MessageBody
+                // wraps its lookup in createMemo)
+                const attachments = createMemo(() => getAttachments());
                 const isImage = (mime: string) => mime.startsWith('image/');
                 const isPdf = (mime: string) => mime === 'application/pdf';
 
-                const getReplySubject = () => addReplyPrefix(headers.find(h => h.name === 'Subject')?.value || '');
+                const getReplySubject = () => addReplyPrefix(findHeader(headers, 'Subject') || '');
                 const getPlainTextBody = () => stripHtml(getBody());
 
                 // Detect if original message was HTML
@@ -370,7 +377,7 @@ export const ThreadView = (props: {
                 };
 
                 const handleForward = () => {
-                  const origSubject = headers.find(h => h.name === 'Subject')?.value || '';
+                  const origSubject = findHeader(headers, 'Subject') || '';
                   const fwdSubject = addForwardPrefix(origSubject);
                   const plainBody = getPlainTextBody();
                   const fwdBody = `\n\n---------- Forwarded message ----------\nFrom: ${from}\nDate: ${date}\nSubject: ${origSubject}\n\n${plainBody}`;
@@ -425,9 +432,9 @@ export const ThreadView = (props: {
                         msgId={msg.id}
                         threadAttachments={props.threadAttachments}
                       />
-                      <Show when={attachments.length > 0}>
+                      <Show when={attachments().length > 0}>
                         <div class="message-attachments">
-                          <For each={attachments}>
+                          <For each={attachments()}>
                             {(att) => {
                               const handleContextMenu = (e: MouseEvent) => {
                                 e.preventDefault();
@@ -516,11 +523,11 @@ export const ThreadView = (props: {
               if (!lastMsg) return;
 
               const headers = lastMsg.payload?.headers || [];
-              const from = headers.find(h => h.name === 'From')?.value || 'Unknown';
-              const date = headers.find(h => h.name === 'Date')?.value || '';
+              const from = findHeader(headers, 'From') || 'Unknown';
+              const date = findHeader(headers, 'Date') || '';
               const replyTo = extractEmail(findHeader(headers, 'Reply-To') || from);
 
-              const subject = addReplyPrefix(headers.find(h => h.name === 'Subject')?.value || '');
+              const subject = addReplyPrefix(findHeader(headers, 'Subject') || '');
               const body = extractMessageBody(lastMsg.payload, lastMsg.snippet);
               const plainBody = stripHtml(DOMPurify.sanitize(body, DOMPURIFY_CONFIG));
               const quotedBody = buildQuotedBody(date, from, plainBody);

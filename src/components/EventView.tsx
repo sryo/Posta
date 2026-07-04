@@ -67,7 +67,13 @@ export const EventView = (props: {
     if (e.key === 'r' && event.organizer) { e.preventDefault(); props.onReplyOrganizer(); return; }
     if (e.key === 'j' && event.hangout_link) { e.preventDefault(); openUrl(event.hangout_link); return; }
     if (e.key === 'o' && event.html_link) { e.preventDefault(); openUrl(event.html_link); return; }
-    if (e.key === 'c') { e.preventDefault(); props.onOpenCalendars(); return; }
+    if (e.key === 'c') {
+      // The drawer footer promises a toggle, so close when already open
+      e.preventDefault();
+      if (props.calendarDrawerOpen) props.onCloseCalendarDrawer();
+      else props.onOpenCalendars();
+      return;
+    }
     if (e.key === 'e' && event.can_edit) { e.preventDefault(); props.onEdit(); return; }
     if ((e.key === 'd' || e.key === '#') && event.can_edit) { e.preventDefault(); props.onDelete(); return; }
   };

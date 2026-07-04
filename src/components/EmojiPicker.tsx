@@ -143,16 +143,17 @@ export const EmojiPicker = (props: EmojiPickerProps) => {
     document.removeEventListener("keydown", handleKeyDown);
   });
 
-  // Filter emojis based on search
+  // Filter emojis based on search. Without per-emoji keyword data, the query
+  // matches category names ("heart", "food", ...) — honest empty results beat
+  // returning 50 unrelated emojis
   const filteredEmojis = () => {
-    const q = search().toLowerCase();
+    const q = search().toLowerCase().trim();
     if (!q) return null;
 
     const results: string[] = [];
     for (const cat of EMOJI_CATEGORIES) {
+      if (!cat.name.toLowerCase().includes(q)) continue;
       for (const emoji of cat.emojis) {
-        // Simple search - just include all if query is non-empty
-        // (proper search would need emoji names/keywords)
         if (results.length < 50) {
           results.push(emoji);
         }

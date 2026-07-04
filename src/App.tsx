@@ -1,4 +1,4 @@
-import { createSignal, onMount, onCleanup, Show, For, createMemo, createEffect } from "solid-js";
+import { createSignal, onMount, onCleanup, Show, For, createMemo, createEffect, untrack } from "solid-js";
 import { createStore, produce, reconcile, unwrap } from "solid-js/store";
 import DOMPurify from 'dompurify';
 import { DOMPURIFY_CONFIG } from './components/MessageBody';
@@ -36,6 +36,7 @@ import {
   type Thread,
   getThreadDetails,
   type FullThread,
+  type MessagePart,
   sendEmail,
   replyToThread,
   getCachedCardThreads,
@@ -319,9 +320,15 @@ function App() {
 
   // Background color picker (stores index, not color value)
   const [bgColorPickerOpen, setBgColorPickerOpen] = createSignal(false);
-  const [selectedBgColorIndex, setSelectedBgColorIndex] = createSignal<number | null>(
-    safeGetItem("bgColorIndex") ? parseInt(safeGetItem("bgColorIndex")!) : null
-  );
+  // A stored index can be stale (BG_COLORS shrank/reordered) or corrupt;
+  // render sites dereference BG_COLORS[idx] directly, so validate on load
+  function readSavedBgColorIndex(): number | null {
+    const raw = safeGetItem("bgColorIndex");
+    if (raw === null) return null;
+    const idx = parseInt(raw, 10);
+    return Number.isInteger(idx) && idx >= 0 && idx < BG_COLORS.length ? idx : null;
+  }
+  const [selectedBgColorIndex, setSelectedBgColorIndex] = createSignal<number | null>(readSavedBgColorIndex());
 
   // Add card form
   const [addingCard, setAddingCard] = createSignal(false);
@@ -349,6 +356,22 @@ function App() {
   const [editCardColor, setEditCardColor] = createSignal<CardColor>(null);
   const [editCardGroupBy, setEditCardGroupBy] = createSignal<GroupBy>("date");
   const [editColorPickerOpen, setEditColorPickerOpen] = createSignal(false);
+
+  // While editing, the card body doubles as a live preview: it keeps showing
+  // the card's real content until the draft query diverges from the saved one
+  function isPreviewingQuery(cardId: string): boolean {
+    if (editingCardId() !== cardId) return false;
+    const card = cards().find(c => c.id === cardId);
+    if (!card) return false;
+    return editCardQuery().trim() !== card.query.trim();
+  }
+
+  function effectiveCardType(card: Card): Card["card_type"] {
+    if (editingCardId() === card.id) {
+      return editCardQuery().toLowerCase().includes("calendar:") ? "calendar" : "email";
+    }
+    return card.card_type;
+  }
 
   // Keyboard navigation focus state
   const [focusedCardId, setFocusedCardId] = createSignal<string | null>(null);
@@ -404,20 +427,41 @@ function App() {
     }
   }
 
+  // The dropdown floats at app level with fixed coordinates; keep it glued
+  // to its input while open (deck/card scrolls are caught via capture phase)
+  createEffect(() => {
+    if (!queryAutocompleteOpen()) return;
+    window.addEventListener("resize", updateDropdownPosition);
+    window.addEventListener("scroll", updateDropdownPosition, true);
+    onCleanup(() => {
+      window.removeEventListener("resize", updateDropdownPosition);
+      window.removeEventListener("scroll", updateDropdownPosition, true);
+    });
+  });
+
   function getCurrentQuery(): string {
     const getter = activeQueryGetter();
     return getter ? getter() : "";
   }
 
+  // Preview requests can resolve out of order; only the latest may render
+  let queryPreviewSeq = 0;
+
   async function fetchQueryPreview(query: string) {
+    const seq = ++queryPreviewSeq;
+
     if (!query.trim()) {
       setQueryPreviewThreads([]);
       setQueryPreviewCalendarEvents([]);
+      setQueryPreviewLoading(false);
       return;
     }
 
     const account = selectedAccount();
-    if (!account) return;
+    if (!account) {
+      setQueryPreviewLoading(false);
+      return;
+    }
 
     setQueryPreviewLoading(true);
 
@@ -426,11 +470,13 @@ function App() {
       setQueryPreviewThreads([]);
       try {
         const events = await fetchCalendarEvents(account.id, query);
+        if (seq !== queryPreviewSeq) return;
         setQueryPreviewCalendarEvents(events);
       } catch {
+        if (seq !== queryPreviewSeq) return;
         setQueryPreviewCalendarEvents([]);
       } finally {
-        setQueryPreviewLoading(false);
+        if (seq === queryPreviewSeq) setQueryPreviewLoading(false);
       }
       return;
     }
@@ -439,11 +485,13 @@ function App() {
     setQueryPreviewCalendarEvents([]);
     try {
       const groups = await searchThreadsPreview(account.id, query);
+      if (seq !== queryPreviewSeq) return;
       setQueryPreviewThreads(groups);
     } catch {
+      if (seq !== queryPreviewSeq) return;
       setQueryPreviewThreads([]);
     } finally {
-      setQueryPreviewLoading(false);
+      if (seq === queryPreviewSeq) setQueryPreviewLoading(false);
     }
   }
 
@@ -451,6 +499,9 @@ function App() {
     if (queryPreviewTimeout) {
       clearTimeout(queryPreviewTimeout);
     }
+    // Loading starts at the debounce, not the fetch, so the window between
+    // typing and the request doesn't flash a stale empty state
+    setQueryPreviewLoading(true);
     queryPreviewTimeout = window.setTimeout(() => {
       fetchQueryPreview(query);
     }, 500);
@@ -696,7 +747,12 @@ function App() {
       });
       if (epoch !== draftEpoch) {
         // Draft was cleared (send/close) while the save was in flight;
-        // don't resurrect it
+        // don't resurrect it — and if this save just created a Gmail draft
+        // that clearDraft couldn't know about, delete the orphan
+        if (result.id && result.id !== gmailDraftId()) {
+          invoke("delete_draft", { accountId: account.id, draftId: result.id })
+            .catch(e => console.warn("Failed to delete orphaned draft:", e));
+        }
         return;
       }
       setGmailDraftId(result.id);
@@ -760,20 +816,25 @@ function App() {
     draftSaveTimeout = setTimeout(saveDraft, 3000) as unknown as number;
   }
 
-  // Load draft when compose opens (only for new emails, not reply/forward with pre-filled content)
+  // Load draft when compose opens (only for new emails, not reply/forward with pre-filled content).
+  // untrack keeps the restore a one-shot on open: mailto/avatar prefills must
+  // not be clobbered, and an account switch mid-compose must not re-fire it
   createEffect(() => {
     if (composing() && !replyingToThread() && !forwardingThread()) {
-      const draft = loadDraft();
-      if (draft) {
-        setComposeTo(draft.to);
-        setComposeCc(draft.cc);
-        setComposeBcc(draft.bcc);
-        setComposeSubject(draft.subject);
-        setComposeBody(draft.body);
-        if (draft.cc || draft.bcc) {
-          setShowCcBcc(true);
+      untrack(() => {
+        if (composeTo() || composeSubject() || composeBody()) return; // Prefilled compose wins
+        const draft = loadDraft();
+        if (draft) {
+          setComposeTo(draft.to);
+          setComposeCc(draft.cc);
+          setComposeBcc(draft.bcc);
+          setComposeSubject(draft.subject);
+          setComposeBody(draft.body);
+          if (draft.cc || draft.bcc) {
+            setShowCcBcc(true);
+          }
         }
-      }
+      });
     }
   });
 
@@ -870,7 +931,7 @@ function App() {
       // not touched by Gmail history sync and must not be stamped as synced
       const now = Date.now();
       const nonCollapsedCardIds = cards()
-        .filter(c => !c.collapsed && c.account_id === account.id && c.card_type !== "calendar")
+        .filter(c => !collapsedCards[c.id] && c.account_id === account.id && c.card_type !== "calendar")
         .map(c => c.id);
       if (nonCollapsedCardIds.length > 0) {
         setLastSyncTimes(produce(s => {
@@ -887,7 +948,7 @@ function App() {
         // History ID was reset; incremental results are unusable.
         // Refetch all non-collapsed email cards and go back to fast polling.
         setPollInterval(BASE_POLL_INTERVAL);
-        const nonCollapsedCards = cards().filter(c => !c.collapsed && c.account_id === account.id && c.card_type !== "calendar");
+        const nonCollapsedCards = cards().filter(c => !collapsedCards[c.id] && c.account_id === account.id && c.card_type !== "calendar");
         for (const card of nonCollapsedCards) {
           fetchAndCacheThreads(account.id, card.id);
         }
@@ -951,7 +1012,7 @@ function App() {
       // New threads detected - refresh non-collapsed cards in background
       const account = selectedAccount();
       if (account) {
-        const nonCollapsedCards = cards().filter(c => !c.collapsed && c.card_type !== "calendar");
+        const nonCollapsedCards = cards().filter(c => !collapsedCards[c.id] && c.card_type !== "calendar");
         for (const card of nonCollapsedCards) {
           fetchAndCacheThreads(account.id, card.id);
         }
@@ -980,6 +1041,20 @@ function App() {
     // Re-arm the timer so the fast interval applies now, not after the
     // previously scheduled (possibly backed-off) timeout fires
     schedulePoll();
+  }
+
+  // Polling, focus-sync, and contact fetch must start whether the account
+  // came from disk at mount or from an OAuth flow later in the session
+  let backgroundSyncStarted = false;
+  function startBackgroundSync(accountId: string) {
+    if (!backgroundSyncStarted) {
+      backgroundSyncStarted = true;
+      schedulePoll();
+      window.addEventListener("focus", handleWindowFocus);
+    }
+    fetchContacts(accountId)
+      .then(contacts => setGoogleContacts(contacts))
+      .catch(e => console.warn("Failed to fetch contacts (user may need to re-auth):", e));
   }
 
   // Drag and drop
@@ -1045,6 +1120,10 @@ function App() {
   });
 
   let unlistenMailto: (() => void) | undefined;
+  // Hoisted out of onMount so onCleanup can remove them
+  let handleResize: (() => void) | undefined;
+  let colorSchemeQuery: MediaQueryList | undefined;
+  let handleColorSchemeChange: ((e: MediaQueryListEvent) => void) | undefined;
 
   onMount(async () => {
     // Apply saved card width
@@ -1057,7 +1136,7 @@ function App() {
     document.documentElement.style.setProperty("--inline-message-width", `${inlineMessageWidth()}px`);
 
     // Constrain inline message width on window resize
-    const handleResize = () => {
+    handleResize = () => {
       const maxWidth = getMaxMessageWidth();
       if (inlineMessageWidth() > maxWidth) {
         updateInlineMessageWidth(Math.max(MIN_MESSAGE_WIDTH, maxWidth));
@@ -1066,8 +1145,8 @@ function App() {
     window.addEventListener("resize", handleResize);
 
     // Listen for color scheme changes
-    const colorSchemeQuery = window.matchMedia?.("(prefers-color-scheme: dark)");
-    const handleColorSchemeChange = (e: MediaQueryListEvent) => {
+    colorSchemeQuery = window.matchMedia?.("(prefers-color-scheme: dark)");
+    handleColorSchemeChange = (e: MediaQueryListEvent) => {
       const deck = document.querySelector(".deck") as HTMLElement;
       if (deck?.dataset.bgLight || deck?.dataset.bgDark) {
         const bgColor = e.matches ? deck.dataset.bgDark! : deck.dataset.bgLight!;
@@ -1118,16 +1197,7 @@ function App() {
           }
         }
 
-        // Set up enhanced polling with adaptive interval
-        schedulePoll();
-
-        // Add window focus listener for immediate sync
-        window.addEventListener("focus", handleWindowFocus);
-
-        // Fetch Google contacts in background for autocomplete
-        fetchContacts(accts[0].id)
-          .then(contacts => setGoogleContacts(contacts))
-          .catch(e => console.warn("Failed to fetch contacts (user may need to re-auth):", e));
+        startBackgroundSync(accts[0].id);
       }
 
       // Listen for mailto: deep-link events
@@ -1159,9 +1229,9 @@ function App() {
     } finally {
       setLoading(false);
       // Apply saved background color after UI is rendered
-      const savedBgColorIndex = safeGetItem("bgColorIndex");
+      const savedBgColorIndex = readSavedBgColorIndex();
       if (savedBgColorIndex !== null) {
-        setTimeout(() => applyBgColor(parseInt(savedBgColorIndex)), 0);
+        setTimeout(() => applyBgColor(savedBgColorIndex), 0);
       }
     }
   });
@@ -1179,6 +1249,8 @@ function App() {
     }
     clearInterval(timeUpdateInterval);
     window.removeEventListener("focus", handleWindowFocus);
+    if (handleResize) window.removeEventListener("resize", handleResize);
+    if (handleColorSchemeChange) colorSchemeQuery?.removeEventListener("change", handleColorSchemeChange);
     unlistenMailto?.();
   });
 
@@ -1268,6 +1340,21 @@ function App() {
       return;
     }
 
+    // Cmd/Ctrl+Enter to save card when editing
+    if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
+      if (editingCardId() && editCardName() && editCardQuery() && !activeThreadId() && !activeEvent()) {
+        e.preventDefault();
+        saveEditCard();
+      }
+      return;
+    }
+
+    // Everything below is a bare-key shortcut; Cmd/Ctrl/Alt combos (Cmd+A
+    // select-all, system shortcuts) must never trigger thread/card actions
+    if (e.metaKey || e.ctrlKey || e.altKey) {
+      return;
+    }
+
     // z to undo last action (when toast is visible) — works even with overlays open
     if (e.key === 'z' && toast()?.visible && lastAction()) {
       e.preventDefault();
@@ -1304,6 +1391,17 @@ function App() {
       return;
     }
 
+    // c to compose new email
+    if (e.key === 'c') {
+      e.preventDefault();
+      if (!composing()) {
+        setReplyingToThread(null);
+        setForwardingThread(null);
+        setComposing(true);
+      }
+      return;
+    }
+
     if (e.key === 'Escape') {
       // Priority: filter > dropdowns > color pickers > batch reply > compose > card editing > sidebar > action menu > focus
       if (showGlobalFilter()) {
@@ -1333,15 +1431,6 @@ function App() {
         setFocusedCardId(null);
         setFocusedThreadIndex(-1);
         setFocusedEventIndex(-1);
-      }
-      return;
-    }
-
-    // Cmd/Ctrl+Enter to save card when editing
-    if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
-      if (editingCardId() && editCardName() && editCardQuery()) {
-        e.preventDefault();
-        saveEditCard();
       }
       return;
     }
@@ -1564,6 +1653,11 @@ function App() {
         handleForward(thread.gmail_thread_id, cardId);
         return;
       }
+      if (e.key === 'x') {
+        e.preventDefault();
+        toggleThreadSelection(cardId, thread.gmail_thread_id);
+        return;
+      }
     }
 
     // Quick actions on focused event
@@ -1666,6 +1760,7 @@ function App() {
       const cardList = await getCards(account.id);
       console.log("Cards after iCloud pull:", cardList.length, cardList.map(c => c.name));
       setCards(cardList);
+      startBackgroundSync(account.id);
 
       // Show restore prompt if cards exist (restored from iCloud)
       // Otherwise show preset selection for new users
@@ -1712,6 +1807,7 @@ function App() {
 
       const cardList = await getCards(account.id);
       setCards(cardList);
+      startBackgroundSync(account.id);
 
       setSettingsOpen(false);
     } catch (e) {
@@ -1799,6 +1895,7 @@ function App() {
 
         const cardList = await getCards(account.id);
         setCards(cardList);
+        startBackgroundSync(account.id);
 
         if (cardList.length > 0) {
           setShowRestorePrompt(true);
@@ -1821,14 +1918,20 @@ function App() {
 
     try {
       await deleteAccount(account.id);
-      setAccounts(accounts().filter(a => a.id !== account.id));
+      const remaining = accounts().filter(a => a.id !== account.id);
+      setAccounts(remaining);
       setSelectedAccount(null);
       setCards([]);
       setCardThreads(reconcile({}));
+      setAccountLabels([]);
       // Clean up localStorage
       safeRemoveItem("cardColors");
       safeRemoveItem("collapsedCards");
       safeRemoveItem("cardGroupBy");
+      // Fall through to the next account instead of a blank screen
+      if (remaining.length > 0) {
+        await switchAccount(remaining[0]);
+      }
     } catch (e) {
       setError(String(e));
     }
@@ -1870,11 +1973,13 @@ function App() {
     }, 200);
   }
 
+  // Cancellable so undoSend can beat the 200ms wipe and keep the restored fields
+  let closeComposeTimeout: number | undefined;
   function closeCompose() {
     setClosingCompose(true);
     if (draftSaveTimeout) clearTimeout(draftSaveTimeout);
     clearDraft(); // Clear draft from localStorage and Gmail when compose closes
-    setTimeout(() => {
+    closeComposeTimeout = window.setTimeout(() => {
       setComposeTo("");
       setComposeCc("");
       setComposeBcc("");
@@ -1886,6 +1991,7 @@ function App() {
       setFocusComposeBody(false);
       setComposeEmailError(null);
       setComposeAttachments([]);
+      setComposeIsHtml(false);
       setGmailDraftId(null);
       setComposing(false);
       setClosingCompose(false);
@@ -1908,15 +2014,22 @@ function App() {
         continue;
       }
 
-      const data = await new Promise<string>((resolve) => {
-        const reader = new FileReader();
-        reader.onload = () => {
-          const result = reader.result as string;
-          // Remove the "data:mime/type;base64," prefix
-          resolve(result.split(',')[1] || '');
-        };
-        reader.readAsDataURL(file);
-      });
+      let data: string;
+      try {
+        data = await new Promise<string>((resolve, reject) => {
+          const reader = new FileReader();
+          reader.onload = () => {
+            const result = reader.result as string;
+            // Remove the "data:mime/type;base64," prefix
+            resolve(result.split(',')[1] || '');
+          };
+          reader.onerror = () => reject(reader.error ?? new Error("File read failed"));
+          reader.readAsDataURL(file);
+        });
+      } catch {
+        skippedFiles.push(`${file.name} (could not be read)`);
+        continue;
+      }
       newAttachments.push({
         filename: file.name,
         mime_type: file.type || 'application/octet-stream',
@@ -1925,7 +2038,7 @@ function App() {
     }
 
     if (skippedFiles.length > 0) {
-      setComposeEmailError(`Files too large: ${skippedFiles.join(', ')}`);
+      setComposeEmailError(`Skipped: ${skippedFiles.join(', ')}`);
     }
 
     if (newAttachments.length > 0) {
@@ -1986,12 +2099,21 @@ function App() {
 
       if (editing) {
         // Update existing event
-        await updateCalendarEvent(
+        const updated = await updateCalendarEvent(
           account.id,
           editing.calendarId,
           editing.id,
           eventInput
         );
+        // Sync the open EventView and the card's copy immediately; the
+        // background refetch below lands later
+        setActiveEvent(ev => (ev && ev.id === updated.id ? updated : ev));
+        const cardId = activeEventCardId();
+        if (cardId && cardCalendarEvents[cardId]) {
+          setCardCalendarEvents(cardId, cardCalendarEvents[cardId].map(ev =>
+            ev.id === updated.id ? updated : ev
+          ));
+        }
       } else {
         // Create new event
         await createCalendarEvent(
@@ -2024,6 +2146,9 @@ function App() {
   function handleSendEmail() {
     const account = selectedAccount();
     if (!account || !composeTo().trim()) return;
+    // A send was just queued and compose is animating out with its fields
+    // still populated; a second click/Cmd+Enter must not queue a duplicate
+    if (closingCompose()) return;
 
     // Validate email addresses
     const toValidation = validateEmailList(composeTo());
@@ -2122,9 +2247,45 @@ function App() {
       hideSendToast();
     } catch (e) {
       console.error("Failed to send email:", e);
+      restoreFailedSend(pending);
       setError(`Failed to send email: ${e}`);
       hideSendToast();
     }
+  }
+
+  // The draft was already cleared and compose closed when the send was
+  // queued, so a failed send must put the email back or it's gone for good.
+  // If the user started composing again during the undo window, their
+  // in-progress text gets a best-effort local stash first.
+  function restoreFailedSend(pending: PendingSend) {
+    if (composing()) {
+      const current: Draft = {
+        to: composeTo(),
+        cc: composeCc(),
+        bcc: composeBcc(),
+        subject: composeSubject(),
+        body: composeBody(),
+        threadId: replyingToThread()?.threadId,
+        gmailDraftId: gmailDraftId() || undefined,
+        savedAt: Date.now(),
+      };
+      if (current.to || current.subject || current.body) {
+        safeSetJSON(getDraftKey(), current);
+      }
+    }
+    setComposeTo(pending.to);
+    setComposeCc(pending.cc);
+    setComposeBcc(pending.bcc);
+    setComposeSubject(pending.subject);
+    setComposeBody(pending.body);
+    setComposeAttachments(pending.attachments);
+    setComposeIsHtml(pending.isHtml ?? false);
+    setReplyingToThread(pending.reply ?? null);
+    setForwardingThread(null);
+    if (pending.cc || pending.bcc) {
+      setShowCcBcc(true);
+    }
+    setComposing(true);
   }
 
   function undoSend() {
@@ -2135,6 +2296,14 @@ function App() {
     clearTimeout(pending.timeoutId);
     clearInterval(pending.progressIntervalId);
 
+    // If closeCompose's 200ms wipe hasn't fired yet, it must not erase the
+    // fields restored below
+    if (closeComposeTimeout) {
+      clearTimeout(closeComposeTimeout);
+      closeComposeTimeout = undefined;
+    }
+    setClosingCompose(false);
+
     // Restore compose with the pending email data
     setComposeTo(pending.to);
     setComposeCc(pending.cc);
@@ -2142,6 +2311,7 @@ function App() {
     setComposeSubject(pending.subject);
     setComposeBody(pending.body);
     setComposeAttachments(pending.attachments);
+    setComposeIsHtml(pending.isHtml ?? false);
     if (pending.reply) {
       setReplyingToThread(pending.reply);
     }
@@ -2177,8 +2347,11 @@ function App() {
     const thread = threads.find(t => t.gmail_thread_id === threadId);
     if (!thread) return;
 
-    // Get the sender to reply to
-    const replyTo = thread.participants[0] || "";
+    // Get the sender to reply to — on sent threads participants[0] can be
+    // the user themselves, so prefer the first other participant
+    const accountEmail = account.email.toLowerCase();
+    const replyTo = thread.participants.find(p => extractEmail(p).toLowerCase() !== accountEmail)
+      || thread.participants[0] || "";
     const subject = thread.subject.startsWith("Re:") ? thread.subject : `Re: ${thread.subject}`;
 
     setQuickReply(qr => ({ ...qr, sending: true }));
@@ -2320,9 +2493,18 @@ function App() {
   }
 
   // Label drawer functions
+  let labelsAccountId: string | null = null;
   async function fetchAccountLabels() {
     const account = selectedAccount();
-    if (!account || accountLabels().length > 0) return; // Already cached
+    if (!account) return;
+
+    // Clear cache if account changed
+    if (labelsAccountId !== account.id) {
+      setAccountLabels([]);
+      labelsAccountId = account.id;
+    }
+
+    if (accountLabels().length > 0) return; // Already cached
 
     setLabelsLoading(true);
     try {
@@ -2387,6 +2569,20 @@ function App() {
 
       // Update the active event with new calendar info
       setActiveEvent(movedEvent);
+
+      // The card's copy must pick up the new calendar_id too, or a later
+      // delete/edit from the card targets the old calendar and 404s
+      const cardId = activeEventCardId();
+      if (cardId && cardCalendarEvents[cardId]) {
+        setCardCalendarEvents(cardId, cardCalendarEvents[cardId].map(ev =>
+          ev.id === event.id ? movedEvent : ev
+        ));
+      }
+      cards().forEach(card => {
+        if (isCalendarCard(card.id)) {
+          fetchAndCacheCalendarEvents(account.id, card.id, card.query);
+        }
+      });
 
       // Find the destination calendar name
       const destCal = availableCalendars().find(c => c.id === destinationCalendarId);
@@ -2582,19 +2778,30 @@ function App() {
         continue;
       }
 
-      const data = await new Promise<string>((resolve) => {
-        const reader = new FileReader();
-        reader.onload = () => {
-          const result = reader.result as string;
-          resolve(result.split(',')[1] || '');
-        };
-        reader.readAsDataURL(file);
-      });
+      let data: string;
+      try {
+        data = await new Promise<string>((resolve, reject) => {
+          const reader = new FileReader();
+          reader.onload = () => {
+            const result = reader.result as string;
+            resolve(result.split(',')[1] || '');
+          };
+          reader.onerror = () => reject(reader.error ?? new Error("File read failed"));
+          reader.readAsDataURL(file);
+        });
+      } catch {
+        skippedFiles.push(`${file.name} (could not be read)`);
+        continue;
+      }
       newAttachments.push({
         filename: file.name,
         mime_type: file.type || 'application/octet-stream',
         data
       });
+    }
+
+    if (skippedFiles.length > 0) {
+      showToast(`Skipped: ${skippedFiles.join(', ')}`);
     }
 
     if (newAttachments.length > 0) {
@@ -2693,7 +2900,12 @@ function App() {
     if (addingCard()) {
       setAddingCard(false);
     }
-    // Clear any existing preview
+    // Clear any existing preview; the body keeps showing the card's real
+    // content until the draft query diverges, so no initial fetch is needed
+    if (queryPreviewTimeout) {
+      clearTimeout(queryPreviewTimeout);
+      queryPreviewTimeout = undefined;
+    }
     setQueryPreviewThreads([]);
     setQueryPreviewCalendarEvents([]);
     setQueryPreviewLoading(false);
@@ -2703,8 +2915,6 @@ function App() {
     setEditCardColor((card.color as CardColor) || null);
     setEditCardGroupBy(card.group_by || "date");
     setEditColorPickerOpen(false);
-    // Fetch initial preview
-    fetchQueryPreview(card.query);
   }
 
   async function saveEditCard() {
@@ -2812,6 +3022,10 @@ function App() {
     const account = selectedAccount();
     if (!account) return;
 
+    // A response landing after the user switched accounts must not write
+    // the old account's threads into the store (dock badge, autocomplete)
+    const stale = () => selectedAccount()?.id !== account.id;
+
     // Check if this is a calendar card
     const card = cards().find(c => c.id === cardId);
     if (card?.card_type === "calendar") {
@@ -2836,6 +3050,7 @@ function App() {
       // For initial load (not append), try cache first (unless force refresh)
       if (!append && !forceRefresh) {
         const cached = await getCachedCardThreads(cardId);
+        if (stale()) return;
         if (cached && cached.groups.length > 0) {
           // Show cached data immediately
           setCardThreads(cardId, cached.groups);
@@ -2853,6 +3068,7 @@ function App() {
 
       const pageToken = append ? cardPageTokens[cardId] : null;
       const result = await fetchThreadsPaginated(account.id, cardId, pageToken);
+      if (stale()) return;
 
       if (append) {
         // Merge new threads into existing groups
@@ -2872,6 +3088,7 @@ function App() {
       setLastSyncTimes(cardId, Date.now());
       setSyncErrors(cardId, null);
     } catch (e) {
+      if (stale()) return;
       const errorMsg = String(e);
       console.error("loadCardThreads error:", errorMsg);
       // Check for session expiry (token revoked, keyring issues, refresh failures)
@@ -2906,6 +3123,8 @@ function App() {
     const account = selectedAccount();
     if (!account) return;
 
+    const stale = () => selectedAccount()?.id !== account.id;
+
     const card = cards().find(c => c.id === cardId);
     if (!card) return;
 
@@ -2919,6 +3138,7 @@ function App() {
       // For initial load (not force refresh), try cache first
       if (!forceRefresh) {
         const cached = await getCachedCardEvents(cardId);
+        if (stale()) return;
         if (cached && cached.events.length > 0) {
           // Show cached data immediately
           setCardCalendarEvents(cardId, cached.events);
@@ -2935,6 +3155,7 @@ function App() {
       // No cache or forced refresh - fetch and wait
       await fetchAndCacheCalendarEvents(account.id, cardId, card.query);
     } catch (e) {
+      if (stale()) return;
       const errorMsg = String(e);
       console.error("loadCalendarEvents error:", errorMsg);
       if (errorMsg.includes("Keyring error") ||
@@ -2970,6 +3191,7 @@ function App() {
   async function fetchAndCacheCalendarEvents(accountId: string, cardId: string, query: string) {
     try {
       const events = await fetchCalendarEvents(accountId, query);
+      if (selectedAccount()?.id !== accountId) return;
       setCardCalendarEvents(cardId, events);
       await saveCachedCardEvents(cardId, events);
       setLastSyncTimes(cardId, Date.now());
@@ -2994,10 +3216,14 @@ function App() {
     const tokenBeforeFetch = cardPageTokens[cardId];
     try {
       const result = await fetchThreadsPaginated(accountId, cardId, null);
+      if (selectedAccount()?.id !== accountId) return;
       // Skip update if a recent action happened (prevents overwriting optimistic updates)
       const recent = lastAction();
       if (recent && Date.now() - recent.timestamp < 3000) {
-        // Just update cache, don't touch UI state
+        // Don't touch UI state; also skip the cache write when the action
+        // touched this card — this fetch may predate the server-side modify,
+        // and caching its groups would resurrect the pre-action state
+        if (recent.cardIds.includes(cardId) || recent.cardId === cardId) return;
         await saveCachedCardThreads(cardId, result.groups, result.next_page_token);
         return;
       }
@@ -3020,6 +3246,7 @@ function App() {
   }
 
   function getGroupByForCard(cardId: string): GroupBy {
+    if (editingCardId() === cardId) return editCardGroupBy();
     const card = cards().find(c => c.id === cardId);
     return card?.group_by || "date";
   }
@@ -3089,6 +3316,7 @@ function App() {
       document.documentElement.style.removeProperty("--app-bg");
     } else {
       const color = BG_COLORS[colorIndex];
+      if (!color) return;
       const isDark = window.matchMedia?.("(prefers-color-scheme: dark)").matches;
       const bgColor = isDark ? color.dark : color.light;
       deck.style.background = bgColor;
@@ -3293,7 +3521,7 @@ function App() {
   }
 
   function getDisplayGroups(cardId: string): ThreadGroup[] {
-    const threads = cardThreads[cardId];
+    const threads = isPreviewingQuery(cardId) ? queryPreviewThreads() : cardThreads[cardId];
     if (!threads) return [];
     const groupBy = getGroupByForCard(cardId);
     let groups = regroupThreads(threads, groupBy);
@@ -3315,7 +3543,7 @@ function App() {
   }
 
   function getCalendarEventGroups(cardId: string): CalendarEventGroup[] {
-    const events = cardCalendarEvents[cardId];
+    const events = isPreviewingQuery(cardId) ? queryPreviewCalendarEvents() : cardCalendarEvents[cardId];
     if (!events) return [];
     const groupBy = getGroupByForCard(cardId);
     let groups = groupCalendarEvents(events, groupBy);
@@ -3643,6 +3871,9 @@ function App() {
 
     try {
       const details = await getThreadDetails(account.id, threadId);
+      // A slower response for a thread the user already left must not
+      // clobber the one they're looking at now
+      if (activeThreadId() !== threadId) return;
       setActiveThread(details);
       // Focus the most recent (last) message
       setFocusedMessageIndex(details.messages.length - 1);
@@ -3650,10 +3881,13 @@ function App() {
       // Fetch CID attachments in background (don't block thread display)
       fetchCidAttachments(account.id, details);
     } catch (e) {
+      if (activeThreadId() !== threadId) return;
       console.error("Failed to load thread details", e);
       setThreadError("Failed to load email. Please try again.");
     } finally {
-      setThreadLoading(false);
+      if (activeThreadId() === threadId) {
+        setThreadLoading(false);
+      }
     }
   }
 
@@ -3663,9 +3897,9 @@ function App() {
 
     // Find all CID images in all messages
     for (const msg of thread.messages) {
-      const findCidParts = (parts: any[]) => {
-        parts?.forEach(part => {
-          const contentIdHeader = part.headers?.find((h: any) =>
+      const findCidParts = (parts: MessagePart[]) => {
+        parts.forEach(part => {
+          const contentIdHeader = part.headers?.find(h =>
             h.name?.toLowerCase() === 'content-id'
           );
           if (contentIdHeader && part.mimeType?.startsWith('image/') && part.body?.attachmentId) {
@@ -3701,7 +3935,7 @@ function App() {
         newCidData[result.value.cid] = result.value.data;
       }
     }
-    if (Object.keys(newCidData).length > 0) {
+    if (Object.keys(newCidData).length > 0 && activeThreadId() === thread.id) {
       setCidAttachmentData(prev => ({ ...prev, ...newCidData }));
     }
   }
@@ -3848,6 +4082,16 @@ function App() {
     const snapshot: Record<string, ThreadGroup[]> = {};
     const affectedCardIds: string[] = [];
 
+    // Archive only removes INBOX: the thread should vanish only from cards
+    // whose query is inbox-scoped — cards like has:attachment or is:starred
+    // still match it on the server. Trash/spam remove it everywhere.
+    const inboxScoped = (cId: string) => {
+      const q = cards().find(c => c.id === cId)?.query.toLowerCase() ?? "";
+      return q.includes("in:inbox") || q.includes("is:inbox") || q.includes("label:inbox") || q.includes("category:");
+    };
+    const removesFromCard = (cId: string) =>
+      action === 'trash' || action === 'spam' || (action === 'archive' && inboxScoped(cId));
+
     for (const [cId, groups] of Object.entries(cardThreads)) {
       if (!groups) continue;
       if (groups.some(g => g.threads.some(t => threadIds.includes(t.gmail_thread_id)))) {
@@ -3870,7 +4114,7 @@ function App() {
           return t;
         }).filter(t => {
           // Optimistic removal for Archive/Trash/Spam
-          if ((action === 'archive' || action === 'trash' || action === 'spam') && threadIds.includes(t.gmail_thread_id)) {
+          if (removesFromCard(cId) && threadIds.includes(t.gmail_thread_id)) {
             return false;
           }
           return true;
@@ -4367,62 +4611,173 @@ function App() {
                             }
                           }}
                         >
-                          {/* Query preview when editing */}
-                          <Show when={editingCardId() === card.id}>
-                            <Show when={queryPreviewLoading()}>
-                              <div class="loading">Searching...</div>
+                          {/* Only show loading if no cached data */}
+                          <Show when={loadingThreads[card.id] && !cardThreads[card.id] && !cardCalendarEvents[card.id]}>
+                            <div class="loading">Loading...</div>
+                          </Show>
+                          <Show when={isPreviewingQuery(card.id) && queryPreviewLoading()}>
+                            <div class="loading">Searching...</div>
+                          </Show>
+                          <Show when={!loadingThreads[card.id] && cardErrors[card.id] && !cardThreads[card.id] && !cardCalendarEvents[card.id]}>
+                            <div class="card-error">
+                              <span class="error-icon">⚠</span>
+                              <span class="error-text">{cardErrors[card.id]}</span>
+                              <button class="retry-btn" onClick={(e) => refreshCard(card.id, e)}>Try again</button>
+                            </div>
+                          </Show>
+
+                          {/* Calendar card: show calendar events */}
+                          <Show when={effectiveCardType(card) === "calendar" && (isPreviewingQuery(card.id) || cardCalendarEvents[card.id])}>
+                            <Show when={getCalendarEventGroups(card.id).length === 0 && !(isPreviewingQuery(card.id) && queryPreviewLoading())}>
+                              <div class="empty">No events</div>
                             </Show>
-                            {/* Calendar events preview */}
-                            <Show when={!queryPreviewLoading() && editCardQuery().toLowerCase().includes("calendar:")}>
-                              <Show when={queryPreviewCalendarEvents().length === 0}>
-                                <div class="empty">No events</div>
-                              </Show>
-                              <For each={groupCalendarEvents(queryPreviewCalendarEvents(), editCardGroupBy())}>
-                                {(group) => (
-                                  <>
-                                    <div class="date-header">{group.label}</div>
-                                    <For each={group.events}>
-                                      {(event) => (
-                                        <div class={`calendar-event-item ${event.response_status === "declined" ? "declined" : ""}`}>
-                                          <div class="calendar-event-row">
-                                            <span class="calendar-event-title">{event.title}</span>
-                                            <span class="calendar-event-time-compact">
-                                              {getSmartEventTime(event)}
-                                            </span>
+                            <For each={getCalendarEventGroups(card.id)}>
+                              {(group) => (
+                                <>
+                                  <div class="date-header">{group.label}</div>
+                                  <For each={group.events}>
+                                    {(event) => (
+                                      <>
+                                      <div
+                                        class={`calendar-event-item ${event.response_status === "declined" ? "declined" : ""} ${selectedEvents()[card.id]?.has(event.id) ? "selected" : ""} ${isEventFocused(card.id, event.id) ? "focused" : ""} ${quickReplyEventId() === event.id ? "replying" : ""}`}
+                                        onClick={() => openEvent(event, card.id)}
+                                        onMouseEnter={() => showEventHoverActions(event.id)}
+                                        onMouseLeave={hideEventHoverActions}
+                                        tabindex="0"
+                                      >
+                                        <div class="calendar-event-row">
+                                          <span class="calendar-event-title">{event.title}</span>
+                                          <span class="calendar-event-time-compact">
+                                            {getSmartEventTime(event)}
+                                          </span>
+                                        </div>
+                                        <Show when={event.description}>
+                                          <div class="calendar-event-description">{event.description}</div>
+                                        </Show>
+                                        <Show when={event.location}>
+                                          <div class="calendar-event-location-compact">
+                                            <LocationIcon />
+                                            <span>{event.location}</span>
                                           </div>
-                                          <Show when={event.description}>
-                                            <div class="calendar-event-description">{event.description}</div>
-                                          </Show>
-                                          <Show when={event.location}>
-                                            <div class="calendar-event-location-compact">
-                                              <LocationIcon />
-                                              <span>{event.location}</span>
-                                            </div>
-                                          </Show>
-                                          <Show when={event.response_status}>
-                                            <div class={`calendar-event-response ${event.response_status}`}>
-                                              {getResponseStatusLabel(event.response_status)}
-                                            </div>
+                                        </Show>
+                                        <Show when={event.response_status}>
+                                          <div class={`calendar-event-response ${event.response_status}`}>
+                                            {getResponseStatusLabel(event.response_status)}
+                                          </div>
+                                        </Show>
+                                        <Show when={event.hangout_link}>
+                                          <button
+                                            class="calendar-join-btn"
+                                            onClick={(e) => { e.stopPropagation(); event.hangout_link && openUrl(event.hangout_link); }}
+                                          >
+                                            Join meeting
+                                          </button>
+                                        </Show>
+                                        {/* Event Checkbox and Actions Wheel */}
+                                        <div
+                                          class="thread-checkbox-wrap"
+                                          onContextMenu={(e) => {
+                                            e.preventDefault();
+                                            e.stopPropagation();
+                                            setActionConfigMenu({ x: e.clientX, y: e.clientY, isEvent: true });
+                                          }}
+                                        >
+                                          <input
+                                            type="checkbox"
+                                            class="thread-checkbox"
+                                            checked={selectedEvents()[card.id]?.has(event.id) || false}
+                                            onClick={(e) => {
+                                              e.stopPropagation();
+                                              toggleEventSelection(card.id, event.id, e);
+                                            }}
+                                          />
+                                          <Show when={(hoveredEvent() === event.id && eventActionsWheelOpen()) || isEventFocused(card.id, event.id)}>
+                                            <ActionsWheel
+                                              cardId={card.id}
+                                              event={event}
+                                              selectedCount={selectedEvents()[card.id]?.has(event.id) ? (selectedEvents()[card.id]?.size || 0) : 0}
+                                              open={true}
+                                              onClose={() => setEventActionsWheelOpen(false)}
+                                              selectedAccount={selectedAccount}
+                                              actionSettings={actionSettings}
+                                              actionOrder={actionOrder}
+                                              eventActionSettings={eventActionSettings}
+                                              eventActionOrder={eventActionOrder}
+                                              selectedThreads={selectedThreads}
+                                              setSelectedThreads={setSelectedThreads}
+                                              selectedEvents={selectedEvents}
+                                              setSelectedEvents={setSelectedEvents}
+                                              openThreadQuickReply={openThreadQuickReply}
+                                              openEventQuickReply={openEventQuickReply}
+                                              startBatchReply={startBatchReply}
+                                              handleForward={handleForward}
+                                              handleThreadAction={handleThreadAction}
+                                              showToast={showToast}
+                                            />
                                           </Show>
                                         </div>
-                                      )}
-                                    </For>
-                                  </>
-                                )}
-                              </For>
+                                        <div class="thread-actions-wheel-placeholder"></div>
+                                      </div>
+                                      {/* Event Quick Reply */}
+                                      <Show when={quickReplyEventId() === event.id}>
+                                        <div class="quick-reply-box" onClick={(e) => e.stopPropagation()}>
+                                          <ComposeTextarea
+                                            class="quick-reply-input"
+                                            placeholder={`Reply to ${event.organizer || 'organizer'}...`}
+                                            value={quickReply().text}
+                                            onChange={(val: string) => setQuickReply(qr => ({ ...qr, text: val }))}
+                                            onSend={() => handleEventQuickReply(event)}
+                                            onCancel={() => { setQuickReplyEventId(null); setQuickReply(qr => ({ ...qr, text: "" })); }}
+                                            disabled={quickReply().sending}
+                                            autofocus
+                                          />
+                                          <div class="quick-reply-actions">
+                                            <button class="btn" onClick={() => { setQuickReplyEventId(null); setQuickReply(qr => ({ ...qr, text: "" })); }} disabled={quickReply().sending}>Cancel <span class="shortcut-hint">ESC</span></button>
+                                            <ComposeSendButton
+                                              onClick={() => handleEventQuickReply(event)}
+                                              disabled={!quickReply().text.trim()}
+                                              sending={quickReply().sending}
+                                            />
+                                          </div>
+                                        </div>
+                                      </Show>
+                                      </>
+                                    )}
+                                  </For>
+                                </>
+                              )}
+                            </For>
+                          </Show>
+
+                          {/* Email card: show threads */}
+                          <Show when={effectiveCardType(card) !== "calendar" && (isPreviewingQuery(card.id) || cardThreads[card.id])}>
+                            <Show when={getDisplayGroups(card.id).length === 0 && !(isPreviewingQuery(card.id) && queryPreviewLoading())}>
+                              <div class="empty">All clear</div>
                             </Show>
-                            {/* Email threads preview */}
-                            <Show when={!queryPreviewLoading() && queryPreviewThreads().length === 0 && editCardQuery().trim() && !editCardQuery().toLowerCase().includes("calendar:")}>
-                              <div class="empty">No matches</div>
-                            </Show>
-                            <Show when={!queryPreviewLoading() && queryPreviewThreads().length > 0}>
-                              <For each={regroupThreads(queryPreviewThreads(), editCardGroupBy())}>
-                                {(group) => (
-                                  <>
-                                    <div class="date-header">{group.label}</div>
-                                    <For each={group.threads}>
-                                      {(thread) => (
-                                        <div class="thread">
+                            <For each={getDisplayGroups(card.id)}>
+                              {(group) => (
+                                <>
+                                  <div class="date-header">{group.label}</div>
+                                  <For each={group.threads}>
+                                    {(thread) => {
+                                      // Load RSVP status once per invite row (guarded inside fetchRsvpStatus)
+                                      createEffect(() => {
+                                        const uid = thread.calendar_event?.uid;
+                                        if (thread.calendar_event?.method === "REQUEST" && uid) {
+                                          fetchRsvpStatus(thread.gmail_thread_id, uid);
+                                        }
+                                      });
+                                      return (
+                                      <>
+                                        <div
+                                          class={`thread ${thread.unread_count > 0 ? 'unread' : ''} ${selectedThreads()[card.id]?.has(thread.gmail_thread_id) ? 'selected' : ''} ${isThreadFocused(card.id, thread.gmail_thread_id) ? 'focused' : ''} ${quickReply().threadId === thread.gmail_thread_id ? 'replying' : ''}`}
+                                          onMouseEnter={() => showThreadHoverActions(thread.gmail_thread_id)}
+                                          onMouseLeave={() => hideThreadHoverActions()}
+                                          onClick={() => openThread(thread.gmail_thread_id, card.id)}
+                                          role="article"
+                                          aria-label={`${thread.unread_count > 0 ? 'Unread: ' : ''}${thread.subject} from ${thread.participants.slice(0, 2).join(', ')}`}
+                                          tabindex="0"
+                                        >
                                           <div class="thread-row">
                                             <Show when={thread.unread_count > 0}>
                                               <div class="unread-dot"></div>
@@ -4440,128 +4795,120 @@ function App() {
                                             </Show>
                                             <span class="thread-time">{formatTime(thread.last_message_date)}</span>
                                           </div>
-                                          <div class="thread-snippet">{decodeHtmlEntities(thread.snippet)}</div>
-                                          {/* Attachment previews */}
-                                          <Show when={thread.attachments?.length > 0 && !thread.calendar_event}>
-                                            <div class="thread-attachments">
-                                              <For each={thread.attachments?.filter(a => a.inline_data && a.mime_type.startsWith("image/")).slice(0, 3)}>
-                                                {(attachment) => (
-                                                  <img
-                                                    class="thread-image-thumb clickable"
-                                                    src={`data:${attachment.mime_type};base64,${normalizeBase64Url(attachment.inline_data || '')}`}
-                                                    alt={attachment.filename}
-                                                    title={attachment.filename}
-                                                    onClick={() => openAttachment(attachment.message_id, attachment.attachment_id, attachment.filename, attachment.mime_type, attachment.inline_data)}
-                                                  />
-                                                )}
-                                              </For>
-                                              <For each={thread.attachments?.filter(a => !a.inline_data || !a.mime_type.startsWith("image/")).slice(0, 2)}>
-                                                {(attachment) => (
-                                                  <div
-                                                    class="thread-file-item clickable"
-                                                    title={`${attachment.filename} (${formatFileSize(attachment.size)})`}
-                                                    onClick={() => openAttachment(attachment.message_id, attachment.attachment_id, attachment.filename, attachment.mime_type, attachment.inline_data)}
-                                                  >
-                                                    <span class="file-name">{truncateMiddle(attachment.filename, 14)}</span>
-                                                  </div>
-                                                )}
-                                              </For>
+                                          {/* Calendar event preview */}
+                                          <Show when={thread.calendar_event}>
+                                            <div class="calendar-event-preview">
+                                              <div class="calendar-event-time">
+                                                <ClockIcon />
+                                                <span>{formatCalendarEventDate(thread.calendar_event!.start_time, thread.calendar_event!.end_time, thread.calendar_event!.all_day)}</span>
+                                              </div>
+                                              <Show when={thread.calendar_event!.location}>
+                                                <div class="calendar-event-location">
+                                                  <LocationIcon />
+                                                  <span>{thread.calendar_event!.location}</span>
+                                                </div>
+                                              </Show>
+                                              <Show when={thread.calendar_event!.method === "REQUEST" && thread.calendar_event!.uid}>
+                                                <div class="calendar-rsvp" onClick={(e) => e.stopPropagation()}>
+                                                  <button
+                                                    class={rsvpStatus[thread.gmail_thread_id] === "accepted" ? "selected" : ""}
+                                                    disabled={rsvpLoading[thread.gmail_thread_id]}
+                                                    onClick={() => handleRsvp(thread.gmail_thread_id, thread.calendar_event!.uid, "yes")}
+                                                  >Yes</button>
+                                                  <button
+                                                    class={rsvpStatus[thread.gmail_thread_id] === "tentative" ? "selected" : ""}
+                                                    disabled={rsvpLoading[thread.gmail_thread_id]}
+                                                    onClick={() => handleRsvp(thread.gmail_thread_id, thread.calendar_event!.uid, "maybe")}
+                                                  >Maybe</button>
+                                                  <button
+                                                    class={rsvpStatus[thread.gmail_thread_id] === "declined" ? "selected" : ""}
+                                                    disabled={rsvpLoading[thread.gmail_thread_id]}
+                                                    onClick={() => handleRsvp(thread.gmail_thread_id, thread.calendar_event!.uid, "no")}
+                                                  >No</button>
+                                                </div>
+                                              </Show>
                                             </div>
                                           </Show>
-                                        </div>
-                                      )}
-                                    </For>
-                                  </>
-                                )}
-                              </For>
-                            </Show>
-                          </Show>
-                          {/* Normal view when not editing */}
-                          <Show when={editingCardId() !== card.id}>
-                            {/* Only show loading if no cached data */}
-                            <Show when={loadingThreads[card.id] && !cardThreads[card.id] && !cardCalendarEvents[card.id]}>
-                              <div class="loading">Loading...</div>
-                            </Show>
-                            <Show when={!loadingThreads[card.id] && cardErrors[card.id] && !cardThreads[card.id] && !cardCalendarEvents[card.id]}>
-                              <div class="card-error">
-                                <span class="error-icon">⚠</span>
-                                <span class="error-text">{cardErrors[card.id]}</span>
-                                <button class="retry-btn" onClick={(e) => refreshCard(card.id, e)}>Try again</button>
-                              </div>
-                            </Show>
-
-                            {/* Calendar card: show calendar events */}
-                            <Show when={card.card_type === "calendar" && cardCalendarEvents[card.id]}>
-                              <Show when={getCalendarEventGroups(card.id).length === 0}>
-                                <div class="empty">No events</div>
-                              </Show>
-                              <For each={getCalendarEventGroups(card.id)}>
-                                {(group) => (
-                                  <>
-                                    <div class="date-header">{group.label}</div>
-                                    <For each={group.events}>
-                                      {(event) => (
-                                        <>
-                                        <div
-                                          class={`calendar-event-item ${event.response_status === "declined" ? "declined" : ""} ${selectedEvents()[card.id]?.has(event.id) ? "selected" : ""} ${isEventFocused(card.id, event.id) ? "focused" : ""} ${quickReplyEventId() === event.id ? "replying" : ""}`}
-                                          onClick={() => openEvent(event, card.id)}
-                                          onMouseEnter={() => showEventHoverActions(event.id)}
-                                          onMouseLeave={hideEventHoverActions}
-                                          tabindex="0"
-                                        >
-                                          <div class="calendar-event-row">
-                                            <span class="calendar-event-title">{event.title}</span>
-                                            <span class="calendar-event-time-compact">
-                                              {getSmartEventTime(event)}
-                                            </span>
+                                          <Show when={!thread.calendar_event}>
+                                            <div class="thread-snippet">{decodeHtmlEntities(thread.snippet)}</div>
+                                          </Show>
+                                          <div class="thread-participants">
+                                            {thread.participants.slice(0, 3).join(", ")}
+                                            {thread.participants.length > 3 && ` + ${thread.participants.length - 3} `}
                                           </div>
-                                          <Show when={event.description}>
-                                            <div class="calendar-event-description">{event.description}</div>
-                                          </Show>
-                                          <Show when={event.location}>
-                                            <div class="calendar-event-location-compact">
-                                              <LocationIcon />
-                                              <span>{event.location}</span>
-                                            </div>
-                                          </Show>
-                                          <Show when={event.response_status}>
-                                            <div class={`calendar-event-response ${event.response_status}`}>
-                                              {getResponseStatusLabel(event.response_status)}
-                                            </div>
-                                          </Show>
-                                          <Show when={event.hangout_link}>
-                                            <button
-                                              class="calendar-join-btn"
-                                              onClick={(e) => { e.stopPropagation(); event.hangout_link && openUrl(event.hangout_link); }}
-                                            >
-                                              Join meeting
-                                            </button>
-                                          </Show>
-                                          {/* Event Checkbox and Actions Wheel */}
+                                          {/* Attachment previews (filter out .ics when calendar event is shown) */}
+                                          {(() => {
+                                            const isCalendarFile = (a: { mime_type: string; filename: string }) =>
+                                              a.mime_type === "text/calendar" || a.mime_type === "application/ics" || a.filename.endsWith(".ics");
+                                            const attachments = thread.calendar_event
+                                              ? thread.attachments?.filter(a => !isCalendarFile(a))
+                                              : thread.attachments;
+                                            const imageAttachments = attachments?.filter(a => a.inline_data && a.mime_type.startsWith("image/")) ?? [];
+                                            const fileAttachments = attachments?.filter(a => !a.inline_data || !a.mime_type.startsWith("image/")) ?? [];
+                                            const shownCount = Math.min(imageAttachments.length, 4) + Math.min(fileAttachments.length, 3);
+                                            return (
+                                              <Show when={attachments && attachments.length > 0}>
+                                                <div class="thread-attachments" onClick={(e) => e.stopPropagation()}>
+                                                  {/* Image thumbnails */}
+                                                  <For each={imageAttachments.slice(0, 4)}>
+                                                    {(attachment) => (
+                                                      <img
+                                                        class="thread-image-thumb clickable"
+                                                        src={`data:${attachment.mime_type};base64,${normalizeBase64Url(attachment.inline_data || '')}`}
+                                                        alt={attachment.filename}
+                                                        title={attachment.filename}
+                                                        onClick={() => openAttachment(attachment.message_id, attachment.attachment_id, attachment.filename, attachment.mime_type, attachment.inline_data)}
+                                                        onContextMenu={(e) => { e.preventDefault(); e.stopPropagation(); showAttachmentContextMenu({ messageId: attachment.message_id, attachmentId: attachment.attachment_id, filename: attachment.filename, mimeType: attachment.mime_type, inlineData: attachment.inline_data }); }}
+                                                      />
+                                                    )}
+                                                  </For>
+                                                  {/* Other files (non-image or images without inline data) */}
+                                                  <For each={fileAttachments.slice(0, 3)}>
+                                                    {(attachment) => (
+                                                      <div
+                                                        class="thread-file-item clickable"
+                                                        title={`${attachment.filename} (${formatFileSize(attachment.size)})`}
+                                                        onClick={() => openAttachment(attachment.message_id, attachment.attachment_id, attachment.filename, attachment.mime_type, attachment.inline_data)}
+                                                        onContextMenu={(e) => { e.preventDefault(); e.stopPropagation(); showAttachmentContextMenu({ messageId: attachment.message_id, attachmentId: attachment.attachment_id, filename: attachment.filename, mimeType: attachment.mime_type, inlineData: attachment.inline_data }); }}
+                                                      >
+                                                        <span class="file-name">{truncateMiddle(attachment.filename, 14)}</span>
+                                                      </div>
+                                                    )}
+                                                  </For>
+                                                  {/* More indicator */}
+                                                  <Show when={attachments && attachments.length > shownCount}>
+                                                    <span class="thread-attachment-more">+{attachments!.length - shownCount}</span>
+                                                  </Show>
+                                                </div>
+                                              </Show>
+                                            );
+                                          })()}
+                                          {/* Thread Checkbox on hover */}
                                           <div
                                             class="thread-checkbox-wrap"
                                             onContextMenu={(e) => {
                                               e.preventDefault();
                                               e.stopPropagation();
-                                              setActionConfigMenu({ x: e.clientX, y: e.clientY, isEvent: true });
+                                              setActionConfigMenu({ x: e.clientX, y: e.clientY });
                                             }}
                                           >
                                             <input
                                               type="checkbox"
                                               class="thread-checkbox"
-                                              checked={selectedEvents()[card.id]?.has(event.id) || false}
+                                              checked={selectedThreads()[card.id]?.has(thread.gmail_thread_id) || false}
                                               onClick={(e) => {
                                                 e.stopPropagation();
-                                                toggleEventSelection(card.id, event.id, e);
+                                                toggleThreadSelection(card.id, thread.gmail_thread_id, e);
                                               }}
                                             />
-                                            <Show when={(hoveredEvent() === event.id && eventActionsWheelOpen()) || isEventFocused(card.id, event.id)}>
+                                            <Show when={(hoveredThread() === thread.gmail_thread_id && actionsWheelOpen()) || isThreadFocused(card.id, thread.gmail_thread_id)}>
                                               <ActionsWheel
                                                 cardId={card.id}
-                                                event={event}
-                                                selectedCount={selectedEvents()[card.id]?.has(event.id) ? (selectedEvents()[card.id]?.size || 0) : 0}
+                                                threadId={thread.gmail_thread_id}
+                                                thread={thread}
+                                                selectedCount={selectedThreads()[card.id]?.has(thread.gmail_thread_id) ? (selectedThreads()[card.id]?.size || 0) : 0}
                                                 open={true}
-                                                onClose={() => setEventActionsWheelOpen(false)}
+                                                onClose={() => setActionsWheelOpen(false)}
                                                 selectedAccount={selectedAccount}
                                                 actionSettings={actionSettings}
                                                 actionOrder={actionOrder}
@@ -4582,251 +4929,42 @@ function App() {
                                           </div>
                                           <div class="thread-actions-wheel-placeholder"></div>
                                         </div>
-                                        {/* Event Quick Reply */}
-                                        <Show when={quickReplyEventId() === event.id}>
+                                        <Show when={quickReply().threadId === thread.gmail_thread_id}>
                                           <div class="quick-reply-box" onClick={(e) => e.stopPropagation()}>
                                             <ComposeTextarea
                                               class="quick-reply-input"
-                                              placeholder={`Reply to ${event.organizer || 'organizer'}...`}
+                                              placeholder="Write a reply..."
                                               value={quickReply().text}
                                               onChange={(val: string) => setQuickReply(qr => ({ ...qr, text: val }))}
-                                              onSend={() => handleEventQuickReply(event)}
-                                              onCancel={() => { setQuickReplyEventId(null); setQuickReply(qr => ({ ...qr, text: "" })); }}
+                                              onSend={handleQuickReply}
+                                              onCancel={() => setQuickReply({ threadId: null, text: "", sending: false })}
                                               disabled={quickReply().sending}
                                               autofocus
                                             />
                                             <div class="quick-reply-actions">
-                                              <button class="btn" onClick={() => { setQuickReplyEventId(null); setQuickReply(qr => ({ ...qr, text: "" })); }} disabled={quickReply().sending}>Cancel <span class="shortcut-hint">ESC</span></button>
+                                              <ReactionButton
+                                                onSelect={(emoji) => handleQuickReaction(thread.gmail_thread_id, emoji)}
+                                                sending={quickReactionSending()}
+                                              />
+                                              <button class="btn" onClick={() => setQuickReply({ threadId: null, text: "", sending: false })} disabled={quickReply().sending}>Cancel <span class="shortcut-hint">ESC</span></button>
                                               <ComposeSendButton
-                                                onClick={() => handleEventQuickReply(event)}
+                                                onClick={handleQuickReply}
                                                 disabled={!quickReply().text.trim()}
                                                 sending={quickReply().sending}
                                               />
                                             </div>
                                           </div>
                                         </Show>
-                                        </>
-                                      )}
-                                    </For>
-                                  </>
-                                )}
-                              </For>
-                            </Show>
-
-                            {/* Email card: show threads */}
-                            <Show when={card.card_type !== "calendar" && cardThreads[card.id]}>
-                              <Show when={getDisplayGroups(card.id).length === 0}>
-                                <div class="empty">All clear</div>
-                              </Show>
-                              <For each={getDisplayGroups(card.id)}>
-                                {(group) => (
-                                  <>
-                                    <div class="date-header">{group.label}</div>
-                                    <For each={group.threads}>
-                                      {(thread) => {
-                                        // Load RSVP status once per invite row (guarded inside fetchRsvpStatus)
-                                        createEffect(() => {
-                                          const uid = thread.calendar_event?.uid;
-                                          if (thread.calendar_event?.method === "REQUEST" && uid) {
-                                            fetchRsvpStatus(thread.gmail_thread_id, uid);
-                                          }
-                                        });
-                                        return (
-                                        <>
-                                          <div
-                                            class={`thread ${thread.unread_count > 0 ? 'unread' : ''} ${selectedThreads()[card.id]?.has(thread.gmail_thread_id) ? 'selected' : ''} ${isThreadFocused(card.id, thread.gmail_thread_id) ? 'focused' : ''} ${quickReply().threadId === thread.gmail_thread_id ? 'replying' : ''}`}
-                                            onMouseEnter={() => showThreadHoverActions(thread.gmail_thread_id)}
-                                            onMouseLeave={() => hideThreadHoverActions()}
-                                            onClick={() => openThread(thread.gmail_thread_id, card.id)}
-                                            role="article"
-                                            aria-label={`${thread.unread_count > 0 ? 'Unread: ' : ''}${thread.subject} from ${thread.participants.slice(0, 2).join(', ')}`}
-                                            tabindex="0"
-                                          >
-                                            <div class="thread-row">
-                                              <Show when={thread.unread_count > 0}>
-                                                <div class="unread-dot"></div>
-                                              </Show>
-                                              <span class="thread-subject">{thread.subject}</span>
-                                              <Show when={thread.calendar_event}>
-                                                <span class="thread-indicator" title="Calendar invite">
-                                                  <CalendarIcon />
-                                                </span>
-                                              </Show>
-                                              <Show when={thread.has_attachment && !thread.calendar_event}>
-                                                <span class="thread-indicator" title="Has attachment">
-                                                  <AttachmentIcon />
-                                                </span>
-                                              </Show>
-                                              <span class="thread-time">{formatTime(thread.last_message_date)}</span>
-                                            </div>
-                                            {/* Calendar event preview */}
-                                            <Show when={thread.calendar_event}>
-                                              <div class="calendar-event-preview">
-                                                <div class="calendar-event-time">
-                                                  <ClockIcon />
-                                                  <span>{formatCalendarEventDate(thread.calendar_event!.start_time, thread.calendar_event!.end_time, thread.calendar_event!.all_day)}</span>
-                                                </div>
-                                                <Show when={thread.calendar_event!.location}>
-                                                  <div class="calendar-event-location">
-                                                    <LocationIcon />
-                                                    <span>{thread.calendar_event!.location}</span>
-                                                  </div>
-                                                </Show>
-                                                <Show when={thread.calendar_event!.method === "REQUEST" && thread.calendar_event!.uid}>
-                                                  <div class="calendar-rsvp" onClick={(e) => e.stopPropagation()}>
-                                                    <button
-                                                      class={rsvpStatus[thread.gmail_thread_id] === "accepted" ? "selected" : ""}
-                                                      disabled={rsvpLoading[thread.gmail_thread_id]}
-                                                      onClick={() => handleRsvp(thread.gmail_thread_id, thread.calendar_event!.uid, "yes")}
-                                                    >Yes</button>
-                                                    <button
-                                                      class={rsvpStatus[thread.gmail_thread_id] === "tentative" ? "selected" : ""}
-                                                      disabled={rsvpLoading[thread.gmail_thread_id]}
-                                                      onClick={() => handleRsvp(thread.gmail_thread_id, thread.calendar_event!.uid, "maybe")}
-                                                    >Maybe</button>
-                                                    <button
-                                                      class={rsvpStatus[thread.gmail_thread_id] === "declined" ? "selected" : ""}
-                                                      disabled={rsvpLoading[thread.gmail_thread_id]}
-                                                      onClick={() => handleRsvp(thread.gmail_thread_id, thread.calendar_event!.uid, "no")}
-                                                    >No</button>
-                                                  </div>
-                                                </Show>
-                                              </div>
-                                            </Show>
-                                            <Show when={!thread.calendar_event}>
-                                              <div class="thread-snippet">{decodeHtmlEntities(thread.snippet)}</div>
-                                            </Show>
-                                            <div class="thread-participants">
-                                              {thread.participants.slice(0, 3).join(", ")}
-                                              {thread.participants.length > 3 && ` + ${thread.participants.length - 3} `}
-                                            </div>
-                                            {/* Attachment previews (filter out .ics when calendar event is shown) */}
-                                            {(() => {
-                                              const isCalendarFile = (a: { mime_type: string; filename: string }) =>
-                                                a.mime_type === "text/calendar" || a.mime_type === "application/ics" || a.filename.endsWith(".ics");
-                                              const attachments = thread.calendar_event
-                                                ? thread.attachments?.filter(a => !isCalendarFile(a))
-                                                : thread.attachments;
-                                              return (
-                                                <Show when={attachments && attachments.length > 0}>
-                                                  <div class="thread-attachments" onClick={(e) => e.stopPropagation()}>
-                                                    {/* Image thumbnails */}
-                                                    <For each={attachments?.filter(a => a.inline_data && a.mime_type.startsWith("image/")).slice(0, 4)}>
-                                                      {(attachment) => (
-                                                        <img
-                                                          class="thread-image-thumb clickable"
-                                                          src={`data:${attachment.mime_type};base64,${normalizeBase64Url(attachment.inline_data || '')}`}
-                                                          alt={attachment.filename}
-                                                          title={attachment.filename}
-                                                          onClick={() => openAttachment(attachment.message_id, attachment.attachment_id, attachment.filename, attachment.mime_type, attachment.inline_data)}
-                                                          onContextMenu={(e) => { e.preventDefault(); e.stopPropagation(); showAttachmentContextMenu({ messageId: attachment.message_id, attachmentId: attachment.attachment_id, filename: attachment.filename, mimeType: attachment.mime_type, inlineData: attachment.inline_data }); }}
-                                                        />
-                                                      )}
-                                                    </For>
-                                                    {/* Other files (non-image or images without inline data) */}
-                                                    <For each={attachments?.filter(a => !a.inline_data || !a.mime_type.startsWith("image/")).slice(0, 3)}>
-                                                      {(attachment) => (
-                                                        <div
-                                                          class="thread-file-item clickable"
-                                                          title={`${attachment.filename} (${formatFileSize(attachment.size)})`}
-                                                          onClick={() => openAttachment(attachment.message_id, attachment.attachment_id, attachment.filename, attachment.mime_type, attachment.inline_data)}
-                                                          onContextMenu={(e) => { e.preventDefault(); e.stopPropagation(); showAttachmentContextMenu({ messageId: attachment.message_id, attachmentId: attachment.attachment_id, filename: attachment.filename, mimeType: attachment.mime_type, inlineData: attachment.inline_data }); }}
-                                                        >
-                                                          <span class="file-name">{truncateMiddle(attachment.filename, 14)}</span>
-                                                        </div>
-                                                      )}
-                                                    </For>
-                                                    {/* More indicator */}
-                                                    <Show when={attachments.length > 7}>
-                                                      <span class="thread-attachment-more">+{attachments.length - 7}</span>
-                                                    </Show>
-                                                  </div>
-                                                </Show>
-                                              );
-                                            })()}
-                                            {/* Thread Checkbox on hover */}
-                                            <div
-                                              class="thread-checkbox-wrap"
-                                              onContextMenu={(e) => {
-                                                e.preventDefault();
-                                                e.stopPropagation();
-                                                setActionConfigMenu({ x: e.clientX, y: e.clientY });
-                                              }}
-                                            >
-                                              <input
-                                                type="checkbox"
-                                                class="thread-checkbox"
-                                                checked={selectedThreads()[card.id]?.has(thread.gmail_thread_id) || false}
-                                                onClick={(e) => {
-                                                  e.stopPropagation();
-                                                  toggleThreadSelection(card.id, thread.gmail_thread_id, e);
-                                                }}
-                                              />
-                                              <Show when={(hoveredThread() === thread.gmail_thread_id && actionsWheelOpen()) || isThreadFocused(card.id, thread.gmail_thread_id)}>
-                                                <ActionsWheel
-                                                  cardId={card.id}
-                                                  threadId={thread.gmail_thread_id}
-                                                  thread={thread}
-                                                  selectedCount={selectedThreads()[card.id]?.has(thread.gmail_thread_id) ? (selectedThreads()[card.id]?.size || 0) : 0}
-                                                  open={true}
-                                                  onClose={() => setActionsWheelOpen(false)}
-                                                  selectedAccount={selectedAccount}
-                                                  actionSettings={actionSettings}
-                                                  actionOrder={actionOrder}
-                                                  eventActionSettings={eventActionSettings}
-                                                  eventActionOrder={eventActionOrder}
-                                                  selectedThreads={selectedThreads}
-                                                  setSelectedThreads={setSelectedThreads}
-                                                  selectedEvents={selectedEvents}
-                                                  setSelectedEvents={setSelectedEvents}
-                                                  openThreadQuickReply={openThreadQuickReply}
-                                                  openEventQuickReply={openEventQuickReply}
-                                                  startBatchReply={startBatchReply}
-                                                  handleForward={handleForward}
-                                                  handleThreadAction={handleThreadAction}
-                                                  showToast={showToast}
-                                                />
-                                              </Show>
-                                            </div>
-                                            <div class="thread-actions-wheel-placeholder"></div>
-                                          </div>
-                                          <Show when={quickReply().threadId === thread.gmail_thread_id}>
-                                            <div class="quick-reply-box" onClick={(e) => e.stopPropagation()}>
-                                              <ComposeTextarea
-                                                class="quick-reply-input"
-                                                placeholder="Write a reply..."
-                                                value={quickReply().text}
-                                                onChange={(val: string) => setQuickReply(qr => ({ ...qr, text: val }))}
-                                                onSend={handleQuickReply}
-                                                onCancel={() => setQuickReply({ threadId: null, text: "", sending: false })}
-                                                disabled={quickReply().sending}
-                                                autofocus
-                                              />
-                                              <div class="quick-reply-actions">
-                                                <ReactionButton
-                                                  onSelect={(emoji) => handleQuickReaction(thread.gmail_thread_id, emoji)}
-                                                  sending={quickReactionSending()}
-                                                />
-                                                <button class="btn" onClick={() => setQuickReply({ threadId: null, text: "", sending: false })} disabled={quickReply().sending}>Cancel <span class="shortcut-hint">ESC</span></button>
-                                                <ComposeSendButton
-                                                  onClick={handleQuickReply}
-                                                  disabled={!quickReply().text.trim()}
-                                                  sending={quickReply().sending}
-                                                />
-                                              </div>
-                                            </div>
-                                          </Show>
-                                        </>
-                                        );
-                                      }}
-                                    </For>
-                                  </>
-                                )}
-                              </For>
-                              {/* Loading more indicator for infinite scroll */}
-                              <Show when={loadingMore[card.id]}>
-                                <div class="loading">Loading more...</div>
-                              </Show>
+                                      </>
+                                      );
+                                    }}
+                                  </For>
+                                </>
+                              )}
+                            </For>
+                            {/* Loading more indicator for infinite scroll */}
+                            <Show when={loadingMore[card.id]}>
+                              <div class="loading">Loading more...</div>
                             </Show>
                           </Show>
                         </div>
@@ -5382,15 +5520,20 @@ function App() {
             if (event.all_day && event.end_time) {
               endDateVal = new Date(endDateVal.getTime() - 86400000);
             }
+            // All-day timestamps are UTC-anchored; their local rendering is a
+            // time the user never chose (e.g. 17:00 in UTC-7), which would be
+            // saved verbatim if "All day" gets unchecked. Prefill smart
+            // defaults instead.
+            const timeDefaults = getSmartEventDefaults();
             setEventForm(f => ({
               ...f,
               summary: event.title || '',
               description: event.description || '',
               location: event.location || '',
               startDate: toDateInputString(startDate, event.all_day),
-              startTime: startDate.toTimeString().slice(0, 5),
+              startTime: event.all_day ? timeDefaults.startTime : startDate.toTimeString().slice(0, 5),
               endDate: toDateInputString(endDateVal, event.all_day),
-              endTime: endDateVal.toTimeString().slice(0, 5),
+              endTime: event.all_day ? timeDefaults.endTime : endDateVal.toTimeString().slice(0, 5),
               allDay: event.all_day,
               attendees: event.attendees.map(a => a.email).join(', '),
               recurrence: null, // Recurrence editing not supported yet
@@ -5795,7 +5938,6 @@ function App() {
             <div class="shortcuts-section">
               <h3>Selection</h3>
               <div class="shortcut-row"><kbd>x</kbd> <span>Select thread</span></div>
-              <div class="shortcut-row"><kbd>⌘A</kbd> <span>Select all</span></div>
             </div>
             <div class="shortcuts-section">
               <h3>Help</h3>

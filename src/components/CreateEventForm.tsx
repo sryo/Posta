@@ -88,24 +88,36 @@ export const CreateEventForm = (props: {
     }, 150);
   });
 
+  // The save button advertises ⌘Enter; handle it on the form so it also
+  // works in the inline edit form, which the app-level shortcut (gated on
+  // creatingEvent) never reaches. Double-saves in panel mode are prevented
+  // by the saving flag, set synchronously by onSave.
+  const handleKeyDown = (e: KeyboardEvent) => {
+    if (e.key === 'Enter' && (e.metaKey || e.ctrlKey) && !props.saving && props.summary) {
+      e.preventDefault();
+      props.onSave();
+    }
+  };
+
   // Validate end time isn't before start time
   const handleStartTimeChange = (time: string) => {
+    const oldStart = timeToMinutes(props.startTime);
+    const oldEnd = timeToMinutes(props.endTime);
     props.setStartTime(time);
-    // If end time is now before start time, adjust it
-    const startIdx = timeSlots.indexOf(time);
-    const endIdx = timeSlots.indexOf(props.endTime);
-    if (endIdx <= startIdx) {
-      // Set end time to 30 mins after start
-      const newEndIdx = Math.min(startIdx + 1, timeSlots.length - 1);
-      props.setEndTime(timeSlots[newEndIdx]);
+    const start = timeToMinutes(time);
+    if (start === null || oldEnd === null) return;
+    // If end time is now at or before start time, shift it to keep the duration
+    if (oldEnd <= start) {
+      const duration = oldStart !== null && oldEnd > oldStart ? oldEnd - oldStart : 30;
+      props.setEndTime(minutesToTime(Math.min(start + duration, 23 * 60 + 59)));
     }
   };
 
   const handleEndTimeChange = (time: string) => {
-    const startIdx = timeSlots.indexOf(props.startTime);
-    const endIdx = timeSlots.indexOf(time);
+    const start = timeToMinutes(props.startTime);
+    const end = timeToMinutes(time);
     // Only allow if end is after start
-    if (endIdx > startIdx) {
+    if (start === null || (end !== null && end > start)) {
       props.setEndTime(time);
     }
   };
@@ -138,6 +150,28 @@ export const CreateEventForm = (props: {
     }
   }
 
+  const timeToMinutes = (t: string): number | null => {
+    const [h, m] = t.split(':').map(Number);
+    return Number.isFinite(h) && Number.isFinite(m) ? h * 60 + m : null;
+  };
+
+  const minutesToTime = (mins: number) =>
+    `${String(Math.floor(mins / 60)).padStart(2, '0')}:${String(mins % 60).padStart(2, '0')}`;
+
+  // Events created elsewhere can have times off the 30-minute grid; insert
+  // the current value as an extra slot so it stays visible and selected
+  const slotsWithValue = (value: string) => {
+    const mins = timeToMinutes(value);
+    if (mins === null || timeSlots.includes(value)) return timeSlots;
+    const idx = timeSlots.findIndex(t => (timeToMinutes(t) ?? 0) > mins);
+    const slots = [...timeSlots];
+    slots.splice(idx === -1 ? slots.length : idx, 0, value);
+    return slots;
+  };
+
+  const startSlots = () => slotsWithValue(props.startTime);
+  const endSlots = () => slotsWithValue(props.endTime);
+
   const formatDateStr = (d: Date) => {
     const year = d.getFullYear();
     const month = String(d.getMonth() + 1).padStart(2, '0');
@@ -149,8 +183,20 @@ export const CreateEventForm = (props: {
 
   const handleDateSelect = (d: Date) => {
     const dateStr = formatDateStr(d);
-    props.setStartDate(dateStr);
-    props.setEndDate(dateStr); // Default to single day event
+    if (props.isEditing) {
+      // Preserve the start→end day span so shifting a multi-day event's
+      // start doesn't silently collapse it to a single day
+      const oldStart = new Date(props.startDate + "T00:00");
+      const oldEnd = new Date(props.endDate + "T00:00");
+      const spanDays = Math.max(0, Math.round((oldEnd.getTime() - oldStart.getTime()) / 86400000));
+      const newEnd = new Date(d);
+      newEnd.setDate(newEnd.getDate() + spanDays);
+      props.setStartDate(dateStr);
+      props.setEndDate(formatDateStr(newEnd));
+    } else {
+      props.setStartDate(dateStr);
+      props.setEndDate(dateStr); // Default to single day event
+    }
   };
 
   const formatDateDisplay = (d: Date) => {
@@ -250,7 +296,7 @@ export const CreateEventForm = (props: {
                   <label style={{ "font-size": "12px", color: "var(--text-secondary)" }}>Start</label>
                 </div>
                 <div class="time-picker-start" style={{ flex: 1, "overflow-y": "auto", border: "1px solid var(--border)", "border-radius": "6px" }}>
-                  <For each={timeSlots}>
+                  <For each={startSlots()}>
                     {(t) => (
                       <div
                         onClick={() => handleStartTimeChange(t)}
@@ -276,7 +322,7 @@ export const CreateEventForm = (props: {
                   <label style={{ "font-size": "12px", color: "var(--text-secondary)" }}>End</label>
                 </div>
                 <div class="time-picker-end" style={{ flex: 1, "overflow-y": "auto", border: "1px solid var(--border)", "border-radius": "6px" }}>
-                  <For each={timeSlots}>
+                  <For each={endSlots()}>
                     {(t) => (
                       <div
                         onClick={() => handleEndTimeChange(t)}
@@ -366,14 +412,14 @@ export const CreateEventForm = (props: {
 
   if (props.inline) {
     return (
-      <div class="inline-event-form">
+      <div class="inline-event-form" onKeyDown={handleKeyDown}>
         {formContent()}
       </div>
     );
   }
 
   return (
-    <div class={`compose-panel event-compose ${props.closing ? 'closing' : ''}`} style={{ height: "auto", "max-height": "90vh", display: "flex", "flex-direction": "column" }}>
+    <div class={`compose-panel event-compose ${props.closing ? 'closing' : ''}`} onKeyDown={handleKeyDown} style={{ height: "auto", "max-height": "90vh", display: "flex", "flex-direction": "column" }}>
       <div class="compose-header">
         <h3>{props.isEditing ? "Edit event" : "New event"}</h3>
         <CloseButton onClick={props.onClose} />

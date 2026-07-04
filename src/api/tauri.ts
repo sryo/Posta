@@ -196,6 +196,7 @@ export interface Header {
 export interface MessageBody {
   size?: number;
   data?: string;
+  attachmentId?: string;
 }
 
 export interface MessagePart {
@@ -346,8 +347,10 @@ export async function saveAttachment(
 export interface GmailLabel {
   id: string;
   name: string;
-  message_list_visibility: string | null;
-  label_list_visibility: string | null;
+  // Rust renames these to camelCase for BOTH serialize and deserialize;
+  // label_type stays snake_case (its rename is deserialize-only)
+  messageListVisibility: string | null;
+  labelListVisibility: string | null;
   label_type: string | null;
 }
 
@@ -430,6 +433,8 @@ export interface CalendarInfo {
   id: string;
   name: string;
   is_primary: boolean;
+  access_role: string; // owner, writer, reader, freeBusyReader
+  timezone: string | null; // IANA timezone, e.g. "America/Argentina/Buenos_Aires"
 }
 
 export async function listCalendars(accountId: string): Promise<CalendarInfo[]> {
