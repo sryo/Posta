@@ -2,7 +2,7 @@
 use serde::Deserialize;
 use serde_json::json;
 
-const API_ENDPOINT: &str = "https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent";
+const API_ENDPOINT: &str = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent";
 
 pub struct GeminiClient {
     client: reqwest::Client,

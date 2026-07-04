@@ -1,8 +1,14 @@
 // Google People API client for contacts
 
+use once_cell::sync::Lazy;
 use serde::{Deserialize, Serialize};
+use std::collections::HashSet;
+use std::sync::Mutex;
 
 const PEOPLE_API_BASE: &str = "https://people.googleapis.com/v1";
+
+/// Access tokens that have already sent the searchContacts warmup request
+static WARMED_TOKENS: Lazy<Mutex<HashSet<String>>> = Lazy::new(|| Mutex::new(HashSet::new()));
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Contact {
@@ -138,11 +144,44 @@ impl PeopleClient {
         Ok(all_contacts)
     }
 
+    /// The People API docs require a warmup request (empty query) before
+    /// searchContacts so the server-side cache is populated; without it the
+    /// first searches after startup can return empty or stale results.
+    /// Best-effort, sent once per access token.
+    async fn warmup_search_cache(&self) {
+        {
+            let mut warmed = match WARMED_TOKENS.lock() {
+                Ok(guard) => guard,
+                Err(_) => return,
+            };
+            if !warmed.insert(self.access_token.clone()) {
+                return;
+            }
+        }
+
+        let url = format!(
+            "{}/people:searchContacts?query=&readMask=names,emailAddresses",
+            PEOPLE_API_BASE
+        );
+
+        if let Err(e) = self
+            .http_client
+            .get(&url)
+            .bearer_auth(&self.access_token)
+            .send()
+            .await
+        {
+            tracing::warn!("People search warmup request failed: {}", e);
+        }
+    }
+
     /// Search contacts by query
     pub async fn search_contacts(&self, query: &str) -> Result<Vec<Contact>, String> {
         if query.trim().is_empty() {
             return Ok(Vec::new());
         }
+
+        self.warmup_search_cache().await;
 
         // searchContacts has no pageToken; 30 is the API's maximum page size
         let url = format!(

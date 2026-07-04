@@ -11,7 +11,10 @@ pub mod people;
 pub mod ai;
 
 use commands::AppState;
+use std::sync::Mutex;
 use tauri::{Emitter, Listener, Manager, RunEvent, WindowEvent};
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+use tauri_plugin_deep_link::DeepLinkExt;
 
 /// Parsed mailto: URL data
 #[derive(Debug, Clone, serde::Serialize)]
@@ -70,6 +73,65 @@ fn parse_mailto(url: &str) -> MailtoData {
     data
 }
 
+/// Mailto URLs received before the webview registered its "mailto-received"
+/// listener (cold start). `ready` flips once the frontend has loaded.
+#[derive(Default)]
+struct PendingMailto(Mutex<PendingMailtoInner>);
+
+#[derive(Default)]
+struct PendingMailtoInner {
+    ready: bool,
+    urls: Vec<String>,
+}
+
+/// Emit a mailto URL to the frontend, or buffer it until the webview is ready
+fn deliver_mailto(handle: &tauri::AppHandle, url: &str) {
+    let buffered = {
+        let pending = handle.state::<PendingMailto>();
+        let mut inner = pending.0.lock().unwrap();
+        if inner.ready {
+            false
+        } else {
+            if !inner.urls.iter().any(|u| u == url) {
+                inner.urls.push(url.to_string());
+            }
+            true
+        }
+    };
+
+    if !buffered {
+        let mailto_data = parse_mailto(url);
+        tracing::info!("Received mailto: to={}", mailto_data.to);
+        let _ = handle.emit("mailto-received", mailto_data);
+    }
+
+    // Show and focus the window
+    if let Some(window) = handle.get_webview_window("main") {
+        let _ = window.show();
+        let _ = window.set_focus();
+    }
+}
+
+/// Mark the frontend ready and replay any mailto links buffered during startup
+fn flush_pending_mailtos(handle: &tauri::AppHandle) {
+    let urls = {
+        let pending = handle.state::<PendingMailto>();
+        let mut inner = pending.0.lock().unwrap();
+        inner.ready = true;
+        std::mem::take(&mut inner.urls)
+    };
+
+    for url in urls {
+        let mailto_data = parse_mailto(&url);
+        tracing::info!("Delivering buffered mailto: to={}", mailto_data.to);
+        let _ = handle.emit("mailto-received", mailto_data);
+        if let Some(window) = handle.get_webview_window("main") {
+            let _ = window.show();
+            let _ = window.set_focus();
+        }
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tracing_subscriber::fmt()
@@ -80,6 +142,7 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_deep_link::init())
         .manage(AppState::new())
+        .manage(PendingMailto::default())
         .setup(|app| {
             // Handle deep links (mailto:)
             #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
@@ -91,30 +154,43 @@ pub fn run() {
                     if let Ok(url_list) = serde_json::from_str::<Vec<String>>(urls) {
                         for url in url_list {
                             if url.starts_with("mailto:") {
-                                let mailto_data = parse_mailto(&url);
-                                tracing::info!("Received mailto: to={}", mailto_data.to);
-
-                                // Emit to frontend
-                                let _ = handle.emit("mailto-received", mailto_data);
-
-                                // Show and focus the window
-                                if let Some(window) = handle.get_webview_window("main") {
-                                    let _ = window.show();
-                                    let _ = window.set_focus();
-                                }
+                                deliver_mailto(&handle, &url);
                             }
                         }
                     }
                 });
+
+                // Cold start: pick up URL(s) the app was launched with, which
+                // can arrive before the listener above is registered
+                match app.deep_link().get_current() {
+                    Ok(Some(urls)) => {
+                        for url in urls {
+                            if url.as_str().starts_with("mailto:") {
+                                deliver_mailto(app.handle(), url.as_str());
+                            }
+                        }
+                    }
+                    Ok(None) => {}
+                    Err(e) => tracing::warn!("Failed to read startup deep link: {}", e),
+                }
             }
             Ok(())
+        })
+        .on_page_load(|webview, payload| {
+            // The frontend registers its "mailto-received" listener right after
+            // mount; wait a beat past load-finished before replaying buffered links
+            if matches!(payload.event(), tauri::webview::PageLoadEvent::Finished) {
+                let handle = webview.app_handle().clone();
+                tauri::async_runtime::spawn(async move {
+                    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                    flush_pending_mailtos(&handle);
+                });
+            }
         })
         .invoke_handler(tauri::generate_handler![
             commands::init_app,
             commands::configure_auth,
             commands::get_stored_credentials,
-            commands::start_oauth_flow,
-            commands::complete_oauth_flow,
             commands::run_oauth_flow,
             commands::get_accounts,
             commands::delete_account,
@@ -124,7 +200,6 @@ pub fn run() {
             commands::update_card,
             commands::delete_card,
             commands::reorder_cards,
-            commands::fetch_threads,
             commands::fetch_threads_paginated,
             commands::sync_threads_incremental,
             commands::search_threads_preview,

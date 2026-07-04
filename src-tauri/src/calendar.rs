@@ -6,6 +6,10 @@ use reqwest::StatusCode;
 use serde::{Deserialize, Serialize};
 
 const CALENDAR_API_BASE: &str = "https://www.googleapis.com/calendar/v3";
+// Events-list page size (the API default) and a per-calendar safety cap so a
+// runaway calendar can't page forever
+const EVENTS_PAGE_SIZE: i32 = 250;
+const PER_CALENDAR_EVENT_CAP: usize = 500;
 
 /// Calendar info returned to frontend
 #[derive(Debug, Clone, Serialize)]
@@ -90,6 +94,8 @@ struct CalendarListEntry {
 #[derive(Debug, Deserialize)]
 struct EventsListResponse {
     items: Option<Vec<ApiEvent>>,
+    #[serde(rename = "nextPageToken")]
+    next_page_token: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -183,13 +189,25 @@ struct CalEventSearchItem {
     attendees: Option<Vec<CalEventAttendee>>,
 }
 
-#[derive(Deserialize, Serialize, Clone)]
+// Round-trips every attendee field: the RSVP PATCH replaces the whole
+// attendees array, so fields not echoed back would be wiped for everyone
+#[derive(Deserialize, Serialize, Clone, Default)]
 struct CalEventAttendee {
     email: String,
+    #[serde(rename = "displayName", skip_serializing_if = "Option::is_none")]
+    display_name: Option<String>,
     #[serde(rename = "responseStatus", skip_serializing_if = "Option::is_none")]
     response_status: Option<String>,
     #[serde(rename = "self", skip_serializing_if = "Option::is_none")]
     is_self: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    optional: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    comment: Option<String>,
+    #[serde(rename = "additionalGuests", skip_serializing_if = "Option::is_none")]
+    additional_guests: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    resource: Option<bool>,
 }
 
 pub struct CalendarClient {
@@ -385,48 +403,91 @@ impl CalendarClient {
         let (time_min, time_max) = query.get_time_range(timezone);
 
         let fetch_futures: Vec<_> = calendars.iter().map(|cal| {
-            let mut url = format!(
+            let mut base_url = format!(
                 "{}/calendars/{}/events?timeMin={}&timeMax={}&maxResults={}&singleEvents=true&orderBy=startTime",
                 CALENDAR_API_BASE,
                 urlencoding::encode(&cal.id),
                 urlencoding::encode(&time_min.to_rfc3339()),
                 urlencoding::encode(&time_max.to_rfc3339()),
-                max_results
+                EVENTS_PAGE_SIZE
             );
 
             if let Some(q) = &query.text {
-                url.push_str(&format!("&q={}", urlencoding::encode(q)));
+                base_url.push_str(&format!("&q={}", urlencoding::encode(q)));
             }
 
             async move {
-                let resp = self
-                    .http_client
-                    .get(&url)
-                    .bearer_auth(&self.access_token)
-                    .send()
-                    .await
-                    .ok()?;
+                let mut items: Vec<ApiEvent> = Vec::new();
+                let mut page_token: Option<String> = None;
 
-                if !resp.status().is_success() {
-                    return None;
+                loop {
+                    let mut url = base_url.clone();
+                    if let Some(token) = &page_token {
+                        url.push_str(&format!("&pageToken={}", urlencoding::encode(token)));
+                    }
+
+                    let resp = self
+                        .http_client
+                        .get(&url)
+                        .bearer_auth(&self.access_token)
+                        .send()
+                        .await
+                        .map_err(|e| format!("Calendar events request failed: {}", e))?;
+
+                    if !resp.status().is_success() {
+                        let status = resp.status();
+                        let body = resp.text().await.unwrap_or_default();
+                        return Err(friendly_calendar_error(status, &body));
+                    }
+
+                    let data: EventsListResponse = resp
+                        .json()
+                        .await
+                        .map_err(|e| format!("Failed to parse events: {}", e))?;
+
+                    items.extend(data.items.unwrap_or_default());
+
+                    if items.len() >= PER_CALENDAR_EVENT_CAP {
+                        items.truncate(PER_CALENDAR_EVENT_CAP);
+                        break;
+                    }
+
+                    match data.next_page_token {
+                        Some(token) => page_token = Some(token),
+                        None => break,
+                    }
                 }
 
-                let data: EventsListResponse = resp.json().await.ok()?;
-                Some((data, cal))
+                Ok::<_, String>(items)
             }
         }).collect();
 
         let results = futures::future::join_all(fetch_futures).await;
 
-        for result in results {
-            if let Some((data, cal)) = result {
-                let events: Vec<CalendarEvent> = data
-                    .items
-                    .unwrap_or_default()
-                    .into_iter()
-                    .filter_map(|e| self.api_event_to_calendar_event(e, &cal.id, &cal.name, &cal.access_role))
-                    .collect();
-                all_events.extend(events);
+        let calendar_count = results.len();
+        let mut errors: Vec<(String, String)> = Vec::new();
+        for (result, cal) in results.into_iter().zip(calendars.iter()) {
+            match result {
+                Ok(items) => {
+                    let events: Vec<CalendarEvent> = items
+                        .into_iter()
+                        .filter_map(|e| self.api_event_to_calendar_event(e, &cal.id, &cal.name, &cal.access_role))
+                        .collect();
+                    all_events.extend(events);
+                }
+                Err(e) => errors.push((cal.id.clone(), e)),
+            }
+        }
+
+        // A minority of calendars failing (e.g. a freeBusyReader calendar
+        // returning 403) is tolerable, but if every calendar failed surface
+        // the error instead of pretending there are no events
+        if !errors.is_empty() {
+            if errors.len() == calendar_count {
+                return Err(errors.remove(0).1);
+            }
+            for (cal_id, e) in &errors {
+                tracing::warn!("Failed to fetch events for calendar {}: {}", cal_id, e);
             }
         }
 
@@ -688,15 +749,16 @@ impl CalendarClient {
         })
     }
 
-    /// Get the user's RSVP status for a calendar event from Calendar API
-    /// Returns the response status: "accepted", "tentative", "declined", "needsAction", or None
-    pub async fn get_calendar_event_status(
+    /// Query a single calendar for an event by iCalUID
+    async fn search_calendar_for_ical_uid(
         &self,
-        user_email: &str,
+        calendar_id: &str,
         event_uid: &str,
-    ) -> Option<String> {
+    ) -> Result<Option<CalEventSearchItem>, String> {
         let search_url = format!(
-            "https://www.googleapis.com/calendar/v3/calendars/primary/events?iCalUID={}",
+            "{}/calendars/{}/events?iCalUID={}",
+            CALENDAR_API_BASE,
+            urlencoding::encode(calendar_id),
             urlencoding::encode(event_uid)
         );
 
@@ -706,15 +768,58 @@ impl CalendarClient {
             .bearer_auth(&self.access_token)
             .send()
             .await
-            .ok()?;
+            .map_err(|e| e.to_string())?;
 
         if !response.status().is_success() {
-            return None;
+            let error_text = response.text().await.unwrap_or_default();
+            return Err(format!("Failed to find calendar event: {}", error_text));
         }
 
-        let events_response: CalEventSearchResponse = response.json().await.ok()?;
-        let items = events_response.items?;
-        let event = items.first()?;
+        let events_response: CalEventSearchResponse = response.json().await.map_err(|e| e.to_string())?;
+        Ok(events_response.items.unwrap_or_default().into_iter().next())
+    }
+
+    /// Locate an event by iCalUID: primary calendar first (common case, no
+    /// extra requests), then the account's other calendars, since invites
+    /// can land on secondary calendars. `writable_only` restricts the
+    /// secondary scan to calendars the user can modify (for RSVP patches).
+    /// Failures on secondary calendars are logged and skipped.
+    async fn find_event_by_ical_uid(
+        &self,
+        event_uid: &str,
+        writable_only: bool,
+    ) -> Result<Option<(String, CalEventSearchItem)>, String> {
+        if let Some(item) = self.search_calendar_for_ical_uid("primary", event_uid).await? {
+            return Ok(Some(("primary".to_string(), item)));
+        }
+
+        let calendars = self.list_calendars().await.unwrap_or_else(|e| {
+            tracing::warn!("Failed to list calendars for iCalUID lookup: {}", e);
+            Vec::new()
+        });
+
+        for cal in calendars.iter().filter(|c| {
+            !c.is_primary
+                && (!writable_only || c.access_role == "owner" || c.access_role == "writer")
+        }) {
+            match self.search_calendar_for_ical_uid(&cal.id, event_uid).await {
+                Ok(Some(item)) => return Ok(Some((cal.id.clone(), item))),
+                Ok(None) => {}
+                Err(e) => tracing::warn!("iCalUID lookup failed for calendar {}: {}", cal.id, e),
+            }
+        }
+
+        Ok(None)
+    }
+
+    /// Get the user's RSVP status for a calendar event from Calendar API
+    /// Returns the response status: "accepted", "tentative", "declined", "needsAction", or None
+    pub async fn get_calendar_event_status(
+        &self,
+        user_email: &str,
+        event_uid: &str,
+    ) -> Option<String> {
+        let (_, event) = self.find_event_by_ical_uid(event_uid, false).await.ok()??;
         let attendees = event.attendees.as_ref()?;
 
         for attendee in attendees {
@@ -735,32 +840,11 @@ impl CalendarClient {
         status: &str,
     ) -> Result<(), String> {
         // First, find the event by iCalUID
-        let search_url = format!(
-            "https://www.googleapis.com/calendar/v3/calendars/primary/events?iCalUID={}",
-            urlencoding::encode(event_uid)
-        );
+        let (calendar_id, event) = self
+            .find_event_by_ical_uid(event_uid, true)
+            .await?
+            .ok_or_else(|| "Calendar event not found".to_string())?;
 
-        let response = self
-            .http_client
-            .get(&search_url)
-            .bearer_auth(&self.access_token)
-            .send()
-            .await
-            .map_err(|e| e.to_string())?;
-
-        if !response.status().is_success() {
-            let error_text = response.text().await.unwrap_or_default();
-            return Err(format!("Failed to find calendar event: {}", error_text));
-        }
-
-        let events_response: CalEventSearchResponse = response.json().await.map_err(|e| e.to_string())?;
-        let items = events_response.items.unwrap_or_default();
-
-        if items.is_empty() {
-            return Err("Calendar event not found".to_string());
-        }
-
-        let event = &items[0];
         let event_id = &event.id;
 
         // Update attendee status
@@ -781,13 +865,16 @@ impl CalendarClient {
                 email: user_email.to_string(),
                 response_status: Some(status.to_string()),
                 is_self: Some(true),
+                ..Default::default()
             });
         }
 
         // Patch the event with updated attendees
         let patch_url = format!(
-            "https://www.googleapis.com/calendar/v3/calendars/primary/events/{}?sendUpdates=all",
-            event_id
+            "{}/calendars/{}/events/{}?sendUpdates=all",
+            CALENDAR_API_BASE,
+            urlencoding::encode(&calendar_id),
+            urlencoding::encode(event_id)
         );
 
         #[derive(Serialize)]
@@ -921,32 +1008,28 @@ impl CalendarQuery {
     }
 
     pub fn get_time_range(&self, timezone: Option<&str>) -> (DateTime<Utc>, DateTime<Utc>) {
-        let now = Utc::now();
+        self.get_time_range_at(timezone, Utc::now())
+    }
+
+    /// Same as get_time_range but with an injectable `now` for testability
+    fn get_time_range_at(&self, timezone: Option<&str>, now: DateTime<Utc>) -> (DateTime<Utc>, DateTime<Utc>) {
+        // Midnight may not exist on a DST spring-forward day (e.g. Chile,
+        // Cuba transition at 00:00); fall back to UTC midnight instead of panicking
+        let utc_midnight = || now.date_naive().and_hms_opt(0, 0, 0).expect("midnight is a valid time").and_utc();
 
         // Use calendar timezone for "today", fall back to local
-        let today_start = if let Some(tz_str) = timezone {
-            if let Ok(tz) = tz_str.parse::<Tz>() {
-                let tz_now = now.with_timezone(&tz);
-                let tz_today = tz_now.date_naive();
-                tz.from_local_datetime(&tz_today.and_hms_opt(0, 0, 0).expect("midnight is a valid time"))
-                    .single()
-                    .map(|dt| dt.with_timezone(&Utc))
-                    .unwrap_or_else(|| now.date_naive().and_hms_opt(0, 0, 0).expect("midnight is a valid time").and_utc())
-            } else {
-                let local_now = Local::now();
-                let local_today = local_now.date_naive();
-                Local.from_local_datetime(&local_today.and_hms_opt(0, 0, 0).expect("midnight is a valid time"))
-                    .single()
-                    .expect("local midnight should be valid")
-                    .with_timezone(&Utc)
-            }
+        let today_start = if let Some(tz) = timezone.and_then(|s| s.parse::<Tz>().ok()) {
+            let tz_today = now.with_timezone(&tz).date_naive();
+            tz.from_local_datetime(&tz_today.and_hms_opt(0, 0, 0).expect("midnight is a valid time"))
+                .single()
+                .map(|dt| dt.with_timezone(&Utc))
+                .unwrap_or_else(utc_midnight)
         } else {
-            let local_now = Local::now();
-            let local_today = local_now.date_naive();
+            let local_today = now.with_timezone(&Local).date_naive();
             Local.from_local_datetime(&local_today.and_hms_opt(0, 0, 0).expect("midnight is a valid time"))
                 .single()
-                .expect("local midnight should be valid")
-                .with_timezone(&Utc)
+                .map(|dt| dt.with_timezone(&Utc))
+                .unwrap_or_else(utc_midnight)
         };
 
         match &self.time_range {
@@ -1049,6 +1132,7 @@ mod tests {
     #[test]
     fn test_parse_duration() {
         assert_eq!(parse_duration("7d"), Some(Duration::days(7)));
+        assert_eq!(parse_duration("27d"), Some(Duration::days(27)));
         assert_eq!(parse_duration("1w"), Some(Duration::weeks(1)));
         assert_eq!(parse_duration("2m"), Some(Duration::days(60)));
         assert_eq!(parse_duration("1y"), Some(Duration::days(365)));
@@ -1109,13 +1193,31 @@ mod tests {
         // Should successfully parse and return a valid time
         assert!(start_tz <= Utc::now());
     }
-}
 
-#[cfg(test)]
-mod tests_27d {
-    use super::*;
     #[test]
-    fn test_27d() {
-         assert_eq!(parse_duration("27d"), Some(Duration::days(27)));
+    fn test_get_time_range_dst_gap() {
+        // Chile springs forward at local midnight: 2024-09-08 00:00 does not
+        // exist in America/Santiago. Must fall back to UTC midnight, not panic.
+        let cq = CalendarQuery::parse("calendar:today");
+        let now = "2024-09-08T15:00:00Z".parse::<DateTime<Utc>>().unwrap();
+        let (start, end) = cq.get_time_range_at(Some("America/Santiago"), now);
+
+        let expected = NaiveDate::from_ymd_opt(2024, 9, 8)
+            .unwrap()
+            .and_hms_opt(0, 0, 0)
+            .unwrap()
+            .and_utc();
+        assert_eq!(start, expected);
+        assert_eq!(end, expected + Duration::days(1));
+
+        // A normal day resolves to actual local midnight (UTC-4 in July)
+        let now = "2024-07-01T15:00:00Z".parse::<DateTime<Utc>>().unwrap();
+        let (start, _) = cq.get_time_range_at(Some("America/Santiago"), now);
+        let expected = NaiveDate::from_ymd_opt(2024, 7, 1)
+            .unwrap()
+            .and_hms_opt(4, 0, 0)
+            .unwrap()
+            .and_utc();
+        assert_eq!(start, expected);
     }
 }

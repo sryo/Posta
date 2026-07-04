@@ -3,7 +3,7 @@
 use crate::models::{Attachment, CalendarEvent, DateBucket, SendAttachment, Thread, ThreadGroup};
 use chrono::{DateTime, Datelike, Duration, Local, TimeZone, Utc};
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 const GMAIL_API_BASE: &str = "https://gmail.googleapis.com/gmail/v1";
 const BATCH_API_ENDPOINT: &str = "https://www.googleapis.com/batch/gmail/v1";
@@ -152,11 +152,6 @@ impl GmailClient {
             client: reqwest::Client::new(),
             access_token,
         }
-    }
-
-    pub async fn search_threads(&self, query: &str) -> Result<Vec<ThreadGroup>, String> {
-        let result = self.search_threads_paginated(query, None).await?;
-        Ok(result.groups)
     }
 
     /// Search threads with a custom limit (for preview)
@@ -389,16 +384,37 @@ impl GmailClient {
 
         // Process in chunks of MAX_BATCH_SIZE
         for chunk in thread_ids.chunks(MAX_BATCH_SIZE) {
-            match self.execute_batch_thread_fetch(chunk).await {
-                Ok(threads) => all_threads.extend(threads),
+            let missing: Vec<String> = match self.execute_batch_thread_fetch(chunk).await {
+                Ok(threads) => {
+                    // Individual sub-responses can fail (429/5xx) even when the
+                    // batch itself succeeds; retry those threads sequentially
+                    let fetched: HashSet<&str> =
+                        threads.iter().map(|t| t.gmail_thread_id.as_str()).collect();
+                    let missing = chunk
+                        .iter()
+                        .filter(|id| !fetched.contains(id.as_str()))
+                        .cloned()
+                        .collect();
+                    all_threads.extend(threads);
+                    missing
+                }
                 Err(e) => {
                     tracing::warn!("Batch fetch failed, falling back to sequential: {}", e);
-                    // Fallback to sequential fetch for this chunk
-                    for thread_id in chunk {
-                        if let Ok(thread) = self.get_thread_detail(thread_id).await {
-                            all_threads.push(thread);
-                        }
+                    chunk.to_vec()
+                }
+            };
+
+            for thread_id in &missing {
+                match self.get_thread_detail(thread_id).await {
+                    Ok(thread) => all_threads.push(thread),
+                    // 404 means the thread was deleted after being listed; anything
+                    // else must fail the whole call so callers don't treat the
+                    // result as complete (incremental sync would otherwise advance
+                    // the history ID past a change it never fetched)
+                    Err(e) if e.contains("API error 404") => {
+                        tracing::warn!("Thread {} no longer exists, skipping", thread_id);
                     }
+                    Err(e) => return Err(format!("Failed to fetch thread {}: {}", thread_id, e)),
                 }
             }
         }
@@ -725,7 +741,11 @@ impl GmailClient {
 
         // Add threading headers if this is a reply
         if let Some((in_reply_to, references)) = reply_headers {
-            message.push_str(&format!("In-Reply-To: {}\r\nReferences: {}\r\n", in_reply_to, references));
+            message.push_str(&format!(
+                "In-Reply-To: {}\r\nReferences: {}\r\n",
+                sanitize_header_value(in_reply_to),
+                sanitize_header_value(references)
+            ));
         }
 
         if !is_html && attachments.is_empty() {
@@ -1685,10 +1705,17 @@ fn ensure_angle_brackets(id: &str) -> String {
     format!("<{}>", trimmed)
 }
 
+/// Replace CR/LF with spaces so a crafted value cannot terminate its header
+/// line and inject extra headers (e.g. a hidden Bcc) into the raw message
+fn sanitize_header_value(value: &str) -> String {
+    value.replace("\r\n", " ").replace(['\r', '\n'], " ")
+}
+
 /// RFC 2047 encode a header value when it contains non-ASCII characters
 fn encode_header_value(value: &str) -> String {
+    let value = sanitize_header_value(value);
     if value.is_ascii() {
-        return value.to_string();
+        return value;
     }
     use base64::Engine;
     format!(
@@ -1699,7 +1726,7 @@ fn encode_header_value(value: &str) -> String {
 
 /// RFC 2047 encode display names in an address list header, leaving emails untouched
 fn encode_address_header(addresses: &str) -> String {
-    split_address_list(addresses)
+    split_address_list(&sanitize_header_value(addresses))
         .iter()
         .map(|addr| encode_single_address(addr))
         .collect::<Vec<_>>()
@@ -1925,15 +1952,15 @@ impl GmailClient {
         let mut message = String::new();
 
         // Headers
-        message.push_str(&format!("From: {}\r\n", from_email));
-        message.push_str(&format!("To: {}\r\n", to_email));
+        message.push_str(&format!("From: {}\r\n", sanitize_header_value(from_email)));
+        message.push_str(&format!("To: {}\r\n", sanitize_header_value(to_email)));
         message.push_str(&format!(
             "Subject: {}\r\n",
             encode_header_value(&format!("Re: {}", emoji))
         ));
         message.push_str("MIME-Version: 1.0\r\n");
-        message.push_str(&format!("In-Reply-To: {}\r\n", reply_to_message_id));
-        message.push_str(&format!("References: {}\r\n", reply_to_message_id));
+        message.push_str(&format!("In-Reply-To: {}\r\n", sanitize_header_value(reply_to_message_id)));
+        message.push_str(&format!("References: {}\r\n", sanitize_header_value(reply_to_message_id)));
         message.push_str(&format!(
             "Content-Type: multipart/alternative; boundary=\"{}\"\r\n\r\n",
             boundary
@@ -2040,6 +2067,40 @@ mod tests {
     #[test]
     fn encode_header_value_leaves_ascii_unchanged() {
         assert_eq!(encode_header_value("Hello world"), "Hello world");
+    }
+
+    #[test]
+    fn header_values_strip_crlf() {
+        assert_eq!(
+            encode_header_value("Test\r\nBcc: evil@example.com"),
+            "Test Bcc: evil@example.com"
+        );
+        assert_eq!(
+            encode_address_header("a@example.com\r\nBcc: evil@example.com"),
+            "a@example.com Bcc: evil@example.com"
+        );
+    }
+
+    #[test]
+    fn build_mime_message_rejects_header_injection() {
+        let client = GmailClient::new("test-token".to_string());
+        let message = client
+            .build_mime_message(
+                "victim@example.com\r\nBcc: evil@example.com",
+                "",
+                "",
+                "Hi\r\nX-Injected: 1",
+                "body",
+                &[],
+                None,
+                false,
+            )
+            .unwrap();
+
+        assert!(!message.contains("\r\nBcc: evil@example.com"));
+        assert!(!message.contains("\r\nX-Injected: 1"));
+        assert!(message.starts_with("To: victim@example.com Bcc: evil@example.com\r\n"));
+        assert!(message.contains("Subject: Hi X-Injected: 1\r\n"));
     }
 
     #[test]

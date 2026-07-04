@@ -193,29 +193,51 @@ fn get_credentials_file_path(app_data_dir: &Path) -> PathBuf {
     app_data_dir.join("tokens").join("oauth_credentials.json")
 }
 
-pub fn store_refresh_token(account_id: &str, token: &str, app_data_dir: &Path) -> Result<(), AuthError> {
-    tracing::info!("Storing refresh token for account: {}", account_id);
-
-    // Try keychain first
-    let keychain_ok = if let Ok(entry) = keyring::Entry::new(KEYRING_SERVICE, &format!("token:{}", account_id)) {
-        entry.set_password(token).is_ok()
-    } else {
-        false
-    };
-
-    if keychain_ok {
-        tracing::info!("Token stored in system keychain");
-    } else {
-        tracing::warn!("Keychain storage failed, using file fallback");
+/// Store a secret in the keychain and verify it can be read back
+/// (keychain can silently fail in sandboxed apps)
+fn keychain_store_verified(key: &str, secret: &str) -> bool {
+    match keyring::Entry::new(KEYRING_SERVICE, key) {
+        Ok(entry) => {
+            entry.set_password(secret).is_ok()
+                && entry.get_password().map(|s| s == secret).unwrap_or(false)
+        }
+        Err(_) => false,
     }
+}
 
-    // Always also write to file as backup (keychain can silently fail in sandboxed apps)
-    let path = get_token_file_path(app_data_dir, account_id);
+/// Write a secret to the plaintext fallback file, restricting it to the
+/// current user on unix
+fn write_secret_file(path: &Path, secret: &str, what: &str) -> Result<(), AuthError> {
     if let Some(parent) = path.parent() {
         let _ = std::fs::create_dir_all(parent);
     }
-    std::fs::write(&path, token)
-        .map_err(|e| AuthError::Keyring(format!("Failed to store token: {}", e)))?;
+    std::fs::write(path, secret)
+        .map_err(|e| AuthError::Keyring(format!("Failed to store {}: {}", what, e)))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600));
+    }
+    Ok(())
+}
+
+pub fn store_refresh_token(account_id: &str, token: &str, app_data_dir: &Path) -> Result<(), AuthError> {
+    tracing::info!("Storing refresh token for account: {}", account_id);
+
+    let path = get_token_file_path(app_data_dir, account_id);
+
+    // Keychain is the primary store; the plaintext file is only a fallback
+    if keychain_store_verified(&format!("token:{}", account_id), token) {
+        tracing::info!("Token stored in system keychain");
+        // Best-effort removal of any legacy plaintext copy
+        if path.exists() {
+            let _ = std::fs::remove_file(&path);
+        }
+        return Ok(());
+    }
+
+    tracing::warn!("Keychain storage failed, using file fallback");
+    write_secret_file(&path, token, "token")?;
     tracing::info!("Token stored in file: {:?}", path);
 
     Ok(())
@@ -243,17 +265,19 @@ pub fn get_refresh_token(account_id: &str, app_data_dir: &Path) -> Result<String
         }
     }
 
-    // Fall back to file storage for backwards compatibility (migrate to keychain on next store)
+    // Fall back to file storage for backwards compatibility
     let path = get_token_file_path(app_data_dir, account_id);
     tracing::info!("Checking file fallback at: {:?}, exists: {}", path, path.exists());
     if path.exists() {
         if let Ok(token) = std::fs::read_to_string(&path) {
             let token = token.trim().to_string();
             if !token.is_empty() {
-                tracing::info!("Found token in file storage (legacy), will migrate on next refresh");
-                // Migrate to keychain for future use
-                if let Ok(entry) = keyring::Entry::new(KEYRING_SERVICE, &format!("token:{}", account_id)) {
-                    let _ = entry.set_password(&token);
+                tracing::info!("Found token in file storage (legacy), migrating to keychain");
+                // Migrate to keychain; only remove the file once the
+                // keychain copy is verified readable
+                if keychain_store_verified(&key, &token) {
+                    let _ = std::fs::remove_file(&path);
+                    tracing::info!("Token migrated to keychain, removed legacy file");
                 }
                 return Ok(token);
             }
@@ -294,26 +318,20 @@ pub fn store_oauth_credentials(client_id: &str, client_secret: &str, app_data_di
     let json = serde_json::to_string(&credentials)
         .map_err(|e| AuthError::Keyring(format!("Failed to serialize credentials: {}", e)))?;
 
-    // Try keychain first
-    let keychain_ok = if let Ok(entry) = keyring::Entry::new(KEYRING_SERVICE, "oauth:credentials") {
-        entry.set_password(&json).is_ok()
-    } else {
-        false
-    };
-
-    if keychain_ok {
-        tracing::info!("OAuth credentials stored in keychain");
-    } else {
-        tracing::warn!("Keychain storage failed for credentials");
-    }
-
-    // Always also write to file as backup
     let path = get_credentials_file_path(app_data_dir);
-    if let Some(parent) = path.parent() {
-        let _ = std::fs::create_dir_all(parent);
+
+    // Keychain is the primary store; the plaintext file is only a fallback
+    if keychain_store_verified("oauth:credentials", &json) {
+        tracing::info!("OAuth credentials stored in keychain");
+        // Best-effort removal of any legacy plaintext copy
+        if path.exists() {
+            let _ = std::fs::remove_file(&path);
+        }
+        return Ok(());
     }
-    std::fs::write(&path, &json)
-        .map_err(|e| AuthError::Keyring(format!("Failed to store credentials: {}", e)))?;
+
+    tracing::warn!("Keychain storage failed for credentials, using file fallback");
+    write_secret_file(&path, &json, "credentials")?;
     tracing::info!("OAuth credentials stored in file: {:?}", path);
 
     Ok(())
@@ -336,9 +354,11 @@ pub fn get_oauth_credentials(app_data_dir: &Path) -> Result<OAuthCredentials, Au
         if let Ok(json) = std::fs::read_to_string(&path) {
             if let Ok(creds) = serde_json::from_str::<OAuthCredentials>(&json) {
                 tracing::info!("Found OAuth credentials in file (legacy), migrating to keychain");
-                // Migrate to keychain
-                if let Ok(entry) = keyring::Entry::new(KEYRING_SERVICE, "oauth:credentials") {
-                    let _ = entry.set_password(&json);
+                // Migrate to keychain; only remove the file once the
+                // keychain copy is verified readable
+                if keychain_store_verified("oauth:credentials", &json) {
+                    let _ = std::fs::remove_file(&path);
+                    tracing::info!("Credentials migrated to keychain, removed legacy file");
                 }
                 return Ok(creds);
             }

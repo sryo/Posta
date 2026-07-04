@@ -145,7 +145,7 @@ fn handle_connection(stream: TcpStream) -> ConnectionOutcome {
             <h1>Sign In Failed</h1>\
             <p>{}</p>\
             </div></body></html>",
-            error
+            html_escape(&error)
         );
         let mut stream = stream;
         let _ = stream.write_all(response.as_bytes());
@@ -155,6 +155,16 @@ fn handle_connection(stream: TcpStream) -> ConnectionOutcome {
         // Unrelated request (e.g. favicon); close it and keep waiting
         ConnectionOutcome::Ignored
     }
+}
+
+/// Escape a string for safe interpolation into HTML; the error page reflects
+/// attacker-controllable query parameters
+fn html_escape(s: &str) -> String {
+    s.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+        .replace('\'', "&#39;")
 }
 
 /// Extract query string from HTTP request line (e.g., "GET /callback?code=xxx HTTP/1.1")
