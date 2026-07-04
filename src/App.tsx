@@ -1717,6 +1717,35 @@ function App() {
     }
   }
 
+  // Post-OAuth: restore the account's layout from iCloud (sync can lag, so pull
+  // once, then retry after a longer delay if the first pull found nothing) and
+  // only offer the preset picker when no layout exists.
+  async function restoreLayoutAfterAuth(account: Account) {
+    upsertAccount(account);
+    setSelectedAccount(account);
+
+    try {
+      await new Promise(resolve => setTimeout(resolve, 500));
+      const icloudResult = await pullFromICloud();
+      if (!icloudResult) {
+        await new Promise(resolve => setTimeout(resolve, 1000));
+        await pullFromICloud();
+      }
+    } catch (e) {
+      console.warn("iCloud pull failed:", e);
+    }
+
+    const cardList = await getCards(account.id);
+    setCards(cardList);
+    startBackgroundSync(account.id);
+
+    if (cardList.length > 0) {
+      setShowRestorePrompt(true);
+    } else {
+      setShowPresetSelection(true);
+    }
+  }
+
   async function handleSignIn() {
     const storedCreds = await getStoredCredentials();
 
@@ -1737,39 +1766,7 @@ function App() {
 
       const account = await runOAuthFlow();
       console.log("Sign in complete, account:", account.id, account.email);
-      upsertAccount(account);
-      setSelectedAccount(account);
-
-      // Try to restore cards from iCloud (remaps orphaned cards to new account)
-      // Small delay to allow iCloud sync to complete
-      try {
-        await new Promise(resolve => setTimeout(resolve, 500));
-        const icloudResult = await pullFromICloud();
-        console.log("iCloud pull result:", icloudResult);
-        // If first attempt didn't find cards, try once more after a longer delay
-        if (!icloudResult) {
-          console.log("No iCloud cards found, retrying...");
-          await new Promise(resolve => setTimeout(resolve, 1000));
-          const retryResult = await pullFromICloud();
-          console.log("iCloud retry result:", retryResult);
-        }
-      } catch (e) {
-        console.warn("iCloud pull failed:", e);
-      }
-
-      const cardList = await getCards(account.id);
-      console.log("Cards after iCloud pull:", cardList.length, cardList.map(c => c.name));
-      setCards(cardList);
-      startBackgroundSync(account.id);
-
-      // Show restore prompt if cards exist (restored from iCloud)
-      // Otherwise show preset selection for new users
-      if (cardList.length > 0) {
-        setShowRestorePrompt(true);
-      } else {
-        console.log("No cards found, showing preset selection");
-        setShowPresetSelection(true);
-      }
+      await restoreLayoutAfterAuth(account);
     } catch (e) {
       setError(String(e));
     } finally {
@@ -1882,26 +1879,7 @@ function App() {
       setError(null);
       try {
         const account = await runOAuthFlow();
-
-        upsertAccount(account);
-        setSelectedAccount(account);
-
-        // Try to restore cards from iCloud (remaps orphaned cards to new account)
-        try {
-          await pullFromICloud();
-        } catch (e) {
-          console.warn("iCloud pull failed:", e);
-        }
-
-        const cardList = await getCards(account.id);
-        setCards(cardList);
-        startBackgroundSync(account.id);
-
-        if (cardList.length > 0) {
-          setShowRestorePrompt(true);
-        } else {
-          setShowPresetSelection(true);
-        }
+        await restoreLayoutAfterAuth(account);
       } catch (e) {
         setError(String(e));
       } finally {
