@@ -946,6 +946,11 @@
             margin: 0;
         }
 
+        .faq details p a {
+            color: var(--accent);
+            text-decoration: none;
+        }
+
         /* Footer */
         .footer {
             padding: 60px 2rem 40px;
@@ -2483,6 +2488,10 @@
             <details>
                 <summary>Where is my data stored?</summary>
                 <p>Locally on your device. Posta doesn't have servers. Your emails are fetched directly from Gmail.</p>
+            </details>
+            <details>
+                <summary>What keeps my inbox tidy when Posta is closed?</summary>
+                <p><a href="https://github.com/sryo/GmailTidy">GmailTidy</a>, Posta's server-side half. A set of Google Apps Scripts that run inside your own Google account: auto archive, auto delete old low-priority mail, follow-up reminders. Same Hot, Meh and Ping ideas.</p>
             </details>
             <details>
                 <summary>What if I prefer a traditional inbox?</summary>
