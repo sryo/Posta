@@ -310,7 +310,7 @@ export const ThreadView = (props: {
         <div class="thread-floating-bar-row">
           <CloseButton onClick={handleClose} />
           <div class="thread-bar-subject">
-            <Show when={props.thread} fallback={<span>Loading...</span>}>
+            <Show when={props.thread} fallback={<Show when={props.loading}><span>Loading...</span></Show>}>
               <h2>{findHeader(props.thread?.messages[0]?.payload?.headers, 'Subject') || '(No Subject)'}</h2>
             </Show>
           </div>

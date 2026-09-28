@@ -573,4 +573,14 @@ describe("ThreadView load errors", () => {
     fireEvent.click(getByRole("button", { name: "Try again" }));
     expect(onRetry).toHaveBeenCalledTimes(1);
   });
+
+  it("stops saying Loading once the thread failed to load", () => {
+    const { queryByText } = renderThread({ thread: null, error: "Couldn't load this conversation." });
+    expect(queryByText("Loading...")).toBeNull();
+  });
+
+  it("says Loading in the title bar while the thread loads", () => {
+    const { getByText } = renderThread({ thread: null, loading: true });
+    expect(getByText("Loading...")).toBeInTheDocument();
+  });
 });
