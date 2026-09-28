@@ -1,7 +1,7 @@
 // OAuth callback server - listens for the OAuth redirect
 
 use std::io::{BufRead, BufReader, Write};
-use std::net::{TcpListener, TcpStream};
+use std::net::{Ipv4Addr, Ipv6Addr, TcpListener, TcpStream};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::thread;
@@ -9,7 +9,7 @@ use std::time::Duration;
 
 const CALLBACK_PORT: u16 = 8420;
 
-/// OAuth callback result with code and state
+/// OAuth callback result; `state` has already been checked against the flow
 pub struct CallbackResult {
     pub code: String,
     pub state: Option<String>,
@@ -18,29 +18,57 @@ pub struct CallbackResult {
 /// One-shot HTTP server for the OAuth redirect. Bind before opening the
 /// browser so the redirect can never race the bind.
 pub struct CallbackServer {
-    listener: TcpListener,
+    listeners: Vec<TcpListener>,
 }
 
 impl CallbackServer {
     pub fn bind() -> Result<Self, String> {
-        let listener = TcpListener::bind(format!("127.0.0.1:{}", CALLBACK_PORT))
-            .map_err(|e| format!("Failed to bind to port {}: {}", CALLBACK_PORT, e))?;
-
-        // Non-blocking accept so the wait loop can poll the cancel flag
-        listener
-            .set_nonblocking(true)
-            .map_err(|e| format!("Failed to set non-blocking: {}", e))?;
-
-        Ok(Self { listener })
+        Self::bind_on(CALLBACK_PORT)
     }
 
-    /// Block until the OAuth redirect arrives, the timeout elapses, or the
-    /// cancel flag is set. Consumes the server so the port is released on
-    /// every exit path.
+    /// Bind 127.0.0.1 and, where the host has it, [::1] on the same port: the
+    /// redirect URI says `localhost`, which browsers may resolve to either.
+    /// Owning both also stops another process from taking the IPv6 side and
+    /// receiving the authorization code.
+    fn bind_on(port: u16) -> Result<Self, String> {
+        let v4 = TcpListener::bind((Ipv4Addr::LOCALHOST, port))
+            .map_err(|e| format!("Failed to bind to port {}: {}", port, e))?;
+        let port = v4.local_addr().map_err(|e| e.to_string())?.port();
+        let mut listeners = vec![v4];
+
+        match TcpListener::bind((Ipv6Addr::LOCALHOST, port)) {
+            Ok(v6) => listeners.push(v6),
+            Err(e) if e.kind() == std::io::ErrorKind::AddrInUse => {
+                return Err(format!("Failed to bind to [::1]:{}: {}", port, e));
+            }
+            // IPv6 loopback unavailable on this host
+            Err(_) => {}
+        }
+
+        // Non-blocking accept so the wait loop can poll the cancel flag
+        for listener in &listeners {
+            listener
+                .set_nonblocking(true)
+                .map_err(|e| format!("Failed to set non-blocking: {}", e))?;
+        }
+
+        Ok(Self { listeners })
+    }
+
+    #[cfg(test)]
+    fn port(&self) -> u16 {
+        self.listeners[0].local_addr().unwrap().port()
+    }
+
+    /// Block until the OAuth redirect for `expected_state` arrives, the timeout
+    /// elapses, or the cancel flag is set. Redirects carrying any other state
+    /// are answered with 400 and ignored. Consumes the server so the port is
+    /// released on every exit path.
     pub fn wait_for_callback(
         self,
         timeout_secs: u64,
         cancel: Arc<AtomicBool>,
+        expected_state: &str,
     ) -> Result<CallbackResult, String> {
         let start = std::time::Instant::now();
         let timeout = Duration::from_secs(timeout_secs);
@@ -53,20 +81,24 @@ impl CallbackServer {
                 return Err("Timeout waiting for OAuth callback".to_string());
             }
 
-            match self.listener.accept() {
-                Ok((stream, _)) => {
-                    match handle_connection(stream) {
-                        ConnectionOutcome::Success(result) => return Ok(result),
-                        ConnectionOutcome::OAuthError(error) => return Err(error),
-                        // Preconnects, unrelated requests, read errors: keep listening
-                        ConnectionOutcome::Ignored => {}
+            let mut accepted = false;
+            for listener in &self.listeners {
+                match listener.accept() {
+                    Ok((stream, _)) => {
+                        accepted = true;
+                        match handle_connection(stream, expected_state) {
+                            ConnectionOutcome::Success(result) => return Ok(result),
+                            ConnectionOutcome::OAuthError(error) => return Err(error),
+                            // Preconnects, unrelated requests, foreign state: keep listening
+                            ConnectionOutcome::Ignored => {}
+                        }
                     }
+                    Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {}
+                    Err(e) => return Err(format!("Accept error: {}", e)),
                 }
-                Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
-                    // No connection yet, sleep a bit
-                    thread::sleep(Duration::from_millis(100));
-                }
-                Err(e) => return Err(format!("Accept error: {}", e)),
+            }
+            if !accepted {
+                thread::sleep(Duration::from_millis(100));
             }
         }
     }
@@ -78,7 +110,7 @@ enum ConnectionOutcome {
     Ignored,
 }
 
-fn handle_connection(stream: TcpStream) -> ConnectionOutcome {
+fn handle_connection(stream: TcpStream, expected_state: &str) -> ConnectionOutcome {
     // Accepted sockets inherit the listener's non-blocking mode on macOS;
     // switch to blocking with a read timeout so read_line doesn't fail with
     // WouldBlock before the browser sends any bytes.
@@ -102,59 +134,53 @@ fn handle_connection(stream: TcpStream) -> ConnectionOutcome {
     }
     drop(reader);
 
-    if let Some((code, state)) = extract_code_and_state(&request_line) {
-        let response = "HTTP/1.1 200 OK\r\n\
-            Content-Type: text/html; charset=utf-8\r\n\
-            Connection: close\r\n\r\n\
-            <!DOCTYPE html>\
-            <html><head><meta charset=\"utf-8\"><style>\
-            body { font-family: -apple-system, BlinkMacSystemFont, sans-serif; \
-            display: flex; justify-content: center; align-items: center; \
-            height: 100vh; margin: 0; background: #f5f5f5; color: #222; }\
-            @media (prefers-color-scheme: dark) { body { background: #1e1e1e; color: #e0e0e0; } }\
-            .container { text-align: center; }\
-            h1 { color: #4285f4; margin-bottom: 8px; }\
-            p { color: #666; } @media (prefers-color-scheme: dark) { p { color: #999; } }\
-            </style></head><body>\
-            <div class=\"container\">\
-            <h1>✓ Signed In</h1>\
-            <p>You can close this window and return to Posta.</p>\
-            </div></body></html>";
-        let mut stream = stream;
-        let _ = stream.write_all(response.as_bytes());
-        let _ = stream.flush();
-        ConnectionOutcome::Success(CallbackResult { code, state })
-    } else if request_line.contains("error=") {
-        let error = extract_error_from_request(&request_line)
-            .unwrap_or_else(|| "Unknown error".to_string());
-        let response = format!(
-            "HTTP/1.1 200 OK\r\n\
-            Content-Type: text/html; charset=utf-8\r\n\
-            Connection: close\r\n\r\n\
-            <!DOCTYPE html>\
-            <html><head><meta charset=\"utf-8\"><style>\
-            body {{ font-family: -apple-system, BlinkMacSystemFont, sans-serif; \
-            display: flex; justify-content: center; align-items: center; \
-            height: 100vh; margin: 0; background: #f5f5f5; color: #222; }}\
-            @media (prefers-color-scheme: dark) {{ body {{ background: #1e1e1e; color: #e0e0e0; }} }}\
-            .container {{ text-align: center; }}\
-            h1 {{ color: #d93025; margin-bottom: 8px; }}\
-            p {{ color: #666; }} @media (prefers-color-scheme: dark) {{ p {{ color: #999; }} }}\
-            </style></head><body>\
-            <div class=\"container\">\
-            <h1>Sign In Failed</h1>\
-            <p>{}</p>\
-            </div></body></html>",
-            html_escape(&error)
-        );
-        let mut stream = stream;
-        let _ = stream.write_all(response.as_bytes());
-        let _ = stream.flush();
-        ConnectionOutcome::OAuthError(error)
-    } else {
-        // Unrelated request (e.g. favicon); close it and keep waiting
-        ConnectionOutcome::Ignored
+    // Anything else (e.g. favicon) is unrelated; close it and keep waiting
+    let Some(redirect) = parse_redirect(&request_line) else {
+        return ConnectionOutcome::Ignored;
+    };
+
+    if redirect.state.as_deref() != Some(expected_state) {
+        respond(stream, "400 Bad Request", "#d93025", "Sign In Failed",
+            "This sign-in link does not belong to the current request.");
+        return ConnectionOutcome::Ignored;
     }
+
+    match redirect.outcome {
+        Ok(code) => {
+            respond(stream, "200 OK", "#4285f4", "\u{2713} Signed In",
+                "You can close this window and return to Posta.");
+            ConnectionOutcome::Success(CallbackResult { code, state: redirect.state })
+        }
+        Err(error) => {
+            respond(stream, "200 OK", "#d93025", "Sign In Failed", &error);
+            ConnectionOutcome::OAuthError(error)
+        }
+    }
+}
+
+fn respond(mut stream: TcpStream, status: &str, accent: &str, title: &str, message: &str) {
+    let response = format!(
+        "HTTP/1.1 {status}\r\n\
+        Content-Type: text/html; charset=utf-8\r\n\
+        Connection: close\r\n\r\n\
+        <!DOCTYPE html>\
+        <html><head><meta charset=\"utf-8\"><style>\
+        body {{ font-family: -apple-system, BlinkMacSystemFont, sans-serif; \
+        display: flex; justify-content: center; align-items: center; \
+        height: 100vh; margin: 0; background: #f5f5f5; color: #222; }}\
+        @media (prefers-color-scheme: dark) {{ body {{ background: #1e1e1e; color: #e0e0e0; }} }}\
+        .container {{ text-align: center; }}\
+        h1 {{ color: {accent}; margin-bottom: 8px; }}\
+        p {{ color: #666; }} @media (prefers-color-scheme: dark) {{ p {{ color: #999; }} }}\
+        </style></head><body>\
+        <div class=\"container\">\
+        <h1>{title}</h1>\
+        <p>{message}</p>\
+        </div></body></html>",
+        message = html_escape(message),
+    );
+    let _ = stream.write_all(response.as_bytes());
+    let _ = stream.flush();
 }
 
 /// Escape a string for safe interpolation into HTML; the error page reflects
@@ -188,17 +214,23 @@ fn get_query_param(query: &str, key: &str) -> Option<String> {
     })
 }
 
-fn extract_code_and_state(request: &str) -> Option<(String, Option<String>)> {
-    let query = extract_query_string(request)?;
-    let code = get_query_param(query, "code")?;
-    let state = get_query_param(query, "state");
-    Some((code, state))
+struct Redirect {
+    /// The authorization code, or the provider's error description
+    outcome: Result<String, String>,
+    state: Option<String>,
 }
 
-fn extract_error_from_request(request: &str) -> Option<String> {
+fn parse_redirect(request: &str) -> Option<Redirect> {
     let query = extract_query_string(request)?;
-    get_query_param(query, "error_description")
-        .or_else(|| get_query_param(query, "error"))
+    let outcome = match get_query_param(query, "code") {
+        Some(code) => Ok(code),
+        None => Err(get_query_param(query, "error_description")
+            .or_else(|| get_query_param(query, "error"))?),
+    };
+    Some(Redirect {
+        outcome,
+        state: get_query_param(query, "state"),
+    })
 }
 
 #[cfg(test)]
@@ -208,33 +240,33 @@ mod tests {
     #[test]
     fn extracts_code_and_state_from_redirect() {
         let line = "GET /callback?state=abc123&code=4%2F0AbCd&scope=email HTTP/1.1\r\n";
-        let (code, state) = extract_code_and_state(line).unwrap();
-        assert_eq!(code, "4/0AbCd");
-        assert_eq!(state.as_deref(), Some("abc123"));
+        let redirect = parse_redirect(line).unwrap();
+        assert_eq!(redirect.outcome.as_deref(), Ok("4/0AbCd"));
+        assert_eq!(redirect.state.as_deref(), Some("abc123"));
     }
 
     #[test]
     fn ignores_requests_without_code() {
-        assert!(extract_code_and_state("GET /favicon.ico HTTP/1.1\r\n").is_none());
-        assert!(extract_code_and_state("GET /callback?state=x HTTP/1.1\r\n").is_none());
-        assert!(extract_code_and_state("").is_none());
+        assert!(parse_redirect("GET /favicon.ico HTTP/1.1\r\n").is_none());
+        assert!(parse_redirect("GET /callback?state=x HTTP/1.1\r\n").is_none());
+        assert!(parse_redirect("").is_none());
     }
 
     #[test]
     fn param_names_match_exactly() {
         let line = "GET /callback?xcode=bad&code=good HTTP/1.1";
-        assert_eq!(extract_code_and_state(line).unwrap().0, "good");
+        assert_eq!(parse_redirect(line).unwrap().outcome.as_deref(), Ok("good"));
     }
 
     #[test]
     fn error_description_is_form_decoded() {
         let line = "GET /callback?error=access_denied&error_description=User+denied%20access HTTP/1.1";
         assert_eq!(
-            extract_error_from_request(line).as_deref(),
-            Some("User denied access")
+            parse_redirect(line).unwrap().outcome.unwrap_err(),
+            "User denied access"
         );
         let line = "GET /callback?error=access_denied HTTP/1.1";
-        assert_eq!(extract_error_from_request(line).as_deref(), Some("access_denied"));
+        assert_eq!(parse_redirect(line).unwrap().outcome.unwrap_err(), "access_denied");
     }
 
     #[test]
@@ -243,5 +275,76 @@ mod tests {
             html_escape(r#"<img src=x onerror='a&b'>"#),
             "&lt;img src=x onerror=&#39;a&amp;b&#39;&gt;"
         );
+    }
+    fn send(addr: std::net::SocketAddr, request_line: &str) -> String {
+        use std::io::Read;
+        let mut stream = TcpStream::connect(addr).unwrap();
+        stream.write_all(format!("{}\r\nHost: localhost\r\n\r\n", request_line).as_bytes()).unwrap();
+        let mut response = String::new();
+        let _ = stream.read_to_string(&mut response);
+        response
+    }
+
+    fn spawn_wait(
+        server: CallbackServer,
+        expected_state: &str,
+    ) -> (Arc<AtomicBool>, thread::JoinHandle<Result<CallbackResult, String>>) {
+        let cancel = Arc::new(AtomicBool::new(false));
+        let flag = cancel.clone();
+        let expected_state = expected_state.to_string();
+        let handle = thread::spawn(move || server.wait_for_callback(10, flag, &expected_state));
+        (cancel, handle)
+    }
+
+    #[test]
+    fn callback_with_foreign_state_is_rejected_and_flow_keeps_waiting() {
+        let server = CallbackServer::bind_on(0).unwrap();
+        let addr = std::net::SocketAddr::from(([127, 0, 0, 1], server.port()));
+        let (_cancel, handle) = spawn_wait(server, "expected");
+
+        let forged = send(addr, "GET /callback?code=evil&state=forged HTTP/1.1");
+        assert!(forged.starts_with("HTTP/1.1 400"), "{}", forged);
+        let missing = send(addr, "GET /callback?code=evil HTTP/1.1");
+        assert!(missing.starts_with("HTTP/1.1 400"), "{}", missing);
+
+        let ok = send(addr, "GET /callback?code=good&state=expected HTTP/1.1");
+        assert!(ok.starts_with("HTTP/1.1 200"), "{}", ok);
+        let result = handle.join().unwrap().unwrap();
+        assert_eq!(result.code, "good");
+    }
+
+    #[test]
+    fn oauth_error_only_ends_the_flow_with_matching_state() {
+        let server = CallbackServer::bind_on(0).unwrap();
+        let addr = std::net::SocketAddr::from(([127, 0, 0, 1], server.port()));
+        let (_cancel, handle) = spawn_wait(server, "expected");
+
+        send(addr, "GET /callback?error=access_denied&state=forged HTTP/1.1");
+        send(addr, "GET /callback?error=access_denied HTTP/1.1");
+        send(addr, "GET /callback?error=access_denied&state=expected HTTP/1.1");
+        let err = handle.join().unwrap().err().unwrap();
+        assert_eq!(err, "access_denied");
+    }
+
+    #[test]
+    fn cancel_flag_ends_the_wait() {
+        let server = CallbackServer::bind_on(0).unwrap();
+        let (cancel, handle) = spawn_wait(server, "expected");
+        cancel.store(true, Ordering::SeqCst);
+        assert!(handle.join().unwrap().is_err());
+    }
+
+    #[test]
+    fn callback_over_ipv6_loopback_is_accepted() {
+        if TcpListener::bind("[::1]:0").is_err() {
+            return; // host without IPv6 loopback
+        }
+        let server = CallbackServer::bind_on(0).unwrap();
+        let port = server.port();
+        let (_cancel, handle) = spawn_wait(server, "s");
+        let addr = std::net::SocketAddr::from((std::net::Ipv6Addr::LOCALHOST, port));
+        let ok = send(addr, "GET /callback?code=v6&state=s HTTP/1.1");
+        assert!(ok.starts_with("HTTP/1.1 200"), "{}", ok);
+        assert_eq!(handle.join().unwrap().unwrap().code, "v6");
     }
 }
