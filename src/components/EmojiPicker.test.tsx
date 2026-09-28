@@ -61,6 +61,6 @@ describe("EmojiPicker", () => {
     const input = container.querySelector<HTMLInputElement>(".emoji-search")!;
     fireEvent.input(input, { target: { value: "zzz" } });
     expect(container.querySelectorAll(".emoji-btn")).toHaveLength(0);
-    expect(container.querySelector(".emoji-empty")?.textContent).toBe("No matching emoji");
+    expect(container.querySelector(".emoji-grid-container")?.textContent).toBe("No matching emoji");
   });
 });

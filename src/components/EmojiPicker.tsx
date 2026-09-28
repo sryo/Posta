@@ -209,7 +209,7 @@ export const EmojiPicker = (props: EmojiPickerProps) => {
 
       <div class="emoji-grid-container">
         <Show when={query()}>
-          <Show when={filteredEmojis().length > 0} fallback={<div class="emoji-empty">No matching emoji</div>}>
+          <Show when={filteredEmojis().length > 0} fallback={<div class="emoji-section-title">No matching emoji</div>}>
             <div class="emoji-grid">
               <For each={filteredEmojis()}>
                 {(emoji) => (
