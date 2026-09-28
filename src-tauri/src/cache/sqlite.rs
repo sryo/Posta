@@ -473,6 +473,22 @@ mod tests {
     }
 
     #[test]
+    fn failed_column_migration_is_reported() {
+        let dir = std::env::temp_dir().join(format!("posta-test-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("broken.db");
+        {
+            let conn = Connection::open(&path).unwrap();
+            // ALTER TABLE cannot add a column to a view
+            conn.execute_batch("CREATE VIEW accounts AS SELECT 'a1' AS id, 'me@x.com' AS email;")
+                .unwrap();
+        }
+        let result = CacheDb::new(&path);
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(result.is_err());
+    }
+
+    #[test]
     fn account_roundtrip_and_lookup_by_email() {
         let db = db();
         let mut a = account("me@x.com");
