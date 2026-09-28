@@ -1974,7 +1974,8 @@ button:disabled:hover {
     border: 1px solid var(--border-color);
     border-radius: var(--radius-lg);
     box-shadow: 0 4px 20px var(--shadow);
-    z-index: 110;
+    /* A new email opens over an open thread or event */
+    z-index: calc(var(--z-dropdown) + 1);
     display: flex;
     flex-direction: column;
     max-height: calc(100vh - var(--panel-top) - var(--app-edge-margin));
