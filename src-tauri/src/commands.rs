@@ -109,7 +109,7 @@ fn sync_cards_to_icloud(state: &AppState) {
     };
 
     let mut all_cards = Vec::new();
-    let mut account_mappings = std::collections::HashMap::new();
+    let mut account_mappings = HashMap::new();
 
     for account in &accounts {
         // Build account_id -> email mapping for iCloud restore
@@ -124,7 +124,11 @@ fn sync_cards_to_icloud(state: &AppState) {
     drop(db_guard); // Release db lock before acquiring icloud lock
     if let Ok(icloud) = state.icloud.lock() {
         let _ = icloud.sync_cards(&all_cards);
-        let _ = icloud.sync_account_mappings(&account_mappings);
+        // Keep other devices' id -> email entries so their cards can still be
+        // matched to the right account when this device pulls them
+        let mut merged = icloud.load_account_mappings().ok().flatten().unwrap_or_default();
+        merged.extend(account_mappings);
+        let _ = icloud.sync_account_mappings(&merged);
     }
 }
 
@@ -1223,6 +1227,27 @@ pub async fn get_calendar_rsvp_status(
 
 // iCloud sync commands
 
+/// Local account that owns a card pulled from iCloud. `mappings` records the
+/// email behind each account id on the device that pushed the card.
+fn icloud_card_account(
+    card_account_id: &str,
+    mappings: &HashMap<String, String>,
+    accounts: &[Account],
+) -> Option<String> {
+    if accounts.iter().any(|a| a.id == card_account_id) {
+        return Some(card_account_id.to_string());
+    }
+    match mappings.get(card_account_id) {
+        Some(email) => accounts
+            .iter()
+            .find(|a| a.email.eq_ignore_ascii_case(email))
+            .map(|a| a.id.clone()),
+        // Owner unknown: a lone local account adopts it
+        None if accounts.len() == 1 => Some(accounts[0].id.clone()),
+        None => None,
+    }
+}
+
 /// Pull cards from iCloud and merge with local. Returns true if changes were made.
 #[tauri::command]
 pub fn pull_from_icloud(state: State<'_, AppState>) -> Result<bool, String> {
@@ -1249,19 +1274,13 @@ pub fn pull_from_icloud(state: State<'_, AppState>) -> Result<bool, String> {
 
     // Get existing local accounts and cards
     let accounts = db.get_accounts().map_err(|e| e.to_string())?;
-    let mut local_cards: std::collections::HashMap<String, Card> = std::collections::HashMap::new();
+    let mut local_cards: HashMap<String, Card> = HashMap::new();
     for account in &accounts {
         let cards = db.get_cards(&account.id).map_err(|e| e.to_string())?;
         for card in cards {
             local_cards.insert(card.id.clone(), card);
         }
     }
-
-    // Build local account lookup by ID and by email
-    let local_account_ids: std::collections::HashSet<String> =
-        accounts.iter().map(|a| a.id.clone()).collect();
-    let local_account_by_email: std::collections::HashMap<String, &crate::models::Account> =
-        accounts.iter().map(|a| (a.email.to_lowercase(), a)).collect();
 
     let mut changes_made = false;
 
@@ -1274,36 +1293,20 @@ pub fn pull_from_icloud(state: State<'_, AppState>) -> Result<bool, String> {
 
     // Merge: iCloud cards that don't exist locally get inserted
     for mut card in icloud_cards {
-        // Check if this card's account exists locally
-        if !local_account_ids.contains(&card.account_id) {
-            // Try to match by email mapping first
-            let email_match = account_mappings
-                .get(&card.account_id)
-                .and_then(|old_email| local_account_by_email.get(&old_email.to_lowercase()))
-                .map(|local_account| local_account.id.clone());
-
-            if let Some(new_id) = email_match {
-                tracing::info!(
-                    "Remapping card {} from {} to {} via email",
-                    card.name,
-                    card.account_id,
-                    new_id
-                );
-                card.account_id = new_id;
-            } else if accounts.len() == 1 {
-                // Fallback: a single local account adopts orphaned cards
-                tracing::info!(
-                    "Remapping orphaned card {} to single account {}",
-                    card.name,
-                    accounts[0].id
-                );
-                card.account_id = accounts[0].id.clone();
-            } else {
-                tracing::warn!(
-                    "Skipping card {} - no matching account (have {} accounts)",
-                    card.name,
-                    accounts.len()
-                );
+        match icloud_card_account(&card.account_id, &account_mappings, &accounts) {
+            Some(account_id) => {
+                if account_id != card.account_id {
+                    tracing::info!(
+                        "Remapping card {} from {} to {}",
+                        card.name,
+                        card.account_id,
+                        account_id
+                    );
+                    card.account_id = account_id;
+                }
+            }
+            None => {
+                tracing::warn!("Skipping card {} - no matching local account", card.name);
                 continue;
             }
         }
@@ -1569,8 +1572,49 @@ pub async fn suggest_replies(
 
 #[cfg(test)]
 mod tests {
-    use super::{attachment_filename, is_auth_error, next_card_position, sanitize_attachment_filename};
-    use crate::models::Card;
+    use super::{
+        attachment_filename, icloud_card_account, is_auth_error, next_card_position,
+        sanitize_attachment_filename,
+    };
+    use crate::models::{Account, Card};
+    use std::collections::HashMap;
+
+    fn account(id: &str, email: &str) -> Account {
+        Account { id: id.into(), ..Account::new(email.into(), None) }
+    }
+
+    fn mappings(pairs: &[(&str, &str)]) -> HashMap<String, String> {
+        pairs.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect()
+    }
+
+    #[test]
+    fn icloud_card_keeps_a_local_account_id() {
+        let accounts = [account("a1", "me@x.com"), account("a2", "work@x.com")];
+        assert_eq!(icloud_card_account("a2", &mappings(&[]), &accounts), Some("a2".into()));
+    }
+
+    #[test]
+    fn icloud_card_is_remapped_by_email_case_insensitively() {
+        let accounts = [account("a1", "me@x.com"), account("a2", "work@x.com")];
+        let m = mappings(&[("old", "Work@X.com")]);
+        assert_eq!(icloud_card_account("old", &m, &accounts), Some("a2".into()));
+    }
+
+    #[test]
+    fn single_account_adopts_only_cards_with_unknown_owner() {
+        let accounts = [account("a1", "me@x.com")];
+        assert_eq!(icloud_card_account("old", &mappings(&[]), &accounts), Some("a1".into()));
+        // The card belongs to an account this device doesn't have; adopting it
+        // would run another mailbox's query against this one
+        let m = mappings(&[("other", "work@x.com")]);
+        assert_eq!(icloud_card_account("other", &m, &accounts), None);
+    }
+
+    #[test]
+    fn icloud_card_without_match_is_skipped_with_several_accounts() {
+        let accounts = [account("a1", "me@x.com"), account("a2", "work@x.com")];
+        assert_eq!(icloud_card_account("old", &mappings(&[]), &accounts), None);
+    }
 
     #[test]
     fn auth_errors_are_recognised_across_apis() {
