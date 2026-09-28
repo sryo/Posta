@@ -56,4 +56,34 @@ describe("App.css cascade", () => {
     expect(decl("submit").get("width")).toBe("100%");
     expect(decl("submit").get("margin-top")).toBe("var(--space-lg)");
   });
+
+  it("stills entrances and transitions under reduced motion but keeps loading and countdown indicators moving", () => {
+    document.body.innerHTML = `<button class="icon-btn spinning"><svg id="refresh"></svg></button>
+      <div class="auth-spinner" id="auth"></div><div class="spinner-sm" id="small"></div>
+      <div class="skeleton-avatar" id="avatar"></div><div class="skeleton-line" id="line"></div>
+      <div class="undo-toast"><div class="toast-progress" id="countdown"></div></div>
+      <div class="thread-overlay" id="panel"></div>`;
+    const indicators = ["refresh", "auth", "small", "avatar", "line", "countdown"].map(
+      (id) => document.getElementById(id)!,
+    );
+    const moving = (el: Element) => cascadedDeclarations(rules, el).get("animation") ?? "";
+    for (const el of indicators) expect(moving(el)).toMatch(/infinite|forwards/);
+    // Any looping animation must be one of the indicators above.
+    for (const rule of rules) {
+      const animation = new Map(rule.declarations).get("animation") ?? "";
+      if (rule.context || !/infinite/.test(animation)) continue;
+      expect(rule.selectors.some((sel) => indicators.some((el) => el.matches(sel)))).toBe(true);
+    }
+
+    const reduced = rules.filter((r) => r.context.includes("prefers-reduced-motion: reduce"));
+    const calming = reduced.find((r) => {
+      const decl = new Map(r.declarations);
+      return /!important/.test(decl.get("animation-duration") ?? "") && /!important/.test(decl.get("transition-duration") ?? "");
+    });
+    expect(calming).toBeDefined();
+    const calmed = (el: Element) => calming!.selectors.some((sel) => el.matches(sel));
+    expect(calmed(document.getElementById("panel")!)).toBe(true);
+    expect(calming!.selectors).toEqual(expect.arrayContaining(["*::before", "*::after"]));
+    expect(indicators.filter(calmed).map((el) => el.id)).toEqual([]);
+  });
 });
