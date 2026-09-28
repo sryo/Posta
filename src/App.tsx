@@ -2891,11 +2891,16 @@ function App() {
     return cardList;
   }
 
+  function closeLabelDrawer() {
+    setLabelDrawerOpen(false);
+    setLabelSearchQuery("");
+  }
+
   function closeThreadView() {
     setActiveThreadId(null);
     setActiveThreadCardId(null);
     setFocusedMessageIndex(0);
-    setLabelDrawerOpen(false);
+    closeLabelDrawer();
     setCidAttachmentData({});
   }
 
@@ -4850,6 +4855,8 @@ function App() {
           onForward={handleForwardFromThread}
           onAction={handleThreadViewAction}
           onOpenLabels={() => { fetchAccountLabels({ refresh: true }); setLabelDrawerOpen(true); }}
+          labelDrawerOpen={labelDrawerOpen()}
+          onCloseLabelDrawer={closeLabelDrawer}
           isStarred={isThreadStarred()}
           isRead={isThreadRead()}
           isImportant={isThreadImportant()}
@@ -4873,11 +4880,11 @@ function App() {
 
         {/* Label Drawer */}
         <Show when={labelDrawerOpen()}>
-          <div class="label-drawer-overlay" onClick={() => { setLabelDrawerOpen(false); setLabelSearchQuery(""); }}></div>
+          <div class="label-drawer-overlay" onClick={closeLabelDrawer}></div>
           <div class="label-drawer">
             <div class="label-drawer-header">
               <h3>Labels</h3>
-              <CloseButton onClick={() => { setLabelDrawerOpen(false); setLabelSearchQuery(""); }} />
+              <CloseButton onClick={closeLabelDrawer} />
             </div>
 
             <div class="label-drawer-search">
@@ -4886,7 +4893,7 @@ function App() {
                 placeholder="Search labels..."
                 value={labelSearchQuery()}
                 onInput={(e) => setLabelSearchQuery(e.currentTarget.value)}
-                onKeyDown={(e) => { if (e.key === 'Escape') { setLabelDrawerOpen(false); setLabelSearchQuery(""); } }}
+                onKeyDown={(e) => { if (e.key === 'Escape') closeLabelDrawer(); }}
                 autofocus
               />
             </div>

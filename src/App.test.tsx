@@ -2531,6 +2531,40 @@ describe("App label drawer", () => {
     expect(screen.getByText("Receipts")).toBeInTheDocument();
     expect(await screen.findByText("Travel")).toBeInTheDocument();
   });
+
+  it("keeps the thread's shortcuts off while the drawer is open and closes only the drawer on Escape", async () => {
+    handlers.get_thread_details = () => ({ id: "t-a", messages: [fullMessage("m1", "Ana <ana@x.com>")] });
+    handlers.list_labels = () => [{ id: "L1", name: "Receipts", messageListVisibility: null, labelListVisibility: null, label_type: "user" }];
+    render(() => <App />);
+    fireEvent.click(await screen.findByText("Mail for A"));
+    await screen.findByText("body m1");
+    fireEvent.keyDown(document, { key: "l" });
+    await screen.findByText("Receipts");
+
+    fireEvent.keyDown(document, { key: "a" });
+    expect(invoke).not.toHaveBeenCalledWith("modify_threads", expect.anything());
+    fireEvent.keyDown(document, { key: "Escape" });
+    await waitFor(() => expect(screen.queryByText("Receipts")).not.toBeInTheDocument());
+    expect(screen.getByText("body m1")).toBeInTheDocument();
+  });
+
+  it("opens the drawer unfiltered after the thread it was searched in closes", async () => {
+    handlers.get_thread_details = () => ({ id: "t-a", messages: [fullMessage("m1", "Ana <ana@x.com>")] });
+    handlers.list_labels = () => [{ id: "L1", name: "Receipts", messageListVisibility: null, labelListVisibility: null, label_type: "user" }];
+    render(() => <App />);
+    fireEvent.click(await screen.findByText("Mail for A"));
+    await screen.findByText("body m1");
+    fireEvent.keyDown(document, { key: "l" });
+    fireEvent.input(await screen.findByPlaceholderText("Search labels..."), { target: { value: "zzz" } });
+    fireEvent.keyDown(document, { key: "Escape" });
+    fireEvent.keyDown(document, { key: "Escape" });
+    await waitFor(() => expect(screen.queryByText("body m1")).not.toBeInTheDocument());
+
+    fireEvent.click(await screen.findByText("Mail for A"));
+    await screen.findByText("body m1");
+    fireEvent.keyDown(document, { key: "l" });
+    expect((await screen.findByPlaceholderText("Search labels...") as HTMLInputElement).value).toBe("");
+  });
 });
 
 describe("App quick reply feedback", () => {
