@@ -58,3 +58,47 @@ export function unusedKeyframes(css: string): string[] {
     (name) => !animations.some((value) => new RegExp(`(?<![\\w-])${name}(?![\\w-])`).test(value)),
   );
 }
+
+type Specificity = [number, number, number];
+
+// [ids, classes/attributes/pseudo-classes, types/pseudo-elements]. Functional
+// pseudo-class arguments are ignored, which is enough for App.css.
+export function specificity(selector: string): Specificity {
+  const s = selector.replace(/\([^)]*\)/g, "");
+  const ids = (s.match(/#[\w-]+/g) ?? []).length;
+  const classes = (s.match(/\.[\w-]+|\[[^\]]*\]|(?<!:):[\w-]+/g) ?? []).length;
+  const types = (s.match(/(?:^|[\s>+~])[a-zA-Z][\w-]*|::[\w-]+/g) ?? []).length;
+  return [ids, classes, types];
+}
+
+// Vendor pseudo-classes jsdom cannot parse can't match a test element anyway.
+function matchesSafely(el: Element, selector: string): boolean {
+  try {
+    return el.matches(selector);
+  } catch {
+    return false;
+  }
+}
+
+const compareSpecificity =(a: Specificity, b: Specificity) => a[0] - b[0] || a[1] - b[1] || a[2] - b[2];
+
+// The winning value of each property that top-level rules declare on `el`
+// itself, by specificity then source order. jsdom's getComputedStyle only
+// resolves inherited properties like font-size, not padding or background.
+export function cascadedDeclarations(rules: Rule[], el: Element): Map<string, string> {
+  const hits: { spec: Specificity; order: number; declarations: [string, string][] }[] = [];
+  rules.forEach((rule, order) => {
+    if (rule.context) return;
+    let best: Specificity | null = null;
+    for (const sel of rule.selectors) {
+      if (/::|:(hover|focus|active)/.test(sel) || !matchesSafely(el, sel)) continue;
+      const spec = specificity(sel);
+      if (!best || compareSpecificity(spec, best) > 0) best = spec;
+    }
+    if (best) hits.push({ spec: best, order, declarations: rule.declarations });
+  });
+  hits.sort((a, b) => compareSpecificity(a.spec, b.spec) || a.order - b.order);
+  const out = new Map<string, string>();
+  for (const hit of hits) for (const [prop, value] of hit.declarations) out.set(prop, value);
+  return out;
+}

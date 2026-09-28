@@ -1,14 +1,8 @@
-import { describe, it, expect, vi } from "vitest";
+import { describe, it, expect } from "vitest";
 import { parseRules, selectorClasses, unusedKeyframes } from "./test/css";
+import { readRepoFile } from "./test/files";
 
-const { readFileSync } = await vi.importActual<{
-  readFileSync(path: string, encoding: "utf8"): string;
-}>("node:fs");
-
-// `new URL("./x", import.meta.url)` is rewritten by Vite into a served asset
-// path, so resolve against the test file's own location by hand.
-const srcDir = decodeURIComponent(import.meta.url.replace(/^file:\/\//, "").replace(/[^/]+$/, ""));
-const css = readFileSync(srcDir + "App.css", "utf8").replace(/\/\*[\s\S]*?\*\//g, "");
+const css = readRepoFile("src/App.css").replace(/\/\*[\s\S]*?\*\//g, "");
 
 const sources = Object.entries(
   import.meta.glob(["./**/*.{ts,tsx}", "!./**/*.test.{ts,tsx}", "!./test/**"], {

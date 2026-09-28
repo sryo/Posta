@@ -1,12 +1,8 @@
-import { describe, it, expect, vi } from "vitest";
+import { describe, it, expect } from "vitest";
 import { parseRules, selectorClasses, unusedKeyframes } from "./test/css";
+import { readRepoFile } from "./test/files";
 
-const { readFileSync } = await vi.importActual<{
-  readFileSync(path: string, encoding: "utf8"): string;
-}>("node:fs");
-
-const srcDir = decodeURIComponent(import.meta.url.replace(/^file:\/\//, "").replace(/[^/]+$/, ""));
-const page = readFileSync(srcDir + "../docs/index.html", "utf8");
+const page = readRepoFile("docs/index.html");
 
 const between = (open: string, close: string) =>
   page.slice(page.indexOf(open) + open.length, page.indexOf(close));
