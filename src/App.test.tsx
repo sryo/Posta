@@ -735,7 +735,10 @@ describe("App calendar", () => {
     await waitFor(() => expect(screen.getAllByText("Planning")).toHaveLength(2));
 
     fireEvent.click(screen.getAllByText("Planning")[0]);
+    const confirm = vi.spyOn(window, "confirm").mockReturnValue(true);
     fireEvent.keyDown(document, { key: "d" });
+    expect(confirm).toHaveBeenCalledTimes(1);
+    confirm.mockRestore();
 
     await waitFor(() => expect(invoke).toHaveBeenCalledWith("delete_calendar_event", expect.anything()));
     await waitFor(() => expect(screen.queryAllByText("Planning")).toHaveLength(0));
