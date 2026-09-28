@@ -963,16 +963,15 @@ function App() {
     const updatedCardThreads: Record<string, ThreadGroup[]> = {};
     const matchedThreadIds = new Set<string>();
     const cardsWithModified = new Set<string>();
+    const cardsWithDeleted = new Set<string>();
 
     for (const cardId of Object.keys(cardThreads)) {
       const groups = cardThreads[cardId];
       if (!groups) continue;
 
       const updatedGroups = groups.map(group => {
-        let threads = [...group.threads];
-
-        // Remove deleted threads
-        threads = threads.filter(t => !deletedThreadIds.includes(t.gmail_thread_id));
+        let threads = group.threads.filter(t => !deletedThreadIds.includes(t.gmail_thread_id));
+        if (threads.length !== group.threads.length) cardsWithDeleted.add(cardId);
 
         // Update modified threads
         for (const modifiedThread of modifiedThreads) {
@@ -1000,9 +999,12 @@ function App() {
     if (!account) return;
     const hasUnmatched = modifiedThreads.some(t => !matchedThreadIds.has(t.gmail_thread_id));
     for (const card of cards()) {
-      if (collapsedCards[card.id] || card.card_type === "calendar") continue;
-      if (hasUnmatched || cardsWithModified.has(card.id)) {
+      if (card.card_type === "calendar") continue;
+      if (!collapsedCards[card.id] && (hasUnmatched || cardsWithModified.has(card.id))) {
         fetchAndCacheThreads(account.id, card.id);
+      } else if (cardsWithDeleted.has(card.id)) {
+        saveCachedCardThreads(card.id, updatedCardThreads[card.id], cardPageTokens[card.id] || null)
+          .catch(e => console.warn("Failed to update thread cache:", e));
       }
     }
   }
@@ -2351,12 +2353,14 @@ function App() {
     if (!account) return;
     try {
       await deleteCalendarEvent(account.id, event.calendar_id, event.id);
-      // Every calendar card can be showing the event
-      setCardCalendarEvents(produce(s => {
-        for (const cId of Object.keys(s)) {
-          s[cId] = s[cId].filter(e => e.id !== event.id);
-        }
-      }));
+      // Every calendar card can be showing the event, in view and in its
+      // saved cache
+      for (const [cId, events] of Object.entries(cardCalendarEvents)) {
+        if (!events?.some(e => e.id === event.id)) continue;
+        const remaining = events.filter(e => e.id !== event.id);
+        setCardCalendarEvents(cId, remaining);
+        saveCachedCardEvents(cId, remaining).catch(e => console.warn("Failed to update event cache:", e));
+      }
       showToast('Event deleted');
       if (activeEvent()?.id === event.id) closeEvent();
     } catch (e) {

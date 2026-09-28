@@ -99,6 +99,25 @@ describe("App background sync", () => {
   });
 });
 
+describe("App background sync deletions", () => {
+  it("drops a thread deleted elsewhere from the card's saved cache", async () => {
+    threadsByCard["card-a"] = [thread("t-a", "Mail for A"), thread("t-b", "Other mail")];
+    render(() => <App />);
+    await screen.findByText("Mail for A");
+    await new Promise(r => setTimeout(r, 20));
+    invoke.mockClear();
+
+    handlers.sync_threads_incremental = () => ({ modified_threads: [], deleted_thread_ids: ["t-a"], is_full_sync: false });
+    window.dispatchEvent(new Event("focus"));
+
+    await waitFor(() => expect(screen.queryByText("Mail for A")).not.toBeInTheDocument());
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith("save_cached_card_threads", expect.objectContaining({
+      cardId: "card-a",
+      groups: [expect.objectContaining({ threads: [expect.objectContaining({ gmail_thread_id: "t-b" })] })],
+    })));
+  });
+});
+
 describe("App background sync while the first page is being cached", () => {
   it("applies a refresh that lands before the first page's cache write finishes", async () => {
     let releaseSave!: () => void;
@@ -739,6 +758,21 @@ describe("App calendar", () => {
 
     await waitFor(() => expect(invoke).toHaveBeenCalledWith("delete_calendar_event", expect.anything()));
     await waitFor(() => expect(screen.queryAllByText("Planning")).toHaveLength(0));
+  });
+
+  it("drops a deleted event from the calendar cards' saved cache", async () => {
+    calendarCards();
+    cardsByAccount.a = [{ ...card("cal-1", "a", "Week"), query: "calendar:7d", card_type: "calendar" }];
+    handlers.fetch_calendar_events = () => [calendarEvent("ev-1", "Planning"), calendarEvent("ev-2", "Review")];
+    handlers.delete_calendar_event = () => null;
+    render(() => <App />);
+    fireEvent.click(await screen.findByText("Planning"));
+    invoke.mockClear();
+    fireEvent.keyDown(document, { key: "d" });
+
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith("save_cached_card_events", {
+      cardId: "cal-1", events: [expect.objectContaining({ id: "ev-2" })],
+    }));
   });
 
   it("does not show an account's calendars once another account is selected", async () => {
