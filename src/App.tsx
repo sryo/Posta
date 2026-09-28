@@ -1291,6 +1291,12 @@ function App() {
       return;
     }
 
+    if (e.key === 'Escape' && authLoading()) {
+      e.preventDefault();
+      cancelSignIn();
+      return;
+    }
+
     // Cmd/Ctrl+Enter to save card when editing
     if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
       if (editingCardId() && editCardName() && editCardQuery() && !activeThreadId() && !activeEvent()) {

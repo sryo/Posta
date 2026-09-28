@@ -2447,6 +2447,20 @@ describe("App sign-in flows", () => {
     expect(screen.queryByText("Complete sign-in in your browser...")).not.toBeInTheDocument();
   });
 
+  it("cancels a sign-in waiting on the browser on Escape", async () => {
+    handlers.get_accounts = () => [];
+    let rejectFlow!: (e: unknown) => void;
+    handlers.run_oauth_flow = () => new Promise((_, reject) => { rejectFlow = reject; });
+    handlers.cancel_oauth_flow = () => { rejectFlow("OAuth callback error: OAuth flow cancelled"); return null; };
+    render(() => <App />);
+    fireEvent.click(await screen.findByText("Sign in with Google"));
+    await screen.findByText("Complete sign-in in your browser...");
+    fireEvent.keyDown(document, { key: "Escape" });
+
+    expect(await screen.findByText("Sign in with Google")).toBeInTheDocument();
+    expect(invoke).toHaveBeenCalledWith("cancel_oauth_flow", undefined);
+  });
+
   it("connects with credentials entered in Settings", async () => {
     handlers.get_accounts = () => [];
     handlers.get_stored_credentials = () => null;
