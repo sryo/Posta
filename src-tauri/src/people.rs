@@ -71,7 +71,7 @@ impl PeopleClient {
     }
 
     /// Fetch user's connections (contacts) with pagination
-    pub async fn list_contacts(
+    async fn list_contacts(
         &self,
         page_size: i32,
         page_token: Option<&str>,

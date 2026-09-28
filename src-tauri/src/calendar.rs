@@ -964,7 +964,6 @@ pub enum TimeRange {
     Week,
     Month,
     Upcoming(Duration),
-    Custom { start: DateTime<Utc>, end: DateTime<Utc> },
 }
 
 impl CalendarQuery {
@@ -1041,7 +1040,6 @@ impl CalendarQuery {
             TimeRange::Month => (day(0), day(30)),
             // For upcoming, we start from NOW to avoid missing things that just started
             TimeRange::Upcoming(duration) => (now, now + *duration),
-            TimeRange::Custom { start, end } => (*start, *end),
         }
     }
 
