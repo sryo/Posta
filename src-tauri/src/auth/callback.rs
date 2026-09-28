@@ -290,6 +290,19 @@ mod tests {
         response
     }
 
+    /// The ephemeral port picked on 127.0.0.1 may already be taken on [::1]
+    /// by an unrelated socket; pick another rather than fail the test
+    fn bind_ephemeral() -> CallbackServer {
+        let mut last_err = String::new();
+        for _ in 0..20 {
+            match CallbackServer::bind_on(0) {
+                Ok(server) => return server,
+                Err(e) => last_err = e,
+            }
+        }
+        panic!("{}", last_err);
+    }
+
     fn spawn_wait(
         server: CallbackServer,
         expected_state: &str,
@@ -303,7 +316,7 @@ mod tests {
 
     #[test]
     fn callback_with_foreign_state_is_rejected_and_flow_keeps_waiting() {
-        let server = CallbackServer::bind_on(0).unwrap();
+        let server = bind_ephemeral();
         let addr = std::net::SocketAddr::from(([127, 0, 0, 1], server.port()));
         let (_cancel, handle) = spawn_wait(server, "expected");
 
@@ -320,7 +333,7 @@ mod tests {
 
     #[test]
     fn oauth_error_only_ends_the_flow_with_matching_state() {
-        let server = CallbackServer::bind_on(0).unwrap();
+        let server = bind_ephemeral();
         let addr = std::net::SocketAddr::from(([127, 0, 0, 1], server.port()));
         let (_cancel, handle) = spawn_wait(server, "expected");
 
@@ -333,7 +346,7 @@ mod tests {
 
     #[test]
     fn idle_preconnect_does_not_delay_the_redirect() {
-        let server = CallbackServer::bind_on(0).unwrap();
+        let server = bind_ephemeral();
         let addr = std::net::SocketAddr::from(([127, 0, 0, 1], server.port()));
         let (_cancel, handle) = spawn_wait(server, "s");
 
@@ -350,7 +363,7 @@ mod tests {
 
     #[test]
     fn cancel_flag_ends_the_wait() {
-        let server = CallbackServer::bind_on(0).unwrap();
+        let server = bind_ephemeral();
         let (cancel, handle) = spawn_wait(server, "expected");
         cancel.store(true, Ordering::SeqCst);
         assert!(handle.join().unwrap().is_err());
@@ -361,7 +374,7 @@ mod tests {
         if TcpListener::bind("[::1]:0").is_err() {
             return; // host without IPv6 loopback
         }
-        let server = CallbackServer::bind_on(0).unwrap();
+        let server = bind_ephemeral();
         let port = server.port();
         let (_cancel, handle) = spawn_wait(server, "s");
         let addr = std::net::SocketAddr::from((std::net::Ipv6Addr::LOCALHOST, port));
