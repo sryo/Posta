@@ -115,6 +115,7 @@ import { safeGetItem, safeSetItem, safeRemoveItem, safeGetJSON, safeSetJSON } fr
 import { BG_COLORS, GMAIL_OPERATORS, type ActionSettings, type CardColor, type GroupBy } from "./shared/constants";
 import { createUndoableSend } from "./app/undoableSend";
 import { messageBodyHtml } from "./app/messageHtml";
+import { readFilesAsAttachments } from "./app/attachments";
 import { eventTimesFromForm, smartEventDefaults } from "./app/eventForm";
 import { getSmartEventTime, groupCalendarEvents, isUserLabel, mergeThreadGroups, regroupThreads, type CalendarEventGroup } from "./app/grouping";
 
@@ -1962,51 +1963,16 @@ function App() {
     }, 200);
   }
 
-  const MAX_ATTACHMENT_SIZE = 25 * 1024 * 1024; // 25MB Gmail limit
-
   async function handleFileSelect(e: Event) {
     const input = e.target as HTMLInputElement;
     if (!input.files || input.files.length === 0) return;
 
-    const newAttachments: SendAttachment[] = [];
-    const skippedFiles: string[] = [];
-
-    for (const file of Array.from(input.files)) {
-      // Check file size
-      if (file.size > MAX_ATTACHMENT_SIZE) {
-        skippedFiles.push(`${file.name} (${formatFileSize(file.size)} - max 25MB)`);
-        continue;
-      }
-
-      let data: string;
-      try {
-        data = await new Promise<string>((resolve, reject) => {
-          const reader = new FileReader();
-          reader.onload = () => {
-            const result = reader.result as string;
-            // Remove the "data:mime/type;base64," prefix
-            resolve(result.split(',')[1] || '');
-          };
-          reader.onerror = () => reject(reader.error ?? new Error("File read failed"));
-          reader.readAsDataURL(file);
-        });
-      } catch {
-        skippedFiles.push(`${file.name} (could not be read)`);
-        continue;
-      }
-      newAttachments.push({
-        filename: file.name,
-        mime_type: file.type || 'application/octet-stream',
-        data,
-      });
+    const { attachments, skipped } = await readFilesAsAttachments(Array.from(input.files));
+    if (skipped.length > 0) {
+      setComposeEmailError(`Skipped: ${skipped.join(', ')}`);
     }
-
-    if (skippedFiles.length > 0) {
-      setComposeEmailError(`Skipped: ${skippedFiles.join(', ')}`);
-    }
-
-    if (newAttachments.length > 0) {
-      setComposeAttachments([...composeAttachments(), ...newAttachments]);
+    if (attachments.length > 0) {
+      setComposeAttachments([...composeAttachments(), ...attachments]);
     }
     input.value = ''; // Reset input so same file can be selected again
   }
@@ -2672,44 +2638,13 @@ function App() {
     const input = e.target as HTMLInputElement;
     if (!input.files || input.files.length === 0) return;
 
-    const newAttachments: SendAttachment[] = [];
-    const skippedFiles: string[] = [];
-
-    for (const file of Array.from(input.files)) {
-      if (file.size > MAX_ATTACHMENT_SIZE) {
-        skippedFiles.push(`${file.name} (${formatFileSize(file.size)} - max 25MB)`);
-        continue;
-      }
-
-      let data: string;
-      try {
-        data = await new Promise<string>((resolve, reject) => {
-          const reader = new FileReader();
-          reader.onload = () => {
-            const result = reader.result as string;
-            resolve(result.split(',')[1] || '');
-          };
-          reader.onerror = () => reject(reader.error ?? new Error("File read failed"));
-          reader.readAsDataURL(file);
-        });
-      } catch {
-        skippedFiles.push(`${file.name} (could not be read)`);
-        continue;
-      }
-      newAttachments.push({
-        filename: file.name,
-        mime_type: file.type || 'application/octet-stream',
-        data
-      });
+    const { attachments, skipped } = await readFilesAsAttachments(Array.from(input.files));
+    if (skipped.length > 0) {
+      showToast(`Skipped: ${skipped.join(', ')}`);
     }
-
-    if (skippedFiles.length > 0) {
-      showToast(`Skipped: ${skippedFiles.join(', ')}`);
-    }
-
-    if (newAttachments.length > 0) {
+    if (attachments.length > 0) {
       const current = batchReplyAttachments()[threadId] || [];
-      setBatchReplyAttachments({ ...batchReplyAttachments(), [threadId]: [...current, ...newAttachments] });
+      setBatchReplyAttachments({ ...batchReplyAttachments(), [threadId]: [...current, ...attachments] });
     }
     input.value = '';
   }
