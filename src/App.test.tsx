@@ -50,6 +50,7 @@ beforeEach(() => {
   localStorage.clear();
   lastMenu = [];
   invoke.mockClear();
+  setBadgeCount.mockClear();
   for (const k of Object.keys(handlers)) delete handlers[k];
   Object.assign(handlers, {
     init_app: () => null,
@@ -312,6 +313,28 @@ describe("App card deletion", () => {
 
     await waitFor(() => expect(screen.queryByText("Unread in B")).not.toBeInTheDocument());
     await waitFor(() => expect(setBadgeCount).toHaveBeenLastCalledWith(undefined));
+  });
+});
+
+describe("App failed thread action after an account switch", () => {
+  it("does not roll the previous account's threads back into view", async () => {
+    handlers.get_accounts = () => [account("a", "a@x.com"), account("b", "b@x.com")];
+    threadsByCard["card-a"] = [{ ...thread("t-a", "Mail for A"), unread_count: 1, labels: ["INBOX", "UNREAD"] }];
+    let failModify!: () => void;
+    handlers.modify_threads = () => new Promise((_, reject) => { failModify = () => reject(new Error("offline")); });
+    render(() => <App />);
+    await screen.findByText("Mail for A");
+
+    fireEvent.keyDown(document, { key: "l" });
+    fireEvent.keyDown(document, { key: "a" });
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith("modify_threads", expect.anything()));
+    fireEvent.click(screen.getByTitle("a@x.com"));
+    fireEvent.click(await screen.findByText("b@x.com"));
+    await screen.findByText("Mail for B");
+
+    failModify();
+    await new Promise(r => setTimeout(r, 20));
+    expect(setBadgeCount).toHaveBeenLastCalledWith(undefined);
   });
 });
 

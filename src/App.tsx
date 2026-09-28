@@ -3313,12 +3313,15 @@ function App() {
       showToast();
     } catch (e) {
       console.error("Failed to modify threads", e);
-      // Roll back the optimistic update; the cache was never written
-      setCardThreads(produce(s => {
-        for (const cId of affectedCardIds) {
-          s[cId] = snapshot[cId];
-        }
-      }));
+      // Roll back the optimistic update; the cache was never written. After
+      // an account switch those cards are no longer loaded.
+      if (selectedAccount()?.id === account.id) {
+        setCardThreads(produce(s => {
+          for (const cId of affectedCardIds) {
+            s[cId] = snapshot[cId];
+          }
+        }));
+      }
       setError(String(e));
     }
   }
