@@ -99,7 +99,6 @@ export const ActionsWheel = (props: {
         joinMeeting: {
           cls: 'event-join',
           title: 'Join meeting',
-          keyHint: 'j',
           icon: VideoIcon,
           onClick: (e) => { e.stopPropagation(); evt.hangout_link && openUrl(evt.hangout_link); },
           available: !!evt.hangout_link
@@ -107,7 +106,6 @@ export const ActionsWheel = (props: {
         openCalendar: {
           cls: 'event-open',
           title: 'Open in Calendar',
-          keyHint: 'o',
           icon: CalendarIcon,
           onClick: (e) => { e.stopPropagation(); evt.html_link && openUrl(evt.html_link); },
           available: !!evt.html_link
@@ -115,7 +113,6 @@ export const ActionsWheel = (props: {
         rsvpYes: {
           cls: evt.response_status === 'accepted' ? 'event-rsvp-active' : 'event-rsvp',
           title: 'RSVP Yes',
-          keyHint: 'y',
           icon: CheckIcon,
           onClick: async (e) => {
             e.stopPropagation();
@@ -134,7 +131,6 @@ export const ActionsWheel = (props: {
         rsvpNo: {
           cls: evt.response_status === 'declined' ? 'event-rsvp-active' : 'event-rsvp',
           title: 'RSVP No',
-          keyHint: 'n',
           icon: ThumbsDownIcon,
           onClick: async (e) => {
             e.stopPropagation();
@@ -153,7 +149,6 @@ export const ActionsWheel = (props: {
         delete: {
           cls: 'bulk-danger',
           title: 'Delete',
-          keyHint: 'd',
           icon: TrashIcon,
           onClick: async (e) => {
             e.stopPropagation();
@@ -243,7 +238,7 @@ export const ActionsWheel = (props: {
         bulkTitle: 'Mark important', bulkIcon: ThumbsUpIcon, bulkOnClick: (e) => { e.stopPropagation(); props.handleThreadAction('important', getSelection(), cId); }
       };
       actionDefs.spam = {
-        cls: 'bulk-spam', title: 'Report spam', keyHint: 'x', icon: SpamIcon,
+        cls: 'bulk-spam', title: 'Report spam', icon: SpamIcon,
         onClick: (e) => { e.stopPropagation(); props.handleThreadAction('spam', [tId], cId); },
         bulkOnClick: (e) => { e.stopPropagation(); props.handleThreadAction('spam', getSelection(), cId); }
       };
