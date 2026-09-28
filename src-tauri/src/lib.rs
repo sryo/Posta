@@ -146,10 +146,19 @@ fn take_pending_mailtos(app_handle: tauri::AppHandle) -> Vec<MailtoData> {
     pending_mailtos(&app_handle).drain()
 }
 
+/// `RUST_LOG`'s directives, or warnings and errors when it is unset or
+/// empty; tracing's own default drops warnings such as a failed iCloud write
+fn log_filter(rust_log: Option<&str>) -> tracing_subscriber::EnvFilter {
+    match rust_log.map(str::trim) {
+        Some(directives) if !directives.is_empty() => tracing_subscriber::EnvFilter::new(directives),
+        _ => tracing_subscriber::EnvFilter::new("warn"),
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tracing_subscriber::fmt()
-        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+        .with_env_filter(log_filter(std::env::var("RUST_LOG").ok().as_deref()))
         .init();
 
     let app = tauri::Builder::default()
@@ -274,6 +283,14 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use super::{is_mailto, parse_mailto, PendingMailtoInner};
+
+    #[test]
+    fn warnings_are_logged_unless_rust_log_says_otherwise() {
+        use tracing_subscriber::filter::LevelFilter;
+        assert_eq!(super::log_filter(None).max_level_hint(), Some(LevelFilter::WARN));
+        assert_eq!(super::log_filter(Some("")).max_level_hint(), Some(LevelFilter::WARN));
+        assert_eq!(super::log_filter(Some("debug")).max_level_hint(), Some(LevelFilter::DEBUG));
+    }
 
     #[test]
     fn mailtos_are_buffered_until_the_frontend_drains_them() {

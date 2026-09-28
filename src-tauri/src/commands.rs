@@ -90,28 +90,23 @@ where
     f(db)
 }
 
-/// Verify that an account exists
-fn verify_account_exists(state: &AppState, account_id: &str) -> Result<(), String> {
-    with_db(state, |db| {
-        let accounts = db.get_accounts().map_err(|e| e.to_string())?;
-        if accounts.iter().any(|a| a.id == account_id) {
-            Ok(())
-        } else {
-            Err("Account not found".to_string())
-        }
+/// A local account, or "Account not found"
+async fn find_account(state: &AppState, account_id: &str) -> Result<Account, String> {
+    let account_id = account_id.to_string();
+    blocking(state, move |state| {
+        with_db(state, |db| {
+            db.get_accounts()
+                .map_err(|e| e.to_string())?
+                .into_iter()
+                .find(|a| a.id == account_id)
+                .ok_or_else(|| "Account not found".to_string())
+        })
     })
+    .await
 }
 
-/// Get email address for an account
-fn get_account_email(state: &AppState, account_id: &str) -> Result<String, String> {
-    with_db(state, |db| {
-        let accounts = db.get_accounts().map_err(|e| e.to_string())?;
-        accounts
-            .into_iter()
-            .find(|a| a.id == account_id)
-            .map(|a| a.email)
-            .ok_or_else(|| "Account not found".to_string())
-    })
+async fn get_account_email(state: &AppState, account_id: &str) -> Result<String, String> {
+    Ok(find_account(state, account_id).await?.email)
 }
 
 /// Deleted cards travel in the iCloud account-mapping map, next to the
@@ -184,41 +179,88 @@ struct SyncRecord {
     seen_backup: bool,
 }
 
+/// Where the card backup is kept
+trait CardBackupStore: Send {
+    fn load_cards(&self) -> Result<Option<Vec<Card>>, String>;
+    fn load_account_mappings(&self) -> Result<Option<HashMap<String, String>>, String>;
+    fn sync_cards(&self, cards: &[Card]) -> Result<(), String>;
+    fn sync_account_mappings(&self, mappings: &HashMap<String, String>) -> Result<(), String>;
+}
+
+impl CardBackupStore for ICloudKVStore {
+    fn load_cards(&self) -> Result<Option<Vec<Card>>, String> {
+        ICloudKVStore::load_cards(self)
+    }
+
+    fn load_account_mappings(&self) -> Result<Option<HashMap<String, String>>, String> {
+        ICloudKVStore::load_account_mappings(self)
+    }
+
+    fn sync_cards(&self, cards: &[Card]) -> Result<(), String> {
+        ICloudKVStore::sync_cards(self, cards)
+    }
+
+    fn sync_account_mappings(&self, mappings: &HashMap<String, String>) -> Result<(), String> {
+        ICloudKVStore::sync_account_mappings(self, mappings)
+    }
+}
+
 /// The iCloud card backup plus this device's `SyncRecord`
 pub struct ICloudSync {
-    store: ICloudKVStore,
+    /// None in debug builds: a signed debug bundle would otherwise read the
+    /// installed app's backup, whose card ids it shares, and its deletions
+    /// would reach the user's real layout on every Mac
+    store: Option<Box<dyn CardBackupStore>>,
     /// Where the `SyncRecord` lives; set once the app data dir is known
     record_path: Option<std::path::PathBuf>,
 }
 
 impl ICloudSync {
     fn new() -> Self {
-        Self { store: ICloudKVStore::new(), record_path: None }
+        let store: Option<Box<dyn CardBackupStore>> =
+            if cfg!(debug_assertions) { None } else { Some(Box::new(ICloudKVStore::new())) };
+        Self { store, record_path: None }
     }
 
     /// A missing or unreadable record only loses the change tracking, so
-    /// conflicts go to iCloud on a pull and to this device on a push
+    /// conflicts go to iCloud on a pull and to this device on a push. An
+    /// unreadable one may belong to a device that has pushed before, so an
+    /// empty store is still not taken as nobody having pushed yet.
     fn load_record(&self) -> SyncRecord {
-        self.record_path
-            .as_ref()
-            .and_then(|p| std::fs::read(p).ok())
-            .and_then(|bytes| serde_json::from_slice(&bytes).ok())
-            .unwrap_or_default()
+        let Some(path) = &self.record_path else { return SyncRecord::default() };
+        let unreadable = |e: String| {
+            tracing::warn!("iCloud card sync state is unreadable, starting over: {}", e);
+            SyncRecord { seen_backup: true, ..Default::default() }
+        };
+        match std::fs::read(path) {
+            Ok(bytes) => serde_json::from_slice(&bytes).unwrap_or_else(|e| unreadable(e.to_string())),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => SyncRecord::default(),
+            Err(e) => unreadable(e.to_string()),
+        }
     }
 
+    /// Written to a temporary file and renamed over the record, so a crash
+    /// mid-write can't leave a torn record that drops unpushed deletions
     fn save_record(&self, record: &SyncRecord) {
         let Some(path) = &self.record_path else { return };
-        let result = serde_json::to_vec(record)
-            .map_err(|e| e.to_string())
-            .and_then(|json| std::fs::write(path, json).map_err(|e| e.to_string()));
+        let temp = path.with_extension("json.tmp");
+        let result = serde_json::to_vec(record).map_err(|e| e.to_string()).and_then(|json| {
+            use std::io::Write;
+            let mut file = std::fs::File::create(&temp).map_err(|e| e.to_string())?;
+            file.write_all(&json).and_then(|_| file.sync_all()).map_err(|e| e.to_string())?;
+            std::fs::rename(&temp, path).map_err(|e| e.to_string())
+        });
         if let Err(e) = result {
+            let _ = std::fs::remove_file(&temp);
             tracing::warn!("Failed to save iCloud card sync state: {}", e);
         }
     }
 
+    /// Ok(None) when the store holds nothing, or there is no store
     fn load_backup(&self) -> Result<Option<Backup>, String> {
-        let cards = self.store.load_cards()?;
-        let mappings = self.store.load_account_mappings()?;
+        let Some(store) = &self.store else { return Ok(None) };
+        let cards = store.load_cards()?;
+        let mappings = store.load_account_mappings()?;
         Ok(Backup::from_store(cards, mappings))
     }
 }
@@ -375,17 +417,18 @@ fn push_cards_to_icloud(icloud: &ICloudSync, state: &AppState, deleted_card: Opt
         (accounts, cards)
     };
 
+    let Some(store) = &icloud.store else { return };
     let Some(backup) = backup_to_push_onto(icloud.load_backup(), &mut record) else {
         return;
     };
     let Some((backup, new_record)) = plan_push(&accounts, local_cards, backup, &record, now_ms()) else {
         return;
     };
-    if let Err(e) = icloud.store.sync_account_mappings(&backup.mappings()) {
+    if let Err(e) = store.sync_account_mappings(&backup.mappings()) {
         tracing::warn!("iCloud account mapping sync failed: {}", e);
         return;
     }
-    match icloud.store.sync_cards(&backup.cards) {
+    match store.sync_cards(&backup.cards) {
         Ok(()) => icloud.save_record(&new_record),
         Err(e) => tracing::warn!("iCloud card sync failed: {}", e),
     }
@@ -632,31 +675,10 @@ async fn finalize_oauth(
     app_handle: &tauri::AppHandle,
     state: &State<'_, AppState>,
 ) -> Result<Account, String> {
-    // Get user info from Google API
     let user_info = get_user_info(access_token).await?;
-
-    // Reuse the existing account id on re-login so cards keep pointing at it;
-    // only mint a new UUID for genuinely new emails
-    let existing = with_db(state, |db| {
-        db.get_account_by_email(&user_info.email).map_err(|e| e.to_string())
-    })?;
-    let account = match existing {
-        Some(mut account) => {
-            account.picture = user_info.picture;
-            account
-        }
-        None => Account::new(user_info.email, user_info.picture),
-    };
-
-    // Get app data directory for secure storage
     let app_data_dir = get_app_data_dir(app_handle)?;
-
-    // Store refresh token securely
-    auth::store_refresh_token(&account.id, refresh_token, &app_data_dir)
-        .map_err(|e| e.to_string())?;
-
-    // Save account to database
-    with_db(state, |db| db.insert_account(&account).map_err(|e| e.to_string()))?;
+    let refresh_token = refresh_token.to_string();
+    let account = blocking(state, move |state| save_signed_in_account(state, user_info, &refresh_token, &app_data_dir)).await?;
 
     // Cache the fresh access token, replacing any stale entry for this account
     let expiry = Instant::now() + Duration::from_secs(expires_in.unwrap_or(3600));
@@ -669,14 +691,47 @@ async fn finalize_oauth(
     Ok(account)
 }
 
+/// Store the refresh token and the account of a completed sign-in. Signing in
+/// again keeps the account's id, so its cards keep pointing at it.
+fn save_signed_in_account(
+    state: &AppState,
+    user_info: UserInfo,
+    refresh_token: &str,
+    app_data_dir: &std::path::Path,
+) -> Result<Account, String> {
+    let existing = with_db(state, |db| db.get_account_by_email(&user_info.email).map_err(|e| e.to_string()))?;
+    let account = match existing {
+        Some(mut account) => {
+            account.picture = user_info.picture;
+            account
+        }
+        None => Account::new(user_info.email, user_info.picture),
+    };
+
+    auth::store_refresh_token(&account.id, refresh_token, app_data_dir).map_err(|e| e.to_string())?;
+    with_db(state, |db| db.insert_account(&account).map_err(|e| e.to_string()))?;
+    Ok(account)
+}
+
+const USERINFO_URL: &str = "https://www.googleapis.com/oauth2/v2/userinfo";
+
+/// A sign-in waits on this request; without a timeout a connection that
+/// never answers leaves it spinning forever
+fn userinfo_http_client(timeout: Duration) -> reqwest::Client {
+    reqwest::Client::builder().timeout(timeout).build().unwrap_or_else(|_| reqwest::Client::new())
+}
+
 async fn get_user_info(access_token: &str) -> Result<UserInfo, String> {
-    let client = reqwest::Client::new();
+    fetch_user_info(&userinfo_http_client(Duration::from_secs(30)), USERINFO_URL, access_token).await
+}
+
+async fn fetch_user_info(client: &reqwest::Client, url: &str, access_token: &str) -> Result<UserInfo, String> {
     let resp = client
-        .get("https://www.googleapis.com/oauth2/v2/userinfo")
+        .get(url)
         .bearer_auth(access_token)
         .send()
         .await
-        .map_err(|e| format!("Failed to send request: {}", e))?;
+        .map_err(|e| format!("Failed to read your Google account: {}", e.without_url()))?;
 
     if !resp.status().is_success() {
         let status = resp.status();
@@ -789,27 +844,22 @@ fn next_card_position(cards: &[Card]) -> i32 {
     cards.iter().map(|c| c.position + 1).max().unwrap_or(0)
 }
 
-/// Helper to get account and card from database
-fn get_account_and_card(
-    state: &AppState,
-    account_id: &str,
-    card_id: &str,
-) -> Result<(Account, Card), String> {
-    with_db(state, |db| {
-        let accounts = db.get_accounts().map_err(|e| e.to_string())?;
-        let account = accounts
-            .into_iter()
-            .find(|a| a.id == account_id)
-            .ok_or("Account not found")?;
-
-        let cards = db.get_cards(account_id).map_err(|e| e.to_string())?;
-        let card = cards
-            .into_iter()
-            .find(|c| c.id == card_id)
-            .ok_or("Card not found")?;
-
-        Ok((account, card))
+/// A card of a local account, or "Account not found" / "Card not found"
+async fn find_card(state: &AppState, account_id: &str, card_id: &str) -> Result<Card, String> {
+    let (account_id, card_id) = (account_id.to_string(), card_id.to_string());
+    blocking(state, move |state| {
+        with_db(state, |db| {
+            if !db.get_accounts().map_err(|e| e.to_string())?.iter().any(|a| a.id == account_id) {
+                return Err("Account not found".to_string());
+            }
+            db.get_cards(&account_id)
+                .map_err(|e| e.to_string())?
+                .into_iter()
+                .find(|c| c.id == card_id)
+                .ok_or_else(|| "Card not found".to_string())
+        })
     })
+    .await
 }
 
 /// The cached token, if it is good for at least another minute
@@ -827,32 +877,57 @@ async fn get_access_token(
     app_handle: &tauri::AppHandle,
     account_id: &str,
 ) -> Result<String, String> {
-    if let Some(token) = cached_access_token(&state.token_cache, account_id)? {
+    let app_data_dir = get_app_data_dir(app_handle)?;
+    let account = account_id.to_string();
+    refreshed_access_token(&state.auth, &state.token_cache, account_id, move || {
+        auth::get_refresh_token(&account, &app_data_dir).map_err(|e| e.to_string())
+    })
+    .await
+}
+
+/// Exchanges a refresh token for an access token
+trait TokenRefresher {
+    async fn refresh(&self, refresh_token: &str) -> Result<(String, Option<u64>), String>;
+}
+
+impl TokenRefresher for GmailAuth {
+    async fn refresh(&self, refresh_token: &str) -> Result<(String, Option<u64>), String> {
+        self.refresh_access_token(refresh_token).await.map_err(|e| e.to_string())
+    }
+}
+
+/// The cached access token, or a fresh one refreshed with the refresh token
+/// `load_refresh_token` reads from secure storage
+async fn refreshed_access_token<R: TokenRefresher>(
+    auth: &Mutex<Option<R>>,
+    token_cache: &TokenCache,
+    account_id: &str,
+    load_refresh_token: impl FnOnce() -> Result<String, String> + Send + 'static,
+) -> Result<String, String> {
+    if let Some(token) = cached_access_token(token_cache, account_id)? {
         return Ok(token);
     }
 
-    let app_data_dir = get_app_data_dir(app_handle)?;
-    let refresh_token = auth::get_refresh_token(account_id, &app_data_dir).map_err(|e| e.to_string())?;
-
     let (access_token, expires_in) = {
-        let auth_guard = state.auth.lock().await;
-        // Parallel calls queue on the auth lock; the first one refreshes and
-        // the rest reuse its token instead of each refreshing again
-        if let Some(token) = cached_access_token(&state.token_cache, account_id)? {
+        let auth_guard = auth.lock().await;
+        // Parallel calls queue on the auth lock; the first one reads secure
+        // storage and refreshes, and the rest reuse its token
+        if let Some(token) = cached_access_token(token_cache, account_id)? {
             return Ok(token);
         }
         let auth = auth_guard
             .as_ref()
             .ok_or("Auth not configured. Please configure auth first.")?;
 
-        auth.refresh_access_token(&refresh_token)
+        // A keychain read can wait on a user prompt; keep it off the async workers
+        let refresh_token = tokio::task::spawn_blocking(load_refresh_token)
             .await
-            .map_err(|e| e.to_string())?
+            .map_err(|e| format!("Task error: {}", e))??;
+        auth.refresh(&refresh_token).await?
     };
 
     let expiry = Instant::now() + Duration::from_secs(expires_in.unwrap_or(3600));
-    state
-        .token_cache
+    token_cache
         .lock()
         .map_err(|_| "Lock error")?
         .insert(account_id.to_string(), (access_token.clone(), expiry));
@@ -866,7 +941,7 @@ async fn account_access_token(
     app_handle: &tauri::AppHandle,
     account_id: &str,
 ) -> Result<String, String> {
-    verify_account_exists(state, account_id)?;
+    find_account(state, account_id).await?;
     get_access_token(state, app_handle, account_id).await
 }
 
@@ -912,8 +987,8 @@ pub async fn fetch_threads_paginated(
 ) -> Result<SearchResult, String> {
     tracing::info!("fetch_threads_paginated for card: {}, page_token: {:?}", card_id, page_token);
 
-    let (account, card) = get_account_and_card(&state, &account_id, &card_id)?;
-    let access_token = get_access_token(&state, &app_handle, &account.id).await?;
+    let card = find_card(&state, &account_id, &card_id).await?;
+    let access_token = get_access_token(&state, &app_handle, &account_id).await?;
 
     let gmail = GmailClient::new(access_token);
     let result = evict_token_on_auth_error(
@@ -968,113 +1043,127 @@ async fn sync_threads_incremental_impl(
 ) -> Result<IncrementalSyncResult, String> {
     tracing::info!("sync_threads_incremental for account: {}", account_id);
 
-    // Get stored history ID
-    let stored_history_id = {
-        let db_guard = state.db.lock().map_err(|_| "Lock error")?;
-        let db = db_guard.as_ref().ok_or("Database not initialized")?;
-        db.get_history_id(account_id).map_err(|e| e.to_string())?
-    };
+    let account = account_id.to_string();
+    let stored_history_id =
+        blocking(state, move |state| with_db(state, |db| db.get_history_id(&account).map_err(|e| e.to_string())))
+            .await?;
 
     let access_token = get_access_token(state, app_handle, account_id).await?;
     let gmail = GmailClient::new(access_token);
+    let mut result = sync_mail_history(&gmail, stored_history_id.as_deref()).await?;
+    for thread in &mut result.modified_threads {
+        thread.account_id = account_id.to_string();
+    }
 
-    match stored_history_id {
-        Some(history_id) => {
-            // Incremental sync - get changes since last sync
-            match gmail.get_history_changes(&history_id).await {
-                Ok(changes) => {
-                    tracing::info!(
-                        "Incremental sync: {} modified threads, {} deletion candidates, {} deleted messages",
-                        changes.modified_thread_ids.len(),
-                        changes.deleted_thread_ids.len(),
-                        changes.deleted_message_ids.len()
-                    );
+    // Only advanced once the changes are in hand, so a failed sync is
+    // retried from the same point
+    let (account, history_id) = (account_id.to_string(), result.new_history_id.clone());
+    blocking(state, move |state| {
+        with_db(state, |db| db.set_history_id(&account, &history_id).map_err(|e| e.to_string()))
+    })
+    .await?;
+    Ok(result)
+}
 
-                    // Verify deletion candidates: a thread that still exists only
-                    // lost some messages and must be treated as modified
-                    let mut modified_thread_ids = changes.modified_thread_ids;
-                    let (still_existing, mut deleted_thread_ids) =
-                        gmail.split_deleted_threads(&changes.deleted_thread_ids).await?;
-                    modified_thread_ids.extend(still_existing);
+/// The Gmail calls an incremental sync makes
+trait MailHistory {
+    async fn history_changes(&self, since: &str) -> Result<crate::gmail::HistoryChanges, String>;
+    async fn split_deleted_threads(&self, thread_ids: &[String]) -> Result<(Vec<String>, Vec<String>), String>;
+    async fn thread_details(&self, thread_ids: &[String]) -> Result<Vec<crate::models::Thread>, String>;
+    async fn current_history_id(&self) -> Result<String, String>;
+}
 
-                    // Batch fetch the modified threads; propagate errors so the
-                    // frontend keeps its current data and retries (the history ID
-                    // is not advanced on failure)
-                    let mut modified_threads = Vec::new();
-                    if !modified_thread_ids.is_empty() {
-                        modified_threads = gmail
-                            .batch_get_thread_details(&modified_thread_ids)
-                            .await
-                            .map_err(|e| format!("Failed to fetch modified threads: {}", e))?;
+impl MailHistory for GmailClient {
+    async fn history_changes(&self, since: &str) -> Result<crate::gmail::HistoryChanges, String> {
+        self.get_history_changes(since).await
+    }
 
-                        // Set account_id on all threads
-                        for thread in &mut modified_threads {
-                            thread.account_id = account_id.to_string();
-                        }
+    async fn split_deleted_threads(&self, thread_ids: &[String]) -> Result<(Vec<String>, Vec<String>), String> {
+        GmailClient::split_deleted_threads(self, thread_ids).await
+    }
 
-                        // A thread deleted between the history call and the
-                        // fetch comes back missing rather than as an error
-                        deleted_thread_ids.extend(vanished_thread_ids(&modified_thread_ids, &modified_threads));
-                    }
+    async fn thread_details(&self, thread_ids: &[String]) -> Result<Vec<crate::models::Thread>, String> {
+        self.batch_get_thread_details(thread_ids).await
+    }
 
-                    // Update stored history ID
-                    {
-                        let db_guard = state.db.lock().map_err(|_| "Lock error")?;
-                        let db = db_guard.as_ref().ok_or("Database not initialized")?;
-                        db.set_history_id(account_id, &changes.new_history_id)
-                            .map_err(|e| e.to_string())?;
-                    }
-
-                    Ok(IncrementalSyncResult {
-                        modified_threads,
-                        deleted_thread_ids,
-                        new_history_id: changes.new_history_id,
-                        is_full_sync: false,
-                    })
-                }
-                Err(e) if e == crate::gmail::HISTORY_EXPIRED => {
-                    tracing::warn!("History ID expired, performing full sync");
-                    // Clear the stale history ID and do full sync
-                    {
-                        let db_guard = state.db.lock().map_err(|_| "Lock error")?;
-                        let db = db_guard.as_ref().ok_or("Database not initialized")?;
-                        db.clear_history_id(account_id).map_err(|e| e.to_string())?;
-                    }
-                    perform_full_sync(&gmail, account_id, state).await
-                }
-                Err(e) => Err(e),
-            }
-        }
-        None => {
-            // No history ID stored - this is the first sync
-            tracing::info!("No history ID found, performing initial full sync");
-            perform_full_sync(&gmail, account_id, state).await
-        }
+    async fn current_history_id(&self) -> Result<String, String> {
+        self.get_current_history_id().await
     }
 }
 
-/// Perform a full sync and establish history ID for future incremental syncs
-async fn perform_full_sync(
-    gmail: &GmailClient,
-    account_id: &str,
-    state: &State<'_, AppState>,
-) -> Result<IncrementalSyncResult, String> {
-    // Get current history ID for future syncs
-    let history_id = gmail
-        .get_current_history_id()
-        .await
-        .map_err(|e| format!("Failed to get history ID: {}", e))?;
+/// Past this many changed threads, fetching each one costs more than the
+/// frontend refetching its open cards, which it does anyway for most of them
+const MAX_INCREMENTAL_THREADS: usize = 100;
 
-    // Store the history ID
-    {
-        let db_guard = state.db.lock().map_err(|_| "Lock error")?;
-        let db = db_guard.as_ref().ok_or("Database not initialized")?;
-        db.set_history_id(account_id, &history_id)
-            .map_err(|e| e.to_string())?;
+/// Changes since `stored_history_id`, or a full sync (the frontend refetches
+/// its cards) when there is none, it expired, or the backlog is too large
+async fn sync_mail_history(
+    gmail: &impl MailHistory,
+    stored_history_id: Option<&str>,
+) -> Result<IncrementalSyncResult, String> {
+    let Some(history_id) = stored_history_id else {
+        tracing::info!("No history ID found, performing initial full sync");
+        return full_sync(gmail).await;
+    };
+
+    let changes = match gmail.history_changes(history_id).await {
+        Ok(changes) => changes,
+        Err(e) if e == crate::gmail::HISTORY_EXPIRED => {
+            tracing::warn!("History ID expired, performing full sync");
+            return full_sync(gmail).await;
+        }
+        Err(e) => return Err(e),
+    };
+    tracing::info!(
+        "Incremental sync: {} modified threads, {} deletion candidates, {} deleted messages",
+        changes.modified_thread_ids.len(),
+        changes.deleted_thread_ids.len(),
+        changes.deleted_message_ids.len()
+    );
+
+    if changes.modified_thread_ids.len() + changes.deleted_thread_ids.len() > MAX_INCREMENTAL_THREADS {
+        tracing::info!("Too many changed threads to fetch one by one, refetching cards instead");
+        return Ok(IncrementalSyncResult {
+            modified_threads: Vec::new(),
+            deleted_thread_ids: Vec::new(),
+            new_history_id: changes.new_history_id,
+            is_full_sync: true,
+        });
     }
 
-    // Return empty result - frontend should do its normal fetch
-    // This avoids duplicating the card-specific query logic here
+    // Verify deletion candidates: a thread that still exists only lost some
+    // messages and must be treated as modified
+    let mut modified_thread_ids = changes.modified_thread_ids;
+    let (still_existing, mut deleted_thread_ids) = gmail.split_deleted_threads(&changes.deleted_thread_ids).await?;
+    modified_thread_ids.extend(still_existing);
+
+    let mut modified_threads = Vec::new();
+    if !modified_thread_ids.is_empty() {
+        modified_threads = gmail
+            .thread_details(&modified_thread_ids)
+            .await
+            .map_err(|e| format!("Failed to fetch modified threads: {}", e))?;
+
+        // A thread deleted between the history call and the fetch comes back
+        // missing rather than as an error
+        deleted_thread_ids.extend(vanished_thread_ids(&modified_thread_ids, &modified_threads));
+    }
+
+    Ok(IncrementalSyncResult {
+        modified_threads,
+        deleted_thread_ids,
+        new_history_id: changes.new_history_id,
+        is_full_sync: false,
+    })
+}
+
+/// Establish a history ID for later incremental syncs; the frontend does its
+/// normal card fetch, so the card queries aren't duplicated here
+async fn full_sync(gmail: &impl MailHistory) -> Result<IncrementalSyncResult, String> {
+    let history_id = gmail
+        .current_history_id()
+        .await
+        .map_err(|e| format!("Failed to get history ID: {}", e))?;
     Ok(IncrementalSyncResult {
         modified_threads: Vec::new(),
         deleted_thread_ids: Vec::new(),
@@ -1092,25 +1181,18 @@ pub async fn modify_threads(
     app_handle: tauri::AppHandle, state: State<'_, AppState>,
 ) -> Result<(), String> {
     let access_token = account_access_token(&state, &app_handle, &account_id).await?;
-    let gmail = std::sync::Arc::new(GmailClient::new(access_token));
+    let gmail = GmailClient::new(access_token);
 
-    // Process in parallel for better performance
-    let futures: Vec<_> = thread_ids
-        .into_iter()
-        .map(|thread_id| {
-            let gmail = gmail.clone();
-            let add = add_labels.clone();
-            let remove = remove_labels.clone();
-            async move {
-                gmail
-                    .modify_thread(&thread_id, add, remove)
-                    .await
-                    .map_err(|e| format!("Failed to modify thread {}: {}", thread_id, e))
-            }
-        })
-        .collect();
-
-    let results = futures::future::join_all(futures).await;
+    let results = for_each_thread(thread_ids, |thread_id| {
+        let (gmail, add, remove) = (&gmail, add_labels.clone(), remove_labels.clone());
+        async move {
+            gmail
+                .modify_thread(&thread_id, add, remove)
+                .await
+                .map_err(|e| format!("Failed to modify thread {}: {}", thread_id, e))
+        }
+    })
+    .await;
 
     // Return first error if any
     for result in results {
@@ -1118,6 +1200,24 @@ pub async fn modify_threads(
     }
 
     Ok(())
+}
+
+/// Gmail answers 429 "Too many concurrent requests for user" past a few
+/// requests in flight, so a bulk action on a large selection runs this many
+/// at a time
+const MAX_CONCURRENT_THREAD_REQUESTS: usize = 8;
+
+async fn for_each_thread<F, Fut>(thread_ids: Vec<String>, request: F) -> Vec<Result<(), String>>
+where
+    F: FnMut(String) -> Fut,
+    Fut: std::future::Future<Output = Result<(), String>>,
+{
+    use futures::StreamExt;
+    futures::stream::iter(thread_ids)
+        .map(request)
+        .buffer_unordered(MAX_CONCURRENT_THREAD_REQUESTS)
+        .collect()
+        .await
 }
 
 /// Search threads by query (for preview, limited results)
@@ -1215,7 +1315,7 @@ pub async fn send_reaction(
     app_handle: tauri::AppHandle,
     state: State<'_, AppState>,
 ) -> Result<(), String> {
-    let from_email = get_account_email(&state, &account_id)?;
+    let from_email = get_account_email(&state, &account_id).await?;
     let access_token = get_access_token(&state, &app_handle, &account_id).await?;
     let gmail = GmailClient::new(access_token);
 
@@ -1547,10 +1647,7 @@ pub async fn open_attachment(
     ).await?;
 
     let dir = attachment_temp_dir(&std::env::temp_dir(), &message_id);
-    std::fs::create_dir_all(&dir).map_err(|e| format!("Failed to create temp dir: {}", e))?;
-    let temp_path = write_unique_file(&dir, &final_filename, &bytes, true)
-        .map_err(|e| format!("Failed to write temp file: {}", e))?;
-    mark_quarantined(&temp_path);
+    let temp_path = write_attachment(&state, dir, final_filename, bytes, true).await?;
 
     // Open with system default application
     tauri_plugin_opener::open_path(&temp_path, None::<&str>).map_err(|e| format!("Failed to open file: {}", e))?;
@@ -1579,11 +1676,27 @@ pub async fn save_attachment(
         .download_dir()
         .map_err(|e| format!("Failed to get downloads dir: {}", e))?;
 
-    let path = write_unique_file(&download_dir, &final_filename, &bytes, false)
-        .map_err(|e| format!("Failed to write file: {}", e))?;
-    mark_quarantined(&path);
-
+    let path = write_attachment(&state, download_dir, final_filename, bytes, false).await?;
     Ok(path.to_string_lossy().to_string())
+}
+
+/// Write an attachment into `dir` under a name no other file has (see
+/// `write_unique_file`) and quarantine it
+async fn write_attachment(
+    state: &AppState,
+    dir: std::path::PathBuf,
+    filename: String,
+    bytes: Vec<u8>,
+    reuse_identical: bool,
+) -> Result<std::path::PathBuf, String> {
+    blocking(state, move |_| {
+        std::fs::create_dir_all(&dir).map_err(|e| format!("Failed to create folder {:?}: {}", dir, e))?;
+        let path = write_unique_file(&dir, &filename, &bytes, reuse_identical)
+            .map_err(|e| format!("Failed to write file: {}", e))?;
+        mark_quarantined(&path);
+        Ok(path)
+    })
+    .await
 }
 
 #[tauri::command]
@@ -1645,7 +1758,7 @@ pub async fn rsvp_calendar_event(
         return Err(format!("Invalid status: {}. Must be one of: accepted, tentative, declined", status));
     }
 
-    let user_email = get_account_email(&state, &account_id)?;
+    let user_email = get_account_email(&state, &account_id).await?;
 
     let access_token = get_access_token(&state, &app_handle, &account_id).await?;
     let calendar = crate::calendar::CalendarClient::new(access_token);
@@ -1660,7 +1773,7 @@ pub async fn get_calendar_rsvp_status(
     event_uid: String,
     app_handle: tauri::AppHandle, state: State<'_, AppState>,
 ) -> Result<Option<String>, String> {
-    let user_email = get_account_email(&state, &account_id)?;
+    let user_email = get_account_email(&state, &account_id).await?;
 
     let access_token = get_access_token(&state, &app_handle, &account_id).await?;
     let calendar = crate::calendar::CalendarClient::new(access_token);
@@ -2048,10 +2161,12 @@ pub async fn suggest_replies(
     app_handle: tauri::AppHandle, state: State<'_, AppState>,
 ) -> Result<Vec<String>, String> {
     let app_data_dir = get_app_data_dir(&app_handle)?;
-    let api_key = auth::get_gemini_api_key(&app_data_dir)
-        .ok_or_else(|| "Gemini API key is required for smart replies.".to_string())?;
+    let api_key = blocking(&state, move |_| {
+        auth::get_gemini_api_key(&app_data_dir).ok_or_else(|| "Gemini API key is required for smart replies.".to_string())
+    })
+    .await?;
 
-    let user_email = get_account_email(&state, &account_id)?;
+    let user_email = get_account_email(&state, &account_id).await?;
 
     let access_token = get_access_token(&state, &app_handle, &account_id).await?;
 
@@ -2096,6 +2211,123 @@ mod tests {
             attachments: Vec::new(),
             calendar_event: None,
         }
+    }
+
+    /// Gmail history with `modified` changed threads and `candidates` threads
+    /// that lost messages, of which `gone` no longer exist
+    #[derive(Default)]
+    struct FakeMail {
+        modified: Vec<String>,
+        candidates: Vec<String>,
+        gone: Vec<String>,
+        expired: bool,
+        calls: std::sync::Mutex<Vec<String>>,
+    }
+
+    impl FakeMail {
+        fn with_changes(modified: usize, candidates: usize) -> Self {
+            FakeMail {
+                modified: (0..modified).map(|i| format!("m{}", i)).collect(),
+                candidates: (0..candidates).map(|i| format!("d{}", i)).collect(),
+                ..Default::default()
+            }
+        }
+
+        fn calls(&self) -> Vec<String> {
+            self.calls.lock().unwrap().clone()
+        }
+    }
+
+    impl super::MailHistory for FakeMail {
+        async fn history_changes(&self, since: &str) -> Result<crate::gmail::HistoryChanges, String> {
+            self.calls.lock().unwrap().push(format!("history {}", since));
+            if self.expired {
+                return Err(crate::gmail::HISTORY_EXPIRED.to_string());
+            }
+            Ok(crate::gmail::HistoryChanges {
+                modified_thread_ids: self.modified.clone(),
+                deleted_thread_ids: self.candidates.clone(),
+                deleted_message_ids: Vec::new(),
+                new_history_id: "200".into(),
+            })
+        }
+
+        async fn split_deleted_threads(&self, ids: &[String]) -> Result<(Vec<String>, Vec<String>), String> {
+            self.calls.lock().unwrap().push(format!("split {}", ids.len()));
+            Ok(ids.iter().cloned().partition(|id| !self.gone.contains(id)))
+        }
+
+        async fn thread_details(&self, ids: &[String]) -> Result<Vec<Thread>, String> {
+            self.calls.lock().unwrap().push(format!("details {}", ids.len()));
+            Ok(ids.iter().filter(|id| !self.gone.contains(id)).map(|id| thread(id)).collect())
+        }
+
+        async fn current_history_id(&self) -> Result<String, String> {
+            self.calls.lock().unwrap().push("profile".into());
+            Ok("300".into())
+        }
+    }
+
+    #[tokio::test]
+    async fn a_large_history_backlog_refetches_cards_instead_of_every_thread() {
+        let gmail = FakeMail::with_changes(90, 20);
+        let result = super::sync_mail_history(&gmail, Some("100")).await.unwrap();
+        assert!(result.is_full_sync);
+        assert!(result.modified_threads.is_empty() && result.deleted_thread_ids.is_empty());
+        assert_eq!(result.new_history_id, "200", "the backlog is not fetched again");
+        assert_eq!(gmail.calls(), vec!["history 100"]);
+    }
+
+    #[tokio::test]
+    async fn a_small_history_backlog_fetches_the_changed_threads() {
+        let gmail = FakeMail { gone: vec!["d1".into()], ..FakeMail::with_changes(2, 2) };
+        let result = super::sync_mail_history(&gmail, Some("100")).await.unwrap();
+        assert!(!result.is_full_sync);
+        let mut fetched: Vec<&str> = result.modified_threads.iter().map(|t| t.gmail_thread_id.as_str()).collect();
+        fetched.sort();
+        assert_eq!(fetched, vec!["d0", "m0", "m1"]);
+        assert_eq!(result.deleted_thread_ids, vec!["d1".to_string()]);
+        assert_eq!(result.new_history_id, "200");
+        assert_eq!(gmail.calls(), vec!["history 100", "split 2", "details 3"]);
+    }
+
+    #[tokio::test]
+    async fn a_missing_or_expired_history_id_starts_a_full_sync() {
+        let gmail = FakeMail::default();
+        let result = super::sync_mail_history(&gmail, None).await.unwrap();
+        assert!(result.is_full_sync);
+        assert_eq!(result.new_history_id, "300");
+
+        let gmail = FakeMail { expired: true, ..Default::default() };
+        let result = super::sync_mail_history(&gmail, Some("1")).await.unwrap();
+        assert!(result.is_full_sync);
+        assert_eq!(result.new_history_id, "300");
+        assert_eq!(gmail.calls(), vec!["history 1", "profile"]);
+    }
+
+    #[tokio::test]
+    async fn bulk_thread_requests_stay_under_gmails_concurrency_limit() {
+        use std::sync::atomic::AtomicUsize;
+        let in_flight = AtomicUsize::new(0);
+        let peak = AtomicUsize::new(0);
+        let ids: Vec<String> = (0..60).map(|i| format!("t{}", i)).collect();
+
+        let results = super::for_each_thread(ids, |id| {
+            let (in_flight, peak) = (&in_flight, &peak);
+            async move {
+                let now = in_flight.fetch_add(1, Ordering::SeqCst) + 1;
+                peak.fetch_max(now, Ordering::SeqCst);
+                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+                in_flight.fetch_sub(1, Ordering::SeqCst);
+                if id == "t7" { Err("429".into()) } else { Ok(()) }
+            }
+        })
+        .await;
+
+        assert_eq!(results.len(), 60, "a failure does not stop the others");
+        assert_eq!(results.iter().filter(|r| r.is_err()).count(), 1);
+        let peak = peak.load(Ordering::SeqCst);
+        assert!(peak > 1 && peak <= super::MAX_CONCURRENT_THREAD_REQUESTS, "peak {}", peak);
     }
 
     #[test]
@@ -2562,6 +2794,24 @@ mod tests {
         std::fs::remove_dir_all(dir).unwrap();
     }
 
+    #[tokio::test]
+    async fn attachments_are_written_into_a_new_folder_without_replacing_a_file() {
+        let base = scratch_dir();
+        let dir = base.join("posta-attachments").join("m1");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("a.pdf"), b"other").unwrap();
+        let state = super::AppState::new();
+
+        let path = super::write_attachment(&state, dir.clone(), "a.pdf".into(), b"%PDF".to_vec(), true).await.unwrap();
+        assert_eq!(path, dir.join("a (1).pdf"));
+        assert_eq!(std::fs::read(dir.join("a.pdf")).unwrap(), b"other");
+
+        let fresh = base.join("new");
+        let path = super::write_attachment(&state, fresh.clone(), "b.txt".into(), b"x".to_vec(), false).await.unwrap();
+        assert_eq!(std::fs::read(path).unwrap(), b"x");
+        std::fs::remove_dir_all(base).unwrap();
+    }
+
     fn message(id: &str, from: &str, text: &str, labels: &[&str], reaction: bool) -> serde_json::Value {
         use base64::Engine;
         let data = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(text);
@@ -2632,6 +2882,124 @@ mod tests {
         assert_eq!(cached_access_token(&cache, "fresh"), Ok(Some("t1".to_string())));
         assert_eq!(cached_access_token(&cache, "expiring"), Ok(None));
         assert_eq!(cached_access_token(&cache, "unknown"), Ok(None));
+    }
+
+    struct FakeRefresher(Arc<std::sync::atomic::AtomicUsize>);
+
+    impl super::TokenRefresher for FakeRefresher {
+        async fn refresh(&self, refresh_token: &str) -> Result<(String, Option<u64>), String> {
+            self.0.fetch_add(1, Ordering::SeqCst);
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            Ok((format!("access-for-{}", refresh_token), Some(3600)))
+        }
+    }
+
+    #[tokio::test]
+    async fn parallel_calls_on_an_expired_token_read_secure_storage_once() {
+        use std::sync::atomic::AtomicUsize;
+        let refreshes = Arc::new(AtomicUsize::new(0));
+        let loads = Arc::new(AtomicUsize::new(0));
+        let auth = tokio::sync::Mutex::new(Some(FakeRefresher(refreshes.clone())));
+        let cache = super::TokenCache::new(HashMap::new());
+
+        let calls = (0..10).map(|_| {
+            let loads = loads.clone();
+            super::refreshed_access_token(&auth, &cache, "a1", move || {
+                loads.fetch_add(1, Ordering::SeqCst);
+                std::thread::sleep(std::time::Duration::from_millis(20));
+                Ok("rt".to_string())
+            })
+        });
+        let tokens = futures::future::join_all(calls).await;
+
+        assert!(tokens.iter().all(|t| t.as_deref() == Ok("access-for-rt")), "{:?}", tokens);
+        assert_eq!(refreshes.load(Ordering::SeqCst), 1);
+        assert_eq!(loads.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn a_missing_refresh_token_fails_the_call_without_caching_anything() {
+        let auth = tokio::sync::Mutex::new(Some(FakeRefresher(Default::default())));
+        let cache = super::TokenCache::new(HashMap::new());
+        let err = super::refreshed_access_token(&auth, &cache, "a1", || Err("No matching entry".into())).await;
+        assert_eq!(err, Err("No matching entry".to_string()));
+        assert!(cache.lock().unwrap().is_empty());
+    }
+
+    #[cfg(debug_assertions)]
+    #[test]
+    fn signing_in_again_keeps_the_account_its_cards_and_its_signature() {
+        let dir = scratch_dir();
+        let state = super::AppState::new();
+        *state.db.lock().unwrap() = Some(super::open_database(&dir.join("posta.db")).unwrap());
+        let user = |picture: &str| super::UserInfo { email: "me@x.com".into(), picture: Some(picture.into()) };
+
+        let first = super::save_signed_in_account(&state, user("old.png"), "rt-1", &dir).unwrap();
+        super::with_db(&state, |db| {
+            db.insert_card(&owned_card("inbox", &first.id)).unwrap();
+            db.update_account_signature(&first.id, Some("-- me")).map_err(|e| e.to_string())
+        })
+        .unwrap();
+
+        let again = super::save_signed_in_account(&state, user("new.png"), "rt-2", &dir).unwrap();
+        assert_eq!(again.id, first.id);
+        let accounts = super::with_db(&state, |db| db.get_accounts().map_err(|e| e.to_string())).unwrap();
+        assert_eq!(accounts.len(), 1);
+        assert_eq!(accounts[0].picture.as_deref(), Some("new.png"));
+        assert_eq!(accounts[0].signature.as_deref(), Some("-- me"));
+        let cards = super::with_db(&state, |db| db.get_cards(&first.id).map_err(|e| e.to_string())).unwrap();
+        assert_eq!(ids(&cards), vec!["inbox"]);
+        assert_eq!(crate::auth::get_refresh_token(&first.id, &dir).unwrap(), "rt-2");
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// A local HTTP server that answers every request with `reply`, or
+    /// never answers when it is None
+    async fn one_reply_server(reply: Option<&'static str>) -> String {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}/userinfo", listener.local_addr().unwrap());
+        tokio::spawn(async move {
+            while let Ok((mut socket, _)) = listener.accept().await {
+                tokio::spawn(async move {
+                    let mut buf = [0u8; 4096];
+                    let _ = socket.read(&mut buf).await;
+                    match reply {
+                        Some(body) => {
+                            let response = format!(
+                                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                                body.len(),
+                                body
+                            );
+                            let _ = socket.write_all(response.as_bytes()).await;
+                        }
+                        None => tokio::time::sleep(std::time::Duration::from_secs(60)).await,
+                    }
+                });
+            }
+        });
+        url
+    }
+
+    #[tokio::test]
+    async fn a_sign_in_whose_account_lookup_never_answers_fails() {
+        let url = one_reply_server(None).await;
+        let client = super::userinfo_http_client(std::time::Duration::from_millis(300));
+        let result = tokio::time::timeout(std::time::Duration::from_secs(10), super::fetch_user_info(&client, &url, "t"))
+            .await
+            .expect("the lookup must time out on its own");
+        let err = result.err().expect("a hung lookup is an error");
+        assert!(err.starts_with("Failed to read your Google account"), "{}", err);
+        assert!(!err.contains("127.0.0.1"), "{}", err);
+    }
+
+    #[tokio::test]
+    async fn the_account_lookup_reads_email_and_picture() {
+        let url = one_reply_server(Some(r#"{"email": "me@x.com", "picture": "https://p/me.png", "id": "1"}"#)).await;
+        let client = super::userinfo_http_client(std::time::Duration::from_secs(5));
+        let info = super::fetch_user_info(&client, &url, "t").await.unwrap();
+        assert_eq!(info.email, "me@x.com");
+        assert_eq!(info.picture.as_deref(), Some("https://p/me.png"));
     }
 
     fn card_at(position: i32) -> Card {
@@ -2735,6 +3103,40 @@ mod tests {
         }
     }
 
+    /// Lines of async fns in `source` that touch the database or secure
+    /// storage outside a `blocking` closure
+    fn blocking_work_on_async_workers(source: &str) -> Vec<String> {
+        const BLOCKING_WORK: &[&str] = &[
+            "with_db(", ".db.lock()", "auth::get_", "auth::store_", "auth::delete_", "write_unique_file(", "mark_quarantined(",
+        ];
+        // Calls that take a closure and run it on the blocking pool
+        const OFFLOADERS: &[&str] = &["blocking(", "refreshed_access_token("];
+        let mut offending = Vec::new();
+        let (mut in_async_fn, mut offloaded) = (false, false);
+        for line in source.lines().take_while(|l| l.trim() != "#[cfg(test)]") {
+            let code = line.trim_start();
+            if ["fn ", "pub fn ", "async fn ", "pub async fn "].iter().any(|p| code.starts_with(p)) {
+                in_async_fn = code.contains("async fn ");
+                offloaded = false;
+            }
+            offloaded |= OFFLOADERS.iter().any(|o| code.contains(o));
+            if in_async_fn && !offloaded && BLOCKING_WORK.iter().any(|w| code.contains(w)) {
+                offending.push(code.to_string());
+            }
+        }
+        offending
+    }
+
+    #[test]
+    fn async_commands_leave_database_and_keychain_work_to_the_blocking_pool() {
+        // A keychain read can wait on a user prompt, and the database lock
+        // is held while multi-megabyte caches are written; either stalls a
+        // tokio worker and every command queued on it
+        assert_eq!(blocking_work_on_async_workers(include_str!("commands.rs")), Vec::<String>::new());
+        let sample = "pub async fn a() {\n    with_db(state, f)?;\n}\nasync fn b() {\n    blocking(&state, |s| with_db(s, f)).await\n}\n";
+        assert_eq!(blocking_work_on_async_workers(sample), vec!["with_db(state, f)?;"]);
+    }
+
     #[tokio::test]
     async fn blocking_work_runs_off_the_calling_thread() {
         let caller = std::thread::current().id();
@@ -2762,6 +3164,165 @@ mod tests {
         assert!(db.get_card_threads("deleted").unwrap().is_none());
         assert!(db.get_card_events("deleted").unwrap().is_none());
         drop(guard);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// In-memory card backup; `readable` false models an iCloud store that
+    /// errors on every read
+    #[derive(Default)]
+    struct FakeBackup {
+        cards: Option<Vec<Card>>,
+        mappings: Option<HashMap<String, String>>,
+        unreadable: bool,
+    }
+
+    #[derive(Clone, Default)]
+    struct FakeStore(Arc<std::sync::Mutex<FakeBackup>>);
+
+    impl super::CardBackupStore for FakeStore {
+        fn load_cards(&self) -> Result<Option<Vec<Card>>, String> {
+            let b = self.0.lock().unwrap();
+            if b.unreadable { Err("unreadable".into()) } else { Ok(b.cards.clone()) }
+        }
+
+        fn load_account_mappings(&self) -> Result<Option<HashMap<String, String>>, String> {
+            let b = self.0.lock().unwrap();
+            if b.unreadable { Err("unreadable".into()) } else { Ok(b.mappings.clone()) }
+        }
+
+        fn sync_cards(&self, cards: &[Card]) -> Result<(), String> {
+            self.0.lock().unwrap().cards = Some(cards.to_vec());
+            Ok(())
+        }
+
+        fn sync_account_mappings(&self, mappings: &HashMap<String, String>) -> Result<(), String> {
+            self.0.lock().unwrap().mappings = Some(mappings.clone());
+            Ok(())
+        }
+    }
+
+    impl FakeStore {
+        fn backup(&self) -> Backup {
+            let b = self.0.lock().unwrap();
+            Backup::from_store(b.cards.clone(), b.mappings.clone()).unwrap_or_default()
+        }
+    }
+
+    /// App state over a scratch database holding `cards` of account a1, with
+    /// an iCloud backup holding the same cards and a record of having synced them
+    fn synced_state(dir: &std::path::Path, cards: &[Card]) -> (super::AppState, FakeStore) {
+        let state = super::AppState::new();
+        let db = super::open_database(&dir.join("posta.db")).unwrap();
+        db.insert_account(&account("a1", "me@x.com")).unwrap();
+        for card in cards {
+            db.insert_card(card).unwrap();
+        }
+        *state.db.lock().unwrap() = Some(db);
+
+        let store = FakeStore::default();
+        store.0.lock().unwrap().cards = Some(cards.to_vec());
+        store.0.lock().unwrap().mappings = Some(mappings(&[("a1", "me@x.com")]));
+        {
+            let mut icloud = state.icloud.lock().unwrap();
+            icloud.store = Some(Box::new(store.clone()));
+            icloud.record_path = Some(dir.join("icloud-card-sync.json"));
+            icloud.save_record(&synced(cards));
+        }
+        (state, store)
+    }
+
+    fn sorted_ids(cards: &[Card]) -> Vec<&str> {
+        let mut ids = ids(cards);
+        ids.sort();
+        ids
+    }
+
+    fn local_card_ids(state: &super::AppState) -> Vec<String> {
+        let guard = state.db.lock().unwrap();
+        let mut ids: Vec<String> = guard.as_ref().unwrap().get_cards("a1").unwrap().into_iter().map(|c| c.id).collect();
+        ids.sort();
+        ids
+    }
+
+    #[cfg(debug_assertions)]
+    #[test]
+    fn debug_builds_leave_the_installed_apps_icloud_backup_alone() {
+        let icloud = super::ICloudSync::new();
+        assert!(icloud.store.is_none());
+        assert_eq!(icloud.load_backup(), Ok(None));
+    }
+
+    #[test]
+    fn deleting_a_card_tombstones_it_in_icloud() {
+        let dir = scratch_dir();
+        let (keep, gone) = (owned_card("keep", "a1"), owned_card("gone", "a1"));
+        let (state, store) = synced_state(&dir, &[keep, gone]);
+
+        super::change_cards(&state, Some("gone"), |db| db.delete_card("gone").map_err(|e| e.to_string())).unwrap();
+
+        assert_eq!(local_card_ids(&state), vec!["keep"]);
+        let pushed = store.backup();
+        assert_eq!(sorted_ids(&pushed.cards), vec!["keep"]);
+        assert!(pushed.tombstones.contains_key("gone"));
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn a_deletion_made_while_icloud_is_unreadable_survives_the_next_pull() {
+        let dir = scratch_dir();
+        let (keep, gone) = (owned_card("keep", "a1"), owned_card("gone", "a1"));
+        let (state, store) = synced_state(&dir, &[keep, gone]);
+
+        store.0.lock().unwrap().unreadable = true;
+        super::change_cards(&state, Some("gone"), |db| db.delete_card("gone").map_err(|e| e.to_string())).unwrap();
+        assert_eq!(sorted_ids(&store.backup().cards), vec!["gone", "keep"], "nothing written while unreadable");
+
+        store.0.lock().unwrap().unreadable = false;
+        super::pull_cards_from_icloud(&state).unwrap();
+
+        assert_eq!(local_card_ids(&state), vec!["keep"]);
+        let pushed = store.backup();
+        assert_eq!(sorted_ids(&pushed.cards), vec!["keep"]);
+        assert!(pushed.tombstones.contains_key("gone"));
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    fn record_at(path: std::path::PathBuf) -> super::ICloudSync {
+        super::ICloudSync { store: None, record_path: Some(path) }
+    }
+
+    #[test]
+    fn an_unreadable_sync_record_does_not_make_an_empty_store_look_like_a_first_push() {
+        let dir = scratch_dir();
+        let path = dir.join("icloud-card-sync.json");
+        std::fs::write(&path, br#"{"base": {"c": {"id""#).unwrap();
+
+        let mut record = record_at(path).load_record();
+        assert!(record.seen_backup);
+        assert_eq!(super::backup_to_push_onto(Ok(None), &mut record), None);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn a_device_without_a_sync_record_has_never_seen_a_backup() {
+        let dir = scratch_dir();
+        assert_eq!(record_at(dir.join("icloud-card-sync.json")).load_record(), SyncRecord::default());
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn the_sync_record_is_replaced_whole() {
+        let dir = scratch_dir();
+        let icloud = record_at(dir.join("icloud-card-sync.json"));
+        let first = tombstoned(synced(&[owned_card("a", "a1")]), &["gone"]);
+        icloud.save_record(&first);
+        assert_eq!(icloud.load_record(), first);
+
+        let second = synced(&[owned_card("b", "a1")]);
+        icloud.save_record(&second);
+        assert_eq!(icloud.load_record(), second);
+        let files: Vec<_> = std::fs::read_dir(&dir).unwrap().map(|e| e.unwrap().file_name()).collect();
+        assert_eq!(files, vec![std::ffi::OsString::from("icloud-card-sync.json")], "no temp file left behind");
         std::fs::remove_dir_all(dir).unwrap();
     }
 
