@@ -1305,6 +1305,7 @@ impl CalendarQuery {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use super::stub_server::StubServer;
 
     fn api_event(json: serde_json::Value) -> ApiEvent {
         serde_json::from_value(json).unwrap()
@@ -1813,116 +1814,9 @@ mod tests {
         assert!(err.contains("not found"), "{err}");
     }
 
-    type Handler = dyn Fn(&str, &str) -> (u16, String) + Send + Sync;
-    type Requests = std::sync::Arc<std::sync::Mutex<Vec<(String, String, String)>>>;
-    type Gate = std::sync::Arc<(Box<dyn Fn(&str) -> bool + Send + Sync>, tokio::sync::Barrier)>;
-
-    /// A local keep-alive HTTP server answering each request with
-    /// `handler(method, path_and_query)`; records every request as (method,
-    /// target, body) and counts the connections it accepted
-    struct StubServer {
-        base: String,
-        requests: Requests,
-        connections: std::sync::Arc<std::sync::atomic::AtomicUsize>,
-    }
-
     impl StubServer {
-        async fn start(handler: impl Fn(&str, &str) -> (u16, String) + Send + Sync + 'static) -> Self {
-            Self::start_inner(std::sync::Arc::new(handler), None).await
-        }
-
-        /// Requests whose target satisfies `gated` are held until `n` of them
-        /// are in flight at once, so a caller sending them one at a time
-        /// never gets an answer
-        async fn start_gated(
-            handler: impl Fn(&str, &str) -> (u16, String) + Send + Sync + 'static,
-            gated: impl Fn(&str) -> bool + Send + Sync + 'static,
-            n: usize,
-        ) -> Self {
-            let gate: Gate = std::sync::Arc::new((Box::new(gated), tokio::sync::Barrier::new(n)));
-            Self::start_inner(std::sync::Arc::new(handler), Some(gate)).await
-        }
-
-        async fn start_inner(handler: std::sync::Arc<Handler>, gate: Option<Gate>) -> Self {
-            use tokio::io::{AsyncReadExt, AsyncWriteExt};
-            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-            let base = format!("http://{}", listener.local_addr().unwrap());
-            let requests: Requests = Default::default();
-            let connections = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
-            let log = requests.clone();
-            let accepted = connections.clone();
-            tokio::spawn(async move {
-                loop {
-                    let Ok((mut socket, _)) = listener.accept().await else { return };
-                    accepted.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-                    let handler = handler.clone();
-                    let log = log.clone();
-                    let gate = gate.clone();
-                    tokio::spawn(async move {
-                        let mut buf = Vec::new();
-                        let mut chunk = [0u8; 4096];
-                        loop {
-                            let header_end = loop {
-                                if let Some(i) = buf.windows(4).position(|w| w == b"\r\n\r\n") {
-                                    break i + 4;
-                                }
-                                match socket.read(&mut chunk).await {
-                                    Ok(0) | Err(_) => return,
-                                    Ok(n) => buf.extend_from_slice(&chunk[..n]),
-                                }
-                            };
-                            let head = String::from_utf8_lossy(&buf[..header_end]).to_string();
-                            let content_length = head
-                                .lines()
-                                .find_map(|l| {
-                                    let (k, v) = l.split_once(':')?;
-                                    k.eq_ignore_ascii_case("content-length").then(|| v.trim().parse::<usize>().ok())?
-                                })
-                                .unwrap_or(0);
-                            while buf.len() < header_end + content_length {
-                                match socket.read(&mut chunk).await {
-                                    Ok(0) | Err(_) => return,
-                                    Ok(n) => buf.extend_from_slice(&chunk[..n]),
-                                }
-                            }
-                            let mut request_line = head.lines().next().unwrap_or_default().split(' ');
-                            let method = request_line.next().unwrap_or_default().to_string();
-                            let target = request_line.next().unwrap_or_default().to_string();
-                            let body = String::from_utf8_lossy(&buf[header_end..header_end + content_length]).to_string();
-                            buf.drain(..header_end + content_length);
-                            if let Some(gate) = &gate {
-                                if (gate.0)(&target) {
-                                    gate.1.wait().await;
-                                }
-                            }
-                            let (status, response) = handler(&method, &target);
-                            log.lock().unwrap().push((method, target, body));
-                            let reply = format!(
-                                "HTTP/1.1 {} Stub\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
-                                status,
-                                response.len(),
-                                response
-                            );
-                            if socket.write_all(reply.as_bytes()).await.is_err() {
-                                return;
-                            }
-                        }
-                    });
-                }
-            });
-            StubServer { base, requests, connections }
-        }
-
         fn client(&self) -> CalendarClient {
             CalendarClient { api_base: self.base.clone(), ..CalendarClient::new("token".into()) }
-        }
-
-        fn requests(&self) -> Vec<(String, String, String)> {
-            self.requests.lock().unwrap().clone()
-        }
-
-        fn connections(&self) -> usize {
-            self.connections.load(std::sync::atomic::Ordering::SeqCst)
         }
     }
 
@@ -2526,5 +2420,118 @@ mod tests {
             range("calendar:today", "2024-11-03T15:00:00Z"),
             (utc("2024-11-03T04:00:00Z"), utc("2024-11-04T05:00:00Z"))
         );
+    }
+}
+
+/// A local HTTP server standing in for Google in client tests
+#[cfg(test)]
+pub(crate) mod stub_server {
+    type Handler = dyn Fn(&str, &str) -> (u16, String) + Send + Sync;
+    type Requests = std::sync::Arc<std::sync::Mutex<Vec<(String, String, String)>>>;
+    type Gate = std::sync::Arc<(Box<dyn Fn(&str) -> bool + Send + Sync>, tokio::sync::Barrier)>;
+
+    /// A local keep-alive HTTP server answering each request with
+    /// `handler(method, path_and_query)`; records every request as (method,
+    /// target, body) and counts the connections it accepted
+    pub(crate) struct StubServer {
+        pub(crate) base: String,
+        requests: Requests,
+        connections: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    }
+
+    impl StubServer {
+        pub(crate) async fn start(handler: impl Fn(&str, &str) -> (u16, String) + Send + Sync + 'static) -> Self {
+            Self::start_inner(std::sync::Arc::new(handler), None).await
+        }
+
+        /// Requests whose target satisfies `gated` are held until `n` of them
+        /// are in flight at once, so a caller sending them one at a time
+        /// never gets an answer
+        pub(crate) async fn start_gated(
+            handler: impl Fn(&str, &str) -> (u16, String) + Send + Sync + 'static,
+            gated: impl Fn(&str) -> bool + Send + Sync + 'static,
+            n: usize,
+        ) -> Self {
+            let gate: Gate = std::sync::Arc::new((Box::new(gated), tokio::sync::Barrier::new(n)));
+            Self::start_inner(std::sync::Arc::new(handler), Some(gate)).await
+        }
+
+        async fn start_inner(handler: std::sync::Arc<Handler>, gate: Option<Gate>) -> Self {
+            use tokio::io::{AsyncReadExt, AsyncWriteExt};
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let base = format!("http://{}", listener.local_addr().unwrap());
+            let requests: Requests = Default::default();
+            let connections = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+            let log = requests.clone();
+            let accepted = connections.clone();
+            tokio::spawn(async move {
+                loop {
+                    let Ok((mut socket, _)) = listener.accept().await else { return };
+                    accepted.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    let handler = handler.clone();
+                    let log = log.clone();
+                    let gate = gate.clone();
+                    tokio::spawn(async move {
+                        let mut buf = Vec::new();
+                        let mut chunk = [0u8; 4096];
+                        loop {
+                            let header_end = loop {
+                                if let Some(i) = buf.windows(4).position(|w| w == b"\r\n\r\n") {
+                                    break i + 4;
+                                }
+                                match socket.read(&mut chunk).await {
+                                    Ok(0) | Err(_) => return,
+                                    Ok(n) => buf.extend_from_slice(&chunk[..n]),
+                                }
+                            };
+                            let head = String::from_utf8_lossy(&buf[..header_end]).to_string();
+                            let content_length = head
+                                .lines()
+                                .find_map(|l| {
+                                    let (k, v) = l.split_once(':')?;
+                                    k.eq_ignore_ascii_case("content-length").then(|| v.trim().parse::<usize>().ok())?
+                                })
+                                .unwrap_or(0);
+                            while buf.len() < header_end + content_length {
+                                match socket.read(&mut chunk).await {
+                                    Ok(0) | Err(_) => return,
+                                    Ok(n) => buf.extend_from_slice(&chunk[..n]),
+                                }
+                            }
+                            let mut request_line = head.lines().next().unwrap_or_default().split(' ');
+                            let method = request_line.next().unwrap_or_default().to_string();
+                            let target = request_line.next().unwrap_or_default().to_string();
+                            let body = String::from_utf8_lossy(&buf[header_end..header_end + content_length]).to_string();
+                            buf.drain(..header_end + content_length);
+                            if let Some(gate) = &gate {
+                                if (gate.0)(&target) {
+                                    gate.1.wait().await;
+                                }
+                            }
+                            let (status, response) = handler(&method, &target);
+                            log.lock().unwrap().push((method, target, body));
+                            let reply = format!(
+                                "HTTP/1.1 {} Stub\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+                                status,
+                                response.len(),
+                                response
+                            );
+                            if socket.write_all(reply.as_bytes()).await.is_err() {
+                                return;
+                            }
+                        }
+                    });
+                }
+            });
+            StubServer { base, requests, connections }
+        }
+
+        pub(crate) fn requests(&self) -> Vec<(String, String, String)> {
+            self.requests.lock().unwrap().clone()
+        }
+
+        pub(crate) fn connections(&self) -> usize {
+            self.connections.load(std::sync::atomic::Ordering::SeqCst)
+        }
     }
 }
