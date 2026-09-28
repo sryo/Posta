@@ -124,7 +124,7 @@ import { actionLabel, actionRemovesFromCard, applyThreadAction, labelChangeFor, 
 import { PRESETS } from "./app/presets";
 import { normalizeActionOrder } from "./app/actionOrder";
 import { parseStoredWidth } from "./app/storedWidth";
-import { isSessionExpiredError } from "./app/authErrors";
+import { isSessionExpiredError, needsSignInAgain } from "./app/authErrors";
 import { withSignature } from "./app/signature";
 import { readFilesAsAttachments } from "./app/attachments";
 import { eventTimesFromForm, smartEventDefaults } from "./app/eventForm";
@@ -3923,7 +3923,7 @@ function App() {
                               <span class="error-icon">⚠</span>
                               <span class="error-text">{cardErrors[card.id]}</span>
                               <Show
-                                when={expiredAccountId() && expiredAccountId() === selectedAccount()?.id}
+                                when={(expiredAccountId() && expiredAccountId() === selectedAccount()?.id) || needsSignInAgain(cardErrors[card.id] ?? "")}
                                 fallback={<button class="retry-btn" onClick={(e) => refreshCard(card.id, e)}>Try again</button>}
                               >
                                 <button class="retry-btn" onClick={handleReauth}>Sign in again</button>

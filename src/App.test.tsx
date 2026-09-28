@@ -940,6 +940,15 @@ describe("App calendar", () => {
       [calendarEvent(`ev-${accountId}`, `Event of ${accountId}`)];
   }
 
+  it("offers to sign in again when calendar access needs it", async () => {
+    calendarCards();
+    handlers.fetch_calendar_events = () => { throw "Calendar permission denied. Please re-login to grant calendar access."; };
+    render(() => <App />);
+
+    expect(await screen.findByText(/Calendar permission denied/)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Sign in again" })).toBeInTheDocument();
+  });
+
   it("quick-replies to the guests of the user's own event, not the user", async () => {
     calendarCards();
     handlers.fetch_calendar_events = () => [{
