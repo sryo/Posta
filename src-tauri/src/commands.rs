@@ -1212,7 +1212,7 @@ pub async fn open_attachment(
     mark_quarantined(&temp_path);
 
     // Open with system default application
-    open::that(&temp_path).map_err(|e| format!("Failed to open file: {}", e))?;
+    tauri_plugin_opener::open_path(&temp_path, None::<&str>).map_err(|e| format!("Failed to open file: {}", e))?;
 
     Ok(())
 }
