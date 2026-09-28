@@ -3,7 +3,7 @@
 use chrono::{DateTime, Duration, Local, NaiveDate, TimeZone, Utc};
 use chrono_tz::Tz;
 use reqwest::StatusCode;
-use serde::{Deserialize, Serialize};
+use serde::{de::DeserializeOwned, Deserialize, Serialize};
 
 const CALENDAR_API_BASE: &str = "https://www.googleapis.com/calendar/v3";
 // Events-list page size (the API default) and a per-calendar safety cap so a
@@ -377,28 +377,33 @@ impl CalendarClient {
         }
     }
 
-    /// List all calendars for the user
-    pub async fn list_calendars(&self) -> Result<Vec<CalendarInfo>, String> {
-        let url = format!("{}/users/me/calendarList", CALENDAR_API_BASE);
-
-        let resp = self
-            .http_client
-            .get(&url)
+    /// Send an authorized request; error statuses become friendly messages
+    async fn send(&self, request: reqwest::RequestBuilder) -> Result<reqwest::Response, String> {
+        let resp = request
             .bearer_auth(&self.access_token)
             .send()
             .await
-            .map_err(|e| format!("Calendar API request failed: {}", e))?;
-
+            .map_err(|e| format!("Calendar request failed: {}", e))?;
         if !resp.status().is_success() {
             let status = resp.status();
             let body = resp.text().await.unwrap_or_default();
             return Err(friendly_calendar_error(status, &body));
         }
+        Ok(resp)
+    }
 
-        let data: CalendarListResponse = resp
+    async fn send_json<T: DeserializeOwned>(&self, request: reqwest::RequestBuilder) -> Result<T, String> {
+        self.send(request)
+            .await?
             .json()
             .await
-            .map_err(|e| format!("Failed to parse calendar list: {}", e))?;
+            .map_err(|e| format!("Failed to parse calendar response: {}", e))
+    }
+
+    /// List all calendars for the user
+    pub async fn list_calendars(&self) -> Result<Vec<CalendarInfo>, String> {
+        let url = format!("{}/users/me/calendarList", CALENDAR_API_BASE);
+        let data: CalendarListResponse = self.send_json(self.http_client.get(&url)).await?;
 
         Ok(data
             .items
@@ -416,21 +421,7 @@ impl CalendarClient {
             CALENDAR_API_BASE,
             urlencoding::encode(calendar_id)
         );
-        let result = async {
-            let resp = self
-                .http_client
-                .get(&url)
-                .bearer_auth(&self.access_token)
-                .send()
-                .await
-                .map_err(|e| e.to_string())?;
-            if !resp.status().is_success() {
-                return Err(format!("HTTP {}", resp.status()));
-            }
-            resp.json::<CalendarListEntry>().await.map_err(|e| e.to_string())
-        }
-        .await;
-        match result {
+        match self.send_json::<CalendarListEntry>(self.http_client.get(&url)).await {
             Ok(entry) => Some(entry.into()),
             Err(e) => {
                 tracing::warn!("Failed to look up calendar {}: {}", calendar_id, e);
@@ -471,24 +462,7 @@ impl CalendarClient {
                         url.push_str(&format!("&pageToken={}", urlencoding::encode(token)));
                     }
 
-                    let resp = self
-                        .http_client
-                        .get(&url)
-                        .bearer_auth(&self.access_token)
-                        .send()
-                        .await
-                        .map_err(|e| format!("Calendar events request failed: {}", e))?;
-
-                    if !resp.status().is_success() {
-                        let status = resp.status();
-                        let body = resp.text().await.unwrap_or_default();
-                        return Err(friendly_calendar_error(status, &body));
-                    }
-
-                    let data: EventsListResponse = resp
-                        .json()
-                        .await
-                        .map_err(|e| format!("Failed to parse events: {}", e))?;
+                    let data: EventsListResponse = self.send_json(self.http_client.get(&url)).await?;
 
                     items.extend(data.items.unwrap_or_default());
 
@@ -567,26 +541,7 @@ impl CalendarClient {
         let calendar = self.calendar_info(calendar_id).await;
         let time_zone = recurrence_time_zone(&fields, calendar.as_ref());
         let body = build_event_request(fields, time_zone, &[])?;
-
-        let resp = self
-            .http_client
-            .post(&url)
-            .bearer_auth(&self.access_token)
-            .json(&body)
-            .send()
-            .await
-            .map_err(|e| format!("Create event request failed: {}", e))?;
-
-        if !resp.status().is_success() {
-            let status = resp.status();
-            let body = resp.text().await.unwrap_or_default();
-            return Err(friendly_calendar_error(status, &body));
-        }
-
-        let api_event: ApiEvent = resp
-            .json()
-            .await
-            .map_err(|e| format!("Failed to parse created event: {}", e))?;
+        let api_event: ApiEvent = self.send_json(self.http_client.post(&url).json(&body)).await?;
 
         written_event(api_event, calendar_id, calendar.as_ref())
             .ok_or_else(|| "Failed to convert created event".to_string())
@@ -607,23 +562,11 @@ impl CalendarClient {
             urlencoding::encode(destination_calendar_id)
         );
 
-        let (resp, calendar) = futures::join!(
-            self.http_client.post(&url).bearer_auth(&self.access_token).send(),
+        let (api_event, calendar) = futures::join!(
+            self.send_json::<ApiEvent>(self.http_client.post(&url)),
             self.calendar_info(destination_calendar_id)
         );
-        let resp = resp.map_err(|e| format!("Move event request failed: {}", e))?;
-
-        if !resp.status().is_success() {
-            let status = resp.status();
-            let body = resp.text().await.unwrap_or_default();
-            return Err(friendly_calendar_error(status, &body));
-        }
-
-        let api_event: ApiEvent = resp
-            .json()
-            .await
-            .map_err(|e| format!("Failed to parse moved event: {}", e))?;
-
+        let api_event = api_event?;
         written_event(api_event, destination_calendar_id, calendar.as_ref())
             .ok_or_else(|| "Failed to convert moved event".to_string())
     }
@@ -641,20 +584,7 @@ impl CalendarClient {
             urlencoding::encode(event_id)
         );
 
-        let resp = self
-            .http_client
-            .delete(&url)
-            .bearer_auth(&self.access_token)
-            .send()
-            .await
-            .map_err(|e| format!("Delete event request failed: {}", e))?;
-
-        if !resp.status().is_success() {
-            let status = resp.status();
-            let body = resp.text().await.unwrap_or_default();
-            return Err(friendly_calendar_error(status, &body));
-        }
-
+        self.send(self.http_client.delete(&url)).await?;
         Ok(())
     }
 
@@ -687,26 +617,7 @@ impl CalendarClient {
             futures::join!(self.calendar_info(calendar_id), existing_attendees);
         let time_zone = recurrence_time_zone(&fields, calendar.as_ref());
         let body = build_event_request(fields, time_zone, &existing_attendees)?;
-
-        let resp = self
-            .http_client
-            .patch(&url)
-            .bearer_auth(&self.access_token)
-            .json(&body)
-            .send()
-            .await
-            .map_err(|e| format!("Update event request failed: {}", e))?;
-
-        if !resp.status().is_success() {
-            let status = resp.status();
-            let body = resp.text().await.unwrap_or_default();
-            return Err(friendly_calendar_error(status, &body));
-        }
-
-        let api_event: ApiEvent = resp
-            .json()
-            .await
-            .map_err(|e| format!("Failed to parse updated event: {}", e))?;
+        let api_event: ApiEvent = self.send_json(self.http_client.patch(&url).json(&body)).await?;
 
         written_event(api_event, calendar_id, calendar.as_ref())
             .ok_or_else(|| "Failed to convert updated event".to_string())
@@ -719,19 +630,7 @@ impl CalendarClient {
             urlencoding::encode(calendar_id),
             urlencoding::encode(event_id)
         );
-        let resp = self
-            .http_client
-            .get(&url)
-            .bearer_auth(&self.access_token)
-            .send()
-            .await
-            .map_err(|e| e.to_string())?;
-        if !resp.status().is_success() {
-            let status = resp.status();
-            let body = resp.text().await.unwrap_or_default();
-            return Err(friendly_calendar_error(status, &body));
-        }
-        let event: CalEventSearchItem = resp.json().await.map_err(|e| e.to_string())?;
+        let event: CalEventSearchItem = self.send_json(self.http_client.get(&url)).await?;
         Ok(event.attendees.unwrap_or_default())
     }
 
@@ -748,20 +647,7 @@ impl CalendarClient {
             urlencoding::encode(event_uid)
         );
 
-        let response = self
-            .http_client
-            .get(&search_url)
-            .bearer_auth(&self.access_token)
-            .send()
-            .await
-            .map_err(|e| e.to_string())?;
-
-        if !response.status().is_success() {
-            let error_text = response.text().await.unwrap_or_default();
-            return Err(format!("Failed to find calendar event: {}", error_text));
-        }
-
-        let events_response: CalEventSearchResponse = response.json().await.map_err(|e| e.to_string())?;
+        let events_response: CalEventSearchResponse = self.send_json(self.http_client.get(&search_url)).await?;
         Ok(events_response.items.unwrap_or_default().into_iter().next())
     }
 
@@ -847,22 +733,8 @@ impl CalendarClient {
             attendees: Vec<CalEventAttendee>,
         }
 
-        let patch_body = PatchRequest { attendees };
-
-        let patch_response = self
-            .http_client
-            .patch(&patch_url)
-            .bearer_auth(&self.access_token)
-            .json(&patch_body)
-            .send()
-            .await
-            .map_err(|e| e.to_string())?;
-
-        if !patch_response.status().is_success() {
-            let error_text = patch_response.text().await.unwrap_or_default();
-            return Err(format!("Failed to update RSVP: {}", error_text));
-        }
-
+        self.send(self.http_client.patch(&patch_url).json(&PatchRequest { attendees }))
+            .await?;
         Ok(())
     }
 }
