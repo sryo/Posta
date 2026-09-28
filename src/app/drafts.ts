@@ -98,6 +98,8 @@ export function createDraftSync() {
   // Saves run one at a time, so a save started while the first one is still
   // creating the Gmail draft updates that draft instead of creating another
   let queue: Promise<void> = Promise.resolve();
+  // The Gmail draft each key synced to, for drafts local storage refused
+  const syncedDraftIds = new Map<string, string>();
   let savedTimeout: number | undefined;
 
   function flashSaved() {
@@ -119,16 +121,18 @@ export function createDraftSync() {
     });
   }
 
-  async function sync(key: string, accountId: string, draft: Draft, startedIn: number, storedLocally: boolean) {
-    if (clearedEpochs.has(startedIn)) return;
+  // Resolves true once Gmail has the draft
+  async function sync(key: string, accountId: string, draft: Draft, startedIn: number, storedLocally: boolean): Promise<boolean> {
+    if (clearedEpochs.has(startedIn)) return false;
     // A compose that let go of its draft (replaced, closed or sent) still
-    // syncs its last save, into the Gmail draft recorded on its own key
+    // syncs its last save, into the Gmail draft recorded on its own key. A
+    // missing local copy means it was discarded, unless it never got stored.
     const detached = startedIn !== epoch;
     let sentDraftId = gmailDraftId();
     if (detached) {
       const stored = safeGetJSON<Draft | null>(key, null);
-      if (!stored) return;
-      sentDraftId = stored.gmailDraftId ?? draft.gmailDraftId ?? null;
+      if (!stored && storedLocally) return false;
+      sentDraftId = stored?.gmailDraftId ?? draft.gmailDraftId ?? syncedDraftIds.get(key) ?? null;
     } else {
       setSaving(true);
     }
@@ -144,25 +148,30 @@ export function createDraftSync() {
       }
       if (startedIn !== epoch) {
         const stored = safeGetJSON<Draft | null>(key, null);
-        if (clearedEpochs.has(startedIn) || !stored) {
+        if (clearedEpochs.has(startedIn) || (!stored && storedLocally)) {
           // Discarded while this save was creating a Gmail draft the discard
           // couldn't know about: delete the orphan
           if (result.id && result.id !== sentDraftId) {
             invoke("delete_draft", { accountId, draftId: result.id })
               .catch(e => console.warn("Failed to delete orphaned draft:", e));
           }
-        } else if (!stored.gmailDraftId || stored.gmailDraftId === sentDraftId) {
+          return false;
+        }
+        syncedDraftIds.set(key, result.id);
+        if (stored && (!stored.gmailDraftId || stored.gmailDraftId === sentDraftId)) {
           // The compose was replaced, not discarded: its draft stays saved
           safeSetJSON(key, { ...stored, gmailDraftId: result.id });
         }
-        return;
+        return true;
       }
       setGmailDraftId(result.id);
+      syncedDraftIds.set(key, result.id);
       // A later save may already have stored newer text locally
       const stored = safeGetJSON<Draft | null>(key, null);
       const latest = stored && stored.savedAt >= draft.savedAt ? stored : draft;
       safeSetJSON(key, { ...latest, gmailDraftId: result.id });
       flashSaved();
+      return true;
     } catch (e) {
       console.warn("Failed to sync draft to Gmail (offline?):", e);
       if (startedIn === epoch && storedLocally) flashSaved();
@@ -170,6 +179,7 @@ export function createDraftSync() {
       // user can't see it; let the next compose pick it up again
       const stored = detached ? safeGetJSON<Draft | null>(key, null) : null;
       if (stored?.closed && !stored.gmailDraftId) safeSetJSON(key, { ...stored, closed: false });
+      return false;
     } finally {
       if (!detached) setSaving(false);
     }
@@ -187,12 +197,14 @@ export function createDraftSync() {
     return writeLocal(key, fields)?.draft ?? null;
   }
 
-  function save(key: string, accountId: string, fields: DraftFields): Promise<void> {
+  // Resolves true once Gmail has this save
+  function save(key: string, accountId: string, fields: DraftFields): Promise<boolean> {
     const local = writeLocal(key, fields);
-    if (!local) return queue;
+    if (!local) return queue.then(() => false);
     const startedIn = epoch;
-    queue = queue.then(() => sync(key, accountId, local.draft, startedIn, local.stored));
-    return queue;
+    const synced = queue.then(() => sync(key, accountId, local.draft, startedIn, local.stored));
+    queue = synced.then(() => {});
+    return synced;
   }
 
   // A saved draft to restore, adopting its Gmail draft for later saves
@@ -238,7 +250,8 @@ export function createDraftSync() {
     await queue;
     const stored = safeGetJSON<Draft | null>(key, null);
     safeRemoveItem(key);
-    const ids = new Set([knownDraftId, stored?.gmailDraftId].filter((id): id is string => !!id));
+    const ids = new Set([knownDraftId, stored?.gmailDraftId, syncedDraftIds.get(key)].filter((id): id is string => !!id));
+    syncedDraftIds.delete(key);
     await Promise.all([...ids].map(id => deleteFromGmail(accountId, id)));
   }
 

@@ -1789,19 +1789,60 @@ function App() {
   // offers to discard it; a compose never typed in leaves nothing behind
   function closeCompose() {
     if (closingCompose()) return;
-    flushDraftSave();
     const key = composeDraftKey;
     const accountId = composeAccount()?.id;
-    const keep = hasDraftContent(composeDraftFields()) && safeGetItem(key) !== null;
+    const fields = composeDraftFields();
+    const keep = hasDraftContent(fields);
+    const storedHere = safeGetItem(key) !== null;
+    // Without a local copy Gmail must get the latest text, typed or not
+    let synced: Promise<boolean> | null = null;
+    if (keep && !storedHere) {
+      cancelDraftSave();
+      if (accountId) synced = drafts.save(key, accountId, fields);
+    } else {
+      flushDraftSave();
+    }
     setClosingCompose(true);
-    if (keep) {
+    if (!keep) {
+      drafts.clear(key, accountId);
+    } else {
       markDraftClosed(key);
       drafts.detach();
-      showToast("Draft saved", { label: "Discard", run: () => { if (accountId) drafts.discard(key, accountId); } });
-    } else {
-      drafts.clear(key, accountId);
+      const discard = { label: "Discard", run: () => { if (accountId) drafts.discard(key, accountId); } };
+      if (storedHere) {
+        showToast("Draft saved", discard);
+      } else {
+        const reopen = reopenComposeAction(key, fields);
+        (synced ?? Promise.resolve(false)).then(inGmail => {
+          if (inGmail) showToast("Draft saved in Gmail", discard);
+          else showToast("Couldn't save the draft", reopen);
+        });
+      }
     }
     closeComposeTimeout = window.setTimeout(resetCompose, 200);
+  }
+
+  // Puts a closed compose back as it was, for when its draft could not be saved
+  function reopenComposeAction(key: string, fields: DraftFields) {
+    const init = {
+      ...fields,
+      isHtml: composeIsHtml(),
+      reply: replyingToThread() ?? undefined,
+      forward: forwardingThread() ?? undefined,
+      replyEvent: replyingToEvent() ?? undefined,
+      forwardEvent: forwardingEvent() ?? undefined,
+      signature: false,
+      accountId: composeAccount()?.id,
+      draftKey: key,
+    };
+    const attachments = composeAttachments();
+    return {
+      label: "Reopen",
+      run: () => {
+        startCompose(init);
+        setComposeAttachments(attachments);
+      },
+    };
   }
 
   // A sent email's draft stays saved until the send goes out

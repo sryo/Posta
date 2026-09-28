@@ -236,6 +236,52 @@ describe("createDraftSync", () => {
     }
   });
 
+  describe("when local storage refuses the draft", () => {
+    const refuseStorage = () => vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => { throw new Error("QuotaExceededError"); });
+
+    it("still syncs a save made just before the compose let go", async () => {
+      handlers.save_draft = () => ({ id: "d1" });
+      const setItem = refuseStorage();
+      try {
+        const drafts = sync();
+        const last = drafts.save("k", "a", fields("only copy"));
+        drafts.detach();
+        expect(await last).toBe(true);
+        expect(invoke).toHaveBeenCalledWith("save_draft", expect.objectContaining({ body: "only copy" }));
+      } finally {
+        setItem.mockRestore();
+      }
+    });
+
+    it("reports a save that reached neither Gmail nor local storage", async () => {
+      handlers.save_draft = () => { throw new Error("offline"); };
+      const setItem = refuseStorage();
+      try {
+        const drafts = sync();
+        const last = drafts.save("k", "a", fields("lost"));
+        drafts.detach();
+        expect(await last).toBe(false);
+      } finally {
+        setItem.mockRestore();
+      }
+    });
+
+    it("discards the Gmail draft it synced to", async () => {
+      handlers.save_draft = () => ({ id: "d1" });
+      const setItem = refuseStorage();
+      try {
+        const drafts = sync();
+        const last = drafts.save("k", "a", fields("only copy"));
+        drafts.detach();
+        await last;
+        await drafts.discard("k", "a");
+        expect(invoke).toHaveBeenCalledWith("delete_draft", { accountId: "a", draftId: "d1" });
+      } finally {
+        setItem.mockRestore();
+      }
+    });
+  });
+
   it("restores a saved draft and updates its Gmail draft from then on", async () => {
     localStorage.setItem("k", JSON.stringify({ ...fields("saved"), gmailDraftId: "d5", savedAt: 1 }));
     handlers.save_draft = () => ({ id: "d5" });

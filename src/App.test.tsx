@@ -1418,6 +1418,50 @@ describe("App drafts", () => {
     expect(draftKeys("draft_new_a")).toEqual([]);
   });
 
+  describe("when local storage refuses drafts", () => {
+    let restoreStorage: () => void;
+    beforeEach(() => {
+      const setItem = Storage.prototype.setItem;
+      const spy = vi.spyOn(Storage.prototype, "setItem").mockImplementation(function (this: Storage, key: string, value: string) {
+        if (key.startsWith("draft_")) throw new Error("QuotaExceededError");
+        setItem.call(this, key, value);
+      });
+      restoreStorage = () => spy.mockRestore();
+    });
+    afterEach(() => restoreStorage());
+
+    it("saves a closed compose's draft to Gmail instead of deleting it", async () => {
+      handlers.save_draft = () => ({ id: "d1" });
+      handlers.delete_draft = () => null;
+      render(() => <App />);
+      await screen.findByText("Mail for A");
+      fireEvent.keyDown(document, { key: "c" });
+      fireEvent.input(await screen.findByPlaceholderText("Subject"), { target: { value: "Only copy" } });
+      fireEvent.keyDown(document, { key: "Escape" });
+
+      await waitFor(() => expect(invoke).toHaveBeenCalledWith("save_draft", expect.objectContaining({ subject: "Only copy" })));
+      expect(await screen.findByText("Draft saved in Gmail")).toBeInTheDocument();
+      expect(invoke).not.toHaveBeenCalledWith("delete_draft", expect.anything());
+
+      fireEvent.click(screen.getByRole("button", { name: "Discard" }));
+      await waitFor(() => expect(invoke).toHaveBeenCalledWith("delete_draft", { accountId: "a", draftId: "d1" }));
+    });
+
+    it("offers to reopen a closed compose whose draft could be saved nowhere", async () => {
+      handlers.save_draft = () => { throw new Error("offline"); };
+      handlers.delete_draft = () => null;
+      render(() => <App />);
+      await screen.findByText("Mail for A");
+      fireEvent.keyDown(document, { key: "c" });
+      fireEvent.input(await screen.findByPlaceholderText("Subject"), { target: { value: "Only copy" } });
+      fireEvent.keyDown(document, { key: "Escape" });
+
+      fireEvent.click(await screen.findByRole("button", { name: "Reopen" }));
+      await waitFor(() => expect(screen.getByPlaceholderText("Subject")).toHaveValue("Only copy"));
+      expect(invoke).not.toHaveBeenCalledWith("delete_draft", expect.anything());
+    });
+  });
+
   it("does not keep a draft for a compose that was never typed in", async () => {
     render(() => <App />);
     await screen.findByText("Mail for A");
