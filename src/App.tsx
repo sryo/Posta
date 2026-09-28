@@ -1,4 +1,4 @@
-import { createSignal, onMount, onCleanup, Show, For, createMemo, createEffect, createComputed, on, untrack } from "solid-js";
+import { batch, createSignal, onMount, onCleanup, Show, For, createMemo, createEffect, createComputed, on, untrack } from "solid-js";
 import { createStore, produce, reconcile, unwrap } from "solid-js/store";
 import DOMPurify from 'dompurify';
 import { DOMPURIFY_CONFIG } from './components/MessageBody';
@@ -1208,23 +1208,7 @@ function App() {
         subject: string;
         body: string;
       }>("mailto-received", (event) => {
-        const data = event.payload;
-        // A mailto link starts its own email; nothing of an open compose
-        // (attachments, reply target) may carry over
-        if (composing()) resetCompose();
-        setComposeTo(data.to);
-        setComposeCc(data.cc);
-        setComposeBcc(data.bcc);
-        setComposeSubject(data.subject);
-        setComposeBody(data.body);
-        // Show CC/BCC if they have values
-        if (data.cc || data.bcc) {
-          setShowCcBcc(true);
-        }
-        // Open compose panel
-        setReplyingToThread(null);
-        setForwardingThread(null);
-        setComposing(true);
+        startCompose(event.payload);
       });
     } catch (e) {
       setError(String(e));
@@ -1893,24 +1877,62 @@ function App() {
     closeComposeTimeout = window.setTimeout(resetCompose, 200);
   }
 
+  // Open compose with these fields. Nothing of a compose that is already open
+  // (reply target, attachments, HTML mode) carries over.
+  function startCompose(init: {
+    to?: string;
+    cc?: string;
+    bcc?: string;
+    subject?: string;
+    body?: string;
+    isHtml?: boolean;
+    reply?: { threadId: string; messageId?: string };
+    forward?: { threadId: string; subject: string; body: string };
+    focusBody?: boolean;
+  }) {
+    if (composing() || closingCompose()) {
+      if (draftSaveTimeout) clearTimeout(draftSaveTimeout);
+      resetCompose();
+    }
+    batch(() => {
+      setReplyingToEvent(null);
+      setForwardingEvent(null);
+      setReplyingToThread(init.reply ?? null);
+      setForwardingThread(init.forward ?? null);
+      setComposeTo(init.to ?? "");
+      setComposeCc(init.cc ?? "");
+      setComposeBcc(init.bcc ?? "");
+      setShowCcBcc(!!(init.cc || init.bcc));
+      setComposeSubject(init.subject ?? "");
+      setComposeBody(init.body ?? "");
+      setComposeIsHtml(!!init.isHtml);
+      setFocusComposeBody(!!init.focusBody);
+      setComposing(true);
+    });
+  }
+
+  // Batched so an open compose goes away in one step instead of re-rendering
+  // through half-cleared states (e.g. a reply form once the forward is gone)
   function resetCompose() {
     clearTimeout(closeComposeTimeout);
     closeComposeTimeout = undefined;
-    setComposeTo("");
-    setComposeCc("");
-    setComposeBcc("");
-    setShowCcBcc(false);
-    setComposeSubject("");
-    setComposeBody("");
-    setForwardingThread(null);
-    setReplyingToThread(null);
-    setFocusComposeBody(false);
-    setComposeEmailError(null);
-    setComposeAttachments([]);
-    setComposeIsHtml(false);
-    setGmailDraftId(null);
-    setComposing(false);
-    setClosingCompose(false);
+    batch(() => {
+      setComposeTo("");
+      setComposeCc("");
+      setComposeBcc("");
+      setShowCcBcc(false);
+      setComposeSubject("");
+      setComposeBody("");
+      setForwardingThread(null);
+      setReplyingToThread(null);
+      setFocusComposeBody(false);
+      setComposeEmailError(null);
+      setComposeAttachments([]);
+      setComposeIsHtml(false);
+      setGmailDraftId(null);
+      setComposing(false);
+      setClosingCompose(false);
+    });
   }
 
   async function handleFileSelect(e: Event) {
@@ -2270,29 +2292,18 @@ function App() {
     }
     const quotedBody = `\n\n---------- Forwarded message ----------\nFrom: ${from}\nDate: ${date}\nSubject: ${thread.subject}\n\n${body}`;
 
-    // Open compose panel with forward content
-    setForwardingThread({ threadId, subject: fwdSubject, body: quotedBody });
-    setComposeTo("");
-    setComposeCc("");
-    setComposeBcc("");
-    setComposeSubject(fwdSubject);
-    setComposeBody(quotedBody);
-    setComposing(true);
+    startCompose({
+      subject: fwdSubject,
+      body: quotedBody,
+      forward: { threadId, subject: fwdSubject, body: quotedBody },
+    });
   }
 
   function handleReplyFromThread(to: string, cc: string, subject: string, quotedBody: string, messageId: string | undefined, isHtml: boolean) {
     const threadId = activeThreadId();
     if (!threadId) return;
 
-    setReplyingToThread({ threadId, messageId });
-    setComposeTo(to);
-    setComposeCc(cc);
-    setComposeBcc("");
-    setComposeSubject(subject);
-    setComposeBody(quotedBody);
-    setComposeIsHtml(isHtml);
-    setFocusComposeBody(true);
-    setComposing(true);
+    startCompose({ to, cc, subject, body: quotedBody, isHtml, reply: { threadId, messageId }, focusBody: true });
 
     const thread = activeThread();
     if (thread && messageId) {
@@ -2306,14 +2317,7 @@ function App() {
   }
 
   function handleForwardFromThread(subject: string, body: string) {
-    const threadId = activeThreadId();
-    setForwardingThread({ threadId: threadId || '', subject, body });
-    setComposeTo("");
-    setComposeCc("");
-    setComposeBcc("");
-    setComposeSubject(subject);
-    setComposeBody(body);
-    setComposing(true);
+    startCompose({ subject, body, forward: { threadId: activeThreadId() || '', subject, body } });
   }
 
   // Label drawer functions
@@ -4957,28 +4961,16 @@ function App() {
             if (!event) return;
             const subject = addReplyPrefix(event.title);
             const { to } = eventReplyRecipients(event, selectedAccount()?.email ?? '');
-            setComposeTo(to);
-            setComposeSubject(subject);
-            setComposeBody('');
+            startCompose({ to, subject, focusBody: true });
             setReplyingToEvent({ eventId: event.id });
-            setForwardingEvent(null);
-            setComposing(true);
-            setFocusComposeBody(true);
           }}
           onReplyAll={() => {
             const event = activeEvent();
             if (!event) return;
             const subject = addReplyPrefix(event.title);
             const { to, cc } = eventReplyRecipients(event, selectedAccount()?.email ?? '', true);
-            setComposeTo(to);
-            setComposeCc(cc);
-            setShowCcBcc(!!cc);
-            setComposeSubject(subject);
-            setComposeBody('');
+            startCompose({ to, cc, subject, focusBody: true });
             setReplyingToEvent({ eventId: event.id });
-            setForwardingEvent(null);
-            setComposing(true);
-            setFocusComposeBody(true);
           }}
           onForward={() => {
             const event = activeEvent();
@@ -4990,13 +4982,8 @@ function App() {
               (event.location ? `Where: ${event.location}\n` : '') +
               (event.organizer ? `Organizer: ${event.organizer}\n` : '') +
               (event.description ? `\n${event.description}` : '');
-            setComposeTo('');
-            setComposeSubject(subject);
-            setComposeBody(body);
+            startCompose({ subject, body, focusBody: true });
             setForwardingEvent({ eventId: event.id });
-            setReplyingToEvent(null);
-            setComposing(true);
-            setFocusComposeBody(true);
           }}
           onEdit={() => {
             const event = activeEvent();

@@ -139,16 +139,12 @@ describe("App attachments", () => {
     fireEvent.contextMenu(await screen.findByTitle("report.pdf (10 B)"));
     await waitFor(() => expect(lastMenu.some(i => i.text === "Forward")).toBe(true));
     lastMenu.find(i => i.text === "Forward")!.action!();
-    const compose = await waitFor(() => {
-      const panel = document.querySelector(".compose-panel");
-      expect(panel).toHaveTextContent("report.pdf");
-      return panel as HTMLElement;
-    });
+    await waitFor(() => expect(document.querySelector(".compose-panel")).toHaveTextContent("report.pdf"));
 
     eventListeners["mailto-received"]({ payload: { to: "bo@y.com", cc: "", bcc: "", subject: "Hi", body: "" } });
 
     await waitFor(() => expect(screen.getByPlaceholderText("Recipients")).toHaveValue("bo@y.com"));
-    expect(compose).not.toHaveTextContent("report.pdf");
+    expect(document.querySelector(".compose-panel")).not.toHaveTextContent("report.pdf");
   });
 
   it("forwards into a fresh email when compose is still closing", async () => {
@@ -365,7 +361,7 @@ describe("App thread list shortcuts", () => {
 
 const fullMessage = (id: string, from: string, extra: Record<string, unknown> = {}) => ({
   id, threadId: "t-a", labelIds: ["INBOX"], snippet: `body ${id}`, internalDate: "0",
-  payload: { mimeType: "text/plain", headers: [{ name: "From", value: from }, { name: "Subject", value: "Hi" }], body: { size: 0 } },
+  payload: { mimeType: "text/plain", headers: [{ name: "From", value: from }, { name: "Subject", value: "Hi" }, { name: "Message-ID", value: `<${id}@x>` }], body: { size: 0 } },
   ...extra,
 });
 
@@ -550,6 +546,35 @@ describe("App calendar", () => {
     releaseA();
     await new Promise(r => setTimeout(r, 20));
     expect(screen.queryByText("Calendar of a")).not.toBeInTheDocument();
+  });
+});
+
+describe("App thread view compose", () => {
+  it("sends a forward started after a reply as a new email, not as the reply", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    handlers.get_thread_details = () => ({
+      id: "t-a",
+      messages: [fullMessage("m1", "Ana <ana@x.com>"), fullMessage("m2", "Bo <bo@x.com>")],
+    });
+    handlers.send_email = () => null;
+    handlers.reply_to_thread = () => null;
+    handlers.save_draft = () => ({ id: "d1" });
+    handlers.delete_draft = () => null;
+    render(() => <App />);
+    fireEvent.click(await screen.findByText("Mail for A"));
+    await screen.findByText("body m2");
+
+    fireEvent.keyDown(document, { key: "r" });
+    await screen.findByPlaceholderText("Write your reply...");
+    fireEvent.mouseEnter(document.querySelectorAll(".message-row")[0]);
+    fireEvent.click(await screen.findByTitle("Forward"));
+    await vi.advanceTimersByTimeAsync(100);
+    fireEvent.input(await screen.findByPlaceholderText("Recipients"), { target: { value: "cy@z.com" } });
+    fireEvent.click(screen.getByRole("button", { name: /^Send/ }));
+    await vi.advanceTimersByTimeAsync(6000);
+
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith("send_email", expect.objectContaining({ to: "cy@z.com" })));
+    expect(invoke).not.toHaveBeenCalledWith("reply_to_thread", expect.anything());
   });
 });
 
