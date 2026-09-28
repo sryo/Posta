@@ -184,6 +184,10 @@ describe("stripHtml tables", () => {
     expect(stripHtml("<table>\n  <tr>\n    <td> Total </td>\n    <td>\n      <b>9</b> items</td>\n  </tr>\n</table>"))
       .toBe("Total\t9 items");
   });
+
+  it("starts no line with a tab when the previous cell ended in a block", () => {
+    expect(stripHtml("<table><tr><td><p>Hello</p></td><td><p>World</p></td></tr></table>")).toBe("Hello\nWorld");
+  });
 });
 
 describe("formatCalendarEventDate durations", () => {

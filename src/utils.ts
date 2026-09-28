@@ -164,7 +164,7 @@ export function stripHtml(html: string): string {
       } else if (child instanceof Element && !SKIPPED_TAGS.has(child.tagName)) {
         if (child.tagName === 'BR') { out += '\n'; continue; }
         const isCell = child.tagName === 'TD' || child.tagName === 'TH';
-        if (isCell && child.previousElementSibling) out = out.replace(/ +$/, '') + '\t';
+        if (isCell && child.previousElementSibling && !out.endsWith('\n')) out = out.replace(/ +$/, '') + '\t';
         const isBlock = BLOCK_TAGS.has(child.tagName);
         if (isBlock) newline();
         walk(child, inPre || child.tagName === 'PRE');
