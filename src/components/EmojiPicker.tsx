@@ -1,7 +1,7 @@
 // Emoji picker component with categories and search
 
 import { createSignal, For, Show, onCleanup, onMount } from "solid-js";
-import { hasCommandModifier } from "../shared/keyboard";
+import { hasCommandModifier, isImeComposing } from "../shared/keyboard";
 
 // Emoji data organized by category
 const EMOJI_CATEGORIES: { name: string; icon: string; emojis: string[] }[] = [
@@ -191,6 +191,13 @@ export const EmojiPicker = (props: EmojiPickerProps) => {
           placeholder="Search emoji..."
           value={search()}
           onInput={(e) => setSearch(e.currentTarget.value)}
+          onKeyDown={(e) => {
+            if (e.key !== "Enter" || isImeComposing(e) || !query()) return;
+            const first = filteredEmojis()[0];
+            if (!first) return;
+            e.preventDefault();
+            handleEmojiClick(first);
+          }}
           ref={searchRef}
         />
       </div>
