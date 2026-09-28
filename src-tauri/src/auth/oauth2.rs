@@ -193,6 +193,18 @@ fn base64_url_encode(input: &[u8]) -> String {
 // Secure token storage - tries keychain first, falls back to file storage
 const KEYRING_SERVICE: &str = "com.posta.mail";
 
+/// Debug builds never touch the keychain: every rebuild is a new binary to
+/// macOS, so each one would prompt for the login password again, once per
+/// secret. They use the owner-only fallback files instead.
+fn keychain_entry(key: &str) -> Option<keyring::Entry> {
+    if cfg!(debug_assertions) {
+        return None;
+    }
+    keyring::Entry::new(KEYRING_SERVICE, key)
+        .map_err(|e| tracing::warn!("Keychain Entry::new failed: {:?}", e))
+        .ok()
+}
+
 use std::path::{Path, PathBuf};
 
 fn get_token_file_path(app_data_dir: &Path, account_id: &str) -> PathBuf {
@@ -212,12 +224,12 @@ const GEMINI_KEYCHAIN_KEY: &str = "gemini:api_key";
 /// Store a secret in the keychain and verify it can be read back
 /// (keychain can silently fail in sandboxed apps)
 fn keychain_store_verified(key: &str, secret: &str) -> bool {
-    match keyring::Entry::new(KEYRING_SERVICE, key) {
-        Ok(entry) => {
+    match keychain_entry(key) {
+        Some(entry) => {
             entry.set_password(secret).is_ok()
                 && entry.get_password().map(|s| s == secret).unwrap_or(false)
         }
-        Err(_) => false,
+        None => false,
     }
 }
 
@@ -264,20 +276,15 @@ pub fn get_refresh_token(account_id: &str, app_data_dir: &Path) -> Result<String
 
     // Try keychain first
     let key = format!("token:{}", account_id);
-    match keyring::Entry::new(KEYRING_SERVICE, &key) {
-        Ok(entry) => {
-            match entry.get_password() {
-                Ok(token) => {
-                    tracing::info!("Found token in keychain");
-                    return Ok(token);
-                }
-                Err(e) => {
-                    tracing::warn!("Keychain get_password failed: {:?}", e);
-                }
+    if let Some(entry) = keychain_entry(&key) {
+        match entry.get_password() {
+            Ok(token) => {
+                tracing::info!("Found token in keychain");
+                return Ok(token);
             }
-        }
-        Err(e) => {
-            tracing::warn!("Keychain Entry::new failed: {:?}", e);
+            Err(e) => {
+                tracing::warn!("Keychain get_password failed: {:?}", e);
+            }
         }
     }
 
@@ -306,7 +313,7 @@ pub fn get_refresh_token(account_id: &str, app_data_dir: &Path) -> Result<String
 
 pub fn delete_refresh_token(account_id: &str, app_data_dir: &Path) -> Result<(), AuthError> {
     // Delete from keychain if present
-    if let Ok(entry) = keyring::Entry::new(KEYRING_SERVICE, &format!("token:{}", account_id)) {
+    if let Some(entry) = keychain_entry(&format!("token:{}", account_id)) {
         let _ = entry.delete_credential();
     }
 
@@ -355,7 +362,7 @@ pub fn store_oauth_credentials(client_id: &str, client_secret: &str, app_data_di
 
 pub fn get_oauth_credentials(app_data_dir: &Path) -> Result<OAuthCredentials, AuthError> {
     // Try keychain first
-    if let Ok(entry) = keyring::Entry::new(KEYRING_SERVICE, "oauth:credentials") {
+    if let Some(entry) = keychain_entry("oauth:credentials") {
         if let Ok(json) = entry.get_password() {
             if let Ok(creds) = serde_json::from_str(&json) {
                 tracing::info!("Found OAuth credentials in keychain");
@@ -390,7 +397,7 @@ pub fn store_gemini_api_key(api_key: &str, app_data_dir: &Path) -> Result<(), Au
     let api_key = api_key.trim();
 
     if api_key.is_empty() {
-        if let Ok(entry) = keyring::Entry::new(KEYRING_SERVICE, GEMINI_KEYCHAIN_KEY) {
+        if let Some(entry) = keychain_entry(GEMINI_KEYCHAIN_KEY) {
             let _ = entry.delete_credential();
         }
         let _ = std::fs::remove_file(&path);
@@ -410,7 +417,7 @@ pub fn store_gemini_api_key(api_key: &str, app_data_dir: &Path) -> Result<(), Au
 }
 
 pub fn get_gemini_api_key(app_data_dir: &Path) -> Option<String> {
-    if let Ok(entry) = keyring::Entry::new(KEYRING_SERVICE, GEMINI_KEYCHAIN_KEY) {
+    if let Some(entry) = keychain_entry(GEMINI_KEYCHAIN_KEY) {
         if let Ok(key) = entry.get_password() {
             if !key.is_empty() {
                 return Some(key);
@@ -427,6 +434,33 @@ pub fn get_gemini_api_key(app_data_dir: &Path) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn debug_builds_keep_secrets_in_owner_only_files_not_the_keychain() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!("posta-secrets-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+
+        store_refresh_token("acct", "refresh-1", &dir).unwrap();
+        store_oauth_credentials("id", "secret", &dir).unwrap();
+        store_gemini_api_key("gem", &dir).unwrap();
+
+        assert_eq!(get_refresh_token("acct", &dir).unwrap(), "refresh-1");
+        assert_eq!(get_oauth_credentials(&dir).unwrap().client_secret, "secret");
+        assert_eq!(get_gemini_api_key(&dir).as_deref(), Some("gem"));
+        for path in [
+            get_token_file_path(&dir, "acct"),
+            get_credentials_file_path(&dir),
+            get_gemini_key_file_path(&dir),
+        ] {
+            let mode = std::fs::metadata(&path).unwrap().permissions().mode();
+            assert_eq!(mode & 0o777, 0o600, "{path:?}");
+        }
+
+        delete_refresh_token("acct", &dir).unwrap();
+        assert!(get_refresh_token("acct", &dir).is_err());
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
 
     fn auth() -> GmailAuth {
         GmailAuth::new("client".into(), "secret".into())

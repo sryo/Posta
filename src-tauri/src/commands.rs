@@ -53,12 +53,15 @@ impl Default for AppState {
 
 // --- Helper functions to reduce boilerplate ---
 
-/// Get app data directory from handle
+/// Get app data directory from handle. Debug builds keep their own
+/// subdirectory so development never shares accounts, cache or secret files
+/// with the installed app.
 fn get_app_data_dir(app_handle: &tauri::AppHandle) -> Result<std::path::PathBuf, String> {
-    app_handle
+    let dir = app_handle
         .path()
         .app_data_dir()
-        .map_err(|e| format!("Failed to get app data dir: {}", e))
+        .map_err(|e| format!("Failed to get app data dir: {}", e))?;
+    Ok(if cfg!(debug_assertions) { dir.join("dev") } else { dir })
 }
 
 /// Execute a closure with database access
