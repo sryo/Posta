@@ -231,6 +231,7 @@ struct CreateEventRequest {
     location: Option<String>,
     start: EventDateTimeInput,
     end: EventDateTimeInput,
+    #[serde(skip_serializing_if = "Option::is_none")]
     attendees: Option<Vec<CalEventAttendee>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     recurrence: Option<Vec<String>>,
@@ -334,13 +335,22 @@ pub struct EventFields {
     pub recurrence: Option<Vec<String>>,
 }
 
-/// The form only knows addresses. Guests already on the event keep their
-/// whole entry, since the attendees array is replaced wholesale and a bare
-/// address would drop their response, optional flag and comment.
-fn attendees_for_write(emails: Vec<String>, existing: &[CalEventAttendee]) -> Vec<CalEventAttendee> {
+/// The guest list to write, or None to leave the event's guests as they are.
+/// The form only knows addresses, and the attendees array is replaced
+/// wholesale, so: guests already on the event keep their whole entry (a bare
+/// address would drop their response, optional flag and comment), guests
+/// Google lists without an address stay, and an unchanged list isn't sent.
+/// `existing` is None when the event's current guests couldn't be read.
+fn attendees_for_write(emails: Option<Vec<String>>, existing: Option<&[CalEventAttendee]>) -> Option<Vec<CalEventAttendee>> {
+    let emails = emails.unwrap_or_default();
+    let existing = match existing {
+        Some(existing) => existing,
+        None if emails.is_empty() => return None,
+        None => &[],
+    };
     let mut attendees: Vec<CalEventAttendee> = Vec::with_capacity(emails.len());
     for email in emails {
-        if attendees.iter().any(|a| a.email.eq_ignore_ascii_case(&email)) {
+        if email.is_empty() || attendees.iter().any(|a| a.email.eq_ignore_ascii_case(&email)) {
             continue;
         }
         let attendee = existing
@@ -350,15 +360,23 @@ fn attendees_for_write(emails: Vec<String>, existing: &[CalEventAttendee]) -> Ve
             .unwrap_or(CalEventAttendee { email, ..Default::default() });
         attendees.push(attendee);
     }
-    attendees
+    let (addressed, unaddressed): (Vec<&CalEventAttendee>, Vec<&CalEventAttendee>) =
+        existing.iter().partition(|a| !a.email.is_empty());
+    let unchanged = attendees.len() == addressed.len()
+        && attendees.iter().all(|a| addressed.iter().any(|e| e.email.eq_ignore_ascii_case(&a.email)));
+    if unchanged {
+        return None;
+    }
+    attendees.extend(unaddressed.into_iter().cloned());
+    Some(attendees)
 }
 
 /// Build the create/update body. `existing_attendees` is the event's current
-/// guest list (empty for a new event).
+/// guest list (empty for a new event, None when it couldn't be read).
 fn build_event_request(
     fields: EventFields,
     time_zone: Option<&str>,
-    existing_attendees: &[CalEventAttendee],
+    existing_attendees: Option<&[CalEventAttendee]>,
 ) -> Result<CreateEventRequest, String> {
     let start_dt = DateTime::<Utc>::from_timestamp_millis(fields.start_time).ok_or("Invalid start time")?;
     let end_dt = DateTime::<Utc>::from_timestamp_millis(fields.end_time).ok_or("Invalid end time")?;
@@ -387,7 +405,7 @@ fn build_event_request(
         location: fields.location,
         start,
         end,
-        attendees: fields.attendees.map(|emails| attendees_for_write(emails, existing_attendees)),
+        attendees: attendees_for_write(fields.attendees, existing_attendees),
         // Google requires RFC 5545 property names ("RRULE:FREQ=DAILY"); the
         // form emits bare rule strings ("FREQ=DAILY")
         recurrence: fields.recurrence.map(|rules| {
@@ -574,7 +592,7 @@ impl CalendarClient {
 
         let calendar = self.calendar_info(calendar_id).await;
         let time_zone = recurrence_time_zone(&fields, calendar.as_ref());
-        let body = build_event_request(fields, time_zone, &[])?;
+        let body = build_event_request(fields, time_zone, Some(&[]))?;
         let api_event: ApiEvent = self.send_json(self.http_client.post(&url).json(&body)).await?;
 
         written_event(api_event, calendar_id, calendar.as_ref())
@@ -637,12 +655,12 @@ impl CalendarClient {
     ) -> Result<CalendarEvent, String> {
         let (calendar, existing) =
             futures::join!(self.calendar_info(calendar_id), self.event_people(calendar_id, event_id));
-        // The current guest list is only needed when the form edits guests,
+        // The current guest list is only needed when the form lists guests,
         // so a failed lookup is fatal only then
         let (existing_attendees, is_self_creator) = match existing {
-            Ok(event) => (event.attendees.unwrap_or_default(), event.creator.and_then(|c| c.is_self).unwrap_or(false)),
-            Err(e) if fields.attendees.is_some() => return Err(e),
-            Err(_) => (Vec::new(), false),
+            Ok(event) => (Some(event.attendees.unwrap_or_default()), event.creator.and_then(|c| c.is_self).unwrap_or(false)),
+            Err(e) if fields.attendees.as_ref().is_some_and(|a| !a.is_empty()) => return Err(e),
+            Err(_) => (None, false),
         };
         let url = format!(
             "{}/calendars/{}/events/{}?sendUpdates={}",
@@ -652,7 +670,7 @@ impl CalendarClient {
             send_updates(is_self_creator)
         );
         let time_zone = recurrence_time_zone(&fields, calendar.as_ref());
-        let body = build_event_request(fields, time_zone, &existing_attendees)?;
+        let body = build_event_request(fields, time_zone, existing_attendees.as_deref())?;
         let api_event: ApiEvent = self.send_json(self.http_client.patch(&url).json(&body)).await?;
 
         written_event(api_event, calendar_id, calendar.as_ref())
@@ -1483,7 +1501,7 @@ mod tests {
         // 2024-12-23 12:00 UTC to 2024-12-24 12:00 UTC, as the form sends all-day dates
         let start = 1_734_955_200_000;
         let end = start + 24 * 3600 * 1000;
-        let req = build_event_request(EventFields { recurrence, ..fields(start, end, all_day) }, time_zone, &[]).unwrap();
+        let req = build_event_request(EventFields { recurrence, ..fields(start, end, all_day) }, time_zone, Some(&[])).unwrap();
         serde_json::to_value(req).unwrap()
     }
 
@@ -1510,7 +1528,7 @@ mod tests {
     #[test]
     fn request_accepts_pre_epoch_timestamps() {
         // 1969-12-31T23:59:58.500Z
-        let req = build_event_request(fields(-1_500, 0, false), None, &[]).unwrap();
+        let req = build_event_request(fields(-1_500, 0, false), None, Some(&[])).unwrap();
         let json = serde_json::to_value(req).unwrap();
         assert_eq!(json["start"]["dateTime"], "1969-12-31T23:59:58.500+00:00");
         assert_eq!(json["end"]["dateTime"], "1970-01-01T00:00:00+00:00");
@@ -1523,7 +1541,8 @@ mod tests {
         assert!(json.get("recurrence").is_none());
         // Cleared optional fields are sent as null so a PATCH clears them
         assert!(json["description"].is_null() && json.get("description").is_some());
-        assert!(json.get("attendees").is_some());
+        // An event with no guests before or after has no guest list to send
+        assert!(json.get("attendees").is_none());
     }
 
     fn attendee(email: &str, is_self: bool, status: &str) -> CalEventAttendee {
@@ -1592,7 +1611,7 @@ mod tests {
             attendees: Some(vec!["me@x.com".into(), "bob@x.com".into(), "dan@x.com".into(), "carol@x.com".into(), "BOB@x.com".into()]),
             ..fields(0, 3_600_000, false)
         };
-        let json = serde_json::to_value(build_event_request(edited, None, &existing).unwrap()).unwrap();
+        let json = serde_json::to_value(build_event_request(edited, None, Some(&existing)).unwrap()).unwrap();
         assert_eq!(
             json["attendees"],
             serde_json::json!([
@@ -1605,12 +1624,52 @@ mod tests {
 
         // Guests left out of the form are removed; clearing the field clears the list
         let json = serde_json::to_value(
-            build_event_request(EventFields { attendees: Some(vec!["dan@x.com".into()]), ..fields(0, 0, false) }, None, &existing).unwrap(),
+            build_event_request(EventFields { attendees: Some(vec!["dan@x.com".into()]), ..fields(0, 0, false) }, None, Some(&existing)).unwrap(),
         )
         .unwrap();
         assert_eq!(json["attendees"], serde_json::json!([{ "email": "dan@x.com" }]));
-        let json = serde_json::to_value(build_event_request(fields(0, 0, false), None, &existing).unwrap()).unwrap();
-        assert!(json["attendees"].is_null());
+        let json = serde_json::to_value(build_event_request(fields(0, 0, false), None, Some(&existing)).unwrap()).unwrap();
+        assert_eq!(json["attendees"], serde_json::json!([]));
+    }
+
+    fn written_attendees(emails: Option<Vec<&str>>, existing: Option<&[CalEventAttendee]>) -> Option<serde_json::Value> {
+        let edited = EventFields {
+            attendees: emails.map(|e| e.into_iter().map(String::from).collect()),
+            ..fields(0, 3_600_000, false)
+        };
+        let json = serde_json::to_value(build_event_request(edited, None, existing).unwrap()).unwrap();
+        json.get("attendees").cloned()
+    }
+
+    #[test]
+    fn an_unchanged_guest_list_is_left_alone() {
+        // The PATCH replaces the whole array, so resending what the form shows
+        // would drop guests it can't show, for a title-only edit
+        let mut hidden = attendee("", false, "accepted");
+        hidden.other.insert("id".into(), "guest-7".into());
+        let existing = vec![attendee("me@x.com", true, "accepted"), attendee("Bob@X.com", false, "declined"), hidden];
+        assert_eq!(written_attendees(Some(vec!["bob@x.com", "me@x.com"]), Some(&existing)), None);
+        assert_eq!(written_attendees(Some(vec!["bob@x.com", "me@x.com", "BOB@x.com"]), Some(&existing)), None);
+
+        // A changed list still keeps the guests the form can't show
+        assert_eq!(
+            written_attendees(Some(vec!["me@x.com", "dan@x.com"]), Some(&existing)),
+            Some(serde_json::json!([
+                { "email": "me@x.com", "responseStatus": "accepted", "self": true },
+                { "email": "dan@x.com" },
+                { "id": "guest-7", "responseStatus": "accepted" },
+            ]))
+        );
+        assert_eq!(
+            written_attendees(None, Some(&existing)),
+            Some(serde_json::json!([{ "id": "guest-7", "responseStatus": "accepted" }]))
+        );
+
+        // Without the current list, a form with no guests leaves them alone
+        assert_eq!(written_attendees(None, None), None);
+        assert_eq!(written_attendees(Some(vec![]), None), None);
+        // A new event with guests invites them
+        assert_eq!(written_attendees(Some(vec!["dan@x.com"]), Some(&[])), Some(serde_json::json!([{ "email": "dan@x.com" }])));
     }
 
     #[test]
@@ -1981,6 +2040,39 @@ mod tests {
             .requests()
             .iter()
             .any(|(method, target, _)| method == "PATCH" && target.starts_with("/calendars/cal/events/e1?")));
+    }
+
+    #[tokio::test]
+    async fn a_title_edit_does_not_resend_the_guest_list() {
+        let server = StubServer::start(|method, target| match method {
+            "GET" if target.contains("/events/e1?fields=") => (
+                200,
+                serde_json::json!({ "id": "e1", "creator": { "self": true }, "attendees": [
+                    { "email": "me@x.com", "self": true, "responseStatus": "accepted" },
+                    { "email": "bob@x.com", "responseStatus": "accepted" },
+                ] })
+                .to_string(),
+            ),
+            "GET" => (200, calendar_entry("cal").to_string()),
+            _ => (200, serde_json::json!({ "id": "e1", "start": { "date": "2024-12-23" } }).to_string()),
+        })
+        .await;
+        let edited = EventFields { attendees: Some(vec!["me@x.com".into(), "bob@x.com".into()]), ..fields(0, 3_600_000, false) };
+        server.client().update_event("cal", "e1", edited).await.unwrap();
+        let patch = server.requests().into_iter().find(|(m, _, _)| m == "PATCH").expect("no PATCH sent");
+        let body: serde_json::Value = serde_json::from_str(&patch.2).unwrap();
+        assert_eq!(body["summary"], "Title");
+        assert!(body.get("attendees").is_none(), "{body}");
+    }
+
+    #[tokio::test]
+    async fn an_edit_without_guests_leaves_them_alone_when_the_event_cannot_be_read() {
+        // update_stub fails the guest lookup; the event may well have guests
+        let server = StubServer::start(update_stub).await;
+        server.client().update_event("cal", "e1", fields(0, 3_600_000, false)).await.unwrap();
+        let patch = server.requests().into_iter().find(|(m, _, _)| m == "PATCH").expect("no PATCH sent");
+        let body: serde_json::Value = serde_json::from_str(&patch.2).unwrap();
+        assert!(body.get("attendees").is_none(), "{body}");
     }
 
     /// Stub where event `e1` was created by the user iff `mine`
