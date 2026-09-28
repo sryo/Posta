@@ -1392,6 +1392,18 @@ mod tests {
     }
 
     #[test]
+    fn request_accepts_pre_epoch_timestamps() {
+        // 1969-12-31T23:59:58.500Z
+        let req = build_event_request(
+            "Title".into(), None, -1_500, 0, false, None, None, None, None,
+        )
+        .unwrap();
+        let json = serde_json::to_value(req).unwrap();
+        assert_eq!(json["start"]["dateTime"], "1969-12-31T23:59:58.500+00:00");
+        assert_eq!(json["end"]["dateTime"], "1970-01-01T00:00:00+00:00");
+    }
+
+    #[test]
     fn request_without_recurrence_leaves_existing_recurrence_alone() {
         // Updates are PATCHes; a null recurrence would strip a series' rules
         let json = request_json(false, None, None);
