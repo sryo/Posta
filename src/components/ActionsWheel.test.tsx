@@ -4,8 +4,8 @@ import { ActionsWheel } from "./ActionsWheel";
 import type { GoogleCalendarEvent, Thread } from "../api/tauri";
 
 vi.mock("@tauri-apps/plugin-opener", () => ({ openUrl: vi.fn() }));
-const rsvpCalendarEvent = vi.hoisted(() => vi.fn());
-vi.mock("../api/tauri", () => ({ rsvpCalendarEvent }));
+const rsvpListedCalendarEvent = vi.hoisted(() => vi.fn());
+vi.mock("../api/tauri", () => ({ rsvpListedCalendarEvent }));
 
 const thread: Thread = {
   gmail_thread_id: "t1",
@@ -98,7 +98,7 @@ describe("ActionsWheel event delete", () => {
     render(() => <ActionsWheel {...baseProps} onClose={onClose} selectedAccount={() => ({ id: "acc" } as any)} event={event} onDeleteEvent={onDeleteEvent} />);
     fireEvent.click(screen.getByTitle("Delete"));
     expect(onDeleteEvent).toHaveBeenCalledWith(event);
-    expect(rsvpCalendarEvent).not.toHaveBeenCalled();
+    expect(rsvpListedCalendarEvent).not.toHaveBeenCalled();
   });
 
   it("asks before deleting and keeps the event when the user cancels", () => {
@@ -118,8 +118,19 @@ describe("ActionsWheel event delete", () => {
 });
 
 describe("ActionsWheel event RSVP", () => {
+  it("answers a recurring occurrence on its own calendar by its listed id", async () => {
+    rsvpListedCalendarEvent.mockReset().mockResolvedValue(null);
+    const onRsvped = vi.fn();
+    const showToast = vi.fn();
+    render(() => <ActionsWheel {...baseProps} showToast={showToast} selectedAccount={() => ({ id: "acc" } as any)} event={{ ...event, id: "e1_20260928T150000Z", calendar_id: "team@x.com" }} onRsvped={onRsvped} />);
+    fireEvent.click(screen.getByTitle("RSVP Yes"));
+    await vi.waitFor(() => expect(onRsvped).toHaveBeenCalledWith("e1_20260928T150000Z", "accepted"));
+    expect(rsvpListedCalendarEvent).toHaveBeenCalledWith("acc", "team@x.com", "e1_20260928T150000Z", "accepted");
+    expect(showToast).toHaveBeenCalledWith("RSVP sent: Going");
+  });
+
   it("reports the new response once the RSVP succeeds", async () => {
-    rsvpCalendarEvent.mockReset().mockResolvedValue(null);
+    rsvpListedCalendarEvent.mockReset().mockResolvedValue(null);
     const onRsvped = vi.fn();
     render(() => <ActionsWheel {...baseProps} selectedAccount={() => ({ id: "acc" } as any)} event={event} onRsvped={onRsvped} />);
     fireEvent.click(screen.getByTitle("RSVP Yes"));
@@ -129,27 +140,27 @@ describe("ActionsWheel event RSVP", () => {
   });
 
   it("does not report a response when the RSVP fails", async () => {
-    rsvpCalendarEvent.mockReset().mockRejectedValue(new Error("offline"));
+    rsvpListedCalendarEvent.mockReset().mockRejectedValue(new Error("offline"));
     const onRsvped = vi.fn();
     const showToast = vi.fn();
     render(() => <ActionsWheel {...baseProps} showToast={showToast} selectedAccount={() => ({ id: "acc" } as any)} event={event} onRsvped={onRsvped} />);
     fireEvent.click(screen.getByTitle("RSVP Yes"));
-    await vi.waitFor(() => expect(showToast).toHaveBeenCalledWith("Failed to RSVP: offline"));
+    await vi.waitFor(() => expect(showToast).toHaveBeenCalledWith("Couldn't RSVP: offline"));
     expect(onRsvped).not.toHaveBeenCalled();
   });
 
   it("sends one RSVP at a time however often the buttons are clicked", async () => {
     let finish!: () => void;
-    rsvpCalendarEvent.mockReset().mockReturnValue(new Promise<void>(r => { finish = r; }));
+    rsvpListedCalendarEvent.mockReset().mockReturnValue(new Promise<void>(r => { finish = r; }));
     const onRsvped = vi.fn();
     render(() => <ActionsWheel {...baseProps} selectedAccount={() => ({ id: "acc" } as any)} event={event} onRsvped={onRsvped} />);
     fireEvent.click(screen.getByTitle("RSVP Yes"));
     fireEvent.click(screen.getByTitle("RSVP Yes"));
     fireEvent.click(screen.getByTitle("RSVP No"));
-    expect(rsvpCalendarEvent).toHaveBeenCalledTimes(1);
+    expect(rsvpListedCalendarEvent).toHaveBeenCalledTimes(1);
     finish();
     await vi.waitFor(() => expect(onRsvped).toHaveBeenCalledTimes(1));
-    rsvpCalendarEvent.mockResolvedValue(null);
+    rsvpListedCalendarEvent.mockResolvedValue(null);
     fireEvent.click(screen.getByTitle("RSVP No"));
     await vi.waitFor(() => expect(onRsvped).toHaveBeenLastCalledWith(event.id, "declined"));
   });

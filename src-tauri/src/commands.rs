@@ -1752,11 +1752,7 @@ pub async fn rsvp_calendar_event(
     status: String, // "accepted", "tentative", or "declined"
     app_handle: tauri::AppHandle, state: State<'_, AppState>,
 ) -> Result<(), String> {
-    // Validate status
-    let valid_statuses = ["accepted", "tentative", "declined"];
-    if !valid_statuses.contains(&status.as_str()) {
-        return Err(format!("Invalid status: {}. Must be one of: accepted, tentative, declined", status));
-    }
+    validate_rsvp_status(&status)?;
 
     let user_email = get_account_email(&state, &account_id).await?;
 
@@ -1765,6 +1761,32 @@ pub async fn rsvp_calendar_event(
 
     let result = calendar.rsvp_calendar_event(&user_email, &event_uid, &status).await;
     evict_token_on_auth_error(&state, &account_id, result)
+}
+
+/// Answers an event as listed on a calendar card, by its calendar and event
+/// id, so recurring occurrences and invites from other systems resolve.
+#[tauri::command]
+pub async fn rsvp_listed_calendar_event(
+    account_id: String,
+    calendar_id: String,
+    event_id: String,
+    status: String,
+    app_handle: tauri::AppHandle, state: State<'_, AppState>,
+) -> Result<(), String> {
+    validate_rsvp_status(&status)?;
+    let user_email = get_account_email(&state, &account_id).await?;
+    let access_token = get_access_token(&state, &app_handle, &account_id).await?;
+    let calendar = crate::calendar::CalendarClient::new(access_token);
+    let result = calendar.rsvp_event(&user_email, &calendar_id, &event_id, &status).await;
+    evict_token_on_auth_error(&state, &account_id, result)
+}
+
+fn validate_rsvp_status(status: &str) -> Result<(), String> {
+    if ["accepted", "tentative", "declined"].contains(&status) {
+        Ok(())
+    } else {
+        Err(format!("Invalid status: {}. Must be one of: accepted, tentative, declined", status))
+    }
 }
 
 #[tauri::command]

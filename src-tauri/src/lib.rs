@@ -235,6 +235,7 @@ pub fn run() {
             commands::save_draft,
             commands::delete_draft,
             commands::rsvp_calendar_event,
+            commands::rsvp_listed_calendar_event,
             commands::get_calendar_rsvp_status,
             commands::pull_from_icloud,
             commands::fetch_contacts,

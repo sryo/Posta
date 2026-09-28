@@ -52,6 +52,7 @@ import {
   listLabels,
   type GmailLabel,
   rsvpCalendarEvent,
+  rsvpListedCalendarEvent,
   getCalendarRsvpStatus,
   syncThreadsIncremental,
   fetchContacts,
@@ -143,7 +144,7 @@ import { escapeTarget, nextCardFocus, nextItemFocus } from "./app/keyboardNav";
 import { getSmartEventTime, groupCalendarEvents, isUserLabel, mergeThreadGroups, regroupThreads, type CalendarEventGroup } from "./app/grouping";
 import { pullLayoutWithRetry } from "./app/icloudRestore";
 import { querySuggestions, type QuerySuggestion } from "./app/querySuggestions";
-import { inviteNamesEvent, rsvpSentMessage, rsvpWithFallback, type RsvpStatus } from "./app/rsvp";
+import { inviteNamesEvent, rsvpSentMessage, type RsvpStatus } from "./app/rsvp";
 import { hasCommandModifier, onActivateKey } from "./shared/keyboard";
 
 const SESSION_EXPIRED_MESSAGE = "Session expired - sign in again";
@@ -4959,7 +4960,7 @@ function App() {
             if (!event || !account || rsvpLoading[event.id]) return;
             setRsvpLoading(event.id, true);
             try {
-              await rsvpWithFallback(account.id, event.id, status);
+              await rsvpListedCalendarEvent(account.id, event.calendar_id, event.id, status);
               markEventRsvp(event.id, status);
               showToast(rsvpSentMessage(status));
             } catch (e) {

@@ -1,11 +1,12 @@
 import { For, Show, createMemo, type JSX } from "solid-js";
 import { openUrl } from '@tauri-apps/plugin-opener';
 import {
-  rsvpCalendarEvent,
+  rsvpListedCalendarEvent,
   type Account,
   type Thread,
   type GoogleCalendarEvent,
 } from "../api/tauri";
+import { rsvpSentMessage, type RsvpStatus } from "../app/rsvp";
 import {
   ClearIcon,
   ReplyIcon,
@@ -62,33 +63,19 @@ export const ActionsWheel = (props: {
     setTimeout(() => el.classList.add('open'), 10);
   };
 
-  // The backend looks events up by iCalUID; Google-origin events use
-  // "<id>@google.com", so retry with that suffix when the bare id misses
-  const rsvpWithFallback = async (accountId: string, eventId: string, status: "accepted" | "tentative" | "declined") => {
-    try {
-      await rsvpCalendarEvent(accountId, eventId, status);
-    } catch (err) {
-      if (String(err).includes("not found")) {
-        await rsvpCalendarEvent(accountId, `${eventId}@google.com`, status);
-      } else {
-        throw err;
-      }
-    }
-  };
-
   // One response at a time: a double click would otherwise send two
   let rsvpInFlight = false;
-  const rsvp = async (eventId: string, status: "accepted" | "declined", label: string) => {
+  const rsvp = async (evt: GoogleCalendarEvent, status: RsvpStatus) => {
     const account = props.selectedAccount();
     if (!account || rsvpInFlight) return;
     rsvpInFlight = true;
     try {
-      await rsvpWithFallback(account.id, eventId, status);
-      props.onRsvped?.(eventId, status);
-      props.showToast(`RSVP: ${label}`);
+      await rsvpListedCalendarEvent(account.id, evt.calendar_id, evt.id, status);
+      props.onRsvped?.(evt.id, status);
+      props.showToast(rsvpSentMessage(status));
       props.onClose();
     } catch (err) {
-      props.showToast(`Failed to RSVP: ${err instanceof Error ? err.message : String(err)}`);
+      props.showToast(`Couldn't RSVP: ${err instanceof Error ? err.message : String(err)}`);
     } finally {
       rsvpInFlight = false;
     }
@@ -136,14 +123,14 @@ export const ActionsWheel = (props: {
           cls: evt.response_status === 'accepted' ? 'event-rsvp-active' : 'event-rsvp',
           title: 'RSVP Yes',
           icon: CheckIcon,
-          onClick: (e) => { e.stopPropagation(); rsvp(evt.id, 'accepted', 'Yes'); },
+          onClick: (e) => { e.stopPropagation(); rsvp(evt, 'accepted'); },
           available: true
         },
         rsvpNo: {
           cls: evt.response_status === 'declined' ? 'event-rsvp-active' : 'event-rsvp',
           title: 'RSVP No',
           icon: ThumbsDownIcon,
-          onClick: (e) => { e.stopPropagation(); rsvp(evt.id, 'declined', 'No'); },
+          onClick: (e) => { e.stopPropagation(); rsvp(evt, 'declined'); },
           available: true
         },
         delete: {

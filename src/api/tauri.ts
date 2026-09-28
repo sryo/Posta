@@ -382,6 +382,15 @@ export async function rsvpCalendarEvent(
   return invoke("rsvp_calendar_event", { accountId, eventUid, status });
 }
 
+export async function rsvpListedCalendarEvent(
+  accountId: string,
+  calendarId: string,
+  eventId: string,
+  status: "accepted" | "tentative" | "declined"
+): Promise<void> {
+  return invoke("rsvp_listed_calendar_event", { accountId, calendarId, eventId, status });
+}
+
 export async function getCalendarRsvpStatus(
   accountId: string,
   eventUid: string

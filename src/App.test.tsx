@@ -1246,16 +1246,21 @@ describe("App calendar", () => {
       { ...card("cal-1", "a", "Week"), query: "calendar:7d", card_type: "calendar" },
       { ...card("cal-2", "a", "Month"), query: "calendar:30d", card_type: "calendar", position: 1 },
     ];
-    handlers.fetch_calendar_events = () => [{ ...calendarEvent("ev-1", "Planning"), response_status: "needsAction" }];
-    handlers.rsvp_calendar_event = () => null;
+    handlers.fetch_calendar_events = () => [{ ...calendarEvent("ev-1_20260928T150000Z", "Planning"), calendar_id: "team@group.calendar.google.com", response_status: "needsAction" }];
+    handlers.rsvp_listed_calendar_event = () => null;
     render(() => <App />);
     await waitFor(() => expect(screen.getAllByText("Planning")).toHaveLength(2));
     fireEvent.click(screen.getAllByText("Planning")[0]);
     fireEvent.click(await screen.findByRole("button", { name: "Yes" }));
 
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith("rsvp_listed_calendar_event", {
+      accountId: "a", calendarId: "team@group.calendar.google.com", eventId: "ev-1_20260928T150000Z", status: "accepted",
+    }));
+    expect(invoke).not.toHaveBeenCalledWith("rsvp_calendar_event", expect.anything());
+
     for (const cardId of ["cal-1", "cal-2"]) {
       await waitFor(() => expect(invoke).toHaveBeenCalledWith("save_cached_card_events", {
-        cardId, events: [expect.objectContaining({ id: "ev-1", response_status: "accepted" })],
+        cardId, events: [expect.objectContaining({ id: "ev-1_20260928T150000Z", response_status: "accepted" })],
       }));
     }
   });
