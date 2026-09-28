@@ -537,14 +537,30 @@ impl CalendarClient {
 
         let calendar_count = results.len();
         let mut errors: Vec<(String, String)> = Vec::new();
+        // An event shared with a subscribed calendar comes back from each
+        // with the same id; keep the copy from the calendar the user answers on
+        let mut listed: HashMap<String, (usize, u8)> = HashMap::new();
         for (result, cal) in results.into_iter().zip(calendars.iter()) {
             match result {
                 Ok(items) => {
-                    let events: Vec<CalendarEvent> = items
+                    let preference = copy_preference(cal);
+                    let events = items
                         .into_iter()
-                        .filter_map(|e| api_event_to_calendar_event(e, &cal.id, &cal.name, &cal.access_role))
-                        .collect();
-                    all_events.extend(events);
+                        .filter_map(|e| api_event_to_calendar_event(e, &cal.id, &cal.name, &cal.access_role));
+                    for event in events {
+                        match listed.get_mut(&event.id) {
+                            Some((index, kept)) => {
+                                if preference < *kept {
+                                    *kept = preference;
+                                    all_events[*index] = event;
+                                }
+                            }
+                            None => {
+                                listed.insert(event.id.clone(), (all_events.len(), preference));
+                                all_events.push(event);
+                            }
+                        }
+                    }
                 }
                 Err(e) => errors.push((cal.id.clone(), e)),
             }
@@ -938,6 +954,16 @@ fn api_event_to_calendar_event(event: ApiEvent, calendar_id: &str, calendar_name
         can_edit,
         recurring_event_id: event.recurring_event_id,
     })
+}
+
+/// Which copy of an event listed from several calendars to keep (lower
+/// wins): the user's primary calendar, then one they can write to
+fn copy_preference(calendar: &CalendarInfo) -> u8 {
+    match calendar.access_role.as_str() {
+        _ if calendar.is_primary => 0,
+        "owner" | "writer" => 1,
+        _ => 2,
+    }
 }
 
 /// Free/busy calendars show no attendees, and Google's generated calendars
@@ -2221,6 +2247,35 @@ mod tests {
         let titles: Vec<&str> = found.iter().map(|e| e.title.as_str()).collect();
         assert_eq!(titles, vec!["second", "first"]);
         assert!(found.iter().all(|e| e.calendar_id == "mine"));
+    }
+
+    #[tokio::test]
+    async fn an_event_on_several_calendars_is_listed_once_from_the_users_own() {
+        // A meeting with a coworker whose calendar the user subscribes to
+        // comes back from both calendars with the same id; cards key events
+        // by id, so a second copy would take the first copy's RSVPs and edits
+        let event = |id: &str| serde_json::json!({ "id": id, "summary": id, "start": { "dateTime": "2024-12-23T10:00:00Z" } });
+        let server = StubServer::start(move |_, target| {
+            let items = if target.starts_with("/users/me/calendarList") {
+                serde_json::json!([
+                    calendar_with_role("coworker", "reader"),
+                    calendar_with_role("team", "writer"),
+                    { "id": "me", "summary": "me", "primary": true, "accessRole": "owner", "timeZone": "UTC" },
+                ])
+            } else if target.starts_with("/calendars/coworker/") {
+                serde_json::json!([event("shared"), event("theirs"), event("team-sync")])
+            } else if target.starts_with("/calendars/team/") {
+                serde_json::json!([event("team-sync")])
+            } else {
+                serde_json::json!([event("shared")])
+            };
+            (200, serde_json::json!({ "items": items }).to_string())
+        })
+        .await;
+        let found = server.client().search_events(&CalendarQuery::parse("calendar:week"), 10).await.unwrap();
+        let mut listed: Vec<(&str, &str)> = found.iter().map(|e| (e.id.as_str(), e.calendar_id.as_str())).collect();
+        listed.sort();
+        assert_eq!(listed, vec![("shared", "me"), ("team-sync", "team"), ("theirs", "coworker")]);
     }
 
     #[tokio::test]
