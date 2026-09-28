@@ -27,6 +27,7 @@ import {
   deleteCard,
   reorderCards,
   deleteAccount,
+  updateAccountSignature,
   fetchThreadsPaginated,
   searchThreadsPreview,
   modifyThreads,
@@ -123,6 +124,7 @@ import { PRESETS } from "./app/presets";
 import { normalizeActionOrder } from "./app/actionOrder";
 import { parseStoredWidth } from "./app/storedWidth";
 import { isSessionExpiredError } from "./app/authErrors";
+import { signatureBlock, withSignature } from "./app/signature";
 import { readFilesAsAttachments } from "./app/attachments";
 import { eventTimesFromForm, smartEventDefaults } from "./app/eventForm";
 import { getSmartEventTime, groupCalendarEvents, isUserLabel, mergeThreadGroups, regroupThreads, type CalendarEventGroup } from "./app/grouping";
@@ -846,7 +848,9 @@ function App() {
   createEffect(() => {
     if (composing() && !replyingToThread() && !forwardingThread()) {
       untrack(() => {
-        if (composeTo() || composeSubject() || composeBody()) return; // Prefilled compose wins
+        const body = composeBody();
+        const prefilled = composeTo() || composeSubject() || (body && body !== signatureBlock(composeAccount()?.signature));
+        if (prefilled) return;
         const draft = loadDraft();
         if (draft) {
           setComposeTo(draft.to);
@@ -1757,6 +1761,18 @@ function App() {
     }
   }
 
+  async function saveSignature(account: Account, text: string) {
+    const signature = text.trim() ? text : null;
+    try {
+      await updateAccountSignature(account.id, signature);
+      const updated = { ...account, signature };
+      setAccounts(accounts().map(a => (a.id === account.id ? updated : a)));
+      if (selectedAccount()?.id === account.id) setSelectedAccount(updated);
+    } catch (e) {
+      setError(`Failed to save signature: ${e}`);
+    }
+  }
+
   async function handleSignOut() {
     const account = selectedAccount();
     if (!account) return;
@@ -1840,6 +1856,8 @@ function App() {
     reply?: { threadId: string; messageId?: string };
     forward?: { threadId: string; subject: string; body: string };
     focusBody?: boolean;
+    // False when putting back an email that already has its signature
+    signature?: boolean;
   }) {
     if (composing() || closingCompose()) {
       if (draftSaveTimeout) clearTimeout(draftSaveTimeout);
@@ -1855,7 +1873,8 @@ function App() {
       setComposeBcc(init.bcc ?? "");
       setShowCcBcc(!!(init.cc || init.bcc));
       setComposeSubject(init.subject ?? "");
-      setComposeBody(init.body ?? "");
+      const body = init.body ?? "";
+      setComposeBody(init.signature === false ? body : withSignature(body, selectedAccount()?.signature));
       setComposeIsHtml(!!init.isHtml);
       setFocusComposeBody(!!init.focusBody);
       setComposing(true);
@@ -2085,6 +2104,7 @@ function App() {
       body: pending.body,
       isHtml: pending.isHtml,
       reply: pending.reply,
+      signature: false,
     });
     setComposeAttachments(pending.attachments);
     setComposeAccount(accounts().find(a => a.id === pending.accountId) ?? null);
@@ -5137,6 +5157,24 @@ function App() {
               Connect <span class="shortcut-hint">↵</span>
             </button>
           </div>
+          <Show when={selectedAccount()}>
+            {(account) => (
+              <div class="settings-section">
+                <div class="settings-section-title">Signature</div>
+                <p class="settings-hint" style="margin-bottom: 12px;">
+                  Added to new emails, replies and forwards from {account().email}.
+                </p>
+                <div class="settings-form-group">
+                  <textarea
+                    aria-label="Signature"
+                    rows={4}
+                    value={account().signature ?? ""}
+                    onChange={(e) => saveSignature(account(), e.currentTarget.value)}
+                  />
+                </div>
+              </div>
+            )}
+          </Show>
           <div class={`settings-section collapsible ${smartRepliesOpen() ? 'open' : ''}`}>
             <div class="settings-section-title" onClick={() => setSmartRepliesOpen(!smartRepliesOpen())}>
               <span>Smart Replies</span>

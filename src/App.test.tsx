@@ -413,6 +413,36 @@ describe("App expired session", () => {
   });
 });
 
+describe("App signature", () => {
+  it("saves the account's signature from Settings", async () => {
+    handlers.update_account_signature = () => null;
+    render(() => <App />);
+    await screen.findByText("Mail for A");
+
+    const field = screen.getByLabelText("Signature");
+    fireEvent.change(field, { target: { value: "Ana\nPosta" } });
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith("update_account_signature", { accountId: "a", signature: "Ana\nPosta" }));
+
+    fireEvent.change(field, { target: { value: "  " } });
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith("update_account_signature", { accountId: "a", signature: null }));
+  });
+
+  it("puts the signature in a new email and still restores a saved draft", async () => {
+    handlers.get_accounts = () => [{ ...account("a", "a@x.com"), signature: "Ana" }];
+    render(() => <App />);
+    await screen.findByText("Mail for A");
+
+    fireEvent.keyDown(document, { key: "c" });
+    expect(((await screen.findByPlaceholderText("Write something...")) as HTMLTextAreaElement).value).toBe("\n\n-- \nAna");
+    fireEvent.keyDown(screen.getByPlaceholderText("Write something..."), { key: "Escape" });
+    await waitFor(() => expect(screen.queryByPlaceholderText("Write something...")).not.toBeInTheDocument());
+
+    localStorage.setItem("draft_new_a", JSON.stringify({ to: "bo@x.com", cc: "", bcc: "", subject: "Hi", body: "saved\n\n-- \nAna", savedAt: 1 }));
+    fireEvent.keyDown(document, { key: "c" });
+    expect(((await screen.findByPlaceholderText("Write something...")) as HTMLTextAreaElement).value).toBe("saved\n\n-- \nAna");
+  });
+});
+
 describe("App thread list shortcuts", () => {
   it("reports the focused thread as spam on !", async () => {
     handlers.modify_threads = () => null;

@@ -3016,7 +3016,8 @@ button:disabled:hover {
     z-index: 2;
 }
 
-.settings-form-group input {
+.settings-form-group input,
+.settings-form-group textarea {
     width: 100%;
     padding: var(--space-md) var(--space-lg);
     border: 1px solid var(--border-color);
@@ -3026,7 +3027,13 @@ button:disabled:hover {
     color: var(--text-primary);
 }
 
-.settings-form-group input:focus {
+.settings-form-group textarea {
+    font-family: inherit;
+    resize: vertical;
+}
+
+.settings-form-group input:focus,
+.settings-form-group textarea:focus {
     outline: none;
     border-color: var(--accent);
 }
