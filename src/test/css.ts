@@ -80,7 +80,7 @@ function matchesSafely(el: Element, selector: string): boolean {
   }
 }
 
-const compareSpecificity =(a: Specificity, b: Specificity) => a[0] - b[0] || a[1] - b[1] || a[2] - b[2];
+const compareSpecificity = (a: Specificity, b: Specificity) => a[0] - b[0] || a[1] - b[1] || a[2] - b[2];
 
 // The winning value of each property that top-level rules declare on `el`
 // itself, by specificity then source order. jsdom's getComputedStyle only
