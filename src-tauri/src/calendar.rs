@@ -30,11 +30,11 @@ fn build_http_client(timeout: std::time::Duration) -> reqwest::Client {
 
 /// One connection pool for every Google API client, so each command doesn't
 /// pay for a fresh TLS handshake
-static HTTP_CLIENT: LazyLock<reqwest::Client> = LazyLock::new(|| build_http_client(REQUEST_TIMEOUT));
+pub(crate) static HTTP_CLIENT: LazyLock<reqwest::Client> = LazyLock::new(|| build_http_client(REQUEST_TIMEOUT));
 
-type CalendarListSlot = Arc<tokio::sync::Mutex<Option<(std::time::Instant, Arc<Vec<CalendarInfo>>)>>>;
+type CalendarListSlot = Arc<tokio::sync::Mutex<Option<(std::time::Instant, Result<Arc<Vec<CalendarInfo>>, String>)>>>;
 
-/// Calendar lists for iCalUID lookups, keyed by (API base, access token)
+/// Calendar lists, keyed by (API base, access token)
 static CALENDAR_LISTS: LazyLock<Mutex<HashMap<(String, String), CalendarListSlot>>> = LazyLock::new(Default::default);
 
 /// Calendar info returned to frontend
@@ -83,6 +83,18 @@ fn friendly_calendar_error(status: StatusCode, body: &str) -> String {
         StatusCode::NOT_FOUND => "Event or calendar not found. It may have been deleted.".to_string(),
         StatusCode::GONE => "This event was already deleted.".to_string(),
         _ => format!("Calendar error ({})", status),
+    }
+}
+
+/// A transport failure in words the user can act on, without the request
+/// URL (it can hold the user's search text)
+fn calendar_request_error(e: reqwest::Error) -> String {
+    if e.is_timeout() {
+        "Google Calendar didn't respond. Check your connection and try again.".to_string()
+    } else if e.is_connect() {
+        "Couldn't reach Google Calendar. Check your connection and try again.".to_string()
+    } else {
+        format!("Calendar request failed: {}", e.without_url())
     }
 }
 
@@ -148,6 +160,8 @@ struct Page<T> {
 struct CalendarListEntry {
     id: String,
     summary: Option<String>,
+    #[serde(rename = "summaryOverride")]
+    summary_override: Option<String>,
     primary: Option<bool>,
     #[serde(rename = "accessRole")]
     access_role: Option<String>,
@@ -159,7 +173,7 @@ impl From<CalendarListEntry> for CalendarInfo {
     fn from(c: CalendarListEntry) -> Self {
         CalendarInfo {
             id: c.id,
-            name: c.summary.unwrap_or_default(),
+            name: c.summary_override.filter(|s| !s.is_empty()).or(c.summary).unwrap_or_default(),
             is_primary: c.primary.unwrap_or(false),
             access_role: c.access_role.unwrap_or_else(|| "reader".to_string()),
             timezone: c.time_zone,
@@ -231,6 +245,7 @@ struct CreateEventRequest {
     location: Option<String>,
     start: EventDateTimeInput,
     end: EventDateTimeInput,
+    #[serde(skip_serializing_if = "Option::is_none")]
     attendees: Option<Vec<CalEventAttendee>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     recurrence: Option<Vec<String>>,
@@ -265,10 +280,12 @@ fn send_updates(is_self_creator: bool) -> &'static str {
     if is_self_creator { "all" } else { "none" }
 }
 
-// Round-trips every attendee field: the RSVP PATCH replaces the whole
-// attendees array, so fields not echoed back would be wiped for everyone
+// Round-trips every attendee field, including ones not named here: the RSVP
+// PATCH replaces the whole attendees array, so fields not echoed back would
+// be wiped for everyone. Google leaves out the address of some guests.
 #[derive(Debug, Deserialize, Serialize, Clone, Default)]
 struct CalEventAttendee {
+    #[serde(default, skip_serializing_if = "String::is_empty")]
     email: String,
     #[serde(rename = "displayName", skip_serializing_if = "Option::is_none")]
     display_name: Option<String>,
@@ -284,6 +301,8 @@ struct CalEventAttendee {
     additional_guests: Option<i64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     resource: Option<bool>,
+    #[serde(flatten)]
+    other: serde_json::Map<String, serde_json::Value>,
 }
 
 pub struct CalendarClient {
@@ -330,13 +349,16 @@ pub struct EventFields {
     pub recurrence: Option<Vec<String>>,
 }
 
-/// The form only knows addresses. Guests already on the event keep their
-/// whole entry, since the attendees array is replaced wholesale and a bare
-/// address would drop their response, optional flag and comment.
-fn attendees_for_write(emails: Vec<String>, existing: &[CalEventAttendee]) -> Vec<CalEventAttendee> {
+/// The guest list to write, or None to leave the event's guests as they are.
+/// The form only knows addresses, and the attendees array is replaced
+/// wholesale, so: guests already on the event keep their whole entry (a bare
+/// address would drop their response, optional flag and comment), guests
+/// Google lists without an address stay, and an unchanged list isn't sent.
+fn attendees_for_write(emails: Option<Vec<String>>, existing: &[CalEventAttendee]) -> Option<Vec<CalEventAttendee>> {
+    let emails = emails.unwrap_or_default();
     let mut attendees: Vec<CalEventAttendee> = Vec::with_capacity(emails.len());
     for email in emails {
-        if attendees.iter().any(|a| a.email.eq_ignore_ascii_case(&email)) {
+        if email.is_empty() || attendees.iter().any(|a| a.email.eq_ignore_ascii_case(&email)) {
             continue;
         }
         let attendee = existing
@@ -346,11 +368,20 @@ fn attendees_for_write(emails: Vec<String>, existing: &[CalEventAttendee]) -> Ve
             .unwrap_or(CalEventAttendee { email, ..Default::default() });
         attendees.push(attendee);
     }
-    attendees
+    let (addressed, unaddressed): (Vec<&CalEventAttendee>, Vec<&CalEventAttendee>) =
+        existing.iter().partition(|a| !a.email.is_empty());
+    let unchanged = attendees.len() == addressed.len()
+        && attendees.iter().all(|a| addressed.iter().any(|e| e.email.eq_ignore_ascii_case(&a.email)));
+    if unchanged {
+        return None;
+    }
+    attendees.extend(unaddressed.into_iter().cloned());
+    Some(attendees)
 }
 
 /// Build the create/update body. `existing_attendees` is the event's current
-/// guest list (empty for a new event).
+/// guest list (empty for a new event, or when it couldn't be read: then a
+/// form without guests leaves the event's guests alone).
 fn build_event_request(
     fields: EventFields,
     time_zone: Option<&str>,
@@ -383,7 +414,7 @@ fn build_event_request(
         location: fields.location,
         start,
         end,
-        attendees: fields.attendees.map(|emails| attendees_for_write(emails, existing_attendees)),
+        attendees: attendees_for_write(fields.attendees, existing_attendees),
         // Google requires RFC 5545 property names ("RRULE:FREQ=DAILY"); the
         // form emits bare rule strings ("FREQ=DAILY")
         recurrence: fields.recurrence.map(|rules| {
@@ -420,7 +451,7 @@ impl CalendarClient {
             .bearer_auth(&self.access_token)
             .send()
             .await
-            .map_err(|e| format!("Calendar request failed: {}", e))?;
+            .map_err(calendar_request_error)?;
         if !resp.status().is_success() {
             let status = resp.status();
             let body = resp.text().await.unwrap_or_default();
@@ -434,7 +465,13 @@ impl CalendarClient {
             .await?
             .json()
             .await
-            .map_err(|e| format!("Failed to parse calendar response: {}", e))
+            .map_err(|e| {
+                if e.is_timeout() {
+                    calendar_request_error(e)
+                } else {
+                    format!("Failed to parse calendar response: {}", e.without_url())
+                }
+            })
     }
 
     /// GET `url` and the pages after it, keeping at most `cap` items
@@ -453,8 +490,8 @@ impl CalendarClient {
                 break;
             }
             match page.next_page_token {
-                Some(token) => page_token = Some(token),
-                None => break,
+                Some(token) if page_token.as_ref() != Some(&token) => page_token = Some(token),
+                _ => break,
             }
         }
         Ok(items)
@@ -490,7 +527,7 @@ impl CalendarClient {
         query: &CalendarQuery,
         max_results: i32,
     ) -> Result<Vec<CalendarEvent>, String> {
-        let calendars = self.list_calendars().await?;
+        let calendars = self.cached_calendar_list().await?;
         let mut all_events = Vec::new();
 
         // Use primary calendar's timezone, or first calendar's, for time range calculation
@@ -515,14 +552,30 @@ impl CalendarClient {
 
         let calendar_count = results.len();
         let mut errors: Vec<(String, String)> = Vec::new();
+        // An event shared with a subscribed calendar comes back from each
+        // with the same id; keep the copy from the calendar the user answers on
+        let mut listed: HashMap<String, (usize, u8)> = HashMap::new();
         for (result, cal) in results.into_iter().zip(calendars.iter()) {
             match result {
                 Ok(items) => {
-                    let events: Vec<CalendarEvent> = items
+                    let preference = copy_preference(cal);
+                    let events = items
                         .into_iter()
-                        .filter_map(|e| api_event_to_calendar_event(e, &cal.id, &cal.name, &cal.access_role))
-                        .collect();
-                    all_events.extend(events);
+                        .filter_map(|e| api_event_to_calendar_event(e, &cal.id, &cal.name, &cal.access_role));
+                    for event in events {
+                        match listed.get_mut(&event.id) {
+                            Some((index, kept)) => {
+                                if preference < *kept {
+                                    *kept = preference;
+                                    all_events[*index] = event;
+                                }
+                            }
+                            None => {
+                                listed.insert(event.id.clone(), (all_events.len(), preference));
+                                all_events.push(event);
+                            }
+                        }
+                    }
                 }
                 Err(e) => errors.push((cal.id.clone(), e)),
             }
@@ -633,11 +686,11 @@ impl CalendarClient {
     ) -> Result<CalendarEvent, String> {
         let (calendar, existing) =
             futures::join!(self.calendar_info(calendar_id), self.event_people(calendar_id, event_id));
-        // The current guest list is only needed when the form edits guests,
+        // The current guest list is only needed when the form lists guests,
         // so a failed lookup is fatal only then
         let (existing_attendees, is_self_creator) = match existing {
             Ok(event) => (event.attendees.unwrap_or_default(), event.creator.and_then(|c| c.is_self).unwrap_or(false)),
-            Err(e) if fields.attendees.is_some() => return Err(e),
+            Err(e) if fields.attendees.as_ref().is_some_and(|a| !a.is_empty()) => return Err(e),
             Err(_) => (Vec::new(), false),
         };
         let url = format!(
@@ -733,10 +786,12 @@ impl CalendarClient {
         Ok(None)
     }
 
-    /// The account's calendar list, cached briefly: every invite row looks
-    /// up its event, and without the cache each would list the calendars
-    /// again. Concurrent lookups for one account wait for a single fetch.
-    async fn calendars_for_invite_lookup(&self) -> Arc<Vec<CalendarInfo>> {
+    /// The account's calendar list, cached briefly: every invite row and
+    /// calendar card needs it, and without the cache each would list the
+    /// calendars again. Concurrent callers for one account wait for a single
+    /// fetch and share its outcome; a failure is not kept for later callers.
+    async fn cached_calendar_list(&self) -> Result<Arc<Vec<CalendarInfo>>, String> {
+        let asked_at = std::time::Instant::now();
         let slot = {
             let mut lists = CALENDAR_LISTS.lock().unwrap_or_else(|e| e.into_inner());
             lists.retain(|_, slot| slot.try_lock().map_or(true, |s| s.as_ref().is_some_and(|(at, _)| at.elapsed() < CALENDAR_LIST_TTL)));
@@ -746,22 +801,23 @@ impl CalendarClient {
                 .clone()
         };
         let mut cached = slot.lock().await;
-        if let Some((at, list)) = cached.as_ref() {
-            if at.elapsed() < CALENDAR_LIST_TTL {
-                return list.clone();
-            }
+        match cached.as_ref() {
+            Some((at, Ok(list))) if at.elapsed() < CALENDAR_LIST_TTL => return Ok(list.clone()),
+            Some((at, Err(e))) if *at >= asked_at => return Err(e.clone()),
+            _ => {}
         }
-        match self.list_calendars().await {
-            Ok(list) => {
-                let list = Arc::new(list);
-                *cached = Some((std::time::Instant::now(), list.clone()));
-                list
-            }
-            Err(e) => {
-                tracing::warn!("Failed to list calendars for iCalUID lookup: {}", e);
-                Default::default()
-            }
-        }
+        let result = self.list_calendars().await.map(Arc::new);
+        *cached = Some((std::time::Instant::now(), result.clone()));
+        result
+    }
+
+    /// Invite lookups fall back to the primary calendar alone when the
+    /// calendar list can't be fetched
+    async fn calendars_for_invite_lookup(&self) -> Arc<Vec<CalendarInfo>> {
+        self.cached_calendar_list().await.unwrap_or_else(|e| {
+            tracing::warn!("Failed to list calendars for iCalUID lookup: {}", e);
+            Default::default()
+        })
     }
 
     /// Get the user's RSVP status for a calendar event from Calendar API
@@ -781,7 +837,7 @@ impl CalendarClient {
         Ok(index.and_then(|i| attendees[i].response_status.clone()))
     }
 
-    /// Send RSVP response to a calendar event via Google Calendar API
+    /// Answer an invite found by iCalUID (an email invite)
     /// status should be "accepted", "tentative", or "declined"
     pub async fn rsvp_calendar_event(
         &self,
@@ -789,27 +845,44 @@ impl CalendarClient {
         event_uid: &str,
         status: &str,
     ) -> Result<(), String> {
-        // First, find the event by iCalUID
         let (calendar_id, event) = self
             .find_event_by_ical_uid(event_uid, true)
             .await?
             .ok_or_else(|| "Calendar event not found".to_string())?;
+        let on_primary = calendar_id == "primary";
+        self.patch_rsvp(&calendar_id, event, user_email, status, on_primary).await
+    }
 
-        let event_id = &event.id;
+    /// Answer an event already listed from one of the user's calendars. Its
+    /// id may be one occurrence of a series or come from another calendar
+    /// system, so it is addressed directly rather than by iCalUID.
+    pub async fn rsvp_event(
+        &self,
+        user_email: &str,
+        calendar_id: &str,
+        event_id: &str,
+        status: &str,
+    ) -> Result<(), String> {
+        let event = self.event_people(calendar_id, event_id).await?;
+        // A primary calendar's id is the account's address
+        let on_primary = calendar_id == "primary" || calendar_id.eq_ignore_ascii_case(user_email);
+        self.patch_rsvp(calendar_id, event, user_email, status, on_primary).await
+    }
 
-        let attendees = with_rsvp(
-            event.attendees.clone().unwrap_or_default(),
-            user_email,
-            status,
-            calendar_id == "primary",
-        );
-
-        // Patch the event with updated attendees
+    async fn patch_rsvp(
+        &self,
+        calendar_id: &str,
+        event: CalEventSearchItem,
+        user_email: &str,
+        status: &str,
+        on_primary: bool,
+    ) -> Result<(), String> {
+        let attendees = with_rsvp(event.attendees.unwrap_or_default(), user_email, status, on_primary);
         let patch_url = format!(
             "{}/calendars/{}/events/{}?sendUpdates=all",
             self.api_base,
-            urlencoding::encode(&calendar_id),
-            urlencoding::encode(event_id)
+            urlencoding::encode(calendar_id),
+            urlencoding::encode(&event.id)
         );
 
         #[derive(Serialize)]
@@ -899,6 +972,16 @@ fn api_event_to_calendar_event(event: ApiEvent, calendar_id: &str, calendar_name
         can_edit,
         recurring_event_id: event.recurring_event_id,
     })
+}
+
+/// Which copy of an event listed from several calendars to keep (lower
+/// wins): the user's primary calendar, then one they can write to
+fn copy_preference(calendar: &CalendarInfo) -> u8 {
+    match calendar.access_role.as_str() {
+        _ if calendar.is_primary => 0,
+        "owner" | "writer" => 1,
+        _ => 2,
+    }
 }
 
 /// Free/busy calendars show no attendees, and Google's generated calendars
@@ -1235,6 +1318,7 @@ impl CalendarQuery {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use super::stub_server::StubServer;
 
     fn api_event(json: serde_json::Value) -> ApiEvent {
         serde_json::from_value(json).unwrap()
@@ -1519,7 +1603,8 @@ mod tests {
         assert!(json.get("recurrence").is_none());
         // Cleared optional fields are sent as null so a PATCH clears them
         assert!(json["description"].is_null() && json.get("description").is_some());
-        assert!(json.get("attendees").is_some());
+        // An event with no guests before or after has no guest list to send
+        assert!(json.get("attendees").is_none());
     }
 
     fn attendee(email: &str, is_self: bool, status: &str) -> CalEventAttendee {
@@ -1606,7 +1691,47 @@ mod tests {
         .unwrap();
         assert_eq!(json["attendees"], serde_json::json!([{ "email": "dan@x.com" }]));
         let json = serde_json::to_value(build_event_request(fields(0, 0, false), None, &existing).unwrap()).unwrap();
-        assert!(json["attendees"].is_null());
+        assert_eq!(json["attendees"], serde_json::json!([]));
+    }
+
+    fn written_attendees(emails: Option<Vec<&str>>, existing: &[CalEventAttendee]) -> Option<serde_json::Value> {
+        let edited = EventFields {
+            attendees: emails.map(|e| e.into_iter().map(String::from).collect()),
+            ..fields(0, 3_600_000, false)
+        };
+        let json = serde_json::to_value(build_event_request(edited, None, existing).unwrap()).unwrap();
+        json.get("attendees").cloned()
+    }
+
+    #[test]
+    fn an_unchanged_guest_list_is_left_alone() {
+        // The PATCH replaces the whole array, so resending what the form shows
+        // would drop guests it can't show, for a title-only edit
+        let mut hidden = attendee("", false, "accepted");
+        hidden.other.insert("id".into(), "guest-7".into());
+        let existing = vec![attendee("me@x.com", true, "accepted"), attendee("Bob@X.com", false, "declined"), hidden];
+        assert_eq!(written_attendees(Some(vec!["bob@x.com", "me@x.com"]), &existing), None);
+        assert_eq!(written_attendees(Some(vec!["bob@x.com", "me@x.com", "BOB@x.com"]), &existing), None);
+
+        // A changed list still keeps the guests the form can't show
+        assert_eq!(
+            written_attendees(Some(vec!["me@x.com", "dan@x.com"]), &existing),
+            Some(serde_json::json!([
+                { "email": "me@x.com", "responseStatus": "accepted", "self": true },
+                { "email": "dan@x.com" },
+                { "id": "guest-7", "responseStatus": "accepted" },
+            ]))
+        );
+        assert_eq!(
+            written_attendees(None, &existing),
+            Some(serde_json::json!([{ "id": "guest-7", "responseStatus": "accepted" }]))
+        );
+
+        // Without the current list, a form with no guests leaves them alone
+        assert_eq!(written_attendees(None, &[]), None);
+        assert_eq!(written_attendees(Some(vec![]), &[]), None);
+        // A new event with guests invites them
+        assert_eq!(written_attendees(Some(vec!["dan@x.com"]), &[]), Some(serde_json::json!([{ "email": "dan@x.com" }])));
     }
 
     #[test]
@@ -1630,126 +1755,95 @@ mod tests {
         let json = serde_json::json!({
             "email": "a@x.com", "displayName": "A", "responseStatus": "accepted",
             "optional": true, "comment": "late", "additionalGuests": 2, "resource": false,
+            "id": "profile-1", "organizer": false,
         });
         let parsed: CalEventAttendee = serde_json::from_value(json.clone()).unwrap();
         assert_eq!(serde_json::to_value(parsed).unwrap(), json);
     }
 
-    type Handler = dyn Fn(&str, &str) -> (u16, String) + Send + Sync;
-    type Requests = std::sync::Arc<std::sync::Mutex<Vec<(String, String, String)>>>;
-    type Gate = std::sync::Arc<(Box<dyn Fn(&str) -> bool + Send + Sync>, tokio::sync::Barrier)>;
+    #[tokio::test]
+    async fn rsvp_keeps_guests_google_lists_without_an_address() {
+        // Google omits the address of some guests; the PATCH must still parse
+        // the list and send those guests back, or they'd be dropped
+        let server = StubServer::start(|method, target| match method {
+            "PATCH" => (200, "{}".to_string()),
+            _ if target.contains("iCalUID=") => (
+                200,
+                serde_json::json!({ "items": [{ "id": "e1", "attendees": [
+                    { "email": "me@x.com", "responseStatus": "needsAction" },
+                    { "id": "guest-7", "displayName": "No address", "responseStatus": "accepted" },
+                ] }] })
+                .to_string(),
+            ),
+            _ => (200, serde_json::json!({ "items": [] }).to_string()),
+        })
+        .await;
+        server.client().rsvp_calendar_event("me@x.com", "uid-1", "accepted").await.unwrap();
+        let patch = server.requests().into_iter().find(|(m, _, _)| m == "PATCH").expect("no PATCH sent");
+        let body: serde_json::Value = serde_json::from_str(&patch.2).unwrap();
+        assert_eq!(
+            body["attendees"],
+            serde_json::json!([
+                { "email": "me@x.com", "responseStatus": "accepted" },
+                { "id": "guest-7", "displayName": "No address", "responseStatus": "accepted" },
+            ])
+        );
+    }
 
-    /// A local keep-alive HTTP server answering each request with
-    /// `handler(method, path_and_query)`; records every request as (method,
-    /// target, body) and counts the connections it accepted
-    struct StubServer {
-        base: String,
-        requests: Requests,
-        connections: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    #[tokio::test]
+    async fn rsvp_to_a_listed_event_patches_that_event_without_an_ical_uid_lookup() {
+        // Cards list single occurrences ("abc_20260928T150000Z") and invites
+        // from other systems, whose ids aren't iCalUIDs; the card already
+        // knows which calendar and event it shows
+        let server = StubServer::start(|method, target| match method {
+            "GET" if target.starts_with("/calendars/me%40x.com/events/abc_20260928T150000Z?") => (
+                200,
+                serde_json::json!({ "id": "abc_20260928T150000Z", "attendees": [
+                    { "email": "boss@x.com", "organizer": true, "responseStatus": "accepted" },
+                    { "email": "me.alias@x.com", "self": true, "responseStatus": "needsAction" },
+                ] })
+                .to_string(),
+            ),
+            "PATCH" => (200, "{}".to_string()),
+            _ => (404, "{}".to_string()),
+        })
+        .await;
+        server
+            .client()
+            .rsvp_event("me@x.com", "me@x.com", "abc_20260928T150000Z", "tentative")
+            .await
+            .unwrap();
+        let requests = server.requests();
+        assert!(requests.iter().all(|(_, t, _)| !t.contains("iCalUID")), "{requests:?}");
+        let patch = requests.iter().find(|(m, _, _)| m == "PATCH").expect("no PATCH sent");
+        assert_eq!(patch.1, "/calendars/me%40x.com/events/abc_20260928T150000Z?sendUpdates=all");
+        let body: serde_json::Value = serde_json::from_str(&patch.2).unwrap();
+        assert_eq!(body["attendees"][0]["responseStatus"], "accepted");
+        assert_eq!(body["attendees"][1]["responseStatus"], "tentative");
+        assert_eq!(body["attendees"].as_array().unwrap().len(), 2);
+
+        // A missing event is reported, not answered
+        let err = server.client().rsvp_event("me@x.com", "me@x.com", "gone", "accepted").await.unwrap_err();
+        assert!(err.contains("not found"), "{err}");
     }
 
     impl StubServer {
-        async fn start(handler: impl Fn(&str, &str) -> (u16, String) + Send + Sync + 'static) -> Self {
-            Self::start_inner(std::sync::Arc::new(handler), None).await
-        }
-
-        /// Requests whose target satisfies `gated` are held until `n` of them
-        /// are in flight at once, so a caller sending them one at a time
-        /// never gets an answer
-        async fn start_gated(
-            handler: impl Fn(&str, &str) -> (u16, String) + Send + Sync + 'static,
-            gated: impl Fn(&str) -> bool + Send + Sync + 'static,
-            n: usize,
-        ) -> Self {
-            let gate: Gate = std::sync::Arc::new((Box::new(gated), tokio::sync::Barrier::new(n)));
-            Self::start_inner(std::sync::Arc::new(handler), Some(gate)).await
-        }
-
-        async fn start_inner(handler: std::sync::Arc<Handler>, gate: Option<Gate>) -> Self {
-            use tokio::io::{AsyncReadExt, AsyncWriteExt};
-            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-            let base = format!("http://{}", listener.local_addr().unwrap());
-            let requests: Requests = Default::default();
-            let connections = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
-            let log = requests.clone();
-            let accepted = connections.clone();
-            tokio::spawn(async move {
-                loop {
-                    let Ok((mut socket, _)) = listener.accept().await else { return };
-                    accepted.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-                    let handler = handler.clone();
-                    let log = log.clone();
-                    let gate = gate.clone();
-                    tokio::spawn(async move {
-                        let mut buf = Vec::new();
-                        let mut chunk = [0u8; 4096];
-                        loop {
-                            let header_end = loop {
-                                if let Some(i) = buf.windows(4).position(|w| w == b"\r\n\r\n") {
-                                    break i + 4;
-                                }
-                                match socket.read(&mut chunk).await {
-                                    Ok(0) | Err(_) => return,
-                                    Ok(n) => buf.extend_from_slice(&chunk[..n]),
-                                }
-                            };
-                            let head = String::from_utf8_lossy(&buf[..header_end]).to_string();
-                            let content_length = head
-                                .lines()
-                                .find_map(|l| {
-                                    let (k, v) = l.split_once(':')?;
-                                    k.eq_ignore_ascii_case("content-length").then(|| v.trim().parse::<usize>().ok())?
-                                })
-                                .unwrap_or(0);
-                            while buf.len() < header_end + content_length {
-                                match socket.read(&mut chunk).await {
-                                    Ok(0) | Err(_) => return,
-                                    Ok(n) => buf.extend_from_slice(&chunk[..n]),
-                                }
-                            }
-                            let mut request_line = head.lines().next().unwrap_or_default().split(' ');
-                            let method = request_line.next().unwrap_or_default().to_string();
-                            let target = request_line.next().unwrap_or_default().to_string();
-                            let body = String::from_utf8_lossy(&buf[header_end..header_end + content_length]).to_string();
-                            buf.drain(..header_end + content_length);
-                            if let Some(gate) = &gate {
-                                if (gate.0)(&target) {
-                                    gate.1.wait().await;
-                                }
-                            }
-                            let (status, response) = handler(&method, &target);
-                            log.lock().unwrap().push((method, target, body));
-                            let reply = format!(
-                                "HTTP/1.1 {} Stub\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
-                                status,
-                                response.len(),
-                                response
-                            );
-                            if socket.write_all(reply.as_bytes()).await.is_err() {
-                                return;
-                            }
-                        }
-                    });
-                }
-            });
-            StubServer { base, requests, connections }
-        }
-
         fn client(&self) -> CalendarClient {
             CalendarClient { api_base: self.base.clone(), ..CalendarClient::new("token".into()) }
-        }
-
-        fn requests(&self) -> Vec<(String, String, String)> {
-            self.requests.lock().unwrap().clone()
-        }
-
-        fn connections(&self) -> usize {
-            self.connections.load(std::sync::atomic::Ordering::SeqCst)
         }
     }
 
     fn calendar_entry(id: &str) -> serde_json::Value {
         serde_json::json!({ "id": id, "summary": id, "accessRole": "owner", "timeZone": "UTC" })
+    }
+
+    #[test]
+    fn calendars_go_by_the_name_the_user_gave_them() {
+        let info = |json: serde_json::Value| CalendarInfo::from(serde_json::from_value::<CalendarListEntry>(json).unwrap());
+        let renamed = info(serde_json::json!({ "id": "c1", "summary": "Team Rota 2024", "summaryOverride": "Rota" }));
+        assert_eq!(renamed.name, "Rota");
+        assert_eq!(info(serde_json::json!({ "id": "c2", "summary": "Work" })).name, "Work");
+        assert_eq!(info(serde_json::json!({ "id": "c3", "summaryOverride": "" , "summary": "Home" })).name, "Home");
     }
 
     #[tokio::test]
@@ -1767,6 +1861,19 @@ mod tests {
         let calendars = server.client().list_calendars().await.unwrap();
         let ids: Vec<&str> = calendars.iter().map(|c| c.id.as_str()).collect();
         assert_eq!(ids, vec!["first", "second"]);
+        assert_eq!(server.requests().len(), 2);
+    }
+
+    #[tokio::test]
+    async fn paging_stops_when_google_repeats_a_page_token() {
+        // Empty pages can carry a token; one that never changes would
+        // otherwise be followed forever, since no items reach the cap
+        let server = StubServer::start(|_, _| (200, serde_json::json!({ "items": [], "nextPageToken": "again" }).to_string())).await;
+        let calendars = tokio::time::timeout(std::time::Duration::from_secs(10), server.client().list_calendars())
+            .await
+            .expect("paged forever")
+            .unwrap();
+        assert!(calendars.is_empty());
         assert_eq!(server.requests().len(), 2);
     }
 
@@ -1896,6 +2003,57 @@ mod tests {
         assert_eq!(list_requests, 2);
     }
 
+    fn calendar_list_requests(server: &StubServer) -> usize {
+        server.requests().iter().filter(|(_, t, _)| t.starts_with("/users/me/calendarList")).count()
+    }
+
+    #[tokio::test]
+    async fn calendar_cards_share_one_calendar_list_request() {
+        // Every calendar card searches at startup and on each refresh
+        let server = StubServer::start(|_, target| {
+            let items = if target.starts_with("/users/me/calendarList") {
+                serde_json::json!([calendar_entry("me"), calendar_entry("work")])
+            } else {
+                serde_json::json!([])
+            };
+            (200, serde_json::json!({ "items": items }).to_string())
+        })
+        .await;
+        let client = server.client();
+        let query = CalendarQuery::parse("calendar:week");
+        let searches: Vec<_> = (0..3).map(|_| client.search_events(&query, 10)).collect();
+        for result in futures::future::join_all(searches).await {
+            result.unwrap();
+        }
+        client.search_events(&CalendarQuery::parse("calendar:today"), 10).await.unwrap();
+        assert_eq!(calendar_list_requests(&server), 1);
+        // Both calendars were still searched each time
+        let event_requests = server.requests().iter().filter(|(_, t, _)| t.starts_with("/calendars/")).count();
+        assert_eq!(event_requests, 8);
+    }
+
+    #[tokio::test]
+    async fn a_failed_calendar_list_answers_everyone_waiting_for_it_but_is_not_kept() {
+        let server = StubServer::start(|_, target| {
+            if target.starts_with("/users/me/calendarList") {
+                return (503, "{}".to_string());
+            }
+            (200, serde_json::json!({ "items": [] }).to_string())
+        })
+        .await;
+        let client = server.client();
+        let query = CalendarQuery::parse("calendar:week");
+        let searches: Vec<_> = (0..3).map(|_| client.search_events(&query, 10)).collect();
+        for result in futures::future::join_all(searches).await {
+            assert_eq!(result.unwrap_err(), "Calendar error (503 Service Unavailable)");
+        }
+        assert_eq!(calendar_list_requests(&server), 1);
+
+        // The next search tries again
+        assert!(client.search_events(&query, 10).await.is_err());
+        assert_eq!(calendar_list_requests(&server), 2);
+    }
+
     #[tokio::test]
     async fn clients_reuse_connections() {
         // Every command builds its own client; sharing one connection pool
@@ -1920,6 +2078,23 @@ mod tests {
             .await
             .expect("request hung");
         assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn connection_failures_are_explained_without_the_request_url() {
+        // The card's sync-failed tooltip shows this; the URL holds the
+        // user's search text
+        let unreachable = CalendarClient { api_base: "http://127.0.0.1:9".into(), ..CalendarClient::new("token".into()) };
+        let err = unreachable.search_events(&CalendarQuery::parse("calendar:week dentist"), 10).await.unwrap_err();
+        assert_eq!(err, "Couldn't reach Google Calendar. Check your connection and try again.");
+
+        let server = StubServer::start_gated(|_, _| (200, "{}".to_string()), |_| true, 2).await;
+        let slow = CalendarClient {
+            http_client: build_http_client(std::time::Duration::from_millis(200)),
+            ..server.client()
+        };
+        let err = slow.list_calendars().await.unwrap_err();
+        assert_eq!(err, "Google Calendar didn't respond. Check your connection and try again.");
     }
 
     fn update_stub(method: &str, target: &str) -> (u16, String) {
@@ -1947,6 +2122,39 @@ mod tests {
             .requests()
             .iter()
             .any(|(method, target, _)| method == "PATCH" && target.starts_with("/calendars/cal/events/e1?")));
+    }
+
+    #[tokio::test]
+    async fn a_title_edit_does_not_resend_the_guest_list() {
+        let server = StubServer::start(|method, target| match method {
+            "GET" if target.contains("/events/e1?fields=") => (
+                200,
+                serde_json::json!({ "id": "e1", "creator": { "self": true }, "attendees": [
+                    { "email": "me@x.com", "self": true, "responseStatus": "accepted" },
+                    { "email": "bob@x.com", "responseStatus": "accepted" },
+                ] })
+                .to_string(),
+            ),
+            "GET" => (200, calendar_entry("cal").to_string()),
+            _ => (200, serde_json::json!({ "id": "e1", "start": { "date": "2024-12-23" } }).to_string()),
+        })
+        .await;
+        let edited = EventFields { attendees: Some(vec!["me@x.com".into(), "bob@x.com".into()]), ..fields(0, 3_600_000, false) };
+        server.client().update_event("cal", "e1", edited).await.unwrap();
+        let patch = server.requests().into_iter().find(|(m, _, _)| m == "PATCH").expect("no PATCH sent");
+        let body: serde_json::Value = serde_json::from_str(&patch.2).unwrap();
+        assert_eq!(body["summary"], "Title");
+        assert!(body.get("attendees").is_none(), "{body}");
+    }
+
+    #[tokio::test]
+    async fn an_edit_without_guests_leaves_them_alone_when_the_event_cannot_be_read() {
+        // update_stub fails the guest lookup; the event may well have guests
+        let server = StubServer::start(update_stub).await;
+        server.client().update_event("cal", "e1", fields(0, 3_600_000, false)).await.unwrap();
+        let patch = server.requests().into_iter().find(|(m, _, _)| m == "PATCH").expect("no PATCH sent");
+        let body: serde_json::Value = serde_json::from_str(&patch.2).unwrap();
+        assert!(body.get("attendees").is_none(), "{body}");
     }
 
     /// Stub where event `e1` was created by the user iff `mine`
@@ -2041,6 +2249,35 @@ mod tests {
         let titles: Vec<&str> = found.iter().map(|e| e.title.as_str()).collect();
         assert_eq!(titles, vec!["second", "first"]);
         assert!(found.iter().all(|e| e.calendar_id == "mine"));
+    }
+
+    #[tokio::test]
+    async fn an_event_on_several_calendars_is_listed_once_from_the_users_own() {
+        // A meeting with a coworker whose calendar the user subscribes to
+        // comes back from both calendars with the same id; cards key events
+        // by id, so a second copy would take the first copy's RSVPs and edits
+        let event = |id: &str| serde_json::json!({ "id": id, "summary": id, "start": { "dateTime": "2024-12-23T10:00:00Z" } });
+        let server = StubServer::start(move |_, target| {
+            let items = if target.starts_with("/users/me/calendarList") {
+                serde_json::json!([
+                    calendar_with_role("coworker", "reader"),
+                    calendar_with_role("team", "writer"),
+                    { "id": "me", "summary": "me", "primary": true, "accessRole": "owner", "timeZone": "UTC" },
+                ])
+            } else if target.starts_with("/calendars/coworker/") {
+                serde_json::json!([event("shared"), event("theirs"), event("team-sync")])
+            } else if target.starts_with("/calendars/team/") {
+                serde_json::json!([event("team-sync"), event("all-hands")])
+            } else {
+                serde_json::json!([event("shared"), event("all-hands")])
+            };
+            (200, serde_json::json!({ "items": items }).to_string())
+        })
+        .await;
+        let found = server.client().search_events(&CalendarQuery::parse("calendar:week"), 10).await.unwrap();
+        let mut listed: Vec<(&str, &str)> = found.iter().map(|e| (e.id.as_str(), e.calendar_id.as_str())).collect();
+        listed.sort();
+        assert_eq!(listed, vec![("all-hands", "me"), ("shared", "me"), ("team-sync", "team"), ("theirs", "coworker")]);
     }
 
     #[tokio::test]
@@ -2226,5 +2463,118 @@ mod tests {
             range("calendar:today", "2024-11-03T15:00:00Z"),
             (utc("2024-11-03T04:00:00Z"), utc("2024-11-04T05:00:00Z"))
         );
+    }
+}
+
+/// A local HTTP server standing in for Google in client tests
+#[cfg(test)]
+pub(crate) mod stub_server {
+    type Handler = dyn Fn(&str, &str) -> (u16, String) + Send + Sync;
+    type Requests = std::sync::Arc<std::sync::Mutex<Vec<(String, String, String)>>>;
+    type Gate = std::sync::Arc<(Box<dyn Fn(&str) -> bool + Send + Sync>, tokio::sync::Barrier)>;
+
+    /// A local keep-alive HTTP server answering each request with
+    /// `handler(method, path_and_query)`; records every request as (method,
+    /// target, body) and counts the connections it accepted
+    pub(crate) struct StubServer {
+        pub(crate) base: String,
+        requests: Requests,
+        connections: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    }
+
+    impl StubServer {
+        pub(crate) async fn start(handler: impl Fn(&str, &str) -> (u16, String) + Send + Sync + 'static) -> Self {
+            Self::start_inner(std::sync::Arc::new(handler), None).await
+        }
+
+        /// Requests whose target satisfies `gated` are held until `n` of them
+        /// are in flight at once, so a caller sending them one at a time
+        /// never gets an answer
+        pub(crate) async fn start_gated(
+            handler: impl Fn(&str, &str) -> (u16, String) + Send + Sync + 'static,
+            gated: impl Fn(&str) -> bool + Send + Sync + 'static,
+            n: usize,
+        ) -> Self {
+            let gate: Gate = std::sync::Arc::new((Box::new(gated), tokio::sync::Barrier::new(n)));
+            Self::start_inner(std::sync::Arc::new(handler), Some(gate)).await
+        }
+
+        async fn start_inner(handler: std::sync::Arc<Handler>, gate: Option<Gate>) -> Self {
+            use tokio::io::{AsyncReadExt, AsyncWriteExt};
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let base = format!("http://{}", listener.local_addr().unwrap());
+            let requests: Requests = Default::default();
+            let connections = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+            let log = requests.clone();
+            let accepted = connections.clone();
+            tokio::spawn(async move {
+                loop {
+                    let Ok((mut socket, _)) = listener.accept().await else { return };
+                    accepted.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    let handler = handler.clone();
+                    let log = log.clone();
+                    let gate = gate.clone();
+                    tokio::spawn(async move {
+                        let mut buf = Vec::new();
+                        let mut chunk = [0u8; 4096];
+                        loop {
+                            let header_end = loop {
+                                if let Some(i) = buf.windows(4).position(|w| w == b"\r\n\r\n") {
+                                    break i + 4;
+                                }
+                                match socket.read(&mut chunk).await {
+                                    Ok(0) | Err(_) => return,
+                                    Ok(n) => buf.extend_from_slice(&chunk[..n]),
+                                }
+                            };
+                            let head = String::from_utf8_lossy(&buf[..header_end]).to_string();
+                            let content_length = head
+                                .lines()
+                                .find_map(|l| {
+                                    let (k, v) = l.split_once(':')?;
+                                    k.eq_ignore_ascii_case("content-length").then(|| v.trim().parse::<usize>().ok())?
+                                })
+                                .unwrap_or(0);
+                            while buf.len() < header_end + content_length {
+                                match socket.read(&mut chunk).await {
+                                    Ok(0) | Err(_) => return,
+                                    Ok(n) => buf.extend_from_slice(&chunk[..n]),
+                                }
+                            }
+                            let mut request_line = head.lines().next().unwrap_or_default().split(' ');
+                            let method = request_line.next().unwrap_or_default().to_string();
+                            let target = request_line.next().unwrap_or_default().to_string();
+                            let body = String::from_utf8_lossy(&buf[header_end..header_end + content_length]).to_string();
+                            buf.drain(..header_end + content_length);
+                            if let Some(gate) = &gate {
+                                if (gate.0)(&target) {
+                                    gate.1.wait().await;
+                                }
+                            }
+                            let (status, response) = handler(&method, &target);
+                            log.lock().unwrap().push((method, target, body));
+                            let reply = format!(
+                                "HTTP/1.1 {} Stub\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+                                status,
+                                response.len(),
+                                response
+                            );
+                            if socket.write_all(reply.as_bytes()).await.is_err() {
+                                return;
+                            }
+                        }
+                    });
+                }
+            });
+            StubServer { base, requests, connections }
+        }
+
+        pub(crate) fn requests(&self) -> Vec<(String, String, String)> {
+            self.requests.lock().unwrap().clone()
+        }
+
+        pub(crate) fn connections(&self) -> usize {
+            self.connections.load(std::sync::atomic::Ordering::SeqCst)
+        }
     }
 }
