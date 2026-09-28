@@ -205,6 +205,43 @@ fn keychain_entry(key: &str) -> Option<keyring::Entry> {
         .ok()
 }
 
+/// Keychain operations behind the secret storage, so the fallback-file logic
+/// can be exercised without the real keychain
+trait SecretStore {
+    fn get(&self, key: &str) -> Option<String>;
+    /// Whether the secret was stored and reads back unchanged (keychain can
+    /// silently fail in sandboxed apps)
+    fn set(&self, key: &str, secret: &str) -> bool;
+    fn delete(&self, key: &str);
+}
+
+struct Keychain;
+
+impl SecretStore for Keychain {
+    fn get(&self, key: &str) -> Option<String> {
+        match keychain_entry(key)?.get_password() {
+            Ok(secret) => Some(secret),
+            Err(keyring::Error::NoEntry) => None,
+            Err(e) => {
+                tracing::warn!("Keychain get_password failed for {}: {:?}", key, e);
+                None
+            }
+        }
+    }
+
+    fn set(&self, key: &str, secret: &str) -> bool {
+        keychain_entry(key).is_some_and(|entry| {
+            entry.set_password(secret).is_ok() && entry.get_password().is_ok_and(|s| s == secret)
+        })
+    }
+
+    fn delete(&self, key: &str) {
+        if let Some(entry) = keychain_entry(key) {
+            let _ = entry.delete_credential();
+        }
+    }
+}
+
 use std::path::{Path, PathBuf};
 
 fn get_token_file_path(app_data_dir: &Path, account_id: &str) -> PathBuf {
@@ -219,19 +256,12 @@ fn get_gemini_key_file_path(app_data_dir: &Path) -> PathBuf {
     app_data_dir.join("tokens").join("gemini_api_key")
 }
 
-const GEMINI_KEYCHAIN_KEY: &str = "gemini:api_key";
-
-/// Store a secret in the keychain and verify it can be read back
-/// (keychain can silently fail in sandboxed apps)
-fn keychain_store_verified(key: &str, secret: &str) -> bool {
-    match keychain_entry(key) {
-        Some(entry) => {
-            entry.set_password(secret).is_ok()
-                && entry.get_password().map(|s| s == secret).unwrap_or(false)
-        }
-        None => false,
-    }
+fn token_keychain_key(account_id: &str) -> String {
+    format!("token:{}", account_id)
 }
+
+const CREDENTIALS_KEYCHAIN_KEY: &str = "oauth:credentials";
+const GEMINI_KEYCHAIN_KEY: &str = "gemini:api_key";
 
 /// Write a secret to the plaintext fallback file, restricting it to the
 /// current user on unix
@@ -249,78 +279,70 @@ fn write_secret_file(path: &Path, secret: &str, what: &str) -> Result<(), AuthEr
     Ok(())
 }
 
-pub fn store_refresh_token(account_id: &str, token: &str, app_data_dir: &Path) -> Result<(), AuthError> {
-    tracing::info!("Storing refresh token for account: {}", account_id);
-
-    let path = get_token_file_path(app_data_dir, account_id);
-
-    // Keychain is the primary store; the plaintext file is only a fallback
-    if keychain_store_verified(&format!("token:{}", account_id), token) {
-        tracing::info!("Token stored in system keychain");
+/// Keychain is the primary store; the plaintext file is only a fallback
+fn store_secret(
+    keychain: &dyn SecretStore,
+    key: &str,
+    secret: &str,
+    path: &Path,
+    what: &str,
+) -> Result<(), AuthError> {
+    if keychain.set(key, secret) {
         // Best-effort removal of any legacy plaintext copy
         if path.exists() {
-            let _ = std::fs::remove_file(&path);
+            let _ = std::fs::remove_file(path);
         }
         return Ok(());
     }
 
-    tracing::warn!("Keychain storage failed, using file fallback");
-    write_secret_file(&path, token, "token")?;
-    tracing::info!("Token stored in file: {:?}", path);
+    tracing::warn!("Keychain storage failed for {}, using file fallback", what);
+    write_secret_file(path, secret, what)
+}
 
-    Ok(())
+/// The keychain copy if `valid`, else the fallback file's, which moves into
+/// the keychain once the keychain copy is verified readable
+fn load_secret(
+    keychain: &dyn SecretStore,
+    key: &str,
+    path: &Path,
+    valid: impl Fn(&str) -> bool,
+) -> Option<String> {
+    if let Some(secret) = keychain.get(key).filter(|s| valid(s)) {
+        return Some(secret);
+    }
+
+    let secret = std::fs::read_to_string(path).ok()?.trim().to_string();
+    if !valid(&secret) {
+        return None;
+    }
+    if keychain.set(key, &secret) {
+        let _ = std::fs::remove_file(path);
+        tracing::info!("Moved {:?} into the keychain", path.file_name().unwrap_or_default());
+    }
+    Some(secret)
+}
+
+fn delete_secret(keychain: &dyn SecretStore, key: &str, path: &Path) {
+    keychain.delete(key);
+    let _ = std::fs::remove_file(path);
+}
+
+pub fn store_refresh_token(account_id: &str, token: &str, app_data_dir: &Path) -> Result<(), AuthError> {
+    tracing::info!("Storing refresh token for account: {}", account_id);
+    let path = get_token_file_path(app_data_dir, account_id);
+    store_secret(&Keychain, &token_keychain_key(account_id), token, &path, "token")
 }
 
 pub fn get_refresh_token(account_id: &str, app_data_dir: &Path) -> Result<String, AuthError> {
-    tracing::info!("Getting refresh token for account: {}", account_id);
-
-    // Try keychain first
-    let key = format!("token:{}", account_id);
-    if let Some(entry) = keychain_entry(&key) {
-        match entry.get_password() {
-            Ok(token) => {
-                tracing::info!("Found token in keychain");
-                return Ok(token);
-            }
-            Err(e) => {
-                tracing::warn!("Keychain get_password failed: {:?}", e);
-            }
-        }
-    }
-
-    // Fall back to file storage for backwards compatibility
     let path = get_token_file_path(app_data_dir, account_id);
-    tracing::info!("Checking file fallback at: {:?}, exists: {}", path, path.exists());
-    if path.exists() {
-        if let Ok(token) = std::fs::read_to_string(&path) {
-            let token = token.trim().to_string();
-            if !token.is_empty() {
-                tracing::info!("Found token in file storage (legacy), migrating to keychain");
-                // Migrate to keychain; only remove the file once the
-                // keychain copy is verified readable
-                if keychain_store_verified(&key, &token) {
-                    let _ = std::fs::remove_file(&path);
-                    tracing::info!("Token migrated to keychain, removed legacy file");
-                }
-                return Ok(token);
-            }
-        }
-    }
-
-    tracing::warn!("No token found for account: {}", account_id);
-    Err(AuthError::Keyring("No matching entry found in secure storage".to_string()))
+    load_secret(&Keychain, &token_keychain_key(account_id), &path, |s| !s.is_empty()).ok_or_else(|| {
+        tracing::warn!("No token found for account: {}", account_id);
+        AuthError::Keyring("No matching entry found in secure storage".to_string())
+    })
 }
 
 pub fn delete_refresh_token(account_id: &str, app_data_dir: &Path) -> Result<(), AuthError> {
-    // Delete from keychain if present
-    if let Some(entry) = keychain_entry(&format!("token:{}", account_id)) {
-        let _ = entry.delete_credential();
-    }
-
-    // Delete from file storage if present
-    let path = get_token_file_path(app_data_dir, account_id);
-    let _ = std::fs::remove_file(path);
-
+    delete_secret(&Keychain, &token_keychain_key(account_id), &get_token_file_path(app_data_dir, account_id));
     Ok(())
 }
 
@@ -342,53 +364,15 @@ pub fn store_oauth_credentials(client_id: &str, client_secret: &str, app_data_di
         .map_err(|e| AuthError::Keyring(format!("Failed to serialize credentials: {}", e)))?;
 
     let path = get_credentials_file_path(app_data_dir);
-
-    // Keychain is the primary store; the plaintext file is only a fallback
-    if keychain_store_verified("oauth:credentials", &json) {
-        tracing::info!("OAuth credentials stored in keychain");
-        // Best-effort removal of any legacy plaintext copy
-        if path.exists() {
-            let _ = std::fs::remove_file(&path);
-        }
-        return Ok(());
-    }
-
-    tracing::warn!("Keychain storage failed for credentials, using file fallback");
-    write_secret_file(&path, &json, "credentials")?;
-    tracing::info!("OAuth credentials stored in file: {:?}", path);
-
-    Ok(())
+    store_secret(&Keychain, CREDENTIALS_KEYCHAIN_KEY, &json, &path, "credentials")
 }
 
 pub fn get_oauth_credentials(app_data_dir: &Path) -> Result<OAuthCredentials, AuthError> {
-    // Try keychain first
-    if let Some(entry) = keychain_entry("oauth:credentials") {
-        if let Ok(json) = entry.get_password() {
-            if let Ok(creds) = serde_json::from_str(&json) {
-                tracing::info!("Found OAuth credentials in keychain");
-                return Ok(creds);
-            }
-        }
-    }
-
-    // Fall back to file storage for backwards compatibility
+    let parse = |json: &str| serde_json::from_str::<OAuthCredentials>(json).ok();
     let path = get_credentials_file_path(app_data_dir);
-    if path.exists() {
-        if let Ok(json) = std::fs::read_to_string(&path) {
-            if let Ok(creds) = serde_json::from_str::<OAuthCredentials>(&json) {
-                tracing::info!("Found OAuth credentials in file (legacy), migrating to keychain");
-                // Migrate to keychain; only remove the file once the
-                // keychain copy is verified readable
-                if keychain_store_verified("oauth:credentials", &json) {
-                    let _ = std::fs::remove_file(&path);
-                    tracing::info!("Credentials migrated to keychain, removed legacy file");
-                }
-                return Ok(creds);
-            }
-        }
-    }
-
-    Err(AuthError::NoCredentials)
+    load_secret(&Keychain, CREDENTIALS_KEYCHAIN_KEY, &path, |json| parse(json).is_some())
+        .and_then(|json| parse(&json))
+        .ok_or(AuthError::NoCredentials)
 }
 
 /// Stores the Gemini API key used for smart replies; an empty key removes it
@@ -397,38 +381,15 @@ pub fn store_gemini_api_key(api_key: &str, app_data_dir: &Path) -> Result<(), Au
     let api_key = api_key.trim();
 
     if api_key.is_empty() {
-        if let Some(entry) = keychain_entry(GEMINI_KEYCHAIN_KEY) {
-            let _ = entry.delete_credential();
-        }
-        let _ = std::fs::remove_file(&path);
+        delete_secret(&Keychain, GEMINI_KEYCHAIN_KEY, &path);
         return Ok(());
     }
 
-    // Keychain is the primary store; the plaintext file is only a fallback
-    if keychain_store_verified(GEMINI_KEYCHAIN_KEY, api_key) {
-        if path.exists() {
-            let _ = std::fs::remove_file(&path);
-        }
-        return Ok(());
-    }
-
-    tracing::warn!("Keychain storage failed for the Gemini API key, using file fallback");
-    write_secret_file(&path, api_key, "Gemini API key")
+    store_secret(&Keychain, GEMINI_KEYCHAIN_KEY, api_key, &path, "Gemini API key")
 }
 
 pub fn get_gemini_api_key(app_data_dir: &Path) -> Option<String> {
-    if let Some(entry) = keychain_entry(GEMINI_KEYCHAIN_KEY) {
-        if let Ok(key) = entry.get_password() {
-            if !key.is_empty() {
-                return Some(key);
-            }
-        }
-    }
-
-    std::fs::read_to_string(get_gemini_key_file_path(app_data_dir))
-        .ok()
-        .map(|key| key.trim().to_string())
-        .filter(|key| !key.is_empty())
+    load_secret(&Keychain, GEMINI_KEYCHAIN_KEY, &get_gemini_key_file_path(app_data_dir), |key| !key.is_empty())
 }
 
 #[cfg(test)]
@@ -459,6 +420,96 @@ mod tests {
 
         delete_refresh_token("acct", &dir).unwrap();
         assert!(get_refresh_token("acct", &dir).is_err());
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// In-memory keychain; with `writable` false every set fails while
+    /// entries already there stay readable
+    struct FakeKeychain {
+        entries: std::sync::Mutex<std::collections::HashMap<String, String>>,
+        writable: bool,
+    }
+
+    impl FakeKeychain {
+        fn new(writable: bool, entries: &[(&str, &str)]) -> Self {
+            let entries = entries.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect();
+            Self { entries: std::sync::Mutex::new(entries), writable }
+        }
+    }
+
+    impl SecretStore for FakeKeychain {
+        fn get(&self, key: &str) -> Option<String> {
+            self.entries.lock().unwrap().get(key).cloned()
+        }
+
+        fn set(&self, key: &str, secret: &str) -> bool {
+            if self.writable {
+                self.entries.lock().unwrap().insert(key.to_string(), secret.to_string());
+            }
+            self.writable
+        }
+
+        fn delete(&self, key: &str) {
+            self.entries.lock().unwrap().remove(key);
+        }
+    }
+
+    fn temp_dir(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("posta-{}-{}", name, uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn fallback_file_moves_into_a_working_keychain() {
+        let dir = temp_dir("migrate");
+        let path = dir.join("secret");
+        std::fs::write(&path, "legacy\n").unwrap();
+        let keychain = FakeKeychain::new(true, &[]);
+
+        assert_eq!(load_secret(&keychain, "k", &path, |s| !s.is_empty()).as_deref(), Some("legacy"));
+        assert_eq!(keychain.get("k").as_deref(), Some("legacy"));
+        assert!(!path.exists());
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn stored_secret_in_a_working_keychain_removes_the_fallback_file() {
+        let dir = temp_dir("store");
+        let path = dir.join("secret");
+        std::fs::write(&path, "old").unwrap();
+        let keychain = FakeKeychain::new(true, &[]);
+
+        store_secret(&keychain, "k", "new", &path, "token").unwrap();
+        assert_eq!(keychain.get("k").as_deref(), Some("new"));
+        assert!(!path.exists());
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn failed_fallback_write_keeps_the_keychain_copy() {
+        let dir = temp_dir("unwritable");
+        // A directory where the file should be makes the write fail
+        let path = dir.join("secret");
+        std::fs::create_dir_all(&path).unwrap();
+        let keychain = FakeKeychain::new(false, &[("k", "old")]);
+
+        assert!(store_secret(&keychain, "k", "new", &path, "token").is_err());
+        assert_eq!(keychain.get("k").as_deref(), Some("old"));
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn invalid_keychain_copy_falls_back_to_the_file() {
+        let dir = temp_dir("invalid");
+        let path = dir.join("secret");
+        std::fs::write(&path, "{\"client_id\":\"id\",\"client_secret\":\"s\"}").unwrap();
+        let keychain = FakeKeychain::new(false, &[("k", "not json")]);
+        let parses = |s: &str| serde_json::from_str::<OAuthCredentials>(s).is_ok();
+
+        let json = load_secret(&keychain, "k", &path, parses).unwrap();
+        assert!(json.contains("\"s\""));
+        assert!(path.exists(), "the file stays while the keychain can't take it");
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
