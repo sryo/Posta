@@ -1841,28 +1841,31 @@ fn group_threads_by_date<Tz: TimeZone>(threads: Vec<Thread>, now: &DateTime<Tz>)
     .collect()
 }
 
-/// Extract the first text/plain body from a FullMessage, searching nested
-/// multipart parts depth-first
+/// The text of a message: its first text/plain body, searching nested
+/// multipart parts depth-first, or else its first HTML body as rendered text
 pub fn extract_body_text_from_message(message: &FullMessage) -> Option<String> {
     let payload = message.payload.as_ref()?;
-    if payload.mime_type.as_deref() == Some("text/plain") {
-        if let Some(text) = payload.body.as_ref().and_then(decode_part_text) {
-            return Some(text);
+    let body_of = |mime_type: &str| {
+        if payload.mime_type.as_deref() == Some(mime_type) {
+            if let Some(text) = payload.body.as_ref().and_then(decode_part_text) {
+                return Some(text);
+            }
         }
-    }
-    payload.parts.as_deref().and_then(find_text_in_parts)
+        payload.parts.as_deref().and_then(|parts| find_body_in_parts(parts, mime_type))
+    };
+    body_of("text/plain").or_else(|| body_of("text/html").map(|html| strip_html_tags(&html)))
 }
 
-fn find_text_in_parts(parts: &[MessagePart]) -> Option<String> {
+fn find_body_in_parts(parts: &[MessagePart], mime_type: &str) -> Option<String> {
     parts.iter().find_map(|part| {
-        if part.mime_type == "text/plain" {
+        if part.mime_type == mime_type {
             let is_attached_file = part.filename.as_deref().is_some_and(|f| !f.is_empty());
             if is_attached_file {
                 return None;
             }
             part.body.as_ref().and_then(decode_part_text)
         } else {
-            part.parts.as_deref().and_then(find_text_in_parts)
+            part.parts.as_deref().and_then(|parts| find_body_in_parts(parts, mime_type))
         }
     })
 }
@@ -3139,6 +3142,35 @@ mod tests {
             )]),
         )]);
         assert_eq!(extract_body_text_from_message(&msg).as_deref(), Some("hello there"));
+    }
+
+    #[test]
+    fn body_text_of_html_only_mail_is_the_rendered_text() {
+        let msg = message_with_parts(vec![part(
+            "multipart/related",
+            None,
+            Some(vec![
+                part("text/html", Some(b64url(b"<div>Meeting moved<br>\nto 3pm &amp; room 2</div>")), None),
+                part("image/png", None, None),
+            ]),
+        )]);
+        assert_eq!(
+            extract_body_text_from_message(&msg).as_deref(),
+            Some("Meeting moved\nto 3pm & room 2\n")
+        );
+
+        let mut single = full_message("m1", &[], vec![]);
+        let payload = single.payload.as_mut().unwrap();
+        payload.mime_type = Some("text/html".to_string());
+        payload.body = Some(MessageBody { size: None, data: Some(b64url(b"<p>Hi</p>")), attachment_id: None });
+        assert_eq!(extract_body_text_from_message(&single).as_deref(), Some("\nHi\n"));
+
+        // Plain text still wins when both are present
+        let both = message_with_parts(vec![
+            part("text/html", Some(b64url(b"<b>html</b>")), None),
+            part("text/plain", Some(b64url(b"plain")), None),
+        ]);
+        assert_eq!(extract_body_text_from_message(&both).as_deref(), Some("plain"));
     }
 
     #[test]
