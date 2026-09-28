@@ -1,4 +1,4 @@
-import { Show, For, type Setter } from "solid-js";
+import { Show, For, createEffect, type Setter } from "solid-js";
 import {
   CARD_COLORS,
   COLOR_HEX,
@@ -46,6 +46,15 @@ export const CardForm = (props: {
   setActiveQuerySetter: Setter<((q: string) => void) | null>;
   applyQuerySuggestion: (suggestion: QuerySuggestion) => void;
 }) => {
+  const groupByOptions = () =>
+    props.query.toLowerCase().includes("calendar:") ? CALENDAR_GROUP_BY_OPTIONS : EMAIL_GROUP_BY_OPTIONS;
+
+  // Switching between email and calendar queries can leave a grouping the
+  // new card type doesn't offer, such as "sender" on a calendar card
+  createEffect(() => {
+    if (!groupByOptions().some(o => o.value === props.groupBy)) props.setGroupBy("date");
+  });
+
   return (
     <div class="card-form">
       <div class="card-form-group">
@@ -159,7 +168,7 @@ export const CardForm = (props: {
       <div class="card-form-group">
         <label>Group</label>
         <div class="group-by-buttons">
-          <For each={props.query.toLowerCase().includes("calendar:") ? CALENDAR_GROUP_BY_OPTIONS : EMAIL_GROUP_BY_OPTIONS}>
+          <For each={groupByOptions()}>
             {(option) => (
               <button
                 class={`group-by-btn ${props.groupBy === option.value ? 'active' : ''}`}
