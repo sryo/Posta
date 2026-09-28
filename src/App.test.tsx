@@ -1437,6 +1437,27 @@ describe("App drafts", () => {
     expect(storedDrafts("draft_new_a")).toEqual([expect.objectContaining({ subject: "Hello" })]);
   });
 
+  it("leaves the email being written open when an earlier send fails", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    handlers.send_email = () => { throw new Error("offline"); };
+    render(() => <App />);
+    await screen.findByText("Mail for A");
+    fireEvent.keyDown(document, { key: "c" });
+    fireEvent.input(await screen.findByPlaceholderText("Recipients"), { target: { value: "bo@y.com" } });
+    fireEvent.input(screen.getByPlaceholderText("Subject"), { target: { value: "First" } });
+    fireEvent.click(screen.getByRole("button", { name: /^Send/ }));
+    await vi.advanceTimersByTimeAsync(500);
+    fireEvent.keyDown(document, { key: "c" });
+    fireEvent.input(await screen.findByPlaceholderText("Subject"), { target: { value: "Second" } });
+    await vi.advanceTimersByTimeAsync(6000);
+
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith("send_email", expect.objectContaining({ subject: "First" })));
+    expect(screen.getByPlaceholderText("Subject")).toHaveValue("Second");
+    fireEvent.click(await screen.findByRole("button", { name: "Open" }));
+    await waitFor(() => expect(screen.getByPlaceholderText("Subject")).toHaveValue("First"));
+    expect(storedDrafts("draft_new_a").map(d => d.subject).sort()).toEqual(["First", "Second"]);
+  });
+
   it("keeps a closed compose's draft and offers to discard it", async () => {
     handlers.save_draft = () => ({ id: "d1" });
     handlers.delete_draft = () => null;

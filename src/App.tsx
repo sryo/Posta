@@ -277,7 +277,17 @@ function App() {
     },
     onFailed: (pending, e) => {
       console.error("Failed to send email:", e);
-      restoreSend(pending);
+      // Putting the failed email back would replace the one being written
+      // (and drop its attachments); offer it instead
+      if (composing() && !closingCompose() && (hasDraftContent(composeDraftFields()) || composeAttachments().length > 0)) {
+        if (pending.draft) {
+          sendingDraftKeys.delete(pending.draft.key);
+          markDraftSending(pending.draft.key, null);
+        }
+        showToast(`Couldn't send "${pending.subject || "(no subject)"}"`, { label: "Open", run: () => restoreSend(pending) });
+      } else {
+        restoreSend(pending);
+      }
       setError(`Failed to send email: ${e}`);
     },
   });
