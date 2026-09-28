@@ -257,7 +257,7 @@ pub async fn run_oauth_flow(
     .map_err(|e| format!("OAuth callback error: {}", e))?;
 
     // Start OAuth flow and get authorization URL
-    let (auth_url, _csrf_token) = {
+    let (auth_url, expected_state) = {
         let auth_guard = state.auth.lock().await;
         let auth = auth_guard
             .as_ref()
@@ -274,7 +274,7 @@ pub async fn run_oauth_flow(
 
     // Wait for callback in a blocking thread
     let wait_cancel = cancel_flag.clone();
-    let callback_result = tokio::task::spawn_blocking(move || server.wait_for_callback(120, wait_cancel))
+    let callback_result = tokio::task::spawn_blocking(move || server.wait_for_callback(120, wait_cancel, &expected_state))
         .await
         .map_err(|e| format!("Task error: {}", e))?;
 
