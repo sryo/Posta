@@ -78,3 +78,7 @@ jobs:
           releaseDraft: true
           prerelease: false
           args: ${{ matrix.args }}
+
+      - name: Verify macOS bundle
+        if: matrix.platform == 'macos-latest'
+        run: scripts/verify-macos-bundle.sh src-tauri/target/aarch64-apple-darwin/release/bundle/macos/Posta.app
