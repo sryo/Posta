@@ -121,3 +121,56 @@ describe("message body extraction", () => {
     expect(extractMessageHtml(undefined, "It&#39;s here")).toBe("It&#39;s here");
   });
 });
+
+describe("extractMessageHtml in the batch reply panel", () => {
+  const b64 = (s: string) =>
+    btoa(String.fromCharCode(...new TextEncoder().encode(s))).replace(/\+/g, "-").replace(/\//g, "_");
+
+  // Render the way the batch reply panel does, then read back what a user sees
+  function visibleText(html: string): string {
+    const div = document.createElement("div");
+    div.innerHTML = html;
+    return div.textContent ?? "";
+  }
+
+  it("escapes a single-part body that is neither plain text nor HTML", () => {
+    const html = extractMessageHtml({ mimeType: "text/calendar", body: { data: b64("<b>BEGIN</b>") } });
+    expect(visibleText(html)).toBe("<b>BEGIN</b>");
+  });
+
+  it("passes an HTML single-part body through", () => {
+    const html = extractMessageHtml({ mimeType: "text/html", body: { data: b64("<p>Hi <b>there</b></p>") } });
+    expect(html).toContain("<b>there</b>");
+  });
+
+  it("keeps angle brackets in a single-part plain-text body visible", () => {
+    const text = "Write to Ana <ana@example.com>\nif x < y && y > z";
+    const html = extractMessageHtml({ mimeType: "text/plain", body: { data: b64(text) } });
+    expect(visibleText(html)).toBe(text);
+  });
+
+  it("keeps angle brackets in a plain-text part of a multipart message visible", () => {
+    const text = "See <https://example.com> & reply";
+    const html = extractMessageHtml({
+      mimeType: "multipart/alternative",
+      parts: [{ mimeType: "text/plain", body: { data: b64(text) } }],
+    });
+    expect(visibleText(html)).toBe(text);
+  });
+
+  it("prefers the HTML part over the plain-text part", () => {
+    const html = extractMessageHtml({
+      mimeType: "multipart/alternative",
+      parts: [
+        { mimeType: "text/plain", body: { data: b64("plain") } },
+        { mimeType: "text/html", body: { data: b64("<i>rich</i>") } },
+      ],
+    });
+    expect(html).toBe("<i>rich</i>");
+  });
+
+  it("falls back to the snippet, then a placeholder", () => {
+    expect(extractMessageHtml({ mimeType: "multipart/mixed", parts: [] }, "snip")).toBe("snip");
+    expect(extractMessageHtml(undefined)).toBe("(No content)");
+  });
+});

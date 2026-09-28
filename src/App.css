@@ -3868,6 +3868,26 @@ button:disabled:hover {
     flex-shrink: 0;
 }
 
+.message-reaction-note {
+    color: var(--text-secondary);
+    font-size: 0.9rem;
+}
+
+.message-reactions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--space-xs);
+    margin-top: var(--space-sm);
+}
+
+.message-reaction {
+    padding: 2px 8px;
+    border: 1px solid var(--border-color);
+    border-radius: 999px;
+    font-size: 0.95rem;
+    cursor: default;
+}
+
 /* Message Actions Wheel - Right side arc */
 .message-actions-wheel {
     position: sticky;

@@ -105,7 +105,7 @@ function plainTextToHtml(text: string): string {
 export function extractMessageHtml(payload: any, snippet?: string): string {
   if (payload?.body?.data) {
     const content = decodeBase64Utf8(payload.body.data);
-    return payload.mimeType === 'text/plain' ? plainTextToHtml(content) : content;
+    return payload.mimeType === 'text/html' ? content : plainTextToHtml(content);
   }
   const htmlContent = findContent(payload?.parts, 'text/html');
   if (htmlContent) return htmlContent;

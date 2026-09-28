@@ -222,6 +222,16 @@ export interface FullMessage {
   snippet?: string;
   internalDate?: string;
   payload?: MessagePayload;
+  // Set when this message is an emoji reaction to another message
+  reaction?: MessageReaction | null;
+}
+
+export interface MessageReaction {
+  emoji: string;
+  from_addr: string;
+  // Message-ID header of the message reacted to
+  in_reply_to: string;
+  message_id: string;
 }
 
 export interface FullThread {

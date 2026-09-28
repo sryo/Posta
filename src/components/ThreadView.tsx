@@ -36,12 +36,9 @@ import { ComposeForm } from "./ComposeForm";
 import { MessageActionsWheel } from "./MessageActionsWheel";
 import { COLOR_HEX } from "../shared/constants";
 import type { InlineComposeProps } from "./types";
+import { findHeader } from "../app/messages";
 
-// Case-insensitive header lookup (Gmail preserves original casing, e.g. "message-id" vs "Message-ID")
-const findHeader = (headers: { name: string; value: string }[] | undefined, name: string): string | undefined => {
-  const lower = name.toLowerCase();
-  return headers?.find(h => h.name?.toLowerCase() === lower)?.value;
-};
+const normalizeMessageId = (id: string) => id.trim().replace(/^<|>$/g, '').toLowerCase();
 
 export const ThreadView = (props: {
   thread: FullThread | null,
@@ -76,6 +73,7 @@ export const ThreadView = (props: {
   threadAttachments?: Attachment[],
   // CID attachment data fetched on-demand (cid -> base64 data)
   cidAttachmentData?: Record<string, string>,
+  onError?: (message: string) => void,
 }) => {
   let messageRefs: (HTMLDivElement | undefined)[] = [];
   let contentRef: HTMLDivElement | undefined;
@@ -106,6 +104,7 @@ export const ThreadView = (props: {
       await sendReaction(props.accountId, props.thread.id, messageIdHeader, emoji, toEmail);
     } catch (e) {
       console.error('Failed to send reaction:', e);
+      props.onError?.(`Failed to send reaction: ${e}`);
     } finally {
       setSendingReaction(false);
     }
@@ -404,6 +403,14 @@ export const ThreadView = (props: {
 
                 const actions = messageActions(msg);
                 const getRfcMessageId = () => findHeader(headers, 'Message-ID');
+                const receivedReactions = createMemo(() => {
+                  const id = getRfcMessageId();
+                  if (!id) return [];
+                  const target = normalizeMessageId(id);
+                  return props.thread!.messages
+                    .map(m => m.reaction)
+                    .filter((r): r is NonNullable<typeof r> => !!r && normalizeMessageId(r.in_reply_to) === target);
+                });
 
                 // Match either the Gmail API id or the RFC Message-ID, since
                 // onReply now reports the RFC id back through inlineCompose
@@ -427,10 +434,12 @@ export const ThreadView = (props: {
                       <div class="message-header">
                         <div class="message-sender">{from}</div>
                         <div class="message-header-actions">
-                          <ReactionButton
-                            onSelect={(emoji) => handleSendReaction(msg.id, emoji)}
-                            sending={sendingReaction()}
-                          />
+                          <Show when={!msg.reaction && extractEmail(from).toLowerCase() !== props.currentUserEmail?.toLowerCase()}>
+                            <ReactionButton
+                              onSelect={(emoji) => handleSendReaction(msg.id, emoji)}
+                              sending={sendingReaction()}
+                            />
+                          </Show>
                           <div class="message-date">{formatEmailDate(date)}</div>
                         </div>
                       </div>
@@ -446,13 +455,27 @@ export const ThreadView = (props: {
                           onMouseLeave={hideMessageWheel}
                         />
                       </Show>
-                      <MessageBody
-                        body={getBody()}
-                        cidAttachmentData={props.cidAttachmentData}
-                        msgPayloadParts={msg.payload?.parts}
-                        msgId={msg.id}
-                        threadAttachments={props.threadAttachments}
-                      />
+                      <Show
+                        when={msg.reaction}
+                        fallback={
+                          <MessageBody
+                            body={getBody()}
+                            cidAttachmentData={props.cidAttachmentData}
+                            msgPayloadParts={msg.payload?.parts}
+                            msgId={msg.id}
+                            threadAttachments={props.threadAttachments}
+                          />
+                        }
+                      >
+                        {(reaction) => <div class="message-reaction-note">Reacted {reaction().emoji}</div>}
+                      </Show>
+                      <Show when={receivedReactions().length > 0}>
+                        <div class="message-reactions">
+                          <For each={receivedReactions()}>
+                            {(r) => <span class="message-reaction" title={r.from_addr}>{r.emoji}</span>}
+                          </For>
+                        </div>
+                      </Show>
                       <Show when={attachments().length > 0}>
                         <div class="message-attachments">
                           <For each={attachments()}>

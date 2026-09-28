@@ -75,6 +75,7 @@ import {
   truncateMiddle,
   getInitial,
   extractEmail,
+  extractMessageHtml,
   extractMessageText,
   parseContact,
   getAvatarColor,
@@ -114,7 +115,6 @@ import { CardForm } from "./components/CardForm";
 import { safeGetItem, safeSetItem, safeRemoveItem, safeGetJSON, safeSetJSON } from "./shared/storage";
 import { BG_COLORS, GMAIL_OPERATORS, type ActionSettings, type CardColor, type GroupBy } from "./shared/constants";
 import { createUndoableSend } from "./app/undoableSend";
-import { messageBodyHtml } from "./app/messageHtml";
 import { findHeader, lastMessageFromOthers } from "./app/messages";
 import { parseStoredWidth } from "./app/storedWidth";
 import { isSessionExpiredError } from "./app/authErrors";
@@ -2513,7 +2513,7 @@ function App() {
               threadId,
               subject,
               snippet: replyMsg.snippet || '',
-              body: messageBodyHtml(replyMsg.payload, replyMsg.snippet),
+              body: extractMessageHtml(replyMsg.payload, replyMsg.snippet),
               from,
               date,
               messageId: replyMsg.id,
@@ -4782,6 +4782,7 @@ function App() {
           thread={activeThread()}
           accountId={selectedAccount()?.id || ''}
           currentUserEmail={selectedAccount()?.email}
+          onError={showToast}
           loading={threadLoading()}
           error={threadError()}
           card={activeThreadCardId() ? (() => {

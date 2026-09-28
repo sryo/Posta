@@ -187,3 +187,36 @@ describe("ThreadView keyboard shortcuts", () => {
     expect(props.onReply).not.toHaveBeenCalled();
   });
 });
+
+describe("ThreadView reactions", () => {
+  it("shows a received reaction on the message it reacts to instead of as a message body", () => {
+    const thread = makeThread([
+      { from: "Alice <alice@example.com>", body: "first" },
+      { from: "Bob <bob@example.com>", body: "fallback text for the reaction" },
+    ]);
+    thread.messages[1].reaction = {
+      emoji: "🎉",
+      from_addr: "bob@example.com",
+      in_reply_to: "<MSG0@example.com>",
+      message_id: "m1",
+    };
+    const { container } = renderThread({ thread });
+    const cards = container.querySelectorAll(".message-card");
+    expect(cards[0].querySelector(".message-reaction")?.textContent).toBe("🎉");
+    expect(cards[1].textContent).not.toContain("fallback text for the reaction");
+    expect(cards[1].querySelector(".message-reaction-note")?.textContent).toContain("🎉");
+    expect(cards[1].querySelector(".add-reaction-btn")).toBeNull();
+    expect(cards[0].querySelector(".add-reaction-btn")).not.toBeNull();
+  });
+
+  it("offers no reaction on the user's own messages", () => {
+    const thread = makeThread([
+      { from: "Alice <alice@example.com>", body: "first" },
+      { from: "Me <ME@example.com>", to: "alice@example.com", body: "reply" },
+    ]);
+    const { container } = renderThread({ thread });
+    const cards = container.querySelectorAll(".message-card");
+    expect(cards[0].querySelector(".add-reaction-btn")).not.toBeNull();
+    expect(cards[1].querySelector(".add-reaction-btn")).toBeNull();
+  });
+});

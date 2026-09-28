@@ -36,6 +36,14 @@ describe("lastMessageFromOthers", () => {
     expect(lastMessageFromOthers(messages, "me@x.com")?.id).toBe("1");
   });
 
+  it("skips reactions from others", () => {
+    const messages = [
+      msg("1", { From: "Ana <ana@x.com>" }),
+      { ...msg("2", { From: "Bo <bo@x.com>" }), reaction: { emoji: "👍" } },
+    ];
+    expect(lastMessageFromOthers(messages, "me@x.com")?.id).toBe("1");
+  });
+
   it("returns undefined for an empty thread", () => {
     expect(lastMessageFromOthers([], "me@x.com")).toBeUndefined();
   });
