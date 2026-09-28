@@ -2162,8 +2162,25 @@ fn strip_html_tags(html: &str) -> String {
         }
     }
 
-    for c in html.chars() {
+    let mut skip_to = 0;
+    for (i, c) in html.char_indices() {
+        if i < skip_to {
+            continue;
+        }
         match c {
+            '<' if html[i..].starts_with("<!--") => {
+                // Comments may hold '>' and whole elements (Outlook's
+                // conditional markup); "<!-->" and "<!--->" end at once
+                let body = &html[i + 4..];
+                let len = if body.starts_with('>') {
+                    1
+                } else if body.starts_with("->") {
+                    2
+                } else {
+                    body.find("-->").map_or(body.len(), |end| end + 3)
+                };
+                skip_to = i + 4 + len;
+            }
             '<' => {
                 in_tag = true;
                 tag.clear();
@@ -2798,6 +2815,18 @@ mod tests {
         assert_eq!(strip_html_tags("<div>one</div><div>two</div>"), "one\ntwo\n");
         assert_eq!(strip_html_tags("<ul><li>a</li><li>b</li></ul>"), "a\nb\n");
         assert_eq!(strip_html_tags("<div>a<br></div><div>b</div>"), "a\nb\n");
+    }
+
+    #[test]
+    fn strip_html_drops_comments_including_outlook_conditionals() {
+        // Newsletters draw a button twice: once for Outlook inside a
+        // conditional comment, once for everyone else
+        let html = "<!--[if mso]><v:roundrect><center>Shop now</center></v:roundrect><![endif]-->\
+                    <!--[if !mso]><!--><a href=\"x\">Shop now</a><!--<![endif]-->";
+        assert_eq!(strip_html_tags(html), "Shop now");
+        assert_eq!(strip_html_tags("a<!-- x > y -->b"), "ab");
+        assert_eq!(strip_html_tags("a<!-->b<!--->c"), "abc");
+        assert_eq!(strip_html_tags("a<!-- never closed"), "a");
     }
 
     #[test]
