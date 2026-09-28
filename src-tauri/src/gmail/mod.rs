@@ -234,6 +234,23 @@ fn friendly_gmail_error(status: reqwest::StatusCode, body: &str) -> String {
     format!("API error {}: {}", status, detail)
 }
 
+/// Refuse a message of `bytes` that messages.send would reject, before
+/// building or uploading it
+fn check_upload_size(bytes: usize) -> Result<(), String> {
+    if bytes <= MAX_UPLOAD_BYTES {
+        return Ok(());
+    }
+    Err(format!(
+        "This message is too large to send ({}MB). Gmail allows up to 25MB of attachments.",
+        bytes.div_ceil(1024 * 1024)
+    ))
+}
+
+/// Size of a message's attachments as sent (base64)
+fn attachment_bytes(message: &OutgoingMessage) -> usize {
+    message.attachments.iter().map(|a| a.data.len()).sum()
+}
+
 /// Turn a non-2xx response into a friendly_gmail_error
 async fn ensure_success(resp: reqwest::Response) -> Result<reqwest::Response, String> {
     if resp.status().is_success() {
@@ -614,6 +631,7 @@ impl GmailClient {
     }
 
     pub async fn send_email(&self, message: &OutgoingMessage<'_>) -> Result<(), String> {
+        check_upload_size(attachment_bytes(message))?;
         self.send_raw(&build_mime_message(message, None), None).await
     }
 
@@ -625,6 +643,7 @@ impl GmailClient {
         message_id: Option<&str>,
         message: &OutgoingMessage<'_>,
     ) -> Result<(), String> {
+        check_upload_size(attachment_bytes(message))?;
         let reply_headers = self.resolve_reply_headers(thread_id, message_id).await;
         let raw = build_mime_message(message, reply_headers.as_ref());
         self.send_raw(&raw, Some(thread_id)).await
@@ -633,12 +652,7 @@ impl GmailClient {
     /// Send a raw RFC 5322 message through the upload endpoint, which takes
     /// it as is (the JSON endpoint needs it base64url'd and accepts far less)
     async fn send_raw(&self, message: &str, thread_id: Option<&str>) -> Result<(), String> {
-        if message.len() > MAX_UPLOAD_BYTES {
-            return Err(format!(
-                "This message is too large to send ({}MB). Gmail allows up to 25MB of attachments.",
-                message.len().div_ceil(1024 * 1024)
-            ));
-        }
+        check_upload_size(message.len())?;
         let url = format!("{}/users/me/messages/send?uploadType=multipart", self.upload_base);
 
         let mut metadata = serde_json::json!({});

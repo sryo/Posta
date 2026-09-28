@@ -364,6 +364,8 @@ async fn a_message_over_gmails_size_limit_is_refused_before_uploading() {
 
     let err = within(server.client().send_email(&message)).await.unwrap_err();
     assert!(err.contains("too large"), "{}", err);
+    let err = within(server.client().reply_to_thread("t1", None, &message)).await.unwrap_err();
+    assert!(err.contains("too large"), "{}", err);
     assert!(server.requests().is_empty());
 }
 
