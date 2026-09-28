@@ -8,7 +8,9 @@
     "dev": "vite",
     "build": "vite build",
     "serve": "vite preview",
-    "tauri": "tauri"
+    "tauri": "tauri",
+    "test": "vitest run",
+    "check": "./scripts/check.sh"
   },
   "license": "MIT",
   "dependencies": {
@@ -20,9 +22,13 @@
     "solid-js": "^1.9.11"
   },
   "devDependencies": {
+    "@solidjs/testing-library": "^0.8.10",
     "@tauri-apps/cli": "^2",
+    "@testing-library/jest-dom": "^6.9.1",
+    "jsdom": "^30.1.1",
     "typescript": "~5.9.3",
     "vite": "^8.0.0",
-    "vite-plugin-solid": "^2.11.11"
+    "vite-plugin-solid": "^2.11.11",
+    "vitest": "^5.0.2"
   }
 }
