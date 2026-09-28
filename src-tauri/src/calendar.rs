@@ -10,6 +10,8 @@ const CALENDAR_API_BASE: &str = "https://www.googleapis.com/calendar/v3";
 // runaway calendar can't page forever
 const EVENTS_PAGE_SIZE: i32 = 250;
 const PER_CALENDAR_EVENT_CAP: usize = 500;
+const CALENDAR_LIST_PAGE_SIZE: i32 = 250;
+const CALENDAR_LIST_CAP: usize = 1000;
 
 /// Calendar info returned to frontend
 #[derive(Debug, Clone, Serialize)]
@@ -96,6 +98,9 @@ pub struct CalendarEvent {
     pub response_status: Option<String>, // accepted, declined, tentative, needsAction
     #[serde(default)]
     pub can_edit: bool, // whether the current user can edit this event
+    /// Set on one occurrence of a repeating event: the series' id
+    #[serde(default)]
+    pub recurring_event_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -107,9 +112,12 @@ pub struct EventAttendee {
     pub is_organizer: bool,
 }
 
+/// One page of a list endpoint (calendarList, events)
 #[derive(Debug, Deserialize)]
-struct CalendarListResponse {
-    items: Option<Vec<CalendarListEntry>>,
+struct Page<T> {
+    items: Option<Vec<T>>,
+    #[serde(rename = "nextPageToken")]
+    next_page_token: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -133,13 +141,6 @@ impl From<CalendarListEntry> for CalendarInfo {
             timezone: c.time_zone,
         }
     }
-}
-
-#[derive(Debug, Deserialize)]
-struct EventsListResponse {
-    items: Option<Vec<ApiEvent>>,
-    #[serde(rename = "nextPageToken")]
-    next_page_token: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -167,6 +168,8 @@ struct ApiEvent {
     #[serde(rename = "guestsCanModify")]
     guests_can_modify: Option<bool>,
     locked: Option<bool>,
+    #[serde(rename = "recurringEventId")]
+    recurring_event_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -255,9 +258,11 @@ struct CalEventAttendee {
 pub struct CalendarClient {
     http_client: reqwest::Client,
     access_token: String,
+    api_base: String,
 }
 
 fn events_list_url(
+    api_base: &str,
     calendar_id: &str,
     time_min: DateTime<Utc>,
     time_max: DateTime<Utc>,
@@ -265,7 +270,7 @@ fn events_list_url(
 ) -> String {
     let mut url = format!(
         "{}/calendars/{}/events?timeMin={}&timeMax={}&maxResults={}&singleEvents=true&orderBy=startTime",
-        CALENDAR_API_BASE,
+        api_base,
         urlencoding::encode(calendar_id),
         urlencoding::encode(&time_min.to_rfc3339()),
         urlencoding::encode(&time_max.to_rfc3339()),
@@ -374,6 +379,7 @@ impl CalendarClient {
         Self {
             http_client: reqwest::Client::new(),
             access_token,
+            api_base: CALENDAR_API_BASE.to_string(),
         }
     }
 
@@ -400,17 +406,34 @@ impl CalendarClient {
             .map_err(|e| format!("Failed to parse calendar response: {}", e))
     }
 
+    /// GET `url` and the pages after it, keeping at most `cap` items
+    async fn get_pages<T: DeserializeOwned>(&self, url: &str, cap: usize) -> Result<Vec<T>, String> {
+        let mut items = Vec::new();
+        let mut page_token: Option<String> = None;
+        loop {
+            let page_url = match &page_token {
+                Some(token) => format!("{}&pageToken={}", url, urlencoding::encode(token)),
+                None => url.to_string(),
+            };
+            let page: Page<T> = self.send_json(self.http_client.get(&page_url)).await?;
+            items.extend(page.items.unwrap_or_default());
+            if items.len() >= cap {
+                items.truncate(cap);
+                break;
+            }
+            match page.next_page_token {
+                Some(token) => page_token = Some(token),
+                None => break,
+            }
+        }
+        Ok(items)
+    }
+
     /// List all calendars for the user
     pub async fn list_calendars(&self) -> Result<Vec<CalendarInfo>, String> {
-        let url = format!("{}/users/me/calendarList", CALENDAR_API_BASE);
-        let data: CalendarListResponse = self.send_json(self.http_client.get(&url)).await?;
-
-        Ok(data
-            .items
-            .unwrap_or_default()
-            .into_iter()
-            .map(CalendarInfo::from)
-            .collect())
+        let url = format!("{}/users/me/calendarList?maxResults={}", self.api_base, CALENDAR_LIST_PAGE_SIZE);
+        let entries: Vec<CalendarListEntry> = self.get_pages(&url, CALENDAR_LIST_CAP).await?;
+        Ok(entries.into_iter().map(CalendarInfo::from).collect())
     }
 
     /// Look up one calendar (accepts "primary"). Best-effort: used to label
@@ -418,7 +441,7 @@ impl CalendarClient {
     async fn calendar_info(&self, calendar_id: &str) -> Option<CalendarInfo> {
         let url = format!(
             "{}/users/me/calendarList/{}",
-            CALENDAR_API_BASE,
+            self.api_base,
             urlencoding::encode(calendar_id)
         );
         match self.send_json::<CalendarListEntry>(self.http_client.get(&url)).await {
@@ -449,37 +472,13 @@ impl CalendarClient {
         // Determine time range from query using calendar timezone
         let (time_min, time_max) = query.get_time_range(timezone);
 
-        let fetch_futures: Vec<_> = calendars.iter().map(|cal| {
-            let base_url = events_list_url(&cal.id, time_min, time_max, query);
-
-            async move {
-                let mut items: Vec<ApiEvent> = Vec::new();
-                let mut page_token: Option<String> = None;
-
-                loop {
-                    let mut url = base_url.clone();
-                    if let Some(token) = &page_token {
-                        url.push_str(&format!("&pageToken={}", urlencoding::encode(token)));
-                    }
-
-                    let data: EventsListResponse = self.send_json(self.http_client.get(&url)).await?;
-
-                    items.extend(data.items.unwrap_or_default());
-
-                    if items.len() >= PER_CALENDAR_EVENT_CAP {
-                        items.truncate(PER_CALENDAR_EVENT_CAP);
-                        break;
-                    }
-
-                    match data.next_page_token {
-                        Some(token) => page_token = Some(token),
-                        None => break,
-                    }
-                }
-
-                Ok::<_, String>(items)
-            }
-        }).collect();
+        let fetch_futures: Vec<_> = calendars
+            .iter()
+            .map(|cal| {
+                let url = events_list_url(&self.api_base, &cal.id, time_min, time_max, query);
+                async move { self.get_pages::<ApiEvent>(&url, PER_CALENDAR_EVENT_CAP).await }
+            })
+            .collect();
 
         let results = futures::future::join_all(fetch_futures).await;
 
@@ -516,9 +515,8 @@ impl CalendarClient {
             .filter(|e| query.matches(e))
             .collect();
 
-        // Sort by start time
         let mut sorted = filtered;
-        sorted.sort_by_key(|e| e.start_time);
+        sorted.sort_by_key(|e| (day_start_millis(e, timezone), !e.all_day));
 
         // Limit results
         sorted.truncate(max_results as usize);
@@ -534,7 +532,7 @@ impl CalendarClient {
     ) -> Result<CalendarEvent, String> {
         let url = format!(
             "{}/calendars/{}/events",
-            CALENDAR_API_BASE,
+            self.api_base,
             urlencoding::encode(calendar_id)
         );
 
@@ -556,7 +554,7 @@ impl CalendarClient {
     ) -> Result<CalendarEvent, String> {
         let url = format!(
             "{}/calendars/{}/events/{}/move?destination={}",
-            CALENDAR_API_BASE,
+            self.api_base,
             urlencoding::encode(source_calendar_id),
             urlencoding::encode(event_id),
             urlencoding::encode(destination_calendar_id)
@@ -579,7 +577,7 @@ impl CalendarClient {
     ) -> Result<(), String> {
         let url = format!(
             "{}/calendars/{}/events/{}",
-            CALENDAR_API_BASE,
+            self.api_base,
             urlencoding::encode(calendar_id),
             urlencoding::encode(event_id)
         );
@@ -599,22 +597,20 @@ impl CalendarClient {
     ) -> Result<CalendarEvent, String> {
         let url = format!(
             "{}/calendars/{}/events/{}",
-            CALENDAR_API_BASE,
+            self.api_base,
             urlencoding::encode(calendar_id),
             urlencoding::encode(event_id)
         );
 
         let existing_attendees = async {
             if fields.attendees.is_none() {
-                return Vec::new();
+                return Ok(Vec::new());
             }
-            self.event_attendees(calendar_id, event_id).await.unwrap_or_else(|e| {
-                tracing::warn!("Failed to read attendees of event {}: {}", event_id, e);
-                Vec::new()
-            })
+            self.event_attendees(calendar_id, event_id).await
         };
         let (calendar, existing_attendees) =
             futures::join!(self.calendar_info(calendar_id), existing_attendees);
+        let existing_attendees = existing_attendees?;
         let time_zone = recurrence_time_zone(&fields, calendar.as_ref());
         let body = build_event_request(fields, time_zone, &existing_attendees)?;
         let api_event: ApiEvent = self.send_json(self.http_client.patch(&url).json(&body)).await?;
@@ -626,7 +622,7 @@ impl CalendarClient {
     async fn event_attendees(&self, calendar_id: &str, event_id: &str) -> Result<Vec<CalEventAttendee>, String> {
         let url = format!(
             "{}/calendars/{}/events/{}?fields=id,attendees",
-            CALENDAR_API_BASE,
+            self.api_base,
             urlencoding::encode(calendar_id),
             urlencoding::encode(event_id)
         );
@@ -642,7 +638,7 @@ impl CalendarClient {
     ) -> Result<Option<CalEventSearchItem>, String> {
         let search_url = format!(
             "{}/calendars/{}/events?iCalUID={}",
-            CALENDAR_API_BASE,
+            self.api_base,
             urlencoding::encode(calendar_id),
             urlencoding::encode(event_uid)
         );
@@ -723,7 +719,7 @@ impl CalendarClient {
         // Patch the event with updated attendees
         let patch_url = format!(
             "{}/calendars/{}/events/{}?sendUpdates=all",
-            CALENDAR_API_BASE,
+            self.api_base,
             urlencoding::encode(&calendar_id),
             urlencoding::encode(event_id)
         );
@@ -813,6 +809,7 @@ fn api_event_to_calendar_event(event: ApiEvent, calendar_id: &str, calendar_name
         hangout_link: event.hangout_link,
         response_status,
         can_edit,
+        recurring_event_id: event.recurring_event_id,
     })
 }
 
@@ -954,6 +951,21 @@ fn start_of_day<Z: TimeZone>(tz: &Z, date: NaiveDate) -> DateTime<Utc> {
         .find_map(|hour| tz.from_local_datetime(&date.and_hms_opt(hour, 0, 0)?).earliest())
         .map(|dt| dt.with_timezone(&Utc))
         .unwrap_or_else(|| date.and_hms_opt(0, 0, 0).expect("midnight is a valid time").and_utc())
+}
+
+/// When an event starts, counting an all-day event from its date's midnight
+/// in `timezone` (else the system's) rather than the UTC midnight its
+/// timestamp holds
+fn day_start_millis(event: &CalendarEvent, timezone: Option<&str>) -> i64 {
+    let date = match DateTime::<Utc>::from_timestamp_millis(event.start_time) {
+        Some(start) if event.all_day => start.date_naive(),
+        _ => return event.start_time,
+    };
+    let start = match timezone.and_then(|s| s.parse::<Tz>().ok()) {
+        Some(tz) => start_of_day(&tz, date),
+        None => start_of_day(&Local, date),
+    };
+    start.timestamp_millis()
 }
 
 #[derive(Debug, Default, Clone)]
@@ -1202,6 +1214,26 @@ mod tests {
     }
 
     #[test]
+    fn events_say_which_series_they_belong_to() {
+        // Cards list single instances; an edit PATCHes that one occurrence,
+        // and the form needs to know it's part of a series
+        let ev = api_event(serde_json::json!({
+            "id": "abc_20241223T100000Z",
+            "recurringEventId": "abc",
+            "start": { "dateTime": "2024-12-23T10:00:00Z" },
+        }));
+        let ev = api_event_to_calendar_event(ev, "cal", "", "owner").unwrap();
+        assert_eq!(ev.recurring_event_id.as_deref(), Some("abc"));
+        assert_eq!(serde_json::to_value(&ev).unwrap()["recurring_event_id"], "abc");
+
+        // Events cached before the field existed still load
+        let mut cached = serde_json::to_value(&ev).unwrap();
+        cached.as_object_mut().unwrap().remove("recurring_event_id");
+        let cached: CalendarEvent = serde_json::from_value(cached).unwrap();
+        assert_eq!(cached.recurring_event_id, None);
+    }
+
+    #[test]
     fn event_response_status_and_attendees() {
         let ev = api_event(serde_json::json!({
             "id": "e1",
@@ -1273,6 +1305,7 @@ mod tests {
             hangout_link: None,
             response_status: Some("accepted".into()),
             can_edit: false,
+            recurring_event_id: None,
         }
     }
 
@@ -1320,7 +1353,7 @@ mod tests {
     #[test]
     fn events_url_requests_cancelled_events_only_when_filtering_for_them() {
         let now = "2024-07-10T15:30:00Z".parse::<DateTime<Utc>>().unwrap();
-        let url = |q: &str| events_list_url("me@x.com", now, now + Duration::days(1), &CalendarQuery::parse(q));
+        let url = |q: &str| events_list_url(CALENDAR_API_BASE, "me@x.com", now, now + Duration::days(1), &CalendarQuery::parse(q));
 
         let plain = url("calendar:today");
         assert!(plain.starts_with("https://www.googleapis.com/calendar/v3/calendars/me%40x.com/events?"));
@@ -1505,6 +1538,201 @@ mod tests {
         });
         let parsed: CalEventAttendee = serde_json::from_value(json.clone()).unwrap();
         assert_eq!(serde_json::to_value(parsed).unwrap(), json);
+    }
+
+    type Handler = dyn Fn(&str, &str) -> (u16, String) + Send + Sync;
+    type Requests = std::sync::Arc<std::sync::Mutex<Vec<(String, String, String)>>>;
+
+    /// A local HTTP server answering each request with `handler(method,
+    /// path_and_query)`; records every request as (method, target, body)
+    struct StubServer {
+        base: String,
+        requests: Requests,
+    }
+
+    impl StubServer {
+        async fn start(handler: impl Fn(&str, &str) -> (u16, String) + Send + Sync + 'static) -> Self {
+            use tokio::io::{AsyncReadExt, AsyncWriteExt};
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let base = format!("http://{}", listener.local_addr().unwrap());
+            let requests: Requests = Default::default();
+            let handler: std::sync::Arc<Handler> = std::sync::Arc::new(handler);
+            let log = requests.clone();
+            tokio::spawn(async move {
+                loop {
+                    let Ok((mut socket, _)) = listener.accept().await else { return };
+                    let handler = handler.clone();
+                    let log = log.clone();
+                    tokio::spawn(async move {
+                        let mut buf = Vec::new();
+                        let mut chunk = [0u8; 4096];
+                        let header_end = loop {
+                            let n = socket.read(&mut chunk).await.unwrap();
+                            if n == 0 {
+                                return;
+                            }
+                            buf.extend_from_slice(&chunk[..n]);
+                            if let Some(i) = buf.windows(4).position(|w| w == b"\r\n\r\n") {
+                                break i + 4;
+                            }
+                        };
+                        let head = String::from_utf8_lossy(&buf[..header_end]).to_string();
+                        let content_length = head
+                            .lines()
+                            .find_map(|l| {
+                                let (k, v) = l.split_once(':')?;
+                                k.eq_ignore_ascii_case("content-length").then(|| v.trim().parse::<usize>().ok())?
+                            })
+                            .unwrap_or(0);
+                        while buf.len() < header_end + content_length {
+                            let n = socket.read(&mut chunk).await.unwrap();
+                            if n == 0 {
+                                break;
+                            }
+                            buf.extend_from_slice(&chunk[..n]);
+                        }
+                        let mut request_line = head.lines().next().unwrap_or_default().split(' ');
+                        let method = request_line.next().unwrap_or_default().to_string();
+                        let target = request_line.next().unwrap_or_default().to_string();
+                        let body = String::from_utf8_lossy(&buf[header_end..]).to_string();
+                        let (status, response) = handler(&method, &target);
+                        log.lock().unwrap().push((method, target, body));
+                        let reply = format!(
+                            "HTTP/1.1 {} Stub\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                            status,
+                            response.len(),
+                            response
+                        );
+                        let _ = socket.write_all(reply.as_bytes()).await;
+                        let _ = socket.shutdown().await;
+                    });
+                }
+            });
+            StubServer { base, requests }
+        }
+
+        fn client(&self) -> CalendarClient {
+            CalendarClient { api_base: self.base.clone(), ..CalendarClient::new("token".into()) }
+        }
+
+        fn requests(&self) -> Vec<(String, String, String)> {
+            self.requests.lock().unwrap().clone()
+        }
+    }
+
+    fn calendar_entry(id: &str) -> serde_json::Value {
+        serde_json::json!({ "id": id, "summary": id, "accessRole": "owner", "timeZone": "UTC" })
+    }
+
+    #[tokio::test]
+    async fn list_calendars_follows_page_tokens() {
+        let server = StubServer::start(|_, target| {
+            let body = if target.contains("pageToken=next%2Fpage") {
+                serde_json::json!({ "items": [calendar_entry("second")] })
+            } else {
+                serde_json::json!({ "items": [calendar_entry("first")], "nextPageToken": "next/page" })
+            };
+            (200, body.to_string())
+        })
+        .await;
+
+        let calendars = server.client().list_calendars().await.unwrap();
+        let ids: Vec<&str> = calendars.iter().map(|c| c.id.as_str()).collect();
+        assert_eq!(ids, vec!["first", "second"]);
+        assert_eq!(server.requests().len(), 2);
+    }
+
+    fn update_stub(method: &str, target: &str) -> (u16, String) {
+        match method {
+            "GET" if target.contains("fields=id,attendees") => (500, "{}".to_string()),
+            "GET" => (200, calendar_entry("cal").to_string()),
+            _ => (200, serde_json::json!({ "id": "e1", "start": { "date": "2024-12-23" } }).to_string()),
+        }
+    }
+
+    #[tokio::test]
+    async fn update_with_guests_fails_rather_than_resetting_their_responses() {
+        // Without the current guest list, a bare-address PATCH would wipe
+        // every guest's response, so the edit must not be sent
+        let server = StubServer::start(update_stub).await;
+        let edited = EventFields { attendees: Some(vec!["bob@x.com".into()]), ..fields(0, 3_600_000, false) };
+        assert!(server.client().update_event("cal", "e1", edited).await.is_err());
+        assert!(server.requests().iter().all(|(method, _, _)| method != "PATCH"));
+
+        // Without guests in the form there is nothing to look up
+        let server = StubServer::start(update_stub).await;
+        let updated = server.client().update_event("cal", "e1", fields(0, 3_600_000, false)).await.unwrap();
+        assert_eq!(updated.calendar_name, "cal");
+        assert!(server
+            .requests()
+            .iter()
+            .any(|(method, target, _)| method == "PATCH" && target == "/calendars/cal/events/e1"));
+    }
+
+    async fn searched_titles(time_zone: &'static str, events: serde_json::Value, max_results: i32) -> Vec<String> {
+        let server = StubServer::start(move |_, target| {
+            let body = if target.starts_with("/users/me/calendarList") {
+                serde_json::json!({ "items": [{ "id": "me", "primary": true, "accessRole": "owner", "timeZone": time_zone }] })
+            } else {
+                serde_json::json!({ "items": events })
+            };
+            (200, body.to_string())
+        })
+        .await;
+        let found = server.client().search_events(&CalendarQuery::parse("calendar:week"), max_results).await.unwrap();
+        found.into_iter().map(|e| e.title).collect()
+    }
+
+    #[tokio::test]
+    async fn search_pages_through_events_and_skips_calendars_that_fail() {
+        let event = |id: &str, time: &str| serde_json::json!({ "id": id, "summary": id, "start": { "dateTime": time } });
+        let server = StubServer::start(move |_, target| {
+            if target.starts_with("/users/me/calendarList") {
+                let items = serde_json::json!([calendar_entry("mine"), calendar_entry("busy")]);
+                return (200, serde_json::json!({ "items": items }).to_string());
+            }
+            if target.starts_with("/calendars/busy/") {
+                return (403, google_error(403, "requiredAccessLevel", "No access"));
+            }
+            let body = if target.contains("&pageToken=2") {
+                serde_json::json!({ "items": [event("second", "2024-12-23T09:00:00Z")] })
+            } else {
+                serde_json::json!({ "items": [event("first", "2024-12-23T10:00:00Z")], "nextPageToken": "2" })
+            };
+            (200, body.to_string())
+        })
+        .await;
+
+        let found = server.client().search_events(&CalendarQuery::parse("calendar:week"), 10).await.unwrap();
+        let titles: Vec<&str> = found.iter().map(|e| e.title.as_str()).collect();
+        assert_eq!(titles, vec!["second", "first"]);
+        assert!(found.iter().all(|e| e.calendar_id == "mine"));
+    }
+
+    #[tokio::test]
+    async fn all_day_events_sort_at_the_calendars_midnight() {
+        // All-day timestamps are UTC midnight; the day actually starts at the
+        // calendar's midnight, before (east of UTC) or after (west) that
+        let tokyo = serde_json::json!([
+            { "id": "a", "summary": "Early meeting", "start": { "dateTime": "2024-12-23T08:00:00+09:00" } },
+            { "id": "b", "summary": "Holiday", "start": { "date": "2024-12-23" }, "end": { "date": "2024-12-24" } },
+        ]);
+        assert_eq!(searched_titles("Asia/Tokyo", tokyo.clone(), 10).await, vec!["Holiday", "Early meeting"]);
+        assert_eq!(searched_titles("Asia/Tokyo", tokyo, 1).await, vec!["Holiday"]);
+
+        // A meeting at the calendar's midnight ties with the all-day event,
+        // which goes first
+        let midnight = serde_json::json!([
+            { "id": "a", "summary": "Midnight call", "start": { "dateTime": "2024-12-23T00:00:00+09:00" } },
+            { "id": "b", "summary": "Holiday", "start": { "date": "2024-12-23" }, "end": { "date": "2024-12-24" } },
+        ]);
+        assert_eq!(searched_titles("Asia/Tokyo", midnight, 10).await, vec!["Holiday", "Midnight call"]);
+
+        let buenos_aires = serde_json::json!([
+            { "id": "b", "summary": "Holiday", "start": { "date": "2024-12-23" }, "end": { "date": "2024-12-24" } },
+            { "id": "a", "summary": "Late dinner", "start": { "dateTime": "2024-12-22T22:00:00-03:00" } },
+        ]);
+        assert_eq!(searched_titles("America/Argentina/Buenos_Aires", buenos_aires, 10).await, vec!["Late dinner", "Holiday"]);
     }
 
     #[test]
