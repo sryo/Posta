@@ -1461,3 +1461,50 @@ describe("App layout removal", () => {
     expect(localStorage.getItem("draft_new_b#1")).not.toBeNull();
   });
 });
+
+describe("App shortcuts behind overlays", () => {
+  it("does not act on the focused thread while the shortcuts help is open", async () => {
+    handlers.modify_threads = () => null;
+    render(() => <App />);
+    await screen.findByText("Mail for A");
+    fireEvent.keyDown(document, { key: "l" });
+    fireEvent.keyDown(document, { key: "?" });
+    await screen.findByText("Keyboard Shortcuts");
+    fireEvent.keyDown(document, { key: "d" });
+    fireEvent.keyDown(document, { key: "c" });
+    await new Promise(r => setTimeout(r, 20));
+
+    expect(invoke).not.toHaveBeenCalledWith("modify_threads", expect.anything());
+    expect(document.querySelector(".compose-panel")).toBeNull();
+  });
+
+  it("does not act on the focused thread while Settings is open", async () => {
+    handlers.modify_threads = () => null;
+    render(() => <App />);
+    await screen.findByText("Mail for A");
+    fireEvent.keyDown(document, { key: "l" });
+    fireEvent.click(screen.getByTitle("a@x.com"));
+    await waitFor(() => expect(document.querySelector(".account-chooser-container")).toHaveTextContent("Settings"));
+    fireEvent.click(within(document.querySelector(".account-chooser-container") as HTMLElement).getByText("Settings"));
+    await waitFor(() => expect(document.querySelector(".settings-sidebar.open")).not.toBeNull());
+    fireEvent.keyDown(document, { key: "a" });
+    await new Promise(r => setTimeout(r, 20));
+
+    expect(invoke).not.toHaveBeenCalledWith("modify_threads", expect.anything());
+  });
+
+  it("closes the shortcuts help before an open compose on Escape", async () => {
+    render(() => <App />);
+    await screen.findByText("Mail for A");
+    fireEvent.keyDown(document, { key: "c" });
+    await screen.findByPlaceholderText("Subject");
+    (document.activeElement as HTMLElement | null)?.blur();
+    fireEvent.keyDown(document, { key: "?" });
+    await screen.findByText("Keyboard Shortcuts");
+    fireEvent.keyDown(document, { key: "Escape" });
+
+    await waitFor(() => expect(screen.queryByText("Keyboard Shortcuts")).not.toBeInTheDocument());
+    await new Promise(r => setTimeout(r, 300));
+    expect(document.querySelector(".compose-panel")).not.toBeNull();
+  });
+});

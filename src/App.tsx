@@ -1228,6 +1228,12 @@ function App() {
       return;
     }
 
+    // Same for modals and panels over the cards; Escape still closes them
+    const overlayOpen = settingsOpen() || shortcutsHelpOpen() || queryHelpOpen() || creatingEvent() || showPresetSelection() || showRestorePrompt();
+    if (overlayOpen && e.key !== 'Escape') {
+      return;
+    }
+
     // / to open filter
     if (e.key === '/') {
       e.preventDefault();
@@ -1259,7 +1265,7 @@ function App() {
     }
 
     if (e.key === 'Escape') {
-      // Priority: filter > dropdowns > color pickers > batch reply > compose > card editing > sidebar > action menu > selection > focus
+      // Priority: filter > dropdowns > color pickers > shortcuts help > batch reply > compose > query help > event form > card editing > sidebar > action menu > selection > focus
       if (showGlobalFilter()) {
         setShowGlobalFilter(false);
         setGlobalFilter("");
@@ -1269,16 +1275,18 @@ function App() {
         setColorPickerOpen(false);
         setEditColorPickerOpen(false);
         setBgColorPickerOpen(false);
+      } else if (shortcutsHelpOpen()) {
+        setShortcutsHelpOpen(false);
       } else if (batchReplyOpen()) {
         closeBatchReply();
-      } else if (composing()) {
+      } else if (composing() && !closingCompose()) {
         closeCompose();
+      } else if (queryHelpOpen()) {
+        setQueryHelpOpen(false);
       } else if (creatingEvent()) {
         closeEventForm();
       } else if (editingCardId()) {
         setEditingCardId(null);
-      } else if (shortcutsHelpOpen()) {
-        setShortcutsHelpOpen(false);
       } else if (settingsOpen()) {
         setSettingsOpen(false);
       } else if (actionConfigMenu()) {
