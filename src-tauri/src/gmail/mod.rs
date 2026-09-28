@@ -2043,7 +2043,7 @@ fn classify_date<Tz: TimeZone>(date: DateTime<Utc>, now: &DateTime<Tz>) -> DateB
     let today = now.date_naive();
     let msg_date = date.with_timezone(&now.timezone()).date_naive();
 
-    if msg_date == today {
+    if msg_date >= today {
         return DateBucket::Today;
     }
     if msg_date == today - Duration::days(1) {
@@ -3944,6 +3944,15 @@ mod tests {
         let now = "2024-01-15T09:00:00+09:00";
         assert_eq!(bucket("2024-01-14T12:00:00+09:00", now), "Yesterday");
         assert_eq!(bucket("2024-01-13T12:00:00+09:00", now), "Last 30 days");
+    }
+
+    #[test]
+    fn classify_date_puts_future_dates_in_today() {
+        // A sender whose clock runs ahead; "This week" would file it under
+        // days that have already passed
+        let now = "2024-01-17T10:00:00-03:00";
+        assert_eq!(bucket("2024-01-18T09:00:00-03:00", now), "Today");
+        assert_eq!(bucket("2024-03-01T09:00:00-03:00", now), "Today");
     }
 
     fn thread_at(id: &str, date: &str) -> Thread {
