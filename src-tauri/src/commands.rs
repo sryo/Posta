@@ -1497,14 +1497,16 @@ pub async fn create_calendar_event(
     let result = calendar
         .create_event(
             calendar_id.as_deref().unwrap_or("primary"),
-            summary,
-            description,
-            start_time,
-            end_time,
-            all_day,
-            location,
-            attendees,
-            recurrence,
+            crate::calendar::EventFields {
+                summary,
+                description,
+                location,
+                start_time,
+                end_time,
+                all_day,
+                attendees,
+                recurrence,
+            },
         )
         .await;
     evict_token_on_auth_error(&state, &account_id, result)
@@ -1565,14 +1567,16 @@ pub async fn update_calendar_event(
         .update_event(
             &calendar_id,
             &event_id,
-            summary,
-            description,
-            start_time,
-            end_time,
-            all_day,
-            location,
-            attendees,
-            recurrence,
+            crate::calendar::EventFields {
+                summary,
+                description,
+                location,
+                start_time,
+                end_time,
+                all_day,
+                attendees,
+                recurrence,
+            },
         )
         .await;
     evict_token_on_auth_error(&state, &account_id, result)

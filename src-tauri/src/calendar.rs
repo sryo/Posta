@@ -3,7 +3,7 @@
 use chrono::{DateTime, Duration, Local, NaiveDate, TimeZone, Utc};
 use chrono_tz::Tz;
 use reqwest::StatusCode;
-use serde::{Deserialize, Serialize};
+use serde::{de::DeserializeOwned, Deserialize, Serialize};
 
 const CALENDAR_API_BASE: &str = "https://www.googleapis.com/calendar/v3";
 // Events-list page size (the API default) and a per-calendar safety cap so a
@@ -36,13 +36,45 @@ fn friendly_calendar_error(status: StatusCode, body: &str) -> String {
         return "Calendar permission denied. Please re-login to grant calendar access.".to_string();
     }
 
+    let api_error = serde_json::from_str::<ApiErrorBody>(body).ok().map(|b| b.error);
+    let rate_limited = api_error.iter().flat_map(|e| &e.errors).any(|e| {
+        matches!(
+            e.reason.as_deref(),
+            Some("rateLimitExceeded" | "userRateLimitExceeded" | "quotaExceeded")
+        )
+    });
+    if rate_limited || status == StatusCode::TOO_MANY_REQUESTS {
+        return "Too many requests. Please try again later.".to_string();
+    }
+
     match status {
         StatusCode::UNAUTHORIZED => "Calendar access expired. Please re-login.".to_string(),
-        StatusCode::FORBIDDEN => "Calendar access denied. Please re-login to grant permissions.".to_string(),
-        StatusCode::NOT_FOUND => "Calendar not found.".to_string(),
-        StatusCode::TOO_MANY_REQUESTS => "Too many requests. Please try again later.".to_string(),
+        // Other 403s are about this calendar or event (read-only calendar,
+        // not the organizer), which Google explains better than we can
+        StatusCode::FORBIDDEN => api_error
+            .and_then(|e| e.message)
+            .unwrap_or_else(|| "You don't have permission to change this calendar.".to_string()),
+        StatusCode::NOT_FOUND => "Event or calendar not found. It may have been deleted.".to_string(),
+        StatusCode::GONE => "This event was already deleted.".to_string(),
         _ => format!("Calendar error ({})", status),
     }
+}
+
+#[derive(Deserialize)]
+struct ApiErrorBody {
+    error: ApiError,
+}
+
+#[derive(Deserialize)]
+struct ApiError {
+    message: Option<String>,
+    #[serde(default)]
+    errors: Vec<ApiErrorItem>,
+}
+
+#[derive(Deserialize)]
+struct ApiErrorItem {
+    reason: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -172,7 +204,7 @@ struct CreateEventRequest {
     location: Option<String>,
     start: EventDateTimeInput,
     end: EventDateTimeInput,
-    attendees: Option<Vec<AttendeeInput>>,
+    attendees: Option<Vec<CalEventAttendee>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     recurrence: Option<Vec<String>>,
 }
@@ -185,11 +217,6 @@ struct EventDateTimeInput {
     // Required by the API for recurring events: the zone the rule expands in
     #[serde(rename = "timeZone", skip_serializing_if = "Option::is_none")]
     time_zone: Option<String>,
-}
-
-#[derive(Debug, Serialize)]
-struct AttendeeInput {
-    email: String,
 }
 
 #[derive(Deserialize)]
@@ -206,7 +233,7 @@ struct CalEventSearchItem {
 
 // Round-trips every attendee field: the RSVP PATCH replaces the whole
 // attendees array, so fields not echoed back would be wiped for everyone
-#[derive(Deserialize, Serialize, Clone, Default)]
+#[derive(Debug, Deserialize, Serialize, Clone, Default)]
 struct CalEventAttendee {
     email: String,
     #[serde(rename = "displayName", skip_serializing_if = "Option::is_none")]
@@ -255,22 +282,48 @@ fn events_list_url(
     url
 }
 
-/// Build a CreateEventRequest from raw parameters (shared by create and update)
-fn build_event_request(
-    summary: String,
-    description: Option<String>,
-    start_time: i64,
-    end_time: i64,
-    all_day: bool,
-    location: Option<String>,
-    attendees: Option<Vec<String>>,
-    recurrence: Option<Vec<String>>,
-    time_zone: Option<&str>,
-) -> Result<CreateEventRequest, String> {
-    let start_dt = DateTime::<Utc>::from_timestamp_millis(start_time).ok_or("Invalid start time")?;
-    let end_dt = DateTime::<Utc>::from_timestamp_millis(end_time).ok_or("Invalid end time")?;
+/// What the event form edits, as sent by create and update
+pub struct EventFields {
+    pub summary: String,
+    pub description: Option<String>,
+    pub location: Option<String>,
+    pub start_time: i64,
+    pub end_time: i64,
+    pub all_day: bool,
+    pub attendees: Option<Vec<String>>,
+    pub recurrence: Option<Vec<String>>,
+}
 
-    let (start, end) = if all_day {
+/// The form only knows addresses. Guests already on the event keep their
+/// whole entry, since the attendees array is replaced wholesale and a bare
+/// address would drop their response, optional flag and comment.
+fn attendees_for_write(emails: Vec<String>, existing: &[CalEventAttendee]) -> Vec<CalEventAttendee> {
+    let mut attendees: Vec<CalEventAttendee> = Vec::with_capacity(emails.len());
+    for email in emails {
+        if attendees.iter().any(|a| a.email.eq_ignore_ascii_case(&email)) {
+            continue;
+        }
+        let attendee = existing
+            .iter()
+            .find(|a| a.email.eq_ignore_ascii_case(&email))
+            .cloned()
+            .unwrap_or(CalEventAttendee { email, ..Default::default() });
+        attendees.push(attendee);
+    }
+    attendees
+}
+
+/// Build the create/update body. `existing_attendees` is the event's current
+/// guest list (empty for a new event).
+fn build_event_request(
+    fields: EventFields,
+    time_zone: Option<&str>,
+    existing_attendees: &[CalEventAttendee],
+) -> Result<CreateEventRequest, String> {
+    let start_dt = DateTime::<Utc>::from_timestamp_millis(fields.start_time).ok_or("Invalid start time")?;
+    let end_dt = DateTime::<Utc>::from_timestamp_millis(fields.end_time).ok_or("Invalid end time")?;
+
+    let (start, end) = if fields.all_day {
         // The form's end date is inclusive; Google's all-day end date is exclusive
         let exclusive_end = end_dt.checked_add_signed(Duration::days(1)).ok_or("Invalid end time")?;
         let date = |dt: DateTime<Utc>| EventDateTimeInput {
@@ -289,20 +342,15 @@ fn build_event_request(
     };
 
     Ok(CreateEventRequest {
-        summary,
-        description,
-        location,
+        summary: fields.summary,
+        description: fields.description,
+        location: fields.location,
         start,
         end,
-        attendees: attendees.map(|emails| {
-            emails
-                .into_iter()
-                .map(|email| AttendeeInput { email })
-                .collect()
-        }),
+        attendees: fields.attendees.map(|emails| attendees_for_write(emails, existing_attendees)),
         // Google requires RFC 5545 property names ("RRULE:FREQ=DAILY"); the
         // form emits bare rule strings ("FREQ=DAILY")
-        recurrence: recurrence.map(|rules| {
+        recurrence: fields.recurrence.map(|rules| {
             rules
                 .into_iter()
                 .map(|rule| {
@@ -329,28 +377,33 @@ impl CalendarClient {
         }
     }
 
-    /// List all calendars for the user
-    pub async fn list_calendars(&self) -> Result<Vec<CalendarInfo>, String> {
-        let url = format!("{}/users/me/calendarList", CALENDAR_API_BASE);
-
-        let resp = self
-            .http_client
-            .get(&url)
+    /// Send an authorized request; error statuses become friendly messages
+    async fn send(&self, request: reqwest::RequestBuilder) -> Result<reqwest::Response, String> {
+        let resp = request
             .bearer_auth(&self.access_token)
             .send()
             .await
-            .map_err(|e| format!("Calendar API request failed: {}", e))?;
-
+            .map_err(|e| format!("Calendar request failed: {}", e))?;
         if !resp.status().is_success() {
             let status = resp.status();
             let body = resp.text().await.unwrap_or_default();
             return Err(friendly_calendar_error(status, &body));
         }
+        Ok(resp)
+    }
 
-        let data: CalendarListResponse = resp
+    async fn send_json<T: DeserializeOwned>(&self, request: reqwest::RequestBuilder) -> Result<T, String> {
+        self.send(request)
+            .await?
             .json()
             .await
-            .map_err(|e| format!("Failed to parse calendar list: {}", e))?;
+            .map_err(|e| format!("Failed to parse calendar response: {}", e))
+    }
+
+    /// List all calendars for the user
+    pub async fn list_calendars(&self) -> Result<Vec<CalendarInfo>, String> {
+        let url = format!("{}/users/me/calendarList", CALENDAR_API_BASE);
+        let data: CalendarListResponse = self.send_json(self.http_client.get(&url)).await?;
 
         Ok(data
             .items
@@ -368,21 +421,7 @@ impl CalendarClient {
             CALENDAR_API_BASE,
             urlencoding::encode(calendar_id)
         );
-        let result = async {
-            let resp = self
-                .http_client
-                .get(&url)
-                .bearer_auth(&self.access_token)
-                .send()
-                .await
-                .map_err(|e| e.to_string())?;
-            if !resp.status().is_success() {
-                return Err(format!("HTTP {}", resp.status()));
-            }
-            resp.json::<CalendarListEntry>().await.map_err(|e| e.to_string())
-        }
-        .await;
-        match result {
+        match self.send_json::<CalendarListEntry>(self.http_client.get(&url)).await {
             Ok(entry) => Some(entry.into()),
             Err(e) => {
                 tracing::warn!("Failed to look up calendar {}: {}", calendar_id, e);
@@ -423,24 +462,7 @@ impl CalendarClient {
                         url.push_str(&format!("&pageToken={}", urlencoding::encode(token)));
                     }
 
-                    let resp = self
-                        .http_client
-                        .get(&url)
-                        .bearer_auth(&self.access_token)
-                        .send()
-                        .await
-                        .map_err(|e| format!("Calendar events request failed: {}", e))?;
-
-                    if !resp.status().is_success() {
-                        let status = resp.status();
-                        let body = resp.text().await.unwrap_or_default();
-                        return Err(friendly_calendar_error(status, &body));
-                    }
-
-                    let data: EventsListResponse = resp
-                        .json()
-                        .await
-                        .map_err(|e| format!("Failed to parse events: {}", e))?;
+                    let data: EventsListResponse = self.send_json(self.http_client.get(&url)).await?;
 
                     items.extend(data.items.unwrap_or_default());
 
@@ -508,14 +530,7 @@ impl CalendarClient {
     pub async fn create_event(
         &self,
         calendar_id: &str,
-        summary: String,
-        description: Option<String>,
-        start_time: i64,
-        end_time: i64,
-        all_day: bool,
-        location: Option<String>,
-        attendees: Option<Vec<String>>,
-        recurrence: Option<Vec<String>>,
+        fields: EventFields,
     ) -> Result<CalendarEvent, String> {
         let url = format!(
             "{}/calendars/{}/events",
@@ -524,34 +539,9 @@ impl CalendarClient {
         );
 
         let calendar = self.calendar_info(calendar_id).await;
-        let time_zone = recurrence
-            .as_ref()
-            .and(calendar.as_ref())
-            .and_then(|c| c.timezone.as_deref());
-        let body = build_event_request(
-            summary, description, start_time, end_time, all_day, location, attendees, recurrence,
-            time_zone,
-        )?;
-
-        let resp = self
-            .http_client
-            .post(&url)
-            .bearer_auth(&self.access_token)
-            .json(&body)
-            .send()
-            .await
-            .map_err(|e| format!("Create event request failed: {}", e))?;
-
-        if !resp.status().is_success() {
-            let status = resp.status();
-            let body = resp.text().await.unwrap_or_default();
-            return Err(friendly_calendar_error(status, &body));
-        }
-
-        let api_event: ApiEvent = resp
-            .json()
-            .await
-            .map_err(|e| format!("Failed to parse created event: {}", e))?;
+        let time_zone = recurrence_time_zone(&fields, calendar.as_ref());
+        let body = build_event_request(fields, time_zone, &[])?;
+        let api_event: ApiEvent = self.send_json(self.http_client.post(&url).json(&body)).await?;
 
         written_event(api_event, calendar_id, calendar.as_ref())
             .ok_or_else(|| "Failed to convert created event".to_string())
@@ -572,26 +562,11 @@ impl CalendarClient {
             urlencoding::encode(destination_calendar_id)
         );
 
-        let resp = self
-            .http_client
-            .post(&url)
-            .bearer_auth(&self.access_token)
-            .send()
-            .await
-            .map_err(|e| format!("Move event request failed: {}", e))?;
-
-        if !resp.status().is_success() {
-            let status = resp.status();
-            let body = resp.text().await.unwrap_or_default();
-            return Err(friendly_calendar_error(status, &body));
-        }
-
-        let api_event: ApiEvent = resp
-            .json()
-            .await
-            .map_err(|e| format!("Failed to parse moved event: {}", e))?;
-
-        let calendar = self.calendar_info(destination_calendar_id).await;
+        let (api_event, calendar) = futures::join!(
+            self.send_json::<ApiEvent>(self.http_client.post(&url)),
+            self.calendar_info(destination_calendar_id)
+        );
+        let api_event = api_event?;
         written_event(api_event, destination_calendar_id, calendar.as_ref())
             .ok_or_else(|| "Failed to convert moved event".to_string())
     }
@@ -609,20 +584,7 @@ impl CalendarClient {
             urlencoding::encode(event_id)
         );
 
-        let resp = self
-            .http_client
-            .delete(&url)
-            .bearer_auth(&self.access_token)
-            .send()
-            .await
-            .map_err(|e| format!("Delete event request failed: {}", e))?;
-
-        if !resp.status().is_success() {
-            let status = resp.status();
-            let body = resp.text().await.unwrap_or_default();
-            return Err(friendly_calendar_error(status, &body));
-        }
-
+        self.send(self.http_client.delete(&url)).await?;
         Ok(())
     }
 
@@ -633,14 +595,7 @@ impl CalendarClient {
         &self,
         calendar_id: &str,
         event_id: &str,
-        summary: String,
-        description: Option<String>,
-        start_time: i64,
-        end_time: i64,
-        all_day: bool,
-        location: Option<String>,
-        attendees: Option<Vec<String>>,
-        recurrence: Option<Vec<String>>,
+        fields: EventFields,
     ) -> Result<CalendarEvent, String> {
         let url = format!(
             "{}/calendars/{}/events/{}",
@@ -649,38 +604,34 @@ impl CalendarClient {
             urlencoding::encode(event_id)
         );
 
-        let calendar = self.calendar_info(calendar_id).await;
-        let time_zone = recurrence
-            .as_ref()
-            .and(calendar.as_ref())
-            .and_then(|c| c.timezone.as_deref());
-        let body = build_event_request(
-            summary, description, start_time, end_time, all_day, location, attendees, recurrence,
-            time_zone,
-        )?;
-
-        let resp = self
-            .http_client
-            .patch(&url)
-            .bearer_auth(&self.access_token)
-            .json(&body)
-            .send()
-            .await
-            .map_err(|e| format!("Update event request failed: {}", e))?;
-
-        if !resp.status().is_success() {
-            let status = resp.status();
-            let body = resp.text().await.unwrap_or_default();
-            return Err(friendly_calendar_error(status, &body));
-        }
-
-        let api_event: ApiEvent = resp
-            .json()
-            .await
-            .map_err(|e| format!("Failed to parse updated event: {}", e))?;
+        let existing_attendees = async {
+            if fields.attendees.is_none() {
+                return Vec::new();
+            }
+            self.event_attendees(calendar_id, event_id).await.unwrap_or_else(|e| {
+                tracing::warn!("Failed to read attendees of event {}: {}", event_id, e);
+                Vec::new()
+            })
+        };
+        let (calendar, existing_attendees) =
+            futures::join!(self.calendar_info(calendar_id), existing_attendees);
+        let time_zone = recurrence_time_zone(&fields, calendar.as_ref());
+        let body = build_event_request(fields, time_zone, &existing_attendees)?;
+        let api_event: ApiEvent = self.send_json(self.http_client.patch(&url).json(&body)).await?;
 
         written_event(api_event, calendar_id, calendar.as_ref())
             .ok_or_else(|| "Failed to convert updated event".to_string())
+    }
+
+    async fn event_attendees(&self, calendar_id: &str, event_id: &str) -> Result<Vec<CalEventAttendee>, String> {
+        let url = format!(
+            "{}/calendars/{}/events/{}?fields=id,attendees",
+            CALENDAR_API_BASE,
+            urlencoding::encode(calendar_id),
+            urlencoding::encode(event_id)
+        );
+        let event: CalEventSearchItem = self.send_json(self.http_client.get(&url)).await?;
+        Ok(event.attendees.unwrap_or_default())
     }
 
     /// Query a single calendar for an event by iCalUID
@@ -696,20 +647,7 @@ impl CalendarClient {
             urlencoding::encode(event_uid)
         );
 
-        let response = self
-            .http_client
-            .get(&search_url)
-            .bearer_auth(&self.access_token)
-            .send()
-            .await
-            .map_err(|e| e.to_string())?;
-
-        if !response.status().is_success() {
-            let error_text = response.text().await.unwrap_or_default();
-            return Err(format!("Failed to find calendar event: {}", error_text));
-        }
-
-        let events_response: CalEventSearchResponse = response.json().await.map_err(|e| e.to_string())?;
+        let events_response: CalEventSearchResponse = self.send_json(self.http_client.get(&search_url)).await?;
         Ok(events_response.items.unwrap_or_default().into_iter().next())
     }
 
@@ -795,22 +733,8 @@ impl CalendarClient {
             attendees: Vec<CalEventAttendee>,
         }
 
-        let patch_body = PatchRequest { attendees };
-
-        let patch_response = self
-            .http_client
-            .patch(&patch_url)
-            .bearer_auth(&self.access_token)
-            .json(&patch_body)
-            .send()
-            .await
-            .map_err(|e| e.to_string())?;
-
-        if !patch_response.status().is_success() {
-            let error_text = patch_response.text().await.unwrap_or_default();
-            return Err(format!("Failed to update RSVP: {}", error_text));
-        }
-
+        self.send(self.http_client.patch(&patch_url).json(&PatchRequest { attendees }))
+            .await?;
         Ok(())
     }
 }
@@ -922,6 +846,11 @@ fn with_rsvp(
     attendees
 }
 
+/// Recurring events need the zone their rule expands in; single events don't
+fn recurrence_time_zone<'a>(fields: &EventFields, calendar: Option<&'a CalendarInfo>) -> Option<&'a str> {
+    fields.recurrence.as_ref().and(calendar)?.timezone.as_deref()
+}
+
 /// Convert an event returned by a write call. Without the calendar's list
 /// entry, fall back to the requested id and assume write access (the write
 /// just succeeded).
@@ -1018,6 +947,15 @@ fn unquote(value: &str) -> &str {
     value.trim_matches('"')
 }
 
+/// Local midnight, or the first instant after a DST gap that swallows
+/// midnight (e.g. America/Santiago springs forward at 00:00)
+fn start_of_day<Z: TimeZone>(tz: &Z, date: NaiveDate) -> DateTime<Utc> {
+    (0..=3)
+        .find_map(|hour| tz.from_local_datetime(&date.and_hms_opt(hour, 0, 0)?).earliest())
+        .map(|dt| dt.with_timezone(&Utc))
+        .unwrap_or_else(|| date.and_hms_opt(0, 0, 0).expect("midnight is a valid time").and_utc())
+}
+
 #[derive(Debug, Default, Clone)]
 pub enum TimeRange {
     #[default]
@@ -1026,7 +964,6 @@ pub enum TimeRange {
     Week,
     Month,
     Upcoming(Duration),
-    Custom { start: DateTime<Utc>, end: DateTime<Utc> },
 }
 
 impl CalendarQuery {
@@ -1083,36 +1020,26 @@ impl CalendarQuery {
 
     /// Same as get_time_range but with an injectable `now` for testability
     fn get_time_range_at(&self, timezone: Option<&str>, now: DateTime<Utc>) -> (DateTime<Utc>, DateTime<Utc>) {
-        // Midnight may not exist on a DST spring-forward day (e.g. Chile,
-        // Cuba transition at 00:00); fall back to UTC midnight instead of panicking
-        let utc_midnight = || now.date_naive().and_hms_opt(0, 0, 0).expect("midnight is a valid time").and_utc();
-
-        // Use calendar timezone for "today", fall back to local
-        let today_start = if let Some(tz) = timezone.and_then(|s| s.parse::<Tz>().ok()) {
-            let tz_today = now.with_timezone(&tz).date_naive();
-            tz.from_local_datetime(&tz_today.and_hms_opt(0, 0, 0).expect("midnight is a valid time"))
-                .single()
-                .map(|dt| dt.with_timezone(&Utc))
-                .unwrap_or_else(utc_midnight)
-        } else {
-            let local_today = now.with_timezone(&Local).date_naive();
-            Local.from_local_datetime(&local_today.and_hms_opt(0, 0, 0).expect("midnight is a valid time"))
-                .single()
-                .map(|dt| dt.with_timezone(&Utc))
-                .unwrap_or_else(utc_midnight)
+        // Days are counted in the calendar's time zone, falling back to the
+        // system's; `day(n)` is the start of the nth day from today
+        let day: Box<dyn Fn(i64) -> DateTime<Utc>> = match timezone.and_then(|s| s.parse::<Tz>().ok()) {
+            Some(tz) => {
+                let today = now.with_timezone(&tz).date_naive();
+                Box::new(move |n| start_of_day(&tz, today + Duration::days(n)))
+            }
+            None => {
+                let today = now.with_timezone(&Local).date_naive();
+                Box::new(move |n| start_of_day(&Local, today + Duration::days(n)))
+            }
         };
 
         match &self.time_range {
-            TimeRange::Today => (today_start, today_start + Duration::days(1)),
-            TimeRange::Tomorrow => (
-                today_start + Duration::days(1),
-                today_start + Duration::days(2),
-            ),
-            TimeRange::Week => (today_start, today_start + Duration::days(7)),
-            TimeRange::Month => (today_start, today_start + Duration::days(30)),
+            TimeRange::Today => (day(0), day(1)),
+            TimeRange::Tomorrow => (day(1), day(2)),
+            TimeRange::Week => (day(0), day(7)),
+            TimeRange::Month => (day(0), day(30)),
             // For upcoming, we start from NOW to avoid missing things that just started
             TimeRange::Upcoming(duration) => (now, now + *duration),
-            TimeRange::Custom { start, end } => (*start, *end),
         }
     }
 
@@ -1169,8 +1096,11 @@ impl CalendarQuery {
 
         // Check response filter
         if let Some(response) = &self.response {
-            let event_response = event.response_status.as_deref().unwrap_or("needsAction");
-            if event_response.to_lowercase() != response.to_lowercase() {
+            let answered = event
+                .response_status
+                .as_deref()
+                .is_some_and(|r| r.eq_ignore_ascii_case(response));
+            if !answered {
                 return false;
             }
         }
@@ -1201,6 +1131,41 @@ mod tests {
 
     fn api_event(json: serde_json::Value) -> ApiEvent {
         serde_json::from_value(json).unwrap()
+    }
+
+    fn google_error(code: u16, reason: &str, message: &str) -> String {
+        serde_json::json!({
+            "error": { "code": code, "message": message, "errors": [{ "reason": reason, "message": message }] }
+        })
+        .to_string()
+    }
+
+    #[test]
+    fn error_messages_only_suggest_re_login_for_auth_problems() {
+        let err = |code: u16, body: &str| friendly_calendar_error(StatusCode::from_u16(code).unwrap(), body);
+
+        // Google reports rate limits as 403s
+        let rate = err(403, &google_error(403, "rateLimitExceeded", "Rate Limit Exceeded"));
+        assert!(rate.contains("Too many requests"), "{rate}");
+        let quota = err(403, &google_error(403, "userRateLimitExceeded", "User Rate Limit Exceeded"));
+        assert!(quota.contains("Too many requests"), "{quota}");
+
+        // Not being allowed to change an event is not a login problem
+        let not_organizer = err(403, &google_error(403, "forbiddenForNonOrganizer", "Shared properties can only be changed by the organizer of the event."));
+        assert!(!not_organizer.contains("re-login"), "{not_organizer}");
+        assert!(not_organizer.contains("only be changed by the organizer"), "{not_organizer}");
+        let read_only = err(403, &google_error(403, "requiredAccessLevel", "You need to have writer access to this calendar."));
+        assert_eq!(read_only, "You need to have writer access to this calendar.");
+
+        // A missing scope still asks for a re-login
+        let scope = err(403, &google_error(403, "insufficientPermissions", "Request had insufficient authentication scopes."));
+        assert!(scope.contains("re-login"), "{scope}");
+        assert!(err(401, &google_error(401, "authError", "Invalid Credentials")).contains("Calendar access expired"));
+
+        // 404/410 on an event (deleted elsewhere) is not a missing calendar
+        assert!(!err(404, &google_error(404, "notFound", "Not Found")).contains("Calendar not found"));
+        assert!(err(410, &google_error(410, "deleted", "Resource has been deleted")).contains("deleted"));
+        assert_eq!(err(500, "<html>oops</html>"), "Calendar error (500 Internal Server Error)");
     }
 
     #[test]
@@ -1335,9 +1300,18 @@ mod tests {
         // Free text is sent to the API, not filtered locally
         assert!(m("unrelated words"));
 
+        // Without a self attendee (a solo event, or one on someone else's
+        // calendar) there is no invitation to answer, so no response: filter
+        // matches; otherwise a needsAction card fills with the user's own blocks
         let mut no_response = ev.clone();
         no_response.response_status = None;
-        assert!(CalendarQuery::parse("response:needsAction").matches(&no_response));
+        for status in ["needsAction", "accepted", "declined", "tentative"] {
+            assert!(!CalendarQuery::parse(&format!("response:{status}")).matches(&no_response), "{status}");
+        }
+        assert!(CalendarQuery::parse("calendar:week").matches(&no_response));
+        let mut pending = ev.clone();
+        pending.response_status = Some("needsAction".into());
+        assert!(CalendarQuery::parse("response:NEEDSACTION").matches(&pending));
         let mut no_location = ev;
         no_location.location = None;
         assert!(!CalendarQuery::parse("location:york").matches(&no_location));
@@ -1360,14 +1334,24 @@ mod tests {
         assert!(url("calendar:week team sync").contains("&q=team%20sync"));
     }
 
+    fn fields(start_time: i64, end_time: i64, all_day: bool) -> EventFields {
+        EventFields {
+            summary: "Title".into(),
+            description: None,
+            location: None,
+            start_time,
+            end_time,
+            all_day,
+            attendees: None,
+            recurrence: None,
+        }
+    }
+
     fn request_json(all_day: bool, recurrence: Option<Vec<String>>, time_zone: Option<&str>) -> serde_json::Value {
         // 2024-12-23 12:00 UTC to 2024-12-24 12:00 UTC, as the form sends all-day dates
         let start = 1_734_955_200_000;
         let end = start + 24 * 3600 * 1000;
-        let req = build_event_request(
-            "Title".into(), None, start, end, all_day, None, None, recurrence, time_zone,
-        )
-        .unwrap();
+        let req = build_event_request(EventFields { recurrence, ..fields(start, end, all_day) }, time_zone, &[]).unwrap();
         serde_json::to_value(req).unwrap()
     }
 
@@ -1394,10 +1378,7 @@ mod tests {
     #[test]
     fn request_accepts_pre_epoch_timestamps() {
         // 1969-12-31T23:59:58.500Z
-        let req = build_event_request(
-            "Title".into(), None, -1_500, 0, false, None, None, None, None,
-        )
-        .unwrap();
+        let req = build_event_request(fields(-1_500, 0, false), None, &[]).unwrap();
         let json = serde_json::to_value(req).unwrap();
         assert_eq!(json["start"]["dateTime"], "1969-12-31T23:59:58.500+00:00");
         assert_eq!(json["end"]["dateTime"], "1970-01-01T00:00:00+00:00");
@@ -1463,6 +1444,57 @@ mod tests {
         assert_eq!(updated[1].email, "me@x.com");
         assert_eq!(updated[1].response_status.as_deref(), Some("tentative"));
         assert_eq!(updated[1].is_self, Some(true));
+    }
+
+    #[test]
+    fn editing_attendees_keeps_existing_guests_entries() {
+        let mut optional = attendee("carol@x.com", false, "tentative");
+        optional.optional = Some(true);
+        optional.comment = Some("maybe".into());
+        let existing = vec![
+            attendee("me@x.com", true, "accepted"),
+            attendee("Bob@X.com", false, "declined"),
+            optional,
+        ];
+        let edited = EventFields {
+            attendees: Some(vec!["me@x.com".into(), "bob@x.com".into(), "dan@x.com".into(), "carol@x.com".into(), "BOB@x.com".into()]),
+            ..fields(0, 3_600_000, false)
+        };
+        let json = serde_json::to_value(build_event_request(edited, None, &existing).unwrap()).unwrap();
+        assert_eq!(
+            json["attendees"],
+            serde_json::json!([
+                { "email": "me@x.com", "responseStatus": "accepted", "self": true },
+                { "email": "Bob@X.com", "responseStatus": "declined" },
+                { "email": "dan@x.com" },
+                { "email": "carol@x.com", "responseStatus": "tentative", "optional": true, "comment": "maybe" },
+            ])
+        );
+
+        // Guests left out of the form are removed; clearing the field clears the list
+        let json = serde_json::to_value(
+            build_event_request(EventFields { attendees: Some(vec!["dan@x.com".into()]), ..fields(0, 0, false) }, None, &existing).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(json["attendees"], serde_json::json!([{ "email": "dan@x.com" }]));
+        let json = serde_json::to_value(build_event_request(fields(0, 0, false), None, &existing).unwrap()).unwrap();
+        assert!(json["attendees"].is_null());
+    }
+
+    #[test]
+    fn recurrence_time_zone_only_for_recurring_events() {
+        let calendar = CalendarInfo {
+            id: "c".into(),
+            name: "C".into(),
+            is_primary: true,
+            access_role: "owner".into(),
+            timezone: Some("Asia/Tokyo".into()),
+        };
+        let single = fields(0, 0, false);
+        let recurring = EventFields { recurrence: Some(vec!["FREQ=DAILY".into()]), ..fields(0, 0, false) };
+        assert_eq!(recurrence_time_zone(&single, Some(&calendar)), None);
+        assert_eq!(recurrence_time_zone(&recurring, Some(&calendar)), Some("Asia/Tokyo"));
+        assert_eq!(recurrence_time_zone(&recurring, None), None);
     }
 
     #[test]
@@ -1586,21 +1618,19 @@ mod tests {
         assert_eq!(start, utc_midnight + Duration::days(1) - Duration::hours(9));
     }
 
+    fn utc(s: &str) -> DateTime<Utc> {
+        s.parse().unwrap()
+    }
+
     #[test]
     fn test_get_time_range_dst_gap() {
         // Chile springs forward at local midnight: 2024-09-08 00:00 does not
-        // exist in America/Santiago. Must fall back to UTC midnight, not panic.
+        // exist in America/Santiago, so the day starts at 01:00 (-03)
         let cq = CalendarQuery::parse("calendar:today");
-        let now = "2024-09-08T15:00:00Z".parse::<DateTime<Utc>>().unwrap();
+        let now = utc("2024-09-08T15:00:00Z");
         let (start, end) = cq.get_time_range_at(Some("America/Santiago"), now);
-
-        let expected = NaiveDate::from_ymd_opt(2024, 9, 8)
-            .unwrap()
-            .and_hms_opt(0, 0, 0)
-            .unwrap()
-            .and_utc();
-        assert_eq!(start, expected);
-        assert_eq!(end, expected + Duration::days(1));
+        assert_eq!(start, utc("2024-09-08T04:00:00Z"));
+        assert_eq!(end, utc("2024-09-09T03:00:00Z"));
 
         // A normal day resolves to actual local midnight (UTC-4 in July)
         let now = "2024-07-01T15:00:00Z".parse::<DateTime<Utc>>().unwrap();
@@ -1611,5 +1641,28 @@ mod tests {
             .unwrap()
             .and_utc();
         assert_eq!(start, expected);
+    }
+
+    #[test]
+    fn day_ranges_follow_local_midnights_across_dst_changes() {
+        let range = |q: &str, now: &str| CalendarQuery::parse(q).get_time_range_at(Some("America/New_York"), utc(now));
+
+        // 2024-03-10 is 23 hours long in New York; 2024-11-03 is 25
+        assert_eq!(
+            range("calendar:today", "2024-03-10T15:00:00Z"),
+            (utc("2024-03-10T05:00:00Z"), utc("2024-03-11T04:00:00Z"))
+        );
+        assert_eq!(
+            range("calendar:tomorrow", "2024-03-09T15:00:00Z"),
+            (utc("2024-03-10T05:00:00Z"), utc("2024-03-11T04:00:00Z"))
+        );
+        assert_eq!(
+            range("calendar:week", "2024-03-08T15:00:00Z"),
+            (utc("2024-03-08T05:00:00Z"), utc("2024-03-15T04:00:00Z"))
+        );
+        assert_eq!(
+            range("calendar:today", "2024-11-03T15:00:00Z"),
+            (utc("2024-11-03T04:00:00Z"), utc("2024-11-04T05:00:00Z"))
+        );
     }
 }
