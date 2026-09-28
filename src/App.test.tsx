@@ -552,6 +552,52 @@ describe("App compose autocomplete", () => {
 });
 
 describe("App compose", () => {
+  it("restores an email whose send was undone while compose was still closing", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    handlers.send_email = () => null;
+    render(() => <App />);
+    await screen.findByText("Mail for A");
+    fireEvent.keyDown(document, { key: "c" });
+    fireEvent.input(await screen.findByPlaceholderText("Recipients"), { target: { value: "bo@y.com" } });
+    fireEvent.input(screen.getByPlaceholderText("Subject"), { target: { value: "Hello" } });
+    fireEvent.click(screen.getByRole("button", { name: /^Send/ }));
+
+    fireEvent.click(document.querySelector(".toast-undo-btn")!);
+    await vi.advanceTimersByTimeAsync(6000);
+
+    expect(screen.getByPlaceholderText("Recipients")).toHaveValue("bo@y.com");
+    expect(screen.getByPlaceholderText("Subject")).toHaveValue("Hello");
+    expect(invoke).not.toHaveBeenCalledWith("send_email", expect.anything());
+  });
+
+  it("sends an undone new email as a new email while a reply is open", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    handlers.get_thread_details = () => ({ id: "t-a", messages: [fullMessage("m1", "Ana <ana@x.com>")] });
+    handlers.send_email = () => null;
+    handlers.reply_to_thread = () => null;
+    render(() => <App />);
+    await screen.findByText("Mail for A");
+    fireEvent.keyDown(document, { key: "c" });
+    fireEvent.input(await screen.findByPlaceholderText("Recipients"), { target: { value: "bo@y.com" } });
+    fireEvent.input(screen.getByPlaceholderText("Subject"), { target: { value: "Hello" } });
+    fireEvent.click(screen.getByRole("button", { name: /^Send/ }));
+    await vi.advanceTimersByTimeAsync(300);
+
+    fireEvent.click(screen.getByText("Mail for A"));
+    await screen.findByText("body m1");
+    fireEvent.keyDown(document, { key: "r" });
+    await screen.findByPlaceholderText("Write your reply...");
+    fireEvent.click(document.querySelector(".toast-undo-btn")!);
+    await vi.advanceTimersByTimeAsync(100);
+
+    expect(screen.getByPlaceholderText("Subject")).toHaveValue("Hello");
+    fireEvent.click(screen.getByRole("button", { name: /^Send/ }));
+    await vi.advanceTimersByTimeAsync(6000);
+
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith("send_email", expect.objectContaining({ to: "bo@y.com", subject: "Hello" })));
+    expect(invoke).not.toHaveBeenCalledWith("reply_to_thread", expect.anything());
+  });
+
   it("sends from the account compose was opened in after switching accounts", async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
     handlers.get_accounts = () => [account("a", "a@x.com"), account("b", "b@x.com")];

@@ -260,7 +260,7 @@ function App() {
     send: executeActualSend,
     onFailed: (pending, e) => {
       console.error("Failed to send email:", e);
-      restoreFailedSend(pending);
+      restoreSend(pending);
       setError(`Failed to send email: ${e}`);
     },
   });
@@ -1817,7 +1817,7 @@ function App() {
     }, 200);
   }
 
-  // Cancellable so undoSend can beat the 200ms wipe and keep the restored fields
+  // Cancelled by resetCompose when a new compose replaces one animating out
   let closeComposeTimeout: number | undefined;
   function closeCompose() {
     setClosingCompose(true);
@@ -2062,11 +2062,11 @@ function App() {
   }
 
   // The draft was already cleared and compose closed when the send was
-  // queued, so a failed send must put the email back or it's gone for good.
-  // If the user started composing again during the undo window, their
+  // queued, so an undone or failed send must put the email back or it's gone
+  // for good. If the user started composing again meanwhile, their
   // in-progress text gets a best-effort local stash first.
-  function restoreFailedSend(pending: PendingSend) {
-    if (composing()) {
+  function restoreSend(pending: PendingSend) {
+    if (composing() && !closingCompose()) {
       const current: Draft = {
         to: composeTo(),
         cc: composeCc(),
@@ -2081,50 +2081,25 @@ function App() {
         safeSetJSON(getDraftKey(), current);
       }
     }
-    setComposeTo(pending.to);
-    setComposeCc(pending.cc);
-    setComposeBcc(pending.bcc);
-    setComposeSubject(pending.subject);
-    setComposeBody(pending.body);
+    startCompose({
+      to: pending.to,
+      cc: pending.cc,
+      bcc: pending.bcc,
+      subject: pending.subject,
+      body: pending.body,
+      isHtml: pending.isHtml,
+      reply: pending.reply,
+    });
     setComposeAttachments(pending.attachments);
-    setComposeIsHtml(pending.isHtml ?? false);
-    setReplyingToThread(pending.reply ?? null);
-    setForwardingThread(null);
-    if (pending.cc || pending.bcc) {
-      setShowCcBcc(true);
-    }
-    setComposing(true);
     setComposeAccount(accounts().find(a => a.id === pending.accountId) ?? null);
+    // An open thread only shows a compose that replies to it
+    const threadId = activeThreadId();
+    if (threadId && threadId !== pending.reply?.threadId) closeThreadView();
   }
 
   function undoSend() {
     const pending = undoableSend.undo();
-    if (!pending) return;
-
-    // If closeCompose's 200ms wipe hasn't fired yet, it must not erase the
-    // fields restored below
-    if (closeComposeTimeout) {
-      clearTimeout(closeComposeTimeout);
-      closeComposeTimeout = undefined;
-    }
-    setClosingCompose(false);
-
-    // Restore compose with the pending email data
-    setComposeTo(pending.to);
-    setComposeCc(pending.cc);
-    setComposeBcc(pending.bcc);
-    setComposeSubject(pending.subject);
-    setComposeBody(pending.body);
-    setComposeAttachments(pending.attachments);
-    setComposeIsHtml(pending.isHtml ?? false);
-    if (pending.reply) {
-      setReplyingToThread(pending.reply);
-    }
-    if (pending.cc || pending.bcc) {
-      setShowCcBcc(true);
-    }
-    setComposing(true);
-    setComposeAccount(accounts().find(a => a.id === pending.accountId) ?? null);
+    if (pending) restoreSend(pending);
   }
 
   async function handleQuickReply() {
@@ -2724,15 +2699,19 @@ function App() {
     return cardList;
   }
 
-  // Views bound to the selected account's threads and events. Compose stays
-  // open: it remembers the account it was opened in.
-  function closeAccountViews() {
+  function closeThreadView() {
     setActiveThreadId(null);
     setActiveThreadCardId(null);
-    setActiveThread(null);
     setFocusedMessageIndex(0);
     setLabelDrawerOpen(false);
     setCidAttachmentData({});
+  }
+
+  // Views bound to the selected account's threads and events. Compose stays
+  // open: it remembers the account it was opened in.
+  function closeAccountViews() {
+    closeThreadView();
+    setActiveThread(null);
     setActiveEvent(null);
     setActiveEventCardId(null);
     setReplyingToEvent(null);
@@ -4586,7 +4565,7 @@ function App() {
             return c ? { name: c.name, color: (c.color as CardColor) || null } : null;
           })() : null}
           focusColor={selectedBgColorIndex() !== null ? BG_COLORS[selectedBgColorIndex()!].hex : null}
-          onClose={() => { setActiveThreadId(null); setActiveThreadCardId(null); setFocusedMessageIndex(0); setLabelDrawerOpen(false); if (composing()) closeCompose(); setCidAttachmentData({}); }}
+          onClose={() => { closeThreadView(); if (composing()) closeCompose(); }}
           focusedMessageIndex={focusedMessageIndex()}
           onFocusChange={setFocusedMessageIndex}
           onOpenAttachment={(messageId, attachmentId, filename, mimeType, inlineData) => openAttachment(messageId, attachmentId, filename, mimeType, inlineData)}
