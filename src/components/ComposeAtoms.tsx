@@ -35,40 +35,23 @@ export const ComposeSendButton = (props: {
   onClick: () => void,
   disabled?: boolean,
   sending?: boolean,
-  label?: string,
-  showShortcut?: boolean,
-  class?: string,
 }) => {
   return (
     <button
-      class={`btn btn-primary ${props.sending ? 'sending' : ''} ${props.class || ''}`}
+      class={`btn btn-primary ${props.sending ? 'sending' : ''}`}
       disabled={props.disabled || props.sending}
       onClick={props.onClick}
     >
-      {props.sending ? 'Sending...' : (
-        <>
-          {props.label || 'Send'}
-          {props.showShortcut !== false && <span class="shortcut-hint">⌘↵</span>}
-        </>
-      )}
+      {props.sending ? 'Sending...' : <>Send<span class="shortcut-hint">⌘↵</span></>}
     </button>
   );
 };
 
-export const CloseButton = (props: {
-  onClick: () => void,
-  showHint?: boolean,
-  title?: string,
-  class?: string,
-}) => {
+export const CloseButton = (props: { onClick: () => void }) => {
   return (
-    <button
-      class={`close-btn ${props.class || ''}`}
-      onClick={props.onClick}
-      title={props.title || "Close (Esc)"}
-    >
+    <button class="close-btn" onClick={props.onClick} title="Close (Esc)">
       <CloseIcon />
-      {props.showHint !== false && <span class="shortcut-hint">ESC</span>}
+      <span class="shortcut-hint">ESC</span>
     </button>
   );
 };
