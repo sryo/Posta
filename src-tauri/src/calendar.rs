@@ -232,6 +232,13 @@ struct CalEventSearchItem {
     #[serde(default)]
     id: String,
     attendees: Option<Vec<CalEventAttendee>>,
+    creator: Option<EventCreator>,
+}
+
+/// Guests hear about changes only to events the user created; anyone else's
+/// event is the creator's to announce
+fn send_updates(is_self_creator: bool) -> &'static str {
+    if is_self_creator { "all" } else { "none" }
 }
 
 // Round-trips every attendee field: the RSVP PATCH replaces the whole
@@ -531,9 +538,10 @@ impl CalendarClient {
         fields: EventFields,
     ) -> Result<CalendarEvent, String> {
         let url = format!(
-            "{}/calendars/{}/events",
+            "{}/calendars/{}/events?sendUpdates={}",
             self.api_base,
-            urlencoding::encode(calendar_id)
+            urlencoding::encode(calendar_id),
+            send_updates(true)
         );
 
         let calendar = self.calendar_info(calendar_id).await;
@@ -552,12 +560,14 @@ impl CalendarClient {
         event_id: &str,
         destination_calendar_id: &str,
     ) -> Result<CalendarEvent, String> {
+        let is_self_creator = self.is_self_creator(source_calendar_id, event_id).await;
         let url = format!(
-            "{}/calendars/{}/events/{}/move?destination={}",
+            "{}/calendars/{}/events/{}/move?destination={}&sendUpdates={}",
             self.api_base,
             urlencoding::encode(source_calendar_id),
             urlencoding::encode(event_id),
-            urlencoding::encode(destination_calendar_id)
+            urlencoding::encode(destination_calendar_id),
+            send_updates(is_self_creator)
         );
 
         let (api_event, calendar) = futures::join!(
@@ -575,11 +585,13 @@ impl CalendarClient {
         calendar_id: &str,
         event_id: &str,
     ) -> Result<(), String> {
+        let is_self_creator = self.is_self_creator(calendar_id, event_id).await;
         let url = format!(
-            "{}/calendars/{}/events/{}",
+            "{}/calendars/{}/events/{}?sendUpdates={}",
             self.api_base,
             urlencoding::encode(calendar_id),
-            urlencoding::encode(event_id)
+            urlencoding::encode(event_id),
+            send_updates(is_self_creator)
         );
 
         self.send(self.http_client.delete(&url)).await?;
@@ -595,22 +607,22 @@ impl CalendarClient {
         event_id: &str,
         fields: EventFields,
     ) -> Result<CalendarEvent, String> {
+        let (calendar, existing) =
+            futures::join!(self.calendar_info(calendar_id), self.event_people(calendar_id, event_id));
+        // The current guest list is only needed when the form edits guests,
+        // so a failed lookup is fatal only then
+        let (existing_attendees, is_self_creator) = match existing {
+            Ok(event) => (event.attendees.unwrap_or_default(), event.creator.and_then(|c| c.is_self).unwrap_or(false)),
+            Err(e) if fields.attendees.is_some() => return Err(e),
+            Err(_) => (Vec::new(), false),
+        };
         let url = format!(
-            "{}/calendars/{}/events/{}",
+            "{}/calendars/{}/events/{}?sendUpdates={}",
             self.api_base,
             urlencoding::encode(calendar_id),
-            urlencoding::encode(event_id)
+            urlencoding::encode(event_id),
+            send_updates(is_self_creator)
         );
-
-        let existing_attendees = async {
-            if fields.attendees.is_none() {
-                return Ok(Vec::new());
-            }
-            self.event_attendees(calendar_id, event_id).await
-        };
-        let (calendar, existing_attendees) =
-            futures::join!(self.calendar_info(calendar_id), existing_attendees);
-        let existing_attendees = existing_attendees?;
         let time_zone = recurrence_time_zone(&fields, calendar.as_ref());
         let body = build_event_request(fields, time_zone, &existing_attendees)?;
         let api_event: ApiEvent = self.send_json(self.http_client.patch(&url).json(&body)).await?;
@@ -619,15 +631,25 @@ impl CalendarClient {
             .ok_or_else(|| "Failed to convert updated event".to_string())
     }
 
-    async fn event_attendees(&self, calendar_id: &str, event_id: &str) -> Result<Vec<CalEventAttendee>, String> {
+    async fn event_people(&self, calendar_id: &str, event_id: &str) -> Result<CalEventSearchItem, String> {
         let url = format!(
-            "{}/calendars/{}/events/{}?fields=id,attendees",
+            "{}/calendars/{}/events/{}?fields=id,attendees,creator",
             self.api_base,
             urlencoding::encode(calendar_id),
             urlencoding::encode(event_id)
         );
-        let event: CalEventSearchItem = self.send_json(self.http_client.get(&url)).await?;
-        Ok(event.attendees.unwrap_or_default())
+        self.send_json(self.http_client.get(&url)).await
+    }
+
+    /// Unknown counts as not the creator, so a failed lookup never emails guests
+    async fn is_self_creator(&self, calendar_id: &str, event_id: &str) -> bool {
+        match self.event_people(calendar_id, event_id).await {
+            Ok(event) => event.creator.and_then(|c| c.is_self).unwrap_or(false),
+            Err(e) => {
+                tracing::warn!("Couldn't look up the creator of event {}: {}", event_id, e);
+                false
+            }
+        }
     }
 
     /// Query a single calendar for an event by iCalUID
@@ -1666,7 +1688,61 @@ mod tests {
         assert!(server
             .requests()
             .iter()
-            .any(|(method, target, _)| method == "PATCH" && target == "/calendars/cal/events/e1"));
+            .any(|(method, target, _)| method == "PATCH" && target.starts_with("/calendars/cal/events/e1?")));
+    }
+
+    /// Stub where event `e1` was created by the user iff `mine`
+    fn creator_stub(mine: bool) -> impl Fn(&str, &str) -> (u16, String) + Send + Sync + 'static {
+        move |method, target| match method {
+            "GET" if target.contains("/events/e1?fields=") => (
+                200,
+                serde_json::json!({ "id": "e1", "creator": { "email": "a@x.com", "self": mine } }).to_string(),
+            ),
+            "GET" => (200, calendar_entry("cal").to_string()),
+            "DELETE" => (204, String::new()),
+            _ => (200, serde_json::json!({ "id": "e1", "start": { "date": "2024-12-23" } }).to_string()),
+        }
+    }
+
+    fn mutation_targets(server: &StubServer) -> Vec<String> {
+        server
+            .requests()
+            .into_iter()
+            .filter(|(method, _, _)| method != "GET")
+            .map(|(_, target, _)| target)
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn creating_an_event_invites_its_guests() {
+        let server = StubServer::start(creator_stub(true)).await;
+        server.client().create_event("cal", fields(0, 3_600_000, false)).await.unwrap();
+        assert_eq!(mutation_targets(&server), vec!["/calendars/cal/events?sendUpdates=all"]);
+    }
+
+    #[tokio::test]
+    async fn guests_are_only_emailed_about_changes_to_events_the_user_created() {
+        for (mine, updates) in [(true, "sendUpdates=all"), (false, "sendUpdates=none")] {
+            let server = StubServer::start(creator_stub(mine)).await;
+            let client = server.client();
+            client.update_event("cal", "e1", fields(0, 3_600_000, false)).await.unwrap();
+            client.move_event("cal", "e1", "other").await.unwrap();
+            client.delete_event("cal", "e1").await.unwrap();
+            let targets = mutation_targets(&server);
+            assert_eq!(targets.len(), 3, "{targets:?}");
+            assert!(targets.iter().all(|t| t.contains(updates)), "mine={mine}: {targets:?}");
+        }
+    }
+
+    #[tokio::test]
+    async fn guests_are_not_emailed_when_the_creator_is_unknown() {
+        let server = StubServer::start(|method, target| match method {
+            "GET" if target.contains("/events/e1?fields=") => (500, "{}".to_string()),
+            _ => (204, String::new()),
+        })
+        .await;
+        server.client().delete_event("cal", "e1").await.unwrap();
+        assert_eq!(mutation_targets(&server), vec!["/calendars/cal/events/e1?sendUpdates=none"]);
     }
 
     async fn searched_titles(time_zone: &'static str, events: serde_json::Value, max_results: i32) -> Vec<String> {
