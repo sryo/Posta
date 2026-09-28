@@ -973,24 +973,24 @@ function App() {
     }
   };
 
-  // Update dock badge with total unread count
-  createEffect(() => {
+  // Dock badge: unread threads across cards. The memo only notifies when the
+  // total changes, so refreshes that change nothing don't touch the badge.
+  const totalUnread = createMemo(() => {
     // A thread can match several cards; count it once
     const unreadThreadIds = new Set<string>();
-
     for (const groups of Object.values(cardThreads)) {
       for (const group of groups) {
         for (const thread of group.threads) {
-          if (thread.unread_count > 0) {
-            unreadThreadIds.add(thread.gmail_thread_id);
-          }
+          if (thread.unread_count > 0) unreadThreadIds.add(thread.gmail_thread_id);
         }
       }
     }
-
-    const totalUnread = unreadThreadIds.size;
-    // Update badge (undefined removes it)
-    getCurrentWindow().setBadgeCount(totalUnread > 0 ? totalUnread : undefined).catch(() => {
+    return unreadThreadIds.size;
+  });
+  createEffect(() => {
+    const total = totalUnread();
+    // undefined removes the badge
+    getCurrentWindow().setBadgeCount(total > 0 ? total : undefined).catch(() => {
       // Badge not supported on this platform
     });
   });

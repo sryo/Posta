@@ -1645,3 +1645,26 @@ describe("App background sync refetches", () => {
     await waitFor(() => expect(fetches()).toBe(before + 1));
   });
 });
+
+describe("App dock badge", () => {
+  it("updates the badge only when the unread count changes", async () => {
+    threadsByCard["card-a"] = [{ ...thread("t-a", "Mail for A"), unread_count: 1 }];
+    handlers.sync_threads_incremental = () => ({ modified_threads: [], deleted_thread_ids: [], is_full_sync: true });
+    render(() => <App />);
+    await screen.findByText("Mail for A");
+    await waitFor(() => expect(setBadgeCount).toHaveBeenLastCalledWith(1));
+    await new Promise(r => setTimeout(r, 20));
+    const calls = setBadgeCount.mock.calls.length;
+    const fetches = () => invoke.mock.calls.filter(([cmd]) => cmd === "fetch_threads_paginated").length;
+    const fetchesBefore = fetches();
+
+    window.dispatchEvent(new Event("focus"));
+    await waitFor(() => expect(fetches()).toBe(fetchesBefore + 1));
+    await new Promise(r => setTimeout(r, 30));
+    expect(setBadgeCount.mock.calls.length).toBe(calls);
+
+    threadsByCard["card-a"] = [{ ...thread("t-a", "Mail for A"), unread_count: 1 }, { ...thread("t-b", "More"), unread_count: 2 }];
+    window.dispatchEvent(new Event("focus"));
+    await waitFor(() => expect(setBadgeCount).toHaveBeenLastCalledWith(2));
+  });
+});
