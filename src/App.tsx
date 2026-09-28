@@ -2263,19 +2263,23 @@ function App() {
     const shouldClose = ['archive', 'inbox', 'trash', 'spam'].includes(action);
 
     await handleThreadAction(action, [thread.id], cardId || '');
+    if (activeThreadId() !== thread.id) return;
 
     if (shouldClose) {
-      setActiveThreadId(null);
-      setActiveThreadCardId(null);
-      setFocusedMessageIndex(0);
+      closeThreadView();
     } else {
-      // Refresh thread to update state
-      try {
-        const updated = await getThreadDetails(account.id, thread.id);
-        setActiveThread(updated);
-      } catch (e) {
-        console.error("Failed to refresh thread:", e);
-      }
+      await refreshActiveThread(account.id, thread.id);
+    }
+  }
+
+  // Reload the open thread after changing it; the user may have opened
+  // another one meanwhile, which must stay
+  async function refreshActiveThread(accountId: string, threadId: string) {
+    try {
+      const updated = await getThreadDetails(accountId, threadId);
+      if (activeThreadId() === threadId) setActiveThread(updated);
+    } catch (e) {
+      console.error("Failed to refresh thread:", e);
     }
   }
 
@@ -2289,11 +2293,7 @@ function App() {
 
     try {
       await modifyThreads(account.id, [thread.id], addLabels, removeLabels);
-
-      // Refresh thread to update labels
-      const updated = await getThreadDetails(account.id, thread.id);
-      setActiveThread(updated);
-
+      await refreshActiveThread(account.id, thread.id);
       showToast(`${isAdding ? 'Added' : 'Removed'} label "${labelName}"`);
     } catch (e) {
       console.error("Failed to modify labels:", e);

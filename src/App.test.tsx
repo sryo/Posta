@@ -620,6 +620,35 @@ describe("App thread view", () => {
   });
 });
 
+describe("App thread view refresh after an action", () => {
+  it("does not replace the thread the user moved on to", async () => {
+    threadsByCard["card-a"] = [thread("t-a", "Mail for A"), thread("t-b", "Other mail")];
+    handlers.modify_threads = () => null;
+    let releaseRefresh!: () => void;
+    const slowRefresh = new Promise<void>(r => { releaseRefresh = r; });
+    let fetchesOfA = 0;
+    handlers.get_thread_details = async ({ threadId }) => {
+      if (threadId === "t-a" && fetchesOfA++ > 0) await slowRefresh;
+      return { id: threadId, messages: [{ ...fullMessage(`m-${threadId}`, "Ana <ana@x.com>"), threadId }] };
+    };
+    render(() => <App />);
+    fireEvent.click(await screen.findByText("Mail for A"));
+    await screen.findByText("body m-t-a");
+
+    fireEvent.click(screen.getByTitle("Star"));
+    await waitFor(() => expect(fetchesOfA).toBe(2));
+    fireEvent.keyDown(document, { key: "Escape" });
+    await waitFor(() => expect(screen.queryByText("body m-t-a")).not.toBeInTheDocument());
+    fireEvent.click(await screen.findByText("Other mail"));
+    await screen.findByText("body m-t-b");
+
+    releaseRefresh();
+    await new Promise(r => setTimeout(r, 20));
+    expect(screen.getByText("body m-t-b")).toBeInTheDocument();
+    expect(screen.queryByText("body m-t-a")).not.toBeInTheDocument();
+  });
+});
+
 describe("App quick reaction", () => {
   it("reacts to the latest real message from someone else, not to a reaction", async () => {
     const headers = (from: string, id: string) => [{ name: "From", value: from }, { name: "Message-Id", value: id }];
