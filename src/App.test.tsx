@@ -303,6 +303,17 @@ describe("App thread list shortcuts", () => {
     );
   });
 
+  it("scrolls the focused card and thread into view", async () => {
+    const scrolled: Element[] = [];
+    const spy = vi.spyOn(Element.prototype, "scrollIntoView").mockImplementation(function (this: Element) { scrolled.push(this); });
+    render(() => <App />);
+    const row = (await screen.findByText("Mail for A")).closest(".thread")!;
+    fireEvent.keyDown(document, { key: "l" });
+    await waitFor(() => expect(scrolled).toContain(row));
+    expect(scrolled).toContain(screen.getByRole("region", { name: "Alpha email card" }).closest(".card-wrapper"));
+    spy.mockRestore();
+  });
+
   it("clears the selection on Escape before dropping card focus", async () => {
     render(() => <App />);
     const row = (await screen.findByText("Mail for A")).closest(".thread")!;
