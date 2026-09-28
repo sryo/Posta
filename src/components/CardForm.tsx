@@ -8,6 +8,7 @@ import {
   type GroupBy,
 } from "../shared/constants";
 import { PaletteIcon, TrashIcon } from "./Icons";
+import { cardTypeForQuery } from "../app/cardType";
 import { onActivateKey } from "../shared/keyboard";
 
 interface QuerySuggestion {
@@ -48,7 +49,7 @@ export const CardForm = (props: {
   applyQuerySuggestion: (suggestion: QuerySuggestion) => void;
 }) => {
   const groupByOptions = () =>
-    props.query.toLowerCase().includes("calendar:") ? CALENDAR_GROUP_BY_OPTIONS : EMAIL_GROUP_BY_OPTIONS;
+    cardTypeForQuery(props.query) === "calendar" ? CALENDAR_GROUP_BY_OPTIONS : EMAIL_GROUP_BY_OPTIONS;
 
   // Switching between email and calendar queries can leave a grouping the
   // new card type doesn't offer, such as "sender" on a calendar card
