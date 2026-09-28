@@ -124,10 +124,13 @@ impl CacheDb {
             .map_err(Into::into)
     }
 
+    /// Insert or update by id. Another id with the same email is an error:
+    /// replacing that row would orphan its cards.
     pub fn insert_account(&self, account: &Account) -> Result<(), CacheError> {
         let conn = self.conn.lock().map_err(|_| CacheError::Lock)?;
         conn.execute(
-            "INSERT OR REPLACE INTO accounts (id, email, picture, signature) VALUES (?1, ?2, ?3, ?4)",
+            "INSERT INTO accounts (id, email, picture, signature) VALUES (?1, ?2, ?3, ?4)
+             ON CONFLICT(id) DO UPDATE SET email = excluded.email, picture = excluded.picture, signature = excluded.signature",
             params![account.id, account.email, account.picture, account.signature],
         )?;
         Ok(())
@@ -554,6 +557,36 @@ mod tests {
         assert_eq!(cards[0].color.as_deref(), Some("red"));
         assert_eq!(cards[0].group_by, "sender");
         assert_eq!(cards[0].card_type, "calendar");
+    }
+
+    #[test]
+    fn saving_an_account_again_updates_it_in_place() {
+        let db = db();
+        let mut a = account("me@x.com");
+        db.insert_account(&a).unwrap();
+        db.update_account_signature(&a.id, Some("-- me")).unwrap();
+        a.picture = Some("new-pic".into());
+        a.signature = Some("-- me".into());
+        db.insert_account(&a).unwrap();
+
+        let accounts = db.get_accounts().unwrap();
+        assert_eq!(accounts.len(), 1);
+        assert_eq!(accounts[0].picture.as_deref(), Some("new-pic"));
+        assert_eq!(accounts[0].signature.as_deref(), Some("-- me"));
+    }
+
+    #[test]
+    fn a_second_account_id_for_the_same_email_does_not_replace_the_first() {
+        let db = db();
+        let first = account("me@x.com");
+        db.insert_account(&first).unwrap();
+        db.insert_card(&Card::new(first.id.clone(), "Inbox".into(), "in:inbox".into(), 0)).unwrap();
+
+        assert!(db.insert_account(&account("me@x.com")).is_err());
+
+        let accounts = db.get_accounts().unwrap();
+        assert_eq!(accounts.len(), 1);
+        assert_eq!(accounts[0].id, first.id, "the cards' account must stay");
     }
 
     #[test]
