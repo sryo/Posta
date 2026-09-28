@@ -2195,6 +2195,9 @@ fn strip_html_tags(html: &str) -> String {
                     {
                         end_line(&mut result, false)
                     }
+                    "td" | "th" if is_closing && !(result.is_empty() || result.ends_with([' ', '\n'])) => {
+                        result.push(' ')
+                    }
                     _ => {}
                 }
             }
@@ -2795,6 +2798,12 @@ mod tests {
         assert_eq!(strip_html_tags("<div>one</div><div>two</div>"), "one\ntwo\n");
         assert_eq!(strip_html_tags("<ul><li>a</li><li>b</li></ul>"), "a\nb\n");
         assert_eq!(strip_html_tags("<div>a<br></div><div>b</div>"), "a\nb\n");
+    }
+
+    #[test]
+    fn strip_html_keeps_table_cells_apart() {
+        let html = "<table><tr><th>Item</th><th>Price</th></tr>\n<tr><td>Tea</td><td> $5 </td></tr></table>";
+        assert_eq!(strip_html_tags(html), "Item Price\nTea $5\n");
     }
 
     #[test]
