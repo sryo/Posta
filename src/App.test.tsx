@@ -61,6 +61,25 @@ beforeEach(() => {
 
 afterEach(() => vi.useRealTimers());
 
+describe("App background sync", () => {
+  it("drops a thread that no longer matches its card after a change elsewhere", async () => {
+    render(() => <App />);
+    await screen.findByText("Mail for A");
+
+    // Archived on another device: history reports it modified, and the
+    // card's query no longer returns it
+    handlers.sync_threads_incremental = () => ({
+      modified_threads: [{ ...thread("t-a", "Mail for A"), labels: [] }],
+      deleted_thread_ids: [],
+      is_full_sync: false,
+    });
+    threadsByCard["card-a"] = [];
+    window.dispatchEvent(new Event("focus"));
+
+    await waitFor(() => expect(screen.queryByText("Mail for A")).not.toBeInTheDocument());
+  });
+});
+
 describe("App accounts", () => {
   it("loads the first account's cards and threads on start", async () => {
     render(() => <App />);

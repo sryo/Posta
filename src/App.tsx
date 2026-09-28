@@ -968,6 +968,7 @@ function App() {
 
     const updatedCardThreads: Record<string, ThreadGroup[]> = {};
     const matchedThreadIds = new Set<string>();
+    const cardsWithModified = new Set<string>();
 
     for (const cardId of Object.keys(cardThreads)) {
       const groups = cardThreads[cardId];
@@ -985,6 +986,7 @@ function App() {
           if (existingIndex >= 0) {
             threads[existingIndex] = modifiedThread;
             matchedThreadIds.add(modifiedThread.gmail_thread_id);
+            cardsWithModified.add(cardId);
           }
         }
 
@@ -997,16 +999,16 @@ function App() {
 
     setCardThreads(produce(s => { Object.assign(s, updatedCardThreads); }));
 
-    // Check for new threads that weren't in any card
-    const unmatchedThreads = modifiedThreads.filter(t => !matchedThreadIds.has(t.gmail_thread_id));
-    if (unmatchedThreads.length > 0) {
-      // New threads detected - refresh non-collapsed cards in background
-      const account = selectedAccount();
-      if (account) {
-        const nonCollapsedCards = cards().filter(c => !collapsedCards[c.id] && c.card_type !== "calendar");
-        for (const card of nonCollapsedCards) {
-          fetchAndCacheThreads(account.id, card.id);
-        }
+    // A modified thread may no longer match its card's query (archived or
+    // read elsewhere), and a thread in no card may be new to some card; only
+    // the server can tell, so refetch the affected cards in the background
+    const account = selectedAccount();
+    if (!account) return;
+    const hasUnmatched = modifiedThreads.some(t => !matchedThreadIds.has(t.gmail_thread_id));
+    for (const card of cards()) {
+      if (collapsedCards[card.id] || card.card_type === "calendar") continue;
+      if (hasUnmatched || cardsWithModified.has(card.id)) {
+        fetchAndCacheThreads(account.id, card.id);
       }
     }
   }
