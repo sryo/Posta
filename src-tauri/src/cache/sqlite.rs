@@ -672,7 +672,7 @@ mod tests {
         let mut renamed = keep.clone();
         renamed.name = "Renamed".into();
 
-        db.apply_card_changes(&[added], &[renamed], &[gone.id.clone()]).unwrap();
+        db.apply_card_changes(&[added], &[renamed], std::slice::from_ref(&gone.id)).unwrap();
 
         let names: Vec<_> = db.get_cards("a").unwrap().into_iter().map(|c| c.name).collect();
         assert_eq!(names, ["Renamed", "Added"]);
@@ -695,7 +695,7 @@ mod tests {
         let duplicate = Card::new("a".into(), "Dup".into(), "q".into(), 3);
         let duplicate = Card { id: keep.id.clone(), ..duplicate };
 
-        let result = db.apply_card_changes(&[fresh, duplicate], &[renamed], &[gone.id.clone()]);
+        let result = db.apply_card_changes(&[fresh, duplicate], &[renamed], std::slice::from_ref(&gone.id));
 
         assert!(result.is_err());
         let names: Vec<_> = db.get_cards("a").unwrap().into_iter().map(|c| c.name).collect();
