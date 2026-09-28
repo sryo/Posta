@@ -295,6 +295,13 @@ fn shared_http_client() -> reqwest::Client {
     CLIENT.get_or_init(|| build_http_client(READ_TIMEOUT)).clone()
 }
 
+/// An id as one URL path segment. Gmail's ids never need escaping, but
+/// one holding '/' or ".." would otherwise send the request, with the
+/// user's token, to a different endpoint.
+fn path_id(id: &str) -> std::borrow::Cow<'_, str> {
+    urlencoding::encode(id)
+}
+
 /// A transport failure in words the user can act on, without the request
 /// URL (it can hold the user's search query)
 fn request_error(e: reqwest::Error) -> String {
@@ -391,7 +398,7 @@ impl GmailClient {
     }
 
     pub async fn get_thread(&self, thread_id: &str) -> Result<FullThread, String> {
-        let url = format!("{}/users/me/threads/{}?format=full", self.api_base, thread_id);
+        let url = format!("{}/users/me/threads/{}?format=full", self.api_base, path_id(thread_id));
 
         let resp = self
             .client
@@ -421,7 +428,7 @@ impl GmailClient {
         add_label_ids: Vec<String>,
         remove_label_ids: Vec<String>,
     ) -> Result<(), String> {
-        let url = format!("{}/users/me/threads/{}/modify", self.api_base, thread_id);
+        let url = format!("{}/users/me/threads/{}/modify", self.api_base, path_id(thread_id));
 
         let body = ModifyThreadRequest {
             add_label_ids,
@@ -449,7 +456,9 @@ impl GmailClient {
     ) -> Result<String, String> {
         let url = format!(
             "{}/users/me/messages/{}/attachments/{}",
-            self.api_base, message_id, attachment_id
+            self.api_base,
+            path_id(message_id),
+            path_id(attachment_id)
         );
 
         let resp = self
@@ -478,7 +487,9 @@ impl GmailClient {
     async fn get_thread_detail(&self, thread_id: &str) -> Result<Thread, String> {
         let url = format!(
             "{}/users/me/threads/{}?format=full&fields={}",
-            self.api_base, thread_id, THREAD_SUMMARY_FIELDS
+            self.api_base,
+            path_id(thread_id),
+            THREAD_SUMMARY_FIELDS
         );
 
         let resp = self
@@ -549,7 +560,7 @@ impl GmailClient {
     async fn execute_batch_thread_fetch(&self, thread_ids: &[String]) -> Result<(Vec<Thread>, Vec<String>), String> {
         let paths: Vec<String> = thread_ids
             .iter()
-            .map(|id| format!("/gmail/v1/users/me/threads/{}?format=full&fields={}", id, THREAD_SUMMARY_FIELDS))
+            .map(|id| format!("/gmail/v1/users/me/threads/{}?format=full&fields={}", path_id(id), THREAD_SUMMARY_FIELDS))
             .collect();
         let items = self.execute_batch(&paths).await?;
         let mut threads = Vec::new();
@@ -789,7 +800,7 @@ impl GmailClient {
         message: &OutgoingMessage<'_>,
         thread_id: Option<&str>,
     ) -> Result<GmailDraft, String> {
-        let url = format!("{}/users/me/drafts/{}", self.api_base, draft_id);
+        let url = format!("{}/users/me/drafts/{}", self.api_base, path_id(draft_id));
         match self.upsert_draft(self.client.put(&url), message, thread_id).await {
             // Sent or discarded from another device while this compose stayed
             // open; without a new draft the text would never reach Gmail again
@@ -840,7 +851,7 @@ impl GmailClient {
 
     /// Delete a draft
     pub async fn delete_draft(&self, draft_id: &str) -> Result<(), String> {
-        let url = format!("{}/users/me/drafts/{}", self.api_base, draft_id);
+        let url = format!("{}/users/me/drafts/{}", self.api_base, path_id(draft_id));
 
         let resp = self
             .client
@@ -902,7 +913,7 @@ impl GmailClient {
             let mut url = format!(
                 "{}/users/me/history?startHistoryId={}&maxResults={}&historyTypes=messageAdded&historyTypes=messageDeleted&historyTypes=labelAdded&historyTypes=labelRemoved",
                 self.api_base,
-                start_history_id,
+                urlencoding::encode(start_history_id),
                 HISTORY_PAGE_SIZE
             );
 
@@ -1005,7 +1016,7 @@ impl GmailClient {
         for chunk in thread_ids.chunks(MAX_BATCH_SIZE) {
             let paths: Vec<String> = chunk
                 .iter()
-                .map(|id| format!("/gmail/v1/users/me/threads/{}?format=minimal&fields=id", id))
+                .map(|id| format!("/gmail/v1/users/me/threads/{}?format=minimal&fields=id", path_id(id)))
                 .collect();
             let statuses: Vec<Option<u16>> = match self.execute_batch(&paths).await {
                 Ok(items) => items.into_iter().map(|item| item.map(|(status, _)| status)).collect(),
@@ -1037,7 +1048,8 @@ impl GmailClient {
     async fn thread_exists(&self, thread_id: &str) -> Result<bool, String> {
         let url = format!(
             "{}/users/me/threads/{}?format=minimal&fields=id",
-            self.api_base, thread_id
+            self.api_base,
+            path_id(thread_id)
         );
 
         let resp = self
@@ -1196,7 +1208,8 @@ fn attachment_fetches(threads: &[Thread]) -> Vec<AttachmentFetch> {
 fn attachment_path(attachment: &Attachment) -> String {
     format!(
         "/gmail/v1/users/me/messages/{}/attachments/{}",
-        attachment.message_id, attachment.attachment_id
+        path_id(&attachment.message_id),
+        path_id(&attachment.attachment_id)
     )
 }
 
@@ -1337,7 +1350,9 @@ fn thread_metadata_url(api_base: &str, thread_id: &str, header_names: &[&str]) -
         .collect();
     format!(
         "{}/users/me/threads/{}?format=metadata{}&fields=id,messages(id,threadId,labelIds,payload/headers)",
-        api_base, thread_id, headers
+        api_base,
+        path_id(thread_id),
+        headers
     )
 }
 

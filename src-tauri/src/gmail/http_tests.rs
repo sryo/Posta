@@ -657,3 +657,36 @@ async fn a_thread_batch_that_is_rate_limited_is_retried_as_a_batch() {
     assert_eq!(threads.len(), 20);
     assert_eq!(server.requests().len(), 2, "one batch retry instead of 20 single fetches");
 }
+
+#[tokio::test]
+async fn ids_are_escaped_in_request_paths() {
+    let server = StubServer::start(|request| {
+        if request.target.starts_with("/batch/") {
+            return batch_reply(request, |_| (200, thread_json("t")));
+        }
+        Reply::Json(200, r#"{"id":"t","messages":[],"data":""}"#.into())
+    })
+    .await;
+    let gmail = server.client();
+    let odd = "a/../b?c#d";
+
+    let _ = within(gmail.get_thread(odd)).await;
+    let _ = within(gmail.modify_thread(odd, vec![], vec!["UNREAD".into()])).await;
+    let _ = within(gmail.get_attachment(odd, odd)).await;
+    let _ = within(gmail.delete_draft(odd)).await;
+    let _ = within(gmail.batch_get_thread_details(&[odd.to_string()])).await;
+
+    let escaped = "a%2F..%2Fb%3Fc%23d";
+    let mut targets: Vec<String> = Vec::new();
+    for request in server.requests() {
+        if request.target.starts_with("/batch/") {
+            targets.extend(batch_paths(&request));
+        } else {
+            targets.push(request.target.clone());
+        }
+    }
+    assert_eq!(targets.len(), 5);
+    for target in &targets {
+        assert!(target.contains(escaped) && !target.contains(odd), "{}", target);
+    }
+}
