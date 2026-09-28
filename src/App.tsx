@@ -68,8 +68,6 @@ import {
 } from "./api/tauri";
 import { Menu, MenuItem, PredefinedMenuItem } from "@tauri-apps/api/menu";
 import {
-  decodeBase64Utf8,
-  findContent,
   formatFileSize,
   formatTime,
   formatSyncTime,
@@ -86,6 +84,7 @@ import {
   getResponseStatusLabel,
   normalizeBase64Url,
   addReplyPrefix,
+  addForwardPrefix,
   toDateInputString,
 } from "./utils";
 import "./App.css";
@@ -114,6 +113,14 @@ import { ActionsWheel } from "./components/ActionsWheel";
 import { CardForm } from "./components/CardForm";
 import { safeGetItem, safeSetItem, safeRemoveItem, safeGetJSON, safeSetJSON } from "./shared/storage";
 import { BG_COLORS, GMAIL_OPERATORS, type ActionSettings, type CardColor, type GroupBy } from "./shared/constants";
+import { createUndoableSend } from "./app/undoableSend";
+import { messageBodyHtml } from "./app/messageHtml";
+import { findHeader, lastMessageFromOthers } from "./app/messages";
+import { parseStoredWidth } from "./app/storedWidth";
+import { isSessionExpiredError } from "./app/authErrors";
+import { readFilesAsAttachments } from "./app/attachments";
+import { eventTimesFromForm, smartEventDefaults } from "./app/eventForm";
+import { getSmartEventTime, groupCalendarEvents, isUserLabel, mergeThreadGroups, regroupThreads, type CalendarEventGroup } from "./app/grouping";
 
 function App() {
   const [loading, setLoading] = createSignal(true);
@@ -162,7 +169,7 @@ function App() {
   // Sync status tracking
   const [lastSyncTimes, setLastSyncTimes] = createStore<Record<string, number>>({});
   const [syncErrors, setSyncErrors] = createStore<Record<string, string | null>>({});
-  // Current time signal for reactive relative time displays (updates every 30s)
+  // Ticking clock for relative time displays
   const [currentTime, setCurrentTime] = createSignal(Date.now());
 
   // Google Contacts from People API
@@ -242,14 +249,16 @@ function App() {
     attachments: SendAttachment[];
     reply?: { threadId: string; messageId?: string };
     isHtml?: boolean;
-    timeoutId: number;
-    progressIntervalId: number;
   }
-  const [pendingSend, setPendingSend] = createSignal<PendingSend | null>(null);
-  const [sendToastVisible, setSendToastVisible] = createSignal(false);
-  const [sendToastClosing, setSendToastClosing] = createSignal(false);
-  const [sendProgress, setSendProgress] = createSignal(0);
-  const SEND_DELAY_MS = 5000;
+  const undoableSend = createUndoableSend<PendingSend>({
+    delayMs: 5000,
+    send: executeActualSend,
+    onFailed: (pending, e) => {
+      console.error("Failed to send email:", e);
+      restoreFailedSend(pending);
+      setError(`Failed to send email: ${e}`);
+    },
+  });
 
   // Settings
   const [settingsOpen, setSettingsOpen] = createSignal(false);
@@ -259,7 +268,7 @@ function App() {
   const MIN_CARD_WIDTH = 250;
   const MAX_CARD_WIDTH = 600;
   const [cardWidth, setCardWidth] = createSignal<number>(
-    Math.max(MIN_CARD_WIDTH, Math.min(MAX_CARD_WIDTH, parseInt(safeGetItem("cardWidth") || "320", 10)))
+    parseStoredWidth(safeGetItem("cardWidth"), 320, MIN_CARD_WIDTH, MAX_CARD_WIDTH)
   );
   const snippetLines = 5; // Fixed at 5 lines
 
@@ -269,7 +278,7 @@ function App() {
   const MAX_MESSAGE_WIDTH = 1200;
   const getMaxMessageWidth = () => Math.min(MAX_MESSAGE_WIDTH, window.innerWidth - 96 - 220);
   const [inlineMessageWidth, setInlineMessageWidth] = createSignal<number>(
-    Math.max(MIN_MESSAGE_WIDTH, Math.min(getMaxMessageWidth(), parseInt(safeGetItem("inlineMessageWidth") || "400", 10)))
+    parseStoredWidth(safeGetItem("inlineMessageWidth"), 400, MIN_MESSAGE_WIDTH, getMaxMessageWidth())
   );
 
   function updateInlineMessageWidth(width: number) {
@@ -392,14 +401,29 @@ function App() {
     const separator = await PredefinedMenuItem.new({ item: "Separator" });
     const forwardItem = await MenuItem.new({
       text: "Forward",
-      enabled: !!att.inlineData,
-      action: () => showToast(`Forward ${att.filename} - coming soon`),
+      action: () => forwardAttachment(att),
     });
 
     const menu = await Menu.new({
       items: [openItem, downloadItem, separator, forwardItem],
     });
     await menu.popup();
+  }
+
+  // Attach to the open compose, or start a new email with it
+  async function forwardAttachment(
+    att: { messageId: string; attachmentId: string; filename: string; mimeType: string; inlineData: string | null }
+  ) {
+    const account = selectedAccount();
+    if (!account) return;
+    try {
+      const data = att.inlineData || await downloadAttachmentApi(account.id, att.messageId, att.attachmentId);
+      setComposeAttachments([...composeAttachments(), { filename: att.filename, mime_type: att.mimeType, data }]);
+      setComposing(true);
+    } catch (e) {
+      console.error("Failed to forward attachment:", e);
+      showToast(`Failed to forward ${att.filename}: ${e}`);
+    }
   }
 
   // Gmail search autocomplete
@@ -617,26 +641,8 @@ function App() {
     closing: boolean;
   }
 
-  // Smart defaults: round up to next 30-min interval, end 30 mins later
-  const getSmartEventDefaults = () => {
-    const now = new Date();
-    const startTime = new Date(now);
-    if (now.getMinutes() <= 30) {
-      startTime.setMinutes(30, 0, 0);
-    } else {
-      startTime.setHours(startTime.getHours() + 1, 0, 0, 0);
-    }
-    const endTime = new Date(startTime.getTime() + 30 * 60 * 1000);
-    // Derive the date from startTime so rounding past midnight advances the day
-    return {
-      date: toDateInputString(startTime),
-      startTime: `${String(startTime.getHours()).padStart(2, '0')}:${String(startTime.getMinutes()).padStart(2, '0')}`,
-      endTime: `${String(endTime.getHours()).padStart(2, '0')}:${String(endTime.getMinutes()).padStart(2, '0')}`
-    };
-  };
-
   const defaultEventForm = (): EventFormState => {
-    const defaults = getSmartEventDefaults();
+    const defaults = smartEventDefaults();
     return {
       summary: "", description: "", location: "",
       startDate: defaults.date, startTime: defaults.startTime,
@@ -649,7 +655,7 @@ function App() {
   const [eventForm, setEventForm] = createSignal<EventFormState>(defaultEventForm());
 
   const resetEventFormToNow = () => {
-    const defaults = getSmartEventDefaults();
+    const defaults = smartEventDefaults();
     setEventForm(f => ({ ...f, startDate: defaults.date, startTime: defaults.startTime, endDate: defaults.date, endTime: defaults.endTime }));
   };
   const closeEventForm = () => {
@@ -976,6 +982,7 @@ function App() {
 
     const updatedCardThreads: Record<string, ThreadGroup[]> = {};
     const matchedThreadIds = new Set<string>();
+    const cardsWithModified = new Set<string>();
 
     for (const cardId of Object.keys(cardThreads)) {
       const groups = cardThreads[cardId];
@@ -993,6 +1000,7 @@ function App() {
           if (existingIndex >= 0) {
             threads[existingIndex] = modifiedThread;
             matchedThreadIds.add(modifiedThread.gmail_thread_id);
+            cardsWithModified.add(cardId);
           }
         }
 
@@ -1005,16 +1013,16 @@ function App() {
 
     setCardThreads(produce(s => { Object.assign(s, updatedCardThreads); }));
 
-    // Check for new threads that weren't in any card
-    const unmatchedThreads = modifiedThreads.filter(t => !matchedThreadIds.has(t.gmail_thread_id));
-    if (unmatchedThreads.length > 0) {
-      // New threads detected - refresh non-collapsed cards in background
-      const account = selectedAccount();
-      if (account) {
-        const nonCollapsedCards = cards().filter(c => !collapsedCards[c.id] && c.card_type !== "calendar");
-        for (const card of nonCollapsedCards) {
-          fetchAndCacheThreads(account.id, card.id);
-        }
+    // A modified thread may no longer match its card's query (archived or
+    // read elsewhere), and a thread in no card may be new to some card; only
+    // the server can tell, so refetch the affected cards in the background
+    const account = selectedAccount();
+    if (!account) return;
+    const hasUnmatched = modifiedThreads.some(t => !matchedThreadIds.has(t.gmail_thread_id));
+    for (const card of cards()) {
+      if (collapsedCards[card.id] || card.card_type === "calendar") continue;
+      if (hasUnmatched || cardsWithModified.has(card.id)) {
+        fetchAndCacheThreads(account.id, card.id);
       }
     }
   }
@@ -1125,11 +1133,7 @@ function App() {
   let handleColorSchemeChange: ((e: MediaQueryListEvent) => void) | undefined;
 
   onMount(async () => {
-    // Apply saved card width
-    const savedWidth = safeGetItem("cardWidth");
-    if (savedWidth) {
-      document.documentElement.style.setProperty("--card-width", `${savedWidth}px`);
-    }
+    document.documentElement.style.setProperty("--card-width", `${cardWidth()}px`);
 
     // Apply saved inline message width
     document.documentElement.style.setProperty("--inline-message-width", `${inlineMessageWidth()}px`);
@@ -1181,21 +1185,7 @@ function App() {
       setAccounts(accts);
       if (accts.length > 0) {
         setSelectedAccount(accts[0]);
-        const cardList = await getCards(accts[0].id);
-        setCards(cardList);
-        // Load collapsed state from localStorage, defaulting to expanded
-        const savedCollapsed = safeGetJSON<Record<string, boolean>>("collapsedCards", {});
-        const collapsed: Record<string, boolean> = {};
-        cardList.forEach(c => { collapsed[c.id] = savedCollapsed[c.id] ?? false; });
-        setCollapsedCards(reconcile(collapsed));
-
-        // Auto-fetch threads for all cards
-        for (const card of cardList) {
-          if (!collapsed[card.id]) {
-            loadCardThreads(card.id);
-          }
-        }
-
+        await loadAccountCards(accts[0]);
         startBackgroundSync(accts[0].id);
       }
 
@@ -1235,7 +1225,6 @@ function App() {
     }
   });
 
-  // Update currentTime every second to keep relative timestamps fresh
   const timeUpdateInterval = setInterval(() => setCurrentTime(Date.now()), 15000);
 
   onCleanup(() => {
@@ -1307,11 +1296,21 @@ function App() {
 
   function scrollFocusedIntoView() {
     requestAnimationFrame(() => {
-      const focusedCard = document.querySelector('.card-wrapper:has(.card.card-focused)');
+      const cardId = focusedCardId();
+      const focusedCard = cardId ? document.querySelector(`.card[data-id="${CSS.escape(cardId)}"]`)?.closest('.card-wrapper') : null;
       focusedCard?.scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'center' });
       const focused = document.querySelector('.thread.focused, .calendar-event-item.focused');
       focused?.scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'nearest' });
     });
+  }
+
+  // Focus a card and the item at `index` in it (-1 focuses the card only)
+  function focusCardItem(cardId: string, index: number) {
+    setFocusedCardId(cardId);
+    const calendar = isCalendarCard(cardId);
+    setFocusedEventIndex(calendar ? index : -1);
+    setFocusedThreadIndex(calendar ? -1 : index);
+    scrollFocusedIntoView();
   }
 
   // Global keyboard shortcuts
@@ -1441,54 +1440,21 @@ function App() {
       if (cardsList.length === 0) return;
 
       const isRight = e.key === 'l' || e.key === 'ArrowRight';
-      let cardId = focusedCardId();
+      const lastCard = cardsList[cardsList.length - 1];
+      const cardId = focusedCardId();
 
       if (!cardId) {
-        // From add card form, go back to last card
-        if (addingCard() && !isRight) {
-          setAddingCard(false);
-          if (cardsList.length > 0) {
-            const lastCard = cardsList[cardsList.length - 1];
-            setFocusedCardId(lastCard.id);
-            if (isCalendarCard(lastCard.id)) {
-              setFocusedEventIndex(0);
-              setFocusedThreadIndex(-1);
-            } else {
-              setFocusedThreadIndex(0);
-              setFocusedEventIndex(-1);
-            }
-            scrollFocusedIntoView();
-          }
-          return;
-        }
-        const targetCard = isRight ? cardsList[0] : cardsList[cardsList.length - 1];
-        setFocusedCardId(targetCard.id);
-        if (isCalendarCard(targetCard.id)) {
-          setFocusedEventIndex(0);
-          setFocusedThreadIndex(-1);
-        } else {
-          setFocusedThreadIndex(0);
-          setFocusedEventIndex(-1);
-        }
-        scrollFocusedIntoView();
+        // From the add card form (or no focus), left goes to the last card
+        if (addingCard() && !isRight) setAddingCard(false);
+        focusCardItem(isRight ? cardsList[0].id : lastCard.id, 0);
         return;
       }
 
-      const cardIndex = cardsList.findIndex(c => c.id === cardId);
-      const newCardIndex = isRight ? cardIndex + 1 : cardIndex - 1;
+      const newCardIndex = cardsList.findIndex(c => c.id === cardId) + (isRight ? 1 : -1);
 
       if (newCardIndex >= 0 && newCardIndex < cardsList.length) {
-        const newCardId = cardsList[newCardIndex].id;
-        setFocusedCardId(newCardId);
-        if (isCalendarCard(newCardId)) {
-          setFocusedEventIndex(0);
-          setFocusedThreadIndex(-1);
-        } else {
-          setFocusedThreadIndex(0);
-          setFocusedEventIndex(-1);
-        }
-        scrollFocusedIntoView();
-      } else if (isRight && newCardIndex >= cardsList.length && !addingCard()) {
+        focusCardItem(cardsList[newCardIndex].id, 0);
+      } else if (isRight && !addingCard()) {
         // Past last card - open add card form
         setFocusedCardId(null);
         setFocusedThreadIndex(-1);
@@ -1498,20 +1464,9 @@ function App() {
         setQueryPreviewCalendarEvents([]);
         setQueryPreviewLoading(false);
         setAddingCard(true);
-      } else if (!isRight && newCardIndex < 0 && addingCard()) {
+      } else if (!isRight && addingCard()) {
         setAddingCard(false);
-        if (cardsList.length > 0) {
-          const lastCard = cardsList[cardsList.length - 1];
-          setFocusedCardId(lastCard.id);
-          if (isCalendarCard(lastCard.id)) {
-            setFocusedEventIndex(0);
-            setFocusedThreadIndex(-1);
-          } else {
-            setFocusedThreadIndex(0);
-            setFocusedEventIndex(-1);
-          }
-          scrollFocusedIntoView();
-        }
+        focusCardItem(lastCard.id, 0);
       }
       return;
     }
@@ -1523,68 +1478,27 @@ function App() {
       if (cardsList.length === 0) return;
 
       const isDown = e.key === 'j' || e.key === 'ArrowDown';
-      let cardId = focusedCardId();
+      const cardId = focusedCardId();
 
       // If no focus, start at first card
       if (!cardId) {
-        cardId = cardsList[0].id;
-        setFocusedCardId(cardId);
-        if (isCalendarCard(cardId)) {
-          setFocusedEventIndex(isDown ? 0 : -1);
-          setFocusedThreadIndex(-1);
-        } else {
-          setFocusedThreadIndex(isDown ? 0 : -1);
-          setFocusedEventIndex(-1);
-        }
-        scrollFocusedIntoView();
+        focusCardItem(cardsList[0].id, isDown ? 0 : -1);
         return;
       }
 
-      // Get items based on card type
-      const isCalendar = isCalendarCard(cardId);
-      const items = isCalendar ? getCardEventsFlat(cardId) : getCardThreadsFlat(cardId);
-      const idx = isCalendar ? focusedEventIndex() : focusedThreadIndex();
+      const itemCount = (id: string) => (isCalendarCard(id) ? getCardEventsFlat(id) : getCardThreadsFlat(id)).length;
+      const idx = isCalendarCard(cardId) ? focusedEventIndex() : focusedThreadIndex();
       const newIdx = isDown ? idx + 1 : idx - 1;
+      const cardIndex = cardsList.findIndex(c => c.id === cardId);
 
-      if (newIdx >= 0 && newIdx < items.length) {
-        // Move within same card
-        if (isCalendar) {
-          setFocusedEventIndex(newIdx);
-        } else {
-          setFocusedThreadIndex(newIdx);
-        }
-        scrollFocusedIntoView();
-      } else if (isDown && newIdx >= items.length) {
-        // Move to next card
-        const cardIndex = cardsList.findIndex(c => c.id === cardId);
-        if (cardIndex < cardsList.length - 1) {
-          const nextCardId = cardsList[cardIndex + 1].id;
-          setFocusedCardId(nextCardId);
-          if (isCalendarCard(nextCardId)) {
-            setFocusedEventIndex(0);
-            setFocusedThreadIndex(-1);
-          } else {
-            setFocusedThreadIndex(0);
-            setFocusedEventIndex(-1);
-          }
-          scrollFocusedIntoView();
-        }
+      if (newIdx >= 0 && newIdx < itemCount(cardId)) {
+        focusCardItem(cardId, newIdx);
+      } else if (isDown && newIdx >= itemCount(cardId)) {
+        if (cardIndex < cardsList.length - 1) focusCardItem(cardsList[cardIndex + 1].id, 0);
       } else if (!isDown && newIdx < 0 && idx >= 0) {
-        // Move to previous card
-        const cardIndex = cardsList.findIndex(c => c.id === cardId);
         if (cardIndex > 0) {
           const prevCardId = cardsList[cardIndex - 1].id;
-          setFocusedCardId(prevCardId);
-          if (isCalendarCard(prevCardId)) {
-            const prevItems = getCardEventsFlat(prevCardId);
-            setFocusedEventIndex(prevItems.length - 1);
-            setFocusedThreadIndex(-1);
-          } else {
-            const prevItems = getCardThreadsFlat(prevCardId);
-            setFocusedThreadIndex(prevItems.length - 1);
-            setFocusedEventIndex(-1);
-          }
-          scrollFocusedIntoView();
+          focusCardItem(prevCardId, itemCount(prevCardId) - 1);
         }
       }
       return;
@@ -1734,8 +1648,8 @@ function App() {
       console.warn("iCloud pull failed:", e);
     }
 
-    const cardList = await getCards(account.id);
-    setCards(cardList);
+    const cardList = await loadAccountCards(account);
+    if (!cardList) return;
     startBackgroundSync(account.id);
 
     if (cardList.length > 0) {
@@ -1801,8 +1715,7 @@ function App() {
         console.warn("iCloud pull failed:", e);
       }
 
-      const cardList = await getCards(account.id);
-      setCards(cardList);
+      await loadAccountCards(account);
       startBackgroundSync(account.id);
 
       setSettingsOpen(false);
@@ -1813,37 +1726,33 @@ function App() {
     }
   }
 
+  let applyingPreset = false;
   async function applyPreset(presetKey: string) {
     const account = selectedAccount();
-    if (!account) return;
-
     const preset = PRESETS[presetKey];
-    if (!preset) return;
+    if (!account || !preset || applyingPreset) return;
 
+    applyingPreset = true;
+    const newCards: Card[] = [];
     try {
-      const newCards: Card[] = [];
-
       for (const cardPreset of preset.cards) {
-        // Detect calendar card from query
         const cardType = cardPreset.query.toLowerCase().includes("calendar:") ? "calendar" : "email";
-        const card = await createCard(account.id, cardPreset.name, cardPreset.query, cardPreset.color || null, "date", cardType);
-        newCards.push(card);
+        newCards.push(await createCard(account.id, cardPreset.name, cardPreset.query, cardPreset.color || null, "date", cardType));
       }
-
-      setCards(newCards);
-
-      // Initialize collapsed state
-      const collapsed: Record<string, boolean> = {};
-      newCards.forEach(c => { collapsed[c.id] = false; });
-      setCollapsedCards(reconcile(collapsed));
-
-      setShowPresetSelection(false);
-
-      // Fetch threads for all new cards
-      newCards.forEach(card => loadCardThreads(card.id));
     } catch (e) {
       setError(String(e));
+      // Nothing was created: stay on the picker so the user can retry
+      if (newCards.length === 0) return;
+    } finally {
+      applyingPreset = false;
     }
+
+    // Show whatever was created, even if a later card failed: the created
+    // ones are already stored, and hiding them invites duplicates on retry
+    setCards(newCards);
+    setCollapsedCards(reconcile(Object.fromEntries(newCards.map(c => [c.id, false]))));
+    setShowPresetSelection(false);
+    newCards.forEach(card => loadCardThreads(card.id));
   }
 
   async function handleStartFresh() {
@@ -1893,6 +1802,7 @@ function App() {
     const account = selectedAccount();
     if (!account) return;
 
+    const signedOutCards = cards();
     try {
       await deleteAccount(account.id);
       const remaining = accounts().filter(a => a.id !== account.id);
@@ -1901,10 +1811,9 @@ function App() {
       setCards([]);
       setCardThreads(reconcile({}));
       setAccountLabels([]);
-      // Clean up localStorage
-      safeRemoveItem("cardColors");
-      safeRemoveItem("collapsedCards");
-      safeRemoveItem("cardGroupBy");
+      const collapsed = safeGetJSON<Record<string, boolean>>("collapsedCards", {});
+      for (const card of signedOutCards) delete collapsed[card.id];
+      safeSetJSON("collapsedCards", collapsed);
       // Fall through to the next account instead of a blank screen
       if (remaining.length > 0) {
         await switchAccount(remaining[0]);
@@ -1975,51 +1884,16 @@ function App() {
     }, 200);
   }
 
-  const MAX_ATTACHMENT_SIZE = 25 * 1024 * 1024; // 25MB Gmail limit
-
   async function handleFileSelect(e: Event) {
     const input = e.target as HTMLInputElement;
     if (!input.files || input.files.length === 0) return;
 
-    const newAttachments: SendAttachment[] = [];
-    const skippedFiles: string[] = [];
-
-    for (const file of Array.from(input.files)) {
-      // Check file size
-      if (file.size > MAX_ATTACHMENT_SIZE) {
-        skippedFiles.push(`${file.name} (${formatFileSize(file.size)} - max 25MB)`);
-        continue;
-      }
-
-      let data: string;
-      try {
-        data = await new Promise<string>((resolve, reject) => {
-          const reader = new FileReader();
-          reader.onload = () => {
-            const result = reader.result as string;
-            // Remove the "data:mime/type;base64," prefix
-            resolve(result.split(',')[1] || '');
-          };
-          reader.onerror = () => reject(reader.error ?? new Error("File read failed"));
-          reader.readAsDataURL(file);
-        });
-      } catch {
-        skippedFiles.push(`${file.name} (could not be read)`);
-        continue;
-      }
-      newAttachments.push({
-        filename: file.name,
-        mime_type: file.type || 'application/octet-stream',
-        data,
-      });
+    const { attachments, skipped } = await readFilesAsAttachments(Array.from(input.files));
+    if (skipped.length > 0) {
+      setComposeEmailError(`Skipped: ${skipped.join(', ')}`);
     }
-
-    if (skippedFiles.length > 0) {
-      setComposeEmailError(`Skipped: ${skippedFiles.join(', ')}`);
-    }
-
-    if (newAttachments.length > 0) {
-      setComposeAttachments([...composeAttachments(), ...newAttachments]);
+    if (attachments.length > 0) {
+      setComposeAttachments([...composeAttachments(), ...attachments]);
     }
     input.value = ''; // Reset input so same file can be selected again
   }
@@ -2039,25 +1913,17 @@ function App() {
       return;
     }
 
+    const times = eventTimesFromForm(form);
+    if ("error" in times) {
+      setEventForm(f => ({ ...f, error: times.error }));
+      return;
+    }
+
     setEventForm(f => ({ ...f, saving: true, error: null }));
 
     const editing = form.editing;
 
     try {
-      let start: number, end: number;
-      if (form.allDay) {
-        const sParts = form.startDate.split('-');
-        start = Date.UTC(parseInt(sParts[0]), parseInt(sParts[1]) - 1, parseInt(sParts[2]), 12, 0, 0);
-
-        const eParts = form.endDate.split('-');
-        end = Date.UTC(parseInt(eParts[0]), parseInt(eParts[1]) - 1, parseInt(eParts[2]), 12, 0, 0);
-      } else {
-        const s = new Date(`${form.startDate}T${form.startTime}`);
-        start = s.getTime();
-        const e = new Date(`${form.endDate}T${form.endTime}`);
-        end = e.getTime();
-      }
-
       const attendeesList = form.attendees
         .split(',')
         .map(s => s.trim())
@@ -2067,8 +1933,8 @@ function App() {
         summary: form.summary,
         description: form.description || null,
         location: form.location || null,
-        startTime: start,
-        endTime: end,
+        startTime: times.start,
+        endTime: times.end,
         allDay: form.allDay,
         attendees: attendeesList.length > 0 ? attendeesList : null,
         recurrence: form.recurrence ? [form.recurrence] : null,
@@ -2157,76 +2023,41 @@ function App() {
       attachments: [...composeAttachments()],
       reply: replyingToThread() ? { ...replyingToThread()! } : undefined,
       isHtml: composeIsHtml(),
-      timeoutId: 0,
-      progressIntervalId: 0,
     };
 
-    // Clear draft and close compose immediately
-    if (draftSaveTimeout) clearTimeout(draftSaveTimeout);
-    clearDraft();
+    // closeCompose clears the draft and cancels any pending draft save
     closeCompose();
-
-    // Start the countdown
-    setSendProgress(0);
-    setSendToastClosing(false);
-    setSendToastVisible(true);
-
-    // Progress animation
-    const progressInterval = window.setInterval(() => {
-      setSendProgress(p => Math.min(p + 2, 100));
-    }, SEND_DELAY_MS / 50);
-
-    // Schedule actual send
-    const timeoutId = window.setTimeout(async () => {
-      clearInterval(progressInterval);
-      // Past the undo window: make undoSend a no-op (and hide the Undo
-      // button) before the network call starts, so a late click can't
-      // reopen compose while the mail still goes out
-      setPendingSend(null);
-      await executeActualSend(pending);
-    }, SEND_DELAY_MS);
-
-    pending.timeoutId = timeoutId;
-    pending.progressIntervalId = progressInterval;
-    setPendingSend(pending);
+    undoableSend.queue(pending);
   }
 
   async function executeActualSend(pending: PendingSend) {
-    try {
-      // Convert plain text to HTML if sending as HTML
-      let body = pending.body;
-      if (pending.isHtml) {
-        // Escape HTML entities and convert newlines to <br>
-        body = body
-          .replace(/&/g, '&amp;')
-          .replace(/</g, '&lt;')
-          .replace(/>/g, '&gt;')
-          .replace(/\n/g, '<br>\n');
-        body = `<div>${body}</div>`;
-      }
+    // Convert plain text to HTML if sending as HTML
+    let body = pending.body;
+    if (pending.isHtml) {
+      // Escape HTML entities and convert newlines to <br>
+      body = body
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/\n/g, '<br>\n');
+      body = `<div>${body}</div>`;
+    }
 
-      if (pending.reply) {
-        await replyToThread(
-          pending.accountId,
-          pending.reply.threadId,
-          pending.to,
-          pending.cc,
-          pending.bcc,
-          pending.subject,
-          body,
-          pending.reply.messageId,
-          pending.attachments,
-          pending.isHtml
-        );
-      } else {
-        await sendEmail(pending.accountId, pending.to, pending.cc, pending.bcc, pending.subject, body, pending.attachments, pending.isHtml);
-      }
-      hideSendToast();
-    } catch (e) {
-      console.error("Failed to send email:", e);
-      restoreFailedSend(pending);
-      setError(`Failed to send email: ${e}`);
-      hideSendToast();
+    if (pending.reply) {
+      await replyToThread(
+        pending.accountId,
+        pending.reply.threadId,
+        pending.to,
+        pending.cc,
+        pending.bcc,
+        pending.subject,
+        body,
+        pending.reply.messageId,
+        pending.attachments,
+        pending.isHtml
+      );
+    } else {
+      await sendEmail(pending.accountId, pending.to, pending.cc, pending.bcc, pending.subject, body, pending.attachments, pending.isHtml);
     }
   }
 
@@ -2266,12 +2097,8 @@ function App() {
   }
 
   function undoSend() {
-    const pending = pendingSend();
+    const pending = undoableSend.undo();
     if (!pending) return;
-
-    // Cancel the scheduled send and the progress animation
-    clearTimeout(pending.timeoutId);
-    clearInterval(pending.progressIntervalId);
 
     // If closeCompose's 200ms wipe hasn't fired yet, it must not erase the
     // fields restored below
@@ -2296,20 +2123,6 @@ function App() {
       setShowCcBcc(true);
     }
     setComposing(true);
-
-    // Clear pending state and hide toast
-    setPendingSend(null);
-    hideSendToast();
-  }
-
-  function hideSendToast() {
-    setSendToastClosing(true);
-    setTimeout(() => {
-      setSendToastVisible(false);
-      setSendToastClosing(false);
-      setPendingSend(null);
-      setSendProgress(0);
-    }, 200);
   }
 
   async function handleQuickReply() {
@@ -2329,7 +2142,7 @@ function App() {
     const accountEmail = account.email.toLowerCase();
     const replyTo = thread.participants.find(p => extractEmail(p).toLowerCase() !== accountEmail)
       || thread.participants[0] || "";
-    const subject = thread.subject.startsWith("Re:") ? thread.subject : `Re: ${thread.subject}`;
+    const subject = addReplyPrefix(thread.subject);
 
     setQuickReply(qr => ({ ...qr, sending: true }));
     try {
@@ -2349,7 +2162,7 @@ function App() {
     const text = quickReply().text;
     if (!account || !event.organizer || !text.trim()) return;
 
-    const subject = `Re: ${event.title}`;
+    const subject = addReplyPrefix(event.title);
 
     setQuickReply(qr => ({ ...qr, sending: true }));
     try {
@@ -2372,14 +2185,12 @@ function App() {
     setQuickReactionSending(true);
 
     try {
-      // Fetch thread details to get the last message
       const fullThread = await getThreadDetails(account.id, threadId);
-      if (!fullThread.messages.length) return;
+      const target = lastMessageFromOthers(fullThread.messages, account.email);
+      if (!target) return;
 
-      const lastMsg = fullThread.messages[fullThread.messages.length - 1];
-      const headers = lastMsg.payload?.headers || [];
-      const fromHeader = headers.find(h => h.name === 'From')?.value;
-      const messageIdHeader = headers.find(h => h.name === 'Message-ID')?.value || lastMsg.id;
+      const fromHeader = findHeader(target.payload?.headers, 'From');
+      const messageIdHeader = findHeader(target.payload?.headers, 'Message-ID') || target.id;
 
       if (!fromHeader) return;
 
@@ -2387,6 +2198,7 @@ function App() {
       await sendReaction(account.id, threadId, messageIdHeader, emoji, toEmail);
     } catch (e) {
       console.error("Failed to send reaction:", e);
+      showToast(`Failed to send reaction: ${e}`);
     } finally {
       setQuickReactionSending(false);
     }
@@ -2399,7 +2211,7 @@ function App() {
     if (!thread) return;
 
     // Build forwarded subject and body
-    const fwdSubject = thread.subject.startsWith("Fwd:") ? thread.subject : `Fwd: ${thread.subject}`;
+    const fwdSubject = addForwardPrefix(thread.subject);
 
     // Quote the full last message like the ThreadView forward path; fall
     // back to the snippet if the fetch fails
@@ -2412,9 +2224,8 @@ function App() {
         const details = await getThreadDetails(account.id, threadId);
         const lastMsg = details.messages[details.messages.length - 1];
         if (lastMsg) {
-          const headers = lastMsg.payload?.headers || [];
-          from = headers.find(h => h.name === 'From')?.value || from;
-          date = headers.find(h => h.name === 'Date')?.value || '';
+          from = findHeader(lastMsg.payload?.headers, 'From') || from;
+          date = findHeader(lastMsg.payload?.headers, 'Date') || '';
           body = extractMessageText(lastMsg.payload, lastMsg.snippet);
         }
       } catch (e) {
@@ -2452,7 +2263,7 @@ function App() {
       // ThreadView may report either the Gmail API id or the RFC Message-ID
       const messageIndex = thread.messages.findIndex(m =>
         m.id === messageId ||
-        m.payload?.headers?.find(h => h.name === 'Message-ID')?.value === messageId
+        findHeader(m.payload?.headers, 'Message-ID') === messageId
       );
       if (messageIndex >= 0) setFocusedMessageIndex(messageIndex);
     }
@@ -2471,6 +2282,7 @@ function App() {
 
   // Label drawer functions
   let labelsAccountId: string | null = null;
+  let labelsFetchingFor: string | null = null;
   async function fetchAccountLabels() {
     const account = selectedAccount();
     if (!account) return;
@@ -2482,10 +2294,13 @@ function App() {
     }
 
     if (accountLabels().length > 0) return; // Already cached
+    if (labelsFetchingFor === account.id) return;
 
+    labelsFetchingFor = account.id;
     setLabelsLoading(true);
     try {
       const labels = await listLabels(account.id);
+      if (selectedAccount()?.id !== account.id) return;
       // Sort: user labels first (alphabetically), then system labels
       const sorted = labels.sort((a, b) => {
         if (a.label_type === 'user' && b.label_type !== 'user') return -1;
@@ -2496,9 +2311,21 @@ function App() {
     } catch (e) {
       console.error("Failed to fetch labels:", e);
     } finally {
+      if (labelsFetchingFor === account.id) labelsFetchingFor = null;
       setLabelsLoading(false);
     }
   }
+
+  const labelNames = createMemo(() => Object.fromEntries(accountLabels().map(l => [l.id, l.name])));
+
+  // "Group by label" shows label names, which only the label list carries
+  createEffect(() => {
+    if (!selectedAccount()) return;
+    const wantsLabels = cards().some(c => c.group_by === "label")
+      || (editingCardId() !== null && editCardGroupBy() === "label")
+      || (addingCard() && newCardGroupBy() === "label");
+    if (wantsLabels) untrack(fetchAccountLabels);
+  });
 
   // Calendar drawer functions (for events)
   async function fetchAvailableCalendars() {
@@ -2597,10 +2424,7 @@ function App() {
   }
 
   function getThreadUserLabelCount(): number {
-    const labels = getCurrentThreadLabels();
-    // System labels are uppercase (INBOX, SENT, STARRED, etc.) or start with CATEGORY_
-    const systemLabels = ['INBOX', 'SENT', 'DRAFT', 'SPAM', 'TRASH', 'STARRED', 'UNREAD', 'IMPORTANT', 'CHAT', 'FORUMS', 'UPDATES', 'PROMOTIONS', 'SOCIAL', 'PERSONAL'];
-    return labels.filter(l => !systemLabels.includes(l) && !l.startsWith('CATEGORY_')).length;
+    return getCurrentThreadLabels().filter(isUserLabel).length;
   }
 
   async function handleThreadViewAction(action: string) {
@@ -2661,19 +2485,6 @@ function App() {
     setBatchReplyMessages({});
     setBatchReplySending({});
 
-    // Helper to extract body from message
-    const extractBody = (msg: any): string => {
-      if (msg.payload?.body?.data) return decodeBase64Utf8(msg.payload.body.data);
-
-      const htmlContent = findContent(msg.payload?.parts, 'text/html');
-      if (htmlContent) return htmlContent;
-
-      const textContent = findContent(msg.payload?.parts, 'text/plain');
-      if (textContent) return `<pre style="white-space: pre-wrap; font-family: inherit;">${textContent}</pre>`;
-
-      return msg.snippet || '(No content)';
-    };
-
     const accountEmail = account.email.toLowerCase();
     const cardThreadList = getCardThreadsFlat(cardId);
 
@@ -2682,16 +2493,11 @@ function App() {
         threadIds.map(async (threadId) => {
           const details = await getThreadDetails(account.id, threadId);
           if (details.messages && details.messages.length > 0) {
-            // Reply to the last message NOT sent by the current account;
-            // if the user replied last, targeting that message would make
+            // If the user replied last, targeting that message would make
             // the batch reply address the user themselves
-            const replyMsg = [...details.messages].reverse().find(m => {
-              const msgFrom = m.payload?.headers?.find(h => h.name === 'From')?.value;
-              return !!msgFrom && extractEmail(msgFrom).toLowerCase() !== accountEmail;
-            }) || details.messages[details.messages.length - 1];
-            const headers = replyMsg.payload?.headers || [];
-            const from = headers.find(h => h.name === 'From')?.value || 'Unknown';
-            const subject = headers.find(h => h.name === 'Subject')?.value || '(No subject)';
+            const replyMsg = lastMessageFromOthers(details.messages, accountEmail)!;
+            const from = findHeader(replyMsg.payload?.headers, 'From') || 'Unknown';
+            const subject = findHeader(replyMsg.payload?.headers, 'Subject') || '(No subject)';
             const date = replyMsg.internalDate
               ? new Date(parseInt(replyMsg.internalDate)).toLocaleDateString()
               : '';
@@ -2707,7 +2513,7 @@ function App() {
               threadId,
               subject,
               snippet: replyMsg.snippet || '',
-              body: extractBody(replyMsg),
+              body: messageBodyHtml(replyMsg.payload, replyMsg.snippet),
               from,
               date,
               messageId: replyMsg.id,
@@ -2746,44 +2552,13 @@ function App() {
     const input = e.target as HTMLInputElement;
     if (!input.files || input.files.length === 0) return;
 
-    const newAttachments: SendAttachment[] = [];
-    const skippedFiles: string[] = [];
-
-    for (const file of Array.from(input.files)) {
-      if (file.size > MAX_ATTACHMENT_SIZE) {
-        skippedFiles.push(`${file.name} (${formatFileSize(file.size)} - max 25MB)`);
-        continue;
-      }
-
-      let data: string;
-      try {
-        data = await new Promise<string>((resolve, reject) => {
-          const reader = new FileReader();
-          reader.onload = () => {
-            const result = reader.result as string;
-            resolve(result.split(',')[1] || '');
-          };
-          reader.onerror = () => reject(reader.error ?? new Error("File read failed"));
-          reader.readAsDataURL(file);
-        });
-      } catch {
-        skippedFiles.push(`${file.name} (could not be read)`);
-        continue;
-      }
-      newAttachments.push({
-        filename: file.name,
-        mime_type: file.type || 'application/octet-stream',
-        data
-      });
+    const { attachments, skipped } = await readFilesAsAttachments(Array.from(input.files));
+    if (skipped.length > 0) {
+      showToast(`Skipped: ${skipped.join(', ')}`);
     }
-
-    if (skippedFiles.length > 0) {
-      showToast(`Skipped: ${skippedFiles.join(', ')}`);
-    }
-
-    if (newAttachments.length > 0) {
+    if (attachments.length > 0) {
       const current = batchReplyAttachments()[threadId] || [];
-      setBatchReplyAttachments({ ...batchReplyAttachments(), [threadId]: [...current, ...newAttachments] });
+      setBatchReplyAttachments({ ...batchReplyAttachments(), [threadId]: [...current, ...attachments] });
     }
     input.value = '';
   }
@@ -2867,8 +2642,11 @@ function App() {
   }
 
   function saveCollapsedState(collapsed: Record<string, boolean>) {
+    // The store only holds this account's cards; keep other accounts' entries
+    const stored = safeGetJSON<Record<string, boolean>>("collapsedCards", {});
+    for (const id of Object.keys(collapsedCards)) delete stored[id];
     setCollapsedCards(reconcile(collapsed));
-    safeSetJSON("collapsedCards", { ...collapsed });
+    safeSetJSON("collapsedCards", { ...stored, ...collapsed });
   }
 
   function startEditCard(card: Card, e: MouseEvent) {
@@ -2965,31 +2743,33 @@ function App() {
   }
 
 
+  // Show the selected account's cards: drop the previous account's loaded
+  // content, then load the cards, their collapsed state and every expanded
+  // card's threads/events. Returns null if the account changed meanwhile.
+  async function loadAccountCards(account: Account): Promise<Card[] | null> {
+    setCardThreads(reconcile({}));
+    setCardCalendarEvents(reconcile({}));
+    const cardList = await getCards(account.id);
+    if (selectedAccount()?.id !== account.id) return null;
+    setCards(cardList);
+
+    const savedCollapsed = safeGetJSON<Record<string, boolean>>("collapsedCards", {});
+    const collapsed: Record<string, boolean> = {};
+    cardList.forEach(c => { collapsed[c.id] = savedCollapsed[c.id] ?? false; });
+    setCollapsedCards(reconcile(collapsed));
+
+    for (const card of cardList) {
+      if (!collapsed[card.id]) loadCardThreads(card.id);
+    }
+    return cardList;
+  }
+
   async function switchAccount(account: Account) {
     if (selectedAccount()?.id === account.id) return;
 
     setSelectedAccount(account);
-    setCardThreads(reconcile({}));
-    setCardCalendarEvents(reconcile({}));
-
     try {
-      const cardList = await getCards(account.id);
-      setCards(cardList);
-
-      const savedCollapsed = safeGetJSON<Record<string, boolean>>("collapsedCards", {});
-      const collapsed: Record<string, boolean> = {};
-      cardList.forEach(c => { collapsed[c.id] = savedCollapsed[c.id] ?? false; });
-      setCollapsedCards(reconcile(collapsed));
-
-      for (const card of cardList) {
-        if (!collapsed[card.id]) {
-          loadCardThreads(card.id);
-        }
-      }
-
-      fetchContacts(account.id)
-        .then(contacts => setGoogleContacts(contacts))
-        .catch(e => console.warn("Failed to fetch contacts (user may need to re-auth):", e));
+      if (await loadAccountCards(account)) startBackgroundSync(account.id);
     } catch (e) {
       setError(String(e));
     }
@@ -3066,26 +2846,8 @@ function App() {
       setSyncErrors(cardId, null);
     } catch (e) {
       if (stale()) return;
-      const errorMsg = String(e);
-      console.error("loadCardThreads error:", errorMsg);
-      // Check for session expiry (token revoked, keyring issues, refresh failures)
-      if (errorMsg.includes("Keyring error") ||
-          errorMsg.includes("No auth token") ||
-          errorMsg.includes("Token refresh failed") ||
-          errorMsg.includes("invalid_grant") ||
-          errorMsg.includes("unauthorized")) {
-        // Only trigger sign out once (prevent race conditions from multiple card loads)
-        if (!error()?.includes("Session expired")) {
-          setError("Session expired - please sign in again");
-          setTimeout(async () => {
-            await handleSignOut();
-            setError(null);
-          }, 1500);
-        }
-      } else {
-        setCardErrors(cardId, errorMsg);
-        setSyncErrors(cardId, errorMsg);
-      }
+      console.error("loadCardThreads error:", e);
+      handleCardLoadError(cardId, e);
     } finally {
       if (append) {
         setLoadingMore(cardId, false);
@@ -3133,36 +2895,27 @@ function App() {
       await fetchAndCacheCalendarEvents(account.id, cardId, card.query);
     } catch (e) {
       if (stale()) return;
-      const errorMsg = String(e);
-      console.error("loadCalendarEvents error:", errorMsg);
-      if (errorMsg.includes("Keyring error") ||
-          errorMsg.includes("No auth token") ||
-          errorMsg.includes("Token refresh failed") ||
-          errorMsg.includes("invalid_grant") ||
-          errorMsg.includes("unauthorized")) {
-        if (!error()?.includes("Session expired")) {
-          setError("Session expired - please sign in again");
-          setTimeout(async () => {
-            await handleSignOut();
-            setError(null);
-          }, 1500);
-        }
-      } else {
-        setCardErrors(cardId, errorMsg);
-        setSyncErrors(cardId, errorMsg);
-      }
+      console.error("loadCalendarEvents error:", e);
+      handleCardLoadError(cardId, e);
     } finally {
-      if (!cardCalendarEvents[cardId]) {
-        // Only turn off loading if we didn't populate from cache (if we did, it's already off)
-        // or if we waited for fetch.
-        // Actually, if we populated from cache, we returned early.
-        // If we didn't, we are here.
-        setLoadingThreads(cardId, false);
-      } else {
-        // If we have data (from await fetch), ensure loading is off
-        setLoadingThreads(cardId, false);
-      }
+      setLoadingThreads(cardId, false);
     }
+  }
+
+  function handleCardLoadError(cardId: string, e: unknown) {
+    const errorMsg = String(e);
+    if (!isSessionExpiredError(errorMsg)) {
+      setCardErrors(cardId, errorMsg);
+      setSyncErrors(cardId, errorMsg);
+      return;
+    }
+    // Several cards fail at once; sign out only once
+    if (error()?.includes("Session expired")) return;
+    setError("Session expired - please sign in again");
+    setTimeout(async () => {
+      await handleSignOut();
+      setError(null);
+    }, 1500);
   }
 
   async function fetchAndCacheCalendarEvents(accountId: string, cardId: string, query: string) {
@@ -3304,204 +3057,11 @@ function App() {
     }
   }
 
-  type CalendarEventGroup = { label: string; events: GoogleCalendarEvent[] };
-
-  function getSmartEventTime(event: GoogleCalendarEvent): string {
-    const now = Date.now();
-
-    // All-day events: compare dates only, not times
-    if (event.all_day) {
-      return formatCalendarEventDate(event.start_time, event.end_time, event.all_day);
-    }
-
-    const endTime = event.end_time || (event.start_time + 3600000);
-
-    // Currently happening
-    if (now >= event.start_time && now < endTime) {
-      return "Now";
-    }
-
-    // In the future
-    const startsIn = event.start_time - now;
-    if (startsIn > 0) {
-      const minutes = Math.floor(startsIn / 60000);
-      if (minutes < 1) return "Starting";
-      if (minutes < 60) return `in ${minutes} min`;
-      const hours = Math.floor(minutes / 60);
-      if (hours < 24) return `in ${hours}h`;
-    }
-
-    // Fall back to regular time format
-    return formatCalendarEventDate(event.start_time, event.end_time, event.all_day);
-  }
-
-  function groupCalendarEvents(events: GoogleCalendarEvent[], groupBy: GroupBy): CalendarEventGroup[] {
-    if (groupBy === "date") {
-      const groups: Record<string, GoogleCalendarEvent[]> = {};
-      // Each label's actual day, for chronological group ordering (sorting by
-      // first event start_time misorders groups once multi-day events repeat)
-      const groupDays: Record<string, number> = {};
-
-      // Setup date boundaries
-      const now = new Date();
-      const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-      const tomorrow = new Date(today);
-      tomorrow.setDate(tomorrow.getDate() + 1);
-      const yesterday = new Date(today);
-      yesterday.setDate(yesterday.getDate() - 1);
-
-      // Compare calendar days by components; midnight-to-midnight ms math
-      // breaks on DST-transition days (23h/25h)
-      const sameDay = (a: Date, b: Date) =>
-        a.getFullYear() === b.getFullYear() && a.getMonth() === b.getMonth() && a.getDate() === b.getDate();
-
-      const labelFor = (day: Date) =>
-        sameDay(day, today) ? "Today"
-          : sameDay(day, tomorrow) ? "Tomorrow"
-            : sameDay(day, yesterday) ? "Yesterday"
-              : day.toLocaleDateString(undefined, { weekday: 'long', month: 'short', day: 'numeric' });
-
-      const addToDay = (event: GoogleCalendarEvent, day: Date) => {
-        const label = labelFor(day);
-        if (!groups[label]) {
-          groups[label] = [];
-          groupDays[label] = day.getTime();
-        }
-        groups[label].push(event);
-      };
-
-      for (const event of events) {
-        // First/last calendar day the event covers (local; UTC components for
-        // all-day, whose timestamps are UTC midnight with an exclusive end)
-        let firstDay: Date;
-        let lastDay: Date;
-        if (event.all_day) {
-          const s = new Date(event.start_time);
-          firstDay = new Date(s.getUTCFullYear(), s.getUTCMonth(), s.getUTCDate());
-          if (event.end_time) {
-            const e = new Date(event.end_time - 86400000);
-            lastDay = new Date(e.getUTCFullYear(), e.getUTCMonth(), e.getUTCDate());
-          } else {
-            lastDay = firstDay;
-          }
-        } else {
-          const s = new Date(event.start_time);
-          firstDay = new Date(s.getFullYear(), s.getMonth(), s.getDate());
-          if (event.end_time && event.end_time > event.start_time) {
-            // -1ms so an event ending exactly at midnight stays on its own day
-            const e = new Date(event.end_time - 1);
-            lastDay = new Date(e.getFullYear(), e.getMonth(), e.getDate());
-          } else {
-            lastDay = firstDay;
-          }
-        }
-        if (lastDay < firstDay) lastDay = firstDay;
-
-        // Ongoing/multi-day events appear under their start day and every
-        // remaining day they span from today on (capped so month-long events
-        // don't flood the list)
-        addToDay(event, firstDay);
-        const horizon = new Date(today.getFullYear(), today.getMonth(), today.getDate() + 31);
-        const from = firstDay < today
-          ? today
-          : new Date(firstDay.getFullYear(), firstDay.getMonth(), firstDay.getDate() + 1);
-        for (let day = from; day <= lastDay && day <= horizon; day = new Date(day.getFullYear(), day.getMonth(), day.getDate() + 1)) {
-          addToDay(event, day);
-        }
-      }
-
-      return Object.entries(groups)
-        .map(([label, events]) => ({
-          label,
-          events: events.sort((a, b) => a.start_time - b.start_time),
-        }))
-        .sort((a, b) => groupDays[a.label] - groupDays[b.label]);
-    }
-
-    if (groupBy === "organizer") {
-      const groups: Record<string, GoogleCalendarEvent[]> = {};
-      for (const event of events) {
-        const organizer = event.organizer || "Unknown";
-        if (!groups[organizer]) groups[organizer] = [];
-        groups[organizer].push(event);
-      }
-      return Object.entries(groups)
-        .sort(([a], [b]) => a.localeCompare(b))
-        .map(([label, events]) => ({
-          label,
-          events: events.sort((a, b) => a.start_time - b.start_time),
-        }));
-    }
-
-    if (groupBy === "calendar") {
-      const groups: Record<string, GoogleCalendarEvent[]> = {};
-      for (const event of events) {
-        const label = event.calendar_name || event.calendar_id;
-        if (!groups[label]) groups[label] = [];
-        groups[label].push(event);
-      }
-      return Object.entries(groups)
-        .sort(([a], [b]) => a.localeCompare(b))
-        .map(([label, events]) => ({
-          label,
-          events: events.sort((a, b) => a.start_time - b.start_time),
-        }));
-    }
-
-    // Default: single group with all events
-    return [{ label: "Events", events }];
-  }
-
-  function regroupThreads(threads: ThreadGroup[], groupBy: GroupBy): ThreadGroup[] {
-    // Flatten all threads first
-    const allThreads = threads.flatMap(g => g.threads);
-
-    if (groupBy === "date") {
-      // Already grouped by date from API, just return as-is
-      return threads;
-    }
-
-    if (groupBy === "sender") {
-      const groups: Record<string, typeof allThreads> = {};
-      for (const thread of allThreads) {
-        const sender = thread.participants[0] || "Unknown";
-        if (!groups[sender]) groups[sender] = [];
-        groups[sender].push(thread);
-      }
-      // Sort by sender name, then by date within each group
-      return Object.entries(groups)
-        .sort(([a], [b]) => a.localeCompare(b))
-        .map(([label, threads]) => ({
-          label,
-          threads: threads.sort((a, b) => b.last_message_date - a.last_message_date),
-        }));
-    }
-
-    if (groupBy === "label") {
-      const groups: Record<string, typeof allThreads> = {};
-      for (const thread of allThreads) {
-        // Use the first non-system label, or "Inbox" as fallback
-        const label = thread.labels.find(l => !l.startsWith("CATEGORY_") && l !== "UNREAD" && l !== "STARRED") || "Inbox";
-        if (!groups[label]) groups[label] = [];
-        groups[label].push(thread);
-      }
-      // Sort labels alphabetically
-      return Object.entries(groups)
-        .sort(([a], [b]) => a.localeCompare(b))
-        .map(([label, threads]) => ({
-          label,
-          threads: threads.sort((a, b) => b.last_message_date - a.last_message_date),
-        }));
-    }
-
-    return threads;
-  }
-
   function getDisplayGroups(cardId: string): ThreadGroup[] {
     const threads = isPreviewingQuery(cardId) ? queryPreviewThreads() : cardThreads[cardId];
     if (!threads) return [];
     const groupBy = getGroupByForCard(cardId);
-    let groups = regroupThreads(threads, groupBy);
+    let groups = regroupThreads(threads, groupBy, labelNames());
 
     // Apply global filter
     const filter = globalFilter().toLowerCase().trim();
@@ -3547,35 +3107,6 @@ function App() {
     if (!groups) return 0;
     return groups.reduce((total, group) =>
       total + group.threads.filter(t => t.unread_count > 0).length, 0);
-  }
-
-  function mergeThreadGroups(existing: ThreadGroup[], incoming: ThreadGroup[]): ThreadGroup[] {
-    const groups: Record<string, ThreadGroup> = {};
-    // Dedupe globally: the same thread must not appear in two date groups.
-    // Incoming copies are fresher, so claim their ids first and drop stale
-    // copies from the existing groups.
-    const seen = new Set<string>();
-
-    for (const group of incoming) {
-      const threads = group.threads.filter(t => !seen.has(t.gmail_thread_id));
-      threads.forEach(t => seen.add(t.gmail_thread_id));
-      groups[group.label] = { ...group, threads };
-    }
-
-    for (const group of existing) {
-      const threads = group.threads.filter(t => !seen.has(t.gmail_thread_id));
-      threads.forEach(t => seen.add(t.gmail_thread_id));
-      if (groups[group.label]) {
-        // Keep load order within a group: previously loaded pages first
-        groups[group.label] = { ...groups[group.label], threads: [...threads, ...groups[group.label].threads] };
-      } else {
-        groups[group.label] = { ...group, threads };
-      }
-    }
-
-    // Return in date order, dropping groups emptied by deduplication
-    const order = ["Today", "Yesterday", "This week", "Last 30 days", "Older"];
-    return order.filter(label => groups[label] && groups[label].threads.length > 0).map(label => groups[label]);
   }
 
   async function refreshCard(cardId: string, e: MouseEvent) {
@@ -4625,7 +4156,7 @@ function App() {
                                         <div class="calendar-event-row">
                                           <span class="calendar-event-title">{event.title}</span>
                                           <span class="calendar-event-time-compact">
-                                            {getSmartEventTime(event)}
+                                            {getSmartEventTime(event, currentTime())}
                                           </span>
                                         </div>
                                         <Show when={event.description}>
@@ -5029,7 +4560,7 @@ function App() {
                                   <div class="calendar-event-row">
                                     <span class="calendar-event-title">{event.title}</span>
                                     <span class="calendar-event-time-compact">
-                                      {getSmartEventTime(event)}
+                                      {getSmartEventTime(event, currentTime())}
                                     </span>
                                   </div>
                                   <Show when={event.description}>
@@ -5058,7 +4589,7 @@ function App() {
                       <div class="empty">No matches</div>
                     </Show>
                     <Show when={!queryPreviewLoading() && queryPreviewThreads().length > 0}>
-                      <For each={regroupThreads(queryPreviewThreads(), newCardGroupBy())}>
+                      <For each={regroupThreads(queryPreviewThreads(), newCardGroupBy(), labelNames())}>
                         {(group) => (
                           <>
                             <div class="date-header">{group.label}</div>
@@ -5201,42 +4732,27 @@ function App() {
             <h2>How do you email?</h2>
             <p>Pick a starting point. You can customize later.</p>
             <div class="preset-options">
-              <div class="preset-option recommended" onClick={() => applyPreset("posta")}>
-                <div class="preset-preview">
-                  <div class="preset-card blue"></div>
-                  <div class="preset-card red"></div>
-                  <div class="preset-card purple"></div>
-                </div>
-                <div class="preset-label">Posta <span class="preset-badge">Recommended</span></div>
-                <div class="preset-desc">Focus on what matters</div>
-              </div>
-              <div class="preset-option" onClick={() => applyPreset("traditional")}>
-                <div class="preset-preview">
-                  <div class="preset-card blue"></div>
-                  <div class="preset-card yellow"></div>
-                  <div class="preset-card orange"></div>
-                  <div class="preset-card green"></div>
-                </div>
-                <div class="preset-label">Traditional</div>
-                <div class="preset-desc">The familiar setup</div>
-              </div>
-              <div class="preset-option" onClick={() => applyPreset("power")}>
-                <div class="preset-preview">
-                  <div class="preset-card blue"></div>
-                  <div class="preset-card yellow"></div>
-                  <div class="preset-card orange"></div>
-                  <div class="preset-card red"></div>
-                </div>
-                <div class="preset-label">Power User</div>
-                <div class="preset-desc">Track everything</div>
-              </div>
-              <div class="preset-option" onClick={() => applyPreset("empty")}>
-                <div class="preset-preview empty">
-                  <PlusIcon />
-                </div>
-                <div class="preset-label">Blank</div>
-                <div class="preset-desc">Build from scratch</div>
-              </div>
+              <For each={Object.entries(PRESETS)}>
+                {([key, preset]) => (
+                  <div class={`preset-option ${key === "posta" ? "recommended" : ""}`} onClick={() => applyPreset(key)}>
+                    <Show
+                      when={preset.cards.length > 0}
+                      fallback={<div class="preset-preview empty"><PlusIcon /></div>}
+                    >
+                      <div class="preset-preview">
+                        <For each={preset.cards.filter(c => c.color)}>
+                          {(c) => <div class={`preset-card ${c.color}`}></div>}
+                        </For>
+                      </div>
+                    </Show>
+                    <div class="preset-label">
+                      {preset.label}
+                      <Show when={key === "posta"}> <span class="preset-badge">Recommended</span></Show>
+                    </div>
+                    <div class="preset-desc">{preset.description}</div>
+                  </div>
+                )}
+              </For>
             </div>
           </div>
         </div>
@@ -5273,7 +4789,7 @@ function App() {
             return c ? { name: c.name, color: (c.color as CardColor) || null } : null;
           })() : null}
           focusColor={selectedBgColorIndex() !== null ? BG_COLORS[selectedBgColorIndex()!].hex : null}
-          onClose={() => { setActiveThreadId(null); setActiveThreadCardId(null); setFocusedMessageIndex(0); setLabelDrawerOpen(false); closeCompose(); setCidAttachmentData({}); }}
+          onClose={() => { setActiveThreadId(null); setActiveThreadCardId(null); setFocusedMessageIndex(0); setLabelDrawerOpen(false); if (composing()) closeCompose(); setCidAttachmentData({}); }}
           focusedMessageIndex={focusedMessageIndex()}
           onFocusChange={setFocusedMessageIndex}
           onOpenAttachment={(messageId, attachmentId, filename, mimeType, inlineData) => openAttachment(messageId, attachmentId, filename, mimeType, inlineData)}
@@ -5438,7 +4954,7 @@ function App() {
           onReplyOrganizer={() => {
             const event = activeEvent();
             if (!event) return;
-            const subject = `Re: ${event.title}`;
+            const subject = addReplyPrefix(event.title);
             const to = event.organizer || '';
             setComposeTo(to);
             setComposeSubject(subject);
@@ -5451,7 +4967,7 @@ function App() {
           onReplyAll={() => {
             const event = activeEvent();
             if (!event) return;
-            const subject = `Re: ${event.title}`;
+            const subject = addReplyPrefix(event.title);
             const allEmails = event.attendees
               .filter(a => !a.is_self)
               .map(a => a.email)
@@ -5471,7 +4987,7 @@ function App() {
           onForward={() => {
             const event = activeEvent();
             if (!event) return;
-            const subject = `Fwd: ${event.title}`;
+            const subject = addForwardPrefix(event.title);
             const body = `---------- Forwarded event ----------\n` +
               `Title: ${event.title}\n` +
               `When: ${new Date(event.start_time).toLocaleString()}\n` +
@@ -5501,7 +5017,7 @@ function App() {
             // time the user never chose (e.g. 17:00 in UTC-7), which would be
             // saved verbatim if "All day" gets unchecked. Prefill smart
             // defaults instead.
-            const timeDefaults = getSmartEventDefaults();
+            const timeDefaults = smartEventDefaults();
             setEventForm(f => ({
               ...f,
               summary: event.title || '',
@@ -5520,15 +5036,15 @@ function App() {
           onDelete={async () => {
             const event = activeEvent();
             const account = selectedAccount();
-            const cardId = activeEventCardId();
             if (!event || !account) return;
             try {
               await deleteCalendarEvent(account.id, event.calendar_id, event.id);
-              // Remove event from card's event list
-              if (cardId) {
-                const currentEvents = cardCalendarEvents[cardId] || [];
-                setCardCalendarEvents(cardId, currentEvents.filter(e => e.id !== event.id));
-              }
+              // Every calendar card can be showing the event
+              setCardCalendarEvents(produce(s => {
+                for (const cId of Object.keys(s)) {
+                  s[cId] = s[cId].filter(e => e.id !== event.id);
+                }
+              }));
               showToast('Event deleted');
               closeEvent();
             } catch (e) {
@@ -6017,12 +5533,12 @@ function App() {
       </For>
 
       {/* Send Toast with Undo */}
-      <Show when={sendToastVisible()}>
-        <div class={`undo-toast send-toast ${sendToastClosing() ? 'closing' : ''}`}>
-          <div class="toast-progress send-progress" style={{ width: `${sendProgress()}%` }}></div>
+      <Show when={undoableSend.toastVisible()}>
+        <div class={`undo-toast send-toast ${undoableSend.toastClosing() ? 'closing' : ''}`}>
+          <div class="toast-progress send-progress" style={{ width: `${undoableSend.progress()}%` }}></div>
           <div class="toast-content">
             <span class="toast-message">Sending message...</span>
-            <Show when={pendingSend()}>
+            <Show when={undoableSend.pending()}>
               <button class="toast-undo-btn" onClick={undoSend}>Undo</button>
             </Show>
           </div>
