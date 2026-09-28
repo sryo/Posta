@@ -377,6 +377,16 @@ describe("App thread list shortcuts", () => {
     );
   });
 
+  it("shows an enabled action missing from an older saved action order", async () => {
+    localStorage.setItem("actionOrder", JSON.stringify(["markImportant", "markRead", "star", "quickReply", "quickForward", "archive", "trash"]));
+    localStorage.setItem("actionSettings", JSON.stringify({ spam: true }));
+    render(() => <App />);
+    await screen.findByText("Mail for A");
+    fireEvent.keyDown(document, { key: "l" });
+    fireEvent.keyDown(document, { key: "x" });
+    expect(await screen.findByTitle("Report spam")).toBeInTheDocument();
+  });
+
   it("scrolls the focused card and thread into view", async () => {
     const scrolled: Element[] = [];
     Element.prototype.scrollIntoView = function (this: Element) { scrolled.push(this); };

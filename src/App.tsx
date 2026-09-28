@@ -119,6 +119,7 @@ import { completeRecipient, currentRecipient, matchContacts, rankContacts } from
 import { eventReplyRecipients } from "./app/eventReply";
 import { actionLabel, actionRemovesFromCard, applyThreadAction, labelChangeFor } from "./app/threadActions";
 import { PRESETS } from "./app/presets";
+import { normalizeActionOrder } from "./app/actionOrder";
 import { parseStoredWidth } from "./app/storedWidth";
 import { isSessionExpiredError } from "./app/authErrors";
 import { readFilesAsAttachments } from "./app/attachments";
@@ -311,22 +312,25 @@ function App() {
   }
 
   // Thread action visibility settings
+  // Stored settings and orders predate some actions; defaults fill the gaps
+  const DEFAULT_ACTION_SETTINGS: ActionSettings = { "archive": false, "star": true, "trash": false, "markRead": true, "markUnread": false, "markImportant": true, "spam": false, "quickReply": true, "quickForward": false };
   const [actionSettings, setActionSettings] = createSignal<Record<string, boolean>>(
-    safeGetJSON<ActionSettings>("actionSettings", { "archive": false, "star": true, "trash": false, "markRead": true, "markUnread": false, "markImportant": true, "spam": false, "quickReply": true, "quickForward": false })
+    { ...DEFAULT_ACTION_SETTINGS, ...safeGetJSON<ActionSettings>("actionSettings", {}) }
   );
   const DEFAULT_ACTION_ORDER = ["markImportant", "markRead", "star", "quickReply", "quickForward", "archive", "spam", "trash"];
   const [actionOrder, setActionOrder] = createSignal<string[]>(
-    safeGetJSON<string[]>("actionOrder", DEFAULT_ACTION_ORDER)
+    normalizeActionOrder(safeGetJSON<unknown>("actionOrder", null), DEFAULT_ACTION_ORDER)
   );
   const [draggingAction, setDraggingAction] = createSignal<string | null>(null);
 
   // Event action visibility settings
+  const DEFAULT_EVENT_ACTION_SETTINGS = { "openCalendar": true, "rsvpYes": true, "rsvpNo": true, "joinMeeting": true, "quickReply": true, "delete": false };
   const [eventActionSettings, setEventActionSettings] = createSignal<Record<string, boolean>>(
-    safeGetJSON<Record<string, boolean>>("eventActionSettings", { "openCalendar": true, "rsvpYes": true, "rsvpNo": true, "joinMeeting": true, "quickReply": true, "delete": false })
+    { ...DEFAULT_EVENT_ACTION_SETTINGS, ...safeGetJSON<Record<string, boolean>>("eventActionSettings", {}) }
   );
   const DEFAULT_EVENT_ACTION_ORDER = ["openCalendar", "rsvpYes", "rsvpNo", "joinMeeting", "quickReply", "delete"];
   const [eventActionOrder, setEventActionOrder] = createSignal<string[]>(
-    safeGetJSON<string[]>("eventActionOrder", DEFAULT_EVENT_ACTION_ORDER)
+    normalizeActionOrder(safeGetJSON<unknown>("eventActionOrder", null), DEFAULT_EVENT_ACTION_ORDER)
   );
 
   // Background color picker (stores index, not color value)
