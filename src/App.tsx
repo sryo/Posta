@@ -4730,42 +4730,27 @@ function App() {
             <h2>How do you email?</h2>
             <p>Pick a starting point. You can customize later.</p>
             <div class="preset-options">
-              <div class="preset-option recommended" onClick={() => applyPreset("posta")}>
-                <div class="preset-preview">
-                  <div class="preset-card blue"></div>
-                  <div class="preset-card red"></div>
-                  <div class="preset-card purple"></div>
-                </div>
-                <div class="preset-label">Posta <span class="preset-badge">Recommended</span></div>
-                <div class="preset-desc">Focus on what matters</div>
-              </div>
-              <div class="preset-option" onClick={() => applyPreset("traditional")}>
-                <div class="preset-preview">
-                  <div class="preset-card blue"></div>
-                  <div class="preset-card yellow"></div>
-                  <div class="preset-card orange"></div>
-                  <div class="preset-card green"></div>
-                </div>
-                <div class="preset-label">Traditional</div>
-                <div class="preset-desc">The familiar setup</div>
-              </div>
-              <div class="preset-option" onClick={() => applyPreset("power")}>
-                <div class="preset-preview">
-                  <div class="preset-card blue"></div>
-                  <div class="preset-card yellow"></div>
-                  <div class="preset-card orange"></div>
-                  <div class="preset-card red"></div>
-                </div>
-                <div class="preset-label">Power User</div>
-                <div class="preset-desc">Track everything</div>
-              </div>
-              <div class="preset-option" onClick={() => applyPreset("empty")}>
-                <div class="preset-preview empty">
-                  <PlusIcon />
-                </div>
-                <div class="preset-label">Blank</div>
-                <div class="preset-desc">Build from scratch</div>
-              </div>
+              <For each={Object.entries(PRESETS)}>
+                {([key, preset]) => (
+                  <div class={`preset-option ${key === "posta" ? "recommended" : ""}`} onClick={() => applyPreset(key)}>
+                    <Show
+                      when={preset.cards.length > 0}
+                      fallback={<div class="preset-preview empty"><PlusIcon /></div>}
+                    >
+                      <div class="preset-preview">
+                        <For each={preset.cards.filter(c => c.color)}>
+                          {(c) => <div class={`preset-card ${c.color}`}></div>}
+                        </For>
+                      </div>
+                    </Show>
+                    <div class="preset-label">
+                      {preset.label}
+                      <Show when={key === "posta"}> <span class="preset-badge">Recommended</span></Show>
+                    </div>
+                    <div class="preset-desc">{preset.description}</div>
+                  </div>
+                )}
+              </For>
             </div>
           </div>
         </div>
