@@ -91,44 +91,69 @@ fn get_account_email(state: &AppState, account_id: &str) -> Result<String, Strin
     })
 }
 
-// Sync all cards to iCloud after any card operation
-fn sync_cards_to_icloud(state: &AppState) {
-    let db_guard = match state.db.lock() {
-        Ok(g) => g,
-        Err(_) => return,
-    };
-    let db = match db_guard.as_ref() {
-        Some(d) => d,
-        None => return,
-    };
+/// The cards and id -> email mappings to write back to iCloud after a local
+/// card change: every local card, plus iCloud cards owned by accounts this
+/// device doesn't have (another device's, or one signed out here). Mappings
+/// are kept only for owners of those cards. None without local accounts,
+/// since nothing on this device can then speak for the backup.
+fn icloud_snapshot(
+    accounts: &[Account],
+    local_cards: Vec<Card>,
+    icloud_cards: Vec<Card>,
+    icloud_mappings: HashMap<String, String>,
+) -> Option<(Vec<Card>, HashMap<String, String>)> {
+    if accounts.is_empty() {
+        return None;
+    }
 
-    // Collect all cards from all accounts and build account mappings
-    let accounts = match db.get_accounts() {
-        Ok(a) => a,
-        Err(_) => return,
-    };
-
-    let mut all_cards = Vec::new();
-    let mut account_mappings = HashMap::new();
-
-    for account in &accounts {
-        // Build account_id -> email mapping for iCloud restore
-        account_mappings.insert(account.id.clone(), account.email.clone());
-
-        if let Ok(cards) = db.get_cards(&account.id) {
-            all_cards.extend(cards);
+    let mut cards = local_cards;
+    for card in icloud_cards {
+        let foreign = icloud_card_account(&card.account_id, &icloud_mappings, accounts).is_none();
+        if foreign && !cards.iter().any(|c| c.id == card.id) {
+            cards.push(card);
         }
     }
 
-    // Sync to iCloud (no-op on non-iOS)
-    drop(db_guard); // Release db lock before acquiring icloud lock
-    if let Ok(icloud) = state.icloud.lock() {
-        let _ = icloud.sync_cards(&all_cards);
-        // Keep other devices' id -> email entries so their cards can still be
-        // matched to the right account when this device pulls them
-        let mut merged = icloud.load_account_mappings().ok().flatten().unwrap_or_default();
-        merged.extend(account_mappings);
-        let _ = icloud.sync_account_mappings(&merged);
+    let mut mappings = icloud_mappings;
+    mappings.extend(accounts.iter().map(|a| (a.id.clone(), a.email.clone())));
+    let owners: std::collections::HashSet<&str> = cards.iter().map(|c| c.account_id.as_str()).collect();
+    mappings.retain(|id, _| owners.contains(id.as_str()));
+
+    Some((cards, mappings))
+}
+
+// Sync all cards to iCloud after any card operation
+fn sync_cards_to_icloud(state: &AppState) {
+    let (accounts, local_cards) = {
+        let Ok(db_guard) = state.db.lock() else { return };
+        let Some(db) = db_guard.as_ref() else { return };
+        let Ok(accounts) = db.get_accounts() else { return };
+        let mut cards = Vec::new();
+        for account in &accounts {
+            match db.get_cards(&account.id) {
+                Ok(c) => cards.extend(c),
+                // A partial list would delete the missing cards from iCloud
+                Err(_) => return,
+            }
+        }
+        (accounts, cards)
+    };
+
+    let Ok(icloud) = state.icloud.lock() else { return };
+    // Unreadable (corrupt) iCloud values are replaced by the local state
+    let Some((cards, mappings)) = icloud_snapshot(
+        &accounts,
+        local_cards,
+        icloud.load_cards().ok().flatten().unwrap_or_default(),
+        icloud.load_account_mappings().ok().flatten().unwrap_or_default(),
+    ) else {
+        return;
+    };
+    if let Err(e) = icloud.sync_cards(&cards) {
+        tracing::warn!("iCloud card sync failed: {}", e);
+    }
+    if let Err(e) = icloud.sync_account_mappings(&mappings) {
+        tracing::warn!("iCloud account mapping sync failed: {}", e);
     }
 }
 
@@ -1673,7 +1698,7 @@ pub async fn suggest_replies(
 #[cfg(test)]
 mod tests {
     use super::{
-        attachment_filename, attachment_temp_dir, icloud_card_account, is_auth_error,
+        attachment_filename, attachment_temp_dir, icloud_card_account, icloud_snapshot, is_auth_error,
         is_executable_attachment, mark_quarantined, next_card_position,
         sanitize_attachment_filename, vanished_thread_ids, write_unique_file,
     };
@@ -1710,6 +1735,41 @@ mod tests {
 
     fn mappings(pairs: &[(&str, &str)]) -> HashMap<String, String> {
         pairs.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect()
+    }
+
+    fn owned_card(id: &str, account_id: &str) -> Card {
+        Card { id: id.into(), ..Card::new(account_id.into(), id.into(), "q".into(), 0) }
+    }
+
+    #[test]
+    fn icloud_snapshot_is_skipped_without_local_accounts() {
+        let backup = vec![owned_card("c1", "gone")];
+        assert!(icloud_snapshot(&[], Vec::new(), backup, mappings(&[("gone", "me@x.com")])).is_none());
+    }
+
+    #[test]
+    fn icloud_snapshot_keeps_cards_of_accounts_this_device_lacks() {
+        let accounts = [account("a1", "me@x.com")];
+        let local = vec![owned_card("mine", "a1")];
+        let backup = vec![
+            owned_card("mine", "a1"),
+            owned_card("deleted-here", "a1"),
+            owned_card("work", "w9"),
+        ];
+        let m = mappings(&[("w9", "work@x.com")]);
+        let (cards, new_mappings) = icloud_snapshot(&accounts, local, backup, m).unwrap();
+        let ids: Vec<&str> = cards.iter().map(|c| c.id.as_str()).collect();
+        assert_eq!(ids, vec!["mine", "work"]);
+        assert_eq!(new_mappings, mappings(&[("a1", "me@x.com"), ("w9", "work@x.com")]));
+    }
+
+    #[test]
+    fn icloud_snapshot_drops_mappings_no_card_uses() {
+        let accounts = [account("a1", "me@x.com"), account("a2", "other@x.com")];
+        let local = vec![owned_card("mine", "a1")];
+        let m = mappings(&[("stale", "old@x.com"), ("a1-old", "me@x.com")]);
+        let (_, new_mappings) = icloud_snapshot(&accounts, local, Vec::new(), m).unwrap();
+        assert_eq!(new_mappings, mappings(&[("a1", "me@x.com")]));
     }
 
     #[test]
