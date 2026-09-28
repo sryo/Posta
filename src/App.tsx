@@ -117,7 +117,7 @@ import { EventView } from "./components/EventView";
 import { ActionsWheel } from "./components/ActionsWheel";
 import { CardForm } from "./components/CardForm";
 import { safeGetItem, safeSetItem, safeRemoveItem, safeGetJSON, safeSetJSON } from "./shared/storage";
-import { BG_COLORS, GMAIL_OPERATORS, type ActionSettings, type CardColor, type GroupBy } from "./shared/constants";
+import { BG_COLORS, type ActionSettings, type CardColor, type GroupBy } from "./shared/constants";
 import { createUndoableSend } from "./app/undoableSend";
 import { findHeader, lastMessageFromOthers } from "./app/messages";
 import { batchReplyEntry, type BatchReplyThread } from "./app/batchReply";
@@ -142,6 +142,7 @@ import { createDraftSync, draftKey, findLatestDraft, findUnsentDrafts, hasDraftC
 import { escapeTarget, nextCardFocus, nextItemFocus } from "./app/keyboardNav";
 import { getSmartEventTime, groupCalendarEvents, isUserLabel, mergeThreadGroups, regroupThreads, type CalendarEventGroup } from "./app/grouping";
 import { pullLayoutWithRetry } from "./app/icloudRestore";
+import { querySuggestions, type QuerySuggestion } from "./app/querySuggestions";
 import { hasCommandModifier, onActivateKey } from "./shared/keyboard";
 
 const SESSION_EXPIRED_MESSAGE = "Session expired - sign in again";
@@ -2401,12 +2402,11 @@ function App() {
 
   const labelNames = createMemo(() => Object.fromEntries(accountLabels().map(l => [l.id, l.name])));
 
-  // "Group by label" shows label names, which only the label list carries
+  // "Group by label" shows label names, and a card query completes label:
+  // from them; only the label list carries them
   createEffect(() => {
     if (!selectedAccount()) return;
-    const wantsLabels = cards().some(c => c.group_by === "label")
-      || (editingCardId() !== null && editCardGroupBy() === "label")
-      || (addingCard() && newCardGroupBy() === "label");
+    const wantsLabels = cards().some(c => c.group_by === "label") || editingCardId() !== null || addingCard();
     if (wantsLabels) untrack(fetchAccountLabels);
   });
 
@@ -3424,52 +3424,11 @@ function App() {
     }
   }
 
+  const userLabelNames = createMemo(() => accountLabels().filter(l => l.label_type === "user").map(l => l.name));
+
   // Gmail search autocomplete suggestions
-  function getQuerySuggestions(query: string): { text: string; desc: string; replace: { start: number; end: number } }[] {
-    if (!query) return [];
-
-    // Find the current "word" being typed (last token after space)
-    const lastSpaceIndex = query.lastIndexOf(' ');
-    const currentToken = query.slice(lastSpaceIndex + 1).toLowerCase();
-    const tokenStart = lastSpaceIndex + 1;
-
-    if (!currentToken) return [];
-
-    const suggestions: { text: string; desc: string; replace: { start: number; end: number } }[] = [];
-
-    // Check if we're typing after an operator that takes email values
-    const emailOperators = ['from:', 'to:', 'cc:', 'bcc:', 'deliveredto:'];
-    for (const op of emailOperators) {
-      if (currentToken.startsWith(op)) {
-        const searchPart = currentToken.slice(op.length).toLowerCase();
-        if (searchPart) {
-          for (const contact of matchContacts(rankedContacts(), searchPart, 6)) {
-            suggestions.push({
-              text: op + contact.email,
-              desc: contact.name ? `${contact.name} (${contact.frequency} emails)` : `${contact.frequency} emails`,
-              replace: { start: tokenStart, end: query.length },
-            });
-          }
-        }
-        return suggestions;
-      }
-    }
-
-    // Fuzzy match operators
-    for (const { op, desc } of GMAIL_OPERATORS) {
-      // Match if the operator starts with the current token or contains it
-      if (op.toLowerCase().startsWith(currentToken) ||
-        (currentToken.length >= 2 && op.toLowerCase().includes(currentToken))) {
-        suggestions.push({
-          text: op,
-          desc,
-          replace: { start: tokenStart, end: query.length },
-        });
-        if (suggestions.length >= 8) break;
-      }
-    }
-
-    return suggestions;
+  function getQuerySuggestions(query: string): QuerySuggestion[] {
+    return querySuggestions(query, rankedContacts(), userLabelNames());
   }
 
   function applyQuerySuggestion(suggestion: { text: string; replace: { start: number; end: number } }) {

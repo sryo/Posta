@@ -2398,6 +2398,28 @@ describe("App accessibility", () => {
   });
 });
 
+describe("App card query autocomplete", () => {
+  it("suggests the account's labels after label:", async () => {
+    handlers.list_labels = () => [
+      { id: "L1", name: "Travel", label_type: "user", messageListVisibility: null, labelListVisibility: null },
+      { id: "INBOX", name: "INBOX", label_type: "system", messageListVisibility: null, labelListVisibility: null },
+    ];
+    handlers.search_threads_preview = () => [];
+    render(() => <App />);
+    await screen.findByText("Mail for A");
+    fireEvent.click(screen.getByTitle("New card"));
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith("list_labels", { accountId: "a" }));
+    await new Promise(r => setTimeout(r, 10));
+    const query = screen.getAllByPlaceholderText("is:inbox, from:boss, newer_than:7d").slice(-1)[0];
+    fireEvent.focus(query);
+    fireEvent.input(query, { target: { value: "label:tr" } });
+
+    const suggestion = await screen.findByText("label:travel");
+    expect(suggestion.closest(".query-autocomplete")).not.toBeNull();
+    expect(screen.queryByText("label:inbox")).not.toBeInTheDocument();
+  });
+});
+
 describe("App label drawer", () => {
   it("says the labels could not be loaded and loads them again on retry", async () => {
     handlers.get_thread_details = () => ({ id: "t-a", messages: [fullMessage("m1", "Ana <ana@x.com>")] });
