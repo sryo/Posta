@@ -3819,7 +3819,7 @@ function App() {
   return (
     <div class="app" onClick={handleAppClick}>
       {/* Drag region for frameless window */}
-      <div class="drag-region" onMouseDown={() => getCurrentWindow().startDragging()}></div>
+      <div class="drag-region" data-tauri-drag-region></div>
 
       {/* Global filter bar - keyboard activated */}
       <div class={`global-filter-bar ${showGlobalFilter() ? 'visible' : ''}`}>

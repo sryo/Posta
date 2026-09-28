@@ -16,8 +16,9 @@ const invoke = vi.fn(async (cmd: string, args: Record<string, unknown> = {}) => 
 
 vi.mock("@tauri-apps/api/core", () => ({ invoke: (cmd: string, args?: Record<string, unknown>) => invoke(cmd, args) }));
 const setBadgeCount = vi.fn(async (_count?: number) => {});
+const startDragging = vi.fn(async () => {});
 vi.mock("@tauri-apps/api/window", () => ({
-  getCurrentWindow: () => ({ setBadgeCount: (count?: number) => setBadgeCount(count), startDragging: async () => {} }),
+  getCurrentWindow: () => ({ setBadgeCount: (count?: number) => setBadgeCount(count), startDragging: () => startDragging() }),
 }));
 const eventListeners: Record<string, (event: { payload: unknown }) => void> = {};
 const listenedEvents: string[] = [];
@@ -2282,6 +2283,22 @@ describe("App thread load errors", () => {
     expect(await screen.findByText(/Sign in again to load this email/)).toBeInTheDocument();
     const banner = document.querySelector(".auth-error") as HTMLElement;
     expect(within(banner).getByRole("button", { name: "Sign in again" })).toBeInTheDocument();
+  });
+});
+
+describe("App title bar", () => {
+  it("leaves dragging and double-click zoom to Tauri's drag region", async () => {
+    startDragging.mockClear();
+    render(() => <App />);
+    await screen.findByText("Mail for A");
+    const region = document.querySelector(".drag-region") as HTMLElement;
+    expect(region).toHaveAttribute("data-tauri-drag-region");
+
+    // Tauri's own handler starts left-button drags and zooms on a
+    // double-click; a handler of the app's would drag on every button
+    fireEvent.mouseDown(region, { button: 2 });
+    fireEvent.mouseDown(region, { button: 0, detail: 2 });
+    expect(startDragging).not.toHaveBeenCalled();
   });
 });
 
