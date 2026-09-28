@@ -397,6 +397,28 @@ describe("App thread list shortcuts", () => {
     expect(scrolled).toContain(screen.getByRole("region", { name: "Alpha email card" }).closest(".card-wrapper"));
   });
 
+  it("undoes an action on the account it was taken in after switching accounts", async () => {
+    handlers.get_accounts = () => [account("a", "a@x.com"), account("b", "b@x.com")];
+    handlers.modify_threads = () => null;
+    threadsByCard["card-a"] = [{ ...thread("t-a", "Mail for A"), labels: ["INBOX"] }];
+    render(() => <App />);
+    await screen.findByText("Mail for A");
+    fireEvent.keyDown(document, { key: "l" });
+    fireEvent.keyDown(document, { key: "a" });
+    await screen.findByText("Archived 1 thread");
+
+    fireEvent.click(screen.getByTitle("a@x.com"));
+    fireEvent.click(await screen.findByText("b@x.com"));
+    await screen.findByText("Mail for B");
+    invoke.mockClear();
+    fireEvent.click(screen.getByText("Undo"));
+
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith("modify_threads", {
+      accountId: "a", threadIds: ["t-a"], addLabels: ["INBOX"], removeLabels: [],
+    }));
+    expect(invoke).not.toHaveBeenCalledWith("fetch_threads_paginated", expect.objectContaining({ accountId: "b", cardId: "card-a" }));
+  });
+
   it("clears the selection on Escape before dropping card focus", async () => {
     render(() => <App />);
     const row = (await screen.findByText("Mail for A")).closest(".thread")!;

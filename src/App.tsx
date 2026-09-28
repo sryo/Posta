@@ -224,6 +224,7 @@ function App() {
 
   // Undo/toast state
   interface UndoableAction {
+    accountId: string;
     action: string;
     threadIds: string[];
     cardId: string;
@@ -3422,19 +3423,20 @@ function App() {
 
   async function undoLastAction() {
     const action = lastAction();
-    const account = selectedAccount();
-    if (!action || !account) return;
+    if (!action) return;
 
     hideToast();
 
     // Reverse the labels: add what was removed, remove what was added
     try {
-      await modifyThreads(account.id, action.threadIds, action.removedLabels, action.addedLabels);
+      await modifyThreads(action.accountId, action.threadIds, action.removedLabels, action.addedLabels);
       // Refresh every card the optimistic update touched, not just the
-      // one the action originated from
-      const cardsToRefresh = action.cardIds.length > 0 ? action.cardIds : [action.cardId];
-      for (const cId of cardsToRefresh) {
-        fetchAndCacheThreads(account.id, cId);
+      // one the action originated from; they are gone after an account switch
+      if (selectedAccount()?.id === action.accountId) {
+        const cardsToRefresh = action.cardIds.length > 0 ? action.cardIds : [action.cardId];
+        for (const cId of cardsToRefresh) {
+          fetchAndCacheThreads(action.accountId, cId);
+        }
       }
     } catch (e) {
       console.error("Failed to undo action", e);
@@ -3493,6 +3495,7 @@ function App() {
       if (silent) return;
       // Store undo state and show toast
       setLastAction({
+        accountId: account.id,
         action,
         threadIds,
         cardId,
