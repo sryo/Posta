@@ -2333,6 +2333,22 @@ describe("App accessibility", () => {
     expect(within(help).getByText("#")).toBeInTheDocument();
   });
 
+  it("lists the open thread's actions and the open event's shortcuts in the help", async () => {
+    render(() => <App />);
+    await screen.findByText("Mail for A");
+    fireEvent.keyDown(document, { key: "?" });
+    const help = (await screen.findByText("Keyboard Shortcuts")).closest(".shortcuts-modal") as HTMLElement;
+    const section = (title: string) => within(help).getByRole("heading", { name: title }).closest(".shortcuts-section") as HTMLElement;
+
+    expect(within(help).getByText("Open thread or event")).toBeInTheDocument();
+    for (const text of ["Archive", "Star", "Toggle read", "Toggle important", "Report spam", "Delete"]) {
+      expect(within(section("Open thread")).getByText(text)).toBeInTheDocument();
+    }
+    for (const text of ["Reply to organizer", "Reply all", "Forward", "Join meeting", "Open in Google Calendar", "Move to calendar", "Edit", "Delete"]) {
+      expect(within(section("Open event")).getByText(text)).toBeInTheDocument();
+    }
+  });
+
   it("names the collapse button and says whether the card is expanded", async () => {
     render(() => <App />);
     await screen.findByText("Mail for A");

@@ -5423,7 +5423,7 @@ function App() {
               <div class="shortcut-row"><kbd>k</kbd> <span>Previous thread</span></div>
               <div class="shortcut-row"><kbd>h</kbd> <span>Previous card</span></div>
               <div class="shortcut-row"><kbd>l</kbd> <span>Next card</span></div>
-              <div class="shortcut-row"><kbd>Enter</kbd> <span>Open thread</span></div>
+              <div class="shortcut-row"><kbd>Enter</kbd> <span>Open thread or event</span></div>
               <div class="shortcut-row"><kbd>Escape</kbd> <span>Close / Go back</span></div>
               <div class="shortcut-row"><kbd>/</kbd> <span>Open filter</span></div>
               <div class="shortcut-row"><kbd>⌘F</kbd> <span>Open filter</span></div>
@@ -5449,6 +5449,23 @@ function App() {
               <div class="shortcut-row"><kbd>⇧R</kbd> <span>Reply all</span></div>
               <div class="shortcut-row"><kbd>f</kbd> <span>Forward message</span></div>
               <div class="shortcut-row"><kbd>l</kbd> <span>Labels</span></div>
+              <div class="shortcut-row"><kbd>a</kbd> <span>Archive</span></div>
+              <div class="shortcut-row"><kbd>s</kbd> <span>Star</span></div>
+              <div class="shortcut-row"><kbd>u</kbd> <span>Toggle read</span></div>
+              <div class="shortcut-row"><kbd>i</kbd> <span>Toggle important</span></div>
+              <div class="shortcut-row"><kbd>!</kbd> <span>Report spam</span></div>
+              <div class="shortcut-row"><kbd>d</kbd> <span>Delete</span></div>
+            </div>
+            <div class="shortcuts-section">
+              <h3>Open event</h3>
+              <div class="shortcut-row"><kbd>r</kbd> <span>Reply to organizer</span></div>
+              <div class="shortcut-row"><kbd>⇧R</kbd> <span>Reply all</span></div>
+              <div class="shortcut-row"><kbd>f</kbd> <span>Forward</span></div>
+              <div class="shortcut-row"><kbd>j</kbd> <span>Join meeting</span></div>
+              <div class="shortcut-row"><kbd>o</kbd> <span>Open in Google Calendar</span></div>
+              <div class="shortcut-row"><kbd>c</kbd> <span>Move to calendar</span></div>
+              <div class="shortcut-row"><kbd>e</kbd> <span>Edit</span></div>
+              <div class="shortcut-row"><kbd>d</kbd> <span>Delete</span></div>
             </div>
             <div class="shortcuts-section">
               <h3>Compose</h3>
