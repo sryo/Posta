@@ -86,6 +86,18 @@ fn friendly_calendar_error(status: StatusCode, body: &str) -> String {
     }
 }
 
+/// A transport failure in words the user can act on, without the request
+/// URL (it can hold the user's search text)
+fn calendar_request_error(e: reqwest::Error) -> String {
+    if e.is_timeout() {
+        "Google Calendar didn't respond. Check your connection and try again.".to_string()
+    } else if e.is_connect() {
+        "Couldn't reach Google Calendar. Check your connection and try again.".to_string()
+    } else {
+        format!("Calendar request failed: {}", e.without_url())
+    }
+}
+
 #[derive(Deserialize)]
 struct ApiErrorBody {
     error: ApiError,
@@ -444,7 +456,7 @@ impl CalendarClient {
             .bearer_auth(&self.access_token)
             .send()
             .await
-            .map_err(|e| format!("Calendar request failed: {}", e))?;
+            .map_err(calendar_request_error)?;
         if !resp.status().is_success() {
             let status = resp.status();
             let body = resp.text().await.unwrap_or_default();
@@ -458,7 +470,13 @@ impl CalendarClient {
             .await?
             .json()
             .await
-            .map_err(|e| format!("Failed to parse calendar response: {}", e))
+            .map_err(|e| {
+                if e.is_timeout() {
+                    calendar_request_error(e)
+                } else {
+                    format!("Failed to parse calendar response: {}", e.without_url())
+                }
+            })
     }
 
     /// GET `url` and the pages after it, keeping at most `cap` items
@@ -2052,6 +2070,23 @@ mod tests {
             .await
             .expect("request hung");
         assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn connection_failures_are_explained_without_the_request_url() {
+        // The card's sync-failed tooltip shows this; the URL holds the
+        // user's search text
+        let unreachable = CalendarClient { api_base: "http://127.0.0.1:9".into(), ..CalendarClient::new("token".into()) };
+        let err = unreachable.search_events(&CalendarQuery::parse("calendar:week dentist"), 10).await.unwrap_err();
+        assert_eq!(err, "Couldn't reach Google Calendar. Check your connection and try again.");
+
+        let server = StubServer::start_gated(|_, _| (200, "{}".to_string()), |_| true, 2).await;
+        let slow = CalendarClient {
+            http_client: build_http_client(std::time::Duration::from_millis(200)),
+            ..server.client()
+        };
+        let err = slow.list_calendars().await.unwrap_err();
+        assert_eq!(err, "Google Calendar didn't respond. Check your connection and try again.");
     }
 
     fn update_stub(method: &str, target: &str) -> (u16, String) {
