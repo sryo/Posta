@@ -1258,3 +1258,120 @@ describe("App batch reply", () => {
     expect(screen.getByText("Batch subject B")).toBeInTheDocument();
   });
 });
+
+describe("App drafts", () => {
+  const draftKeys = (prefix: string) => Object.keys(localStorage).filter(k => k.startsWith(prefix));
+  const storedDrafts = (prefix: string) => draftKeys(prefix).map(k => JSON.parse(localStorage.getItem(k)!));
+
+  it("keeps typed text locally before the draft is synced", async () => {
+    render(() => <App />);
+    await screen.findByText("Mail for A");
+    fireEvent.keyDown(document, { key: "c" });
+    fireEvent.input(await screen.findByPlaceholderText("Subject"), { target: { value: "Typed" } });
+
+    expect(storedDrafts("draft_new_a")).toEqual([expect.objectContaining({ subject: "Typed" })]);
+  });
+
+  it("keeps a sent email's draft until the send goes out", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    handlers.save_draft = () => ({ id: "d1" });
+    handlers.delete_draft = () => null;
+    handlers.send_email = () => null;
+    render(() => <App />);
+    await screen.findByText("Mail for A");
+    fireEvent.keyDown(document, { key: "c" });
+    fireEvent.input(await screen.findByPlaceholderText("Recipients"), { target: { value: "bo@y.com" } });
+    fireEvent.input(screen.getByPlaceholderText("Subject"), { target: { value: "Hello" } });
+    await vi.advanceTimersByTimeAsync(3500);
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith("save_draft", expect.anything()));
+
+    fireEvent.click(screen.getByRole("button", { name: /^Send/ }));
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(invoke).not.toHaveBeenCalledWith("delete_draft", expect.anything());
+    expect(storedDrafts("draft_new_a")).toEqual([expect.objectContaining({ subject: "Hello" })]);
+
+    await vi.advanceTimersByTimeAsync(5000);
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith("send_email", expect.anything()));
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith("delete_draft", { accountId: "a", draftId: "d1" }));
+    expect(draftKeys("draft_new_a")).toEqual([]);
+  });
+
+  it("keeps the draft of a send that failed", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    handlers.send_email = () => { throw new Error("offline"); };
+    render(() => <App />);
+    await screen.findByText("Mail for A");
+    fireEvent.keyDown(document, { key: "c" });
+    fireEvent.input(await screen.findByPlaceholderText("Recipients"), { target: { value: "bo@y.com" } });
+    fireEvent.input(screen.getByPlaceholderText("Subject"), { target: { value: "Hello" } });
+    fireEvent.click(screen.getByRole("button", { name: /^Send/ }));
+    await vi.advanceTimersByTimeAsync(6000);
+
+    await waitFor(() => expect(screen.getByPlaceholderText("Subject")).toHaveValue("Hello"));
+    expect(invoke).not.toHaveBeenCalledWith("delete_draft", expect.anything());
+    expect(storedDrafts("draft_new_a")).toEqual([expect.objectContaining({ subject: "Hello" })]);
+  });
+
+  it("keeps a closed compose's draft and offers to discard it", async () => {
+    handlers.save_draft = () => ({ id: "d1" });
+    handlers.delete_draft = () => null;
+    render(() => <App />);
+    await screen.findByText("Mail for A");
+    fireEvent.keyDown(document, { key: "c" });
+    fireEvent.input(await screen.findByPlaceholderText("Subject"), { target: { value: "Half written" } });
+    fireEvent.keyDown(document, { key: "Escape" });
+
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith("save_draft", expect.objectContaining({ subject: "Half written" })));
+    expect(invoke).not.toHaveBeenCalledWith("delete_draft", expect.anything());
+    expect(storedDrafts("draft_new_a")).toEqual([expect.objectContaining({ subject: "Half written" })]);
+
+    fireEvent.click(await screen.findByRole("button", { name: "Discard" }));
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith("delete_draft", { accountId: "a", draftId: "d1" }));
+    expect(draftKeys("draft_new_a")).toEqual([]);
+  });
+
+  it("does not keep a draft for a compose that was never typed in", async () => {
+    render(() => <App />);
+    await screen.findByText("Mail for A");
+    fireEvent.keyDown(document, { key: "c" });
+    await screen.findByPlaceholderText("Subject");
+    fireEvent.keyDown(document, { key: "Escape" });
+    await new Promise(r => setTimeout(r, 300));
+
+    expect(draftKeys("draft_")).toEqual([]);
+    expect(screen.queryByRole("button", { name: "Discard" })).not.toBeInTheDocument();
+  });
+
+  it("keeps an open compose's text when a mailto link replaces it", async () => {
+    render(() => <App />);
+    await screen.findByText("Mail for A");
+    fireEvent.keyDown(document, { key: "c" });
+    fireEvent.input(await screen.findByPlaceholderText("Subject"), { target: { value: "First" } });
+
+    eventListeners["mailto-received"]({ payload: { to: "bo@y.com", cc: "", bcc: "", subject: "Second", body: "" } });
+    await waitFor(() => expect(screen.getByPlaceholderText("Subject")).toHaveValue("Second"));
+    fireEvent.input(screen.getByPlaceholderText("Subject"), { target: { value: "Second!" } });
+
+    expect(storedDrafts("draft_new_a").map(d => d.subject).sort()).toEqual(["First", "Second!"]);
+  });
+
+  it("restores a reply draft when replying to the thread again", async () => {
+    handlers.get_thread_details = () => ({ id: "t-a", messages: [fullMessage("m1", "Ana <ana@x.com>")] });
+    handlers.save_draft = () => ({ id: "d7" });
+    localStorage.setItem("draft_reply_a_t-a#old", JSON.stringify({
+      to: "ana@x.com", cc: "", bcc: "", subject: "Re: Hi", body: "my saved reply", threadId: "t-a", gmailDraftId: "d7", savedAt: 5,
+    }));
+    render(() => <App />);
+    fireEvent.click(await screen.findByText("Mail for A"));
+    await screen.findByText("body m1");
+    fireEvent.keyDown(document, { key: "r" });
+
+    const body = await screen.findByPlaceholderText("Write your reply...");
+    expect(body).toHaveValue("my saved reply");
+    fireEvent.input(body, { target: { value: "my saved reply, edited" } });
+    fireEvent.keyDown(screen.getByPlaceholderText("Write your reply..."), { key: "Escape" });
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith("save_draft", expect.objectContaining({ draftId: "d7", body: "my saved reply, edited" })));
+    expect(storedDrafts("draft_reply_a_t-a")).toEqual([expect.objectContaining({ body: "my saved reply, edited" })]);
+  });
+});
+

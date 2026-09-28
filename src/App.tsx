@@ -125,13 +125,13 @@ import { PRESETS } from "./app/presets";
 import { normalizeActionOrder } from "./app/actionOrder";
 import { parseStoredWidth } from "./app/storedWidth";
 import { isSessionExpiredError } from "./app/authErrors";
-import { signatureBlock, withSignature } from "./app/signature";
+import { withSignature } from "./app/signature";
 import { readFilesAsAttachments } from "./app/attachments";
 import { eventTimesFromForm, smartEventDefaults } from "./app/eventForm";
 import { composePlacement } from "./app/composePlacement";
 import { cidImagesToFetch, fetchCidImages } from "./app/cidImages";
 import { sendPending, type PendingSend } from "./app/pendingSend";
-import { createDraftSync, draftKey, hasDraftContent, type DraftFields } from "./app/drafts";
+import { createDraftSync, draftKey, findLatestDraft, hasDraftContent, markDraftClosed, sessionDraftKey, type DraftFields } from "./app/drafts";
 import { nextCardFocus, nextItemFocus } from "./app/keyboardNav";
 import { getSmartEventTime, groupCalendarEvents, isUserLabel, mergeThreadGroups, regroupThreads, type CalendarEventGroup } from "./app/grouping";
 
@@ -257,7 +257,10 @@ function App() {
   // Undo send state
   const undoableSend = createUndoableSend<PendingSend>({
     delayMs: 5000,
-    send: sendPending,
+    send: async pending => {
+      await sendPending(pending);
+      if (pending.draft) drafts.discard(pending.draft.key, pending.accountId, pending.draft.gmailDraftId);
+    },
     onFailed: (pending, e) => {
       console.error("Failed to send email:", e);
       restoreSend(pending);
@@ -427,9 +430,8 @@ function App() {
     try {
       const data = att.inlineData || await downloadAttachmentApi(account.id, att.messageId, att.attachmentId);
       // The compose that is animating out is done; start a new one
-      if (closingCompose()) resetCompose();
+      if (!composing() || closingCompose()) startCompose({});
       setComposeAttachments([...composeAttachments(), { filename: att.filename, mime_type: att.mimeType, data }]);
-      setComposing(true);
     } catch (e) {
       console.error("Failed to forward attachment:", e);
       showToast(`Failed to forward ${att.filename}: ${e}`);
@@ -712,10 +714,8 @@ function App() {
   let fabHoverTimeout: number | undefined;
   let draftSaveTimeout: number | undefined;
   const drafts = createDraftSync();
-
-  function getDraftKey(): string {
-    return draftKey(composeAccount()?.id, { replyThreadId: replyingToThread()?.threadId, forwarding: !!forwardingThread() });
-  }
+  // Where the open compose keeps its draft, chosen when it opens
+  let composeDraftKey = "";
 
   function composeDraftFields(): DraftFields {
     return {
@@ -729,43 +729,36 @@ function App() {
   }
 
   function saveDraft() {
+    cancelDraftSave();
     const account = composeAccount();
     if (!composing() || closingCompose() || !account) return;
-    drafts.save(getDraftKey(), account.id, composeDraftFields());
+    drafts.save(composeDraftKey, account.id, composeDraftFields());
   }
 
-  function clearDraft() {
-    return drafts.clear(getDraftKey(), composeAccount()?.id);
+  // Every edit is kept locally at once, so a quit can't lose it; Gmail gets
+  // it once typing pauses
+  function handleComposeInput() {
+    if (!composing() || closingCompose()) return;
+    drafts.saveLocal(composeDraftKey, composeDraftFields());
+    clearTimeout(draftSaveTimeout);
+    draftSaveTimeout = window.setTimeout(saveDraft, 3000);
   }
 
-  function debouncedSaveDraft() {
-    if (draftSaveTimeout) clearTimeout(draftSaveTimeout);
-    draftSaveTimeout = setTimeout(saveDraft, 3000) as unknown as number;
+  function flushDraftSave() {
+    if (draftSaveTimeout !== undefined) saveDraft();
   }
 
-  // Load draft when compose opens (only for new emails, not reply/forward with pre-filled content).
-  // untrack keeps the restore a one-shot on open: mailto/avatar prefills must
-  // not be clobbered, and an account switch mid-compose must not re-fire it
-  createEffect(() => {
-    if (composing() && !replyingToThread() && !forwardingThread()) {
-      untrack(() => {
-        const body = composeBody();
-        const prefilled = composeTo() || composeSubject() || (body && body !== signatureBlock(composeAccount()?.signature));
-        if (prefilled) return;
-        const draft = drafts.load(getDraftKey());
-        if (draft) {
-          setComposeTo(draft.to);
-          setComposeCc(draft.cc);
-          setComposeBcc(draft.bcc);
-          setComposeSubject(draft.subject);
-          setComposeBody(draft.body);
-          if (draft.cc || draft.bcc) {
-            setShowCcBcc(true);
-          }
-        }
-      });
-    }
-  });
+  function cancelDraftSave() {
+    clearTimeout(draftSaveTimeout);
+    draftSaveTimeout = undefined;
+  }
+
+  // The saved draft a compose opening on this target picks up again. A new
+  // email only picks up one left behind by a quit, crash or failed sync; one
+  // the user closed is in Gmail's Drafts.
+  function restorableDraft(group: string, forNewEmail: boolean) {
+    return findLatestDraft(group, draft => !forNewEmail || !draft.closed);
+  }
 
   // Batch Reply
   const [batchReplyOpen, setBatchReplyOpen] = createSignal(false);
@@ -1432,6 +1425,7 @@ function App() {
   onCleanup(() => {
     document.removeEventListener('keydown', handleGlobalKeyDown);
     document.removeEventListener('click', handleGlobalClick);
+    cancelDraftSave();
   });
 
   function handleGlobalClick(e: MouseEvent) {
@@ -1716,10 +1710,29 @@ function App() {
 
   // Cancelled by resetCompose when a new compose replaces one animating out
   let closeComposeTimeout: number | undefined;
+  // Closing keeps a draft the user wrote in (saved in Gmail's Drafts too) and
+  // offers to discard it; a compose never typed in leaves nothing behind
   function closeCompose() {
+    if (closingCompose()) return;
+    flushDraftSave();
+    const key = composeDraftKey;
+    const accountId = composeAccount()?.id;
+    const keep = hasDraftContent(composeDraftFields()) && safeGetItem(key) !== null;
     setClosingCompose(true);
-    if (draftSaveTimeout) clearTimeout(draftSaveTimeout);
-    clearDraft(); // Clear draft from localStorage and Gmail when compose closes
+    if (keep) {
+      markDraftClosed(key);
+      drafts.detach();
+      showToast("Draft saved", { label: "Discard", run: () => { if (accountId) drafts.discard(key, accountId); } });
+    } else {
+      drafts.clear(key, accountId);
+    }
+    closeComposeTimeout = window.setTimeout(resetCompose, 200);
+  }
+
+  // A sent email's draft stays saved until the send goes out
+  function closeComposeAfterSend() {
+    setClosingCompose(true);
+    drafts.detach();
     closeComposeTimeout = window.setTimeout(resetCompose, 200);
   }
 
@@ -1739,20 +1752,37 @@ function App() {
     focusBody?: boolean;
     // False when putting back an email that already has its signature
     signature?: boolean;
+    // Defaults to the selected account
+    accountId?: string;
+    // Continue this saved draft instead of looking for one
+    draftKey?: string;
   }) {
     if (composing() || closingCompose()) resetCompose();
+    const accountId = init.accountId ?? selectedAccount()?.id;
+    const group = draftKey(accountId, {
+      replyThreadId: init.reply?.threadId,
+      forwardThreadId: init.forward?.threadId,
+      replyEventId: init.replyEvent?.eventId,
+      forwardEventId: init.forwardEvent?.eventId,
+    });
+    const isNewEmail = !init.reply && !init.forward && !init.replyEvent && !init.forwardEvent;
+    const prefilled = !!(init.to || init.subject || init.body);
+    const saved = init.draftKey || (isNewEmail && prefilled) ? null : restorableDraft(group, isNewEmail);
+    composeDraftKey = init.draftKey ?? saved?.key ?? sessionDraftKey(group);
+    if (init.draftKey || saved) drafts.load(composeDraftKey);
+    const fields = saved?.draft ?? init;
     batch(() => {
       setReplyingToEvent(init.replyEvent ?? null);
       setForwardingEvent(init.forwardEvent ?? null);
       setReplyingToThread(init.reply ?? null);
       setForwardingThread(init.forward ?? null);
-      setComposeTo(init.to ?? "");
-      setComposeCc(init.cc ?? "");
-      setComposeBcc(init.bcc ?? "");
-      setShowCcBcc(!!(init.cc || init.bcc));
-      setComposeSubject(init.subject ?? "");
-      const body = init.body ?? "";
-      setComposeBody(init.signature === false ? body : withSignature(body, selectedAccount()?.signature));
+      setComposeTo(fields.to ?? "");
+      setComposeCc(fields.cc ?? "");
+      setComposeBcc(fields.bcc ?? "");
+      setShowCcBcc(!!(fields.cc || fields.bcc));
+      setComposeSubject(fields.subject ?? "");
+      const body = fields.body ?? "";
+      setComposeBody(saved || init.signature === false ? body : withSignature(body, selectedAccount()?.signature));
       setComposeIsHtml(!!init.isHtml);
       setFocusComposeBody(!!init.focusBody);
       setComposing(true);
@@ -1764,7 +1794,7 @@ function App() {
   function resetCompose() {
     clearTimeout(closeComposeTimeout);
     closeComposeTimeout = undefined;
-    if (draftSaveTimeout) clearTimeout(draftSaveTimeout);
+    flushDraftSave();
     drafts.detach();
     batch(() => {
       setComposeTo("");
@@ -1920,22 +1950,18 @@ function App() {
       isHtml: composeIsHtml(),
     };
 
-    // closeCompose clears the draft and cancels any pending draft save
-    closeCompose();
+    // Saved locally as sent, so a quit during the undo window leaves it as a
+    // draft rather than losing it
+    cancelDraftSave();
+    drafts.saveLocal(composeDraftKey, composeDraftFields());
+    pending.draft = { key: composeDraftKey, gmailDraftId: drafts.gmailDraftId() ?? undefined };
+    closeComposeAfterSend();
     undoableSend.queue(pending);
   }
 
-  // The draft was already cleared and compose closed when the send was
-  // queued, so an undone or failed send must put the email back or it's gone
-  // for good. If the user started composing again meanwhile, their
-  // in-progress text gets a best-effort local stash first.
+  // Compose closed when the send was queued, so an undone or failed send puts
+  // the email back, continuing its saved draft
   function restoreSend(pending: PendingSend) {
-    if (composing() && !closingCompose()) {
-      const current = composeDraftFields();
-      if (hasDraftContent(current)) {
-        safeSetJSON(getDraftKey(), { ...current, gmailDraftId: drafts.gmailDraftId() || undefined, savedAt: Date.now() });
-      }
-    }
     startCompose({
       to: pending.to,
       cc: pending.cc,
@@ -1945,6 +1971,8 @@ function App() {
       isHtml: pending.isHtml,
       reply: pending.reply,
       signature: false,
+      accountId: pending.accountId,
+      draftKey: pending.draft?.key,
     });
     setComposeAttachments(pending.attachments);
     setComposeAccount(accounts().find(a => a.id === pending.accountId) ?? null);
@@ -4370,7 +4398,7 @@ function App() {
             draftSaved={drafts.saved()}
             onSend={handleSendEmail}
             onClose={closeCompose}
-            onInput={debouncedSaveDraft}
+            onInput={handleComposeInput}
             focusBody={focusComposeBody()}
             autocomplete={{
               show: showAutocomplete(),
@@ -4517,7 +4545,7 @@ function App() {
             draftSaved: drafts.saved(),
             onSend: handleSendEmail,
             onClose: closeCompose,
-            onInput: debouncedSaveDraft,
+            onInput: handleComposeInput,
             focusBody: focusComposeBody(),
             resizing: inlineResizing(),
             onResizeStart: handleInlineResizeStart,
@@ -4719,7 +4747,7 @@ function App() {
             draftSaved: drafts.saved(),
             onSend: handleSendEmail,
             onClose: () => { closeCompose(); setReplyingToEvent(null); setForwardingEvent(null); },
-            onInput: debouncedSaveDraft,
+            onInput: handleComposeInput,
             focusBody: focusComposeBody(),
             resizing: inlineResizing(),
             onResizeStart: handleInlineResizeStart,
