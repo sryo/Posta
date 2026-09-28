@@ -57,6 +57,16 @@ fn connections_url(page_size: i32, page_token: Option<&str>) -> String {
     url
 }
 
+fn people_error(status: reqwest::StatusCode, body: &str) -> String {
+    if body.contains("SERVICE_DISABLED") || body.contains("has not been used in project") {
+        return "People API not enabled. Please enable the Google People API in your Google Cloud Console to get contact suggestions.".to_string();
+    }
+    if status == reqwest::StatusCode::FORBIDDEN {
+        return "Contacts permission not granted. Please re-authenticate to enable contact suggestions.".to_string();
+    }
+    format!("People API error ({}): {}", status, body)
+}
+
 pub struct PeopleClient {
     http_client: reqwest::Client,
     access_token: String,
@@ -88,11 +98,8 @@ impl PeopleClient {
 
         if !resp.status().is_success() {
             let status = resp.status();
-            if status == reqwest::StatusCode::FORBIDDEN {
-                return Err("Contacts permission not granted. Please re-authenticate to enable contact suggestions.".to_string());
-            }
             let body = resp.text().await.unwrap_or_default();
-            return Err(format!("People API error ({}): {}", status, body));
+            return Err(people_error(status, &body));
         }
 
         let data: ConnectionsResponse = resp
@@ -201,6 +208,28 @@ mod tests {
         let client = PeopleClient::new("invalid".to_string());
         assert!(client.fetch_all_contacts(0).await.unwrap().is_empty());
         assert!(client.fetch_all_contacts(-5).await.unwrap().is_empty());
+    }
+
+    #[test]
+    fn a_disabled_people_api_is_not_reported_as_a_permissions_problem() {
+        // Users bring their own Cloud project; re-authenticating can't enable an API
+        let disabled = serde_json::json!({ "error": {
+            "code": 403,
+            "message": "People API has not been used in project 123 before or it is disabled.",
+            "status": "PERMISSION_DENIED",
+            "details": [{ "reason": "SERVICE_DISABLED" }],
+        }})
+        .to_string();
+        let msg = people_error(reqwest::StatusCode::FORBIDDEN, &disabled);
+        assert!(msg.contains("People API not enabled"), "{msg}");
+        assert!(!msg.contains("re-authenticate"), "{msg}");
+
+        let scope = people_error(reqwest::StatusCode::FORBIDDEN, r#"{"error":{"status":"PERMISSION_DENIED"}}"#);
+        assert!(scope.contains("Contacts permission not granted"), "{scope}");
+
+        // The token cache is evicted on this exact wording
+        let expired = people_error(reqwest::StatusCode::UNAUTHORIZED, "{}");
+        assert!(expired.contains("401 Unauthorized"), "{expired}");
     }
 
     fn connection(json: serde_json::Value) -> PeopleConnection {

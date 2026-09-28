@@ -2,8 +2,11 @@
 
 use chrono::{DateTime, Duration, Local, NaiveDate, TimeZone, Utc};
 use chrono_tz::Tz;
+use futures::{FutureExt, StreamExt};
 use reqwest::StatusCode;
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
+use std::collections::HashMap;
+use std::sync::{Arc, LazyLock, Mutex};
 
 const CALENDAR_API_BASE: &str = "https://www.googleapis.com/calendar/v3";
 // Events-list page size (the API default) and a per-calendar safety cap so a
@@ -12,6 +15,27 @@ const EVENTS_PAGE_SIZE: i32 = 250;
 const PER_CALENDAR_EVENT_CAP: usize = 500;
 const CALENDAR_LIST_PAGE_SIZE: i32 = 250;
 const CALENDAR_LIST_CAP: usize = 1000;
+/// Secondary calendars searched at once per invite lookup; several invite
+/// rows look up at the same time, and Google rate-limits per user
+const INVITE_SEARCH_CONCURRENCY: usize = 4;
+const CALENDAR_LIST_TTL: std::time::Duration = std::time::Duration::from_secs(120);
+const REQUEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
+fn build_http_client(timeout: std::time::Duration) -> reqwest::Client {
+    reqwest::Client::builder()
+        .timeout(timeout)
+        .build()
+        .unwrap_or_else(|_| reqwest::Client::new())
+}
+
+/// One connection pool for every Google API client, so each command doesn't
+/// pay for a fresh TLS handshake
+static HTTP_CLIENT: LazyLock<reqwest::Client> = LazyLock::new(|| build_http_client(REQUEST_TIMEOUT));
+
+type CalendarListSlot = Arc<tokio::sync::Mutex<Option<(std::time::Instant, Arc<Vec<CalendarInfo>>)>>>;
+
+/// Calendar lists for iCalUID lookups, keyed by (API base, access token)
+static CALENDAR_LISTS: LazyLock<Mutex<HashMap<(String, String), CalendarListSlot>>> = LazyLock::new(Default::default);
 
 /// Calendar info returned to frontend
 #[derive(Debug, Clone, Serialize)]
@@ -384,7 +408,7 @@ fn build_event_request(
 impl CalendarClient {
     pub fn new(access_token: String) -> Self {
         Self {
-            http_client: reqwest::Client::new(),
+            http_client: HTTP_CLIENT.clone(),
             access_token,
             api_base: CALENDAR_API_BASE.to_string(),
         }
@@ -683,23 +707,61 @@ impl CalendarClient {
             return Ok(Some(("primary".to_string(), item)));
         }
 
-        let calendars = self.list_calendars().await.unwrap_or_else(|e| {
-            tracing::warn!("Failed to list calendars for iCalUID lookup: {}", e);
-            Vec::new()
-        });
-
-        for cal in calendars.iter().filter(|c| {
-            !c.is_primary
-                && (!writable_only || c.access_role == "owner" || c.access_role == "writer")
-        }) {
-            match self.search_calendar_for_ical_uid(&cal.id, event_uid).await {
+        let calendars = self.calendars_for_invite_lookup().await;
+        let candidates: Vec<&CalendarInfo> = calendars
+            .iter()
+            .filter(|c| {
+                !c.is_primary
+                    && can_hold_invites(c)
+                    && (!writable_only || c.access_role == "owner" || c.access_role == "writer")
+            })
+            .collect();
+        // Results arrive in calendar order; stopping at the first hit drops
+        // the searches still in flight and never starts the rest
+        let searches: Vec<_> = candidates
+            .into_iter()
+            .map(|cal| async move { (cal, self.search_calendar_for_ical_uid(&cal.id, event_uid).await) }.boxed())
+            .collect();
+        let mut results = futures::stream::iter(searches).buffered(INVITE_SEARCH_CONCURRENCY);
+        while let Some((cal, result)) = results.next().await {
+            match result {
                 Ok(Some(item)) => return Ok(Some((cal.id.clone(), item))),
                 Ok(None) => {}
                 Err(e) => tracing::warn!("iCalUID lookup failed for calendar {}: {}", cal.id, e),
             }
         }
-
         Ok(None)
+    }
+
+    /// The account's calendar list, cached briefly: every invite row looks
+    /// up its event, and without the cache each would list the calendars
+    /// again. Concurrent lookups for one account wait for a single fetch.
+    async fn calendars_for_invite_lookup(&self) -> Arc<Vec<CalendarInfo>> {
+        let slot = {
+            let mut lists = CALENDAR_LISTS.lock().unwrap_or_else(|e| e.into_inner());
+            lists.retain(|_, slot| slot.try_lock().map_or(true, |s| s.as_ref().is_some_and(|(at, _)| at.elapsed() < CALENDAR_LIST_TTL)));
+            lists
+                .entry((self.api_base.clone(), self.access_token.clone()))
+                .or_default()
+                .clone()
+        };
+        let mut cached = slot.lock().await;
+        if let Some((at, list)) = cached.as_ref() {
+            if at.elapsed() < CALENDAR_LIST_TTL {
+                return list.clone();
+            }
+        }
+        match self.list_calendars().await {
+            Ok(list) => {
+                let list = Arc::new(list);
+                *cached = Some((std::time::Instant::now(), list.clone()));
+                list
+            }
+            Err(e) => {
+                tracing::warn!("Failed to list calendars for iCalUID lookup: {}", e);
+                Default::default()
+            }
+        }
     }
 
     /// Get the user's RSVP status for a calendar event from Calendar API
@@ -833,6 +895,13 @@ fn api_event_to_calendar_event(event: ApiEvent, calendar_id: &str, calendar_name
         can_edit,
         recurring_event_id: event.recurring_event_id,
     })
+}
+
+/// Free/busy calendars show no attendees, and Google's generated calendars
+/// (holidays, contacts' birthdays, week numbers: ids under
+/// group.v.calendar.google.com) never receive invitations
+fn can_hold_invites(calendar: &CalendarInfo) -> bool {
+    calendar.access_role != "freeBusyReader" && !calendar.id.ends_with("@group.v.calendar.google.com")
 }
 
 /// The user's entry in an attendee list. The API's `self` flag marks the
@@ -1564,73 +1633,102 @@ mod tests {
 
     type Handler = dyn Fn(&str, &str) -> (u16, String) + Send + Sync;
     type Requests = std::sync::Arc<std::sync::Mutex<Vec<(String, String, String)>>>;
+    type Gate = std::sync::Arc<(Box<dyn Fn(&str) -> bool + Send + Sync>, tokio::sync::Barrier)>;
 
-    /// A local HTTP server answering each request with `handler(method,
-    /// path_and_query)`; records every request as (method, target, body)
+    /// A local keep-alive HTTP server answering each request with
+    /// `handler(method, path_and_query)`; records every request as (method,
+    /// target, body) and counts the connections it accepted
     struct StubServer {
         base: String,
         requests: Requests,
+        connections: std::sync::Arc<std::sync::atomic::AtomicUsize>,
     }
 
     impl StubServer {
         async fn start(handler: impl Fn(&str, &str) -> (u16, String) + Send + Sync + 'static) -> Self {
+            Self::start_inner(std::sync::Arc::new(handler), None).await
+        }
+
+        /// Requests whose target satisfies `gated` are held until `n` of them
+        /// are in flight at once, so a caller sending them one at a time
+        /// never gets an answer
+        async fn start_gated(
+            handler: impl Fn(&str, &str) -> (u16, String) + Send + Sync + 'static,
+            gated: impl Fn(&str) -> bool + Send + Sync + 'static,
+            n: usize,
+        ) -> Self {
+            let gate: Gate = std::sync::Arc::new((Box::new(gated), tokio::sync::Barrier::new(n)));
+            Self::start_inner(std::sync::Arc::new(handler), Some(gate)).await
+        }
+
+        async fn start_inner(handler: std::sync::Arc<Handler>, gate: Option<Gate>) -> Self {
             use tokio::io::{AsyncReadExt, AsyncWriteExt};
             let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
             let base = format!("http://{}", listener.local_addr().unwrap());
             let requests: Requests = Default::default();
-            let handler: std::sync::Arc<Handler> = std::sync::Arc::new(handler);
+            let connections = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
             let log = requests.clone();
+            let accepted = connections.clone();
             tokio::spawn(async move {
                 loop {
                     let Ok((mut socket, _)) = listener.accept().await else { return };
+                    accepted.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
                     let handler = handler.clone();
                     let log = log.clone();
+                    let gate = gate.clone();
                     tokio::spawn(async move {
                         let mut buf = Vec::new();
                         let mut chunk = [0u8; 4096];
-                        let header_end = loop {
-                            let n = socket.read(&mut chunk).await.unwrap();
-                            if n == 0 {
+                        loop {
+                            let header_end = loop {
+                                if let Some(i) = buf.windows(4).position(|w| w == b"\r\n\r\n") {
+                                    break i + 4;
+                                }
+                                match socket.read(&mut chunk).await {
+                                    Ok(0) | Err(_) => return,
+                                    Ok(n) => buf.extend_from_slice(&chunk[..n]),
+                                }
+                            };
+                            let head = String::from_utf8_lossy(&buf[..header_end]).to_string();
+                            let content_length = head
+                                .lines()
+                                .find_map(|l| {
+                                    let (k, v) = l.split_once(':')?;
+                                    k.eq_ignore_ascii_case("content-length").then(|| v.trim().parse::<usize>().ok())?
+                                })
+                                .unwrap_or(0);
+                            while buf.len() < header_end + content_length {
+                                match socket.read(&mut chunk).await {
+                                    Ok(0) | Err(_) => return,
+                                    Ok(n) => buf.extend_from_slice(&chunk[..n]),
+                                }
+                            }
+                            let mut request_line = head.lines().next().unwrap_or_default().split(' ');
+                            let method = request_line.next().unwrap_or_default().to_string();
+                            let target = request_line.next().unwrap_or_default().to_string();
+                            let body = String::from_utf8_lossy(&buf[header_end..header_end + content_length]).to_string();
+                            buf.drain(..header_end + content_length);
+                            if let Some(gate) = &gate {
+                                if (gate.0)(&target) {
+                                    gate.1.wait().await;
+                                }
+                            }
+                            let (status, response) = handler(&method, &target);
+                            log.lock().unwrap().push((method, target, body));
+                            let reply = format!(
+                                "HTTP/1.1 {} Stub\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+                                status,
+                                response.len(),
+                                response
+                            );
+                            if socket.write_all(reply.as_bytes()).await.is_err() {
                                 return;
                             }
-                            buf.extend_from_slice(&chunk[..n]);
-                            if let Some(i) = buf.windows(4).position(|w| w == b"\r\n\r\n") {
-                                break i + 4;
-                            }
-                        };
-                        let head = String::from_utf8_lossy(&buf[..header_end]).to_string();
-                        let content_length = head
-                            .lines()
-                            .find_map(|l| {
-                                let (k, v) = l.split_once(':')?;
-                                k.eq_ignore_ascii_case("content-length").then(|| v.trim().parse::<usize>().ok())?
-                            })
-                            .unwrap_or(0);
-                        while buf.len() < header_end + content_length {
-                            let n = socket.read(&mut chunk).await.unwrap();
-                            if n == 0 {
-                                break;
-                            }
-                            buf.extend_from_slice(&chunk[..n]);
                         }
-                        let mut request_line = head.lines().next().unwrap_or_default().split(' ');
-                        let method = request_line.next().unwrap_or_default().to_string();
-                        let target = request_line.next().unwrap_or_default().to_string();
-                        let body = String::from_utf8_lossy(&buf[header_end..]).to_string();
-                        let (status, response) = handler(&method, &target);
-                        log.lock().unwrap().push((method, target, body));
-                        let reply = format!(
-                            "HTTP/1.1 {} Stub\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
-                            status,
-                            response.len(),
-                            response
-                        );
-                        let _ = socket.write_all(reply.as_bytes()).await;
-                        let _ = socket.shutdown().await;
                     });
                 }
             });
-            StubServer { base, requests }
+            StubServer { base, requests, connections }
         }
 
         fn client(&self) -> CalendarClient {
@@ -1639,6 +1737,10 @@ mod tests {
 
         fn requests(&self) -> Vec<(String, String, String)> {
             self.requests.lock().unwrap().clone()
+        }
+
+        fn connections(&self) -> usize {
+            self.connections.load(std::sync::atomic::Ordering::SeqCst)
         }
     }
 
@@ -1662,6 +1764,148 @@ mod tests {
         let ids: Vec<&str> = calendars.iter().map(|c| c.id.as_str()).collect();
         assert_eq!(ids, vec!["first", "second"]);
         assert_eq!(server.requests().len(), 2);
+    }
+
+    fn invite_lookup_stub(calendars: serde_json::Value, found_on: &'static str) -> impl Fn(&str, &str) -> (u16, String) + Send + Sync + 'static {
+        move |method, target| {
+            if target.starts_with("/users/me/calendarList") {
+                return (200, serde_json::json!({ "items": calendars }).to_string());
+            }
+            if method == "PATCH" {
+                return (200, "{}".to_string());
+            }
+            let items = if target.starts_with(&format!("/calendars/{}/events?iCalUID=", urlencoding::encode(found_on))) {
+                serde_json::json!([{ "id": "e1", "attendees": [{ "email": "me@x.com", "responseStatus": "accepted" }] }])
+            } else {
+                serde_json::json!([])
+            };
+            (200, serde_json::json!({ "items": items }).to_string())
+        }
+    }
+
+    fn calendar_with_role(id: &str, role: &str) -> serde_json::Value {
+        serde_json::json!({ "id": id, "summary": id, "accessRole": role })
+    }
+
+    fn searched_calendars(server: &StubServer) -> Vec<String> {
+        server
+            .requests()
+            .into_iter()
+            .filter(|(_, target, _)| target.contains("/events?iCalUID="))
+            .map(|(_, target, _)| target.trim_start_matches("/calendars/").split('/').next().unwrap().to_string())
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn invite_lookup_searches_secondary_calendars_concurrently() {
+        let calendars = serde_json::json!([
+            { "id": "me@x.com", "primary": true, "accessRole": "owner" },
+            calendar_with_role("work", "owner"),
+            calendar_with_role("team", "writer"),
+            calendar_with_role("shared", "reader"),
+        ]);
+        // One at a time, the first secondary search would wait forever
+        let server = StubServer::start_gated(
+            invite_lookup_stub(calendars, "team"),
+            |target| target.contains("/events?iCalUID=") && !target.starts_with("/calendars/primary/"),
+            3,
+        )
+        .await;
+        let status = tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            server.client().get_calendar_event_status("me@x.com", "uid-1"),
+        )
+        .await
+        .expect("secondary calendars were searched one at a time");
+        assert_eq!(status.as_deref(), Some("accepted"));
+    }
+
+    #[tokio::test]
+    async fn invite_lookup_stops_at_the_first_calendar_holding_the_invite() {
+        // Accounts can subscribe to dozens of calendars; searching all of
+        // them at once for every invite row runs into Google's rate limits
+        let calendars: Vec<_> = (0..20).map(|i| calendar_with_role(&format!("cal{i:02}"), "reader")).collect();
+        let server = StubServer::start(invite_lookup_stub(serde_json::json!(calendars), "cal00")).await;
+        assert_eq!(server.client().get_calendar_event_status("me@x.com", "uid-1").await.as_deref(), Some("accepted"));
+        let searched = searched_calendars(&server);
+        assert_eq!(searched[0], "primary");
+        assert!(searched.len() <= 1 + INVITE_SEARCH_CONCURRENCY, "{searched:?}");
+    }
+
+    #[tokio::test]
+    async fn invite_lookup_skips_calendars_that_cannot_hold_invites() {
+        let calendars = serde_json::json!([
+            { "id": "me@x.com", "primary": true, "accessRole": "owner" },
+            calendar_with_role("work", "owner"),
+            calendar_with_role("shared", "reader"),
+            calendar_with_role("busy", "freeBusyReader"),
+            calendar_with_role("en.usa#holiday@group.v.calendar.google.com", "reader"),
+            calendar_with_role("addressbook#contacts@group.v.calendar.google.com", "reader"),
+        ]);
+        let server = StubServer::start(invite_lookup_stub(calendars, "nowhere")).await;
+        assert_eq!(server.client().get_calendar_event_status("me@x.com", "uid-1").await, None);
+        let mut searched = searched_calendars(&server);
+        searched.sort();
+        assert_eq!(searched, vec!["primary", "shared", "work"]);
+
+        // An RSVP can only be written to a calendar the user can modify
+        let calendars = serde_json::json!([calendar_with_role("work", "owner"), calendar_with_role("shared", "reader")]);
+        let rsvp_server = StubServer::start(invite_lookup_stub(calendars, "work")).await;
+        rsvp_server.client().rsvp_calendar_event("me@x.com", "uid-1", "declined").await.unwrap();
+        let mut searched = searched_calendars(&rsvp_server);
+        searched.sort();
+        assert_eq!(searched, vec!["primary", "work"]);
+        let patches: Vec<_> = rsvp_server.requests().into_iter().filter(|(m, _, _)| m == "PATCH").collect();
+        assert_eq!(patches.len(), 1);
+        assert!(patches[0].1.starts_with("/calendars/work/events/e1?"), "{:?}", patches[0]);
+        assert!(patches[0].2.contains("declined"), "{:?}", patches[0]);
+    }
+
+    #[tokio::test]
+    async fn invite_lookups_share_one_calendar_list_request() {
+        // Each invite row looks up its own event; the account's calendar
+        // list is fetched once for all of them, not once per row
+        let calendars = serde_json::json!([calendar_with_role("work", "owner")]);
+        let server = StubServer::start(invite_lookup_stub(calendars, "work")).await;
+        let client = server.client();
+        let lookups: Vec<_> = (0..4).map(|i| client.get_calendar_event_status("me@x.com", ["a", "b", "c", "d"][i])).collect();
+        let statuses = futures::future::join_all(lookups).await;
+        assert!(statuses.iter().all(|s| s.as_deref() == Some("accepted")), "{statuses:?}");
+        server.client().get_calendar_event_status("me@x.com", "e").await;
+        let list_requests = server.requests().iter().filter(|(_, t, _)| t.starts_with("/users/me/calendarList")).count();
+        assert_eq!(list_requests, 1);
+
+        // Another account (token) gets its own list
+        let other = CalendarClient { access_token: "other-token".into(), ..server.client() };
+        other.get_calendar_event_status("me@x.com", "f").await;
+        let list_requests = server.requests().iter().filter(|(_, t, _)| t.starts_with("/users/me/calendarList")).count();
+        assert_eq!(list_requests, 2);
+    }
+
+    #[tokio::test]
+    async fn clients_reuse_connections() {
+        // Every command builds its own client; sharing one connection pool
+        // saves a TLS handshake per request against Google
+        let server = StubServer::start(|_, _| (200, serde_json::json!({ "items": [] }).to_string())).await;
+        for _ in 0..3 {
+            server.client().list_calendars().await.unwrap();
+        }
+        assert_eq!(server.requests().len(), 3);
+        assert_eq!(server.connections(), 1);
+    }
+
+    #[tokio::test]
+    async fn a_request_google_never_answers_fails_instead_of_hanging() {
+        // The gate needs two requests, so the only one sent is never answered
+        let server = StubServer::start_gated(|_, _| (200, "{}".to_string()), |_| true, 2).await;
+        let client = CalendarClient {
+            http_client: build_http_client(std::time::Duration::from_millis(200)),
+            ..server.client()
+        };
+        let result = tokio::time::timeout(std::time::Duration::from_secs(10), client.list_calendars())
+            .await
+            .expect("request hung");
+        assert!(result.is_err());
     }
 
     fn update_stub(method: &str, target: &str) -> (u16, String) {
