@@ -144,7 +144,8 @@ describe("ThreadView keyboard shortcuts", () => {
     const { container } = renderThread();
     fireEvent.click(container.querySelectorAll<HTMLButtonElement>(".add-reaction-btn")[0]);
     expect(container.querySelector(".emoji-picker")).not.toBeNull();
-    fireEvent.keyDown(document.activeElement ?? document.body, { key: "Escape" });
+    expect(document.activeElement).toBe(container.querySelector(".emoji-search"));
+    fireEvent.keyDown(document.activeElement!, { key: "Escape" });
     expect(container.querySelector(".emoji-picker")).toBeNull();
     expect(container.querySelector(".thread-overlay.closing")).toBeNull();
 
@@ -164,6 +165,18 @@ describe("ThreadView keyboard shortcuts", () => {
     expect(subject).toBe("Fwd: Lunch");
     expect(body).toContain("From: Alice <alice@example.com>");
     expect(body).toContain("first");
+  });
+
+  it("shows and quotes a plain-text body verbatim, line breaks and angle brackets included", () => {
+    const { props, container } = renderThread({
+      thread: makeThread([{ from: "Alice <alice@example.com>", body: "Ask Bob <bob@example.com>\nThanks" }]),
+      focusedMessageIndex: 0,
+    });
+    const shown = container.querySelector(".message-body")!;
+    expect(shown.textContent).toContain("Ask Bob <bob@example.com>\nThanks");
+    expect(shown.querySelector("[style*='pre-wrap']")).not.toBeNull();
+    fireEvent.keyDown(document, { key: "r" });
+    expect((props.onReply as any).mock.calls[0][3]).toContain("> Ask Bob <bob@example.com>\n> Thanks");
   });
 
   it("does not reply while an inline compose is open", () => {
