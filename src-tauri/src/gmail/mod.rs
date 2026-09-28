@@ -699,30 +699,7 @@ impl GmailClient {
         }
 
         let thread = self.get_thread(thread_id).await.ok()?;
-        // Prefer the message matching the provided Gmail hex id; fall back to
-        // the last message in the thread
-        let parent = message_id
-            .and_then(|id| thread.messages.iter().find(|m| m.id == id))
-            .or_else(|| thread.messages.last())?;
-        let headers = parent.payload.as_ref()?.headers.as_ref()?;
-
-        let parent_message_id = headers
-            .iter()
-            .find(|h| h.name.eq_ignore_ascii_case("Message-ID"))
-            .map(|h| ensure_angle_brackets(&h.value))?;
-        let parent_references = headers
-            .iter()
-            .find(|h| h.name.eq_ignore_ascii_case("References"))
-            .map(|h| h.value.trim().to_string())
-            .unwrap_or_default();
-
-        let references = if parent_references.is_empty() {
-            parent_message_id.clone()
-        } else {
-            format!("{} {}", parent_references, parent_message_id)
-        };
-
-        Some((parent_message_id, references))
+        reply_headers_from_thread(&thread, message_id)
     }
 
     /// List all labels for the authenticated user
@@ -1147,6 +1124,34 @@ fn thread_participants(messages: &[MessageDetail]) -> Vec<String> {
         }
     }
     participants
+}
+
+/// Threading headers (In-Reply-To, References) for a reply to `thread`.
+/// The parent is the message with Gmail id `message_id`, or else the latest
+/// message that is not a draft (the reply's own saved draft is in the thread).
+fn reply_headers_from_thread(
+    thread: &FullThread,
+    message_id: Option<&str>,
+) -> Option<(String, String)> {
+    let is_draft = |m: &FullMessage| {
+        m.label_ids
+            .as_ref()
+            .is_some_and(|labels| labels.iter().any(|l| l == "DRAFT"))
+    };
+    let parent = message_id
+        .and_then(|id| thread.messages.iter().find(|m| m.id == id))
+        .or_else(|| thread.messages.iter().rev().find(|m| !is_draft(m)))?;
+    let headers = parent.payload.as_ref()?.headers.as_deref();
+
+    let parent_message_id = ensure_angle_brackets(find_header(headers, "Message-ID")?);
+    let references = match find_header(headers, "References").map(str::trim) {
+        Some(parent_references) if !parent_references.is_empty() => {
+            format!("{} {}", parent_references, parent_message_id)
+        }
+        _ => parent_message_id.clone(),
+    };
+
+    Some((parent_message_id, references))
 }
 
 fn find_header<'a>(headers: Option<&'a [Header]>, name: &str) -> Option<&'a str> {
@@ -2271,6 +2276,55 @@ mod tests {
             detail("4", &[], "me@example.com"),
         ];
         assert_eq!(thread_participants(&messages), vec!["a@example.com", "me@example.com"]);
+    }
+
+    fn full_message(id: &str, labels: &[&str], headers: Vec<Header>) -> FullMessage {
+        FullMessage {
+            id: id.to_string(),
+            thread_id: "t1".to_string(),
+            label_ids: Some(labels.iter().map(|l| l.to_string()).collect()),
+            snippet: None,
+            internal_date: None,
+            payload: Some(MessagePayload {
+                headers: Some(headers),
+                body: None,
+                parts: None,
+                mime_type: Some("text/plain".to_string()),
+            }),
+        }
+    }
+
+    fn thread_of(messages: Vec<FullMessage>) -> FullThread {
+        FullThread { id: "t1".to_string(), history_id: None, messages }
+    }
+
+    #[test]
+    fn reply_headers_skip_drafts_when_falling_back_to_last_message() {
+        let thread = thread_of(vec![
+            full_message("m1", &["INBOX"], vec![
+                header("Message-Id", "<one@example.com>"),
+            ]),
+            full_message("m2", &["INBOX"], vec![
+                header("Message-ID", "<two@example.com>"),
+                header("References", "<one@example.com>"),
+            ]),
+            full_message("d1", &["DRAFT"], vec![
+                header("Message-ID", "<draft@example.com>"),
+                header("References", "<one@example.com> <two@example.com>"),
+            ]),
+        ]);
+        assert_eq!(
+            reply_headers_from_thread(&thread, None),
+            Some((
+                "<two@example.com>".to_string(),
+                "<one@example.com> <two@example.com>".to_string()
+            ))
+        );
+        // An explicit Gmail id still wins
+        assert_eq!(
+            reply_headers_from_thread(&thread, Some("m1")),
+            Some(("<one@example.com>".to_string(), "<one@example.com>".to_string()))
+        );
     }
 
     #[test]
