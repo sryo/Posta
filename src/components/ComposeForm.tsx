@@ -105,7 +105,7 @@ export const ComposeForm = (props: ComposeFormProps) => {
       <div class="compose-to-row">
         <input
           ref={(el) => setTimeout(() => { if (props.focusTo !== false && !props.focusBody) el?.focus(); }, 50)}
-          type="email"
+          type="text"
           value={props.to || ''}
           onInput={(e) => { props.setTo?.(e.currentTarget.value); props.onInput?.(); }}
           onFocus={() => props.autocomplete?.setShow(true)}
