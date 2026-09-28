@@ -139,10 +139,10 @@ import { coalesceByKey } from "./app/coalesce";
 import { threadLoadErrorMessage } from "./app/loadErrors";
 import { cardTypeForQuery } from "./app/cardType";
 import { createDraftSync, draftKey, findLatestDraft, findUnsentDrafts, hasDraftContent, markDraftClosed, markDraftSending, pruneDrafts, removeAccountDrafts, sessionDraftKey, type DraftFields } from "./app/drafts";
-import { nextCardFocus, nextItemFocus } from "./app/keyboardNav";
+import { escapeTarget, nextCardFocus, nextItemFocus } from "./app/keyboardNav";
 import { getSmartEventTime, groupCalendarEvents, isUserLabel, mergeThreadGroups, regroupThreads, type CalendarEventGroup } from "./app/grouping";
 import { pullLayoutWithRetry } from "./app/icloudRestore";
-import { onActivateKey } from "./shared/keyboard";
+import { hasCommandModifier, onActivateKey } from "./shared/keyboard";
 
 const SESSION_EXPIRED_MESSAGE = "Session expired - sign in again";
 
@@ -1312,7 +1312,7 @@ function App() {
 
     // Everything below is a bare-key shortcut; Cmd/Ctrl/Alt combos (Cmd+A
     // select-all, system shortcuts) must never trigger thread/card actions
-    if (e.metaKey || e.ctrlKey || e.altKey) {
+    if (hasCommandModifier(e)) {
       return;
     }
 
@@ -1366,40 +1366,39 @@ function App() {
     }
 
     if (e.key === 'Escape') {
-      // Priority: filter > dropdowns > color pickers > shortcuts help > batch reply > compose > query help > event form > card editing > sidebar > action menu > selection > focus
-      if (showGlobalFilter()) {
-        setShowGlobalFilter(false);
-        setGlobalFilter("");
-      } else if (accountChooserOpen()) {
-        setAccountChooserOpen(false);
-      } else if (colorPickerOpen() || editColorPickerOpen() || bgColorPickerOpen()) {
-        setColorPickerOpen(false);
-        setEditColorPickerOpen(false);
-        setBgColorPickerOpen(false);
-      } else if (shortcutsHelpOpen()) {
-        setShortcutsHelpOpen(false);
-      } else if (batchReplyOpen()) {
-        dismissBatchReply();
-      } else if (composing() && !closingCompose()) {
-        closeCompose();
-      } else if (queryHelpOpen()) {
-        setQueryHelpOpen(false);
-      } else if (creatingEvent()) {
-        closeEventForm();
-      } else if (editingCardId()) {
-        setEditingCardId(null);
-      } else if (settingsOpen()) {
-        setSettingsOpen(false);
-      } else if (actionConfigMenu()) {
-        setActionConfigMenu(null);
-      } else if (focusedCardId() && (selectedThreads()[focusedCardId()!]?.size || selectedEvents()[focusedCardId()!]?.size)) {
-        const cardId = focusedCardId()!;
-        setSelectedThreads({ ...selectedThreads(), [cardId]: new Set() });
-        setSelectedEvents({ ...selectedEvents(), [cardId]: new Set() });
-      } else if (focusedCardId()) {
-        setFocusedCardId(null);
-        setFocusedThreadIndex(-1);
-        setFocusedEventIndex(-1);
+      const focused = focusedCardId();
+      const target = escapeTarget({
+        filter: showGlobalFilter(),
+        accountChooser: accountChooserOpen(),
+        colorPicker: colorPickerOpen() || editColorPickerOpen() || bgColorPickerOpen(),
+        shortcutsHelp: shortcutsHelpOpen(),
+        batchReply: batchReplyOpen(),
+        compose: composing() && !closingCompose(),
+        queryHelp: queryHelpOpen(),
+        eventForm: creatingEvent(),
+        cardEditor: !!editingCardId(),
+        settings: settingsOpen(),
+        actionConfigMenu: !!actionConfigMenu(),
+        selection: !!focused && !!(selectedThreads()[focused]?.size || selectedEvents()[focused]?.size),
+        cardFocus: !!focused,
+      });
+      switch (target) {
+        case "filter": setShowGlobalFilter(false); setGlobalFilter(""); break;
+        case "accountChooser": setAccountChooserOpen(false); break;
+        case "colorPicker": setColorPickerOpen(false); setEditColorPickerOpen(false); setBgColorPickerOpen(false); break;
+        case "shortcutsHelp": setShortcutsHelpOpen(false); break;
+        case "batchReply": dismissBatchReply(); break;
+        case "compose": closeCompose(); break;
+        case "queryHelp": setQueryHelpOpen(false); break;
+        case "eventForm": closeEventForm(); break;
+        case "cardEditor": setEditingCardId(null); break;
+        case "settings": setSettingsOpen(false); break;
+        case "actionConfigMenu": setActionConfigMenu(null); break;
+        case "selection":
+          setSelectedThreads({ ...selectedThreads(), [focused!]: new Set() });
+          setSelectedEvents({ ...selectedEvents(), [focused!]: new Set() });
+          break;
+        case "cardFocus": setFocusedCardId(null); setFocusedThreadIndex(-1); setFocusedEventIndex(-1); break;
       }
       return;
     }
@@ -3900,12 +3899,7 @@ function App() {
                           style={{ background: getAvatarColor(contact.name || contact.email) }}
                           title={contact.name ? `${contact.name} <${contact.email}>` : contact.email}
                           onClick={writeTo}
-                          onKeyDown={(e) => {
-                            if (e.key !== "Enter" && e.key !== " ") return;
-                            e.preventDefault();
-                            e.stopPropagation();
-                            writeTo();
-                          }}
+                          on:keydown={onActivateKey(writeTo)}
                         >
                           {(contact.name || contact.email).charAt(0).toUpperCase()}
                           <span class="suggestion-label">{contact.name || contact.email}</span>

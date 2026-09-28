@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { nextCardFocus, nextItemFocus } from "./keyboardNav";
+import { escapeTarget, nextCardFocus, nextItemFocus } from "./keyboardNav";
 
 const cards = [{ id: "a", count: 2 }, { id: "b", count: 0 }, { id: "c", count: 3 }];
 
@@ -66,5 +66,31 @@ describe("nextCardFocus", () => {
 
   it("does nothing without cards", () => {
     expect(nextCardFocus([], null, true, false)).toBeNull();
+  });
+});
+
+describe("escapeTarget", () => {
+  const none = {
+    filter: false, accountChooser: false, colorPicker: false, shortcutsHelp: false, batchReply: false,
+    compose: false, queryHelp: false, eventForm: false, cardEditor: false, settings: false,
+    actionConfigMenu: false, selection: false, cardFocus: false,
+  };
+
+  it("closes one thing per press, the one most in front first", () => {
+    const all = Object.fromEntries(Object.keys(none).map(k => [k, true])) as typeof none;
+    const order: string[] = [];
+    let open = { ...all };
+    for (let target = escapeTarget(open); target; target = escapeTarget(open)) {
+      order.push(target);
+      open = { ...open, [target]: false };
+    }
+    expect(order).toEqual([
+      "filter", "accountChooser", "colorPicker", "shortcutsHelp", "batchReply", "compose",
+      "queryHelp", "eventForm", "cardEditor", "settings", "actionConfigMenu", "selection", "cardFocus",
+    ]);
+  });
+
+  it("has nothing to close when nothing is open", () => {
+    expect(escapeTarget(none)).toBeNull();
   });
 });

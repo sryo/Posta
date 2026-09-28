@@ -53,3 +53,31 @@ export function nextCardFocus(
   if (right) return { cardId: null, addingCard: true };
   return addingCard ? { cardId: last, addingCard: false } : null;
 }
+
+// What is open, as far as Escape is concerned
+export interface EscapeState {
+  filter: boolean;
+  accountChooser: boolean;
+  colorPicker: boolean;
+  shortcutsHelp: boolean;
+  batchReply: boolean;
+  compose: boolean;
+  queryHelp: boolean;
+  eventForm: boolean;
+  cardEditor: boolean;
+  settings: boolean;
+  actionConfigMenu: boolean;
+  // Threads or events selected in the focused card
+  selection: boolean;
+  cardFocus: boolean;
+}
+
+// Front to back: each Escape closes the first of these that is open
+const ESCAPE_ORDER: (keyof EscapeState)[] = [
+  "filter", "accountChooser", "colorPicker", "shortcutsHelp", "batchReply", "compose",
+  "queryHelp", "eventForm", "cardEditor", "settings", "actionConfigMenu", "selection", "cardFocus",
+];
+
+export function escapeTarget(state: EscapeState): keyof EscapeState | null {
+  return ESCAPE_ORDER.find(key => state[key]) ?? null;
+}
