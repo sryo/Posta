@@ -1161,10 +1161,10 @@ fn parse_ics_content(ics_data: &str) -> Option<CalendarEvent> {
     let status = find_ics_value(&event_lines, "STATUS");
 
     let (dtstart_params, dtstart) = find_ics_property(&event_lines, "DTSTART")?;
-    let (start_time, all_day) = parse_ics_datetime(&dtstart, &dtstart_params)?;
+    let (start_time, all_day) = parse_ics_datetime(&dtstart, &dtstart_params, &lines)?;
 
     let end_time = find_ics_property(&event_lines, "DTEND")
-        .and_then(|(params, s)| parse_ics_datetime(&s, &params))
+        .and_then(|(params, s)| parse_ics_datetime(&s, &params, &lines))
         .map(|(ts, _)| ts);
 
     let organizer = find_ics_value(&event_lines, "ORGANIZER").map(|s| strip_mailto(&s));
@@ -1193,9 +1193,10 @@ fn parse_ics_content(ics_data: &str) -> Option<CalendarEvent> {
 
 /// Parse an ICS datetime string (e.g., "20240115T100000Z" or "20240115").
 /// `params` are the property parameters (e.g. "TZID=America/New_York"); a
-/// naive datetime is resolved in that zone, falling back to machine-local.
+/// naive datetime is resolved in that zone (see resolve_ics_wall_time), and
+/// `calendar` is every line of the calendar, for its VTIMEZONE definitions.
 /// Returns (timestamp_millis, is_all_day)
-fn parse_ics_datetime(s: &str, params: &str) -> Option<(i64, bool)> {
+fn parse_ics_datetime(s: &str, params: &str, calendar: &[&str]) -> Option<(i64, bool)> {
     let s = s.trim();
     // Byte-offset slicing below is only safe on ASCII
     if !s.is_ascii() {
@@ -1214,44 +1215,62 @@ fn parse_ics_datetime(s: &str, params: &str) -> Option<(i64, bool)> {
         return Some((utc.timestamp_millis(), true));
     }
 
-    // Full datetime with T separator
-    if s.contains('T') {
-        // Format: YYYYMMDDTHHMMSS or YYYYMMDDTHHMMSSZ
-        let is_utc = s.ends_with('Z');
-        let s = s.trim_end_matches('Z');
+    let is_utc = s.ends_with('Z');
+    let datetime = parse_ics_naive_datetime(s.trim_end_matches('Z'))?;
+    let utc = if is_utc {
+        DateTime::<Utc>::from_naive_utc_and_offset(datetime, Utc)
+    } else {
+        let tzid = params
+            .split(';')
+            .find_map(|p| p.strip_prefix("TZID="))
+            .map(|v| v.trim_matches('"'));
+        resolve_ics_wall_time(datetime, tzid, calendar)?
+    };
+    Some((utc.timestamp_millis(), false))
+}
 
-        if s.len() >= 15 {
-            let year: i32 = s[0..4].parse().ok()?;
-            let month: u32 = s[4..6].parse().ok()?;
-            let day: u32 = s[6..8].parse().ok()?;
-            let hour: u32 = s[9..11].parse().ok()?;
-            let min: u32 = s[11..13].parse().ok()?;
-            let sec: u32 = s[13..15].parse().ok()?;
+/// "YYYYMMDDTHHMMSS" as a naive datetime
+fn parse_ics_naive_datetime(s: &str) -> Option<chrono::NaiveDateTime> {
+    if !s.is_ascii() || s.len() < 15 || s.as_bytes()[8] != b'T' {
+        return None;
+    }
+    let date = chrono::NaiveDate::from_ymd_opt(s[0..4].parse().ok()?, s[4..6].parse().ok()?, s[6..8].parse().ok()?)?;
+    let time = chrono::NaiveTime::from_hms_opt(s[9..11].parse().ok()?, s[11..13].parse().ok()?, s[13..15].parse().ok()?)?;
+    Some(chrono::NaiveDateTime::new(date, time))
+}
 
-            let date = chrono::NaiveDate::from_ymd_opt(year, month, day)?;
-            let time = chrono::NaiveTime::from_hms_opt(hour, min, sec)?;
-            let datetime = chrono::NaiveDateTime::new(date, time);
-
-            let tzid = params
-                .split(';')
-                .find_map(|p| p.strip_prefix("TZID="))
-                .map(|v| v.trim_matches('"'));
-
-            let utc = if is_utc {
-                DateTime::<Utc>::from_naive_utc_and_offset(datetime, Utc)
-            } else {
-                // No TZID or an unknown zone: assume machine-local time
-                match tzid.and_then(|tz| tz.parse::<chrono_tz::Tz>().ok()) {
-                    Some(tz) => resolve_wall_time(&tz, datetime)?,
-                    None => resolve_wall_time(&Local, datetime)?,
-                }
-            };
-
-            return Some((utc.timestamp_millis(), false));
+/// The instant a wall-clock time in the zone named `tzid` denotes. The name is
+/// tried as an IANA zone, then as a Windows zone name (Outlook, Exchange), then
+/// against the calendar's own VTIMEZONE rules; without a usable zone the time
+/// is taken as machine-local.
+fn resolve_ics_wall_time(
+    datetime: chrono::NaiveDateTime,
+    tzid: Option<&str>,
+    calendar: &[&str],
+) -> Option<DateTime<Utc>> {
+    if let Some(tzid) = tzid {
+        if let Some(tz) = named_zone(tzid) {
+            return resolve_wall_time(&tz, datetime);
+        }
+        if let Some(offset) = vtimezone_offset(calendar, tzid, datetime) {
+            let utc = datetime.checked_sub_signed(Duration::seconds(offset.into()))?;
+            return Some(DateTime::from_naive_utc_and_offset(utc, Utc));
         }
     }
+    resolve_wall_time(&Local, datetime)
+}
 
-    None
+fn named_zone(tzid: &str) -> Option<chrono_tz::Tz> {
+    let tzid = tzid.trim();
+    if let Ok(tz) = tzid.parse() {
+        return Some(tz);
+    }
+    if let Some((_, iana)) = WINDOWS_ZONES.iter().find(|(windows, _)| windows.eq_ignore_ascii_case(tzid)) {
+        return iana.parse().ok();
+    }
+    // Prefixed IANA ids such as "/mozilla.org/20050126_1/America/New_York"
+    let segments: Vec<&str> = tzid.split('/').collect();
+    (1..segments.len()).find_map(|i| segments[i..].join("/").parse().ok())
 }
 
 /// The instant a wall-clock time in `tz` denotes. A time repeated when clocks go
@@ -1270,6 +1289,291 @@ fn resolve_wall_time<Tz: TimeZone>(tz: &Tz, datetime: chrono::NaiveDateTime) -> 
     let utc = datetime.checked_sub_signed(Duration::seconds(offset_before.into()))?;
     Some(DateTime::from_naive_utc_and_offset(utc, Utc))
 }
+
+/// The UTC offset in seconds that the VTIMEZONE `tzid` of `calendar` gives
+/// wall-clock time `datetime`: the TZOFFSETTO of the observance (STANDARD or
+/// DAYLIGHT) that began most recently. Yearly rules of the "nth weekday of a
+/// month" kind are followed; other rules count only their first onset.
+fn vtimezone_offset(calendar: &[&str], tzid: &str, datetime: chrono::NaiveDateTime) -> Option<i32> {
+    let zone = ics_components(calendar, "VTIMEZONE")
+        .into_iter()
+        .find(|zone| find_ics_value(zone, "TZID").is_some_and(|id| id.trim_matches('"') == tzid))?;
+    let observances: Vec<&[&str]> = ["STANDARD", "DAYLIGHT"]
+        .iter()
+        .flat_map(|kind| ics_components(zone, kind))
+        .collect();
+
+    let mut latest: Option<(chrono::NaiveDateTime, i32)> = None;
+    let mut earliest: Option<(chrono::NaiveDateTime, i32)> = None;
+    for observance in observances {
+        let Some(start) = find_ics_value(observance, "DTSTART").and_then(|s| parse_ics_naive_datetime(&s)) else {
+            continue;
+        };
+        let Some(offset_to) = find_ics_value(observance, "TZOFFSETTO").and_then(|s| parse_utc_offset(&s)) else {
+            continue;
+        };
+        let offset_from = find_ics_value(observance, "TZOFFSETFROM")
+            .and_then(|s| parse_utc_offset(&s))
+            .unwrap_or(offset_to);
+        let rule = find_ics_value(observance, "RRULE").and_then(|r| YearlyRule::parse(&r));
+        let onsets: Vec<chrono::NaiveDateTime> = match &rule {
+            Some(rule) => (datetime.year() - 1..=datetime.year())
+                .filter_map(|year| rule.onset(year, start))
+                .collect(),
+            None => vec![start],
+        };
+        for onset in onsets {
+            if onset <= datetime && latest.is_none_or(|(at, _)| onset > at) {
+                latest = Some((onset, offset_to));
+            }
+        }
+        if earliest.is_none_or(|(at, _)| start < at) {
+            earliest = Some((start, offset_from));
+        }
+    }
+    latest.or(earliest).map(|(_, offset)| offset)
+}
+
+/// The line ranges of each `kind` component directly inside `lines`
+fn ics_components<'a, 'b>(lines: &'b [&'a str], kind: &str) -> Vec<&'b [&'a str]> {
+    let begin = format!("BEGIN:{}", kind);
+    let end = format!("END:{}", kind);
+    let mut components = Vec::new();
+    let mut rest = lines;
+    while let Some(start) = rest.iter().position(|l| *l == begin) {
+        let Some(len) = rest[start..].iter().position(|l| *l == end) else {
+            break;
+        };
+        components.push(&rest[start + 1..start + len]);
+        rest = &rest[start + len + 1..];
+    }
+    components
+}
+
+/// "+0530", "-0800" or "+053000" as seconds east of UTC
+fn parse_utc_offset(value: &str) -> Option<i32> {
+    let value = value.trim();
+    let (sign, digits) = match value.as_bytes().first()? {
+        b'+' => (1, &value[1..]),
+        b'-' => (-1, &value[1..]),
+        _ => return None,
+    };
+    if !(digits.len() == 4 || digits.len() == 6) || !digits.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    let hours: i32 = digits[0..2].parse().ok()?;
+    let minutes: i32 = digits[2..4].parse().ok()?;
+    let seconds: i32 = digits.get(4..6).map_or(Some(0), |s| s.parse().ok())?;
+    Some(sign * (hours * 3600 + minutes * 60 + seconds))
+}
+
+/// A VTIMEZONE recurrence "FREQ=YEARLY;BYMONTH=m;BYDAY=nDD", e.g. the second
+/// Sunday of March (n = 2) or the last Sunday of October (n = -1)
+struct YearlyRule {
+    month: u32,
+    weekday: chrono::Weekday,
+    nth: i32,
+    until: Option<chrono::NaiveDateTime>,
+}
+
+impl YearlyRule {
+    fn parse(rrule: &str) -> Option<Self> {
+        let parts: HashMap<String, &str> = rrule
+            .split(';')
+            .filter_map(|p| p.split_once('='))
+            .map(|(k, v)| (k.trim().to_ascii_uppercase(), v.trim()))
+            .collect();
+        if !parts.get("FREQ")?.eq_ignore_ascii_case("YEARLY") {
+            return None;
+        }
+        let month: u32 = parts.get("BYMONTH")?.parse().ok()?;
+        let byday = parts.get("BYDAY")?;
+        if !byday.is_ascii() || byday.len() < 2 {
+            return None;
+        }
+        let (nth, day) = byday.split_at(byday.len() - 2);
+        let nth: i32 = if nth.is_empty() { 1 } else { nth.trim_start_matches('+').parse().ok()? };
+        let weekday = match day.to_ascii_uppercase().as_str() {
+            "MO" => chrono::Weekday::Mon,
+            "TU" => chrono::Weekday::Tue,
+            "WE" => chrono::Weekday::Wed,
+            "TH" => chrono::Weekday::Thu,
+            "FR" => chrono::Weekday::Fri,
+            "SA" => chrono::Weekday::Sat,
+            "SU" => chrono::Weekday::Sun,
+            _ => return None,
+        };
+        let until = parts
+            .get("UNTIL")
+            .and_then(|u| parse_ics_naive_datetime(u.trim_end_matches('Z')));
+        Some(Self { month, weekday, nth, until })
+    }
+
+    /// When the observance starts in `year`, at the time of day of `start`
+    fn onset(&self, year: i32, start: chrono::NaiveDateTime) -> Option<chrono::NaiveDateTime> {
+        let date = match self.nth {
+            1..=5 => chrono::NaiveDate::from_weekday_of_month_opt(year, self.month, self.weekday, self.nth as u8),
+            -1 => {
+                let first_of_next = if self.month == 12 {
+                    chrono::NaiveDate::from_ymd_opt(year + 1, 1, 1)
+                } else {
+                    chrono::NaiveDate::from_ymd_opt(year, self.month + 1, 1)
+                }?;
+                let last = first_of_next.pred_opt()?;
+                let back = (7 + last.weekday().num_days_from_monday() - self.weekday.num_days_from_monday()) % 7;
+                last.checked_sub_signed(Duration::days(back.into()))
+            }
+            _ => None,
+        }?;
+        let onset = date.and_time(start.time());
+        let in_range = onset >= start && self.until.is_none_or(|until| onset <= until);
+        in_range.then_some(onset)
+    }
+}
+
+/// Windows time zone names (as Outlook and Exchange write TZIDs) and the IANA
+/// zone CLDR maps each one to
+const WINDOWS_ZONES: &[(&str, &str)] = &[
+    ("Dateline Standard Time", "Etc/GMT+12"),
+    ("UTC-11", "Etc/GMT+11"),
+    ("Aleutian Standard Time", "America/Adak"),
+    ("Hawaiian Standard Time", "Pacific/Honolulu"),
+    ("Marquesas Standard Time", "Pacific/Marquesas"),
+    ("Alaskan Standard Time", "America/Anchorage"),
+    ("UTC-09", "Etc/GMT+9"),
+    ("Pacific Standard Time (Mexico)", "America/Tijuana"),
+    ("UTC-08", "Etc/GMT+8"),
+    ("Pacific Standard Time", "America/Los_Angeles"),
+    ("US Mountain Standard Time", "America/Phoenix"),
+    ("Mountain Standard Time (Mexico)", "America/Mazatlan"),
+    ("Mountain Standard Time", "America/Denver"),
+    ("Yukon Standard Time", "America/Whitehorse"),
+    ("Central America Standard Time", "America/Guatemala"),
+    ("Central Standard Time", "America/Chicago"),
+    ("Easter Island Standard Time", "Pacific/Easter"),
+    ("Central Standard Time (Mexico)", "America/Mexico_City"),
+    ("Canada Central Standard Time", "America/Regina"),
+    ("SA Pacific Standard Time", "America/Bogota"),
+    ("Eastern Standard Time (Mexico)", "America/Cancun"),
+    ("Eastern Standard Time", "America/New_York"),
+    ("Haiti Standard Time", "America/Port-au-Prince"),
+    ("Cuba Standard Time", "America/Havana"),
+    ("US Eastern Standard Time", "America/Indiana/Indianapolis"),
+    ("Turks And Caicos Standard Time", "America/Grand_Turk"),
+    ("Paraguay Standard Time", "America/Asuncion"),
+    ("Atlantic Standard Time", "America/Halifax"),
+    ("Venezuela Standard Time", "America/Caracas"),
+    ("Central Brazilian Standard Time", "America/Cuiaba"),
+    ("SA Western Standard Time", "America/La_Paz"),
+    ("Pacific SA Standard Time", "America/Santiago"),
+    ("Newfoundland Standard Time", "America/St_Johns"),
+    ("Tocantins Standard Time", "America/Araguaina"),
+    ("E. South America Standard Time", "America/Sao_Paulo"),
+    ("SA Eastern Standard Time", "America/Cayenne"),
+    ("Argentina Standard Time", "America/Argentina/Buenos_Aires"),
+    ("Greenland Standard Time", "America/Nuuk"),
+    ("Montevideo Standard Time", "America/Montevideo"),
+    ("Magallanes Standard Time", "America/Punta_Arenas"),
+    ("Saint Pierre Standard Time", "America/Miquelon"),
+    ("Bahia Standard Time", "America/Bahia"),
+    ("UTC-02", "Etc/GMT+2"),
+    ("Azores Standard Time", "Atlantic/Azores"),
+    ("Cape Verde Standard Time", "Atlantic/Cape_Verde"),
+    ("UTC", "Etc/UTC"),
+    ("GMT Standard Time", "Europe/London"),
+    ("Greenwich Standard Time", "Atlantic/Reykjavik"),
+    ("Sao Tome Standard Time", "Africa/Sao_Tome"),
+    ("Morocco Standard Time", "Africa/Casablanca"),
+    ("W. Europe Standard Time", "Europe/Berlin"),
+    ("Central Europe Standard Time", "Europe/Budapest"),
+    ("Romance Standard Time", "Europe/Paris"),
+    ("Central European Standard Time", "Europe/Warsaw"),
+    ("W. Central Africa Standard Time", "Africa/Lagos"),
+    ("Jordan Standard Time", "Asia/Amman"),
+    ("GTB Standard Time", "Europe/Bucharest"),
+    ("Middle East Standard Time", "Asia/Beirut"),
+    ("Egypt Standard Time", "Africa/Cairo"),
+    ("E. Europe Standard Time", "Europe/Chisinau"),
+    ("Syria Standard Time", "Asia/Damascus"),
+    ("West Bank Standard Time", "Asia/Hebron"),
+    ("South Africa Standard Time", "Africa/Johannesburg"),
+    ("FLE Standard Time", "Europe/Kyiv"),
+    ("Israel Standard Time", "Asia/Jerusalem"),
+    ("South Sudan Standard Time", "Africa/Juba"),
+    ("Kaliningrad Standard Time", "Europe/Kaliningrad"),
+    ("Sudan Standard Time", "Africa/Khartoum"),
+    ("Libya Standard Time", "Africa/Tripoli"),
+    ("Namibia Standard Time", "Africa/Windhoek"),
+    ("Arabic Standard Time", "Asia/Baghdad"),
+    ("Turkey Standard Time", "Europe/Istanbul"),
+    ("Arab Standard Time", "Asia/Riyadh"),
+    ("Belarus Standard Time", "Europe/Minsk"),
+    ("Russian Standard Time", "Europe/Moscow"),
+    ("E. Africa Standard Time", "Africa/Nairobi"),
+    ("Volgograd Standard Time", "Europe/Volgograd"),
+    ("Iran Standard Time", "Asia/Tehran"),
+    ("Arabian Standard Time", "Asia/Dubai"),
+    ("Astrakhan Standard Time", "Europe/Astrakhan"),
+    ("Azerbaijan Standard Time", "Asia/Baku"),
+    ("Russia Time Zone 3", "Europe/Samara"),
+    ("Mauritius Standard Time", "Indian/Mauritius"),
+    ("Saratov Standard Time", "Europe/Saratov"),
+    ("Georgian Standard Time", "Asia/Tbilisi"),
+    ("Caucasus Standard Time", "Asia/Yerevan"),
+    ("Afghanistan Standard Time", "Asia/Kabul"),
+    ("West Asia Standard Time", "Asia/Tashkent"),
+    ("Ekaterinburg Standard Time", "Asia/Yekaterinburg"),
+    ("Pakistan Standard Time", "Asia/Karachi"),
+    ("Qyzylorda Standard Time", "Asia/Qyzylorda"),
+    ("India Standard Time", "Asia/Kolkata"),
+    ("Sri Lanka Standard Time", "Asia/Colombo"),
+    ("Nepal Standard Time", "Asia/Kathmandu"),
+    ("Central Asia Standard Time", "Asia/Bishkek"),
+    ("Bangladesh Standard Time", "Asia/Dhaka"),
+    ("Omsk Standard Time", "Asia/Omsk"),
+    ("Myanmar Standard Time", "Asia/Yangon"),
+    ("SE Asia Standard Time", "Asia/Bangkok"),
+    ("Altai Standard Time", "Asia/Barnaul"),
+    ("W. Mongolia Standard Time", "Asia/Hovd"),
+    ("North Asia Standard Time", "Asia/Krasnoyarsk"),
+    ("N. Central Asia Standard Time", "Asia/Novosibirsk"),
+    ("Tomsk Standard Time", "Asia/Tomsk"),
+    ("China Standard Time", "Asia/Shanghai"),
+    ("North Asia East Standard Time", "Asia/Irkutsk"),
+    ("Singapore Standard Time", "Asia/Singapore"),
+    ("W. Australia Standard Time", "Australia/Perth"),
+    ("Taipei Standard Time", "Asia/Taipei"),
+    ("Ulaanbaatar Standard Time", "Asia/Ulaanbaatar"),
+    ("Aus Central W. Standard Time", "Australia/Eucla"),
+    ("Transbaikal Standard Time", "Asia/Chita"),
+    ("Tokyo Standard Time", "Asia/Tokyo"),
+    ("North Korea Standard Time", "Asia/Pyongyang"),
+    ("Korea Standard Time", "Asia/Seoul"),
+    ("Yakutsk Standard Time", "Asia/Yakutsk"),
+    ("Cen. Australia Standard Time", "Australia/Adelaide"),
+    ("AUS Central Standard Time", "Australia/Darwin"),
+    ("E. Australia Standard Time", "Australia/Brisbane"),
+    ("AUS Eastern Standard Time", "Australia/Sydney"),
+    ("West Pacific Standard Time", "Pacific/Port_Moresby"),
+    ("Tasmania Standard Time", "Australia/Hobart"),
+    ("Vladivostok Standard Time", "Asia/Vladivostok"),
+    ("Lord Howe Standard Time", "Australia/Lord_Howe"),
+    ("Bougainville Standard Time", "Pacific/Bougainville"),
+    ("Russia Time Zone 10", "Asia/Srednekolymsk"),
+    ("Magadan Standard Time", "Asia/Magadan"),
+    ("Norfolk Standard Time", "Pacific/Norfolk"),
+    ("Sakhalin Standard Time", "Asia/Sakhalin"),
+    ("Central Pacific Standard Time", "Pacific/Guadalcanal"),
+    ("Russia Time Zone 11", "Asia/Kamchatka"),
+    ("New Zealand Standard Time", "Pacific/Auckland"),
+    ("UTC+12", "Etc/GMT-12"),
+    ("Fiji Standard Time", "Pacific/Fiji"),
+    ("Chatham Islands Standard Time", "Pacific/Chatham"),
+    ("UTC+13", "Etc/GMT-13"),
+    ("Tonga Standard Time", "Pacific/Tongatapu"),
+    ("Samoa Standard Time", "Pacific/Apia"),
+    ("Line Islands Standard Time", "Pacific/Kiritimati"),
+];
 
 /// Represents attachment metadata extracted from message parts
 struct AttachmentInfo {
@@ -2125,13 +2429,13 @@ mod tests {
 
     #[test]
     fn parse_ics_datetime_rejects_non_ascii_without_panicking() {
-        assert_eq!(parse_ics_datetime("202é115", ""), None);
-        assert_eq!(parse_ics_datetime("20240115T1é0000", ""), None);
-        assert_eq!(parse_ics_datetime("é0240115T100000Z", ""), None);
+        assert_eq!(parse_ics_datetime("202é115", "", &[]), None);
+        assert_eq!(parse_ics_datetime("20240115T1é0000", "", &[]), None);
+        assert_eq!(parse_ics_datetime("é0240115T100000Z", "", &[]), None);
     }
 
     fn ics_utc(s: &str, params: &str) -> Option<(String, bool)> {
-        parse_ics_datetime(s, params).map(|(ms, all_day)| {
+        parse_ics_datetime(s, params, &[]).map(|(ms, all_day)| {
             (DateTime::from_timestamp_millis(ms).unwrap().to_rfc3339(), all_day)
         })
     }
@@ -2173,6 +2477,132 @@ mod tests {
             ics_utc("20241006T021500", "TZID=Australia/Lord_Howe"),
             Some(("2024-10-05T15:45:00+00:00".to_string(), false))
         );
+    }
+
+    /// An invite whose event starts at `dtstart` (with its parameters) after
+    /// the given VTIMEZONE lines, CRLF-joined
+    fn invite_with_zone(zone: &[&str], dtstart: &str) -> String {
+        let mut lines = vec!["BEGIN:VCALENDAR", "METHOD:REQUEST"];
+        lines.extend_from_slice(zone);
+        lines.extend_from_slice(&["BEGIN:VEVENT", dtstart, "SUMMARY:Sync", "END:VEVENT", "END:VCALENDAR"]);
+        lines.join("\r\n")
+    }
+
+    fn invite_start_utc(ics: &str) -> String {
+        let event = parse_ics_content(ics).expect("invite parses");
+        DateTime::from_timestamp_millis(event.start_time).unwrap().to_rfc3339()
+    }
+
+    #[test]
+    fn parse_ics_maps_windows_zone_names_to_iana() {
+        // Outlook and Exchange name zones the Windows way
+        let pacific = invite_with_zone(&[], "DTSTART;TZID=Pacific Standard Time:20240715T100000");
+        assert_eq!(invite_start_utc(&pacific), "2024-07-15T17:00:00+00:00");
+        let quoted = invite_with_zone(&[], "DTSTART;TZID=\"W. Europe Standard Time\":20240115T100000");
+        assert_eq!(invite_start_utc(&quoted), "2024-01-15T09:00:00+00:00");
+        let india = invite_with_zone(&[], "DTSTART;TZID=India Standard Time:20240115T100000");
+        assert_eq!(invite_start_utc(&india), "2024-01-15T04:30:00+00:00");
+    }
+
+    #[test]
+    fn windows_zone_table_names_only_known_iana_zones() {
+        assert!(WINDOWS_ZONES.len() > 50);
+        for (windows, iana) in WINDOWS_ZONES {
+            assert!(iana.parse::<chrono_tz::Tz>().is_ok(), "{} maps to unknown {}", windows, iana);
+        }
+    }
+
+    #[test]
+    fn parse_ics_accepts_prefixed_iana_zone_ids() {
+        let ics = invite_with_zone(
+            &[],
+            "DTSTART;TZID=/mozilla.org/20050126_1/America/New_York:20240115T100000",
+        );
+        assert_eq!(invite_start_utc(&ics), "2024-01-15T15:00:00+00:00");
+    }
+
+    const CUSTOM_EUROPE_ZONE: &[&str] = &[
+        "BEGIN:VTIMEZONE",
+        "TZID:Customized Time Zone",
+        "BEGIN:STANDARD",
+        "DTSTART:16010101T030000",
+        "TZOFFSETFROM:+0200",
+        "TZOFFSETTO:+0100",
+        "RRULE:FREQ=YEARLY;INTERVAL=1;BYDAY=-1SU;BYMONTH=10",
+        "END:STANDARD",
+        "BEGIN:DAYLIGHT",
+        "DTSTART:16010101T020000",
+        "TZOFFSETFROM:+0100",
+        "TZOFFSETTO:+0200",
+        "RRULE:FREQ=YEARLY;INTERVAL=1;BYDAY=-1SU;BYMONTH=3",
+        "END:DAYLIGHT",
+        "END:VTIMEZONE",
+    ];
+
+    #[test]
+    fn parse_ics_follows_vtimezone_rules_for_unknown_zone_names() {
+        let at = |dtstart: &str| {
+            invite_start_utc(&invite_with_zone(
+                CUSTOM_EUROPE_ZONE,
+                &format!("DTSTART;TZID=Customized Time Zone:{}", dtstart),
+            ))
+        };
+        // January follows the previous October's switch to standard time
+        assert_eq!(at("20240115T100000"), "2024-01-15T09:00:00+00:00");
+        // Daylight time starts on the last Sunday of March (the 31st in 2024)
+        assert_eq!(at("20240330T120000"), "2024-03-30T11:00:00+00:00");
+        assert_eq!(at("20240331T120000"), "2024-03-31T10:00:00+00:00");
+        // ...and ends on the last Sunday of October (the 27th)
+        assert_eq!(at("20241026T120000"), "2024-10-26T10:00:00+00:00");
+        assert_eq!(at("20241027T120000"), "2024-10-27T11:00:00+00:00");
+    }
+
+    #[test]
+    fn parse_ics_vtimezone_nth_weekday_rules() {
+        let zone = [
+            "BEGIN:VTIMEZONE",
+            "TZID:Customized Time Zone 1",
+            "BEGIN:STANDARD",
+            "DTSTART:16010101T020000",
+            "TZOFFSETFROM:-0700",
+            "TZOFFSETTO:-0800",
+            "RRULE:FREQ=YEARLY;INTERVAL=1;BYDAY=1SU;BYMONTH=11",
+            "END:STANDARD",
+            "BEGIN:DAYLIGHT",
+            "DTSTART:16010101T020000",
+            "TZOFFSETFROM:-0800",
+            "TZOFFSETTO:-0700",
+            "RRULE:FREQ=YEARLY;INTERVAL=1;BYDAY=2SU;BYMONTH=3",
+            "END:DAYLIGHT",
+            "END:VTIMEZONE",
+        ];
+        let at = |dtstart: &str| {
+            invite_start_utc(&invite_with_zone(
+                &zone,
+                &format!("DTSTART;TZID=\"Customized Time Zone 1\":{}", dtstart),
+            ))
+        };
+        // Second Sunday of March 2024 is the 10th, first Sunday of November the 3rd
+        assert_eq!(at("20240309T120000"), "2024-03-09T20:00:00+00:00");
+        assert_eq!(at("20240310T120000"), "2024-03-10T19:00:00+00:00");
+        assert_eq!(at("20241102T120000"), "2024-11-02T19:00:00+00:00");
+        assert_eq!(at("20241103T120000"), "2024-11-03T20:00:00+00:00");
+    }
+
+    #[test]
+    fn parse_ics_vtimezone_without_rules_is_a_fixed_offset() {
+        let zone = [
+            "BEGIN:VTIMEZONE",
+            "TZID:Office",
+            "BEGIN:STANDARD",
+            "DTSTART:16010101T000000",
+            "TZOFFSETFROM:+0530",
+            "TZOFFSETTO:+0530",
+            "END:STANDARD",
+            "END:VTIMEZONE",
+        ];
+        let ics = invite_with_zone(&zone, "DTSTART;TZID=Office:20240715T100000");
+        assert_eq!(invite_start_utc(&ics), "2024-07-15T04:30:00+00:00");
     }
 
     const FOLDED_INVITE: &str = concat!(
