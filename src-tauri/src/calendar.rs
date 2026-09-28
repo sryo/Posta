@@ -10,6 +10,8 @@ const CALENDAR_API_BASE: &str = "https://www.googleapis.com/calendar/v3";
 // runaway calendar can't page forever
 const EVENTS_PAGE_SIZE: i32 = 250;
 const PER_CALENDAR_EVENT_CAP: usize = 500;
+const CALENDAR_LIST_PAGE_SIZE: i32 = 250;
+const CALENDAR_LIST_CAP: usize = 1000;
 
 /// Calendar info returned to frontend
 #[derive(Debug, Clone, Serialize)]
@@ -107,9 +109,12 @@ pub struct EventAttendee {
     pub is_organizer: bool,
 }
 
+/// One page of a list endpoint (calendarList, events)
 #[derive(Debug, Deserialize)]
-struct CalendarListResponse {
-    items: Option<Vec<CalendarListEntry>>,
+struct Page<T> {
+    items: Option<Vec<T>>,
+    #[serde(rename = "nextPageToken")]
+    next_page_token: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -133,13 +138,6 @@ impl From<CalendarListEntry> for CalendarInfo {
             timezone: c.time_zone,
         }
     }
-}
-
-#[derive(Debug, Deserialize)]
-struct EventsListResponse {
-    items: Option<Vec<ApiEvent>>,
-    #[serde(rename = "nextPageToken")]
-    next_page_token: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -255,9 +253,11 @@ struct CalEventAttendee {
 pub struct CalendarClient {
     http_client: reqwest::Client,
     access_token: String,
+    api_base: String,
 }
 
 fn events_list_url(
+    api_base: &str,
     calendar_id: &str,
     time_min: DateTime<Utc>,
     time_max: DateTime<Utc>,
@@ -265,7 +265,7 @@ fn events_list_url(
 ) -> String {
     let mut url = format!(
         "{}/calendars/{}/events?timeMin={}&timeMax={}&maxResults={}&singleEvents=true&orderBy=startTime",
-        CALENDAR_API_BASE,
+        api_base,
         urlencoding::encode(calendar_id),
         urlencoding::encode(&time_min.to_rfc3339()),
         urlencoding::encode(&time_max.to_rfc3339()),
@@ -374,6 +374,7 @@ impl CalendarClient {
         Self {
             http_client: reqwest::Client::new(),
             access_token,
+            api_base: CALENDAR_API_BASE.to_string(),
         }
     }
 
@@ -400,17 +401,34 @@ impl CalendarClient {
             .map_err(|e| format!("Failed to parse calendar response: {}", e))
     }
 
+    /// GET `url` and the pages after it, keeping at most `cap` items
+    async fn get_pages<T: DeserializeOwned>(&self, url: &str, cap: usize) -> Result<Vec<T>, String> {
+        let mut items = Vec::new();
+        let mut page_token: Option<String> = None;
+        loop {
+            let page_url = match &page_token {
+                Some(token) => format!("{}&pageToken={}", url, urlencoding::encode(token)),
+                None => url.to_string(),
+            };
+            let page: Page<T> = self.send_json(self.http_client.get(&page_url)).await?;
+            items.extend(page.items.unwrap_or_default());
+            if items.len() >= cap {
+                items.truncate(cap);
+                break;
+            }
+            match page.next_page_token {
+                Some(token) => page_token = Some(token),
+                None => break,
+            }
+        }
+        Ok(items)
+    }
+
     /// List all calendars for the user
     pub async fn list_calendars(&self) -> Result<Vec<CalendarInfo>, String> {
-        let url = format!("{}/users/me/calendarList", CALENDAR_API_BASE);
-        let data: CalendarListResponse = self.send_json(self.http_client.get(&url)).await?;
-
-        Ok(data
-            .items
-            .unwrap_or_default()
-            .into_iter()
-            .map(CalendarInfo::from)
-            .collect())
+        let url = format!("{}/users/me/calendarList?maxResults={}", self.api_base, CALENDAR_LIST_PAGE_SIZE);
+        let entries: Vec<CalendarListEntry> = self.get_pages(&url, CALENDAR_LIST_CAP).await?;
+        Ok(entries.into_iter().map(CalendarInfo::from).collect())
     }
 
     /// Look up one calendar (accepts "primary"). Best-effort: used to label
@@ -418,7 +436,7 @@ impl CalendarClient {
     async fn calendar_info(&self, calendar_id: &str) -> Option<CalendarInfo> {
         let url = format!(
             "{}/users/me/calendarList/{}",
-            CALENDAR_API_BASE,
+            self.api_base,
             urlencoding::encode(calendar_id)
         );
         match self.send_json::<CalendarListEntry>(self.http_client.get(&url)).await {
@@ -449,37 +467,13 @@ impl CalendarClient {
         // Determine time range from query using calendar timezone
         let (time_min, time_max) = query.get_time_range(timezone);
 
-        let fetch_futures: Vec<_> = calendars.iter().map(|cal| {
-            let base_url = events_list_url(&cal.id, time_min, time_max, query);
-
-            async move {
-                let mut items: Vec<ApiEvent> = Vec::new();
-                let mut page_token: Option<String> = None;
-
-                loop {
-                    let mut url = base_url.clone();
-                    if let Some(token) = &page_token {
-                        url.push_str(&format!("&pageToken={}", urlencoding::encode(token)));
-                    }
-
-                    let data: EventsListResponse = self.send_json(self.http_client.get(&url)).await?;
-
-                    items.extend(data.items.unwrap_or_default());
-
-                    if items.len() >= PER_CALENDAR_EVENT_CAP {
-                        items.truncate(PER_CALENDAR_EVENT_CAP);
-                        break;
-                    }
-
-                    match data.next_page_token {
-                        Some(token) => page_token = Some(token),
-                        None => break,
-                    }
-                }
-
-                Ok::<_, String>(items)
-            }
-        }).collect();
+        let fetch_futures: Vec<_> = calendars
+            .iter()
+            .map(|cal| {
+                let url = events_list_url(&self.api_base, &cal.id, time_min, time_max, query);
+                async move { self.get_pages::<ApiEvent>(&url, PER_CALENDAR_EVENT_CAP).await }
+            })
+            .collect();
 
         let results = futures::future::join_all(fetch_futures).await;
 
@@ -534,7 +528,7 @@ impl CalendarClient {
     ) -> Result<CalendarEvent, String> {
         let url = format!(
             "{}/calendars/{}/events",
-            CALENDAR_API_BASE,
+            self.api_base,
             urlencoding::encode(calendar_id)
         );
 
@@ -556,7 +550,7 @@ impl CalendarClient {
     ) -> Result<CalendarEvent, String> {
         let url = format!(
             "{}/calendars/{}/events/{}/move?destination={}",
-            CALENDAR_API_BASE,
+            self.api_base,
             urlencoding::encode(source_calendar_id),
             urlencoding::encode(event_id),
             urlencoding::encode(destination_calendar_id)
@@ -579,7 +573,7 @@ impl CalendarClient {
     ) -> Result<(), String> {
         let url = format!(
             "{}/calendars/{}/events/{}",
-            CALENDAR_API_BASE,
+            self.api_base,
             urlencoding::encode(calendar_id),
             urlencoding::encode(event_id)
         );
@@ -599,7 +593,7 @@ impl CalendarClient {
     ) -> Result<CalendarEvent, String> {
         let url = format!(
             "{}/calendars/{}/events/{}",
-            CALENDAR_API_BASE,
+            self.api_base,
             urlencoding::encode(calendar_id),
             urlencoding::encode(event_id)
         );
@@ -626,7 +620,7 @@ impl CalendarClient {
     async fn event_attendees(&self, calendar_id: &str, event_id: &str) -> Result<Vec<CalEventAttendee>, String> {
         let url = format!(
             "{}/calendars/{}/events/{}?fields=id,attendees",
-            CALENDAR_API_BASE,
+            self.api_base,
             urlencoding::encode(calendar_id),
             urlencoding::encode(event_id)
         );
@@ -642,7 +636,7 @@ impl CalendarClient {
     ) -> Result<Option<CalEventSearchItem>, String> {
         let search_url = format!(
             "{}/calendars/{}/events?iCalUID={}",
-            CALENDAR_API_BASE,
+            self.api_base,
             urlencoding::encode(calendar_id),
             urlencoding::encode(event_uid)
         );
@@ -723,7 +717,7 @@ impl CalendarClient {
         // Patch the event with updated attendees
         let patch_url = format!(
             "{}/calendars/{}/events/{}?sendUpdates=all",
-            CALENDAR_API_BASE,
+            self.api_base,
             urlencoding::encode(&calendar_id),
             urlencoding::encode(event_id)
         );
@@ -1320,7 +1314,7 @@ mod tests {
     #[test]
     fn events_url_requests_cancelled_events_only_when_filtering_for_them() {
         let now = "2024-07-10T15:30:00Z".parse::<DateTime<Utc>>().unwrap();
-        let url = |q: &str| events_list_url("me@x.com", now, now + Duration::days(1), &CalendarQuery::parse(q));
+        let url = |q: &str| events_list_url(CALENDAR_API_BASE, "me@x.com", now, now + Duration::days(1), &CalendarQuery::parse(q));
 
         let plain = url("calendar:today");
         assert!(plain.starts_with("https://www.googleapis.com/calendar/v3/calendars/me%40x.com/events?"));
@@ -1505,6 +1499,108 @@ mod tests {
         });
         let parsed: CalEventAttendee = serde_json::from_value(json.clone()).unwrap();
         assert_eq!(serde_json::to_value(parsed).unwrap(), json);
+    }
+
+    type Handler = dyn Fn(&str, &str) -> (u16, String) + Send + Sync;
+    type Requests = std::sync::Arc<std::sync::Mutex<Vec<(String, String, String)>>>;
+
+    /// A local HTTP server answering each request with `handler(method,
+    /// path_and_query)`; records every request as (method, target, body)
+    struct StubServer {
+        base: String,
+        requests: Requests,
+    }
+
+    impl StubServer {
+        async fn start(handler: impl Fn(&str, &str) -> (u16, String) + Send + Sync + 'static) -> Self {
+            use tokio::io::{AsyncReadExt, AsyncWriteExt};
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let base = format!("http://{}", listener.local_addr().unwrap());
+            let requests: Requests = Default::default();
+            let handler: std::sync::Arc<Handler> = std::sync::Arc::new(handler);
+            let log = requests.clone();
+            tokio::spawn(async move {
+                loop {
+                    let Ok((mut socket, _)) = listener.accept().await else { return };
+                    let handler = handler.clone();
+                    let log = log.clone();
+                    tokio::spawn(async move {
+                        let mut buf = Vec::new();
+                        let mut chunk = [0u8; 4096];
+                        let header_end = loop {
+                            let n = socket.read(&mut chunk).await.unwrap();
+                            if n == 0 {
+                                return;
+                            }
+                            buf.extend_from_slice(&chunk[..n]);
+                            if let Some(i) = buf.windows(4).position(|w| w == b"\r\n\r\n") {
+                                break i + 4;
+                            }
+                        };
+                        let head = String::from_utf8_lossy(&buf[..header_end]).to_string();
+                        let content_length = head
+                            .lines()
+                            .find_map(|l| {
+                                let (k, v) = l.split_once(':')?;
+                                k.eq_ignore_ascii_case("content-length").then(|| v.trim().parse::<usize>().ok())?
+                            })
+                            .unwrap_or(0);
+                        while buf.len() < header_end + content_length {
+                            let n = socket.read(&mut chunk).await.unwrap();
+                            if n == 0 {
+                                break;
+                            }
+                            buf.extend_from_slice(&chunk[..n]);
+                        }
+                        let mut request_line = head.lines().next().unwrap_or_default().split(' ');
+                        let method = request_line.next().unwrap_or_default().to_string();
+                        let target = request_line.next().unwrap_or_default().to_string();
+                        let body = String::from_utf8_lossy(&buf[header_end..]).to_string();
+                        let (status, response) = handler(&method, &target);
+                        log.lock().unwrap().push((method, target, body));
+                        let reply = format!(
+                            "HTTP/1.1 {} Stub\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                            status,
+                            response.len(),
+                            response
+                        );
+                        let _ = socket.write_all(reply.as_bytes()).await;
+                        let _ = socket.shutdown().await;
+                    });
+                }
+            });
+            StubServer { base, requests }
+        }
+
+        fn client(&self) -> CalendarClient {
+            CalendarClient { api_base: self.base.clone(), ..CalendarClient::new("token".into()) }
+        }
+
+        fn requests(&self) -> Vec<(String, String, String)> {
+            self.requests.lock().unwrap().clone()
+        }
+    }
+
+    fn calendar_entry(id: &str) -> serde_json::Value {
+        serde_json::json!({ "id": id, "summary": id, "accessRole": "owner", "timeZone": "UTC" })
+    }
+
+    #[tokio::test]
+    async fn list_calendars_follows_page_tokens() {
+        let server = StubServer::start(|_, target| {
+            let body = if target.contains("pageToken=next%2Fpage") {
+                serde_json::json!({ "items": [calendar_entry("second")] })
+            } else {
+                serde_json::json!({ "items": [calendar_entry("first")], "nextPageToken": "next/page" })
+            };
+            (200, body.to_string())
+        })
+        .await;
+
+        let calendars = server.client().list_calendars().await.unwrap();
+        let ids: Vec<&str> = calendars.iter().map(|c| c.id.as_str()).collect();
+        assert_eq!(ids, vec!["first", "second"]);
+        assert_eq!(server.requests().len(), 2);
     }
 
     #[test]
