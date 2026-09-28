@@ -1,4 +1,5 @@
 import { beforeAll, describe, expect, it, vi } from "vitest";
+import { createSignal } from "solid-js";
 import { fireEvent, render } from "@solidjs/testing-library";
 import { ThreadView } from "./ThreadView";
 import type { FullThread } from "../api/tauri";
@@ -218,5 +219,47 @@ describe("ThreadView reactions", () => {
     const cards = container.querySelectorAll(".message-card");
     expect(cards[0].querySelector(".add-reaction-btn")).not.toBeNull();
     expect(cards[1].querySelector(".add-reaction-btn")).toBeNull();
+  });
+});
+
+describe("ThreadView inline forward", () => {
+  const composeStub = (isForward: boolean) => ({
+    replyToMessageId: null, isForward, to: "", setTo: vi.fn(), cc: "", setCc: vi.fn(), bcc: "", setBcc: vi.fn(),
+    showCcBcc: false, setShowCcBcc: vi.fn(), body: "", setBody: vi.fn(), attachments: [], onRemoveAttachment: vi.fn(),
+    onFileSelect: vi.fn(), error: null, draftSaving: false, draftSaved: false, onSend: vi.fn(), onClose: vi.fn(),
+    onInput: vi.fn(), focusBody: false, resizing: false, onResizeStart: vi.fn(),
+  });
+
+  const renderWithCompose = (focusedMessageIndex: number) => {
+    const [compose, setCompose] = createSignal<ReturnType<typeof composeStub> | null>(null);
+    const thread = makeThread([
+      { from: "Alice <alice@example.com>", body: "first" },
+      { from: "Bob <bob@example.com>", body: "second" },
+      { from: "Carol <carol@example.com>", body: "third" },
+    ]);
+    const props: any = {
+      thread, loading: false, error: null, card: null, focusColor: null, onClose: vi.fn(),
+      focusedMessageIndex, onFocusChange: vi.fn(), onOpenAttachment: vi.fn(), onDownloadAttachment: vi.fn(),
+      onShowAttachmentMenu: vi.fn(), onReply: vi.fn(), onForward: vi.fn(() => setCompose(composeStub(true))),
+      onAction: vi.fn(), onOpenLabels: vi.fn(), accountId: "acc", currentUserEmail: "me@example.com",
+      isStarred: false, isRead: true, isImportant: false, isInInbox: true, labelCount: 0,
+    };
+    const result = render(() => <ThreadView {...props} inlineCompose={compose()} />);
+    return { setCompose, ...result };
+  };
+
+  const rowWithCompose = (container: HTMLElement) =>
+    Array.from(container.querySelectorAll(".message-row")).findIndex(r => r.querySelector(".inline-compose"));
+
+  it("opens the forward compose under the message being forwarded", () => {
+    const { container } = renderWithCompose(0);
+    fireEvent.keyDown(document, { key: "f" });
+    expect(rowWithCompose(container)).toBe(0);
+  });
+
+  it("falls back to the last message for a forward started outside the thread view", () => {
+    const { container, setCompose } = renderWithCompose(0);
+    setCompose(composeStub(true));
+    expect(rowWithCompose(container)).toBe(2);
   });
 });

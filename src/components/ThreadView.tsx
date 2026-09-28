@@ -82,6 +82,10 @@ export const ThreadView = (props: {
   const [hoveredLinkUrl, setHoveredLinkUrl] = createSignal<string | null>(null);
   const [closing, setClosing] = createSignal(false);
   const [sendingReaction, setSendingReaction] = createSignal(false);
+  // Message a forward was started from in this view; null means the forward
+  // came from elsewhere (e.g. the card list) and sits under the last message
+  const [forwardSourceId, setForwardSourceId] = createSignal<string | null>(null);
+  createEffect(() => { if (!props.inlineCompose?.isForward) setForwardSourceId(null); });
   let hoverTimeout: number | undefined;
 
   // Handle sending a reaction
@@ -200,6 +204,7 @@ export const ThreadView = (props: {
       forward: () => {
         const plainBody = extractMessageText(msg.payload, msg.snippet);
         const fwdBody = `\n\n---------- Forwarded message ----------\nFrom: ${from}\nDate: ${date}\nSubject: ${subject}\n\n${plainBody}`;
+        setForwardSourceId(msg.id);
         props.onForward(addForwardPrefix(subject), fwdBody);
       },
     };
@@ -418,7 +423,12 @@ export const ThreadView = (props: {
                   const rid = props.inlineCompose?.replyToMessageId;
                   return rid != null && (rid === msg.id || rid === getRfcMessageId());
                 };
-                const isForwardingFromThis = () => props.inlineCompose?.isForward && index() === props.thread!.messages.length - 1;
+                const isForwardingFromThis = () => {
+                  if (!props.inlineCompose?.isForward) return false;
+                  const source = forwardSourceId();
+                  const sourceShown = source != null && props.thread!.messages.some(m => m.id === source);
+                  return sourceShown ? source === msg.id : index() === props.thread!.messages.length - 1;
+                };
                 const showInlineCompose = () => isReplyingToThis() || isForwardingFromThis();
 
                 return (
