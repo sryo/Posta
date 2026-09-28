@@ -753,16 +753,10 @@ impl CalendarClient {
         user_email: &str,
         event_uid: &str,
     ) -> Option<String> {
-        let (_, event) = self.find_event_by_ical_uid(event_uid, false).await.ok()??;
+        let (calendar_id, event) = self.find_event_by_ical_uid(event_uid, false).await.ok()??;
         let attendees = event.attendees.as_ref()?;
-
-        for attendee in attendees {
-            if attendee.email.to_lowercase() == user_email.to_lowercase() {
-                return attendee.response_status.clone();
-            }
-        }
-
-        None
+        let index = self_attendee_index(attendees, user_email, calendar_id == "primary")?;
+        attendees[index].response_status.clone()
     }
 
     /// Send RSVP response to a calendar event via Google Calendar API
@@ -781,27 +775,12 @@ impl CalendarClient {
 
         let event_id = &event.id;
 
-        // Update attendee status
-        let mut attendees: Vec<CalEventAttendee> = event.attendees.clone().unwrap_or_default();
-        let mut found_self = false;
-
-        for attendee in attendees.iter_mut() {
-            if attendee.email.to_lowercase() == user_email.to_lowercase() {
-                attendee.response_status = Some(status.to_string());
-                found_self = true;
-                break;
-            }
-        }
-
-        if !found_self {
-            // Add ourselves as an attendee
-            attendees.push(CalEventAttendee {
-                email: user_email.to_string(),
-                response_status: Some(status.to_string()),
-                is_self: Some(true),
-                ..Default::default()
-            });
-        }
+        let attendees = with_rsvp(
+            event.attendees.clone().unwrap_or_default(),
+            user_email,
+            status,
+            calendar_id == "primary",
+        );
 
         // Patch the event with updated attendees
         let patch_url = format!(
@@ -911,6 +890,36 @@ fn api_event_to_calendar_event(event: ApiEvent, calendar_id: &str, calendar_name
         response_status,
         can_edit,
     })
+}
+
+/// The user's entry in an attendee list. The API's `self` flag marks the
+/// owner of the calendar the event was read from, so on the primary
+/// calendar it also finds invites sent to one of the user's aliases; on
+/// other calendars it would be someone else.
+fn self_attendee_index(attendees: &[CalEventAttendee], user_email: &str, on_primary: bool) -> Option<usize> {
+    attendees
+        .iter()
+        .position(|a| a.email.eq_ignore_ascii_case(user_email))
+        .or_else(|| on_primary.then(|| attendees.iter().position(|a| a.is_self == Some(true))).flatten())
+}
+
+/// The attendee list with the user's response set, adding the user if absent
+fn with_rsvp(
+    mut attendees: Vec<CalEventAttendee>,
+    user_email: &str,
+    status: &str,
+    on_primary: bool,
+) -> Vec<CalEventAttendee> {
+    match self_attendee_index(&attendees, user_email, on_primary) {
+        Some(i) => attendees[i].response_status = Some(status.to_string()),
+        None => attendees.push(CalEventAttendee {
+            email: user_email.to_string(),
+            response_status: Some(status.to_string()),
+            is_self: Some(true),
+            ..Default::default()
+        }),
+    }
+    attendees
 }
 
 /// Convert an event returned by a write call. Without the calendar's list
@@ -1390,6 +1399,68 @@ mod tests {
         // Cleared optional fields are sent as null so a PATCH clears them
         assert!(json["description"].is_null() && json.get("description").is_some());
         assert!(json.get("attendees").is_some());
+    }
+
+    fn attendee(email: &str, is_self: bool, status: &str) -> CalEventAttendee {
+        CalEventAttendee {
+            email: email.into(),
+            response_status: Some(status.into()),
+            is_self: is_self.then_some(true),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn rsvp_updates_the_self_attendee_even_when_invited_under_an_alias() {
+        // Invite went to an alias; the API marks that attendee as self
+        let attendees = vec![
+            attendee("boss@x.com", false, "accepted"),
+            attendee("me.alias@x.com", true, "needsAction"),
+        ];
+        assert_eq!(self_attendee_index(&attendees, "me@x.com", true), Some(1));
+
+        let updated = with_rsvp(attendees.clone(), "me@x.com", "declined", true);
+        assert_eq!(updated.len(), 2);
+        assert_eq!(updated[0].response_status.as_deref(), Some("accepted"));
+        assert_eq!(updated[1].response_status.as_deref(), Some("declined"));
+
+        // On someone else's calendar, `self` is that calendar's owner
+        assert_eq!(self_attendee_index(&attendees, "me@x.com", false), None);
+        let updated = with_rsvp(attendees, "me@x.com", "declined", false);
+        assert_eq!(updated.len(), 3);
+        assert_eq!(updated[1].response_status.as_deref(), Some("needsAction"));
+    }
+
+    #[test]
+    fn rsvp_prefers_the_exact_email_over_the_self_flag() {
+        let attendees = vec![
+            attendee("shared@x.com", true, "needsAction"),
+            attendee("me@x.com", false, "needsAction"),
+        ];
+        assert_eq!(self_attendee_index(&attendees, "me@x.com", true), Some(1));
+    }
+
+    #[test]
+    fn rsvp_matches_email_case_insensitively_and_adds_self_when_missing() {
+        let updated = with_rsvp(vec![attendee("Me@X.com", false, "needsAction")], "me@x.com", "accepted", true);
+        assert_eq!(updated.len(), 1);
+        assert_eq!(updated[0].response_status.as_deref(), Some("accepted"));
+
+        let updated = with_rsvp(vec![attendee("boss@x.com", false, "accepted")], "me@x.com", "tentative", true);
+        assert_eq!(updated.len(), 2);
+        assert_eq!(updated[1].email, "me@x.com");
+        assert_eq!(updated[1].response_status.as_deref(), Some("tentative"));
+        assert_eq!(updated[1].is_self, Some(true));
+    }
+
+    #[test]
+    fn rsvp_patch_round_trips_attendee_fields() {
+        let json = serde_json::json!({
+            "email": "a@x.com", "displayName": "A", "responseStatus": "accepted",
+            "optional": true, "comment": "late", "additionalGuests": 2, "resource": false,
+        });
+        let parsed: CalEventAttendee = serde_json::from_value(json.clone()).unwrap();
+        assert_eq!(serde_json::to_value(parsed).unwrap(), json);
     }
 
     #[test]
