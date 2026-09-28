@@ -1169,21 +1169,7 @@ function App() {
       setAccounts(accts);
       if (accts.length > 0) {
         setSelectedAccount(accts[0]);
-        const cardList = await getCards(accts[0].id);
-        setCards(cardList);
-        // Load collapsed state from localStorage, defaulting to expanded
-        const savedCollapsed = safeGetJSON<Record<string, boolean>>("collapsedCards", {});
-        const collapsed: Record<string, boolean> = {};
-        cardList.forEach(c => { collapsed[c.id] = savedCollapsed[c.id] ?? false; });
-        setCollapsedCards(reconcile(collapsed));
-
-        // Auto-fetch threads for all cards
-        for (const card of cardList) {
-          if (!collapsed[card.id]) {
-            loadCardThreads(card.id);
-          }
-        }
-
+        await loadAccountCards(accts[0]);
         startBackgroundSync(accts[0].id);
       }
 
@@ -1646,8 +1632,8 @@ function App() {
       console.warn("iCloud pull failed:", e);
     }
 
-    const cardList = await getCards(account.id);
-    setCards(cardList);
+    const cardList = await loadAccountCards(account);
+    if (!cardList) return;
     startBackgroundSync(account.id);
 
     if (cardList.length > 0) {
@@ -1713,8 +1699,7 @@ function App() {
         console.warn("iCloud pull failed:", e);
       }
 
-      const cardList = await getCards(account.id);
-      setCards(cardList);
+      await loadAccountCards(account);
       startBackgroundSync(account.id);
 
       setSettingsOpen(false);
@@ -1805,6 +1790,7 @@ function App() {
     const account = selectedAccount();
     if (!account) return;
 
+    const signedOutCards = cards();
     try {
       await deleteAccount(account.id);
       const remaining = accounts().filter(a => a.id !== account.id);
@@ -1813,10 +1799,9 @@ function App() {
       setCards([]);
       setCardThreads(reconcile({}));
       setAccountLabels([]);
-      // Clean up localStorage
-      safeRemoveItem("cardColors");
-      safeRemoveItem("collapsedCards");
-      safeRemoveItem("cardGroupBy");
+      const collapsed = safeGetJSON<Record<string, boolean>>("collapsedCards", {});
+      for (const card of signedOutCards) delete collapsed[card.id];
+      safeSetJSON("collapsedCards", collapsed);
       // Fall through to the next account instead of a blank screen
       if (remaining.length > 0) {
         await switchAccount(remaining[0]);
@@ -2646,7 +2631,8 @@ function App() {
 
   function saveCollapsedState(collapsed: Record<string, boolean>) {
     setCollapsedCards(reconcile(collapsed));
-    safeSetJSON("collapsedCards", { ...collapsed });
+    // The store only holds this account's cards; keep other accounts' entries
+    safeSetJSON("collapsedCards", { ...safeGetJSON<Record<string, boolean>>("collapsedCards", {}), ...collapsed });
   }
 
   function startEditCard(card: Card, e: MouseEvent) {
@@ -2743,31 +2729,33 @@ function App() {
   }
 
 
+  // Show the selected account's cards: drop the previous account's loaded
+  // content, then load the cards, their collapsed state and every expanded
+  // card's threads/events. Returns null if the account changed meanwhile.
+  async function loadAccountCards(account: Account): Promise<Card[] | null> {
+    setCardThreads(reconcile({}));
+    setCardCalendarEvents(reconcile({}));
+    const cardList = await getCards(account.id);
+    if (selectedAccount()?.id !== account.id) return null;
+    setCards(cardList);
+
+    const savedCollapsed = safeGetJSON<Record<string, boolean>>("collapsedCards", {});
+    const collapsed: Record<string, boolean> = {};
+    cardList.forEach(c => { collapsed[c.id] = savedCollapsed[c.id] ?? false; });
+    setCollapsedCards(reconcile(collapsed));
+
+    for (const card of cardList) {
+      if (!collapsed[card.id]) loadCardThreads(card.id);
+    }
+    return cardList;
+  }
+
   async function switchAccount(account: Account) {
     if (selectedAccount()?.id === account.id) return;
 
     setSelectedAccount(account);
-    setCardThreads(reconcile({}));
-    setCardCalendarEvents(reconcile({}));
-
     try {
-      const cardList = await getCards(account.id);
-      setCards(cardList);
-
-      const savedCollapsed = safeGetJSON<Record<string, boolean>>("collapsedCards", {});
-      const collapsed: Record<string, boolean> = {};
-      cardList.forEach(c => { collapsed[c.id] = savedCollapsed[c.id] ?? false; });
-      setCollapsedCards(reconcile(collapsed));
-
-      for (const card of cardList) {
-        if (!collapsed[card.id]) {
-          loadCardThreads(card.id);
-        }
-      }
-
-      fetchContacts(account.id)
-        .then(contacts => setGoogleContacts(contacts))
-        .catch(e => console.warn("Failed to fetch contacts (user may need to re-auth):", e));
+      if (await loadAccountCards(account)) startBackgroundSync(account.id);
     } catch (e) {
       setError(String(e));
     }
