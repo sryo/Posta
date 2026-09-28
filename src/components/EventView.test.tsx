@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { fireEvent, render, screen } from "@solidjs/testing-library";
+import { createSignal } from "solid-js";
 import { EventView } from "./EventView";
 import type { GoogleCalendarEvent } from "../api/tauri";
 
@@ -24,9 +25,9 @@ const event: GoogleCalendarEvent = {
   can_edit: true,
 };
 
-function renderEvent(overrides: Partial<GoogleCalendarEvent> = {}) {
-  const props = {
-    event: { ...event, ...overrides },
+function baseProps() {
+  return {
+    event: event as GoogleCalendarEvent | null,
     card: null,
     focusColor: null,
     onClose: vi.fn(),
@@ -46,6 +47,10 @@ function renderEvent(overrides: Partial<GoogleCalendarEvent> = {}) {
     inlineCompose: null,
     inlineEdit: null,
   };
+}
+
+function renderEvent(overrides: Partial<GoogleCalendarEvent> = {}) {
+  const props = { ...baseProps(), event: { ...event, ...overrides } };
   const { container } = render(() => <EventView {...props} />);
   return Object.assign(props, { container });
 }
@@ -84,25 +89,56 @@ describe("EventView keyboard shortcuts", () => {
 });
 
 describe("EventView delete", () => {
-  afterEach(() => vi.restoreAllMocks());
+  afterEach(() => { vi.restoreAllMocks(); vi.useRealTimers(); });
 
-  it("asks before deleting from the toolbar or the # and d keys", () => {
+  // window.confirm returns false without a dialog in the macOS webview
+  it("asks for a second press instead of a native confirm before deleting", () => {
     const confirm = vi.spyOn(window, "confirm").mockReturnValue(false);
     const props = renderEvent();
     fireEvent.click(screen.getByTitle("Delete event"));
-    fireEvent.keyDown(document, { key: "#" });
-    fireEvent.keyDown(document, { key: "d" });
-    expect(confirm).toHaveBeenCalledTimes(3);
-    expect(confirm).toHaveBeenCalledWith(expect.stringContaining("Standup"));
     expect(props.onDelete).not.toHaveBeenCalled();
+    expect(screen.getByTitle(/again to delete/)).toHaveTextContent("Confirm");
+    fireEvent.click(screen.getByTitle(/again to delete/));
+    expect(props.onDelete).toHaveBeenCalledTimes(1);
+    expect(confirm).not.toHaveBeenCalled();
   });
 
-  it("deletes once confirmed", () => {
-    vi.spyOn(window, "confirm").mockReturnValue(true);
+  it("deletes with the # and d keys pressed twice", () => {
+    const props = renderEvent();
+    fireEvent.keyDown(document, { key: "#" });
+    expect(props.onDelete).not.toHaveBeenCalled();
+    fireEvent.keyDown(document, { key: "d" });
+    expect(props.onDelete).toHaveBeenCalledTimes(1);
+  });
+
+  it("disarms on Escape without closing the event", () => {
+    const props = renderEvent();
+    fireEvent.keyDown(document, { key: "d" });
+    fireEvent.keyDown(document, { key: "Escape" });
+    fireEvent.keyDown(document, { key: "d" });
+    expect(props.onDelete).not.toHaveBeenCalled();
+    expect(props.container.querySelector(".thread-overlay.closing")).toBeNull();
+    expect(screen.getByTitle(/again to delete/)).toBeInTheDocument();
+  });
+
+  it("does not carry a pending delete over to another event", () => {
+    const [current, setCurrent] = createSignal<GoogleCalendarEvent>(event);
+    const onDelete = vi.fn();
+    render(() => <EventView {...baseProps()} event={current()} onDelete={onDelete} />);
+    fireEvent.keyDown(document, { key: "d" });
+    setCurrent({ ...event, id: "e2", title: "Other" });
+    fireEvent.keyDown(document, { key: "d" });
+    expect(onDelete).not.toHaveBeenCalled();
+  });
+
+  it("disarms by itself after a few seconds", () => {
+    vi.useFakeTimers();
     const props = renderEvent();
     fireEvent.click(screen.getByTitle("Delete event"));
-    fireEvent.keyDown(document, { key: "d" });
-    expect(props.onDelete).toHaveBeenCalledTimes(2);
+    vi.advanceTimersByTime(5000);
+    expect(screen.getByTitle("Delete event")).toHaveTextContent("Delete");
+    fireEvent.click(screen.getByTitle("Delete event"));
+    expect(props.onDelete).not.toHaveBeenCalled();
   });
 });
 

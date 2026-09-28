@@ -26,7 +26,7 @@ import {
   VideoIcon,
   CheckIcon,
 } from "./Icons";
-import { confirmEventDelete } from "../utils";
+import { createTwoStepConfirm } from "../shared/twoStepConfirm";
 
 // Half Pie Menu Component
 export const ActionsWheel = (props: {
@@ -63,6 +63,8 @@ export const ActionsWheel = (props: {
     setTimeout(() => el.classList.add('open'), 10);
   };
 
+  const deleteConfirm = createTwoStepConfirm();
+
   // One response at a time: a double click would otherwise send two
   let rsvpInFlight = false;
   const rsvp = async (evt: GoogleCalendarEvent, status: RsvpStatus) => {
@@ -85,7 +87,7 @@ export const ActionsWheel = (props: {
   // selection changes while the wheel stays mounted
   const actions = createMemo(() => {
     const settings = props.actionSettings();
-    const actions: { cls: string; title: string, keyHint?: string, icon: () => JSX.Element, onClick: (e: MouseEvent) => void }[] = [];
+    const actions: { cls: string; title: string, keyHint?: string, icon: () => JSX.Element, onClick: (e: MouseEvent) => void, confirmsDelete?: boolean }[] = [];
 
     // Event actions (when event prop is provided)
     if (props.event) {
@@ -96,7 +98,7 @@ export const ActionsWheel = (props: {
       const evtOrder = props.eventActionOrder();
 
       // Event action definitions
-      const eventActionDefs: Record<string, { cls: string; title: string; keyHint?: string; icon: () => JSX.Element; onClick: (e: MouseEvent) => void; available: boolean }> = {
+      const eventActionDefs: Record<string, { cls: string; title: string; keyHint?: string; icon: () => JSX.Element; onClick: (e: MouseEvent) => void; available: boolean; confirmsDelete?: boolean }> = {
         quickReply: {
           cls: 'bulk-reply',
           title: 'Reply to organizer',
@@ -135,15 +137,17 @@ export const ActionsWheel = (props: {
         },
         delete: {
           cls: 'bulk-danger',
-          title: 'Delete',
-          icon: TrashIcon,
+          title: deleteConfirm.armed() ? `Click again to delete ${evt.title || '(No title)'}` : 'Delete',
+          icon: deleteConfirm.armed() ? CheckIcon : TrashIcon,
           onClick: (e) => {
             e.stopPropagation();
-            if (!confirmEventDelete(evt.title)) return;
-            props.onDeleteEvent?.(evt);
-            props.onClose();
+            deleteConfirm.press(() => {
+              props.onDeleteEvent?.(evt);
+              props.onClose();
+            });
           },
-          available: evt.can_edit && !!props.onDeleteEvent
+          available: evt.can_edit && !!props.onDeleteEvent,
+          confirmsDelete: true
         }
       };
 
@@ -157,7 +161,7 @@ export const ActionsWheel = (props: {
         } else {
           if (!evtSettings[key]) continue;
         }
-        actions.push({ cls: def.cls, title: def.title, keyHint: def.keyHint, icon: def.icon, onClick: def.onClick });
+        actions.push({ cls: def.cls, title: def.title, keyHint: def.keyHint, icon: def.icon, onClick: def.onClick, confirmsDelete: def.confirmsDelete });
       }
 
       // Clear selection (if events are selected)
@@ -299,7 +303,10 @@ export const ActionsWheel = (props: {
                   left: `calc(50% + ${x.toFixed(1)}px - 14px)`,
                   top: `calc(50% + ${y.toFixed(1)}px - 14px)`
                 }}
-                onClick={action.onClick}
+                onClick={(e) => {
+                  if (!action.confirmsDelete) deleteConfirm.disarm();
+                  action.onClick(e);
+                }}
                 title={action.title}
               >
                 <div style={{ width: '14px', height: '14px' }}>
