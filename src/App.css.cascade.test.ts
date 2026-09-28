@@ -1,23 +1,16 @@
-import { describe, it, expect, beforeAll } from "vitest";
+import { describe, it, expect } from "vitest";
 import { cascadedDeclarations, parseRules, specificity } from "./test/css";
 import { readRepoFile } from "./test/files";
 
-const css = readRepoFile("src/App.css");
-const rules = parseRules(css.replace(/\/\*[\s\S]*?\*\//g, ""));
+const rules = parseRules(readRepoFile("src/App.css").replace(/\/\*[\s\S]*?\*\//g, ""));
 
 describe("App.css cascade", () => {
-  beforeAll(() => {
-    const style = document.createElement("style");
-    style.textContent = css;
-    document.head.appendChild(style);
-  });
-
   it("sizes code inside a preformatted block like the block itself", () => {
     document.body.innerHTML =
-      '<div class="message-body"><pre id="pre"><code id="block">x</code></pre><p id="p"><code id="inline">y</code></p></div>';
-    const size = (id: string) => getComputedStyle(document.getElementById(id)!).fontSize;
-    expect(size("block")).toBe(size("pre"));
-    expect(size("inline")).not.toBe(size("p"));
+      '<div class="message-body"><pre><code id="block">x</code></pre><p><code id="inline">y</code></p></div>';
+    const size = (id: string) => cascadedDeclarations(rules, document.getElementById(id)!).get("font-size");
+    expect(size("block")).toBe("inherit");
+    expect(size("inline")).toMatch(/em$/);
   });
 
   it("gives code inside a preformatted block no chip padding or background of its own", () => {
