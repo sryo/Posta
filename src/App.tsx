@@ -419,6 +419,8 @@ function App() {
     if (!account) return;
     try {
       const data = att.inlineData || await downloadAttachmentApi(account.id, att.messageId, att.attachmentId);
+      // The compose that is animating out is done; start a new one
+      if (closingCompose()) resetCompose();
       setComposeAttachments([...composeAttachments(), { filename: att.filename, mime_type: att.mimeType, data }]);
       setComposing(true);
     } catch (e) {
@@ -1882,23 +1884,27 @@ function App() {
     setClosingCompose(true);
     if (draftSaveTimeout) clearTimeout(draftSaveTimeout);
     clearDraft(); // Clear draft from localStorage and Gmail when compose closes
-    closeComposeTimeout = window.setTimeout(() => {
-      setComposeTo("");
-      setComposeCc("");
-      setComposeBcc("");
-      setShowCcBcc(false);
-      setComposeSubject("");
-      setComposeBody("");
-      setForwardingThread(null);
-      setReplyingToThread(null);
-      setFocusComposeBody(false);
-      setComposeEmailError(null);
-      setComposeAttachments([]);
-      setComposeIsHtml(false);
-      setGmailDraftId(null);
-      setComposing(false);
-      setClosingCompose(false);
-    }, 200);
+    closeComposeTimeout = window.setTimeout(resetCompose, 200);
+  }
+
+  function resetCompose() {
+    clearTimeout(closeComposeTimeout);
+    closeComposeTimeout = undefined;
+    setComposeTo("");
+    setComposeCc("");
+    setComposeBcc("");
+    setShowCcBcc(false);
+    setComposeSubject("");
+    setComposeBody("");
+    setForwardingThread(null);
+    setReplyingToThread(null);
+    setFocusComposeBody(false);
+    setComposeEmailError(null);
+    setComposeAttachments([]);
+    setComposeIsHtml(false);
+    setGmailDraftId(null);
+    setComposing(false);
+    setClosingCompose(false);
   }
 
   async function handleFileSelect(e: Event) {

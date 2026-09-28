@@ -41,6 +41,7 @@ const threadsByCard: Record<string, Thread[]> = {};
 
 beforeEach(() => {
   localStorage.clear();
+  lastMenu = [];
   invoke.mockClear();
   for (const k of Object.keys(handlers)) delete handlers[k];
   Object.assign(handlers, {
@@ -113,6 +114,31 @@ describe("App attachments", () => {
       return panel as HTMLElement;
     });
     await waitFor(() => expect(compose).toHaveTextContent("report.pdf"));
+  });
+
+  it("forwards into a fresh email when compose is still closing", async () => {
+    threadsByCard["card-a"] = [{
+      ...thread("t-a", "Mail for A"),
+      has_attachment: true,
+      attachments: [{
+        message_id: "m1", attachment_id: "att1", filename: "report.pdf",
+        mime_type: "application/pdf", size: 10, inline_data: "cGRm", content_id: null,
+      }],
+    }];
+    render(() => <App />);
+    fireEvent.contextMenu(await screen.findByTitle("report.pdf (10 B)"));
+    await waitFor(() => expect(lastMenu.some(i => i.text === "Forward")).toBe(true));
+
+    fireEvent.click(screen.getByTitle("Compose"));
+    fireEvent.input(await screen.findByPlaceholderText("Subject"), { target: { value: "Old subject" } });
+    fireEvent.keyDown(document, { key: "Escape" });
+    lastMenu.find(i => i.text === "Forward")!.action!();
+    await new Promise(r => setTimeout(r, 300));
+
+    const compose = document.querySelector(".compose-panel") as HTMLElement;
+    expect(compose).not.toBeNull();
+    expect(compose).toHaveTextContent("report.pdf");
+    expect(screen.getByPlaceholderText("Subject")).toHaveValue("");
   });
 });
 
