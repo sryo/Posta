@@ -1,6 +1,5 @@
 import { describe, it, expect, vi } from "vitest";
-
-type Rule = { selectors: string[]; declarations: [string, string][]; context: string };
+import { parseRules, selectorClasses, unusedKeyframes } from "./test/css";
 
 const { readFileSync } = await vi.importActual<{
   readFileSync(path: string, encoding: "utf8"): string;
@@ -12,51 +11,12 @@ const srcDir = decodeURIComponent(import.meta.url.replace(/^file:\/\//, "").repl
 const css = readFileSync(srcDir + "App.css", "utf8").replace(/\/\*[\s\S]*?\*\//g, "");
 
 const sources = Object.entries(
-  import.meta.glob(["./**/*.{ts,tsx}", "!./**/*.test.{ts,tsx}"], {
+  import.meta.glob(["./**/*.{ts,tsx}", "!./**/*.test.{ts,tsx}", "!./test/**"], {
     query: "?raw",
     import: "default",
     eager: true,
   }) as Record<string, string>,
 );
-
-// Flattens nested at-rules (@media, @supports) into their inner style rules;
-// @keyframes blocks are skipped since their "selectors" are percentages.
-function parseRules(text: string): Rule[] {
-  const rules: Rule[] = [];
-  let i = 0;
-  function block(skip: boolean, context: string) {
-    while (i < text.length) {
-      const open = text.indexOf("{", i);
-      const close = text.indexOf("}", i);
-      if (close !== -1 && (open === -1 || close < open)) {
-        i = close + 1;
-        return;
-      }
-      if (open === -1) return;
-      const prelude = text.slice(i, open).trim();
-      i = open + 1;
-      if (prelude.startsWith("@")) {
-        block(skip || prelude.startsWith("@keyframes"), `${context} ${prelude}`.trim());
-        continue;
-      }
-      const end = text.indexOf("}", i);
-      const body = text.slice(i, end);
-      i = end + 1;
-      if (skip) continue;
-      const declarations = body
-        .split(";")
-        .map((d) => d.trim())
-        .filter(Boolean)
-        .map((d) => {
-          const colon = d.indexOf(":");
-          return [d.slice(0, colon).trim(), d.slice(colon + 1).trim()] as [string, string];
-        });
-      rules.push({ selectors: prelude.split(",").map((s) => s.trim()), declarations, context });
-    }
-  }
-  block(false, "");
-  return rules;
-}
 
 const rules = parseRules(css);
 
@@ -177,25 +137,14 @@ describe("App.css", () => {
     const literals = sources
       .map(([, text]) => (text.match(/"[^"\n]*"|'[^'\n]*'|`[^`]*`/g) ?? []).join("\n"))
       .join("\n");
-    const classes = new Set<string>();
-    for (const rule of rules) {
-      for (const sel of rule.selectors) {
-        for (const m of sel.matchAll(/\.(-?[A-Za-z_][\w-]*)/g)) classes.add(m[1]);
-      }
-    }
-    const unused = [...classes].filter(
+    const unused = [...selectorClasses(rules)].filter(
       (c) => !new RegExp(`(?<![\\w-])${c}(?![\\w-])`).test(literals),
     );
     expect(unused.sort()).toEqual([]);
   });
 
   it("styles every class the app renders", () => {
-    const styled = new Set<string>();
-    for (const rule of rules) {
-      for (const sel of rule.selectors) {
-        for (const m of sel.matchAll(/\.(-?[A-Za-z_][\w-]*)/g)) styled.add(m[1]);
-      }
-    }
+    const styled = selectorClasses(rules);
     const unstyled = new Set<string>();
     for (const [path, text] of sources) {
       if (!path.endsWith(".tsx")) continue;
@@ -204,6 +153,10 @@ describe("App.css", () => {
       }
     }
     expect([...unstyled].sort()).toEqual([]);
+  });
+
+  it("has no keyframes that no animation plays", () => {
+    expect(unusedKeyframes(css)).toEqual([]);
   });
 
   it("declares each selector list in a single rule per context", () => {
