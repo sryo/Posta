@@ -142,6 +142,11 @@ describe("App.css", () => {
     expect(scheme.split(/\s+/).sort()).toEqual(["dark", "light"]);
   });
 
+  it("leaves window dragging to data-tauri-drag-region, since no webview the app runs in honours app-region", () => {
+    const dragRules = rules.filter((r) => r.declarations.some(([prop]) => /(^|-)app-region$/.test(prop)));
+    expect(dragRules.map((r) => r.selectors.join(", "))).toEqual([]);
+  });
+
   it("has no keyframes that no animation plays", () => {
     expect(unusedKeyframes(css)).toEqual([]);
   });
