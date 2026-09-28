@@ -93,7 +93,7 @@ impl CallbackServer {
                             let _ = outcomes.send(handle_connection(stream, &expected_state));
                         });
                     }
-                    Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {}
+                    Err(ref e) if accept_error_is_transient(e.kind()) => {}
                     Err(e) => return Err(format!("Accept error: {}", e)),
                 }
             }
@@ -106,6 +106,16 @@ impl CallbackServer {
             }
         }
     }
+}
+
+/// Nothing waiting, or a client (often a browser preconnect) that hung up
+/// before its connection was accepted
+fn accept_error_is_transient(kind: std::io::ErrorKind) -> bool {
+    use std::io::ErrorKind;
+    matches!(
+        kind,
+        ErrorKind::WouldBlock | ErrorKind::ConnectionAborted | ErrorKind::ConnectionReset | ErrorKind::Interrupted
+    )
 }
 
 enum ConnectionOutcome {
@@ -293,6 +303,15 @@ mod tests {
         let server = bind_ephemeral();
         let err = server.wait_for_callback(0, Arc::new(AtomicBool::new(false)), "s").err().unwrap();
         assert_eq!(err, "Timed out waiting for sign-in in the browser. Try again.");
+    }
+
+    #[test]
+    fn a_connection_dropped_before_accept_does_not_end_the_wait() {
+        use std::io::ErrorKind;
+        for kind in [ErrorKind::WouldBlock, ErrorKind::ConnectionAborted, ErrorKind::ConnectionReset, ErrorKind::Interrupted] {
+            assert!(accept_error_is_transient(kind), "{:?}", kind);
+        }
+        assert!(!accept_error_is_transient(ErrorKind::PermissionDenied));
     }
 
     #[test]
