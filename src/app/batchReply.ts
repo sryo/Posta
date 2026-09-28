@@ -9,7 +9,7 @@ export interface BatchReplyThread {
   body: string; // Full HTML body
   from: string;
   date: string;
-  messageId: string;
+  messageId: string; // RFC Message-ID when the message has one, else its Gmail id
   to: string; // Reply-to address
 }
 
@@ -41,7 +41,7 @@ export function batchReplyEntry(threadId: string, messages: FullMessage[], accou
     body: extractMessageHtml(msg.payload, msg.snippet),
     from,
     date: msg.internalDate ? new Date(parseInt(msg.internalDate)).toLocaleDateString() : "",
-    messageId: msg.id,
+    messageId: findHeader(headers, "Message-ID") || msg.id,
     to,
   };
 }

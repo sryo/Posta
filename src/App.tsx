@@ -2145,9 +2145,9 @@ function App() {
     try {
       // The thread list lacks Reply-To and who wrote last; the full thread has both
       const details = await getThreadDetails(account.id, threadId);
-      const replyTo = batchReplyEntry(threadId, details.messages ?? [], account.email)?.to;
-      if (!replyTo) throw new Error("No one to reply to");
-      await replyToThread(account.id, threadId, replyTo, "", "", subject, text, undefined, [], false);
+      const entry = batchReplyEntry(threadId, details.messages ?? [], account.email);
+      if (!entry?.to) throw new Error("No one to reply to");
+      await replyToThread(account.id, threadId, entry.to, "", "", subject, text, entry.messageId, [], false);
       setQuickReply({ threadId: null, text: "", sending: false });
       setQuickReplyCardId(null);
     } catch (e) {
@@ -2572,12 +2572,16 @@ function App() {
     const attachments = batchReplyAttachments()[threadId] || [];
 
     if (!account || !thread || !message?.trim()) return;
+    if (!thread.to) {
+      showToast(`No one to reply to in "${thread.subject}"`);
+      return;
+    }
 
     setBatchReplySending({ ...batchReplySending(), [threadId]: true });
 
     try {
       const replySubject = addReplyPrefix(thread.subject);
-      await replyToThread(account.id, threadId, thread.to, "", "", replySubject, message, undefined, attachments, false);
+      await replyToThread(account.id, threadId, thread.to, "", "", replySubject, message, thread.messageId, attachments, false);
 
       // Remove from batch reply list
       setBatchReplyThreads(batchReplyThreads().filter(t => t.threadId !== threadId));

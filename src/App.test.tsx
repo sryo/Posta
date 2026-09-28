@@ -838,6 +838,31 @@ describe("App quick reply", () => {
   });
 });
 
+describe("App quick reply threading", () => {
+  it("replies to the latest message from someone else, not to a later reaction", async () => {
+    handlers.get_thread_details = () => ({
+      id: "t-a",
+      messages: [
+        fullMessage("m1", "Ana <ana@x.com>"),
+        {
+          ...fullMessage("m2", "Bo <bo@x.com>"),
+          reaction: { emoji: "👍", from_addr: "bo@x.com", in_reply_to: "<m1@x>", message_id: "<m2@x>" },
+        },
+      ],
+    });
+    handlers.reply_to_thread = () => null;
+    render(() => <App />);
+    await screen.findByText("Mail for A");
+    fireEvent.keyDown(document, { key: "l" });
+    fireEvent.keyDown(document, { key: "r" });
+    const input = document.querySelector(".quick-reply-input") as HTMLTextAreaElement;
+    fireEvent.input(input, { target: { value: "Thanks" } });
+    fireEvent.keyDown(input, { key: "Enter", metaKey: true });
+
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith("reply_to_thread", expect.objectContaining({ to: "ana@x.com", messageId: "<m1@x>" })));
+  });
+});
+
 describe("App batch reply", () => {
   it("replies at the Reply-To address", async () => {
     handlers.get_thread_details = () => ({
@@ -857,6 +882,45 @@ describe("App batch reply", () => {
     fireEvent.click(screen.getByRole("button", { name: /^Send ⌘/ }));
 
     await waitFor(() => expect(invoke).toHaveBeenCalledWith("reply_to_thread", expect.objectContaining({ to: "team@x.com" })));
+  });
+
+  it("replies to the message it shows, not to the user's own later one", async () => {
+    handlers.get_thread_details = () => ({
+      id: "t-a",
+      messages: [fullMessage("m1", "Ana <ana@x.com>"), fullMessage("m2", "Me <a@x.com>", {
+        payload: { mimeType: "text/plain", headers: [{ name: "From", value: "a@x.com" }, { name: "To", value: "ana@x.com" }, { name: "Message-ID", value: "<m2@x>" }], body: { size: 0 } },
+      })],
+    });
+    handlers.reply_to_thread = () => null;
+    render(() => <App />);
+    await screen.findByText("Mail for A");
+    fireEvent.keyDown(document, { key: "l" });
+    fireEvent.keyDown(document, { key: "x" });
+    fireEvent.click(await screen.findByTitle("Batch Reply"));
+    fireEvent.input(await screen.findByPlaceholderText(/^Reply to/), { target: { value: "Thanks" } });
+    fireEvent.click(screen.getByRole("button", { name: /^Send ⌘/ }));
+
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith("reply_to_thread", expect.objectContaining({ to: "ana@x.com", messageId: "<m1@x>" })));
+  });
+
+  it("says why a thread with no one to reply to cannot be sent", async () => {
+    handlers.get_thread_details = () => ({
+      id: "t-a",
+      messages: [fullMessage("m1", "a@x.com", {
+        payload: { mimeType: "text/plain", headers: [{ name: "From", value: "a@x.com" }, { name: "To", value: "a@x.com" }, { name: "Subject", value: "Note to self" }], body: { size: 0 } },
+      })],
+    });
+    handlers.reply_to_thread = () => { throw new Error("backend: invalid To header"); };
+    render(() => <App />);
+    await screen.findByText("Mail for A");
+    fireEvent.keyDown(document, { key: "l" });
+    fireEvent.keyDown(document, { key: "x" });
+    fireEvent.click(await screen.findByTitle("Batch Reply"));
+    fireEvent.input(await screen.findByPlaceholderText(/^Reply to/), { target: { value: "Thanks" } });
+    fireEvent.click(screen.getByRole("button", { name: /^Send ⌘/ }));
+
+    expect(await screen.findByText(/No one to reply to/)).toBeInTheDocument();
+    expect(invoke).not.toHaveBeenCalledWith("reply_to_thread", expect.anything());
   });
 
   it("ignores a slow batch that finishes after another batch opened", async () => {
