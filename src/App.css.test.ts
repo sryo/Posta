@@ -144,6 +144,23 @@ describe("App.css", () => {
     expect([...undefinedVars]).toEqual([]);
   });
 
+  it("gives no fallback to tokens that :root always defines", () => {
+    const rootTokens = new Set<string>();
+    for (const rule of rules) {
+      if (rule.selectors.length === 1 && rule.selectors[0] === ":root") {
+        for (const [prop] of rule.declarations) rootTokens.add(prop);
+      }
+    }
+    expect(rootTokens.has("--text-secondary")).toBe(true);
+    const needless = new Set<string>();
+    for (const text of [css, ...sources.map(([, t]) => t)]) {
+      for (const m of text.matchAll(/var\(\s*(--[\w-]+)\s*,/g)) {
+        if (rootTokens.has(m[1])) needless.add(m[1]);
+      }
+    }
+    expect([...needless].sort()).toEqual([]);
+  });
+
   it("has no custom properties that nothing reads", () => {
     const read = new Set<string>();
     for (const text of [css, ...sources.map(([, t]) => t)]) {

@@ -1031,7 +1031,7 @@ select:focus:not(:focus-visible) {
 }
 
 .thread-file-item:hover {
-    background: var(--bg-tertiary, var(--bg-secondary));
+    background: var(--bg-tertiary);
 }
 
 .file-name {
@@ -3747,7 +3747,7 @@ button:disabled:hover {
     align-items: center;
     justify-content: center;
     padding: 48px;
-    color: var(--text-secondary, #666);
+    color: var(--text-secondary);
     font-size: 0.95rem;
 }
 
@@ -3873,7 +3873,7 @@ button:disabled:hover {
 }
 
 .message-date {
-    color: var(--text-secondary, #888);
+    color: var(--text-secondary);
     font-size: 0.8rem;
     white-space: nowrap;
     flex-shrink: 0;
@@ -3999,7 +3999,7 @@ button:disabled:hover {
     margin: 12px 0;
     padding-left: 16px;
     border-left: 3px solid var(--border-color);
-    color: var(--text-secondary, #666);
+    color: var(--text-secondary);
 }
 
 .message-body pre,
