@@ -16,6 +16,7 @@ import {
   buildForwardBody,
   addReplyPrefix,
   addForwardPrefix,
+  smoothScroll,
   splitEmailList,
 } from "../utils";
 import {
@@ -261,7 +262,7 @@ export const ThreadView = (props: {
 
       if (newIndex !== props.focusedMessageIndex) {
         props.onFocusChange(newIndex);
-        messageRefs[newIndex]?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+        messageRefs[newIndex]?.scrollIntoView({ behavior: smoothScroll(), block: 'nearest' });
       }
     }
   };

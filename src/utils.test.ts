@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 import {
   addForwardPrefix,
   addReplyPrefix,
@@ -8,6 +8,7 @@ import {
   extractMessageText,
   extractName,
   formatCalendarEventDate,
+  smoothScroll,
   splitEmailList,
   stripHtml,
   textOrHtmlToHtml,
@@ -265,5 +266,23 @@ describe("buildForwardBody", () => {
     const body = buildForwardBody({ from: "a@x.com", date: "", subject: "Hi", body: "text" });
     expect(body).toBe("\n\n---------- Forwarded message ----------\nFrom: a@x.com\nDate: \nSubject: Hi\n\ntext");
     expect(buildForwardBody({ from: "a@x.com", date: "", subject: "Hi", to: "", cc: "  ", body: "text" })).toBe(body);
+  });
+});
+
+describe("smoothScroll", () => {
+  const original = window.matchMedia;
+  afterEach(() => { window.matchMedia = original; });
+  const stubMotion = (reduce: boolean) => {
+    window.matchMedia = ((query: string) => ({ matches: reduce && query === "(prefers-reduced-motion: reduce)" })) as unknown as typeof window.matchMedia;
+  };
+
+  it("animates scrolling by default", () => {
+    stubMotion(false);
+    expect(smoothScroll()).toBe("smooth");
+  });
+
+  it("jumps instead when the system asks for reduced motion", () => {
+    stubMotion(true);
+    expect(smoothScroll()).toBe("auto");
   });
 });

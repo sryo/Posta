@@ -495,3 +495,9 @@ export function formatCalendarEventDate(
 
   return `${dateStr} ${timeStr}`;
 }
+
+// scrollIntoView's smooth behaviour ignores the reduced-motion setting that
+// CSS transitions honour
+export function smoothScroll(): ScrollBehavior {
+  return window.matchMedia?.("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth";
+}

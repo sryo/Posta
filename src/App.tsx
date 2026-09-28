@@ -88,6 +88,7 @@ import {
   addReplyPrefix,
   addForwardPrefix,
   buildForwardBody,
+  smoothScroll,
   toDateInputString,
 } from "./utils";
 import "./App.css";
@@ -373,7 +374,7 @@ function App() {
   createEffect(() => {
     if (addingCard() && addCardFormRef) {
       requestAnimationFrame(() => {
-        addCardFormRef?.scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'nearest' });
+        addCardFormRef?.scrollIntoView({ behavior: smoothScroll(), block: 'nearest', inline: 'nearest' });
       });
     }
   });
@@ -1174,9 +1175,9 @@ function App() {
     requestAnimationFrame(() => {
       const cardId = focusedCardId();
       const focusedCard = cardId ? document.querySelector(`.card[data-id="${CSS.escape(cardId)}"]`)?.closest('.card-wrapper') : null;
-      focusedCard?.scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'center' });
+      focusedCard?.scrollIntoView({ behavior: smoothScroll(), block: 'nearest', inline: 'center' });
       const focused = document.querySelector('.thread.focused, .calendar-event-item.focused');
-      focused?.scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'nearest' });
+      focused?.scrollIntoView({ behavior: smoothScroll(), block: 'nearest', inline: 'nearest' });
     });
   }
 
