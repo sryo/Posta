@@ -1401,7 +1401,7 @@ function App() {
     }
 
     if (e.key === 'Escape') {
-      // Priority: filter > dropdowns > color pickers > batch reply > compose > card editing > sidebar > action menu > focus
+      // Priority: filter > dropdowns > color pickers > batch reply > compose > card editing > sidebar > action menu > selection > focus
       if (showGlobalFilter()) {
         setShowGlobalFilter(false);
         setGlobalFilter("");
@@ -1425,6 +1425,10 @@ function App() {
         setSettingsOpen(false);
       } else if (actionConfigMenu()) {
         setActionConfigMenu(null);
+      } else if (focusedCardId() && (selectedThreads()[focusedCardId()!]?.size || selectedEvents()[focusedCardId()!]?.size)) {
+        const cardId = focusedCardId()!;
+        setSelectedThreads({ ...selectedThreads(), [cardId]: new Set() });
+        setSelectedEvents({ ...selectedEvents(), [cardId]: new Set() });
       } else if (focusedCardId()) {
         setFocusedCardId(null);
         setFocusedThreadIndex(-1);
@@ -1564,6 +1568,11 @@ function App() {
       if (e.key === 'f') {
         e.preventDefault();
         handleForward(thread.gmail_thread_id, cardId);
+        return;
+      }
+      if (e.key === '!') {
+        e.preventDefault();
+        handleThreadAction('spam', [thread.gmail_thread_id], cardId);
         return;
       }
       if (e.key === 'x') {
@@ -4817,8 +4826,6 @@ function App() {
             setBcc: setComposeBcc,
             showCcBcc: showCcBcc(),
             setShowCcBcc: setShowCcBcc,
-            subject: composeSubject(),
-            setSubject: setComposeSubject,
             body: composeBody(),
             setBody: setComposeBody,
             attachments: composeAttachments(),
@@ -4831,7 +4838,6 @@ function App() {
             onClose: closeCompose,
             onInput: debouncedSaveDraft,
             focusBody: focusComposeBody(),
-            messageWidth: inlineMessageWidth(),
             resizing: inlineResizing(),
             onResizeStart: handleInlineResizeStart,
           } : null}
@@ -5071,8 +5077,6 @@ function App() {
             setBcc: setComposeBcc,
             showCcBcc: showCcBcc(),
             setShowCcBcc: setShowCcBcc,
-            subject: composeSubject(),
-            setSubject: setComposeSubject,
             body: composeBody(),
             setBody: setComposeBody,
             attachments: composeAttachments(),
@@ -5085,7 +5089,6 @@ function App() {
             onClose: () => { closeCompose(); setReplyingToEvent(null); setForwardingEvent(null); },
             onInput: debouncedSaveDraft,
             focusBody: focusComposeBody(),
-            messageWidth: inlineMessageWidth(),
             resizing: inlineResizing(),
             onResizeStart: handleInlineResizeStart,
           } : null}
@@ -5422,6 +5425,18 @@ function App() {
               <div class="shortcut-row"><kbd>d</kbd> <span>Delete thread</span></div>
               <div class="shortcut-row"><kbd>r</kbd> <span>Reply to thread</span></div>
               <div class="shortcut-row"><kbd>f</kbd> <span>Forward thread</span></div>
+              <div class="shortcut-row"><kbd>u</kbd> <span>Toggle read</span></div>
+              <div class="shortcut-row"><kbd>i</kbd> <span>Toggle important</span></div>
+              <div class="shortcut-row"><kbd>!</kbd> <span>Report spam</span></div>
+            </div>
+            <div class="shortcuts-section">
+              <h3>Open thread</h3>
+              <div class="shortcut-row"><kbd>j</kbd> <span>Next message</span></div>
+              <div class="shortcut-row"><kbd>k</kbd> <span>Previous message</span></div>
+              <div class="shortcut-row"><kbd>r</kbd> <span>Reply to message</span></div>
+              <div class="shortcut-row"><kbd>⇧R</kbd> <span>Reply all</span></div>
+              <div class="shortcut-row"><kbd>f</kbd> <span>Forward message</span></div>
+              <div class="shortcut-row"><kbd>l</kbd> <span>Labels</span></div>
             </div>
             <div class="shortcuts-section">
               <h3>Compose</h3>
@@ -5432,6 +5447,7 @@ function App() {
             <div class="shortcuts-section">
               <h3>Selection</h3>
               <div class="shortcut-row"><kbd>x</kbd> <span>Select thread</span></div>
+              <div class="shortcut-row"><kbd>Escape</kbd> <span>Clear selection</span></div>
             </div>
             <div class="shortcuts-section">
               <h3>Help</h3>

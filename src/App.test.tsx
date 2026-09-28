@@ -227,3 +227,29 @@ describe("App accounts", () => {
     expect(invoke).not.toHaveBeenCalledWith("fetch_threads_paginated", expect.objectContaining({ cardId: "card-b" }));
   });
 });
+
+describe("App thread list shortcuts", () => {
+  it("reports the focused thread as spam on !", async () => {
+    handlers.modify_threads = () => null;
+    render(() => <App />);
+    await screen.findByText("Mail for A");
+    fireEvent.keyDown(document, { key: "l" });
+    fireEvent.keyDown(document, { key: "!", shiftKey: true });
+    await waitFor(() =>
+      expect(invoke).toHaveBeenCalledWith("modify_threads", expect.objectContaining({
+        threadIds: ["t-a"], addLabels: expect.arrayContaining(["SPAM"]),
+      })),
+    );
+  });
+
+  it("clears the selection on Escape before dropping card focus", async () => {
+    render(() => <App />);
+    const row = (await screen.findByText("Mail for A")).closest(".thread")!;
+    fireEvent.keyDown(document, { key: "l" });
+    fireEvent.keyDown(document, { key: "x" });
+    await waitFor(() => expect(row).toHaveClass("selected"));
+    fireEvent.keyDown(document, { key: "Escape" });
+    await waitFor(() => expect(row).not.toHaveClass("selected"));
+    expect(row).toHaveClass("focused");
+  });
+});

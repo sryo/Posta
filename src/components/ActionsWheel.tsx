@@ -238,7 +238,7 @@ export const ActionsWheel = (props: {
         bulkTitle: 'Mark important', bulkIcon: ThumbsUpIcon, bulkOnClick: (e) => { e.stopPropagation(); props.handleThreadAction('important', getSelection(), cId); }
       };
       actionDefs.spam = {
-        cls: 'bulk-spam', title: 'Report spam', icon: SpamIcon,
+        cls: 'bulk-spam', title: 'Report spam', keyHint: '!', icon: SpamIcon,
         onClick: (e) => { e.stopPropagation(); props.handleThreadAction('spam', [tId], cId); },
         bulkOnClick: (e) => { e.stopPropagation(); props.handleThreadAction('spam', getSelection(), cId); }
       };

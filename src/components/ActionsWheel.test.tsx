@@ -72,7 +72,7 @@ describe("ActionsWheel key hints", () => {
     expect(hint("Archive")).toBe("a");
     expect(hint("Star")).toBe("s");
     expect(hint("Delete")).toBe("d");
-    expect(hint("Report spam")).toBeNull();
+    expect(hint("Report spam")).toBe("!");
   });
 
   it("does not advertise unbound keys on event actions", () => {

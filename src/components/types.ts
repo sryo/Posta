@@ -12,8 +12,6 @@ export interface InlineComposeProps {
   setBcc: (v: string) => void;
   showCcBcc: boolean;
   setShowCcBcc: (v: boolean) => void;
-  subject: string;
-  setSubject: (v: string) => void;
   body: string;
   setBody: (v: string) => void;
   attachments: SendAttachment[];
@@ -28,7 +26,6 @@ export interface InlineComposeProps {
   onInput: () => void;
   focusBody: boolean;
   // Resize props
-  messageWidth: number;
   resizing: boolean;
   onResizeStart: (e: MouseEvent) => void;
 }
