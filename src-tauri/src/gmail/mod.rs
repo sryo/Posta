@@ -1300,17 +1300,12 @@ fn parse_ics_datetime(s: &str, params: &str) -> Option<(i64, bool)> {
 
             let utc = if is_utc {
                 DateTime::<Utc>::from_naive_utc_and_offset(datetime, Utc)
-            } else if let Some(resolved) = tzid
-                .and_then(|tz| tz.parse::<chrono_tz::Tz>().ok())
-                .and_then(|tz| tz.from_local_datetime(&datetime).single())
-            {
-                resolved.with_timezone(&Utc)
             } else {
-                // No TZID (or unknown zone / ambiguous local time):
-                // assume machine-local time, convert to UTC
-                let local = chrono::Local::now().timezone();
-                let local_dt = datetime.and_local_timezone(local).single()?;
-                local_dt.with_timezone(&Utc)
+                // No TZID or an unknown zone: assume machine-local time
+                match tzid.and_then(|tz| tz.parse::<chrono_tz::Tz>().ok()) {
+                    Some(tz) => resolve_wall_time(&tz, datetime)?,
+                    None => resolve_wall_time(&Local, datetime)?,
+                }
             };
 
             return Some((utc.timestamp_millis(), false));
@@ -1318,6 +1313,16 @@ fn parse_ics_datetime(s: &str, params: &str) -> Option<(i64, bool)> {
     }
 
     None
+}
+
+/// The instant a wall-clock time in `tz` denotes. A time repeated when clocks go
+/// back is its first occurrence; a time skipped when they go forward is read
+/// with the offset in force before the change (02:30 becomes 03:30).
+fn resolve_wall_time<Tz: TimeZone>(tz: &Tz, datetime: chrono::NaiveDateTime) -> Option<DateTime<Utc>> {
+    let resolved = tz.from_local_datetime(&datetime).earliest().or_else(|| {
+        tz.from_local_datetime(&(datetime + Duration::hours(1))).earliest()
+    })?;
+    Some(resolved.with_timezone(&Utc))
 }
 
 /// Represents attachment metadata extracted from message parts
@@ -2110,6 +2115,41 @@ mod tests {
         assert_eq!(parse_ics_datetime("202é115", ""), None);
         assert_eq!(parse_ics_datetime("20240115T1é0000", ""), None);
         assert_eq!(parse_ics_datetime("é0240115T100000Z", ""), None);
+    }
+
+    fn ics_utc(s: &str, params: &str) -> Option<(String, bool)> {
+        parse_ics_datetime(s, params).map(|(ms, all_day)| {
+            (DateTime::from_timestamp_millis(ms).unwrap().to_rfc3339(), all_day)
+        })
+    }
+
+    #[test]
+    fn parse_ics_all_day_is_utc_midnight_of_that_date() {
+        // The frontend reads all-day dates back with getUTC*, so the stored
+        // instant must be midnight UTC regardless of the machine's zone
+        assert_eq!(
+            ics_utc("20240115", "VALUE=DATE"),
+            Some(("2024-01-15T00:00:00+00:00".to_string(), true))
+        );
+    }
+
+    #[test]
+    fn parse_ics_resolves_tzid_times_across_dst_changes() {
+        let ny = "TZID=America/New_York";
+        assert_eq!(
+            ics_utc("20240115T100000", ny),
+            Some(("2024-01-15T15:00:00+00:00".to_string(), false))
+        );
+        // 01:30 happens twice on 2024-11-03; take the first (EDT)
+        assert_eq!(
+            ics_utc("20241103T013000", ny),
+            Some(("2024-11-03T05:30:00+00:00".to_string(), false))
+        );
+        // 02:30 is skipped on 2024-03-10; it means 03:30 EDT
+        assert_eq!(
+            ics_utc("20240310T023000", ny),
+            Some(("2024-03-10T07:30:00+00:00".to_string(), false))
+        );
     }
 
     const FOLDED_INVITE: &str = concat!(
