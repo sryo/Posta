@@ -115,6 +115,7 @@ import { safeGetItem, safeSetItem, safeRemoveItem, safeGetJSON, safeSetJSON } fr
 import { BG_COLORS, GMAIL_OPERATORS, type ActionSettings, type CardColor, type GroupBy } from "./shared/constants";
 import { createUndoableSend } from "./app/undoableSend";
 import { messageBodyHtml } from "./app/messageHtml";
+import { isSessionExpiredError } from "./app/authErrors";
 import { readFilesAsAttachments } from "./app/attachments";
 import { eventTimesFromForm, smartEventDefaults } from "./app/eventForm";
 import { getSmartEventTime, groupCalendarEvents, isUserLabel, mergeThreadGroups, regroupThreads, type CalendarEventGroup } from "./app/grouping";
@@ -2927,26 +2928,8 @@ function App() {
       setSyncErrors(cardId, null);
     } catch (e) {
       if (stale()) return;
-      const errorMsg = String(e);
-      console.error("loadCardThreads error:", errorMsg);
-      // Check for session expiry (token revoked, keyring issues, refresh failures)
-      if (errorMsg.includes("Keyring error") ||
-          errorMsg.includes("No auth token") ||
-          errorMsg.includes("Token refresh failed") ||
-          errorMsg.includes("invalid_grant") ||
-          errorMsg.includes("unauthorized")) {
-        // Only trigger sign out once (prevent race conditions from multiple card loads)
-        if (!error()?.includes("Session expired")) {
-          setError("Session expired - please sign in again");
-          setTimeout(async () => {
-            await handleSignOut();
-            setError(null);
-          }, 1500);
-        }
-      } else {
-        setCardErrors(cardId, errorMsg);
-        setSyncErrors(cardId, errorMsg);
-      }
+      console.error("loadCardThreads error:", e);
+      handleCardLoadError(cardId, e);
     } finally {
       if (append) {
         setLoadingMore(cardId, false);
@@ -2994,36 +2977,27 @@ function App() {
       await fetchAndCacheCalendarEvents(account.id, cardId, card.query);
     } catch (e) {
       if (stale()) return;
-      const errorMsg = String(e);
-      console.error("loadCalendarEvents error:", errorMsg);
-      if (errorMsg.includes("Keyring error") ||
-          errorMsg.includes("No auth token") ||
-          errorMsg.includes("Token refresh failed") ||
-          errorMsg.includes("invalid_grant") ||
-          errorMsg.includes("unauthorized")) {
-        if (!error()?.includes("Session expired")) {
-          setError("Session expired - please sign in again");
-          setTimeout(async () => {
-            await handleSignOut();
-            setError(null);
-          }, 1500);
-        }
-      } else {
-        setCardErrors(cardId, errorMsg);
-        setSyncErrors(cardId, errorMsg);
-      }
+      console.error("loadCalendarEvents error:", e);
+      handleCardLoadError(cardId, e);
     } finally {
-      if (!cardCalendarEvents[cardId]) {
-        // Only turn off loading if we didn't populate from cache (if we did, it's already off)
-        // or if we waited for fetch.
-        // Actually, if we populated from cache, we returned early.
-        // If we didn't, we are here.
-        setLoadingThreads(cardId, false);
-      } else {
-        // If we have data (from await fetch), ensure loading is off
-        setLoadingThreads(cardId, false);
-      }
+      setLoadingThreads(cardId, false);
     }
+  }
+
+  function handleCardLoadError(cardId: string, e: unknown) {
+    const errorMsg = String(e);
+    if (!isSessionExpiredError(errorMsg)) {
+      setCardErrors(cardId, errorMsg);
+      setSyncErrors(cardId, errorMsg);
+      return;
+    }
+    // Several cards fail at once; sign out only once
+    if (error()?.includes("Session expired")) return;
+    setError("Session expired - please sign in again");
+    setTimeout(async () => {
+      await handleSignOut();
+      setError(null);
+    }, 1500);
   }
 
   async function fetchAndCacheCalendarEvents(accountId: string, cardId: string, query: string) {
