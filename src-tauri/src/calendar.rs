@@ -36,13 +36,45 @@ fn friendly_calendar_error(status: StatusCode, body: &str) -> String {
         return "Calendar permission denied. Please re-login to grant calendar access.".to_string();
     }
 
+    let api_error = serde_json::from_str::<ApiErrorBody>(body).ok().map(|b| b.error);
+    let rate_limited = api_error.iter().flat_map(|e| &e.errors).any(|e| {
+        matches!(
+            e.reason.as_deref(),
+            Some("rateLimitExceeded" | "userRateLimitExceeded" | "quotaExceeded")
+        )
+    });
+    if rate_limited || status == StatusCode::TOO_MANY_REQUESTS {
+        return "Too many requests. Please try again later.".to_string();
+    }
+
     match status {
         StatusCode::UNAUTHORIZED => "Calendar access expired. Please re-login.".to_string(),
-        StatusCode::FORBIDDEN => "Calendar access denied. Please re-login to grant permissions.".to_string(),
-        StatusCode::NOT_FOUND => "Calendar not found.".to_string(),
-        StatusCode::TOO_MANY_REQUESTS => "Too many requests. Please try again later.".to_string(),
+        // Other 403s are about this calendar or event (read-only calendar,
+        // not the organizer), which Google explains better than we can
+        StatusCode::FORBIDDEN => api_error
+            .and_then(|e| e.message)
+            .unwrap_or_else(|| "You don't have permission to change this calendar.".to_string()),
+        StatusCode::NOT_FOUND => "Event or calendar not found. It may have been deleted.".to_string(),
+        StatusCode::GONE => "This event was already deleted.".to_string(),
         _ => format!("Calendar error ({})", status),
     }
+}
+
+#[derive(Deserialize)]
+struct ApiErrorBody {
+    error: ApiError,
+}
+
+#[derive(Deserialize)]
+struct ApiError {
+    message: Option<String>,
+    #[serde(default)]
+    errors: Vec<ApiErrorItem>,
+}
+
+#[derive(Deserialize)]
+struct ApiErrorItem {
+    reason: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1229,6 +1261,41 @@ mod tests {
 
     fn api_event(json: serde_json::Value) -> ApiEvent {
         serde_json::from_value(json).unwrap()
+    }
+
+    fn google_error(code: u16, reason: &str, message: &str) -> String {
+        serde_json::json!({
+            "error": { "code": code, "message": message, "errors": [{ "reason": reason, "message": message }] }
+        })
+        .to_string()
+    }
+
+    #[test]
+    fn error_messages_only_suggest_re_login_for_auth_problems() {
+        let err = |code: u16, body: &str| friendly_calendar_error(StatusCode::from_u16(code).unwrap(), body);
+
+        // Google reports rate limits as 403s
+        let rate = err(403, &google_error(403, "rateLimitExceeded", "Rate Limit Exceeded"));
+        assert!(rate.contains("Too many requests"), "{rate}");
+        let quota = err(403, &google_error(403, "userRateLimitExceeded", "User Rate Limit Exceeded"));
+        assert!(quota.contains("Too many requests"), "{quota}");
+
+        // Not being allowed to change an event is not a login problem
+        let not_organizer = err(403, &google_error(403, "forbiddenForNonOrganizer", "Shared properties can only be changed by the organizer of the event."));
+        assert!(!not_organizer.contains("re-login"), "{not_organizer}");
+        assert!(not_organizer.contains("only be changed by the organizer"), "{not_organizer}");
+        let read_only = err(403, &google_error(403, "requiredAccessLevel", "You need to have writer access to this calendar."));
+        assert_eq!(read_only, "You need to have writer access to this calendar.");
+
+        // A missing scope still asks for a re-login
+        let scope = err(403, &google_error(403, "insufficientPermissions", "Request had insufficient authentication scopes."));
+        assert!(scope.contains("re-login"), "{scope}");
+        assert!(err(401, &google_error(401, "authError", "Invalid Credentials")).contains("Calendar access expired"));
+
+        // 404/410 on an event (deleted elsewhere) is not a missing calendar
+        assert!(!err(404, &google_error(404, "notFound", "Not Found")).contains("Calendar not found"));
+        assert!(err(410, &google_error(410, "deleted", "Resource has been deleted")).contains("deleted"));
+        assert_eq!(err(500, "<html>oops</html>"), "Calendar error (500 Internal Server Error)");
     }
 
     #[test]
