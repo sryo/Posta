@@ -22,6 +22,8 @@ const BATCH_ATTEMPTS: usize = 2;
 const BATCH_RETRY_DELAY: std::time::Duration = std::time::Duration::from_secs(1);
 const MAX_INLINE_IMAGE_SIZE: i32 = 100_000; // 100KB max for inline images
 const MAX_INLINE_IMAGES: usize = 3;
+/// Budget of the attachment data kept in memory between thread list fetches
+const ATTACHMENT_CACHE_BYTES: usize = 32 * 1024 * 1024;
 
 /// Partial-response fields for thread list entries: message headers and the
 /// part tree (with part headers, for Content-ID) three levels deep, without
@@ -48,6 +50,7 @@ pub struct GmailClient {
     batch_endpoint: String,
     upload_base: String,
     batch_retry_delay: std::time::Duration,
+    attachment_cache: std::sync::Arc<std::sync::Mutex<AttachmentCache>>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -337,6 +340,7 @@ impl GmailClient {
             batch_endpoint: BATCH_API_ENDPOINT.to_string(),
             upload_base: GMAIL_UPLOAD_BASE.to_string(),
             batch_retry_delay: BATCH_RETRY_DELAY,
+            attachment_cache: shared_attachment_cache(),
         }
     }
 
@@ -585,27 +589,40 @@ impl GmailClient {
     }
 
     /// Fetch the data the list shows with a thread: its first few small images
-    /// and its calendar invite. Failures leave the data out.
+    /// and its calendar invite. Data downloaded before is reused, since a
+    /// message never changes. Failures leave the data out.
     async fn load_attachment_data(&self, threads: &mut [Thread]) {
         let fetches = attachment_fetches(threads);
-        let mut data = Vec::with_capacity(fetches.len());
-        for chunk in fetches.chunks(MAX_BATCH_SIZE) {
+        let mut data: Vec<Option<String>> = {
+            let mut cache = self.attachment_cache.lock().unwrap_or_else(|e| e.into_inner());
+            fetches.iter().map(|f| cache.get(&f.key)).collect()
+        };
+        let misses: Vec<usize> = (0..fetches.len()).filter(|&i| data[i].is_none()).collect();
+        for chunk in misses.chunks(MAX_BATCH_SIZE) {
             let paths: Vec<String> = chunk
                 .iter()
-                .map(|f| attachment_path(&threads[f.thread].attachments[f.attachment]))
+                .map(|&i| attachment_path(&threads[fetches[i].thread].attachments[fetches[i].attachment]))
                 .collect();
-            match self.execute_batch_get(&paths).await {
-                Ok(bodies) => data.extend(bodies.into_iter().map(|body| {
-                    #[derive(Deserialize)]
-                    struct AttachmentResponse {
-                        data: String,
-                    }
-                    serde_json::from_str::<AttachmentResponse>(&body?).ok().map(|a| a.data)
-                })),
+            let bodies = match self.execute_batch_get(&paths).await {
+                Ok(bodies) => bodies,
                 Err(e) => {
                     tracing::warn!("Attachment batch failed: {}", e);
-                    data.extend(std::iter::repeat_n(None, chunk.len()));
+                    continue;
                 }
+            };
+            let mut cache = self.attachment_cache.lock().unwrap_or_else(|e| e.into_inner());
+            for (&i, body) in chunk.iter().zip(bodies) {
+                #[derive(Deserialize)]
+                struct AttachmentResponse {
+                    data: String,
+                }
+                let fetched = body
+                    .and_then(|body| serde_json::from_str::<AttachmentResponse>(&body).ok())
+                    .map(|a| a.data);
+                if let Some(fetched) = &fetched {
+                    cache.insert(fetches[i].key.clone(), fetched.clone());
+                }
+                data[i] = fetched;
             }
         }
         apply_attachment_data(threads, &fetches, data);
@@ -1182,6 +1199,81 @@ fn split_at_blank_line(text: &str) -> Option<(&str, &str)> {
 struct AttachmentFetch {
     thread: usize,
     attachment: usize,
+    key: AttachmentKey,
+}
+
+/// A message part's identity across fetches. Gmail hands out a new
+/// attachment id on every fetch, so the part is known by its message, its
+/// position among the message's attachments and what it is.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+struct AttachmentKey {
+    message_id: String,
+    position: usize,
+    filename: String,
+    mime_type: String,
+    size: i32,
+}
+
+fn attachment_key(attachments: &[Attachment], index: usize) -> AttachmentKey {
+    let attachment = &attachments[index];
+    AttachmentKey {
+        message_id: attachment.message_id.clone(),
+        position: attachments[..index].iter().filter(|a| a.message_id == attachment.message_id).count(),
+        filename: attachment.filename.clone(),
+        mime_type: attachment.mime_type.clone(),
+        size: attachment.size,
+    }
+}
+
+/// Attachment data by part, least recently used dropped first once the data
+/// exceeds `capacity` bytes
+struct AttachmentCache {
+    entries: HashMap<AttachmentKey, (String, u64)>,
+    recency: std::collections::BTreeMap<u64, AttachmentKey>,
+    bytes: usize,
+    tick: u64,
+    capacity: usize,
+}
+
+impl AttachmentCache {
+    fn new(capacity: usize) -> Self {
+        Self { entries: HashMap::new(), recency: Default::default(), bytes: 0, tick: 0, capacity }
+    }
+
+    fn get(&mut self, key: &AttachmentKey) -> Option<String> {
+        self.tick += 1;
+        let (data, used) = self.entries.get_mut(key)?;
+        self.recency.remove(used);
+        *used = self.tick;
+        self.recency.insert(self.tick, key.clone());
+        Some(data.clone())
+    }
+
+    fn insert(&mut self, key: AttachmentKey, data: String) {
+        if data.len() > self.capacity {
+            return;
+        }
+        self.tick += 1;
+        self.bytes += data.len();
+        self.recency.insert(self.tick, key.clone());
+        if let Some((old, used)) = self.entries.insert(key, (data, self.tick)) {
+            self.bytes -= old.len();
+            self.recency.remove(&used);
+        }
+        while self.bytes > self.capacity {
+            let Some((_, oldest)) = self.recency.pop_first() else { break };
+            if let Some((old, _)) = self.entries.remove(&oldest) {
+                self.bytes -= old.len();
+            }
+        }
+    }
+}
+
+fn shared_attachment_cache() -> std::sync::Arc<std::sync::Mutex<AttachmentCache>> {
+    static CACHE: std::sync::OnceLock<std::sync::Arc<std::sync::Mutex<AttachmentCache>>> = std::sync::OnceLock::new();
+    CACHE
+        .get_or_init(|| std::sync::Arc::new(std::sync::Mutex::new(AttachmentCache::new(ATTACHMENT_CACHE_BYTES))))
+        .clone()
 }
 
 /// The first few small images of each thread and all its calendar invites
@@ -1199,7 +1291,7 @@ fn attachment_fetches(threads: &[Thread]) -> Vec<AttachmentFetch> {
             let invites = t.attachments.iter().enumerate().filter(|(_, a)| a.is_calendar());
             images
                 .chain(invites)
-                .map(move |(attachment, _)| AttachmentFetch { thread, attachment })
+                .map(move |(attachment, _)| AttachmentFetch { thread, attachment, key: attachment_key(&t.attachments, attachment) })
                 .collect::<Vec<_>>()
         })
         .collect()
@@ -3740,6 +3832,54 @@ mod tests {
                 (Some(2), 200, "{\"data\": \"c\"}"),
             ]
         );
+    }
+
+    fn cache_key(message_id: &str, position: usize) -> AttachmentKey {
+        AttachmentKey {
+            message_id: message_id.to_string(),
+            position,
+            filename: "a.png".to_string(),
+            mime_type: "image/png".to_string(),
+            size: 10,
+        }
+    }
+
+    #[test]
+    fn the_attachment_cache_drops_the_least_recently_used_data_past_its_budget() {
+        let mut cache = AttachmentCache::new(10);
+        cache.insert(cache_key("m1", 0), "aaaa".into());
+        cache.insert(cache_key("m2", 0), "bbbb".into());
+        assert_eq!(cache.get(&cache_key("m1", 0)).as_deref(), Some("aaaa"));
+
+        cache.insert(cache_key("m3", 0), "cccc".into());
+        assert_eq!(cache.get(&cache_key("m2", 0)), None, "least recently used");
+        assert_eq!(cache.get(&cache_key("m1", 0)).as_deref(), Some("aaaa"));
+        assert_eq!(cache.get(&cache_key("m3", 0)).as_deref(), Some("cccc"));
+
+        cache.insert(cache_key("m3", 0), "cc".into());
+        assert_eq!(cache.bytes, 6);
+        cache.insert(cache_key("huge", 0), "x".repeat(11));
+        assert_eq!(cache.get(&cache_key("huge", 0)), None, "larger than the whole budget");
+        assert_eq!(cache.entries.len(), 2);
+        assert_eq!(cache.recency.len(), 2);
+    }
+
+    #[test]
+    fn attachments_are_known_by_their_position_in_their_message() {
+        let attachments = vec![
+            listed_attachment("m1", "x1", "image/png", 10),
+            listed_attachment("m2", "x2", "image/png", 10),
+            listed_attachment("m1", "x3", "image/png", 10),
+        ];
+        let keys: Vec<(String, usize)> =
+            (0..3).map(|i| attachment_key(&attachments, i)).map(|k| (k.message_id, k.position)).collect();
+        assert_eq!(keys, [("m1".into(), 0), ("m2".into(), 0), ("m1".into(), 1)]);
+    }
+
+    #[test]
+    fn clients_share_one_attachment_cache() {
+        let (a, b) = (GmailClient::new("a".into()), GmailClient::new("b".into()));
+        assert!(std::sync::Arc::ptr_eq(&a.attachment_cache, &b.attachment_cache));
     }
 
     fn listed_attachment(message_id: &str, attachment_id: &str, mime: &str, size: i32) -> Attachment {
