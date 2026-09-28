@@ -11,6 +11,15 @@ const PAGE_SIZE: usize = 20;
 const MAX_BATCH_SIZE: usize = 50; // Gmail allows up to 100, but 50 is safer
 const MAX_INLINE_IMAGE_SIZE: i32 = 100_000; // 100KB max for inline images
 
+/// Partial-response fields for thread list entries: message headers and the
+/// part tree (with part headers, for Content-ID) three levels deep, without bodies
+const THREAD_SUMMARY_FIELDS: &str = concat!(
+    "id,messages(id,labelIds,snippet,internalDate,payload(headers,mimeType,",
+    "parts(mimeType,filename,headers,body(size,attachmentId),",
+    "parts(mimeType,filename,headers,body(size,attachmentId),",
+    "parts(mimeType,filename,headers,body(size,attachmentId))))))"
+);
+
 #[derive(Debug, Serialize)]
 pub struct SearchResult {
     pub groups: Vec<ThreadGroup>,
@@ -311,10 +320,9 @@ impl GmailClient {
     }
 
     async fn get_thread_detail(&self, thread_id: &str) -> Result<Thread, String> {
-        // Use format=full to get attachment info, but limit fields to avoid downloading bodies
         let url = format!(
-            "{}/users/me/threads/{}?format=full&fields=id,messages(id,threadId,labelIds,snippet,internalDate,payload(headers,mimeType,parts(mimeType,filename,body(size,attachmentId),parts(mimeType,filename,body(size,attachmentId)))))",
-            GMAIL_API_BASE, thread_id
+            "{}/users/me/threads/{}?format=full&fields={}",
+            GMAIL_API_BASE, thread_id, THREAD_SUMMARY_FIELDS
         );
 
         let resp = self
@@ -390,7 +398,6 @@ impl GmailClient {
 
         // Build multipart request body
         let mut body = String::new();
-        let fields = "id,historyId,messages(id,threadId,labelIds,snippet,internalDate,payload(headers,mimeType,parts(mimeType,filename,body(size,attachmentId),parts(mimeType,filename,body(size,attachmentId)))))";
 
         for (i, thread_id) in thread_ids.iter().enumerate() {
             body.push_str(&format!("--{}\r\n", boundary));
@@ -398,7 +405,7 @@ impl GmailClient {
             body.push_str(&format!("Content-ID: <item{}>\r\n\r\n", i));
             body.push_str(&format!(
                 "GET /gmail/v1/users/me/threads/{}?format=full&fields={} HTTP/1.1\r\n\r\n",
-                thread_id, fields
+                thread_id, THREAD_SUMMARY_FIELDS
             ));
         }
         body.push_str(&format!("--{}--\r\n", boundary));
