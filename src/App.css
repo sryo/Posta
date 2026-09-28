@@ -5,6 +5,7 @@
 }
 
 :root {
+    color-scheme: light dark;
     --bg-primary: #fff;
     --bg-secondary: #f5f5f5;
     --bg-tertiary: #fafafa;
@@ -4975,4 +4976,16 @@ button:disabled:hover {
 .scheduler-option.selected {
     background-color: var(--accent);
     color: #fff;
+}
+
+/* Loading spinners, skeletons and the undo countdown keep moving: they carry
+   state rather than decoration. */
+@media (prefers-reduced-motion: reduce) {
+    *:not(.icon-btn.spinning svg, .auth-spinner, .spinner-sm, .skeleton-avatar, .skeleton-line, .toast-progress),
+    *::before,
+    *::after {
+        animation-duration: 0.01ms !important;
+        animation-iteration-count: 1 !important;
+        transition-duration: 0.01ms !important;
+    }
 }

@@ -32,11 +32,29 @@ export function parseRules(text: string): Rule[] {
           const colon = d.indexOf(":");
           return [d.slice(0, colon).trim(), d.slice(colon + 1).trim()] as [string, string];
         });
-      rules.push({ selectors: prelude.split(",").map((s) => s.trim()), declarations, context });
+      rules.push({ selectors: splitSelectorList(prelude), declarations, context });
     }
   }
   block(false, "");
   return rules;
+}
+
+// Splits on the commas between selectors, not those inside :not(a, b).
+function splitSelectorList(prelude: string): string[] {
+  const out: string[] = [];
+  let depth = 0;
+  let start = 0;
+  for (let j = 0; j < prelude.length; j++) {
+    const ch = prelude[j];
+    if (ch === "(") depth++;
+    else if (ch === ")") depth--;
+    else if (ch === "," && depth === 0) {
+      out.push(prelude.slice(start, j).trim());
+      start = j + 1;
+    }
+  }
+  out.push(prelude.slice(start).trim());
+  return out;
 }
 
 // Every class name a rule's selectors mention.
