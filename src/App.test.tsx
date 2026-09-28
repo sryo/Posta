@@ -1607,3 +1607,41 @@ describe("App card refreshes", () => {
     expect(fetches()).toBe(2);
   });
 });
+
+describe("App background sync refetches", () => {
+  it("does not refetch cards for a thread that only moved to spam", async () => {
+    render(() => <App />);
+    await screen.findByText("Mail for A");
+    await new Promise(r => setTimeout(r, 20));
+    const fetches = () => invoke.mock.calls.filter(([cmd]) => cmd === "fetch_threads_paginated").length;
+    const before = fetches();
+
+    handlers.sync_threads_incremental = () => ({
+      modified_threads: [{ ...thread("t-spam", "Junk"), labels: ["SPAM", "UNREAD"] }],
+      deleted_thread_ids: [],
+      is_full_sync: false,
+    });
+    window.dispatchEvent(new Event("focus"));
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith("sync_threads_incremental", { accountId: "a" }));
+    await new Promise(r => setTimeout(r, 30));
+
+    expect(fetches()).toBe(before);
+  });
+
+  it("refetches cards for new mail no card shows yet", async () => {
+    render(() => <App />);
+    await screen.findByText("Mail for A");
+    await new Promise(r => setTimeout(r, 20));
+    const fetches = () => invoke.mock.calls.filter(([cmd]) => cmd === "fetch_threads_paginated").length;
+    const before = fetches();
+
+    handlers.sync_threads_incremental = () => ({
+      modified_threads: [{ ...thread("t-new", "New"), labels: ["INBOX", "UNREAD"] }],
+      deleted_thread_ids: [],
+      is_full_sync: false,
+    });
+    window.dispatchEvent(new Event("focus"));
+
+    await waitFor(() => expect(fetches()).toBe(before + 1));
+  });
+});

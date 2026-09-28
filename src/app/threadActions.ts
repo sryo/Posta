@@ -80,6 +80,15 @@ export function actionRemovesFromCard(action: string, cardQuery: string): boolea
   return q.includes("in:inbox") || q.includes("is:inbox") || q.includes("label:inbox") || q.includes("category:");
 }
 
+// Whether a changed thread no card shows could have joined a card with this
+// query. Gmail searches leave out spam and trash unless the query asks for
+// them, so a thread that only moved there can't have.
+export function threadMayJoinCard(thread: Pick<Thread, "labels">, cardQuery: string): boolean {
+  const labels = thread.labels;
+  if (!(labels.includes("SPAM") || labels.includes("TRASH")) || labels.includes("INBOX")) return true;
+  return /\b(in|label):(spam|trash|anywhere)\b/i.test(cardQuery);
+}
+
 // The card's groups as they look once the action has succeeded
 export function applyThreadAction(
   groups: ThreadGroup[],

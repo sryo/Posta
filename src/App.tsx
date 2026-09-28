@@ -120,7 +120,7 @@ import { findHeader, lastMessageFromOthers } from "./app/messages";
 import { batchReplyEntry, type BatchReplyThread } from "./app/batchReply";
 import { completeRecipient, currentRecipient, matchContacts, rankContacts } from "./app/contacts";
 import { eventReplyRecipients } from "./app/eventReply";
-import { actionLabel, actionRemovesFromCard, applyThreadAction, labelChangeFor, undoLabelChanges, type LabelReversal } from "./app/threadActions";
+import { actionLabel, actionRemovesFromCard, applyThreadAction, labelChangeFor, threadMayJoinCard, undoLabelChanges, type LabelReversal } from "./app/threadActions";
 import { PRESETS } from "./app/presets";
 import { normalizeActionOrder } from "./app/actionOrder";
 import { parseStoredWidth } from "./app/storedWidth";
@@ -883,10 +883,11 @@ function App() {
     // the server can tell, so refetch the affected cards in the background
     const account = selectedAccount();
     if (!account) return;
-    const hasUnmatched = modifiedThreads.some(t => !matchedThreadIds.has(t.gmail_thread_id));
+    const unmatched = modifiedThreads.filter(t => !matchedThreadIds.has(t.gmail_thread_id));
     for (const card of cards()) {
       if (card.card_type === "calendar") continue;
-      if (!collapsedCards[card.id] && (hasUnmatched || cardsWithModified.has(card.id))) {
+      const mayGainThread = unmatched.some(t => threadMayJoinCard(t, card.query));
+      if (!collapsedCards[card.id] && (mayGainThread || cardsWithModified.has(card.id))) {
         fetchAndCacheThreads(account.id, card.id);
       } else if (cardsWithDeleted.has(card.id)) {
         saveCachedCardThreads(card.id, updatedCardThreads[card.id], cardPageTokens[card.id] || null)
