@@ -1235,12 +1235,28 @@ pub async fn save_cached_card_threads(
     state: State<'_, AppState>,
 ) -> Result<(), String> {
     blocking(&state, move |state| {
-        with_db(state, |db| {
-            db.save_card_threads(&card_id, &groups, next_page_token.as_deref())
-                .map_err(|e| e.to_string())
-        })
+        save_card_cache(state, &card_id, |db| db.save_card_threads(&card_id, &groups, next_page_token.as_deref()))
     })
     .await
+}
+
+/// Save a card's cache, unless the card was deleted while it was being
+/// refreshed; nothing would ever remove that row
+fn save_card_cache(
+    state: &AppState,
+    card_id: &str,
+    save: impl FnOnce(&CacheDb) -> Result<(), crate::cache::sqlite::CacheError>,
+) -> Result<(), String> {
+    // The database lock is held from the check through the save, so a
+    // deletion can't slip in between
+    with_db(state, |db| {
+        for account in db.get_accounts().map_err(|e| e.to_string())? {
+            if db.get_cards(&account.id).map_err(|e| e.to_string())?.iter().any(|c| c.id == card_id) {
+                return save(db).map_err(|e| e.to_string());
+            }
+        }
+        Ok(())
+    })
 }
 
 #[tauri::command]
@@ -1278,13 +1294,7 @@ pub async fn save_cached_card_events(
     events: Vec<crate::models::GoogleCalendarEvent>,
     state: State<'_, AppState>,
 ) -> Result<(), String> {
-    blocking(&state, move |state| {
-        with_db(state, |db| {
-            db.save_card_events(&card_id, &events)
-                .map_err(|e| e.to_string())
-        })
-    })
-    .await
+    blocking(&state, move |state| save_card_cache(state, &card_id, |db| db.save_card_events(&card_id, &events))).await
 }
 
 #[tauri::command]
@@ -2639,6 +2649,29 @@ mod tests {
         let caller = std::thread::current().id();
         let ran_on = super::blocking(&super::AppState::new(), |_| Ok(std::thread::current().id())).await;
         assert_ne!(ran_on.unwrap(), caller);
+    }
+
+    #[test]
+    fn a_refresh_that_finishes_after_its_card_was_deleted_leaves_no_cache() {
+        let dir = scratch_dir();
+        let state = super::AppState::new();
+        let db = super::open_database(&dir.join("posta.db")).unwrap();
+        db.insert_account(&account("a1", "me@x.com")).unwrap();
+        db.insert_card(&owned_card("live", "a1")).unwrap();
+        *state.db.lock().unwrap() = Some(db);
+
+        let save = |id: &str| super::save_card_cache(&state, id, |db| db.save_card_threads(id, &[], None));
+        save("live").unwrap();
+        save("deleted").unwrap();
+        super::save_card_cache(&state, "deleted", |db| db.save_card_events("deleted", &[])).unwrap();
+
+        let guard = state.db.lock().unwrap();
+        let db = guard.as_ref().unwrap();
+        assert!(db.get_card_threads("live").unwrap().is_some());
+        assert!(db.get_card_threads("deleted").unwrap().is_none());
+        assert!(db.get_card_events("deleted").unwrap().is_none());
+        drop(guard);
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]
