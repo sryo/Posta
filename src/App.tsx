@@ -1727,37 +1727,31 @@ function App() {
     }
   }
 
+  let applyingPreset = false;
   async function applyPreset(presetKey: string) {
     const account = selectedAccount();
-    if (!account) return;
-
     const preset = PRESETS[presetKey];
-    if (!preset) return;
+    if (!account || !preset || applyingPreset) return;
 
+    applyingPreset = true;
+    const newCards: Card[] = [];
     try {
-      const newCards: Card[] = [];
-
       for (const cardPreset of preset.cards) {
-        // Detect calendar card from query
         const cardType = cardPreset.query.toLowerCase().includes("calendar:") ? "calendar" : "email";
-        const card = await createCard(account.id, cardPreset.name, cardPreset.query, cardPreset.color || null, "date", cardType);
-        newCards.push(card);
+        newCards.push(await createCard(account.id, cardPreset.name, cardPreset.query, cardPreset.color || null, "date", cardType));
       }
-
-      setCards(newCards);
-
-      // Initialize collapsed state
-      const collapsed: Record<string, boolean> = {};
-      newCards.forEach(c => { collapsed[c.id] = false; });
-      setCollapsedCards(reconcile(collapsed));
-
-      setShowPresetSelection(false);
-
-      // Fetch threads for all new cards
-      newCards.forEach(card => loadCardThreads(card.id));
     } catch (e) {
       setError(String(e));
+    } finally {
+      applyingPreset = false;
     }
+
+    // Show whatever was created, even if a later card failed: the created
+    // ones are already stored, and hiding them invites duplicates on retry
+    setCards(newCards);
+    setCollapsedCards(reconcile(Object.fromEntries(newCards.map(c => [c.id, false]))));
+    setShowPresetSelection(false);
+    newCards.forEach(card => loadCardThreads(card.id));
   }
 
   async function handleStartFresh() {

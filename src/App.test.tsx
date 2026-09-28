@@ -115,6 +115,51 @@ describe("App attachments", () => {
   });
 });
 
+describe("App presets", () => {
+  function signInToEmptyLayout() {
+    handlers.get_accounts = () => [];
+    handlers.run_oauth_flow = () => account("n", "n@x.com");
+    cardsByAccount.n = [];
+    let nextId = 0;
+    handlers.create_card = ({ name, query }) => ({
+      ...card(`new-${nextId++}`, "n", name as string),
+      query: query as string,
+      card_type: (query as string).includes("calendar:") ? "calendar" : "email",
+    });
+    handlers.get_cached_card_events = () => null;
+    handlers.fetch_calendar_events = () => [];
+    handlers.save_cached_card_events = () => null;
+    render(() => <App />);
+  }
+
+  it("creates the preset's cards once even when clicked twice", async () => {
+    signInToEmptyLayout();
+    fireEvent.click(await screen.findByText("Sign in with Google"));
+    const option = (await screen.findByText("Traditional", {}, { timeout: 3000 })).closest(".preset-option")!;
+
+    fireEvent.click(option);
+    fireEvent.click(option);
+
+    await waitFor(() => expect(screen.queryByText("How do you email?")).not.toBeInTheDocument());
+    expect(invoke.mock.calls.filter(([cmd]) => cmd === "create_card")).toHaveLength(4);
+  });
+
+  it("shows the cards that were created when a later one fails", async () => {
+    signInToEmptyLayout();
+    const create = handlers.create_card;
+    let calls = 0;
+    handlers.create_card = (args) => {
+      if (++calls === 3) throw new Error("db locked");
+      return create(args);
+    };
+    fireEvent.click(await screen.findByText("Sign in with Google"));
+    fireEvent.click((await screen.findByText("Traditional", {}, { timeout: 3000 })).closest(".preset-option")!);
+
+    expect(await screen.findByRole("region", { name: "Inbox email card" })).toBeInTheDocument();
+    expect(screen.getByRole("region", { name: "Starred email card" })).toBeInTheDocument();
+  });
+});
+
 describe("App accounts", () => {
   it("loads the first account's cards and threads on start", async () => {
     render(() => <App />);
