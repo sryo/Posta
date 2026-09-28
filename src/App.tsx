@@ -131,6 +131,7 @@ import { eventTimesFromForm, smartEventDefaults } from "./app/eventForm";
 import { composePlacement } from "./app/composePlacement";
 import { cidImagesToFetch, fetchCidImages } from "./app/cidImages";
 import { sendPending, type PendingSend } from "./app/pendingSend";
+import { parseMailto } from "./app/mailto";
 import { createDraftSync, draftKey, findLatestDraft, hasDraftContent, markDraftClosed, removeAccountDrafts, sessionDraftKey, type DraftFields } from "./app/drafts";
 import { nextCardFocus, nextItemFocus } from "./app/keyboardNav";
 import { getSmartEventTime, groupCalendarEvents, isUserLabel, mergeThreadGroups, regroupThreads, type CalendarEventGroup } from "./app/grouping";
@@ -1438,15 +1439,25 @@ function App() {
   function handleGlobalClick(e: MouseEvent) {
     const target = e.target as HTMLElement;
 
-    // Intercept clicks on links to open in external browser
+    // Web links open in the browser and mailto links in compose. Links in an
+    // email must never navigate the app's own page; the app's links (href="#")
+    // are left to their own handlers.
     const link = target.closest('a') as HTMLAnchorElement | null;
-    if (link && link.href) {
-      const href = link.href;
-      // Only intercept http/https links (not javascript:, mailto:, etc.)
-      if (href.startsWith('http://') || href.startsWith('https://')) {
+    if (link && link.href && !e.defaultPrevented) {
+      const inEmail = !!link.closest('.message-body');
+      if (link.protocol === 'mailto:') {
+        e.preventDefault();
+        startCompose(parseMailto(link.href));
+        return;
+      }
+      if ((link.protocol === 'http:' || link.protocol === 'https:') && link.origin !== window.location.origin) {
         e.preventDefault();
         e.stopPropagation();
-        openUrl(href);
+        openUrl(link.href);
+        return;
+      }
+      if (inEmail) {
+        e.preventDefault();
         return;
       }
     }

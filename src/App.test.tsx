@@ -23,7 +23,8 @@ vi.mock("@tauri-apps/api/event", () => ({
     return () => {};
   },
 }));
-vi.mock("@tauri-apps/plugin-opener", () => ({ openUrl: async () => {} }));
+const openUrl = vi.fn(async (_url: string) => {});
+vi.mock("@tauri-apps/plugin-opener", () => ({ openUrl: (url: string) => openUrl(url) }));
 type MenuItemOptions = { text?: string; enabled?: boolean; action?: () => void };
 let lastMenu: MenuItemOptions[] = [];
 vi.mock("@tauri-apps/api/menu", () => ({
@@ -52,6 +53,7 @@ beforeEach(() => {
   localStorage.clear();
   lastMenu = [];
   invoke.mockClear();
+  openUrl.mockClear();
   setBadgeCount.mockClear();
   for (const k of Object.keys(handlers)) delete handlers[k];
   Object.assign(handlers, {
@@ -1531,5 +1533,52 @@ describe("App undo", () => {
       accountId: "a", threadIds: ["t-2"], addLabels: [], removeLabels: ["STARRED"],
     }));
     expect(invoke.mock.calls.filter(([cmd]) => cmd === "modify_threads")).toHaveLength(1);
+  });
+});
+
+describe("App links", () => {
+  function clickLink(href: string, inside?: string, onClick?: (e: MouseEvent) => void) {
+    const container = document.createElement("div");
+    if (inside) container.className = inside;
+    const link = document.createElement("a");
+    link.setAttribute("href", href);
+    link.textContent = "link";
+    if (onClick) link.addEventListener("click", onClick);
+    container.appendChild(link);
+    document.body.appendChild(container);
+    const notCancelled = fireEvent.click(link);
+    container.remove();
+    return notCancelled;
+  }
+
+  it("opens web links in the browser", async () => {
+    render(() => <App />);
+    await screen.findByText("Mail for A");
+    expect(clickLink("https://example.com/a", "message-body")).toBe(false);
+    expect(openUrl).toHaveBeenCalledWith("https://example.com/a");
+  });
+
+  it("opens a mailto link as a new email", async () => {
+    render(() => <App />);
+    await screen.findByText("Mail for A");
+    expect(clickLink("mailto:bo@y.com?subject=Hi%20there", "message-body")).toBe(false);
+
+    await waitFor(() => expect(screen.getByPlaceholderText("Recipients")).toHaveValue("bo@y.com"));
+    expect(screen.getByPlaceholderText("Subject")).toHaveValue("Hi there");
+    expect(openUrl).not.toHaveBeenCalled();
+  });
+
+  it("leaves the app's own links to their handlers", async () => {
+    render(() => <App />);
+    await screen.findByText("Mail for A");
+    clickLink("#", undefined, e => e.preventDefault());
+    expect(openUrl).not.toHaveBeenCalled();
+  });
+
+  it("does not follow a relative link in an email", async () => {
+    render(() => <App />);
+    await screen.findByText("Mail for A");
+    expect(clickLink("/unsubscribe", "message-body")).toBe(false);
+    expect(openUrl).not.toHaveBeenCalled();
   });
 });
