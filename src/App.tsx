@@ -262,6 +262,8 @@ function App() {
   } | null>(null);
   let toastTimeoutId: number | undefined;
   let toastHideTimeoutId: number | undefined;
+  // The closed draft the toast's Discard would delete
+  let discardToastDraftKey: string | null = null;
 
   // Undo send state
   const undoableSend = createUndoableSend<PendingSend>({
@@ -1821,13 +1823,23 @@ function App() {
     } else {
       markDraftClosed(key);
       drafts.detach();
-      const discard = { label: "Discard", run: () => { if (accountId) drafts.discard(key, accountId); } };
+      const offerDiscard = (message: string) => {
+        showToast(message, {
+          label: "Discard",
+          run: () => {
+            // A reply opened again since continues this draft
+            if (composing() && !closingCompose() && composeDraftKey === key) return;
+            if (accountId) drafts.discard(key, accountId);
+          },
+        });
+        discardToastDraftKey = key;
+      };
       if (storedHere) {
-        showToast("Draft saved", discard);
+        offerDiscard("Draft saved");
       } else {
         const reopen = reopenComposeAction(key, fields);
         (synced ?? Promise.resolve(false)).then(inGmail => {
-          if (inGmail) showToast("Draft saved in Gmail", discard);
+          if (inGmail) offerDiscard("Draft saved in Gmail");
           else showToast("Couldn't save the draft", reopen);
         });
       }
@@ -1899,6 +1911,7 @@ function App() {
     const saved = init.draftKey || (isNewEmail && prefilled) ? null : restorableDraft(group, isNewEmail);
     composeDraftKey = init.draftKey ?? saved?.key ?? sessionDraftKey(group);
     if (init.draftKey || saved) drafts.load(composeDraftKey);
+    if (composeDraftKey === discardToastDraftKey && toast()?.visible) hideToast();
     const fields = saved?.draft ?? init;
     batch(() => {
       setReplyingToEvent(init.replyEvent ?? null);
@@ -3454,6 +3467,7 @@ function App() {
   }
 
   function showToast(message?: string, action?: { label: string; run: () => void }) {
+    discardToastDraftKey = null;
     clearTimeout(toastTimeoutId);
     // Cancel a pending hide so it can't null out this newer toast
     clearTimeout(toastHideTimeoutId);

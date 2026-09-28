@@ -1563,6 +1563,29 @@ describe("App drafts", () => {
     await waitFor(() => expect(invoke).toHaveBeenCalledWith("save_draft", expect.objectContaining({ draftId: "d7", body: "my saved reply, edited" })));
     expect(storedDrafts("draft_reply_a_t-a")).toEqual([expect.objectContaining({ body: "my saved reply, edited" })]);
   });
+
+  it("does not let the closed reply's Discard delete the draft a reopened reply continues", async () => {
+    handlers.get_thread_details = () => ({ id: "t-a", messages: [fullMessage("m1", "Ana <ana@x.com>")] });
+    handlers.save_draft = () => ({ id: "d7" });
+    handlers.delete_draft = () => null;
+    render(() => <App />);
+    fireEvent.click(await screen.findByText("Mail for A"));
+    await screen.findByText("body m1");
+    fireEvent.keyDown(document, { key: "r" });
+    fireEvent.input(await screen.findByPlaceholderText("Write your reply..."), { target: { value: "half a reply" } });
+    fireEvent.keyDown(screen.getByPlaceholderText("Write your reply..."), { key: "Escape" });
+    await screen.findByRole("button", { name: "Discard" });
+    await new Promise(r => setTimeout(r, 250));
+
+    fireEvent.keyDown(document, { key: "r" });
+    expect(await screen.findByPlaceholderText("Write your reply...")).toHaveValue("half a reply");
+    const discard = screen.queryByRole("button", { name: "Discard" });
+    if (discard) fireEvent.click(discard);
+    await new Promise(r => setTimeout(r, 50));
+
+    expect(invoke).not.toHaveBeenCalledWith("delete_draft", expect.anything());
+    expect(storedDrafts("draft_reply_a_t-a")).toEqual([expect.objectContaining({ body: expect.stringContaining("half a reply") })]);
+  });
 });
 
 describe("App inline reply", () => {
