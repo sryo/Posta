@@ -421,6 +421,12 @@ describe("App calendar", () => {
     await waitFor(() => expect(invoke).toHaveBeenCalledWith("send_email", expect.objectContaining({ to: "bo@y.com" })));
   });
 
+  it("labels calendar cards as calendar cards", async () => {
+    calendarCards();
+    render(() => <App />);
+    expect(await screen.findByRole("region", { name: "Agenda A calendar card" })).toBeInTheDocument();
+  });
+
   it("removes a deleted event from every calendar card showing it", async () => {
     calendarCards();
     cardsByAccount.a = [

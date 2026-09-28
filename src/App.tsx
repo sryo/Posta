@@ -4030,7 +4030,7 @@ function App() {
                         data-id={card.id}
                         data-color={editingCardId() === card.id ? (editCardColor() || undefined) : (card.color || undefined)}
                         role="region"
-                        aria-label={`${card.name} email card`}
+                        aria-label={`${card.name} ${card.card_type === "calendar" ? "calendar" : "email"} card`}
                       >
                         <Show when={editingCardId() === card.id}>
                           <CardForm
