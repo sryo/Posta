@@ -12,6 +12,8 @@ pub enum CacheError {
     Database(#[from] rusqlite::Error),
     #[error("Lock error")]
     Lock,
+    #[error("This card no longer exists. It may have been deleted on another device.")]
+    CardNotFound,
 }
 
 /// Cached thread groups, next page token, and cache time in Unix seconds
@@ -196,10 +198,13 @@ impl CacheDb {
     /// it, and the edited copy may predate a reorder.
     pub fn update_card(&self, card: &Card) -> Result<(), CacheError> {
         let conn = self.conn.lock().map_err(|_| CacheError::Lock)?;
-        conn.execute(
+        let updated = conn.execute(
             "UPDATE cards SET name = ?1, query = ?2, collapsed = ?3, color = ?4, group_by = ?5, card_type = ?6 WHERE id = ?7",
             params![card.name, card.query, card.collapsed as i32, card.color, card.group_by, card.card_type, card.id],
         )?;
+        if updated == 0 {
+            return Err(CacheError::CardNotFound);
+        }
         Ok(())
     }
 
@@ -603,6 +608,15 @@ mod tests {
         let stored = &db.get_cards("a").unwrap()[0];
         assert_eq!(stored.name, "Renamed");
         assert_eq!(stored.position, 4);
+    }
+
+    #[test]
+    fn editing_a_card_deleted_meanwhile_is_an_error() {
+        let db = db();
+        let card = Card::new("a".into(), "One".into(), "q1".into(), 0);
+        let err = db.update_card(&card).unwrap_err();
+        assert!(err.to_string().contains("deleted on another device"), "{}", err);
+        assert!(db.get_cards("a").unwrap().is_empty());
     }
 
     #[test]
