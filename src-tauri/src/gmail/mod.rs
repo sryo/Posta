@@ -13,8 +13,6 @@ const PAGE_SIZE: usize = 20;
 const MAX_BATCH_SIZE: usize = 50; // Gmail allows up to 100, but 50 is safer
 const MAX_INLINE_IMAGE_SIZE: i32 = 100_000; // 100KB max for inline images
 const MAX_INLINE_IMAGES: usize = 3;
-/// Threads of a batch whose attachments are loaded at the same time
-const THREAD_LOAD_CONCURRENCY: usize = 5;
 
 /// Partial-response fields for thread list entries: message headers and the
 /// part tree (with part headers, for Content-ID) three levels deep, without
@@ -350,19 +348,15 @@ impl GmailClient {
             .await
             .map_err(|e| format!("Failed to parse thread: {}", e))?;
 
-        Ok(self.thread_detail_to_thread(detail).await)
+        Ok(thread_summary(detail))
     }
 
-    /// Batch fetch thread details for multiple thread IDs
-    /// This is much more efficient than fetching one at a time
+    /// Thread list entries for `thread_ids`, with the data of their small
+    /// images and calendar invites. Threads and attachments are each fetched
+    /// with batch requests; threads a batch misses are fetched one by one.
     pub async fn batch_get_thread_details(&self, thread_ids: &[String]) -> Result<Vec<Thread>, String> {
-        if thread_ids.is_empty() {
-            return Ok(Vec::new());
-        }
-
         let mut all_threads = Vec::new();
 
-        // Process in chunks of MAX_BATCH_SIZE
         for chunk in thread_ids.chunks(MAX_BATCH_SIZE) {
             let missing: Vec<String> = match self.execute_batch_thread_fetch(chunk).await {
                 Ok(threads) => {
@@ -399,24 +393,67 @@ impl GmailClient {
             }
         }
 
+        self.load_attachment_data(&mut all_threads).await;
         Ok(all_threads)
     }
 
-    /// Execute a single batch request for thread details
+    /// Summaries of the threads a single batch request returns
     async fn execute_batch_thread_fetch(&self, thread_ids: &[String]) -> Result<Vec<Thread>, String> {
-        let boundary = format!("batch_{}", uuid::Uuid::new_v4().to_string().replace('-', ""));
+        let paths: Vec<String> = thread_ids
+            .iter()
+            .map(|id| format!("/gmail/v1/users/me/threads/{}?format=full&fields={}", id, THREAD_SUMMARY_FIELDS))
+            .collect();
+        let bodies = self.execute_batch_get(&paths).await?;
+        Ok(bodies
+            .into_iter()
+            .flatten()
+            .filter_map(|body| {
+                serde_json::from_str::<ThreadDetail>(&body)
+                    .map_err(|e| tracing::warn!("Failed to parse thread from batch: {}", e))
+                    .ok()
+            })
+            .map(thread_summary)
+            .collect())
+    }
 
-        // Build multipart request body
+    /// Fetch the data the list shows with a thread: its first few small images
+    /// and its calendar invite. Failures leave the data out.
+    async fn load_attachment_data(&self, threads: &mut [Thread]) {
+        let fetches = attachment_fetches(threads);
+        let mut data = Vec::with_capacity(fetches.len());
+        for chunk in fetches.chunks(MAX_BATCH_SIZE) {
+            let paths: Vec<String> = chunk
+                .iter()
+                .map(|f| attachment_path(&threads[f.thread].attachments[f.attachment]))
+                .collect();
+            match self.execute_batch_get(&paths).await {
+                Ok(bodies) => data.extend(bodies.into_iter().map(|body| {
+                    #[derive(Deserialize)]
+                    struct AttachmentResponse {
+                        data: String,
+                    }
+                    serde_json::from_str::<AttachmentResponse>(&body?).ok().map(|a| a.data)
+                })),
+                Err(e) => {
+                    tracing::warn!("Attachment batch failed: {}", e);
+                    data.extend(std::iter::repeat_n(None, chunk.len()));
+                }
+            }
+        }
+        apply_attachment_data(threads, &fetches, data);
+    }
+
+    /// Run GET `paths` (at most MAX_BATCH_SIZE) as one batch request. Returns
+    /// each path's JSON body in order, or None where its sub-request failed.
+    async fn execute_batch_get(&self, paths: &[String]) -> Result<Vec<Option<String>>, String> {
+        let boundary = format!("batch_{}", uuid::Uuid::new_v4().simple());
+
         let mut body = String::new();
-
-        for (i, thread_id) in thread_ids.iter().enumerate() {
+        for (i, path) in paths.iter().enumerate() {
             body.push_str(&format!("--{}\r\n", boundary));
             body.push_str("Content-Type: application/http\r\n");
             body.push_str(&format!("Content-ID: <item{}>\r\n\r\n", i));
-            body.push_str(&format!(
-                "GET /gmail/v1/users/me/threads/{}?format=full&fields={} HTTP/1.1\r\n\r\n",
-                thread_id, THREAD_SUMMARY_FIELDS
-            ));
+            body.push_str(&format!("GET {} HTTP/1.1\r\n\r\n", path));
         }
         body.push_str(&format!("--{}--\r\n", boundary));
 
@@ -446,55 +483,16 @@ impl GmailClient {
 
         let resp_body = resp.text().await.map_err(|e| format!("Failed to read response: {}", e))?;
 
-        use futures::StreamExt;
-        let threads = futures::stream::iter(parse_batch_body(&resp_body, &resp_boundary))
-            .map(|detail| self.thread_detail_to_thread(detail))
-            .buffered(THREAD_LOAD_CONCURRENCY)
-            .collect()
-            .await;
-        Ok(threads)
-    }
-
-    async fn thread_detail_to_thread(&self, detail: ThreadDetail) -> Thread {
-        let mut thread = thread_summary(detail);
-        let calendar_attachments: Vec<Attachment> =
-            thread.attachments.iter().filter(|a| a.is_calendar()).cloned().collect();
-        let (_, calendar_event) = futures::join!(
-            self.load_inline_images(&mut thread.attachments),
-            self.load_calendar_event(&calendar_attachments)
-        );
-        thread.calendar_event = calendar_event;
-        thread
-    }
-
-    /// Fetch the data of the first few small images so the list can show them
-    async fn load_inline_images(&self, attachments: &mut [Attachment]) {
-        let images = attachments
-            .iter_mut()
-            .filter(|a| a.mime_type.starts_with("image/") && a.size < MAX_INLINE_IMAGE_SIZE)
-            .take(MAX_INLINE_IMAGES);
-        futures::future::join_all(images.map(|attachment| async move {
-            match self.get_attachment(&attachment.message_id, &attachment.attachment_id).await {
-                Ok(data) => attachment.inline_data = Some(data),
-                Err(e) => tracing::warn!("Failed to fetch attachment {}: {}", attachment.filename, e),
-            }
-        }))
-        .await;
-    }
-
-    /// The event of the first calendar attachment that parses
-    async fn load_calendar_event(&self, attachments: &[Attachment]) -> Option<CalendarEvent> {
-        for attachment in attachments {
-            match self.get_attachment(&attachment.message_id, &attachment.attachment_id).await {
-                Ok(data) => {
-                    if let Some(event) = decode_base64_body(&data).and_then(|ics| parse_ics_content(&ics)) {
-                        return Some(event);
-                    }
+        let mut bodies = vec![None; paths.len()];
+        for response in parse_batch_responses(&resp_body, &resp_boundary) {
+            match response.index {
+                Some(i) if i < bodies.len() && (200..300).contains(&response.status) => {
+                    bodies[i] = Some(response.body.to_string());
                 }
-                Err(e) => tracing::warn!("Failed to fetch calendar attachment: {}", e),
+                _ => tracing::warn!("Batch sub-request failed with status {}", response.status),
             }
         }
-        None
+        Ok(bodies)
     }
 
     pub async fn send_email(&self, message: &OutgoingMessage<'_>) -> Result<(), String> {
@@ -893,24 +891,98 @@ fn batch_boundary(content_type: &str) -> Option<String> {
     })
 }
 
-/// Thread details from a Gmail batch response. Each part wraps an HTTP
-/// response whose JSON body follows the first blank line after the status
-/// line; sub-requests that failed (e.g. 429) carry an error body and are
-/// skipped so the caller can retry them.
-fn parse_batch_body(body: &str, boundary: &str) -> Vec<ThreadDetail> {
+/// One sub-response of a Gmail batch response
+struct BatchResponse<'a> {
+    /// Position of the request in the batch, from its "response-itemN" Content-ID
+    index: Option<usize>,
+    status: u16,
+    body: &'a str,
+}
+
+/// The sub-responses of a batch response body. Each part has its own headers,
+/// then the wrapped HTTP response: a status line, headers and the JSON body.
+fn parse_batch_responses<'a>(body: &'a str, boundary: &str) -> Vec<BatchResponse<'a>> {
     let delimiter = format!("--{}", boundary);
-    body.split(&delimiter)
+    body.split(delimiter.as_str())
         .skip(1)
         .filter_map(|part| {
-            let json_start = part.find("\r\n\r\n{").map(|i| i + 4)
-                .or_else(|| part.find("\n\n{").map(|i| i + 2))?;
-            let json_part = &part[json_start..];
-            let json_str = &json_part[..=json_part.rfind('}')?];
-            serde_json::from_str::<ThreadDetail>(json_str)
-                .map_err(|e| tracing::warn!("Failed to parse thread from batch: {}", e))
-                .ok()
+            // The closing delimiter "--boundary--" leaves a part starting with "--"
+            let part = part.strip_prefix("\r\n").or_else(|| part.strip_prefix('\n'))?;
+            let (part_headers, http) = split_at_blank_line(part)?;
+            let (http_head, body) = split_at_blank_line(http)?;
+            let status = http_head.lines().next()?.split_whitespace().nth(1)?.parse().ok()?;
+            let index = part_headers.lines().find_map(|line| {
+                let (name, value) = line.split_once(':')?;
+                if !name.trim().eq_ignore_ascii_case("Content-ID") {
+                    return None;
+                }
+                value.trim().trim_matches(['<', '>']).rsplit("item").next()?.parse().ok()
+            });
+            Some(BatchResponse { index, status, body: body.trim_end() })
         })
         .collect()
+}
+
+/// `text` split around its first empty line (CRLF or LF line endings)
+fn split_at_blank_line(text: &str) -> Option<(&str, &str)> {
+    let crlf = text.find("\r\n\r\n").map(|i| (i, 4));
+    let lf = text.find("\n\n").map(|i| (i, 2));
+    let (at, len) = match (crlf, lf) {
+        (Some(a), Some(b)) => if a.0 <= b.0 { a } else { b },
+        (a, b) => a.or(b)?,
+    };
+    Some((&text[..at], &text[at + len..]))
+}
+
+/// An attachment of a thread list entry whose data the list shows
+struct AttachmentFetch {
+    thread: usize,
+    attachment: usize,
+}
+
+/// The first few small images of each thread and all its calendar invites
+fn attachment_fetches(threads: &[Thread]) -> Vec<AttachmentFetch> {
+    threads
+        .iter()
+        .enumerate()
+        .flat_map(|(thread, t)| {
+            let images = t
+                .attachments
+                .iter()
+                .enumerate()
+                .filter(|(_, a)| a.mime_type.starts_with("image/") && a.size < MAX_INLINE_IMAGE_SIZE)
+                .take(MAX_INLINE_IMAGES);
+            let invites = t.attachments.iter().enumerate().filter(|(_, a)| a.is_calendar());
+            images
+                .chain(invites)
+                .map(move |(attachment, _)| AttachmentFetch { thread, attachment })
+                .collect::<Vec<_>>()
+        })
+        .collect()
+}
+
+fn attachment_path(attachment: &Attachment) -> String {
+    format!(
+        "/gmail/v1/users/me/messages/{}/attachments/{}",
+        attachment.message_id, attachment.attachment_id
+    )
+}
+
+/// Store fetched attachment data (`data[i]` is that of `fetches[i]`): images
+/// keep theirs for the list, and a thread's event is its first invite that parses
+fn apply_attachment_data(threads: &mut [Thread], fetches: &[AttachmentFetch], data: Vec<Option<String>>) {
+    for (fetch, data) in fetches.iter().zip(data) {
+        let Some(data) = data else { continue };
+        let thread = &mut threads[fetch.thread];
+        let attachment = &mut thread.attachments[fetch.attachment];
+        if attachment.is_calendar() {
+            if thread.calendar_event.is_none() {
+                thread.calendar_event = decode_base64_body(&data).and_then(|ics| parse_ics_content(&ics));
+            }
+        } else {
+            attachment.inline_data = Some(data);
+        }
+    }
 }
 
 fn extract_email_address(from: &str) -> String {
@@ -3073,7 +3145,7 @@ mod tests {
     }
 
     #[test]
-    fn batch_body_parses_crlf_and_lf_parts_and_skips_errors() {
+    fn batch_responses_parse_crlf_and_lf_parts_with_their_status() {
         let body = concat!(
             "--batch_x\r\n",
             "Content-Type: application/http\r\n",
@@ -3092,8 +3164,113 @@ mod tests {
             "{\"error\": {\"code\": 429}}\r\n",
             "--batch_x--\r\n",
         );
-        let ids: Vec<String> = parse_batch_body(body, "batch_x").into_iter().map(|d| d.id).collect();
-        assert_eq!(ids, vec!["t1", "t2"]);
+        let responses: Vec<(u16, &str)> =
+            parse_batch_responses(body, "batch_x").into_iter().map(|r| (r.status, r.body)).collect();
+        assert_eq!(
+            responses,
+            vec![
+                (200, "{\"id\": \"t1\", \"messages\": []}"),
+                (200, "{\"id\": \"t2\"}"),
+                (429, "{\"error\": {\"code\": 429}}"),
+            ]
+        );
+    }
+
+    #[test]
+    fn batch_responses_carry_their_request_index_and_status() {
+        let body = concat!(
+            "--batch_x\r\n",
+            "Content-Type: application/http\r\n",
+            "Content-ID: <response-item1>\r\n\r\n",
+            "HTTP/1.1 200 OK\r\n",
+            "Content-Type: application/json; charset=UTF-8\r\n\r\n",
+            "{\"data\": \"b\"}\r\n",
+            "--batch_x\r\n",
+            "Content-Type: application/http\r\n",
+            "Content-ID: <response-item0>\r\n\r\n",
+            "HTTP/1.1 404 Not Found\r\n\r\n",
+            "{\"error\": {\"code\": 404}}\r\n",
+            "--batch_x\n",
+            "content-id: <response-item2>\n\n",
+            "HTTP/1.1 200 OK\n\n",
+            "{\"data\": \"c\"}\n",
+            "--batch_x--\r\n",
+        );
+        let responses: Vec<(Option<usize>, u16, &str)> = parse_batch_responses(body, "batch_x")
+            .into_iter()
+            .map(|r| (r.index, r.status, r.body))
+            .collect();
+        assert_eq!(
+            responses,
+            vec![
+                (Some(1), 200, "{\"data\": \"b\"}"),
+                (Some(0), 404, "{\"error\": {\"code\": 404}}"),
+                (Some(2), 200, "{\"data\": \"c\"}"),
+            ]
+        );
+    }
+
+    fn listed_attachment(message_id: &str, attachment_id: &str, mime: &str, size: i32) -> Attachment {
+        Attachment {
+            message_id: message_id.to_string(),
+            attachment_id: attachment_id.to_string(),
+            filename: format!("{}.bin", attachment_id),
+            mime_type: mime.to_string(),
+            size,
+            inline_data: None,
+            content_id: None,
+        }
+    }
+
+    #[test]
+    fn list_attachment_data_is_fetched_for_small_images_and_invites_only() {
+        let mut first = thread_at("t1", "2024-01-17T09:00:00Z");
+        first.attachments = vec![
+            listed_attachment("m1", "img1", "image/png", 2_000),
+            listed_attachment("m1", "big", "image/jpeg", 5_000_000),
+            listed_attachment("m1", "pdf", "application/pdf", 2_000),
+            listed_attachment("m1", "img2", "image/gif", 2_000),
+            listed_attachment("m2", "img3", "image/png", 2_000),
+            listed_attachment("m2", "img4", "image/png", 2_000),
+        ];
+        let mut second = thread_at("t2", "2024-01-17T08:00:00Z");
+        second.attachments = vec![
+            listed_attachment("m3", "broken", "text/calendar", 300),
+            listed_attachment("m3", "invite", "application/ics", 300),
+        ];
+        let mut threads = vec![first, second];
+
+        let fetches = attachment_fetches(&threads);
+        let wanted: Vec<&str> = fetches
+            .iter()
+            .map(|f| threads[f.thread].attachments[f.attachment].attachment_id.as_str())
+            .collect();
+        assert_eq!(wanted, vec!["img1", "img2", "img3", "broken", "invite"]);
+        assert_eq!(
+            attachment_path(&threads[0].attachments[0]),
+            "/gmail/v1/users/me/messages/m1/attachments/img1"
+        );
+
+        let ics = concat!(
+            "BEGIN:VCALENDAR\r\nBEGIN:VEVENT\r\n",
+            "DTSTART:20240115T150000Z\r\nSUMMARY:Review\r\n",
+            "END:VEVENT\r\nEND:VCALENDAR\r\n"
+        );
+        let data = vec![
+            Some("aW1nMQ".to_string()),
+            None, // img2's sub-request failed
+            Some("aW1nMw".to_string()),
+            Some(b64url(b"not a calendar")),
+            Some(b64url(ics.as_bytes())),
+        ];
+        apply_attachment_data(&mut threads, &fetches, data);
+
+        let inline: Vec<Option<&str>> =
+            threads[0].attachments.iter().map(|a| a.inline_data.as_deref()).collect();
+        assert_eq!(inline, vec![Some("aW1nMQ"), None, None, None, Some("aW1nMw"), None]);
+        let event = threads[1].calendar_event.as_ref().expect("invite parsed");
+        assert_eq!(event.title, "Review");
+        assert!(threads[0].calendar_event.is_none());
     }
 
     #[test]
