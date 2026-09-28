@@ -224,6 +224,18 @@ describe("createDraftSync", () => {
     expect(drafts.saved()).toBe(true);
   });
 
+  it("doesn't claim the draft is saved when neither Gmail nor local storage took it", async () => {
+    handlers.save_draft = () => { throw new Error("offline"); };
+    const setItem = vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => { throw new Error("QuotaExceededError"); });
+    try {
+      const drafts = sync();
+      await drafts.save("k", "a", fields("one"));
+      expect(drafts.saved()).toBe(false);
+    } finally {
+      setItem.mockRestore();
+    }
+  });
+
   it("restores a saved draft and updates its Gmail draft from then on", async () => {
     localStorage.setItem("k", JSON.stringify({ ...fields("saved"), gmailDraftId: "d5", savedAt: 1 }));
     handlers.save_draft = () => ({ id: "d5" });

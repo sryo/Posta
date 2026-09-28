@@ -119,7 +119,7 @@ export function createDraftSync() {
     });
   }
 
-  async function sync(key: string, accountId: string, draft: Draft, startedIn: number) {
+  async function sync(key: string, accountId: string, draft: Draft, startedIn: number, storedLocally: boolean) {
     if (clearedEpochs.has(startedIn)) return;
     // A compose that let go of its draft (replaced, closed or sent) still
     // syncs its last save, into the Gmail draft recorded on its own key
@@ -165,8 +165,7 @@ export function createDraftSync() {
       flashSaved();
     } catch (e) {
       console.warn("Failed to sync draft to Gmail (offline?):", e);
-      // The local copy was saved
-      if (startedIn === epoch) flashSaved();
+      if (startedIn === epoch && storedLocally) flashSaved();
       // A closed draft that isn't in Gmail's Drafts would be kept where the
       // user can't see it; let the next compose pick it up again
       const stored = detached ? safeGetJSON<Draft | null>(key, null) : null;
@@ -178,18 +177,21 @@ export function createDraftSync() {
 
   // Write the local copy only, synchronously, so it survives a quit that
   // lands before the next Gmail sync
-  function saveLocal(key: string, fields: DraftFields): Draft | null {
+  function writeLocal(key: string, fields: DraftFields): { draft: Draft; stored: boolean } | null {
     if (!hasDraftContent(fields)) return null;
     const draft: Draft = { ...fields, gmailDraftId: gmailDraftId() || undefined, savedAt: Date.now() };
-    safeSetJSON(key, draft);
-    return draft;
+    return { draft, stored: safeSetJSON(key, draft) };
+  }
+
+  function saveLocal(key: string, fields: DraftFields): Draft | null {
+    return writeLocal(key, fields)?.draft ?? null;
   }
 
   function save(key: string, accountId: string, fields: DraftFields): Promise<void> {
-    const draft = saveLocal(key, fields);
-    if (!draft) return queue;
+    const local = writeLocal(key, fields);
+    if (!local) return queue;
     const startedIn = epoch;
-    queue = queue.then(() => sync(key, accountId, draft, startedIn));
+    queue = queue.then(() => sync(key, accountId, local.draft, startedIn, local.stored));
     return queue;
   }
 
