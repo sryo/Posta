@@ -549,15 +549,24 @@ impl GmailClient {
             }
         }
 
+        let thread = self.get_thread_metadata(&thread_reply_metadata_url(thread_id)).await.ok()?;
+        reply_headers_from_thread(&thread, message_id)
+    }
+
+    /// A thread fetched with a thread_metadata_url
+    async fn get_thread_metadata(&self, url: &str) -> Result<FullThread, String> {
         let resp = self
             .client
-            .get(thread_reply_metadata_url(thread_id))
+            .get(url)
             .bearer_auth(&self.access_token)
             .send()
             .await
-            .ok()?;
-        let thread: FullThread = ensure_success(resp).await.ok()?.json().await.ok()?;
-        reply_headers_from_thread(&thread, message_id)
+            .map_err(|e| format!("Request failed: {}", e))?;
+        ensure_success(resp)
+            .await?
+            .json()
+            .await
+            .map_err(|e| format!("Failed to parse thread: {}", e))
     }
 
     /// List all labels for the authenticated user
@@ -1011,13 +1020,29 @@ fn thread_participants(messages: &[MessageDetail]) -> Vec<String> {
     participants
 }
 
-/// A thread's messages with only the headers reply_headers_from_thread needs,
-/// so resolving them (on every draft autosave) does not download bodies
-fn thread_reply_metadata_url(thread_id: &str) -> String {
+/// A thread's messages with only the headers `header_names`, without bodies
+fn thread_metadata_url(thread_id: &str, header_names: &[&str]) -> String {
+    let headers: String = header_names
+        .iter()
+        .map(|name| format!("&metadataHeaders={}", name))
+        .collect();
     format!(
-        "{}/users/me/threads/{}?format=metadata&metadataHeaders=Message-ID&metadataHeaders=References\
-         &fields=id,messages(id,threadId,labelIds,payload/headers)",
-        GMAIL_API_BASE, thread_id
+        "{}/users/me/threads/{}?format=metadata{}&fields=id,messages(id,threadId,labelIds,payload/headers)",
+        GMAIL_API_BASE, thread_id, headers
+    )
+}
+
+/// The headers reply_headers_from_thread needs, so resolving them (on every
+/// draft autosave) does not download bodies
+fn thread_reply_metadata_url(thread_id: &str) -> String {
+    thread_metadata_url(thread_id, &["Message-ID", "References"])
+}
+
+/// The headers that find, vet (check_can_react) and thread a reaction's target
+fn reaction_metadata_url(thread_id: &str) -> String {
+    thread_metadata_url(
+        thread_id,
+        &["Message-ID", "References", "To", "Cc", "List-Id", "List-Unsubscribe", "Precedence"],
     )
 }
 
@@ -2152,7 +2177,7 @@ impl GmailClient {
         from_email: &str,
         to_email: &str,
     ) -> Result<(), String> {
-        let thread = self.get_thread(thread_id).await?;
+        let thread = self.get_thread_metadata(&reaction_metadata_url(thread_id)).await?;
         let wanted_header = ensure_angle_brackets(message_id);
         let target = thread
             .messages
@@ -2777,6 +2802,34 @@ mod tests {
             reply_headers_from_thread(&thread, None),
             Some(("<one@example.com>".to_string(), "<one@example.com>".to_string()))
         );
+    }
+
+    #[test]
+    fn reaction_target_comes_from_a_metadata_fetch_with_eligibility_headers() {
+        let url = reaction_metadata_url("t1");
+        assert!(url.starts_with(&format!("{}/users/me/threads/t1?", GMAIL_API_BASE)));
+        assert!(url.contains("format=metadata"));
+        assert!(!url.contains("format=full"));
+        let requested: Vec<&str> = url
+            .split(['?', '&'])
+            .filter_map(|p| p.strip_prefix("metadataHeaders="))
+            .collect();
+        for name in ["Message-ID", "References", "To", "Cc", "List-Id", "List-Unsubscribe", "Precedence"] {
+            assert!(requested.contains(&name), "missing {}", name);
+        }
+
+        // A mailing-list target is still refused from the trimmed response
+        let response = r#"{
+            "id": "t1",
+            "messages": [
+                {"id": "m1", "threadId": "t1", "labelIds": ["INBOX"],
+                 "payload": {"headers": [{"name": "Message-ID", "value": "<one@example.com>"},
+                                         {"name": "To", "value": "me@example.com"},
+                                         {"name": "List-Id", "value": "<dev.example.com>"}]}}
+            ]
+        }"#;
+        let thread: FullThread = serde_json::from_str(response).expect("metadata thread parses");
+        assert!(check_can_react(&thread.messages[0], "me@example.com").is_err());
     }
 
     fn b64url(s: &[u8]) -> String {
