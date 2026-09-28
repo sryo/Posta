@@ -90,28 +90,23 @@ where
     f(db)
 }
 
-/// Verify that an account exists
-fn verify_account_exists(state: &AppState, account_id: &str) -> Result<(), String> {
-    with_db(state, |db| {
-        let accounts = db.get_accounts().map_err(|e| e.to_string())?;
-        if accounts.iter().any(|a| a.id == account_id) {
-            Ok(())
-        } else {
-            Err("Account not found".to_string())
-        }
+/// A local account, or "Account not found"
+async fn find_account(state: &AppState, account_id: &str) -> Result<Account, String> {
+    let account_id = account_id.to_string();
+    blocking(state, move |state| {
+        with_db(state, |db| {
+            db.get_accounts()
+                .map_err(|e| e.to_string())?
+                .into_iter()
+                .find(|a| a.id == account_id)
+                .ok_or_else(|| "Account not found".to_string())
+        })
     })
+    .await
 }
 
-/// Get email address for an account
-fn get_account_email(state: &AppState, account_id: &str) -> Result<String, String> {
-    with_db(state, |db| {
-        let accounts = db.get_accounts().map_err(|e| e.to_string())?;
-        accounts
-            .into_iter()
-            .find(|a| a.id == account_id)
-            .map(|a| a.email)
-            .ok_or_else(|| "Account not found".to_string())
-    })
+async fn get_account_email(state: &AppState, account_id: &str) -> Result<String, String> {
+    Ok(find_account(state, account_id).await?.email)
 }
 
 /// Deleted cards travel in the iCloud account-mapping map, next to the
@@ -680,31 +675,10 @@ async fn finalize_oauth(
     app_handle: &tauri::AppHandle,
     state: &State<'_, AppState>,
 ) -> Result<Account, String> {
-    // Get user info from Google API
     let user_info = get_user_info(access_token).await?;
-
-    // Reuse the existing account id on re-login so cards keep pointing at it;
-    // only mint a new UUID for genuinely new emails
-    let existing = with_db(state, |db| {
-        db.get_account_by_email(&user_info.email).map_err(|e| e.to_string())
-    })?;
-    let account = match existing {
-        Some(mut account) => {
-            account.picture = user_info.picture;
-            account
-        }
-        None => Account::new(user_info.email, user_info.picture),
-    };
-
-    // Get app data directory for secure storage
     let app_data_dir = get_app_data_dir(app_handle)?;
-
-    // Store refresh token securely
-    auth::store_refresh_token(&account.id, refresh_token, &app_data_dir)
-        .map_err(|e| e.to_string())?;
-
-    // Save account to database
-    with_db(state, |db| db.insert_account(&account).map_err(|e| e.to_string()))?;
+    let refresh_token = refresh_token.to_string();
+    let account = blocking(state, move |state| save_signed_in_account(state, user_info, &refresh_token, &app_data_dir)).await?;
 
     // Cache the fresh access token, replacing any stale entry for this account
     let expiry = Instant::now() + Duration::from_secs(expires_in.unwrap_or(3600));
@@ -714,6 +688,28 @@ async fn finalize_oauth(
         .map_err(|_| "Lock error")?
         .insert(account.id.clone(), (access_token.to_string(), expiry));
 
+    Ok(account)
+}
+
+/// Store the refresh token and the account of a completed sign-in. Signing in
+/// again keeps the account's id, so its cards keep pointing at it.
+fn save_signed_in_account(
+    state: &AppState,
+    user_info: UserInfo,
+    refresh_token: &str,
+    app_data_dir: &std::path::Path,
+) -> Result<Account, String> {
+    let existing = with_db(state, |db| db.get_account_by_email(&user_info.email).map_err(|e| e.to_string()))?;
+    let account = match existing {
+        Some(mut account) => {
+            account.picture = user_info.picture;
+            account
+        }
+        None => Account::new(user_info.email, user_info.picture),
+    };
+
+    auth::store_refresh_token(&account.id, refresh_token, app_data_dir).map_err(|e| e.to_string())?;
+    with_db(state, |db| db.insert_account(&account).map_err(|e| e.to_string()))?;
     Ok(account)
 }
 
@@ -837,27 +833,22 @@ fn next_card_position(cards: &[Card]) -> i32 {
     cards.iter().map(|c| c.position + 1).max().unwrap_or(0)
 }
 
-/// Helper to get account and card from database
-fn get_account_and_card(
-    state: &AppState,
-    account_id: &str,
-    card_id: &str,
-) -> Result<(Account, Card), String> {
-    with_db(state, |db| {
-        let accounts = db.get_accounts().map_err(|e| e.to_string())?;
-        let account = accounts
-            .into_iter()
-            .find(|a| a.id == account_id)
-            .ok_or("Account not found")?;
-
-        let cards = db.get_cards(account_id).map_err(|e| e.to_string())?;
-        let card = cards
-            .into_iter()
-            .find(|c| c.id == card_id)
-            .ok_or("Card not found")?;
-
-        Ok((account, card))
+/// A card of a local account, or "Account not found" / "Card not found"
+async fn find_card(state: &AppState, account_id: &str, card_id: &str) -> Result<Card, String> {
+    let (account_id, card_id) = (account_id.to_string(), card_id.to_string());
+    blocking(state, move |state| {
+        with_db(state, |db| {
+            if !db.get_accounts().map_err(|e| e.to_string())?.iter().any(|a| a.id == account_id) {
+                return Err("Account not found".to_string());
+            }
+            db.get_cards(&account_id)
+                .map_err(|e| e.to_string())?
+                .into_iter()
+                .find(|c| c.id == card_id)
+                .ok_or_else(|| "Card not found".to_string())
+        })
     })
+    .await
 }
 
 /// The cached token, if it is good for at least another minute
@@ -939,7 +930,7 @@ async fn account_access_token(
     app_handle: &tauri::AppHandle,
     account_id: &str,
 ) -> Result<String, String> {
-    verify_account_exists(state, account_id)?;
+    find_account(state, account_id).await?;
     get_access_token(state, app_handle, account_id).await
 }
 
@@ -985,8 +976,8 @@ pub async fn fetch_threads_paginated(
 ) -> Result<SearchResult, String> {
     tracing::info!("fetch_threads_paginated for card: {}, page_token: {:?}", card_id, page_token);
 
-    let (account, card) = get_account_and_card(&state, &account_id, &card_id)?;
-    let access_token = get_access_token(&state, &app_handle, &account.id).await?;
+    let card = find_card(&state, &account_id, &card_id).await?;
+    let access_token = get_access_token(&state, &app_handle, &account_id).await?;
 
     let gmail = GmailClient::new(access_token);
     let result = evict_token_on_auth_error(
@@ -1041,11 +1032,10 @@ async fn sync_threads_incremental_impl(
 ) -> Result<IncrementalSyncResult, String> {
     tracing::info!("sync_threads_incremental for account: {}", account_id);
 
-    let stored_history_id = {
-        let db_guard = state.db.lock().map_err(|_| "Lock error")?;
-        let db = db_guard.as_ref().ok_or("Database not initialized")?;
-        db.get_history_id(account_id).map_err(|e| e.to_string())?
-    };
+    let account = account_id.to_string();
+    let stored_history_id =
+        blocking(state, move |state| with_db(state, |db| db.get_history_id(&account).map_err(|e| e.to_string())))
+            .await?;
 
     let access_token = get_access_token(state, app_handle, account_id).await?;
     let gmail = GmailClient::new(access_token);
@@ -1056,11 +1046,11 @@ async fn sync_threads_incremental_impl(
 
     // Only advanced once the changes are in hand, so a failed sync is
     // retried from the same point
-    {
-        let db_guard = state.db.lock().map_err(|_| "Lock error")?;
-        let db = db_guard.as_ref().ok_or("Database not initialized")?;
-        db.set_history_id(account_id, &result.new_history_id).map_err(|e| e.to_string())?;
-    }
+    let (account, history_id) = (account_id.to_string(), result.new_history_id.clone());
+    blocking(state, move |state| {
+        with_db(state, |db| db.set_history_id(&account, &history_id).map_err(|e| e.to_string()))
+    })
+    .await?;
     Ok(result)
 }
 
@@ -1314,7 +1304,7 @@ pub async fn send_reaction(
     app_handle: tauri::AppHandle,
     state: State<'_, AppState>,
 ) -> Result<(), String> {
-    let from_email = get_account_email(&state, &account_id)?;
+    let from_email = get_account_email(&state, &account_id).await?;
     let access_token = get_access_token(&state, &app_handle, &account_id).await?;
     let gmail = GmailClient::new(access_token);
 
@@ -1744,7 +1734,7 @@ pub async fn rsvp_calendar_event(
         return Err(format!("Invalid status: {}. Must be one of: accepted, tentative, declined", status));
     }
 
-    let user_email = get_account_email(&state, &account_id)?;
+    let user_email = get_account_email(&state, &account_id).await?;
 
     let access_token = get_access_token(&state, &app_handle, &account_id).await?;
     let calendar = crate::calendar::CalendarClient::new(access_token);
@@ -1759,7 +1749,7 @@ pub async fn get_calendar_rsvp_status(
     event_uid: String,
     app_handle: tauri::AppHandle, state: State<'_, AppState>,
 ) -> Result<Option<String>, String> {
-    let user_email = get_account_email(&state, &account_id)?;
+    let user_email = get_account_email(&state, &account_id).await?;
 
     let access_token = get_access_token(&state, &app_handle, &account_id).await?;
     let calendar = crate::calendar::CalendarClient::new(access_token);
@@ -2147,10 +2137,12 @@ pub async fn suggest_replies(
     app_handle: tauri::AppHandle, state: State<'_, AppState>,
 ) -> Result<Vec<String>, String> {
     let app_data_dir = get_app_data_dir(&app_handle)?;
-    let api_key = auth::get_gemini_api_key(&app_data_dir)
-        .ok_or_else(|| "Gemini API key is required for smart replies.".to_string())?;
+    let api_key = blocking(&state, move |_| {
+        auth::get_gemini_api_key(&app_data_dir).ok_or_else(|| "Gemini API key is required for smart replies.".to_string())
+    })
+    .await?;
 
-    let user_email = get_account_email(&state, &account_id)?;
+    let user_email = get_account_email(&state, &account_id).await?;
 
     let access_token = get_access_token(&state, &app_handle, &account_id).await?;
 
@@ -2892,6 +2884,33 @@ mod tests {
         assert!(cache.lock().unwrap().is_empty());
     }
 
+    #[cfg(debug_assertions)]
+    #[test]
+    fn signing_in_again_keeps_the_account_its_cards_and_its_signature() {
+        let dir = scratch_dir();
+        let state = super::AppState::new();
+        *state.db.lock().unwrap() = Some(super::open_database(&dir.join("posta.db")).unwrap());
+        let user = |picture: &str| super::UserInfo { email: "me@x.com".into(), picture: Some(picture.into()) };
+
+        let first = super::save_signed_in_account(&state, user("old.png"), "rt-1", &dir).unwrap();
+        super::with_db(&state, |db| {
+            db.insert_card(&owned_card("inbox", &first.id)).unwrap();
+            db.update_account_signature(&first.id, Some("-- me")).map_err(|e| e.to_string())
+        })
+        .unwrap();
+
+        let again = super::save_signed_in_account(&state, user("new.png"), "rt-2", &dir).unwrap();
+        assert_eq!(again.id, first.id);
+        let accounts = super::with_db(&state, |db| db.get_accounts().map_err(|e| e.to_string())).unwrap();
+        assert_eq!(accounts.len(), 1);
+        assert_eq!(accounts[0].picture.as_deref(), Some("new.png"));
+        assert_eq!(accounts[0].signature.as_deref(), Some("-- me"));
+        let cards = super::with_db(&state, |db| db.get_cards(&first.id).map_err(|e| e.to_string())).unwrap();
+        assert_eq!(ids(&cards), vec!["inbox"]);
+        assert_eq!(crate::auth::get_refresh_token(&first.id, &dir).unwrap(), "rt-2");
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
     fn card_at(position: i32) -> Card {
         Card::new("acct".into(), "c".into(), "q".into(), position)
     }
@@ -2991,6 +3010,38 @@ mod tests {
                 assert!(signature.trim_start().starts_with("pub async fn"), "{}", signature);
             }
         }
+    }
+
+    /// Lines of async fns in `source` that touch the database or secure
+    /// storage outside a `blocking` closure
+    fn blocking_work_on_async_workers(source: &str) -> Vec<String> {
+        const BLOCKING_WORK: &[&str] = &["with_db(", ".db.lock()", "auth::get_", "auth::store_", "auth::delete_"];
+        // Calls that take a closure and run it on the blocking pool
+        const OFFLOADERS: &[&str] = &["blocking(", "refreshed_access_token("];
+        let mut offending = Vec::new();
+        let (mut in_async_fn, mut offloaded) = (false, false);
+        for line in source.lines().take_while(|l| l.trim() != "#[cfg(test)]") {
+            let code = line.trim_start();
+            if ["fn ", "pub fn ", "async fn ", "pub async fn "].iter().any(|p| code.starts_with(p)) {
+                in_async_fn = code.contains("async fn ");
+                offloaded = false;
+            }
+            offloaded |= OFFLOADERS.iter().any(|o| code.contains(o));
+            if in_async_fn && !offloaded && BLOCKING_WORK.iter().any(|w| code.contains(w)) {
+                offending.push(code.to_string());
+            }
+        }
+        offending
+    }
+
+    #[test]
+    fn async_commands_leave_database_and_keychain_work_to_the_blocking_pool() {
+        // A keychain read can wait on a user prompt, and the database lock
+        // is held while multi-megabyte caches are written; either stalls a
+        // tokio worker and every command queued on it
+        assert_eq!(blocking_work_on_async_workers(include_str!("commands.rs")), Vec::<String>::new());
+        let sample = "pub async fn a() {\n    with_db(state, f)?;\n}\nasync fn b() {\n    blocking(&state, |s| with_db(s, f)).await\n}\n";
+        assert_eq!(blocking_work_on_async_workers(sample), vec!["with_db(state, f)?;"]);
     }
 
     #[tokio::test]
