@@ -29,6 +29,9 @@ pub struct AppState {
     pub oauth_cancel: Arc<std::sync::Mutex<Option<Arc<AtomicBool>>>>,
     /// Cached access tokens per account_id; never hold this lock across an await
     pub token_cache: Arc<TokenCache>,
+    /// OAuth credentials known to be in secure storage, so configuring auth
+    /// with them again doesn't rewrite the keychain
+    pub stored_credentials: Arc<std::sync::Mutex<Option<AuthConfig>>>,
 }
 
 type TokenCache = std::sync::Mutex<HashMap<String, (String, Instant)>>;
@@ -41,6 +44,7 @@ impl AppState {
             icloud: Arc::new(std::sync::Mutex::new(ICloudSync::new())),
             oauth_cancel: Arc::new(std::sync::Mutex::new(None)),
             token_cache: Arc::new(std::sync::Mutex::new(HashMap::new())),
+            stored_credentials: Arc::new(std::sync::Mutex::new(None)),
         }
     }
 }
@@ -401,7 +405,7 @@ fn change_cards<T>(
     Ok(result)
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct AuthConfig {
     pub client_id: String,
     pub client_secret: String,
@@ -440,24 +444,40 @@ fn open_database(db_path: &std::path::Path) -> Result<CacheDb, String> {
 pub async fn configure_auth(config: AuthConfig, app_handle: tauri::AppHandle, state: State<'_, AppState>) -> Result<(), String> {
     let app_data_dir = get_app_data_dir(&app_handle)?;
 
-    // Store credentials securely
-    auth::store_oauth_credentials(&config.client_id, &config.client_secret, &app_data_dir)
-        .map_err(|e| e.to_string())?;
+    remember_credentials(&state.stored_credentials, &config, |c| {
+        auth::store_oauth_credentials(&c.client_id, &c.client_secret, &app_data_dir).map_err(|e| e.to_string())
+    })?;
 
     let auth = GmailAuth::new(config.client_id, config.client_secret);
     *state.auth.lock().await = Some(auth);
     Ok(())
 }
 
+/// Store the OAuth credentials unless secure storage is known to hold them
+fn remember_credentials(
+    known: &std::sync::Mutex<Option<AuthConfig>>,
+    config: &AuthConfig,
+    store: impl FnOnce(&AuthConfig) -> Result<(), String>,
+) -> Result<(), String> {
+    let mut known = known.lock().map_err(|_| "Lock error")?;
+    if known.as_ref() == Some(config) {
+        return Ok(());
+    }
+    store(config)?;
+    *known = Some(config.clone());
+    Ok(())
+}
+
 #[tauri::command]
-pub fn get_stored_credentials(app_handle: tauri::AppHandle) -> Result<Option<AuthConfig>, String> {
+pub fn get_stored_credentials(app_handle: tauri::AppHandle, state: State<'_, AppState>) -> Result<Option<AuthConfig>, String> {
     let app_data_dir = get_app_data_dir(&app_handle)?;
 
     match auth::get_oauth_credentials(&app_data_dir) {
-        Ok(creds) => Ok(Some(AuthConfig {
-            client_id: creds.client_id,
-            client_secret: creds.client_secret,
-        })),
+        Ok(creds) => {
+            let config = AuthConfig { client_id: creds.client_id, client_secret: creds.client_secret };
+            *state.stored_credentials.lock().map_err(|_| "Lock error")? = Some(config.clone());
+            Ok(Some(config))
+        }
         Err(auth::AuthError::NoCredentials) => Ok(None),
         Err(e) => Err(e.to_string()),
     }
@@ -2538,6 +2558,22 @@ mod tests {
         assert_eq!(cached.len(), 1);
         assert_eq!(cached_at, three_days_ago);
         std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn credentials_already_in_secure_storage_are_not_written_again() {
+        let known = std::sync::Mutex::new(None);
+        let config = super::AuthConfig { client_id: "id".into(), client_secret: "secret".into() };
+        let mut writes = 0;
+        super::remember_credentials(&known, &config, |_| { writes += 1; Ok(()) }).unwrap();
+        super::remember_credentials(&known, &config, |_| { writes += 1; Ok(()) }).unwrap();
+        assert_eq!(writes, 1);
+
+        let changed = super::AuthConfig { client_secret: "new".into(), ..config.clone() };
+        let failed = super::remember_credentials(&known, &changed, |_| Err("keychain locked".into()));
+        assert!(failed.is_err());
+        super::remember_credentials(&known, &changed, |_| { writes += 1; Ok(()) }).unwrap();
+        assert_eq!(writes, 2, "a failed write is retried");
     }
 
     #[test]
