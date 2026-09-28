@@ -87,6 +87,7 @@ import {
   normalizeBase64Url,
   addReplyPrefix,
   addForwardPrefix,
+  buildForwardBody,
   toDateInputString,
 } from "./utils";
 import "./App.css";
@@ -2131,6 +2132,8 @@ function App() {
     // back to the snippet if the fetch fails
     let from = thread.participants[0] || 'Unknown';
     let date = '';
+    let to = '';
+    let cc = '';
     let body = thread.snippet;
     const account = selectedAccount();
     if (account) {
@@ -2140,13 +2143,15 @@ function App() {
         if (lastMsg) {
           from = findHeader(lastMsg.payload?.headers, 'From') || from;
           date = findHeader(lastMsg.payload?.headers, 'Date') || '';
+          to = findHeader(lastMsg.payload?.headers, 'To') || '';
+          cc = findHeader(lastMsg.payload?.headers, 'Cc') || '';
           body = extractMessageText(lastMsg.payload, lastMsg.snippet);
         }
       } catch (e) {
         console.error("Failed to fetch thread for forward:", e);
       }
     }
-    const quotedBody = `\n\n---------- Forwarded message ----------\nFrom: ${from}\nDate: ${date}\nSubject: ${thread.subject}\n\n${body}`;
+    const quotedBody = buildForwardBody({ from, date, subject: thread.subject, to, cc, body });
 
     startCompose({
       subject: fwdSubject,

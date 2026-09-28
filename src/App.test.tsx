@@ -1607,6 +1607,38 @@ describe("App undo", () => {
   });
 });
 
+describe("App forward from a card", () => {
+  it("names the forwarded message's recipients", async () => {
+    handlers.get_thread_details = () => ({
+      id: "t-a",
+      messages: [fullMessage("m1", "Ana <ana@x.com>", {
+        payload: {
+          mimeType: "text/plain",
+          headers: [
+            { name: "From", value: "Ana <ana@x.com>" },
+            { name: "To", value: "Bo <bo@x.com>" },
+            { name: "Cc", value: "cy@x.com" },
+            { name: "Subject", value: "Hi" },
+          ],
+          body: { size: 0 },
+        },
+      })],
+    });
+    render(() => <App />);
+    await screen.findByText("Mail for A");
+    fireEvent.keyDown(document, { key: "l" });
+    fireEvent.keyDown(document, { key: "f" });
+
+    const body = await waitFor(() => {
+      const textarea = document.querySelector<HTMLTextAreaElement>(".compose-panel textarea");
+      expect(textarea?.value).toContain("Forwarded message");
+      return textarea!.value;
+    });
+    expect(body).toContain("To: Bo <bo@x.com>");
+    expect(body).toContain("Cc: cy@x.com");
+  });
+});
+
 describe("App links", () => {
   function clickLink(href: string, inside?: string, onClick?: (e: MouseEvent) => void) {
     const container = document.createElement("div");
