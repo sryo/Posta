@@ -227,7 +227,7 @@ export const CreateEventForm = (props: {
             value={props.summary}
             onInput={(e) => props.setSummary(e.currentTarget.value)}
             placeholder="Event title"
-            autofocus
+            ref={(el) => setTimeout(() => el.focus(), 0)}
           />
         </div>
 

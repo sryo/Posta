@@ -46,6 +46,14 @@ const firstDayCard = (container: HTMLElement) => container.querySelector(".sched
 const slot = (container: HTMLElement, picker: "start" | "end", time: string) =>
   Array.from(container.querySelectorAll<HTMLElement>(`.time-picker-${picker} > div`)).find(el => el.textContent === time)!;
 
+describe("CreateEventForm focus", () => {
+  it("focuses the title when opened", async () => {
+    const { container } = renderForm({ startDate: "2031-03-03" });
+    await new Promise(r => setTimeout(r, 100));
+    expect(document.activeElement).toBe(container.querySelector('input[placeholder="Event title"]'));
+  });
+});
+
 describe("CreateEventForm date navigation", () => {
   it("jumps to the chosen month even from the 31st", () => {
     const { container } = renderForm({ startDate: "2031-01-31" });
