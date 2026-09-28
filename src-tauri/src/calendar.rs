@@ -98,6 +98,9 @@ pub struct CalendarEvent {
     pub response_status: Option<String>, // accepted, declined, tentative, needsAction
     #[serde(default)]
     pub can_edit: bool, // whether the current user can edit this event
+    /// Set on one occurrence of a repeating event: the series' id
+    #[serde(default)]
+    pub recurring_event_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -165,6 +168,8 @@ struct ApiEvent {
     #[serde(rename = "guestsCanModify")]
     guests_can_modify: Option<bool>,
     locked: Option<bool>,
+    #[serde(rename = "recurringEventId")]
+    recurring_event_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -804,6 +809,7 @@ fn api_event_to_calendar_event(event: ApiEvent, calendar_id: &str, calendar_name
         hangout_link: event.hangout_link,
         response_status,
         can_edit,
+        recurring_event_id: event.recurring_event_id,
     })
 }
 
@@ -1208,6 +1214,26 @@ mod tests {
     }
 
     #[test]
+    fn events_say_which_series_they_belong_to() {
+        // Cards list single instances; an edit PATCHes that one occurrence,
+        // and the form needs to know it's part of a series
+        let ev = api_event(serde_json::json!({
+            "id": "abc_20241223T100000Z",
+            "recurringEventId": "abc",
+            "start": { "dateTime": "2024-12-23T10:00:00Z" },
+        }));
+        let ev = api_event_to_calendar_event(ev, "cal", "", "owner").unwrap();
+        assert_eq!(ev.recurring_event_id.as_deref(), Some("abc"));
+        assert_eq!(serde_json::to_value(&ev).unwrap()["recurring_event_id"], "abc");
+
+        // Events cached before the field existed still load
+        let mut cached = serde_json::to_value(&ev).unwrap();
+        cached.as_object_mut().unwrap().remove("recurring_event_id");
+        let cached: CalendarEvent = serde_json::from_value(cached).unwrap();
+        assert_eq!(cached.recurring_event_id, None);
+    }
+
+    #[test]
     fn event_response_status_and_attendees() {
         let ev = api_event(serde_json::json!({
             "id": "e1",
@@ -1279,6 +1305,7 @@ mod tests {
             hangout_link: None,
             response_status: Some("accepted".into()),
             can_edit: false,
+            recurring_event_id: None,
         }
     }
 
