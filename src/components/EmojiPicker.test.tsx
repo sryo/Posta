@@ -55,4 +55,12 @@ describe("EmojiPicker", () => {
     expect(pageShortcut).toHaveBeenCalledTimes(2);
     document.removeEventListener("keydown", pageShortcut);
   });
+
+  it("says so when no category matches the search", () => {
+    const { container } = render(() => <EmojiPicker onSelect={vi.fn()} onClose={vi.fn()} />);
+    const input = container.querySelector<HTMLInputElement>(".emoji-search")!;
+    fireEvent.input(input, { target: { value: "zzz" } });
+    expect(container.querySelectorAll(".emoji-btn")).toHaveLength(0);
+    expect(container.querySelector(".emoji-empty")?.textContent).toBe("No matching emoji");
+  });
 });

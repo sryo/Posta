@@ -209,15 +209,17 @@ export const EmojiPicker = (props: EmojiPickerProps) => {
 
       <div class="emoji-grid-container">
         <Show when={query()}>
-          <div class="emoji-grid">
-            <For each={filteredEmojis()}>
-              {(emoji) => (
-                <button class="emoji-btn" onClick={() => handleEmojiClick(emoji)}>
-                  {emoji}
-                </button>
-              )}
-            </For>
-          </div>
+          <Show when={filteredEmojis().length > 0} fallback={<div class="emoji-empty">No matching emoji</div>}>
+            <div class="emoji-grid">
+              <For each={filteredEmojis()}>
+                {(emoji) => (
+                  <button class="emoji-btn" onClick={() => handleEmojiClick(emoji)}>
+                    {emoji}
+                  </button>
+                )}
+              </For>
+            </div>
+          </Show>
         </Show>
 
         <Show when={!query()}>
