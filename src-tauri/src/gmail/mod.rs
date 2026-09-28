@@ -757,7 +757,15 @@ impl GmailClient {
         thread_id: Option<&str>,
     ) -> Result<GmailDraft, String> {
         let url = format!("{}/users/me/drafts/{}", self.api_base, draft_id);
-        self.upsert_draft(self.client.put(&url), message, thread_id).await
+        match self.upsert_draft(self.client.put(&url), message, thread_id).await {
+            // Sent or discarded from another device while this compose stayed
+            // open; without a new draft the text would never reach Gmail again
+            Err(e) if e.starts_with("API error 404") => {
+                tracing::info!("Draft {} no longer exists, saving as a new draft", draft_id);
+                self.create_draft(message, thread_id).await
+            }
+            result => result,
+        }
     }
 
     async fn upsert_draft(

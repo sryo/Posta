@@ -369,6 +369,39 @@ async fn a_message_over_gmails_size_limit_is_refused_before_uploading() {
     assert!(server.requests().is_empty());
 }
 
+#[tokio::test]
+async fn saving_over_a_draft_deleted_elsewhere_creates_a_new_one() {
+    let server = StubServer::start(|request| match (request.method.as_str(), request.target.as_str()) {
+        ("PUT", "/gmail/v1/users/me/drafts/gone") => {
+            Reply::Json(404, google_error(404, "NOT_FOUND", "notFound", "Requested entity was not found."))
+        }
+        ("POST", "/gmail/v1/users/me/drafts") => Reply::Json(200, r#"{"id":"fresh","message":{"id":"m2"}}"#.into()),
+        _ => Reply::Json(500, "{}".into()),
+    })
+    .await;
+    let message = OutgoingMessage { to: "bob@example.com", body: "still writing", ..Default::default() };
+
+    let draft = within(server.client().update_draft("gone", &message, None)).await.unwrap();
+
+    assert_eq!(draft.id, "fresh");
+    let requests = server.requests();
+    let created = requests.iter().find(|r| r.method == "POST").expect("draft recreated");
+    let raw = serde_json::from_slice::<serde_json::Value>(&created.body).unwrap()["message"]["raw"]
+        .as_str()
+        .map(|raw| decode_base64_body(raw).unwrap())
+        .unwrap();
+    assert!(raw.contains("still writing"));
+}
+
+#[tokio::test]
+async fn other_draft_save_failures_are_not_retried_as_new_drafts() {
+    let server = StubServer::start(|_| Reply::Json(500, "{}".into())).await;
+    let message = OutgoingMessage { to: "bob@example.com", body: "text", ..Default::default() };
+
+    assert!(within(server.client().update_draft("d1", &message, None)).await.is_err());
+    assert!(server.requests().iter().all(|r| r.method == "PUT"));
+}
+
 fn google_error(code: u16, status: &str, reason: &str, message: &str) -> String {
     serde_json::json!({
         "error": {
