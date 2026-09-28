@@ -670,6 +670,26 @@ describe("App thread view compose", () => {
 });
 
 describe("App batch reply", () => {
+  it("replies at the Reply-To address", async () => {
+    handlers.get_thread_details = () => ({
+      id: "t-a",
+      messages: [{
+        ...fullMessage("m1", "List <noreply@x.com>"),
+        payload: { mimeType: "text/plain", headers: [{ name: "From", value: "List <noreply@x.com>" }, { name: "Reply-To", value: "team@x.com" }, { name: "Subject", value: "News" }], body: { size: 0 } },
+      }],
+    });
+    handlers.reply_to_thread = () => null;
+    render(() => <App />);
+    await screen.findByText("Mail for A");
+    fireEvent.keyDown(document, { key: "l" });
+    fireEvent.keyDown(document, { key: "x" });
+    fireEvent.click(await screen.findByTitle("Batch Reply"));
+    fireEvent.input(await screen.findByPlaceholderText(/^Reply to/), { target: { value: "Thanks" } });
+    fireEvent.click(screen.getByRole("button", { name: /^Send ⌘/ }));
+
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith("reply_to_thread", expect.objectContaining({ to: "team@x.com" })));
+  });
+
   it("ignores a slow batch that finishes after another batch opened", async () => {
     cardsByAccount.a = [card("card-a", "a", "Alpha"), { ...card("card-b", "a", "Beta"), position: 1 }];
     threadsByCard["card-b"] = [thread("t-b", "Mail for B")];

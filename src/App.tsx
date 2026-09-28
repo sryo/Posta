@@ -75,7 +75,6 @@ import {
   truncateMiddle,
   getInitial,
   extractEmail,
-  extractMessageHtml,
   extractMessageText,
   getAvatarColor,
   validateEmailList,
@@ -115,6 +114,7 @@ import { safeGetItem, safeSetItem, safeRemoveItem, safeGetJSON, safeSetJSON } fr
 import { BG_COLORS, GMAIL_OPERATORS, type ActionSettings, type CardColor, type GroupBy } from "./shared/constants";
 import { createUndoableSend } from "./app/undoableSend";
 import { findHeader, lastMessageFromOthers } from "./app/messages";
+import { batchReplyEntry, type BatchReplyThread } from "./app/batchReply";
 import { completeRecipient, currentRecipient, matchContacts, rankContacts } from "./app/contacts";
 import { eventReplyRecipients } from "./app/eventReply";
 import { actionLabel, actionRemovesFromCard, applyThreadAction, labelChangeFor } from "./app/threadActions";
@@ -861,16 +861,6 @@ function App() {
   });
 
   // Batch Reply
-  interface BatchReplyThread {
-    threadId: string;
-    subject: string;
-    snippet: string;
-    body: string; // Full HTML body
-    from: string;
-    date: string;
-    messageId: string;
-    to: string; // Reply-to address
-  }
   const [batchReplyOpen, setBatchReplyOpen] = createSignal(false);
   const [batchReplyCardId, setBatchReplyCardId] = createSignal<string | null>(null);
   const [batchReplyThreads, setBatchReplyThreads] = createSignal<BatchReplyThread[]>([]);
@@ -2488,44 +2478,10 @@ function App() {
     setBatchReplyMessages({});
     setBatchReplySending({});
 
-    const accountEmail = account.email.toLowerCase();
-    const cardThreadList = getCardThreadsFlat(cardId);
-
     try {
-      const results = await Promise.allSettled(
-        threadIds.map(async (threadId) => {
-          const details = await getThreadDetails(account.id, threadId);
-          if (details.messages && details.messages.length > 0) {
-            // If the user replied last, targeting that message would make
-            // the batch reply address the user themselves
-            const replyMsg = lastMessageFromOthers(details.messages, accountEmail)!;
-            const from = findHeader(replyMsg.payload?.headers, 'From') || 'Unknown';
-            const subject = findHeader(replyMsg.payload?.headers, 'Subject') || '(No subject)';
-            const date = replyMsg.internalDate
-              ? new Date(parseInt(replyMsg.internalDate)).toLocaleDateString()
-              : '';
-            let to = extractEmail(from);
-            if (!to || to.toLowerCase() === accountEmail) {
-              // Every message is from the user; fall back to thread participants
-              const cardThread = cardThreadList.find(t => t.gmail_thread_id === threadId);
-              const participant = cardThread?.participants.find(p => extractEmail(p).toLowerCase() !== accountEmail)
-                || cardThread?.participants[0];
-              if (participant) to = extractEmail(participant);
-            }
-            return {
-              threadId,
-              subject,
-              snippet: replyMsg.snippet || '',
-              body: extractMessageHtml(replyMsg.payload, replyMsg.snippet),
-              from,
-              date,
-              messageId: replyMsg.id,
-              to,
-            } as BatchReplyThread;
-          }
-          return null;
-        })
-      );
+      const results = await Promise.allSettled(threadIds.map(async threadId =>
+        batchReplyEntry(threadId, (await getThreadDetails(account.id, threadId)).messages ?? [], account.email)
+      ));
 
       const threads = results
         .filter((r): r is PromiseFulfilledResult<BatchReplyThread | null> => r.status === 'fulfilled')
@@ -4991,7 +4947,7 @@ function App() {
                         showFields={false}
                         body={batchReplyMessages()[thread.threadId] || ''}
                         setBody={(v) => updateBatchReplyMessage(thread.threadId, v)}
-                        placeholder={`Reply to ${extractEmail(thread.from)}...`}
+                        placeholder={`Reply to ${thread.to || extractEmail(thread.from)}...`}
                         attachments={batchReplyAttachments()[thread.threadId] || []}
                         onRemoveAttachment={(i) => removeBatchReplyAttachment(thread.threadId, i)}
                         onFileSelect={(e) => handleBatchReplyFileSelect(thread.threadId, e)}
