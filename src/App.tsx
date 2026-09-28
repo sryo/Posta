@@ -144,8 +144,8 @@ function App() {
   const [calendarDrawerOpen, setCalendarDrawerOpen] = createSignal(false);
   const [availableCalendars, setAvailableCalendars] = createSignal<{ id: string; name: string; is_primary: boolean }[]>([]);
   const [calendarsLoading, setCalendarsLoading] = createSignal(false);
-  // Track last account to detect changes
-  let lastAccountId: string | null = null;
+  // The account availableCalendars was loaded for
+  let calendarsAccountId: string | null = null;
 
   // Label drawer state
   const [labelDrawerOpen, setLabelDrawerOpen] = createSignal(false);
@@ -2359,10 +2359,9 @@ function App() {
     const account = selectedAccount();
     if (!account) return;
 
-    // Clear cache if account changed
-    if (lastAccountId !== account.id) {
+    if (calendarsAccountId !== account.id) {
       setAvailableCalendars([]);
-      lastAccountId = account.id;
+      calendarsAccountId = account.id;
     }
 
     if (availableCalendars().length > 0) return; // Already cached
@@ -2370,6 +2369,7 @@ function App() {
     setCalendarsLoading(true);
     try {
       const calendars = await listCalendars(account.id);
+      if (selectedAccount()?.id !== account.id) return;
       // Sort: primary first, then alphabetically
       const sorted = calendars.sort((a, b) => {
         if (a.is_primary && !b.is_primary) return -1;
@@ -2379,9 +2379,9 @@ function App() {
       setAvailableCalendars(sorted);
     } catch (e) {
       console.error("Failed to fetch calendars:", e);
-      showToast("Failed to load calendars");
+      if (selectedAccount()?.id === account.id) showToast("Failed to load calendars");
     } finally {
-      setCalendarsLoading(false);
+      if (selectedAccount()?.id === account.id) setCalendarsLoading(false);
     }
   }
 

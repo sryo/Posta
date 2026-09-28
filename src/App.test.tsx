@@ -353,6 +353,51 @@ describe("App compose", () => {
   });
 });
 
+const calendarEvent = (id: string, title: string) => ({
+  id, calendar_id: "primary", calendar_name: "Main", title, description: null, location: null,
+  start_time: Date.now() + 3600_000, end_time: Date.now() + 7200_000, all_day: false, status: "confirmed",
+  organizer: "org@x.com", attendees: [], html_link: null, hangout_link: null, response_status: null, can_edit: true,
+});
+
+describe("App calendar", () => {
+  function calendarCards() {
+    const calCard = (id: string, accountId: string, name: string): Card => ({
+      ...card(id, accountId, name), query: "calendar:7d", card_type: "calendar",
+    });
+    handlers.get_accounts = () => [account("a", "a@x.com"), account("b", "b@x.com")];
+    cardsByAccount.a = [calCard("cal-a", "a", "Agenda A")];
+    cardsByAccount.b = [calCard("cal-b", "b", "Agenda B")];
+    handlers.get_cached_card_events = () => null;
+    handlers.save_cached_card_events = () => null;
+    handlers.fetch_calendar_events = ({ accountId }) =>
+      [calendarEvent(`ev-${accountId}`, `Event of ${accountId}`)];
+  }
+
+  it("does not show an account's calendars once another account is selected", async () => {
+    calendarCards();
+    let releaseA!: () => void;
+    const slowA = new Promise<void>(r => { releaseA = r; });
+    handlers.list_calendars = async ({ accountId }) => {
+      if (accountId === "a") await slowA;
+      return [{ id: `cal-${accountId}`, name: `Calendar of ${accountId}`, is_primary: false, access_role: "owner", timezone: null }];
+    };
+    render(() => <App />);
+
+    fireEvent.click(await screen.findByText("Event of a"));
+    fireEvent.click(await screen.findByTitle("Move to calendar"));
+
+    fireEvent.click(screen.getByTitle("a@x.com"));
+    fireEvent.click(await screen.findByText("b@x.com"));
+    fireEvent.click(await screen.findByText("Event of b"));
+    fireEvent.click(await screen.findByTitle("Move to calendar"));
+    expect(await screen.findByText("Calendar of b")).toBeInTheDocument();
+
+    releaseA();
+    await new Promise(r => setTimeout(r, 20));
+    expect(screen.queryByText("Calendar of a")).not.toBeInTheDocument();
+  });
+});
+
 describe("App batch reply", () => {
   it("ignores a slow batch that finishes after another batch opened", async () => {
     cardsByAccount.a = [card("card-a", "a", "Alpha"), { ...card("card-b", "a", "Beta"), position: 1 }];
