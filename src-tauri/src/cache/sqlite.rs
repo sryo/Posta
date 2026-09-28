@@ -248,21 +248,6 @@ impl CacheDb {
         Ok(thread_count + calendar_count)
     }
 
-    /// Clear stale card caches (older than max_age_hours)
-    pub fn clear_stale_card_cache(&self, max_age_hours: i64) -> Result<usize, CacheError> {
-        let conn = self.conn.lock().map_err(|_| CacheError::Lock)?;
-        let cutoff = chrono::Utc::now().timestamp() - (max_age_hours * 3600);
-        let thread_count = conn.execute(
-            "DELETE FROM card_thread_cache WHERE cached_at < ?1",
-            params![cutoff],
-        )?;
-        let calendar_count = conn.execute(
-            "DELETE FROM card_calendar_cache WHERE cached_at < ?1",
-            params![cutoff],
-        )?;
-        Ok(thread_count + calendar_count)
-    }
-
     // Card thread cache operations
 
     pub fn save_card_threads(
@@ -640,23 +625,6 @@ mod tests {
         }
         assert!(db.get_card_threads("c").unwrap().is_none());
         assert!(db.get_card_events("c").unwrap().is_none());
-    }
-
-    #[test]
-    fn stale_card_cache_is_pruned() {
-        let db = db();
-        db.save_card_threads("fresh", &[], None).unwrap();
-        {
-            let conn = db.conn.lock().unwrap();
-            conn.execute(
-                "INSERT INTO card_thread_cache (card_id, thread_data, cached_at) VALUES ('old', '[]', 0)",
-                [],
-            )
-            .unwrap();
-        }
-        assert_eq!(db.clear_stale_card_cache(24).unwrap(), 1);
-        assert!(db.get_card_threads("old").unwrap().is_none());
-        assert!(db.get_card_threads("fresh").unwrap().is_some());
     }
 
     #[test]

@@ -463,7 +463,13 @@ fn init_app_blocking(app_dir: &std::path::Path, state: &AppState) -> Result<(), 
 /// card, is overwritten on every refresh, and goes when the card or its
 /// account is deleted
 fn open_database(db_path: &std::path::Path) -> Result<CacheDb, String> {
-    CacheDb::new(db_path).map_err(|e| format!("Failed to open database: {}", e))
+    let db = CacheDb::new(db_path).map_err(|e| format!("Failed to open database: {}", e))?;
+    match db.clear_orphaned_card_cache() {
+        Ok(0) => {}
+        Ok(n) => tracing::info!("Removed {} cached card results of deleted cards", n),
+        Err(e) => tracing::warn!("Failed to remove caches of deleted cards: {}", e),
+    }
+    Ok(db)
 }
 
 #[tauri::command]
@@ -1746,6 +1752,13 @@ fn plan_pull(
     merge
 }
 
+fn apply_card_merge(db: &CacheDb, merge: &CardMerge) -> Result<(), String> {
+    for id in &merge.delete {
+        tracing::info!("Deleting card {} - deleted on another device", id);
+    }
+    db.apply_card_changes(&merge.insert, &merge.update, &merge.delete).map_err(|e| e.to_string())
+}
+
 /// Pull cards from iCloud and merge with local. Returns true if changes were made.
 #[tauri::command]
 pub async fn pull_from_icloud(state: State<'_, AppState>) -> Result<bool, String> {
@@ -1778,16 +1791,7 @@ fn pull_cards_from_icloud(state: &AppState) -> Result<bool, String> {
         );
 
         let merge = plan_pull(&accounts, &local_cards, backup, &icloud.load_record(), now_ms());
-        for card in &merge.insert {
-            db.insert_card(card).map_err(|e| e.to_string())?;
-        }
-        for card in &merge.update {
-            db.update_card(card).map_err(|e| e.to_string())?;
-        }
-        for id in &merge.delete {
-            tracing::info!("Deleting card {} - deleted on another device", id);
-            db.delete_card(id).map_err(|e| e.to_string())?;
-        }
+        apply_card_merge(db, &merge)?;
         merge
     };
     icloud.save_record(&merge.record);
@@ -2619,12 +2623,40 @@ mod tests {
     }
 
     #[test]
+    fn a_pull_that_cannot_apply_every_change_applies_none() {
+        let dir = scratch_dir();
+        let db = super::open_database(&dir.join("posta.db")).unwrap();
+        let existing = Card::new("a1".into(), "Existing".into(), "q".into(), 0);
+        let deleted_elsewhere = Card::new("a1".into(), "Deleted".into(), "q".into(), 1);
+        db.insert_card(&existing).unwrap();
+        db.insert_card(&deleted_elsewhere).unwrap();
+
+        let fresh = Card::new("a1".into(), "Fresh".into(), "q".into(), 2);
+        let merge = super::CardMerge {
+            insert: vec![fresh.clone(), existing.clone()],
+            delete: vec![deleted_elsewhere.id.clone()],
+            ..Default::default()
+        };
+        assert!(super::apply_card_merge(&db, &merge).is_err());
+
+        let ids: Vec<String> = db.get_cards("a1").unwrap().into_iter().map(|c| c.id).collect();
+        assert_eq!(ids, vec![existing.id, deleted_elsewhere.id]);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
     fn opening_the_database_keeps_an_old_offline_cache() {
         // A user back after a few days, and offline, still sees their cards
         let dir = scratch_dir();
         let path = dir.join("posta.db");
         let groups = vec![crate::models::ThreadGroup { label: "Today".into(), threads: Vec::new() }];
-        super::open_database(&path).unwrap().save_card_threads("c1", &groups, None).unwrap();
+        let card = Card::new("a1".into(), "Inbox".into(), "in:inbox".into(), 0);
+        {
+            let db = super::open_database(&path).unwrap();
+            db.insert_card(&card).unwrap();
+            db.save_card_threads(&card.id, &groups, None).unwrap();
+            db.save_card_threads("deleted-card", &groups, None).unwrap();
+        }
         let three_days_ago = chrono::Utc::now().timestamp() - 3 * 24 * 3600;
         rusqlite::Connection::open(&path)
             .unwrap()
@@ -2632,9 +2664,10 @@ mod tests {
             .unwrap();
 
         let db = super::open_database(&path).unwrap();
-        let (cached, _, cached_at) = db.get_card_threads("c1").unwrap().expect("cache kept");
+        let (cached, _, cached_at) = db.get_card_threads(&card.id).unwrap().expect("cache kept");
         assert_eq!(cached.len(), 1);
         assert_eq!(cached_at, three_days_ago);
+        assert!(db.get_card_threads("deleted-card").unwrap().is_none(), "orphaned cache removed");
         std::fs::remove_dir_all(dir).unwrap();
     }
 

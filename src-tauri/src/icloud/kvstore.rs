@@ -57,8 +57,7 @@ impl ICloudKVStore {
     }
 
     /// Errors unless the value reached the local store: callers record a
-    /// successful write as synced, and a later pull deletes local cards that
-    /// were recorded as synced but are missing from iCloud
+    /// successful write as synced
     fn set_json<T: Serialize + ?Sized>(&self, key: &str, value: &T) -> Result<(), String> {
         let json = serde_json::to_string(value).map_err(|e| e.to_string())?;
         self.backend.set_string(key, &json);
