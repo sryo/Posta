@@ -121,8 +121,9 @@ export const CreateEventForm = (props: {
   // works in the inline edit form, which the app-level shortcut (gated on
   // creatingEvent) never reaches. Double-saves in panel mode are prevented
   // by the saving flag, set synchronously by onSave.
+  const hasTitle = () => props.summary.trim().length > 0;
   const handleKeyDown = (e: KeyboardEvent) => {
-    if (e.key === 'Enter' && (e.metaKey || e.ctrlKey) && !props.saving && props.summary) {
+    if (e.key === 'Enter' && (e.metaKey || e.ctrlKey) && !props.saving && hasTitle()) {
       e.preventDefault();
       props.onSave();
     }
@@ -387,7 +388,7 @@ export const CreateEventForm = (props: {
         <button class="btn" onClick={props.onClose} style={{ "margin-right": "8px" }}>
           Cancel
         </button>
-        <button class="btn btn-primary" disabled={props.saving || !props.summary} onClick={props.onSave} title="Save event (⌘Enter)">
+        <button class="btn btn-primary" disabled={props.saving || !hasTitle()} onClick={props.onSave} title="Save event (⌘Enter)">
           {props.saving ? "Saving..." : <>{props.isEditing ? "Update" : "Save"} <span class="shortcut-hint">⌘↵</span></>}
         </button>
       </div>

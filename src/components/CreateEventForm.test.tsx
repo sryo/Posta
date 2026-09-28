@@ -1,9 +1,9 @@
-import { describe, expect, it, vi } from "vitest";
+import { beforeAll, describe, expect, it, vi } from "vitest";
 import { fireEvent, render } from "@solidjs/testing-library";
 import { createSignal } from "solid-js";
 import { CreateEventForm } from "./CreateEventForm";
 
-function renderForm(init: { startDate: string; endDate?: string; startTime?: string; endTime?: string; isEditing?: boolean; allDay?: boolean; setRecurrence?: (v: string | null) => void }) {
+function renderForm(init: { startDate: string; endDate?: string; startTime?: string; endTime?: string; isEditing?: boolean; allDay?: boolean; setRecurrence?: (v: string | null) => void; summary?: string; onSave?: () => void }) {
   const [startDate, setStartDate] = createSignal(init.startDate);
   const [endDate, setEndDate] = createSignal(init.endDate ?? init.startDate);
   const [startTime, setStartTime] = createSignal(init.startTime ?? "10:00");
@@ -11,7 +11,7 @@ function renderForm(init: { startDate: string; endDate?: string; startTime?: str
   const result = render(() => (
     <CreateEventForm
       onClose={vi.fn()}
-      summary="Trip"
+      summary={init.summary ?? "Trip"}
       setSummary={vi.fn()}
       description=""
       setDescription={vi.fn()}
@@ -32,7 +32,7 @@ function renderForm(init: { startDate: string; endDate?: string; startTime?: str
       recurrence={null}
       setRecurrence={init.setRecurrence ?? vi.fn()}
       saving={false}
-      onSave={vi.fn()}
+      onSave={init.onSave ?? vi.fn()}
       error={null}
       isEditing={init.isEditing}
     />
@@ -45,6 +45,29 @@ const firstDayCard = (container: HTMLElement) => container.querySelector(".sched
 
 const slot = (container: HTMLElement, picker: "start" | "end", time: string) =>
   Array.from(container.querySelectorAll<HTMLElement>(`.time-picker-${picker} > div`)).find(el => el.textContent === time)!;
+
+// jsdom has no layout; the form scrolls the selected times into view on open
+beforeAll(() => {
+  Element.prototype.scrollIntoView = vi.fn();
+});
+
+describe("CreateEventForm saving", () => {
+  it("won't save an event whose title is only spaces", () => {
+    const onSave = vi.fn();
+    const { container } = renderForm({ startDate: "2025-03-10", summary: "   ", onSave });
+    const save = container.querySelector<HTMLButtonElement>(".btn-primary")!;
+    expect(save.disabled).toBe(true);
+    fireEvent.keyDown(container.querySelector("textarea")!, { key: "Enter", metaKey: true });
+    expect(onSave).not.toHaveBeenCalled();
+  });
+
+  it("saves on ⌘Enter once there is a title", () => {
+    const onSave = vi.fn();
+    const { container } = renderForm({ startDate: "2025-03-10", summary: "Trip", onSave });
+    fireEvent.keyDown(container.querySelector("textarea")!, { key: "Enter", metaKey: true });
+    expect(onSave).toHaveBeenCalledTimes(1);
+  });
+});
 
 describe("CreateEventForm focus", () => {
   it("focuses the title when opened", async () => {
