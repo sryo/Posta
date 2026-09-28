@@ -885,6 +885,45 @@ describe("App compose autocomplete", () => {
     expect(to).toHaveValue("ana@x.com, c11@y.com");
   });
 
+  it("suggests only the selected account's contacts after switching accounts", async () => {
+    handlers.get_accounts = () => [account("a", "a@x.com"), account("b", "b@x.com")];
+    let releaseA!: () => void;
+    const slowA = new Promise<void>(r => { releaseA = r; });
+    let releaseB!: () => void;
+    const slowB = new Promise<void>(r => { releaseB = r; });
+    const contact = (name: string) => ({ resource_name: `people/${name}`, display_name: name, email_addresses: [`${name.toLowerCase()}@y.com`], photo_url: null });
+    let callsForA = 0;
+    handlers.fetch_contacts = async ({ accountId }) => {
+      if (accountId === "a") {
+        if (callsForA++ > 0) await slowA;
+        return [contact(callsForA > 1 ? "Late" : "Ann")];
+      }
+      await slowB;
+      return [contact("Bea")];
+    };
+    render(() => <App />);
+    await screen.findByText("Ann");
+
+    fireEvent.click(screen.getByTitle("a@x.com"));
+    fireEvent.click(await screen.findByText("b@x.com"));
+    await screen.findByText("Mail for B");
+    expect(screen.queryByText("Ann")).not.toBeInTheDocument();
+
+    // Back to A and at once to B: A's slow reply lands after B's
+    fireEvent.click(screen.getByTitle("b@x.com"));
+    fireEvent.click(await screen.findByText("a@x.com"));
+    await screen.findByText("Mail for A");
+    fireEvent.click(screen.getByTitle("a@x.com"));
+    fireEvent.click(await screen.findByText("b@x.com"));
+    await screen.findByText("Mail for B");
+    releaseB();
+    await screen.findByText("Bea");
+    releaseA();
+    await new Promise(r => setTimeout(r, 20));
+    expect(screen.queryByText("Late")).not.toBeInTheDocument();
+    expect(screen.getByText("Bea")).toBeInTheDocument();
+  });
+
   it("saves a recipient picked from the suggestions in the draft", async () => {
     handlers.fetch_contacts = () => [{ resource_name: "people/1", display_name: "Zed", email_addresses: ["zed@y.com"], photo_url: null }];
     render(() => <App />);

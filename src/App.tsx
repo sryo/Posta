@@ -997,7 +997,7 @@ function App() {
       window.addEventListener("focus", handleWindowFocus);
     }
     fetchContacts(accountId)
-      .then(contacts => setGoogleContacts(contacts))
+      .then(contacts => { if (selectedAccount()?.id === accountId) setGoogleContacts(contacts); })
       .catch(e => console.warn("Failed to fetch contacts (user may need to re-auth):", e));
   }
 
@@ -2858,6 +2858,7 @@ function App() {
     setQuickReplyCardId(null);
     setQuickReplyEventId(null);
     setActionsWheelOpen(false);
+    setGoogleContacts([]);
     if (creatingEvent() && eventForm().editing) closeEventForm();
   }
 
