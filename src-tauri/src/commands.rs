@@ -28,8 +28,10 @@ pub struct AppState {
     /// Cancel flag for the in-flight OAuth flow, so a retry can release port 8420
     pub oauth_cancel: Arc<std::sync::Mutex<Option<Arc<AtomicBool>>>>,
     /// Cached access tokens per account_id; never hold this lock across an await
-    pub token_cache: Arc<std::sync::Mutex<HashMap<String, (String, Instant)>>>,
+    pub token_cache: Arc<TokenCache>,
 }
+
+type TokenCache = std::sync::Mutex<HashMap<String, (String, Instant)>>;
 
 impl AppState {
     pub fn new() -> Self {
@@ -556,28 +558,35 @@ fn get_account_and_card(
     })
 }
 
+/// The cached token, if it is good for at least another minute
+fn cached_access_token(token_cache: &TokenCache, account_id: &str) -> Result<Option<String>, String> {
+    let cache = token_cache.lock().map_err(|_| "Lock error")?;
+    Ok(cache
+        .get(account_id)
+        .filter(|(_, expiry)| expiry.saturating_duration_since(Instant::now()) > Duration::from_secs(60))
+        .map(|(token, _)| token.clone()))
+}
+
 /// Helper to get a valid access token for an account (refreshing if needed)
 async fn get_access_token(
     state: &AppState,
     app_handle: &tauri::AppHandle,
     account_id: &str,
 ) -> Result<String, String> {
-    // Serve from cache if the token is good for at least another 60s
-    {
-        let cache = state.token_cache.lock().map_err(|_| "Lock error")?;
-        if let Some((token, expiry)) = cache.get(account_id) {
-            if expiry.saturating_duration_since(Instant::now()) > Duration::from_secs(60) {
-                return Ok(token.clone());
-            }
-        }
+    if let Some(token) = cached_access_token(&state.token_cache, account_id)? {
+        return Ok(token);
     }
 
     let app_data_dir = get_app_data_dir(app_handle)?;
     let refresh_token = auth::get_refresh_token(account_id, &app_data_dir).map_err(|e| e.to_string())?;
 
-    // Refresh the access token
     let (access_token, expires_in) = {
         let auth_guard = state.auth.lock().await;
+        // Parallel calls queue on the auth lock; the first one refreshes and
+        // the rest reuse its token instead of each refreshing again
+        if let Some(token) = cached_access_token(&state.token_cache, account_id)? {
+            return Ok(token);
+        }
         let auth = auth_guard
             .as_ref()
             .ok_or("Auth not configured. Please configure auth first.")?;
@@ -1747,7 +1756,7 @@ pub async fn suggest_replies(
 #[cfg(test)]
 mod tests {
     use super::{
-        attachment_filename, attachment_temp_dir, icloud_card_account, icloud_snapshot, is_auth_error,
+        attachment_filename, attachment_temp_dir, cached_access_token, icloud_card_account, icloud_snapshot, is_auth_error,
         is_executable_attachment, mark_quarantined, merge_icloud_cards, next_card_position, reply_context,
         sanitize_attachment_filename, vanished_thread_ids, write_unique_file,
     };
@@ -2106,6 +2115,19 @@ mod tests {
         let kept = context.matches('é').count();
         assert_eq!(kept, 1000);
         assert!(context.contains("é..."));
+    }
+
+    #[test]
+    fn cached_tokens_are_reused_only_with_a_minute_to_spare() {
+        use std::time::{Duration, Instant};
+        let now = Instant::now();
+        let cache = super::TokenCache::new(HashMap::from([
+            ("fresh".to_string(), ("t1".to_string(), now + Duration::from_secs(600))),
+            ("expiring".to_string(), ("t2".to_string(), now + Duration::from_secs(30))),
+        ]));
+        assert_eq!(cached_access_token(&cache, "fresh"), Ok(Some("t1".to_string())));
+        assert_eq!(cached_access_token(&cache, "expiring"), Ok(None));
+        assert_eq!(cached_access_token(&cache, "unknown"), Ok(None));
     }
 
     fn card_at(position: i32) -> Card {
