@@ -1742,6 +1742,8 @@ function App() {
       }
     } catch (e) {
       setError(String(e));
+      // Nothing was created: stay on the picker so the user can retry
+      if (newCards.length === 0) return;
     } finally {
       applyingPreset = false;
     }
