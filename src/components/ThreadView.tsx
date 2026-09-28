@@ -164,23 +164,40 @@ export const ThreadView = (props: {
     const subject = findHeader(headers, 'Subject') || '';
     const rfcMessageId = findHeader(headers, 'Message-ID');
     const isHtml = msg.payload?.mimeType === 'text/html' || !!findContent(msg.payload?.parts, 'text/html');
-    // Reply-To takes precedence over From when present
-    const replyTo = extractEmail(findHeader(headers, 'Reply-To') || from);
     const quotedBody = () => buildQuotedBody(date, from, extractMessageText(msg.payload, msg.snippet));
+    const addresses = (header: string) => splitEmailList(findHeader(headers, header) || '').map(extractEmail);
+
+    // Recipients for a reply: to the sender (Reply-To wins over From), or,
+    // when replying to one's own message, back to its original recipients.
+    // Reply-all adds everyone else once, never the current user.
+    const recipients = (all: boolean) => {
+      const me = props.currentUserEmail?.toLowerCase();
+      const seen = new Set<string>(me ? [me] : []);
+      const unique = (list: string[]) => list.filter(e => {
+        const key = e.toLowerCase();
+        if (!e || seen.has(key)) return false;
+        seen.add(key);
+        return true;
+      });
+      const fromMe = !!me && extractEmail(from).toLowerCase() === me;
+      if (fromMe && !findHeader(headers, 'Reply-To')) {
+        const to = unique(addresses('To'));
+        if (to.length > 0) return { to: to.join(', '), cc: all ? unique(addresses('Cc')).join(', ') : '' };
+      }
+      const replyTo = extractEmail(findHeader(headers, 'Reply-To') || from);
+      seen.add(replyTo.toLowerCase());
+      seen.add(extractEmail(from).toLowerCase());
+      return { to: replyTo, cc: all ? unique([...addresses('To'), ...addresses('Cc')]).join(', ') : '' };
+    };
+
+    const reply = (all: boolean, prefix = '') => {
+      const { to, cc } = recipients(all);
+      props.onReply(to, cc, addReplyPrefix(subject), prefix + quotedBody(), rfcMessageId, isHtml);
+    };
 
     return {
-      reply: (prefix = '') => props.onReply(replyTo, "", addReplyPrefix(subject), prefix + quotedBody(), rfcMessageId, isHtml),
-      replyAll: () => {
-        const excluded = new Set([replyTo.toLowerCase(), extractEmail(from).toLowerCase()]);
-        if (props.currentUserEmail) excluded.add(props.currentUserEmail.toLowerCase());
-        const toHeader = findHeader(headers, 'To') || '';
-        const ccHeader = findHeader(headers, 'Cc') || '';
-        const ccList = splitEmailList([toHeader, ccHeader].filter(Boolean).join(', '))
-          .map(e => extractEmail(e))
-          .filter(e => e && !excluded.has(e.toLowerCase()))
-          .join(', ');
-        props.onReply(replyTo, ccList, addReplyPrefix(subject), quotedBody(), rfcMessageId, isHtml);
-      },
+      reply: (prefix = '') => reply(false, prefix),
+      replyAll: () => reply(true),
       forward: () => {
         const plainBody = extractMessageText(msg.payload, msg.snippet);
         const fwdBody = `\n\n---------- Forwarded message ----------\nFrom: ${from}\nDate: ${date}\nSubject: ${subject}\n\n${plainBody}`;

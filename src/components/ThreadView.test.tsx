@@ -112,6 +112,34 @@ describe("ThreadView keyboard shortcuts", () => {
     expect(cc).toBe("carol@example.com");
   });
 
+  it("replies to the original recipients when the message was sent by the current user", () => {
+    const { props } = renderThread({
+      thread: makeThread([
+        { from: "Me <ME@example.com>", to: "Dan <dan@example.com>, eve@example.com", cc: "fay@example.com, me@example.com", body: "ping" },
+      ]),
+      focusedMessageIndex: 0,
+    });
+    fireEvent.keyDown(document, { key: "r" });
+    fireEvent.keyDown(document, { key: "R", shiftKey: true });
+    const [replyTo, replyCc] = (props.onReply as any).mock.calls[0];
+    expect(replyTo).toBe("dan@example.com, eve@example.com");
+    expect(replyCc).toBe("");
+    const [allTo, allCc] = (props.onReply as any).mock.calls[1];
+    expect(allTo).toBe("dan@example.com, eve@example.com");
+    expect(allCc).toBe("fay@example.com");
+  });
+
+  it("lists each reply-all recipient once", () => {
+    const { props } = renderThread({
+      thread: makeThread([
+        { from: "Bob <bob@example.com>", to: "me@example.com, carol@example.com", cc: "Carol <CAROL@example.com>", body: "x" },
+      ]),
+      focusedMessageIndex: 0,
+    });
+    fireEvent.keyDown(document, { key: "R", shiftKey: true });
+    expect((props.onReply as any).mock.calls[0][1]).toBe("carol@example.com");
+  });
+
   it("forwards the focused message on 'f'", () => {
     const { props } = renderThread({ focusedMessageIndex: 0 });
     fireEvent.keyDown(document, { key: "f" });
