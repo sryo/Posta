@@ -1,4 +1,4 @@
-import { batch, createSignal, onMount, onCleanup, Show, For, Index, createMemo, createEffect, createComputed, on, untrack } from "solid-js";
+import { batch, createSignal, onMount, onCleanup, Show, For, Index, createMemo, createEffect, createComputed, createSelector, mapArray, on, untrack } from "solid-js";
 import { createStore, produce, reconcile, unwrap } from "solid-js/store";
 import DOMPurify from 'dompurify';
 import { DOMPURIFY_CONFIG } from './components/MessageBody';
@@ -583,6 +583,9 @@ function App() {
 
   // Event quick reply
   const [quickReplyEventId, setQuickReplyEventId] = createSignal<string | null>(null);
+  // Rows read these rather than quickReply(), which changes on every keystroke
+  const isQuickReplyThread = createSelector(createMemo(() => quickReply().threadId));
+  const isQuickReplyEvent = createSelector(quickReplyEventId);
 
   // Open quick reply for a thread/event, closing the other target and clearing
   // draft text whenever the target changes so text never leaks between them
@@ -609,6 +612,8 @@ function App() {
   // Event actions wheel
   const [hoveredEvent, setHoveredEvent] = createSignal<string | null>(null);
   const [eventActionsWheelOpen, setEventActionsWheelOpen] = createSignal(false);
+  const isHoveredThread = createSelector(hoveredThread);
+  const isHoveredEvent = createSelector(hoveredEvent);
   let hoverEventActionsTimeout: number | undefined;
 
   function showThreadHoverActions(threadId: string) {
@@ -1201,13 +1206,16 @@ function App() {
     return threads[idx] || null;
   }
 
-  // Check if a specific thread in a card is focused
+  // Selectors notify only the rows whose answer changes, so moving focus or
+  // hovering updates two rows instead of every row of every card
+  const rowKey = (cardId: string, itemId: string) => `${cardId}\n${itemId}`;
+  const focusedThreadKey = createMemo(() => {
+    const thread = getFocusedThread();
+    return thread ? rowKey(focusedCardId()!, thread.gmail_thread_id) : null;
+  });
+  const isFocusedThreadKey = createSelector(focusedThreadKey);
   function isThreadFocused(cardId: string, threadId: string): boolean {
-    if (focusedCardId() !== cardId) return false;
-    const idx = focusedThreadIndex();
-    if (idx < 0) return false;
-    const threads = getCardThreadsFlat(cardId);
-    return threads[idx]?.gmail_thread_id === threadId;
+    return isFocusedThreadKey(rowKey(cardId, threadId));
   }
 
   // Get flattened list of calendar events for a card
@@ -1215,13 +1223,13 @@ function App() {
     return getCalendarEventGroups(cardId).flatMap(g => g.events);
   }
 
-  // Check if a specific event in a card is focused
+  const focusedEventKey = createMemo(() => {
+    const event = getFocusedEvent();
+    return event ? rowKey(focusedCardId()!, event.id) : null;
+  });
+  const isFocusedEventKey = createSelector(focusedEventKey);
   function isEventFocused(cardId: string, eventId: string): boolean {
-    if (focusedCardId() !== cardId) return false;
-    const idx = focusedEventIndex();
-    if (idx < 0) return false;
-    const events = getCardEventsFlat(cardId);
-    return events[idx]?.id === eventId;
+    return isFocusedEventKey(rowKey(cardId, eventId));
   }
 
   // Get the focused event
@@ -3230,7 +3238,25 @@ function App() {
     }
   }
 
+  // Each card's grouped and filtered threads and events, recomputed only
+  // when what they are built from changes. Rows ask for their card's groups
+  // on every focus, hover and keystroke.
+  const cardGroupMemos = createMemo(mapArray(() => cards().map(c => c.id), cardId => ({
+    cardId,
+    threads: createMemo(() => computeDisplayGroups(cardId)),
+    events: createMemo(() => computeCalendarEventGroups(cardId)),
+  })));
+  const cardGroupsById = createMemo(() => new Map(cardGroupMemos().map(m => [m.cardId, m])));
+
   function getDisplayGroups(cardId: string): ThreadGroup[] {
+    return cardGroupsById().get(cardId)?.threads() ?? computeDisplayGroups(cardId);
+  }
+
+  function getCalendarEventGroups(cardId: string): CalendarEventGroup[] {
+    return cardGroupsById().get(cardId)?.events() ?? computeCalendarEventGroups(cardId);
+  }
+
+  function computeDisplayGroups(cardId: string): ThreadGroup[] {
     const threads = isPreviewingQuery(cardId) ? queryPreviewThreads() : cardThreads[cardId];
     if (!threads) return [];
     const groupBy = getGroupByForCard(cardId);
@@ -3252,7 +3278,7 @@ function App() {
     return groups;
   }
 
-  function getCalendarEventGroups(cardId: string): CalendarEventGroup[] {
+  function computeCalendarEventGroups(cardId: string): CalendarEventGroup[] {
     const events = isPreviewingQuery(cardId) ? queryPreviewCalendarEvents() : cardCalendarEvents[cardId];
     if (!events) return [];
     const groupBy = getGroupByForCard(cardId);
@@ -4159,7 +4185,7 @@ function App() {
                                     {(event) => (
                                       <>
                                       <div
-                                        class={`calendar-event-item ${event.response_status === "declined" ? "declined" : ""} ${selectedEvents()[card.id]?.has(event.id) ? "selected" : ""} ${isEventFocused(card.id, event.id) ? "focused" : ""} ${quickReplyEventId() === event.id ? "replying" : ""}`}
+                                        class={`calendar-event-item ${event.response_status === "declined" ? "declined" : ""} ${selectedEvents()[card.id]?.has(event.id) ? "selected" : ""} ${isEventFocused(card.id, event.id) ? "focused" : ""} ${isQuickReplyEvent(event.id) ? "replying" : ""}`}
                                         onClick={() => openEvent(event, card.id)}
                                         onMouseEnter={() => showEventHoverActions(event.id)}
                                         onMouseLeave={hideEventHoverActions}
@@ -4211,7 +4237,7 @@ function App() {
                                               toggleEventSelection(card.id, event.id, e);
                                             }}
                                           />
-                                          <Show when={(hoveredEvent() === event.id && eventActionsWheelOpen()) || isEventFocused(card.id, event.id)}>
+                                          <Show when={(isHoveredEvent(event.id) && eventActionsWheelOpen()) || isEventFocused(card.id, event.id)}>
                                             <ActionsWheel
                                               cardId={card.id}
                                               event={event}
@@ -4240,7 +4266,7 @@ function App() {
                                         </div>
                                       </div>
                                       {/* Event Quick Reply */}
-                                      <Show when={quickReplyEventId() === event.id}>
+                                      <Show when={isQuickReplyEvent(event.id)}>
                                         <div class="quick-reply-box" onClick={(e) => e.stopPropagation()}>
                                           <ComposeTextarea
                                             class="quick-reply-input"
@@ -4291,7 +4317,7 @@ function App() {
                                       return (
                                       <>
                                         <div
-                                          class={`thread ${thread.unread_count > 0 ? 'unread' : ''} ${selectedThreads()[card.id]?.has(thread.gmail_thread_id) ? 'selected' : ''} ${isThreadFocused(card.id, thread.gmail_thread_id) ? 'focused' : ''} ${quickReply().threadId === thread.gmail_thread_id ? 'replying' : ''}`}
+                                          class={`thread ${thread.unread_count > 0 ? 'unread' : ''} ${selectedThreads()[card.id]?.has(thread.gmail_thread_id) ? 'selected' : ''} ${isThreadFocused(card.id, thread.gmail_thread_id) ? 'focused' : ''} ${isQuickReplyThread(thread.gmail_thread_id) ? 'replying' : ''}`}
                                           onMouseEnter={() => showThreadHoverActions(thread.gmail_thread_id)}
                                           onMouseLeave={() => hideThreadHoverActions()}
                                           onClick={() => openThread(thread.gmail_thread_id, card.id)}
@@ -4422,7 +4448,7 @@ function App() {
                                                 toggleThreadSelection(card.id, thread.gmail_thread_id, e);
                                               }}
                                             />
-                                            <Show when={(hoveredThread() === thread.gmail_thread_id && actionsWheelOpen()) || isThreadFocused(card.id, thread.gmail_thread_id)}>
+                                            <Show when={(isHoveredThread(thread.gmail_thread_id) && actionsWheelOpen()) || isThreadFocused(card.id, thread.gmail_thread_id)}>
                                               <ActionsWheel
                                                 cardId={card.id}
                                                 threadId={thread.gmail_thread_id}
@@ -4449,7 +4475,7 @@ function App() {
                                             </Show>
                                           </div>
                                         </div>
-                                        <Show when={quickReply().threadId === thread.gmail_thread_id}>
+                                        <Show when={isQuickReplyThread(thread.gmail_thread_id)}>
                                           <div class="quick-reply-box" onClick={(e) => e.stopPropagation()}>
                                             <ComposeTextarea
                                               class="quick-reply-input"

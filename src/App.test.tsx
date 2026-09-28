@@ -38,6 +38,18 @@ vi.mock("@tauri-apps/api/menu", () => ({
   PredefinedMenuItem: { new: async () => ({}) },
 }));
 
+const regroupThreads = vi.hoisted(() => ({ calls: 0 }));
+vi.mock("./app/grouping", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("./app/grouping")>();
+  return {
+    ...actual,
+    regroupThreads: (...args: Parameters<typeof actual.regroupThreads>) => {
+      regroupThreads.calls++;
+      return actual.regroupThreads(...args);
+    },
+  };
+});
+
 import App from "./App";
 import type { Account, Card, Thread } from "./api/tauri";
 import { ICLOUD_RESTORE_DELAYS_MS } from "./app/icloudRestore";
@@ -2182,6 +2194,26 @@ describe("App thread rows", () => {
     await waitFor(() => expect(screen.queryByText("Mail for A")).not.toBeInTheDocument());
 
     expect(rowOf("Other mail")).toBe(row);
+  });
+
+  it("does not regroup a card to move focus, hover a row or type a quick reply", async () => {
+    threadsByCard["card-a"] = Array.from({ length: 30 }, (_, i) => thread(`t${i}`, `Mail ${i}`));
+    render(() => <App />);
+    await screen.findByText("Mail 29");
+    fireEvent.keyDown(document, { key: "l" });
+    fireEvent.keyDown(document, { key: "j" });
+    fireEvent.keyDown(document, { key: "r" });
+    const input = document.querySelector(".quick-reply-input") as HTMLTextAreaElement;
+    regroupThreads.calls = 0;
+
+    fireEvent.input(input, { target: { value: "T" } });
+    fireEvent.input(input, { target: { value: "Th" } });
+    fireEvent.keyDown(document, { key: "j" });
+    fireEvent.keyDown(document, { key: "k" });
+    fireEvent.mouseEnter(rowOf("Mail 5")!);
+
+    expect(regroupThreads.calls).toBe(0);
+    expect(rowOf("Mail 1")).toHaveClass("focused");
   });
 });
 
