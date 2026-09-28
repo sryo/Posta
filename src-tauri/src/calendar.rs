@@ -18,6 +18,8 @@ const CALENDAR_LIST_CAP: usize = 1000;
 /// Secondary calendars searched at once per invite lookup; several invite
 /// rows look up at the same time, and Google rate-limits per user
 const INVITE_SEARCH_CONCURRENCY: usize = 4;
+/// Calendars one card's search lists events from at once
+const SEARCH_CONCURRENCY: usize = 6;
 const CALENDAR_LIST_TTL: std::time::Duration = std::time::Duration::from_secs(120);
 const REQUEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 
@@ -540,15 +542,15 @@ impl CalendarClient {
         // Determine time range from query using calendar timezone
         let (time_min, time_max) = query.get_time_range(timezone);
 
-        let fetch_futures: Vec<_> = calendars
+        let fetches: Vec<_> = calendars
             .iter()
             .map(|cal| {
                 let url = events_list_url(&self.api_base, &cal.id, time_min, time_max, query);
-                async move { self.get_pages::<ApiEvent>(&url, PER_CALENDAR_EVENT_CAP).await }
+                async move { self.get_pages::<ApiEvent>(&url, PER_CALENDAR_EVENT_CAP).await }.boxed()
             })
             .collect();
-
-        let results = futures::future::join_all(fetch_futures).await;
+        // In calendar order, which the dedupe below relies on
+        let results: Vec<_> = futures::stream::iter(fetches).buffered(SEARCH_CONCURRENCY).collect().await;
 
         let calendar_count = results.len();
         let mut errors: Vec<(String, String)> = Vec::new();
@@ -2252,6 +2254,31 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_search_asks_a_few_calendars_at_a_time() {
+        // Accounts subscribe to dozens of team, room and holiday calendars;
+        // asking all at once for every card runs into Google's rate limits,
+        // and the calendars that get refused silently drop out of the card
+        let calendars: Vec<_> = (0..20).map(|i| calendar_entry(&format!("cal{i:02}"))).collect();
+        let server = StubServer::start_slow(
+            move |_, target| {
+                let items = if target.starts_with("/users/me/calendarList") {
+                    serde_json::json!(calendars)
+                } else {
+                    let id = target.trim_start_matches("/calendars/").split('/').next().unwrap();
+                    serde_json::json!([{ "id": id, "summary": id, "start": { "dateTime": "2024-12-23T10:00:00Z" } }])
+                };
+                (200, serde_json::json!({ "items": items }).to_string())
+            },
+            std::time::Duration::from_millis(30),
+        )
+        .await;
+        let found = server.client().search_events(&CalendarQuery::parse("calendar:week"), 100).await.unwrap();
+        assert_eq!(found.len(), 20);
+        assert!(server.most_in_flight() > 1, "calendars were searched one at a time");
+        assert!(server.most_in_flight() <= SEARCH_CONCURRENCY, "{} requests at once", server.most_in_flight());
+    }
+
+    #[tokio::test]
     async fn an_event_on_several_calendars_is_listed_once_from_the_users_own() {
         // A meeting with a coworker whose calendar the user subscribes to
         // comes back from both calendars with the same id; cards key events
@@ -2480,11 +2507,21 @@ pub(crate) mod stub_server {
         pub(crate) base: String,
         requests: Requests,
         connections: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+        most_in_flight: std::sync::Arc<std::sync::atomic::AtomicUsize>,
     }
 
     impl StubServer {
         pub(crate) async fn start(handler: impl Fn(&str, &str) -> (u16, String) + Send + Sync + 'static) -> Self {
-            Self::start_inner(std::sync::Arc::new(handler), None).await
+            Self::start_inner(std::sync::Arc::new(handler), None, None).await
+        }
+
+        /// Every request is answered only after `hold`, so requests sent
+        /// together overlap and `most_in_flight` sees them
+        pub(crate) async fn start_slow(
+            handler: impl Fn(&str, &str) -> (u16, String) + Send + Sync + 'static,
+            hold: std::time::Duration,
+        ) -> Self {
+            Self::start_inner(std::sync::Arc::new(handler), None, Some(hold)).await
         }
 
         /// Requests whose target satisfies `gated` are held until `n` of them
@@ -2496,17 +2533,20 @@ pub(crate) mod stub_server {
             n: usize,
         ) -> Self {
             let gate: Gate = std::sync::Arc::new((Box::new(gated), tokio::sync::Barrier::new(n)));
-            Self::start_inner(std::sync::Arc::new(handler), Some(gate)).await
+            Self::start_inner(std::sync::Arc::new(handler), Some(gate), None).await
         }
 
-        async fn start_inner(handler: std::sync::Arc<Handler>, gate: Option<Gate>) -> Self {
+        async fn start_inner(handler: std::sync::Arc<Handler>, gate: Option<Gate>, hold: Option<std::time::Duration>) -> Self {
             use tokio::io::{AsyncReadExt, AsyncWriteExt};
             let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
             let base = format!("http://{}", listener.local_addr().unwrap());
             let requests: Requests = Default::default();
             let connections = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+            let in_flight = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+            let most_in_flight = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
             let log = requests.clone();
             let accepted = connections.clone();
+            let peak = most_in_flight.clone();
             tokio::spawn(async move {
                 loop {
                     let Ok((mut socket, _)) = listener.accept().await else { return };
@@ -2514,6 +2554,8 @@ pub(crate) mod stub_server {
                     let handler = handler.clone();
                     let log = log.clone();
                     let gate = gate.clone();
+                    let in_flight = in_flight.clone();
+                    let peak = peak.clone();
                     tokio::spawn(async move {
                         let mut buf = Vec::new();
                         let mut chunk = [0u8; 4096];
@@ -2551,6 +2593,12 @@ pub(crate) mod stub_server {
                                     gate.1.wait().await;
                                 }
                             }
+                            if let Some(hold) = hold {
+                                use std::sync::atomic::Ordering::SeqCst;
+                                peak.fetch_max(in_flight.fetch_add(1, SeqCst) + 1, SeqCst);
+                                tokio::time::sleep(hold).await;
+                                in_flight.fetch_sub(1, SeqCst);
+                            }
                             let (status, response) = handler(&method, &target);
                             log.lock().unwrap().push((method, target, body));
                             let reply = format!(
@@ -2566,7 +2614,7 @@ pub(crate) mod stub_server {
                     });
                 }
             });
-            StubServer { base, requests, connections }
+            StubServer { base, requests, connections, most_in_flight }
         }
 
         pub(crate) fn requests(&self) -> Vec<(String, String, String)> {
@@ -2575,6 +2623,11 @@ pub(crate) mod stub_server {
 
         pub(crate) fn connections(&self) -> usize {
             self.connections.load(std::sync::atomic::Ordering::SeqCst)
+        }
+
+        /// The most requests held at once by a `start_slow` server
+        pub(crate) fn most_in_flight(&self) -> usize {
+            self.most_in_flight.load(std::sync::atomic::Ordering::SeqCst)
         }
     }
 }
