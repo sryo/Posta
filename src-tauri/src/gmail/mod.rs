@@ -604,7 +604,7 @@ impl GmailClient {
             .body(body)
             .send()
             .await
-            .map_err(|e| format!("Batch {}", request_error(e)))?;
+            .map_err(request_error)?;
 
         if !resp.status().is_success() {
             let status = resp.status();
@@ -1005,7 +1005,7 @@ impl GmailClient {
     }
 
     /// Check whether a thread still exists (false when the API returns 404)
-    pub async fn thread_exists(&self, thread_id: &str) -> Result<bool, String> {
+    async fn thread_exists(&self, thread_id: &str) -> Result<bool, String> {
         let url = format!(
             "{}/users/me/threads/{}?format=minimal&fields=id",
             self.api_base, thread_id
