@@ -402,14 +402,29 @@ function App() {
     const separator = await PredefinedMenuItem.new({ item: "Separator" });
     const forwardItem = await MenuItem.new({
       text: "Forward",
-      enabled: !!att.inlineData,
-      action: () => showToast(`Forward ${att.filename} - coming soon`),
+      action: () => forwardAttachment(att),
     });
 
     const menu = await Menu.new({
       items: [openItem, downloadItem, separator, forwardItem],
     });
     await menu.popup();
+  }
+
+  // Attach to the open compose, or start a new email with it
+  async function forwardAttachment(
+    att: { messageId: string; attachmentId: string; filename: string; mimeType: string; inlineData: string | null }
+  ) {
+    const account = selectedAccount();
+    if (!account) return;
+    try {
+      const data = att.inlineData || await downloadAttachmentApi(account.id, att.messageId, att.attachmentId);
+      setComposeAttachments([...composeAttachments(), { filename: att.filename, mime_type: att.mimeType, data }]);
+      setComposing(true);
+    } catch (e) {
+      console.error("Failed to forward attachment:", e);
+      showToast(`Failed to forward ${att.filename}: ${e}`);
+    }
   }
 
   // Gmail search autocomplete

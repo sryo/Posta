@@ -15,22 +15,29 @@ vi.mock("@tauri-apps/api/window", () => ({
 }));
 vi.mock("@tauri-apps/api/event", () => ({ listen: async () => () => {} }));
 vi.mock("@tauri-apps/plugin-opener", () => ({ openUrl: async () => {} }));
-vi.mock("@tauri-apps/api/menu", () => ({ Menu: {}, MenuItem: {}, PredefinedMenuItem: {} }));
+type MenuItemOptions = { text?: string; enabled?: boolean; action?: () => void };
+let lastMenu: MenuItemOptions[] = [];
+vi.mock("@tauri-apps/api/menu", () => ({
+  Menu: { new: async ({ items }: { items: MenuItemOptions[] }) => ({ popup: async () => { lastMenu = items; } }) },
+  MenuItem: { new: async (opts: MenuItemOptions) => opts },
+  PredefinedMenuItem: { new: async () => ({}) },
+}));
 
 import App from "./App";
+import type { Account, Card, Thread } from "./api/tauri";
 
-const account = (id: string, email: string) => ({ id, email, picture: null, signature: null });
-const card = (id: string, accountId: string, name: string) => ({
+const account = (id: string, email: string): Account => ({ id, email, picture: null, signature: null });
+const card = (id: string, accountId: string, name: string): Card => ({
   id, account_id: accountId, name, query: "is:inbox", position: 0, collapsed: false,
   color: null, group_by: "date", card_type: "email",
 });
-const thread = (id: string, subject: string) => ({
+const thread = (id: string, subject: string): Thread => ({
   gmail_thread_id: id, account_id: "", subject, snippet: "", last_message_date: 0,
   unread_count: 0, labels: [], participants: [], has_attachment: false, attachments: [], calendar_event: null,
 });
 
-const cardsByAccount: Record<string, ReturnType<typeof card>[]> = {};
-const threadsByCard: Record<string, ReturnType<typeof thread>[]> = {};
+const cardsByAccount: Record<string, Card[]> = {};
+const threadsByCard: Record<string, Thread[]> = {};
 
 beforeEach(() => {
   localStorage.clear();
@@ -77,6 +84,34 @@ describe("App background sync", () => {
     window.dispatchEvent(new Event("focus"));
 
     await waitFor(() => expect(screen.queryByText("Mail for A")).not.toBeInTheDocument());
+  });
+});
+
+describe("App attachments", () => {
+  it("forwards an attachment from its context menu in a new email", async () => {
+    threadsByCard["card-a"] = [{
+      ...thread("t-a", "Mail for A"),
+      has_attachment: true,
+      attachments: [{
+        message_id: "m1", attachment_id: "att1", filename: "report.pdf",
+        mime_type: "application/pdf", size: 10, inline_data: null, content_id: null,
+      }],
+    }];
+    handlers.download_attachment = ({ attachmentId }) => (attachmentId === "att1" ? "cGRm" : null);
+    render(() => <App />);
+
+    fireEvent.contextMenu(await screen.findByTitle("report.pdf (10 B)"));
+    await waitFor(() => expect(lastMenu.some(i => i.text === "Forward")).toBe(true));
+    const forward = lastMenu.find(i => i.text === "Forward")!;
+    expect(forward.enabled).not.toBe(false);
+    forward.action!();
+
+    const compose = await waitFor(() => {
+      const panel = document.querySelector(".compose-panel");
+      expect(panel).not.toBeNull();
+      return panel as HTMLElement;
+    });
+    await waitFor(() => expect(compose).toHaveTextContent("report.pdf"));
   });
 });
 
