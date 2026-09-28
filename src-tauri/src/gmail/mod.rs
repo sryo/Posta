@@ -1324,74 +1324,116 @@ fn ics_property_matches(line: &str, name: &str) -> bool {
         && matches!(line.as_bytes().get(name.len()), Some(b':') | Some(b';'))
 }
 
-/// Extract a property value from an ICS block by name
-fn get_ics_property(block: &str, name: &str) -> Option<String> {
-    get_ics_property_with_params(block, name).map(|(_, value)| value)
-}
-
-/// Extract a property's parameters and value from an ICS block by name.
-/// For "DTSTART;TZID=America/New_York:20240115T100000" returns
-/// ("TZID=America/New_York", "20240115T100000"); params are empty when absent.
-fn get_ics_property_with_params(block: &str, name: &str) -> Option<(String, String)> {
-    for line in block.lines() {
-        let line = line.trim();
-        if ics_property_matches(line, name) {
-            if let Some(colon_pos) = line.find(':') {
-                let params = line[name.len()..colon_pos]
-                    .trim_start_matches(';')
-                    .to_string();
-                return Some((params, line[colon_pos + 1..].to_string()));
-            }
+/// Join RFC 5545 folded lines (a CRLF followed by a space or tab continues the
+/// previous line) and return the logical content lines
+fn unfold_ics_lines(ics_data: &str) -> Vec<String> {
+    let mut lines: Vec<String> = Vec::new();
+    for raw in ics_data.split('\n') {
+        let raw = raw.strip_suffix('\r').unwrap_or(raw);
+        match (raw.strip_prefix([' ', '\t']), lines.last_mut()) {
+            (Some(continuation), Some(last)) => last.push_str(continuation),
+            _ => lines.push(raw.to_string()),
         }
     }
-    None
+    lines
+}
+
+/// Find property `name` among `lines` and return its (parameters, value).
+/// For "DTSTART;TZID=America/New_York:20240115T100000" that is
+/// ("TZID=America/New_York", "20240115T100000"); parameters are empty when absent.
+fn find_ics_property(lines: &[&str], name: &str) -> Option<(String, String)> {
+    lines.iter().find_map(|line| {
+        if !ics_property_matches(line, name) {
+            return None;
+        }
+        // Parameter values may be quoted and contain ':' (e.g. CN="Doe: Jane")
+        let mut in_quotes = false;
+        let colon_pos = line.char_indices().find_map(|(i, c)| match c {
+            '"' => {
+                in_quotes = !in_quotes;
+                None
+            }
+            ':' if !in_quotes => Some(i),
+            _ => None,
+        })?;
+        let params = line[name.len()..colon_pos].trim_start_matches(';').to_string();
+        Some((params, line[colon_pos + 1..].to_string()))
+    })
+}
+
+fn find_ics_value(lines: &[&str], name: &str) -> Option<String> {
+    find_ics_property(lines, name).map(|(_, value)| value)
+}
+
+/// Decode RFC 5545 TEXT escapes (\n, \, \; \\)
+fn unescape_ics_text(value: &str) -> String {
+    let mut out = String::with_capacity(value.len());
+    let mut chars = value.chars();
+    while let Some(c) = chars.next() {
+        if c != '\\' {
+            out.push(c);
+            continue;
+        }
+        match chars.next() {
+            Some('n') | Some('N') => out.push('\n'),
+            Some(other) => out.push(other),
+            None => out.push('\\'),
+        }
+    }
+    out
+}
+
+fn strip_mailto(value: &str) -> String {
+    match value.get(..7) {
+        Some(prefix) if prefix.eq_ignore_ascii_case("mailto:") => value[7..].to_string(),
+        _ => value.to_string(),
+    }
 }
 
 /// Parse ICS calendar data and extract the first event
-/// Uses simple text parsing since the icalendar crate has a complex API
 fn parse_ics_content(ics_data: &str) -> Option<CalendarEvent> {
-    // Check if this is a valid calendar
-    if !ics_data.contains("BEGIN:VCALENDAR") || !ics_data.contains("BEGIN:VEVENT") {
-        return None;
+    let unfolded = unfold_ics_lines(ics_data);
+    let lines: Vec<&str> = unfolded.iter().map(|l| l.trim()).collect();
+
+    let event_start = lines.iter().position(|l| *l == "BEGIN:VEVENT")?;
+    let event_len = lines[event_start..].iter().position(|l| *l == "END:VEVENT")?;
+
+    // Properties of the event itself, excluding nested components such as
+    // VALARM whose DESCRIPTION would otherwise be taken for the event's
+    let mut event_lines = Vec::new();
+    let mut depth = 0usize;
+    for line in &lines[event_start + 1..event_start + event_len] {
+        if line.starts_with("BEGIN:") {
+            depth += 1;
+        } else if line.starts_with("END:") {
+            depth = depth.saturating_sub(1);
+        } else if depth == 0 {
+            event_lines.push(*line);
+        }
     }
 
-    // Get METHOD from calendar level
-    let method = get_ics_property(ics_data, "METHOD");
+    let method = find_ics_value(&lines[..event_start], "METHOD");
+    let text = |name: &str| find_ics_value(&event_lines, name).map(|v| unescape_ics_text(&v));
 
-    // Extract VEVENT block
-    let event_start = ics_data.find("BEGIN:VEVENT")?;
-    let event_end = ics_data.find("END:VEVENT")?;
-    let event_block = &ics_data[event_start..event_end];
+    let title = text("SUMMARY").unwrap_or_else(|| "(No title)".to_string());
+    let uid = find_ics_value(&event_lines, "UID");
+    let location = text("LOCATION");
+    let description = text("DESCRIPTION");
+    let status = find_ics_value(&event_lines, "STATUS");
 
-    let title = get_ics_property(event_block, "SUMMARY").unwrap_or_else(|| "(No title)".to_string());
-    let uid = get_ics_property(event_block, "UID");
-    let location = get_ics_property(event_block, "LOCATION");
-    let description = get_ics_property(event_block, "DESCRIPTION");
-    let status = get_ics_property(event_block, "STATUS");
-
-    // Parse DTSTART
-    let (dtstart_params, dtstart) = get_ics_property_with_params(event_block, "DTSTART")?;
+    let (dtstart_params, dtstart) = find_ics_property(&event_lines, "DTSTART")?;
     let (start_time, all_day) = parse_ics_datetime(&dtstart, &dtstart_params)?;
 
-    // Parse DTEND (optional)
-    let end_time = get_ics_property_with_params(event_block, "DTEND")
+    let end_time = find_ics_property(&event_lines, "DTEND")
         .and_then(|(params, s)| parse_ics_datetime(&s, &params))
         .map(|(ts, _)| ts);
 
-    // Parse ORGANIZER (remove mailto: prefix)
-    let organizer = get_ics_property(event_block, "ORGANIZER").map(|s| {
-        s.strip_prefix("mailto:").unwrap_or(&s).to_string()
-    });
+    let organizer = find_ics_value(&event_lines, "ORGANIZER").map(|s| strip_mailto(&s));
 
-    // Parse ATTENDEE lines
-    let attendees: Vec<String> = event_block
-        .lines()
-        .filter(|line| line.trim().starts_with("ATTENDEE"))
-        .filter_map(|line| {
-            line.find(':').map(|pos| {
-                line[pos + 1..].strip_prefix("mailto:").unwrap_or(&line[pos + 1..]).to_string()
-            })
-        })
+    let attendees: Vec<String> = event_lines
+        .iter()
+        .filter_map(|line| find_ics_value(&[*line], "ATTENDEE"))
+        .map(|value| strip_mailto(&value))
         .collect();
 
     Some(CalendarEvent {
@@ -2163,5 +2205,57 @@ mod tests {
         assert_eq!(parse_ics_datetime("202é115", ""), None);
         assert_eq!(parse_ics_datetime("20240115T1é0000", ""), None);
         assert_eq!(parse_ics_datetime("é0240115T100000Z", ""), None);
+    }
+
+    const FOLDED_INVITE: &str = concat!(
+        "BEGIN:VCALENDAR\r\n",
+        "METHOD:REQUEST\r\n",
+        "BEGIN:VEVENT\r\n",
+        "DTSTART:20240115T150000Z\r\n",
+        "DTEND:20240115T160000Z\r\n",
+        "DTSTAMP:20240110T120000Z\r\n",
+        "ORGANIZER;CN=\"Doe: Jane\":MAILTO:jane@example.com\r\n",
+        "UID:abc123@google.com\r\n",
+        "ATTENDEE;CUTYPE=INDIVIDUAL;ROLE=REQ-PARTICIPANT;PARTSTAT=NEEDS-ACTION;RSVP=\r\n",
+        " TRUE;CN=bob@example.com;X-NUM-GUESTS=0:mailto:bob@example.com\r\n",
+        "ATTENDEE;CN=carol@example.com:mailto:carol@example.com\r\n",
+        "SUMMARY:Quarterly planning\\, budget and a very long title that the server fo\r\n",
+        " lded\r\n",
+        "LOCATION:Room 1\\; Floor 2\r\n",
+        "STATUS:CONFIRMED\r\n",
+        "BEGIN:VALARM\r\n",
+        "ACTION:DISPLAY\r\n",
+        "DESCRIPTION:This is an event reminder\r\n",
+        "TRIGGER:-P0DT0H30M0S\r\n",
+        "END:VALARM\r\n",
+        "END:VEVENT\r\n",
+        "END:VCALENDAR\r\n",
+    );
+
+    #[test]
+    fn parse_ics_unfolds_long_lines_and_unescapes_text() {
+        let event = parse_ics_content(FOLDED_INVITE).expect("invite parses");
+        assert_eq!(
+            event.title,
+            "Quarterly planning, budget and a very long title that the server folded"
+        );
+        assert_eq!(event.location.as_deref(), Some("Room 1; Floor 2"));
+        assert_eq!(event.method.as_deref(), Some("REQUEST"));
+        assert_eq!(event.uid.as_deref(), Some("abc123@google.com"));
+    }
+
+    #[test]
+    fn parse_ics_reads_folded_attendees_and_quoted_params() {
+        let event = parse_ics_content(FOLDED_INVITE).expect("invite parses");
+        assert_eq!(event.attendees, vec!["bob@example.com", "carol@example.com"]);
+        assert_eq!(event.organizer.as_deref(), Some("jane@example.com"));
+    }
+
+    #[test]
+    fn parse_ics_ignores_alarm_description() {
+        let event = parse_ics_content(FOLDED_INVITE).expect("invite parses");
+        assert_eq!(event.description, None);
+        assert_eq!(event.start_time, 1705330800000);
+        assert_eq!(event.end_time, Some(1705334400000));
     }
 }
