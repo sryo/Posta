@@ -296,7 +296,10 @@ fn store_secret(
     }
 
     tracing::warn!("Keychain storage failed for {}, using file fallback", what);
-    write_secret_file(path, secret, what)
+    write_secret_file(path, secret, what)?;
+    // An older keychain copy would otherwise be read instead of the file
+    keychain.delete(key);
+    Ok(())
 }
 
 /// The keychain copy if `valid`, else the fallback file's, which moves into
@@ -483,6 +486,18 @@ mod tests {
         store_secret(&keychain, "k", "new", &path, "token").unwrap();
         assert_eq!(keychain.get("k").as_deref(), Some("new"));
         assert!(!path.exists());
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn secret_written_to_the_file_is_not_shadowed_by_an_old_keychain_copy() {
+        let dir = temp_dir("stale");
+        let path = dir.join("secret");
+        let keychain = FakeKeychain::new(false, &[("k", "old")]);
+
+        store_secret(&keychain, "k", "new", &path, "token").unwrap();
+
+        assert_eq!(load_secret(&keychain, "k", &path, |s| !s.is_empty()).as_deref(), Some("new"));
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
