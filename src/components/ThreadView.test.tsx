@@ -4,10 +4,12 @@ import { fireEvent, render } from "@solidjs/testing-library";
 import { ThreadView } from "./ThreadView";
 import type { FullThread } from "../api/tauri";
 
+const smartRepliesProps = vi.hoisted(() => ({ last: null as any }));
 vi.mock("./SmartReplies", () => ({
-  SmartReplies: (props: { onSelect: (text: string) => void }) => (
-    <button class="reply-chip" onClick={() => props.onSelect("Sounds good")}>Sounds good</button>
-  ),
+  SmartReplies: (props: { onSelect: (text: string) => void }) => {
+    smartRepliesProps.last = props;
+    return <button class="reply-chip" onClick={() => props.onSelect("Sounds good")}>Sounds good</button>;
+  },
 }));
 
 const b64 = (s: string) =>
@@ -328,6 +330,24 @@ describe("ThreadView smart replies", () => {
     expect(body.startsWith("Sounds good")).toBe(true);
     expect(body).toContain("> Lunch at noon?");
     expect(messageId).toBe("<msg0@example.com>");
+  });
+
+  it("tells suggestions which message they answer and whether a key is saved", () => {
+    const [thread, setThread] = createSignal(makeThread([{ from: "Alice <alice@example.com>", body: "one" }]));
+    render(() => (
+      <ThreadView
+        thread={thread()} loading={false} error={null} card={null} focusColor={null} onClose={vi.fn()}
+        focusedMessageIndex={0} onFocusChange={vi.fn()} onOpenAttachment={vi.fn()} onDownloadAttachment={vi.fn()}
+        onShowAttachmentMenu={vi.fn()} onReply={vi.fn()} onForward={vi.fn()} onAction={vi.fn()} onOpenLabels={vi.fn()}
+        accountId="acc" isStarred={false} isRead={true} isImportant={false} isInInbox={true} labelCount={0} inlineCompose={null}
+        geminiKeySaved={true}
+      />
+    ));
+    const props = smartRepliesProps.last;
+    expect(props.keySaved).toBe(true);
+    expect(props.lastMessageId).toBe("m0");
+    setThread(makeThread([{ from: "Alice <alice@example.com>", body: "one" }, { from: "Bob <bob@example.com>", body: "two" }]));
+    expect(props.lastMessageId).toBe("m1");
   });
 });
 

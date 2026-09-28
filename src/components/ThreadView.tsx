@@ -81,6 +81,8 @@ export const ThreadView = (props: {
   // CID attachment data fetched on-demand (cid -> base64 data)
   cidAttachmentData?: Record<string, string>,
   onError?: (message: string) => void,
+  // Whether a Gemini key is saved; smart replies ask the keychain when unknown
+  geminiKeySaved?: boolean,
 }) => {
   let messageRefs: (HTMLDivElement | undefined)[] = [];
   let contentRef: HTMLDivElement | undefined;
@@ -644,6 +646,8 @@ export const ThreadView = (props: {
           <SmartReplies
             accountId={props.accountId}
             threadId={props.thread!.id}
+            lastMessageId={props.thread!.messages[props.thread!.messages.length - 1]?.id}
+            keySaved={props.geminiKeySaved}
             onSelect={(suggestion) => {
               const target = lastMessageFromOthers(props.thread!.messages, props.currentUserEmail ?? '');
               if (target) messageActions(target).reply(suggestion);

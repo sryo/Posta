@@ -1,9 +1,14 @@
-import { createSignal, onMount, Show, For } from "solid-js";
+import { createSignal, createEffect, on, onMount, Show, For } from "solid-js";
 import { hasGeminiApiKey, suggestReplies } from "../api/tauri";
 
 interface SmartRepliesProps {
     accountId: string;
     threadId: string;
+    // Suggestions answer this message; a new one arriving asks again
+    lastMessageId?: string;
+    // Whether a Gemini key is saved, when the caller already knows; otherwise
+    // the keychain is asked on mount
+    keySaved?: boolean;
     onSelect: (text: string) => void;
 }
 
@@ -34,30 +39,43 @@ export const SmartReplies = (props: SmartRepliesProps) => {
 
     const [enabled, setEnabled] = createSignal(false);
 
+    let request = 0;
     const fetchSuggestions = async () => {
         if (!props.threadId || !props.accountId) return;
 
+        const current = ++request;
         setLoading(true);
         setError(null);
+        setSuggestions([]);
         try {
             const results = await suggestReplies(props.accountId, props.threadId);
-            setSuggestions(results);
+            if (current === request) setSuggestions(results);
         } catch (e: any) {
-            setError(typeof e === 'string' ? e : e?.message || String(e));
+            if (current === request) setError(typeof e === 'string' ? e : e?.message || String(e));
         } finally {
-            setLoading(false);
+            if (current === request) setLoading(false);
         }
     };
 
     onMount(async () => {
-        try {
-            if (!(await hasGeminiApiKey())) return;
-        } catch {
+        if (props.keySaved === undefined) {
+            try {
+                if (!(await hasGeminiApiKey())) return;
+            } catch {
+                return;
+            }
+        } else if (!props.keySaved) {
             return;
         }
         setEnabled(true);
         fetchSuggestions();
     });
+
+    createEffect(on(
+        () => [props.threadId, props.lastMessageId] as const,
+        () => { if (enabled()) fetchSuggestions(); },
+        { defer: true },
+    ));
 
     // Gate in JSX rather than an early return: a top-level `return null`
     // freezes this instance as null forever, while <Show> re-evaluates
