@@ -1,6 +1,5 @@
 import { describe, it, expect, vi } from "vitest";
-
-type Rule = { selectors: string[]; declarations: [string, string][] };
+import { parseRules, selectorClasses, unusedKeyframes } from "./test/css";
 
 const { readFileSync } = await vi.importActual<{
   readFileSync(path: string, encoding: "utf8"): string;
@@ -12,51 +11,12 @@ const srcDir = decodeURIComponent(import.meta.url.replace(/^file:\/\//, "").repl
 const css = readFileSync(srcDir + "App.css", "utf8").replace(/\/\*[\s\S]*?\*\//g, "");
 
 const sources = Object.entries(
-  import.meta.glob(["./**/*.{ts,tsx}", "!./**/*.test.{ts,tsx}"], {
+  import.meta.glob(["./**/*.{ts,tsx}", "!./**/*.test.{ts,tsx}", "!./test/**"], {
     query: "?raw",
     import: "default",
     eager: true,
   }) as Record<string, string>,
 );
-
-// Flattens nested at-rules (@media, @supports) into their inner style rules;
-// @keyframes blocks are skipped since their "selectors" are percentages.
-function parseRules(text: string): Rule[] {
-  const rules: Rule[] = [];
-  let i = 0;
-  function block(skip: boolean) {
-    while (i < text.length) {
-      const open = text.indexOf("{", i);
-      const close = text.indexOf("}", i);
-      if (close !== -1 && (open === -1 || close < open)) {
-        i = close + 1;
-        return;
-      }
-      if (open === -1) return;
-      const prelude = text.slice(i, open).trim();
-      i = open + 1;
-      if (prelude.startsWith("@")) {
-        block(skip || prelude.startsWith("@keyframes"));
-        continue;
-      }
-      const end = text.indexOf("}", i);
-      const body = text.slice(i, end);
-      i = end + 1;
-      if (skip) continue;
-      const declarations = body
-        .split(";")
-        .map((d) => d.trim())
-        .filter(Boolean)
-        .map((d) => {
-          const colon = d.indexOf(":");
-          return [d.slice(0, colon).trim(), d.slice(colon + 1).trim()] as [string, string];
-        });
-      rules.push({ selectors: prelude.split(",").map((s) => s.trim()), declarations });
-    }
-  }
-  block(false);
-  return rules;
-}
 
 const rules = parseRules(css);
 
@@ -70,6 +30,55 @@ function standaloneDeclarations(classes: string[]): Map<string, string> {
       return sel.slice(1).split(".").every((c) => classes.includes(c));
     });
     if (matches) for (const [prop, value] of rule.declarations) out.set(prop, value);
+  }
+  return out;
+}
+
+// Classes rendered only so code and tests can find the element; inline styles
+// or other classes carry their look.
+const UNSTYLED_HOOKS = new Set([
+  "scheduler-ui",
+  "scheduler-header",
+  "scheduler-days",
+  "scheduler-day-card",
+  "scheduler-times",
+  "time-picker-start",
+  "time-picker-end",
+  // Redundant in the markup; each should go from the TSX and from this list.
+  "btn-lg",
+  "btn-secondary",
+  "clickable",
+  "compose-textarea",
+  "restore-modal",
+  "sending",
+  "thread-actions-wheel-placeholder",
+]);
+
+// Class names in `class="..."`, and every string literal or template text
+// inside `class={...}` / `classList={{...}}` expressions (ternary branches,
+// classList keys).
+function renderedClasses(tsx: string): string[] {
+  const out: string[] = [];
+  const addTokens = (s: string) => {
+    for (const t of s.split(/\s+/)) if (/^-?[A-Za-z_][\w-]*$/.test(t)) out.push(t);
+  };
+  for (const m of tsx.matchAll(/\bclass="([^"]*)"/g)) addTokens(m[1]);
+  for (const m of tsx.matchAll(/\bclass(?:List)?=\{/g)) {
+    let depth = 1;
+    let j = m.index! + m[0].length;
+    const start = j;
+    while (j < tsx.length && depth > 0) {
+      if (tsx[j] === "{") depth++;
+      else if (tsx[j] === "}") depth--;
+      j++;
+    }
+    const expr = tsx.slice(start, j - 1);
+    // Literals compared against (`state === 'fresh'`) are values, not classes.
+    for (const lit of expr.matchAll(/(?<![=!]=\s*)(?:"([^"\n]*)"|'([^'\n]*)')/g)) addTokens(lit[1] ?? lit[2]);
+    for (const tpl of expr.matchAll(/`([^`]*)`/g)) addTokens(tpl[1].replace(/\$\{[^}]*\}/g, " "));
+    if (m[0].startsWith("classList")) {
+      for (const key of expr.matchAll(/(?:^|[{,])\s*([A-Za-z_][\w-]*)\s*:/g)) out.push(key[1]);
+    }
   }
   return out;
 }
@@ -95,6 +104,23 @@ describe("App.css", () => {
     expect([...undefinedVars]).toEqual([]);
   });
 
+  it("gives no fallback to tokens that :root always defines", () => {
+    const rootTokens = new Set<string>();
+    for (const rule of rules) {
+      if (rule.selectors.length === 1 && rule.selectors[0] === ":root") {
+        for (const [prop] of rule.declarations) rootTokens.add(prop);
+      }
+    }
+    expect(rootTokens.has("--text-secondary")).toBe(true);
+    const needless = new Set<string>();
+    for (const text of [css, ...sources.map(([, t]) => t)]) {
+      for (const m of text.matchAll(/var\(\s*(--[\w-]+)\s*,/g)) {
+        if (rootTokens.has(m[1])) needless.add(m[1]);
+      }
+    }
+    expect([...needless].sort()).toEqual([]);
+  });
+
   it("has no custom properties that nothing reads", () => {
     const read = new Set<string>();
     for (const text of [css, ...sources.map(([, t]) => t)]) {
@@ -111,16 +137,37 @@ describe("App.css", () => {
     const literals = sources
       .map(([, text]) => (text.match(/"[^"\n]*"|'[^'\n]*'|`[^`]*`/g) ?? []).join("\n"))
       .join("\n");
-    const classes = new Set<string>();
-    for (const rule of rules) {
-      for (const sel of rule.selectors) {
-        for (const m of sel.matchAll(/\.(-?[A-Za-z_][\w-]*)/g)) classes.add(m[1]);
-      }
-    }
-    const unused = [...classes].filter(
+    const unused = [...selectorClasses(rules)].filter(
       (c) => !new RegExp(`(?<![\\w-])${c}(?![\\w-])`).test(literals),
     );
     expect(unused.sort()).toEqual([]);
+  });
+
+  it("styles every class the app renders", () => {
+    const styled = selectorClasses(rules);
+    const unstyled = new Set<string>();
+    for (const [path, text] of sources) {
+      if (!path.endsWith(".tsx")) continue;
+      for (const cls of renderedClasses(text)) {
+        if (!styled.has(cls) && !UNSTYLED_HOOKS.has(cls)) unstyled.add(cls);
+      }
+    }
+    expect([...unstyled].sort()).toEqual([]);
+  });
+
+  it("has no keyframes that no animation plays", () => {
+    expect(unusedKeyframes(css)).toEqual([]);
+  });
+
+  it("declares each selector list in a single rule per context", () => {
+    const seen = new Set<string>();
+    const repeated: string[] = [];
+    for (const rule of rules) {
+      const key = `${rule.context} ${rule.selectors.join(", ")}`.trim();
+      if (seen.has(key)) repeated.push(key);
+      seen.add(key);
+    }
+    expect(repeated).toEqual([]);
   });
 
   it("never declares the same property twice in one rule", () => {

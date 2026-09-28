@@ -9,6 +9,7 @@
     "build": "vite build",
     "serve": "vite preview",
     "tauri": "tauri",
+    "typecheck": "tsc --noEmit && tsc -p tsconfig.node.json --noEmit",
     "test": "vitest run",
     "check": "./scripts/check.sh"
   },

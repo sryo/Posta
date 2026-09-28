@@ -1031,7 +1031,7 @@ select:focus:not(:focus-visible) {
 }
 
 .thread-file-item:hover {
-    background: var(--bg-tertiary, var(--bg-secondary));
+    background: var(--bg-tertiary);
 }
 
 .file-name {
@@ -1719,6 +1719,19 @@ button:disabled:hover {
 .auth-btn svg {
     width: 18px;
     height: 18px;
+}
+
+.auth-settings-btn {
+    margin-top: var(--space-2xl);
+    background: none;
+    border: none;
+    color: var(--text-secondary);
+    cursor: pointer;
+    font-size: var(--font-size-sm);
+}
+
+.auth-settings-btn:hover {
+    color: var(--text-primary);
 }
 
 .auth-error {
@@ -3676,8 +3689,13 @@ button:disabled:hover {
     transition: background 0.15s;
 }
 
-.label-item:hover {
+.label-item:hover,
+.label-item-selected {
     background: var(--bg-hover);
+}
+
+.label-item-selected .label-name {
+    font-weight: 600;
 }
 
 .label-item input[type="checkbox"],
@@ -3729,7 +3747,7 @@ button:disabled:hover {
     align-items: center;
     justify-content: center;
     padding: 48px;
-    color: var(--text-secondary, #666);
+    color: var(--text-secondary);
     font-size: 0.95rem;
 }
 
@@ -3855,7 +3873,7 @@ button:disabled:hover {
 }
 
 .message-date {
-    color: var(--text-secondary, #888);
+    color: var(--text-secondary);
     font-size: 0.8rem;
     white-space: nowrap;
     flex-shrink: 0;
@@ -3981,7 +3999,7 @@ button:disabled:hover {
     margin: 12px 0;
     padding-left: 16px;
     border-left: 3px solid var(--border-color);
-    color: var(--text-secondary, #666);
+    color: var(--text-secondary);
 }
 
 .message-body pre,
@@ -3999,6 +4017,12 @@ button:disabled:hover {
 
 .message-body code {
     padding: var(--space-xs) var(--space-md);
+}
+
+.message-body pre code {
+    padding: 0;
+    background: none;
+    font-size: inherit;
 }
 
 @media (prefers-color-scheme: dark) {
