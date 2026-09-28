@@ -9,11 +9,11 @@ export const ComposeTextarea = (props: {
   placeholder?: string,
   disabled?: boolean,
   autofocus?: boolean,
-  class?: string,
+  class: string,
 }) => {
   return (
     <textarea
-      class={props.class || "compose-textarea"}
+      class={props.class}
       placeholder={props.placeholder || "Write your message..."}
       value={props.value}
       onInput={(e) => props.onChange(e.currentTarget.value)}
@@ -38,7 +38,7 @@ export const ComposeSendButton = (props: {
 }) => {
   return (
     <button
-      class={`btn btn-primary ${props.sending ? 'sending' : ''}`}
+      class="btn btn-primary"
       disabled={props.disabled || props.sending}
       onClick={props.onClick}
     >

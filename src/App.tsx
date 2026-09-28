@@ -3810,7 +3810,6 @@ function App() {
           <button
             class="auth-settings-btn"
             onClick={() => setSettingsOpen(true)}
-            style="margin-top: 24px; background: none; border: none; color: var(--text-secondary); cursor: pointer; font-size: var(--font-size-sm);"
           >
             Settings
           </button>
@@ -4044,7 +4043,6 @@ function App() {
                                             />
                                           </Show>
                                         </div>
-                                        <div class="thread-actions-wheel-placeholder"></div>
                                       </div>
                                       {/* Event Quick Reply */}
                                       <Show when={quickReplyEventId() === event.id}>
@@ -4181,7 +4179,7 @@ function App() {
                                                   <For each={imageAttachments.slice(0, 4)}>
                                                     {(attachment) => (
                                                       <img
-                                                        class="thread-image-thumb clickable"
+                                                        class="thread-image-thumb"
                                                         src={`data:${attachment.mime_type};base64,${normalizeBase64Url(attachment.inline_data || '')}`}
                                                         alt={attachment.filename}
                                                         title={attachment.filename}
@@ -4194,7 +4192,7 @@ function App() {
                                                   <For each={fileAttachments.slice(0, 3)}>
                                                     {(attachment) => (
                                                       <div
-                                                        class="thread-file-item clickable"
+                                                        class="thread-file-item"
                                                         title={`${attachment.filename} (${formatFileSize(attachment.size)})`}
                                                         onClick={() => openAttachment(attachment.message_id, attachment.attachment_id, attachment.filename, attachment.mime_type, attachment.inline_data)}
                                                         onContextMenu={(e) => { e.preventDefault(); e.stopPropagation(); showAttachmentContextMenu({ messageId: attachment.message_id, attachmentId: attachment.attachment_id, filename: attachment.filename, mimeType: attachment.mime_type, inlineData: attachment.inline_data }); }}
@@ -4255,7 +4253,6 @@ function App() {
                                               />
                                             </Show>
                                           </div>
-                                          <div class="thread-actions-wheel-placeholder"></div>
                                         </div>
                                         <Show when={quickReply().threadId === thread.gmail_thread_id}>
                                           <div class="quick-reply-box" onClick={(e) => e.stopPropagation()}>
@@ -4581,11 +4578,11 @@ function App() {
       {/* Restore Found Prompt */}
       <Show when={showRestorePrompt()}>
         <div class="preset-overlay">
-          <div class="preset-modal restore-modal">
+          <div class="preset-modal">
             <h2>Welcome Back</h2>
             <p>We found a layout from iCloud.</p>
             <div class="restore-actions">
-              <button class="btn btn-primary btn-lg" onClick={() => setShowRestorePrompt(false)}>
+              <button class="btn btn-primary" onClick={() => setShowRestorePrompt(false)}>
                 Continue
               </button>
               <button class="btn btn-ghost" onClick={handleStartFresh}>

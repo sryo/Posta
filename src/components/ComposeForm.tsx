@@ -253,7 +253,7 @@ export const ComposeForm = (props: ComposeFormProps) => {
       </Show>
       <div class="compose-spacer" />
       <button
-        class={`btn btn-primary ${props.sending ? 'sending' : ''}`}
+        class="btn btn-primary"
         disabled={!canSend() || props.sending}
         onClick={props.onSend}
       >

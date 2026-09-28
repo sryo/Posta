@@ -37,21 +37,8 @@ function standaloneDeclarations(classes: string[]): Map<string, string> {
 // Classes rendered only so code and tests can find the element; inline styles
 // or other classes carry their look.
 const UNSTYLED_HOOKS = new Set([
-  "scheduler-ui",
-  "scheduler-header",
-  "scheduler-days",
-  "scheduler-day-card",
-  "scheduler-times",
   "time-picker-start",
   "time-picker-end",
-  // Redundant in the markup; each should go from the TSX and from this list.
-  "btn-lg",
-  "btn-secondary",
-  "clickable",
-  "compose-textarea",
-  "restore-modal",
-  "sending",
-  "thread-actions-wheel-placeholder",
 ]);
 
 // Class names in `class="..."`, and every string literal or template text

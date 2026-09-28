@@ -516,7 +516,7 @@ export const ThreadView = (props: {
                               const hasThumb = att.inlineData && isImage(att.mimeType);
                               return (
                                 <div
-                                  class="attachment-thumb clickable"
+                                  class="attachment-thumb"
                                   title={`${att.filename} (${formatFileSize(att.size)})`}
                                   onClick={() => props.onOpenAttachment(msg.id, att.attachmentId, att.filename, att.mimeType, att.inlineData)}
                                   onContextMenu={handleContextMenu}

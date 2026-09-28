@@ -373,7 +373,7 @@ export const CreateEventForm = (props: {
       <div class={props.inline ? "inline-event-footer" : "compose-footer"}>
         <Show when={props.error}><div class="compose-error">{props.error}</div></Show>
         <div class="compose-spacer" />
-        <button class="btn btn-secondary" onClick={props.onClose} style={{ "margin-right": "8px" }}>
+        <button class="btn" onClick={props.onClose} style={{ "margin-right": "8px" }}>
           Cancel
         </button>
         <button class="btn btn-primary" disabled={props.saving || !props.summary} onClick={props.onSave} title="Save event (⌘Enter)">
