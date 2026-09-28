@@ -497,7 +497,11 @@ fn get_account_and_card(
 }
 
 /// Helper to get a valid access token for an account (refreshing if needed)
-async fn get_access_token(state: &AppState, account_id: &str, app_data_dir: &std::path::Path) -> Result<String, String> {
+async fn get_access_token(
+    state: &AppState,
+    app_handle: &tauri::AppHandle,
+    account_id: &str,
+) -> Result<String, String> {
     // Serve from cache if the token is good for at least another 60s
     {
         let cache = state.token_cache.lock().map_err(|_| "Lock error")?;
@@ -508,8 +512,8 @@ async fn get_access_token(state: &AppState, account_id: &str, app_data_dir: &std
         }
     }
 
-    // Get stored refresh token
-    let refresh_token = auth::get_refresh_token(account_id, app_data_dir).map_err(|e| e.to_string())?;
+    let app_data_dir = get_app_data_dir(app_handle)?;
+    let refresh_token = auth::get_refresh_token(account_id, &app_data_dir).map_err(|e| e.to_string())?;
 
     // Refresh the access token
     let (access_token, expires_in) = {
@@ -531,6 +535,16 @@ async fn get_access_token(state: &AppState, account_id: &str, app_data_dir: &std
         .insert(account_id.to_string(), (access_token.clone(), expiry));
 
     Ok(access_token)
+}
+
+/// Access token for an account that must exist locally
+async fn account_access_token(
+    state: &AppState,
+    app_handle: &tauri::AppHandle,
+    account_id: &str,
+) -> Result<String, String> {
+    verify_account_exists(state, account_id)?;
+    get_access_token(state, app_handle, account_id).await
 }
 
 /// Gmail and People errors embed the HTTP status ("401 Unauthorized"), most
@@ -573,12 +587,10 @@ pub async fn fetch_threads_paginated(
     page_token: Option<String>,
     app_handle: tauri::AppHandle, state: State<'_, AppState>,
 ) -> Result<SearchResult, String> {
-    let app_data_dir = get_app_data_dir(&app_handle)?;
-
     tracing::info!("fetch_threads_paginated for card: {}, page_token: {:?}", card_id, page_token);
 
     let (account, card) = get_account_and_card(&state, &account_id, &card_id)?;
-    let access_token = get_access_token(&state, &account.id, &app_data_dir).await?;
+    let access_token = get_access_token(&state, &app_handle, &account.id).await?;
 
     let gmail = GmailClient::new(access_token);
     let result = evict_token_on_auth_error(
@@ -631,8 +643,6 @@ async fn sync_threads_incremental_impl(
     app_handle: &tauri::AppHandle,
     state: &State<'_, AppState>,
 ) -> Result<IncrementalSyncResult, String> {
-    let app_data_dir = get_app_data_dir(app_handle)?;
-
     tracing::info!("sync_threads_incremental for account: {}", account_id);
 
     // Get stored history ID
@@ -642,7 +652,7 @@ async fn sync_threads_incremental_impl(
         db.get_history_id(account_id).map_err(|e| e.to_string())?
     };
 
-    let access_token = get_access_token(state, account_id, &app_data_dir).await?;
+    let access_token = get_access_token(state, app_handle, account_id).await?;
     let gmail = GmailClient::new(access_token);
 
     match stored_history_id {
@@ -767,11 +777,7 @@ pub async fn modify_threads(
     remove_labels: Vec<String>,
     app_handle: tauri::AppHandle, state: State<'_, AppState>,
 ) -> Result<(), String> {
-    let app_data_dir = get_app_data_dir(&app_handle)?;
-
-    verify_account_exists(&state, &account_id)?;
-
-    let access_token = get_access_token(&state, &account_id, &app_data_dir).await?;
+    let access_token = account_access_token(&state, &app_handle, &account_id).await?;
     let gmail = std::sync::Arc::new(GmailClient::new(access_token));
 
     // Process in parallel for better performance
@@ -807,11 +813,7 @@ pub async fn search_threads_preview(
     query: String,
     app_handle: tauri::AppHandle, state: State<'_, AppState>,
 ) -> Result<Vec<ThreadGroup>, String> {
-    let app_data_dir = get_app_data_dir(&app_handle)?;
-
-    verify_account_exists(&state, &account_id)?;
-
-    let access_token = get_access_token(&state, &account_id, &app_data_dir).await?;
+    let access_token = account_access_token(&state, &app_handle, &account_id).await?;
     let gmail = GmailClient::new(access_token);
 
     // Limit to 5 threads for preview
@@ -825,11 +827,7 @@ pub async fn get_thread_details(
     thread_id: String,
     app_handle: tauri::AppHandle, state: State<'_, AppState>,
 ) -> Result<crate::gmail::FullThread, String> {
-    let app_data_dir = get_app_data_dir(&app_handle)?;
-
-    verify_account_exists(&state, &account_id)?;
-
-    let access_token = get_access_token(&state, &account_id, &app_data_dir).await?;
+    let access_token = account_access_token(&state, &app_handle, &account_id).await?;
     let gmail = GmailClient::new(access_token);
 
     evict_token_on_auth_error(&state, &account_id, gmail.get_thread(&thread_id).await)
@@ -847,11 +845,7 @@ pub async fn send_email(
     is_html: Option<bool>,
     app_handle: tauri::AppHandle, state: State<'_, AppState>,
 ) -> Result<(), String> {
-    let app_data_dir = get_app_data_dir(&app_handle)?;
-
-    verify_account_exists(&state, &account_id)?;
-
-    let access_token = get_access_token(&state, &account_id, &app_data_dir).await?;
+    let access_token = account_access_token(&state, &app_handle, &account_id).await?;
     let gmail = GmailClient::new(access_token);
 
     let result = gmail.send_email(&to, &cc, &bcc, &subject, &body, &attachments, is_html.unwrap_or(false)).await;
@@ -872,11 +866,7 @@ pub async fn reply_to_thread(
     is_html: Option<bool>,
     app_handle: tauri::AppHandle, state: State<'_, AppState>,
 ) -> Result<(), String> {
-    let app_data_dir = get_app_data_dir(&app_handle)?;
-
-    verify_account_exists(&state, &account_id)?;
-
-    let access_token = get_access_token(&state, &account_id, &app_data_dir).await?;
+    let access_token = account_access_token(&state, &app_handle, &account_id).await?;
     let gmail = GmailClient::new(access_token);
 
     let result = gmail.reply_to_thread(&thread_id, &to, &cc, &bcc, &subject, &body, message_id.as_deref(), &attachments, is_html.unwrap_or(false)).await;
@@ -893,9 +883,8 @@ pub async fn send_reaction(
     app_handle: tauri::AppHandle,
     state: State<'_, AppState>,
 ) -> Result<(), String> {
-    let app_data_dir = get_app_data_dir(&app_handle)?;
     let from_email = get_account_email(&state, &account_id)?;
-    let access_token = get_access_token(&state, &account_id, &app_data_dir).await?;
+    let access_token = get_access_token(&state, &app_handle, &account_id).await?;
     let gmail = GmailClient::new(access_token);
 
     let result = gmail.send_reaction(&thread_id, &message_id, &emoji, &from_email, &to_email).await;
@@ -988,11 +977,7 @@ pub async fn download_attachment(
     app_handle: tauri::AppHandle,
     state: State<'_, AppState>,
 ) -> Result<String, String> {
-    let app_data_dir = get_app_data_dir(&app_handle)?;
-
-    verify_account_exists(&state, &account_id)?;
-
-    let access_token = get_access_token(&state, &account_id, &app_data_dir).await?;
+    let access_token = account_access_token(&state, &app_handle, &account_id).await?;
     let gmail = GmailClient::new(access_token);
 
     evict_token_on_auth_error(
@@ -1058,8 +1043,7 @@ async fn resolve_attachment_file(
         let attachment_id = attachment_id.ok_or("No attachment ID or inline data")?;
         verify_account_exists(state, account_id)?;
 
-        let app_data_dir = get_app_data_dir(app_handle)?;
-        let access_token = get_access_token(state, account_id, &app_data_dir).await?;
+        let access_token = get_access_token(state, app_handle, account_id).await?;
         let gmail = GmailClient::new(access_token);
         evict_token_on_auth_error(
             state,
@@ -1250,11 +1234,7 @@ pub async fn list_labels(
     account_id: String,
     app_handle: tauri::AppHandle, state: State<'_, AppState>,
 ) -> Result<Vec<GmailLabel>, String> {
-    let app_data_dir = get_app_data_dir(&app_handle)?;
-
-    verify_account_exists(&state, &account_id)?;
-
-    let access_token = get_access_token(&state, &account_id, &app_data_dir).await?;
+    let access_token = account_access_token(&state, &app_handle, &account_id).await?;
     let gmail = GmailClient::new(access_token);
 
     evict_token_on_auth_error(&state, &account_id, gmail.list_labels().await)
@@ -1272,11 +1252,7 @@ pub async fn save_draft(
     thread_id: Option<String>,
     app_handle: tauri::AppHandle, state: State<'_, AppState>,
 ) -> Result<GmailDraft, String> {
-    let app_data_dir = get_app_data_dir(&app_handle)?;
-
-    verify_account_exists(&state, &account_id)?;
-
-    let access_token = get_access_token(&state, &account_id, &app_data_dir).await?;
+    let access_token = account_access_token(&state, &app_handle, &account_id).await?;
     let gmail = GmailClient::new(access_token);
 
     let result = match draft_id {
@@ -1300,11 +1276,7 @@ pub async fn delete_draft(
     draft_id: String,
     app_handle: tauri::AppHandle, state: State<'_, AppState>,
 ) -> Result<(), String> {
-    let app_data_dir = get_app_data_dir(&app_handle)?;
-
-    verify_account_exists(&state, &account_id)?;
-
-    let access_token = get_access_token(&state, &account_id, &app_data_dir).await?;
+    let access_token = account_access_token(&state, &app_handle, &account_id).await?;
     let gmail = GmailClient::new(access_token);
 
     evict_token_on_auth_error(&state, &account_id, gmail.delete_draft(&draft_id).await)
@@ -1317,8 +1289,6 @@ pub async fn rsvp_calendar_event(
     status: String, // "accepted", "tentative", or "declined"
     app_handle: tauri::AppHandle, state: State<'_, AppState>,
 ) -> Result<(), String> {
-    let app_data_dir = get_app_data_dir(&app_handle)?;
-
     // Validate status
     let valid_statuses = ["accepted", "tentative", "declined"];
     if !valid_statuses.contains(&status.as_str()) {
@@ -1327,7 +1297,7 @@ pub async fn rsvp_calendar_event(
 
     let user_email = get_account_email(&state, &account_id)?;
 
-    let access_token = get_access_token(&state, &account_id, &app_data_dir).await?;
+    let access_token = get_access_token(&state, &app_handle, &account_id).await?;
     let calendar = crate::calendar::CalendarClient::new(access_token);
 
     let result = calendar.rsvp_calendar_event(&user_email, &event_uid, &status).await;
@@ -1340,11 +1310,9 @@ pub async fn get_calendar_rsvp_status(
     event_uid: String,
     app_handle: tauri::AppHandle, state: State<'_, AppState>,
 ) -> Result<Option<String>, String> {
-    let app_data_dir = get_app_data_dir(&app_handle)?;
-
     let user_email = get_account_email(&state, &account_id)?;
 
-    let access_token = get_access_token(&state, &account_id, &app_data_dir).await?;
+    let access_token = get_access_token(&state, &app_handle, &account_id).await?;
     let calendar = crate::calendar::CalendarClient::new(access_token);
 
     Ok(calendar.get_calendar_event_status(&user_email, &event_uid).await)
@@ -1463,11 +1431,7 @@ pub async fn fetch_contacts(
     app_handle: tauri::AppHandle,
     state: State<'_, AppState>,
 ) -> Result<Vec<crate::people::Contact>, String> {
-    let app_data_dir = get_app_data_dir(&app_handle)?;
-
-    verify_account_exists(&state, &account_id)?;
-
-    let access_token = get_access_token(&state, &account_id, &app_data_dir).await?;
+    let access_token = account_access_token(&state, &app_handle, &account_id).await?;
     let people = crate::people::PeopleClient::new(access_token);
 
     // Fetch up to 200 contacts
@@ -1481,11 +1445,7 @@ pub async fn list_calendars(
     account_id: String,
     app_handle: tauri::AppHandle, state: State<'_, AppState>,
 ) -> Result<Vec<crate::calendar::CalendarInfo>, String> {
-    let app_data_dir = get_app_data_dir(&app_handle)?;
-
-    verify_account_exists(&state, &account_id)?;
-
-    let access_token = get_access_token(&state, &account_id, &app_data_dir).await?;
+    let access_token = account_access_token(&state, &app_handle, &account_id).await?;
     let calendar = crate::calendar::CalendarClient::new(access_token);
 
     evict_token_on_auth_error(&state, &account_id, calendar.list_calendars().await)
@@ -1497,11 +1457,7 @@ pub async fn fetch_calendar_events(
     query: String,
     app_handle: tauri::AppHandle, state: State<'_, AppState>,
 ) -> Result<Vec<crate::calendar::CalendarEvent>, String> {
-    let app_data_dir = get_app_data_dir(&app_handle)?;
-
-    verify_account_exists(&state, &account_id)?;
-
-    let access_token = get_access_token(&state, &account_id, &app_data_dir).await?;
+    let access_token = account_access_token(&state, &app_handle, &account_id).await?;
     let calendar = crate::calendar::CalendarClient::new(access_token);
 
     let parsed_query = crate::calendar::CalendarQuery::parse(&query);
@@ -1524,9 +1480,7 @@ pub async fn create_calendar_event(
     app_handle: tauri::AppHandle,
     state: State<'_, AppState>,
 ) -> Result<crate::models::GoogleCalendarEvent, String> {
-    let app_data_dir = get_app_data_dir(&app_handle)?;
-
-    let access_token = get_access_token(&state, &account_id, &app_data_dir).await?;
+    let access_token = account_access_token(&state, &app_handle, &account_id).await?;
     let calendar = crate::calendar::CalendarClient::new(access_token);
 
     let result = calendar
@@ -1554,9 +1508,7 @@ pub async fn move_calendar_event(
     app_handle: tauri::AppHandle,
     state: State<'_, AppState>,
 ) -> Result<crate::models::GoogleCalendarEvent, String> {
-    let app_data_dir = get_app_data_dir(&app_handle)?;
-
-    let access_token = get_access_token(&state, &account_id, &app_data_dir).await?;
+    let access_token = account_access_token(&state, &app_handle, &account_id).await?;
     let calendar = crate::calendar::CalendarClient::new(access_token);
 
     let result = calendar
@@ -1573,9 +1525,7 @@ pub async fn delete_calendar_event(
     app_handle: tauri::AppHandle,
     state: State<'_, AppState>,
 ) -> Result<(), String> {
-    let app_data_dir = get_app_data_dir(&app_handle)?;
-
-    let access_token = get_access_token(&state, &account_id, &app_data_dir).await?;
+    let access_token = account_access_token(&state, &app_handle, &account_id).await?;
     let calendar = crate::calendar::CalendarClient::new(access_token);
 
     evict_token_on_auth_error(&state, &account_id, calendar.delete_event(&calendar_id, &event_id).await)
@@ -1597,9 +1547,7 @@ pub async fn update_calendar_event(
     app_handle: tauri::AppHandle,
     state: State<'_, AppState>,
 ) -> Result<crate::models::GoogleCalendarEvent, String> {
-    let app_data_dir = get_app_data_dir(&app_handle)?;
-
-    let access_token = get_access_token(&state, &account_id, &app_data_dir).await?;
+    let access_token = account_access_token(&state, &app_handle, &account_id).await?;
     let calendar = crate::calendar::CalendarClient::new(access_token);
 
     let result = calendar
@@ -1691,15 +1639,13 @@ pub async fn suggest_replies(
     api_key: String,
     app_handle: tauri::AppHandle, state: State<'_, AppState>,
 ) -> Result<Vec<String>, String> {
-    let app_data_dir = get_app_data_dir(&app_handle)?;
-
     if api_key.is_empty() {
         return Err("Gemini API key is required for smart replies.".to_string());
     }
 
     let user_email = get_account_email(&state, &account_id)?;
 
-    let access_token = get_access_token(&state, &account_id, &app_data_dir).await?;
+    let access_token = get_access_token(&state, &app_handle, &account_id).await?;
 
     let gmail = GmailClient::new(access_token);
     let thread = evict_token_on_auth_error(&state, &account_id, gmail.get_thread(&thread_id).await)
