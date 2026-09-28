@@ -186,6 +186,26 @@ describe("App presets", () => {
     expect(screen.getByRole("region", { name: "Starred email card" })).toBeInTheDocument();
   });
 
+  it("keeps a restored layout whose cards could not be deleted when starting from scratch", async () => {
+    handlers.get_accounts = () => [];
+    handlers.run_oauth_flow = () => account("a", "a@x.com");
+    handlers.pull_from_icloud = () => true;
+    handlers.delete_card = ({ id }) => {
+      if (id === "card-a") throw new Error("db locked");
+      return null;
+    };
+    cardsByAccount.a = [card("card-a", "a", "Alpha"), { ...card("card-z", "a", "Zeta"), position: 1 }];
+    render(() => <App />);
+
+    fireEvent.click(await screen.findByText("Sign in with Google"));
+    fireEvent.click(await screen.findByText("Start from scratch", {}, { timeout: 3000 }));
+
+    expect(await screen.findByText(/db locked/)).toBeInTheDocument();
+    expect(screen.queryByText("How do you email?")).not.toBeInTheDocument();
+    expect(screen.getByRole("region", { name: "Alpha email card" })).toBeInTheDocument();
+    expect(screen.queryByRole("region", { name: "Zeta email card" })).not.toBeInTheDocument();
+  });
+
   it("stays on the preset picker when no card could be created", async () => {
     signInToEmptyLayout();
     handlers.create_card = () => { throw new Error("db locked"); };

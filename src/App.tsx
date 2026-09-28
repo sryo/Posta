@@ -1775,19 +1775,21 @@ function App() {
   }
 
   async function handleStartFresh() {
-    try {
-      // Delete all existing cards
-      const currentCards = cards();
-      await Promise.allSettled(currentCards.map(card => deleteCard(card.id)));
-      setCards([]);
-      setCollapsedCards(reconcile({}));
+    const currentCards = cards();
+    const results = await Promise.allSettled(currentCards.map(card => deleteCard(card.id)));
+    // Cards that failed to delete still exist; keep showing them rather than
+    // letting a preset pile new cards on top
+    const remaining = currentCards.filter((_, i) => results[i].status === "rejected");
+    setCards(remaining);
+    setCollapsedCards(reconcile(Object.fromEntries(remaining.map(c => [c.id, collapsedCards[c.id] ?? false]))));
 
-      // Close restore prompt and show preset selection
-      setShowRestorePrompt(false);
-      setShowPresetSelection(true);
-    } catch (e) {
-      setError(`Failed to reset layout: ${e}`);
+    const failure = results.find((r): r is PromiseRejectedResult => r.status === "rejected");
+    if (failure) {
+      setError(`Failed to reset layout: ${failure.reason}`);
+      return;
     }
+    setShowRestorePrompt(false);
+    setShowPresetSelection(true);
   }
 
   async function handleSaveSettings() {
