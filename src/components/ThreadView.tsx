@@ -125,9 +125,17 @@ export const ThreadView = (props: {
     setTimeout(() => props.onClose(), 200); // Match animation duration
   };
 
-  // Scroll to newest message when thread loads
+  // Scroll to the newest message when the thread loads or gains a message.
+  // Actions such as star or a label change reload the same thread, and must
+  // not pull the reader away from an earlier message.
+  let scrolledTo: { id: string; count: number } | null = null;
   createEffect(() => {
-    if (props.thread && contentRef) {
+    const loaded = props.thread;
+    if (!loaded) return;
+    const count = loaded.messages.length;
+    if (scrolledTo?.id === loaded.id && count <= scrolledTo.count) return;
+    scrolledTo = { id: loaded.id, count };
+    if (contentRef) {
       requestAnimationFrame(() => {
         const thread = props.thread;
         if (!thread) return;

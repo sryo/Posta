@@ -431,6 +431,41 @@ describe("ThreadView attachments", () => {
   });
 });
 
+describe("ThreadView scrolling", () => {
+  const nextFrame = () => new Promise(r => requestAnimationFrame(() => r(null)));
+
+  it("scrolls to the newest message on open but keeps the reading position when the thread refreshes", async () => {
+    const messages = [
+      { from: "Alice <alice@example.com>", body: "first" },
+      { from: "Bob <bob@example.com>", body: "second" },
+    ];
+    const [thread, setThread] = createSignal(makeThread(messages));
+    const scroll = vi.fn();
+    Element.prototype.scrollIntoView = scroll;
+    render(() => (
+      <ThreadView
+        thread={thread()} loading={false} error={null} card={null} focusColor={null} onClose={vi.fn()}
+        focusedMessageIndex={0} onFocusChange={vi.fn()} onOpenAttachment={vi.fn()} onDownloadAttachment={vi.fn()}
+        onShowAttachmentMenu={vi.fn()} onReply={vi.fn()} onForward={vi.fn()} onAction={vi.fn()} onOpenLabels={vi.fn()}
+        accountId="acc" isStarred={false} isRead={true} isImportant={false} isInInbox={true} labelCount={0} inlineCompose={null}
+      />
+    ));
+    await nextFrame();
+    expect(scroll).toHaveBeenCalledWith({ block: "start" });
+
+    // Starring or relabelling reloads the same thread
+    scroll.mockClear();
+    setThread(makeThread(messages));
+    await nextFrame();
+    expect(scroll).not.toHaveBeenCalled();
+
+    // A reply arriving does bring the newest message into view
+    setThread(makeThread([...messages, { from: "Carol <carol@example.com>", body: "third" }]));
+    await nextFrame();
+    expect(scroll).toHaveBeenCalledWith({ block: "start" });
+  });
+});
+
 describe("ThreadView load errors", () => {
   it("offers to try loading the thread again", () => {
     const onRetry = vi.fn();
