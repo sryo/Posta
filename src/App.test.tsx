@@ -280,3 +280,42 @@ describe("App thread view", () => {
     expect(screen.queryByText(/Marked 1 thread as read/)).not.toBeInTheDocument();
   });
 });
+
+describe("App batch reply", () => {
+  it("ignores a slow batch that finishes after another batch opened", async () => {
+    cardsByAccount.a = [card("card-a", "a", "Alpha"), { ...card("card-b", "a", "Beta"), position: 1 }];
+    threadsByCard["card-b"] = [thread("t-b", "Mail for B")];
+    let releaseA!: () => void;
+    const slowA = new Promise<void>(r => { releaseA = r; });
+    handlers.get_thread_details = async ({ threadId }) => {
+      if (threadId === "t-a") await slowA;
+      const subject = threadId === "t-a" ? "Batch subject A" : "Batch subject B";
+      return {
+        id: threadId,
+        messages: [{
+          ...fullMessage(`m-${threadId}`, "Ana <ana@x.com>"),
+          payload: { mimeType: "text/plain", headers: [{ name: "From", value: "Ana <ana@x.com>" }, { name: "Subject", value: subject }], body: { size: 0 } },
+        }],
+      };
+    };
+    render(() => <App />);
+    await screen.findByText("Mail for B");
+
+    fireEvent.keyDown(document, { key: "l" });
+    fireEvent.keyDown(document, { key: "x" });
+    fireEvent.click(await screen.findByTitle("Batch Reply"));
+    await screen.findByText("Loading threads...");
+    fireEvent.keyDown(document, { key: "Escape" });
+    await waitFor(() => expect(screen.queryByText("Loading threads...")).not.toBeInTheDocument());
+
+    fireEvent.keyDown(document, { key: "l" });
+    fireEvent.keyDown(document, { key: "x" });
+    fireEvent.click(await screen.findByTitle("Batch Reply"));
+    expect(await screen.findByText("Batch subject B")).toBeInTheDocument();
+
+    releaseA();
+    await new Promise(r => setTimeout(r, 20));
+    expect(screen.queryByText("Batch subject A")).not.toBeInTheDocument();
+    expect(screen.getByText("Batch subject B")).toBeInTheDocument();
+  });
+});

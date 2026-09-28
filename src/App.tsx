@@ -2485,10 +2485,14 @@ function App() {
     }
   }
 
+  // Bumped on every open and close so a slow load can't fill a batch that
+  // was closed or reopened for other threads
+  let batchReplyRequest = 0;
   async function startBatchReply(cardId: string, threadIds: string[]) {
     const account = selectedAccount();
     if (!account || threadIds.length === 0) return;
 
+    const request = ++batchReplyRequest;
     setBatchReplyLoading(true);
     setBatchReplyOpen(true);
     setBatchReplyCardId(cardId);
@@ -2539,13 +2543,15 @@ function App() {
         .map(r => r.value)
         .filter((t): t is BatchReplyThread => t !== null);
 
-      setBatchReplyThreads(threads);
+      if (request === batchReplyRequest) setBatchReplyThreads(threads);
     } finally {
-      setBatchReplyLoading(false);
+      if (request === batchReplyRequest) setBatchReplyLoading(false);
     }
   }
 
   function closeBatchReply() {
+    batchReplyRequest++;
+    setBatchReplyLoading(false);
     setBatchReplyOpen(false);
     setBatchReplyCardId(null);
     setBatchReplyThreads([]);
