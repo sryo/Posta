@@ -13,7 +13,7 @@ const EMOJI_CATEGORIES: { name: string; icon: string; emojis: string[] }[] = [
       "\ud83d\ude18", "\ud83d\ude17", "\ud83d\ude19", "\ud83d\ude1a", "\ud83d\ude0b", "\ud83d\ude1b", "\ud83d\ude1c", "\ud83e\udd2a",
       "\ud83d\ude1d", "\ud83e\udd11", "\ud83e\udd17", "\ud83e\udd2d", "\ud83e\udd2b", "\ud83e\udd14", "\ud83e\udd10", "\ud83e\udd28",
       "\ud83d\ude10", "\ud83d\ude11", "\ud83d\ude36", "\ud83d\ude0f", "\ud83d\ude12", "\ud83d\ude44", "\ud83d\ude2c", "\ud83e\udd25",
-      "\ud83d\ude0c", "\ud83d\ude14", "\ud83d\ude2a", "\ud83e\udd24", "\ud83d\ude34", "\ud83d\ude37", "\ud83e\udd12", "\ud83e\udd15",
+      "\ud83d\ude14", "\ud83d\ude2a", "\ud83e\udd24", "\ud83d\ude34", "\ud83d\ude37", "\ud83e\udd12", "\ud83e\udd15",
       "\ud83e\udd22", "\ud83e\udd2e", "\ud83e\udd27", "\ud83e\udd75", "\ud83e\udd76", "\ud83e\udd74", "\ud83d\ude35", "\ud83e\udd2f",
       "\ud83e\udd20", "\ud83e\udd73", "\ud83d\ude0e", "\ud83e\udd13", "\ud83e\uddd0", "\ud83d\ude15", "\ud83d\ude1f", "\ud83d\ude41",
       "\ud83d\ude2e", "\ud83d\ude2f", "\ud83d\ude32", "\ud83d\ude33", "\ud83e\udd7a", "\ud83d\ude26", "\ud83d\ude27", "\ud83d\ude28",
@@ -46,7 +46,7 @@ const EMOJI_CATEGORIES: { name: string; icon: string; emojis: string[] }[] = [
     name: "Celebration",
     icon: "\ud83c\udf89",
     emojis: [
-      "\ud83c\udf89", "\ud83c\udf8a", "\ud83c\udf88", "\ud83c\udf81", "\ud83c\udf80", "\ud83c\udf8a", "\u2728", "\ud83c\udf1f",
+      "\ud83c\udf89", "\ud83c\udf8a", "\ud83c\udf88", "\ud83c\udf81", "\ud83c\udf80", "\u2728", "\ud83c\udf1f",
       "\ud83d\udcab", "\ud83d\udca5", "\ud83c\udf86", "\ud83c\udf87", "\ud83e\udde8", "\ud83c\udf90", "\ud83c\udf8f", "\ud83c\udfee",
       "\ud83c\udfb0", "\ud83c\udfb2", "\ud83c\udfaf", "\ud83c\udfb3", "\ud83c\udfc6", "\ud83e\udd47", "\ud83e\udd48", "\ud83e\udd49",
     ],
@@ -151,20 +151,18 @@ export const EmojiPicker = (props: EmojiPickerProps) => {
   // Filter emojis based on search. Without per-emoji keyword data, the query
   // matches category names ("heart", "food", ...) — honest empty results beat
   // returning 50 unrelated emojis
+  const query = () => search().toLowerCase().trim();
   const filteredEmojis = () => {
-    const q = search().toLowerCase().trim();
-    if (!q) return null;
-
-    const results: string[] = [];
+    const q = query();
+    const results = new Set<string>();
     for (const cat of EMOJI_CATEGORIES) {
       if (!cat.name.toLowerCase().includes(q)) continue;
       for (const emoji of cat.emojis) {
-        if (results.length < 50) {
-          results.push(emoji);
-        }
+        if (results.size >= 50) break;
+        results.add(emoji);
       }
     }
-    return results;
+    return [...results];
   };
 
   const handleEmojiClick = (emoji: string) => {
@@ -185,7 +183,7 @@ export const EmojiPicker = (props: EmojiPickerProps) => {
         />
       </div>
 
-      <Show when={!search()}>
+      <Show when={!query()}>
         <div class="emoji-categories-tabs">
           <For each={EMOJI_CATEGORIES}>
             {(cat, i) => (
@@ -202,7 +200,7 @@ export const EmojiPicker = (props: EmojiPickerProps) => {
       </Show>
 
       <div class="emoji-grid-container">
-        <Show when={search() && filteredEmojis()}>
+        <Show when={query()}>
           <div class="emoji-grid">
             <For each={filteredEmojis()}>
               {(emoji) => (
@@ -214,7 +212,7 @@ export const EmojiPicker = (props: EmojiPickerProps) => {
           </div>
         </Show>
 
-        <Show when={!search()}>
+        <Show when={!query()}>
           <div class="emoji-section">
             <div class="emoji-section-title">Frequently Used</div>
             <div class="emoji-grid">
