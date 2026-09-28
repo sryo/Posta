@@ -142,6 +142,17 @@ describe("groupCalendarEvents", () => {
       .toEqual([["Unknown", ["2"]], ["zed@x", ["3", "1"]]]);
     expect(groupCalendarEvents(events, "calendar").map(g => g.label)).toEqual(["Home", "Work"]);
   });
+
+  it("sorts an all-day event from its local midnight, ahead of meetings starting then", () => {
+    const events = [
+      event("midnight", { start_time: at(12, 0) }),
+      event("late", { start_time: new Date(2026, 2, 11, 23, 30).getTime() }),
+      event("holiday", { all_day: true, start_time: allDay(12), end_time: allDay(13) }),
+    ];
+    for (const groupBy of ["organizer", "calendar"] as const) {
+      expect(groupCalendarEvents(events, groupBy)[0].events.map(e => e.id)).toEqual(["late", "holiday", "midnight"]);
+    }
+  });
 });
 
 describe("getSmartEventTime", () => {

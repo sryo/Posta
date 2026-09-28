@@ -31,6 +31,17 @@ export function getSmartEventTime(event: GoogleCalendarEvent, now: number): stri
   return formatCalendarEventDate(event.start_time, event.end_time, event.all_day);
 }
 
+// All-day timestamps are UTC midnight; place them at local midnight of their
+// date, ahead of timed events starting at that same moment
+function byStartTime(a: GoogleCalendarEvent, b: GoogleCalendarEvent): number {
+  const key = (e: GoogleCalendarEvent) => {
+    if (!e.all_day) return e.start_time;
+    const d = new Date(e.start_time);
+    return new Date(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate()).getTime();
+  };
+  return key(a) - key(b) || Number(b.all_day) - Number(a.all_day);
+}
+
 export function groupCalendarEvents(events: GoogleCalendarEvent[], groupBy: GroupBy, now: Date = new Date()): CalendarEventGroup[] {
   if (groupBy === "date") {
     const groups: Record<string, GoogleCalendarEvent[]> = {};
@@ -107,18 +118,18 @@ export function groupCalendarEvents(events: GoogleCalendarEvent[], groupBy: Grou
     return Object.entries(groups)
       .map(([label, events]) => ({
         label,
-        events: events.sort((a, b) => a.start_time - b.start_time),
+        events: events.sort(byStartTime),
       }))
       .sort((a, b) => groupDays[a.label] - groupDays[b.label]);
   }
 
   if (groupBy === "organizer") {
-    return groupByKey(events, e => e.organizer || "Unknown", (a, b) => a.start_time - b.start_time)
+    return groupByKey(events, e => e.organizer || "Unknown", byStartTime)
       .map(({ label, items }) => ({ label, events: items }));
   }
 
   if (groupBy === "calendar") {
-    return groupByKey(events, e => e.calendar_name || e.calendar_id, (a, b) => a.start_time - b.start_time)
+    return groupByKey(events, e => e.calendar_name || e.calendar_id, byStartTime)
       .map(({ label, items }) => ({ label, events: items }));
   }
 
