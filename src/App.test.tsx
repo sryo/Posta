@@ -67,6 +67,7 @@ beforeEach(() => {
 });
 
 afterEach(() => vi.useRealTimers());
+Element.prototype.scrollIntoView = () => {};
 
 describe("App background sync", () => {
   it("drops a thread that no longer matches its card after a change elsewhere", async () => {
@@ -251,5 +252,31 @@ describe("App thread list shortcuts", () => {
     fireEvent.keyDown(document, { key: "Escape" });
     await waitFor(() => expect(row).not.toHaveClass("selected"));
     expect(row).toHaveClass("focused");
+  });
+});
+
+const fullMessage = (id: string, from: string, extra: Record<string, unknown> = {}) => ({
+  id, threadId: "t-a", labelIds: ["INBOX"], snippet: `body ${id}`, internalDate: "0",
+  payload: { mimeType: "text/plain", headers: [{ name: "From", value: from }, { name: "Subject", value: "Hi" }], body: { size: 0 } },
+  ...extra,
+});
+
+describe("App thread view", () => {
+  it("marks an unread thread read on open without an undo toast", async () => {
+    threadsByCard["card-a"] = [{ ...thread("t-a", "Mail for A"), unread_count: 1, labels: ["INBOX", "UNREAD"] }];
+    handlers.modify_threads = () => null;
+    handlers.get_thread_details = () => ({ id: "t-a", messages: [fullMessage("m1", "Ana <ana@x.com>")] });
+    render(() => <App />);
+
+    fireEvent.click(await screen.findByText("Mail for A"));
+
+    await waitFor(() =>
+      expect(invoke).toHaveBeenCalledWith("modify_threads", expect.objectContaining({
+        threadIds: ["t-a"], removeLabels: ["UNREAD"],
+      })),
+    );
+    await new Promise(r => setTimeout(r, 20));
+    expect(document.querySelector(".toast-undo-btn")).toBeNull();
+    expect(screen.queryByText(/Marked 1 thread as read/)).not.toBeInTheDocument();
   });
 });

@@ -116,6 +116,7 @@ import { safeGetItem, safeSetItem, safeRemoveItem, safeGetJSON, safeSetJSON } fr
 import { BG_COLORS, GMAIL_OPERATORS, type ActionSettings, type CardColor, type GroupBy } from "./shared/constants";
 import { createUndoableSend } from "./app/undoableSend";
 import { findHeader, lastMessageFromOthers } from "./app/messages";
+import { actionRemovesFromCard, applyThreadAction, labelChangeFor } from "./app/threadActions";
 import { parseStoredWidth } from "./app/storedWidth";
 import { isSessionExpiredError } from "./app/authErrors";
 import { readFilesAsAttachments } from "./app/attachments";
@@ -3381,7 +3382,7 @@ function App() {
       const thread = group.threads.find(t => t.gmail_thread_id === threadId);
       if (thread && thread.unread_count > 0) {
         // Mark as read in background (don't await)
-        handleThreadAction('read', [threadId], cardId);
+        handleThreadAction('read', [threadId], cardId, { silent: true });
         break;
       }
     }
@@ -3543,7 +3544,9 @@ function App() {
     }
   }
 
-  async function handleThreadAction(action: string, threadIds: string[], cardId: string) {
+  // silent: a change the user didn't ask for directly (marking a thread
+  // read on open) gets no undo toast
+  async function handleThreadAction(action: string, threadIds: string[], cardId: string, { silent = false } = {}) {
     const account = selectedAccount();
     if (!account) return;
 
@@ -3555,42 +3558,7 @@ function App() {
       }
     }
 
-    let addLabels: string[] = [];
-    let removeLabels: string[] = [];
-
-    switch (action) {
-      case 'archive':
-        removeLabels.push("INBOX");
-        break;
-      case 'inbox':
-        addLabels.push("INBOX");
-        break;
-      case 'star':
-        addLabels.push("STARRED");
-        break;
-      case 'unstar':
-        removeLabels.push("STARRED");
-        break;
-      case 'trash':
-        addLabels.push("TRASH");
-        break;
-      case 'read':
-        removeLabels.push("UNREAD");
-        break;
-      case 'unread':
-        addLabels.push("UNREAD");
-        break;
-      case 'important':
-        addLabels.push("IMPORTANT");
-        break;
-      case 'notImportant':
-        removeLabels.push("IMPORTANT");
-        break;
-      case 'spam':
-        addLabels.push("SPAM");
-        removeLabels.push("INBOX");
-        break;
-    }
+    const { add: addLabels, remove: removeLabels } = labelChangeFor(action);
 
     // Optimistic Update - update ALL cards that contain these threads.
     // Snapshot the affected cards first so the update can be rolled back
@@ -3599,48 +3567,18 @@ function App() {
     const snapshot: Record<string, ThreadGroup[]> = {};
     const affectedCardIds: string[] = [];
 
-    // Archive only removes INBOX: the thread should vanish only from cards
-    // whose query is inbox-scoped — cards like has:attachment or is:starred
-    // still match it on the server. Trash/spam remove it everywhere.
-    const inboxScoped = (cId: string) => {
-      const q = cards().find(c => c.id === cId)?.query.toLowerCase() ?? "";
-      return q.includes("in:inbox") || q.includes("is:inbox") || q.includes("label:inbox") || q.includes("category:");
-    };
-    const removesFromCard = (cId: string) =>
-      action === 'trash' || action === 'spam' || (action === 'archive' && inboxScoped(cId));
-
     for (const [cId, groups] of Object.entries(cardThreads)) {
       if (!groups) continue;
       if (groups.some(g => g.threads.some(t => threadIds.includes(t.gmail_thread_id)))) {
         snapshot[cId] = structuredClone(unwrap(groups));
         affectedCardIds.push(cId);
       }
-      updatedCardThreads[cId] = groups.map(group => ({
-        ...group,
-        threads: group.threads.map(t => {
-          if (threadIds.includes(t.gmail_thread_id)) {
-            let newLabels = [...t.labels];
-            addLabels.forEach(l => { if (!newLabels.includes(l)) newLabels.push(l); });
-            removeLabels.forEach(l => { newLabels = newLabels.filter(lbl => lbl !== l); });
-            // Update unread count for read/unread actions
-            let newUnreadCount = t.unread_count;
-            if (action === 'read') newUnreadCount = 0;
-            if (action === 'unread' && newUnreadCount === 0) newUnreadCount = 1;
-            return { ...t, labels: newLabels, unread_count: newUnreadCount };
-          }
-          return t;
-        }).filter(t => {
-          // Optimistic removal for Archive/Trash/Spam
-          if (removesFromCard(cId) && threadIds.includes(t.gmail_thread_id)) {
-            return false;
-          }
-          return true;
-        })
-      }));
+      const query = cards().find(c => c.id === cId)?.query ?? "";
+      updatedCardThreads[cId] = applyThreadAction(groups, threadIds, action, actionRemovesFromCard(action, query));
     }
 
     setCardThreads(reconcile(updatedCardThreads));
-    setActionsWheelOpen(false);
+    if (!silent) setActionsWheelOpen(false);
 
     // Clear selection after bulk action
     if (threadIds.length > 1) {
@@ -3653,6 +3591,7 @@ function App() {
       for (const cId of affectedCardIds) {
         saveCachedCardThreads(cId, updatedCardThreads[cId], cardPageTokens[cId] || null);
       }
+      if (silent) return;
       // Store undo state and show toast
       setLastAction({
         action,
