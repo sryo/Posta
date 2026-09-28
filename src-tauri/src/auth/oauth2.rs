@@ -103,17 +103,14 @@ impl GmailAuth {
                 .as_ref()
                 .ok_or_else(|| AuthError::OAuth2("No pending auth flow".to_string()))?;
 
-            if let Some(received) = received_state {
-                if received != pending.state {
-                    return Err(AuthError::OAuth2("State mismatch - possible CSRF attack".to_string()));
-                }
+            if received_state != Some(pending.state.as_str()) {
+                return Err(AuthError::OAuth2("State mismatch - possible CSRF attack".to_string()));
             }
 
             guard.take().map(|p| p.verifier).unwrap_or_default()
         };
 
         tracing::info!("Exchanging code for tokens...");
-        tracing::debug!("Code: {}...", &code[..20.min(code.len())]);
 
         let client = reqwest::Client::new();
         let resp = client
@@ -133,16 +130,14 @@ impl GmailAuth {
         let body = resp.text().await.unwrap_or_default();
 
         tracing::info!("Token response status: {}", status);
-        tracing::debug!("Token response body: {}", &body);
 
         if !status.is_success() {
             return Err(AuthError::OAuth2(format!("Token exchange failed ({}): {}", status, body)));
         }
 
+        // A successful body carries the tokens, so keep it out of the error
         let token_resp: TokenResponse = serde_json::from_str(&body)
-            .map_err(|e| AuthError::OAuth2(format!("Failed to parse token response: {} - {}", e, body)))?;
-
-        tracing::info!("Got access token: {}...", &token_resp.access_token[..20.min(token_resp.access_token.len())]);
+            .map_err(|e| AuthError::OAuth2(format!("Failed to parse token response: {}", e)))?;
 
         let refresh_token = token_resp
             .refresh_token
@@ -379,4 +374,52 @@ pub fn delete_oauth_credentials(app_data_dir: &Path) -> Result<(), AuthError> {
     let _ = std::fs::remove_file(path);
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn auth() -> GmailAuth {
+        GmailAuth::new("client".into(), "secret".into())
+    }
+
+    #[tokio::test]
+    async fn exchange_rejects_callback_without_state() {
+        let auth = auth();
+        auth.start_auth_flow().await.unwrap();
+        let err = auth.exchange_code("code".into(), None).await.unwrap_err();
+        assert!(err.to_string().contains("State"), "{}", err);
+        assert!(auth.pending_auth.lock().await.is_some(), "flow must survive a bad callback");
+    }
+
+    #[tokio::test]
+    async fn exchange_rejects_mismatched_state_and_keeps_flow() {
+        let auth = auth();
+        auth.start_auth_flow().await.unwrap();
+        let err = auth.exchange_code("code".into(), Some("forged")).await.unwrap_err();
+        assert!(err.to_string().contains("State"), "{}", err);
+        assert!(auth.pending_auth.lock().await.is_some());
+    }
+
+    #[tokio::test]
+    async fn exchange_without_pending_flow_fails() {
+        let err = auth().exchange_code("code".into(), Some("x")).await.unwrap_err();
+        assert!(err.to_string().contains("No pending"), "{}", err);
+    }
+
+    #[tokio::test]
+    async fn auth_url_carries_pkce_and_state() {
+        let auth = auth();
+        let (url, state) = auth.start_auth_flow().await.unwrap();
+        assert!(url.starts_with(GOOGLE_AUTH_URL));
+        assert!(url.contains(&format!("state={}", state)));
+        assert!(url.contains("code_challenge_method=S256"));
+
+        let verifier = auth.pending_auth.lock().await.as_ref().unwrap().verifier.clone();
+        assert!((43..=128).contains(&verifier.len()));
+        use sha2::{Digest, Sha256};
+        let challenge = base64_url_encode(&Sha256::digest(verifier.as_bytes()));
+        assert!(url.contains(&format!("code_challenge={}&", challenge)));
+    }
 }
