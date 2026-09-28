@@ -5035,11 +5035,12 @@ function App() {
             <p class="settings-hint">
               <a href="#" onClick={(e) => { e.preventDefault(); openUrl('https://console.cloud.google.com/apis/credentials'); }} class="settings-link">
                 Open Google Cloud Console
-              </a> to create OAuth credentials.
+              </a>, create an OAuth client of type "Desktop app", and enable the Gmail API, Google Calendar API and People API for its project.
             </p>
             <div class="settings-form-group">
-              <label>Client ID</label>
+              <label for="settings-client-id">Client ID</label>
               <input
+                id="settings-client-id"
                 type="text"
                 value={clientId()}
                 onInput={(e) => setClientId(e.currentTarget.value)}
@@ -5051,8 +5052,9 @@ function App() {
               />
             </div>
             <div class="settings-form-group">
-              <label>Client Secret</label>
+              <label for="settings-client-secret">Client Secret</label>
               <input
+                id="settings-client-secret"
                 type="password"
                 value={clientSecret()}
                 onInput={(e) => setClientSecret(e.currentTarget.value)}

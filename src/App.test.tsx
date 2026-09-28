@@ -1761,3 +1761,18 @@ describe("App thread load errors", () => {
     expect(within(banner).getByRole("button", { name: "Sign in again" })).toBeInTheDocument();
   });
 });
+
+describe("App Google API settings", () => {
+  it("labels the credential fields and says which client and APIs to set up", async () => {
+    handlers.get_accounts = () => [];
+    handlers.get_stored_credentials = () => null;
+    render(() => <App />);
+    fireEvent.click(await screen.findByText("Settings"));
+
+    expect(screen.getByLabelText("Client ID")).toHaveAttribute("placeholder", "xxxx.apps.googleusercontent.com");
+    expect(screen.getByLabelText("Client Secret")).toHaveAttribute("type", "password");
+    const hints = Array.from(document.querySelectorAll(".settings-hint")).map(el => el.textContent).join(" ");
+    expect(hints).toMatch(/Desktop app/);
+    expect(hints).toMatch(/Gmail API.*Google Calendar API.*People API/);
+  });
+});
