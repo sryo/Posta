@@ -54,6 +54,7 @@ export const ActionsWheel = (props: {
   handleThreadAction: (action: string, threadIds: string[], cardId: string) => void;
   // Deletes an event the user can edit; without it the wheel offers no delete
   onDeleteEvent?: (event: GoogleCalendarEvent) => void;
+  onRsvped?: (eventId: string, status: string) => void;
   showToast: (message?: string) => void;
 }) => {
   const containerRef = (el: HTMLDivElement) => {
@@ -123,6 +124,7 @@ export const ActionsWheel = (props: {
             if (!account) return;
             try {
               await rsvpWithFallback(account.id, evt.id, 'accepted');
+              props.onRsvped?.(evt.id, 'accepted');
               props.showToast('RSVP: Yes');
               props.onClose();
             } catch (err) {
@@ -141,6 +143,7 @@ export const ActionsWheel = (props: {
             if (!account) return;
             try {
               await rsvpWithFallback(account.id, evt.id, 'declined');
+              props.onRsvped?.(evt.id, 'declined');
               props.showToast('RSVP: No');
               props.onClose();
             } catch (err) {

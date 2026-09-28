@@ -116,3 +116,25 @@ describe("ActionsWheel event delete", () => {
     expect(screen.getByTitle("RSVP No")).toBeInTheDocument();
   });
 });
+
+describe("ActionsWheel event RSVP", () => {
+  it("reports the new response once the RSVP succeeds", async () => {
+    rsvpCalendarEvent.mockReset().mockResolvedValue(null);
+    const onRsvped = vi.fn();
+    render(() => <ActionsWheel {...baseProps} selectedAccount={() => ({ id: "acc" } as any)} event={event} onRsvped={onRsvped} />);
+    fireEvent.click(screen.getByTitle("RSVP Yes"));
+    await vi.waitFor(() => expect(onRsvped).toHaveBeenCalledWith(event.id, "accepted"));
+    fireEvent.click(screen.getByTitle("RSVP No"));
+    await vi.waitFor(() => expect(onRsvped).toHaveBeenCalledWith(event.id, "declined"));
+  });
+
+  it("does not report a response when the RSVP fails", async () => {
+    rsvpCalendarEvent.mockReset().mockRejectedValue(new Error("offline"));
+    const onRsvped = vi.fn();
+    const showToast = vi.fn();
+    render(() => <ActionsWheel {...baseProps} showToast={showToast} selectedAccount={() => ({ id: "acc" } as any)} event={event} onRsvped={onRsvped} />);
+    fireEvent.click(screen.getByTitle("RSVP Yes"));
+    await vi.waitFor(() => expect(showToast).toHaveBeenCalledWith("Failed to RSVP"));
+    expect(onRsvped).not.toHaveBeenCalled();
+  });
+});

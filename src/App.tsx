@@ -3885,6 +3885,7 @@ function App() {
                                               handleForward={handleForward}
                                               handleThreadAction={handleThreadAction}
                                               onDeleteEvent={deleteEvent}
+                                              onRsvped={markEventRsvp}
                                               showToast={showToast}
                                             />
                                           </Show>
