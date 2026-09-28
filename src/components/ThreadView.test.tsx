@@ -390,6 +390,30 @@ describe("ThreadView attachments", () => {
     expect(props.onOpenAttachment).toHaveBeenCalledWith("m0", "att-1", "invoice.pdf", "application/pdf", undefined);
   });
 
+  it("keeps same-named attachments apart when Gmail hands out fresh attachment ids", () => {
+    const thread = makeThread([{ from: "Alice <alice@example.com>", body: "" }]);
+    const image = (id: string) => ({ filename: "image.png", mimeType: "image/png", body: { attachmentId: id, size: 10 } });
+    thread.messages[0].payload = {
+      ...thread.messages[0].payload,
+      mimeType: "multipart/mixed",
+      parts: [{ mimeType: "text/plain", body: { data: b64("hi") } }, image("detail-1"), image("detail-2")],
+    };
+    const listed = (id: string, data: string) => ({
+      message_id: "m0", attachment_id: id, filename: "image.png", mime_type: "image/png", size: 10, inline_data: data, content_id: null,
+    });
+    const { container, props } = renderThread({
+      thread,
+      focusedMessageIndex: 0,
+      threadAttachments: [listed("list-1", "Rmlyc3Q"), listed("list-2", "U2Vjb25k")],
+    });
+    const thumbs = container.querySelectorAll<HTMLElement>(".attachment-thumb");
+    expect(thumbs).toHaveLength(2);
+    fireEvent.click(thumbs[0]);
+    fireEvent.click(thumbs[1]);
+    const inlineData = (props.onOpenAttachment as any).mock.calls.map((c: unknown[]) => c[4]);
+    expect(inlineData).toEqual(["Rmlyc3Q", "U2Vjb25k"]);
+  });
+
   it("opens an attachment from the keyboard", () => {
     const thread = makeThread([{ from: "Alice <alice@example.com>", body: "" }]);
     thread.messages[0].payload = {

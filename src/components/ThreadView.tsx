@@ -400,27 +400,37 @@ export const ThreadView = (props: {
                 // Extract attachments from message parts, enriched with inline_data from threadAttachments
                 const getAttachments = () => {
                   const attachments: { filename: string; mimeType: string; size: number; attachmentId?: string; inlineData?: string }[] = [];
-                  const findAttachments = (parts: any[]) => {
+                  const payload = msg.payload;
+                  const fileParts: any[] = [];
+                  const findFileParts = (parts: any[]) => {
                     parts?.forEach(part => {
-                      if (part.filename && part.filename.length > 0) {
-                        const attachmentId = part.body?.attachmentId;
-                        // Look up inline_data from threadAttachments if available
-                        const threadAtt = props.threadAttachments?.find(
-                          a => a.message_id === msg.id && (a.attachment_id === attachmentId || a.filename === part.filename)
-                        );
-                        attachments.push({
-                          filename: part.filename,
-                          mimeType: part.mimeType || 'application/octet-stream',
-                          size: part.body?.size || 0,
-                          attachmentId,
-                          inlineData: threadAtt?.inline_data || part.body?.data,
-                        });
-                      }
-                      if (part.parts) findAttachments(part.parts);
+                      if (part.filename && part.filename.length > 0) fileParts.push(part);
+                      if (part.parts) findFileParts(part.parts);
                     });
                   };
-                  const payload = msg.payload;
-                  findAttachments(payload?.parts?.length ? payload.parts : payload?.filename ? [payload] : []);
+                  findFileParts(payload?.parts?.length ? payload.parts : payload?.filename ? [payload] : []);
+
+                  // Gmail issues a new attachmentId on every fetch, so the
+                  // listing's ids often differ from these; fall back to
+                  // pairing same-named files in order, each listing entry once
+                  const listed = props.threadAttachments?.filter(a => a.message_id === msg.id) ?? [];
+                  const partIds = new Set(fileParts.map(p => p.body?.attachmentId));
+                  const unpaired = listed.filter(a => !partIds.has(a.attachment_id));
+                  for (const part of fileParts) {
+                    const attachmentId = part.body?.attachmentId;
+                    let threadAtt = listed.find(a => a.attachment_id === attachmentId);
+                    if (!threadAtt) {
+                      const i = unpaired.findIndex(a => a.filename === part.filename);
+                      if (i !== -1) threadAtt = unpaired.splice(i, 1)[0];
+                    }
+                    attachments.push({
+                      filename: part.filename,
+                      mimeType: part.mimeType || 'application/octet-stream',
+                      size: part.body?.size || 0,
+                      attachmentId,
+                      inlineData: threadAtt?.inline_data || part.body?.data,
+                    });
+                  }
                   return attachments;
                 };
 
