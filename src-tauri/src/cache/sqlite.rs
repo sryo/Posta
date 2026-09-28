@@ -189,9 +189,15 @@ impl CacheDb {
         insert_card_row(&conn, card)
     }
 
+    /// Save a card edit. The position is left alone: `reorder_cards` owns
+    /// it, and the edited copy may predate a reorder.
     pub fn update_card(&self, card: &Card) -> Result<(), CacheError> {
         let conn = self.conn.lock().map_err(|_| CacheError::Lock)?;
-        update_card_row(&conn, card)
+        conn.execute(
+            "UPDATE cards SET name = ?1, query = ?2, collapsed = ?3, color = ?4, group_by = ?5, card_type = ?6 WHERE id = ?7",
+            params![card.name, card.query, card.collapsed as i32, card.color, card.group_by, card.card_type, card.id],
+        )?;
+        Ok(())
     }
 
     pub fn delete_card(&self, id: &str) -> Result<(), CacheError> {
@@ -548,6 +554,32 @@ mod tests {
         assert_eq!(cards[0].color.as_deref(), Some("red"));
         assert_eq!(cards[0].group_by, "sender");
         assert_eq!(cards[0].card_type, "calendar");
+    }
+
+    #[test]
+    fn editing_a_card_from_a_stale_copy_keeps_its_current_position() {
+        let db = db();
+        let card = Card::new("a".into(), "One".into(), "q1".into(), 0);
+        db.insert_card(&card).unwrap();
+        db.reorder_cards(&[(card.id.clone(), 4)]).unwrap();
+
+        let mut edited = card.clone();
+        edited.name = "Renamed".into();
+        db.update_card(&edited).unwrap();
+
+        let stored = &db.get_cards("a").unwrap()[0];
+        assert_eq!(stored.name, "Renamed");
+        assert_eq!(stored.position, 4);
+    }
+
+    #[test]
+    fn pulled_card_changes_carry_their_position() {
+        let db = db();
+        let card = Card::new("a".into(), "One".into(), "q1".into(), 0);
+        db.insert_card(&card).unwrap();
+        let moved = Card { position: 3, ..card };
+        db.apply_card_changes(&[], std::slice::from_ref(&moved), &[]).unwrap();
+        assert_eq!(db.get_cards("a").unwrap()[0].position, 3);
     }
 
     #[test]
