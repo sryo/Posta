@@ -274,6 +274,8 @@ struct CalEventSearchItem {
     id: String,
     attendees: Option<Vec<CalEventAttendee>>,
     creator: Option<EventCreator>,
+    #[serde(rename = "recurringEventId")]
+    recurring_event_id: Option<String>,
 }
 
 /// Guests hear about changes only to events the user created; anyone else's
@@ -731,7 +733,9 @@ impl CalendarClient {
         }
     }
 
-    /// Query a single calendar for an event by iCalUID
+    /// Query a single calendar for an event by iCalUID. A series comes back
+    /// with each occurrence that was changed on its own, all sharing the
+    /// iCalUID; the series itself is the one to answer.
     async fn search_calendar_for_ical_uid(
         &self,
         calendar_id: &str,
@@ -745,7 +749,9 @@ impl CalendarClient {
         );
 
         let events_response: CalEventSearchResponse = self.send_json(self.http_client.get(&search_url)).await?;
-        Ok(events_response.items.unwrap_or_default().into_iter().next())
+        let mut items = events_response.items.unwrap_or_default();
+        let series = items.iter().position(|e| e.recurring_event_id.is_none()).unwrap_or(0);
+        Ok((series < items.len()).then(|| items.swap_remove(series)))
     }
 
     /// Locate an event by iCalUID: primary calendar first (common case, no
@@ -1973,6 +1979,37 @@ mod tests {
         assert_eq!(patches.len(), 1);
         assert!(patches[0].1.starts_with("/calendars/work/events/e1?"), "{:?}", patches[0]);
         assert!(patches[0].2.contains("declined"), "{:?}", patches[0]);
+    }
+
+    #[tokio::test]
+    async fn an_invite_to_a_series_is_answered_on_the_series_not_one_moved_occurrence() {
+        // Looking a series up by iCalUID returns the series and each occurrence
+        // that was changed on its own, in no set order
+        for moved_first in [true, false] {
+            let server = StubServer::start(move |method, target| {
+                if method == "PATCH" {
+                    return (200, "{}".to_string());
+                }
+                if !target.starts_with("/calendars/primary/events?iCalUID=") {
+                    return (200, serde_json::json!({ "items": [] }).to_string());
+                }
+                let series = serde_json::json!({ "id": "weekly", "attendees": [
+                    { "email": "me@x.com", "responseStatus": "declined" },
+                ] });
+                let moved = serde_json::json!({ "id": "weekly_20260924T150000Z", "recurringEventId": "weekly", "attendees": [
+                    { "email": "me@x.com", "responseStatus": "accepted" },
+                ] });
+                let items = if moved_first { serde_json::json!([moved, series]) } else { serde_json::json!([series, moved]) };
+                (200, serde_json::json!({ "items": items }).to_string())
+            })
+            .await;
+            let client = server.client();
+            let status = client.get_calendar_event_status("me@x.com", "uid-1").await.unwrap();
+            assert_eq!(status.as_deref(), Some("declined"), "moved_first={moved_first}");
+            client.rsvp_calendar_event("me@x.com", "uid-1", "tentative").await.unwrap();
+            let patch = server.requests().into_iter().find(|(m, _, _)| m == "PATCH").expect("no PATCH sent");
+            assert!(patch.1.starts_with("/calendars/primary/events/weekly?"), "moved_first={moved_first}: {}", patch.1);
+        }
     }
 
     #[tokio::test]
