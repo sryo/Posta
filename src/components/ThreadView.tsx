@@ -1,6 +1,7 @@
 import { createSignal, createEffect, createMemo, onMount, onCleanup, Show, For } from "solid-js";
 import { MessageBody } from './MessageBody';
 import { sendReaction, type FullThread, type FullMessage, type Attachment } from "../api/tauri";
+import { createCloseAfterAnimation } from "../shared/closeAfterAnimation";
 import { isTypingTarget, hasCommandModifier, onActivateKey } from "../shared/keyboard";
 import {
   findContent,
@@ -86,7 +87,6 @@ export const ThreadView = (props: {
   const [hoveredMessageId, setHoveredMessageId] = createSignal<string | null>(null);
   const [wheelOpen, setWheelOpen] = createSignal(false);
   const [hoveredLinkUrl, setHoveredLinkUrl] = createSignal<string | null>(null);
-  const [closing, setClosing] = createSignal(false);
   const [sendingReaction, setSendingReaction] = createSignal(false);
   // Message a forward was started from in this view; null means the forward
   // came from elsewhere (e.g. the card list) and sits under the last message
@@ -120,10 +120,7 @@ export const ThreadView = (props: {
     }
   };
 
-  const handleClose = () => {
-    setClosing(true);
-    setTimeout(() => props.onClose(), 200); // Match animation duration
-  };
+  const { closing, close: handleClose } = createCloseAfterAnimation(() => props.onClose());
 
   // Gmail messages never change content under the same id (a draft edit gets
   // a new id), so a reloaded thread reuses the loaded message objects and

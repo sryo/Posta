@@ -493,6 +493,34 @@ describe("ThreadView scrolling", () => {
   });
 });
 
+describe("ThreadView closing", () => {
+  it("closes once however often Escape is pressed during the closing animation", () => {
+    vi.useFakeTimers();
+    try {
+      const { props } = renderThread();
+      fireEvent.keyDown(document, { key: "Escape" });
+      fireEvent.keyDown(document, { key: "Escape" });
+      vi.advanceTimersByTime(500);
+      expect(props.onClose).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("does not close whatever is open next once it is gone", () => {
+    vi.useFakeTimers();
+    try {
+      const { props, unmount } = renderThread();
+      fireEvent.keyDown(document, { key: "Escape" });
+      unmount();
+      vi.advanceTimersByTime(500);
+      expect(props.onClose).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
 describe("ThreadView load errors", () => {
   it("offers to try loading the thread again", () => {
     const onRetry = vi.fn();

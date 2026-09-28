@@ -173,3 +173,16 @@ describe("EventView video call", () => {
     expect(openUrl).toHaveBeenCalledWith("https://meet.google.com/abc");
   });
 });
+
+describe("EventView closing", () => {
+  afterEach(() => vi.useRealTimers());
+
+  it("closes once however often Escape is pressed during the closing animation", () => {
+    vi.useFakeTimers();
+    const props = renderEvent();
+    fireEvent.keyDown(document, { key: "Escape" });
+    fireEvent.keyDown(document, { key: "Escape" });
+    vi.advanceTimersByTime(500);
+    expect(props.onClose).toHaveBeenCalledTimes(1);
+  });
+});

@@ -1,4 +1,4 @@
-import { createSignal, createEffect, on, onMount, onCleanup, Show, For } from "solid-js";
+import { createEffect, on, onMount, onCleanup, Show, For } from "solid-js";
 import DOMPurify from 'dompurify';
 import { DOMPURIFY_CONFIG } from './MessageBody';
 import { openUrl } from '@tauri-apps/plugin-opener';
@@ -17,6 +17,7 @@ import { ComposeForm } from "./ComposeForm";
 import { CreateEventForm } from "./CreateEventForm";
 import { MessageActionsWheel } from "./MessageActionsWheel";
 import { COLOR_HEX } from "../shared/constants";
+import { createCloseAfterAnimation } from "../shared/closeAfterAnimation";
 import { isTypingTarget, hasCommandModifier } from "../shared/keyboard";
 import { createTwoStepConfirm } from "../shared/twoStepConfirm";
 import type { InlineComposeProps, InlineEditEventProps } from "./types";
@@ -43,12 +44,8 @@ export const EventView = (props: {
   inlineCompose: InlineComposeProps | null;
   inlineEdit: InlineEditEventProps | null;
 }) => {
-  const [closing, setClosing] = createSignal(false);
 
-  const handleClose = () => {
-    setClosing(true);
-    setTimeout(() => props.onClose(), 200);
-  };
+  const { closing, close: handleClose } = createCloseAfterAnimation(() => props.onClose());
 
   const deleteConfirm = createTwoStepConfirm();
   const handleDelete = () => deleteConfirm.press(() => props.onDelete());
