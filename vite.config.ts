@@ -1,11 +1,13 @@
 import { defineConfig } from "vite";
 import solid from "vite-plugin-solid";
 
-// @ts-expect-error process is a nodejs global
+// Node global; @types/node is not a dependency.
+declare const process: { env: Record<string, string | undefined> };
+
 const host = process.env.TAURI_DEV_HOST;
 
 // https://vite.dev/config/
-export default defineConfig(async () => ({
+export default defineConfig({
   plugins: [solid()],
 
   // Vite options tailored for Tauri development and only applied in `tauri dev` or `tauri build`
@@ -29,4 +31,4 @@ export default defineConfig(async () => ({
       ignored: ["**/src-tauri/**"],
     },
   },
-}));
+});
