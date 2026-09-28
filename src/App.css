@@ -18,12 +18,6 @@
     --shadow: rgba(0, 0, 0, 0.1);
     --danger: #e53935;
     --danger-bg: rgba(229, 57, 53, 0.1);
-    --success: #43a047;
-    --success-bg: rgba(67, 160, 71, 0.12);
-    --warning: #fb8c00;
-    --warning-bg: rgba(251, 140, 0, 0.12);
-    --info: #00acc1;
-    --info-bg: rgba(0, 172, 193, 0.12);
     --toast-bg: #323232;
 
     /* Z-index scale - hierarchical layers
@@ -78,7 +72,6 @@
     --space-lg: 12px;
     --space-xl: 16px;
     --space-2xl: 24px;
-    --space-3xl: 32px;
 }
 
 @media (prefers-color-scheme: dark) {
@@ -95,12 +88,6 @@
         --shadow: rgba(0, 0, 0, 0.3);
         --danger: #ff6b6b;
         --danger-bg: rgba(255, 107, 107, 0.15);
-        --success: #66bb6a;
-        --success-bg: rgba(102, 187, 106, 0.15);
-        --warning: #ffa726;
-        --warning-bg: rgba(255, 167, 38, 0.15);
-        --info: #26c6da;
-        --info-bg: rgba(38, 198, 218, 0.15);
         --toast-bg: #424242;
     }
 }
