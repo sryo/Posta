@@ -1797,6 +1797,7 @@ function App() {
   function cancelAddCard() {
     setClosingAddCard(true);
     setTimeout(() => {
+      setNewCardName("");
       setNewCardQuery("");
       setNewCardColor(null);
       setNewCardGroupBy("date");

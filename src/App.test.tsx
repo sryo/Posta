@@ -2096,6 +2096,21 @@ describe("App links", () => {
   });
 });
 
+describe("App new card form", () => {
+  it("starts empty again after a cancelled card", async () => {
+    handlers.search_threads_preview = () => [];
+    render(() => <App />);
+    await screen.findByText("Mail for A");
+    fireEvent.click(screen.getByTitle("New card"));
+    fireEvent.input(screen.getByPlaceholderText("Inbox, Starred..."), { target: { value: "Temp" } });
+    fireEvent.click(screen.getByTitle("Cancel (Esc)"));
+    await waitFor(() => expect(screen.queryByPlaceholderText("Inbox, Starred...")).not.toBeInTheDocument());
+
+    fireEvent.click(screen.getByTitle("New card"));
+    expect(screen.getByPlaceholderText("Inbox, Starred...")).toHaveValue("");
+  });
+});
+
 describe("App card order", () => {
   it("says so when a dragged card's new place can't be saved, and puts it back", async () => {
     cardsByAccount.a = [card("card-a", "a", "Alpha"), { ...card("card-b", "a", "Beta"), position: 1 }];
