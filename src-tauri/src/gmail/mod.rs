@@ -1480,6 +1480,8 @@ fn strip_html_tags(html: &str) -> String {
     let mut result = String::new();
     let mut tag = String::new();
     let mut in_tag = false;
+    // Element whose content is not text (style, script, head) until it closes
+    let mut hidden_element: Option<String> = None;
 
     for c in html.chars() {
         match c {
@@ -1489,7 +1491,7 @@ fn strip_html_tags(html: &str) -> String {
             }
             '>' if in_tag => {
                 in_tag = false;
-                // Line-breaking tags become newlines instead of vanishing
+                let is_closing = tag.starts_with('/');
                 let name = tag
                     .trim_start_matches('/')
                     .split_whitespace()
@@ -1497,11 +1499,19 @@ fn strip_html_tags(html: &str) -> String {
                     .unwrap_or("")
                     .trim_end_matches('/')
                     .to_ascii_lowercase();
-                if name == "br" || name == "p" {
+                if let Some(hidden) = &hidden_element {
+                    if is_closing && *hidden == name {
+                        hidden_element = None;
+                    }
+                } else if !is_closing && matches!(name.as_str(), "style" | "script" | "head") {
+                    hidden_element = Some(name);
+                } else if name == "br" || name == "p" {
+                    // Line-breaking tags become newlines instead of vanishing
                     result.push('\n');
                 }
             }
             _ if in_tag => tag.push(c),
+            _ if hidden_element.is_some() => {}
             _ => result.push(c),
         }
     }
@@ -1937,6 +1947,14 @@ mod tests {
     fn strip_html_removes_other_tags() {
         assert_eq!(strip_html_tags("<b>bold</b> and <i>italic</i>"), "bold and italic");
         assert_eq!(strip_html_tags("<a href=\"http://x\">link</a>"), "link");
+    }
+
+    #[test]
+    fn strip_html_drops_style_script_and_head_contents() {
+        // A reply quoting an HTML newsletter carries its <head> and <style>
+        let html = "<html><head><title>Promo</title><style>p { color: red; }</style></head>\
+                    <body><STYLE type=\"text/css\">.x{}</STYLE>Hi<script>alert(1)</script> there</body></html>";
+        assert_eq!(strip_html_tags(html), "Hi there");
     }
 
     #[test]
