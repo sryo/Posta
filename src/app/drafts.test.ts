@@ -79,6 +79,23 @@ describe("createDraftSync", () => {
     expect(drafts.gmailDraftId()).toBeNull();
   });
 
+  it("deletes an existing Gmail draft once when it is cleared during an update", async () => {
+    const create = deferred<{ id: string }>();
+    const update = deferred<{ id: string }>();
+    let calls = 0;
+    handlers.save_draft = () => (calls++ === 0 ? create.promise : update.promise);
+    const drafts = sync();
+    drafts.save("k", "a", fields("one"));
+    const saving = drafts.save("k", "a", fields("two"));
+    create.resolve({ id: "d1" });
+    await vi.waitFor(() => expect(invoke).toHaveBeenCalledTimes(2));
+    await drafts.clear("k", "a");
+    update.resolve({ id: "d1" });
+    await saving;
+
+    expect(invoke.mock.calls.filter(([cmd]) => cmd === "delete_draft")).toEqual([["delete_draft", { accountId: "a", draftId: "d1" }]]);
+  });
+
   it("does not hand the old compose's Gmail draft to the compose that replaced it", async () => {
     const pending = deferred<{ id: string }>();
     handlers.save_draft = () => pending.promise;
@@ -93,6 +110,45 @@ describe("createDraftSync", () => {
     // The replaced compose's draft is kept, not deleted
     expect(invoke).not.toHaveBeenCalledWith("delete_draft", expect.anything());
     expect(JSON.parse(localStorage.getItem("k")!)).toMatchObject({ body: "old" });
+  });
+
+  it("keeps the newer local text when an earlier save returns after it", async () => {
+    const first = deferred<{ id: string }>();
+    let calls = 0;
+    handlers.save_draft = () => {
+      if (calls++ === 0) return first.promise;
+      throw new Error("offline");
+    };
+    const drafts = sync();
+    const a = drafts.save("k", "a", fields("one"));
+    vi.setSystemTime(Date.now() + 1000);
+    const b = drafts.save("k", "a", fields("two"));
+    first.resolve({ id: "d1" });
+    await Promise.all([a, b]);
+    vi.useRealTimers();
+
+    expect(JSON.parse(localStorage.getItem("k")!)).toMatchObject({ body: "two", gmailDraftId: "d1" });
+  });
+
+  it("does not overwrite the replacing compose's draft saved under the same key", async () => {
+    const pending = deferred<{ id: string }>();
+    let calls = 0;
+    handlers.save_draft = () => {
+      if (calls++ === 0) return pending.promise;
+      throw new Error("offline");
+    };
+    const drafts = sync();
+    const saving = drafts.save("k", "a", fields("old"));
+    await vi.waitFor(() => expect(invoke).toHaveBeenCalledWith("save_draft", expect.anything()));
+    drafts.detach();
+    vi.setSystemTime(Date.now() + 1000);
+    const next = drafts.save("k", "a", fields("new"));
+    pending.resolve({ id: "d-old" });
+    await Promise.all([saving, next]);
+    vi.useRealTimers();
+
+    expect(JSON.parse(localStorage.getItem("k")!)).toMatchObject({ body: "new" });
+    expect(JSON.parse(localStorage.getItem("k")!).gmailDraftId).toBeUndefined();
   });
 
   it("clears the local copy and the Gmail draft", async () => {

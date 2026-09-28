@@ -1,6 +1,6 @@
 import { createSignal } from "solid-js";
 import { invoke } from "@tauri-apps/api/core";
-import { safeGetItem, safeRemoveItem, safeSetJSON } from "../shared/storage";
+import { safeGetItem, safeGetJSON, safeRemoveItem, safeSetJSON } from "../shared/storage";
 
 export interface DraftFields {
   to: string;
@@ -55,10 +55,11 @@ export function createDraftSync() {
   async function sync(key: string, accountId: string, draft: Draft, startedIn: number) {
     if (startedIn !== epoch) return;
     setSaving(true);
+    const sentDraftId = gmailDraftId();
     try {
       const result = await invoke<{ id: string }>("save_draft", {
         accountId,
-        draftId: gmailDraftId(),
+        draftId: sentDraftId,
         to: draft.to,
         cc: draft.cc,
         bcc: draft.bcc,
@@ -68,9 +69,12 @@ export function createDraftSync() {
       });
       if (startedIn !== epoch) {
         if (!clearedEpochs.has(startedIn)) {
-          // The compose was replaced, not discarded: its draft stays saved
-          safeSetJSON(key, { ...draft, gmailDraftId: result.id });
-        } else if (result.id && result.id !== draft.gmailDraftId) {
+          // The compose was replaced, not discarded: its draft stays saved,
+          // unless the next compose has already saved over the same key
+          if (safeGetJSON<Draft | null>(key, null)?.savedAt === draft.savedAt) {
+            safeSetJSON(key, { ...draft, gmailDraftId: result.id });
+          }
+        } else if (result.id && result.id !== sentDraftId) {
           // Discarded while this save was creating a Gmail draft the clear
           // couldn't know about: delete the orphan
           invoke("delete_draft", { accountId, draftId: result.id })
@@ -79,7 +83,10 @@ export function createDraftSync() {
         return;
       }
       setGmailDraftId(result.id);
-      safeSetJSON(key, { ...draft, gmailDraftId: result.id });
+      // A later save may already have stored newer text locally
+      const stored = safeGetJSON<Draft | null>(key, null);
+      const latest = stored && stored.savedAt >= draft.savedAt ? stored : draft;
+      safeSetJSON(key, { ...latest, gmailDraftId: result.id });
       flashSaved();
     } catch (e) {
       console.warn("Failed to sync draft to Gmail (offline?):", e);
