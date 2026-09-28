@@ -70,6 +70,23 @@ export function actionLabel(action: string, count: number): string {
   }
 }
 
+export function actionFailureLabel(action: string, count: number): string {
+  const threads = `${count} thread${count === 1 ? "" : "s"}`;
+  switch (action) {
+    case "archive": return `Couldn't archive ${threads}`;
+    case "inbox": return `Couldn't move ${threads} to inbox`;
+    case "star": return `Couldn't star ${threads}`;
+    case "unstar": return `Couldn't remove the star from ${threads}`;
+    case "trash": return `Couldn't delete ${threads}`;
+    case "read": return `Couldn't mark ${threads} as read`;
+    case "unread": return `Couldn't mark ${threads} as unread`;
+    case "important": return `Couldn't mark ${threads} as important`;
+    case "notImportant": return `Couldn't mark ${threads} as not important`;
+    case "spam": return `Couldn't move ${threads} to spam`;
+    default: return `Couldn't change ${threads}`;
+  }
+}
+
 // Archive only removes INBOX, so the thread should vanish only from cards
 // whose query is inbox-scoped: cards like has:attachment or is:starred still
 // match it on the server. Trash and spam remove it everywhere.

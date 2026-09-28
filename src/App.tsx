@@ -1,4 +1,4 @@
-import { batch, createSignal, onMount, onCleanup, Show, For, Index, createMemo, createEffect, createComputed, on, untrack } from "solid-js";
+import { batch, createSignal, onMount, onCleanup, Show, For, Index, createMemo, createEffect, createComputed, createSelector, mapArray, on, untrack } from "solid-js";
 import { createStore, produce, reconcile, unwrap } from "solid-js/store";
 import DOMPurify from 'dompurify';
 import { DOMPURIFY_CONFIG } from './components/MessageBody';
@@ -117,30 +117,39 @@ import { EventView } from "./components/EventView";
 import { ActionsWheel } from "./components/ActionsWheel";
 import { CardForm } from "./components/CardForm";
 import { safeGetItem, safeSetItem, safeRemoveItem, safeGetJSON, safeSetJSON } from "./shared/storage";
-import { BG_COLORS, GMAIL_OPERATORS, type ActionSettings, type CardColor, type GroupBy } from "./shared/constants";
+import { BG_COLORS, type ActionSettings, type CardColor, type GroupBy } from "./shared/constants";
 import { createUndoableSend } from "./app/undoableSend";
 import { findHeader, lastMessageFromOthers } from "./app/messages";
 import { batchReplyEntry, type BatchReplyThread } from "./app/batchReply";
 import { completeRecipient, currentRecipient, matchContacts, rankContacts } from "./app/contacts";
 import { eventReplyRecipients } from "./app/eventReply";
-import { actionLabel, actionRemovesFromCard, applyThreadAction, labelChangeFor, threadMayJoinCard, undoLabelChanges, type LabelReversal } from "./app/threadActions";
+import { actionFailureLabel, actionLabel, actionRemovesFromCard, applyThreadAction, labelChangeFor, threadMayJoinCard, undoLabelChanges, type LabelReversal } from "./app/threadActions";
 import { PRESETS } from "./app/presets";
 import { normalizeActionOrder } from "./app/actionOrder";
 import { parseStoredWidth } from "./app/storedWidth";
 import { isSessionExpiredError, needsSignInAgain } from "./app/authErrors";
-import { withSignature } from "./app/signature";
+import { signatureBlock, withSignature } from "./app/signature";
 import { readFilesAsAttachments } from "./app/attachments";
 import { eventAttendees, eventTimesFromForm, smartEventDefaults } from "./app/eventForm";
 import { composePlacement } from "./app/composePlacement";
-import { cidImagesToFetch, fetchCidImages } from "./app/cidImages";
+import { cidImagesToFetch, createLruCache, fetchCidImages } from "./app/cidImages";
 import { sendPending, type PendingSend } from "./app/pendingSend";
 import { parseMailto } from "./app/mailto";
 import { coalesceByKey } from "./app/coalesce";
 import { threadLoadErrorMessage } from "./app/loadErrors";
 import { cardTypeForQuery } from "./app/cardType";
-import { createDraftSync, draftKey, findLatestDraft, hasDraftContent, markDraftClosed, removeAccountDrafts, sessionDraftKey, type DraftFields } from "./app/drafts";
-import { nextCardFocus, nextItemFocus } from "./app/keyboardNav";
+import { createDraftSync, draftKey, findLatestDraft, findUnsentDrafts, hasDraftContent, markDraftClosed, markDraftSending, pruneDrafts, removeAccountDrafts, sessionDraftKey, type DraftFields } from "./app/drafts";
+import { escapeTarget, nextCardFocus, nextItemFocus } from "./app/keyboardNav";
 import { getSmartEventTime, groupCalendarEvents, isUserLabel, mergeThreadGroups, regroupThreads, type CalendarEventGroup } from "./app/grouping";
+import { pullLayoutWithRetry } from "./app/icloudRestore";
+import { querySuggestions, type QuerySuggestion } from "./app/querySuggestions";
+import { inviteNamesEvent, rsvpSentMessage, rsvpWithFallback, type RsvpStatus } from "./app/rsvp";
+import { hasCommandModifier, onActivateKey } from "./shared/keyboard";
+
+const SESSION_EXPIRED_MESSAGE = "Session expired - sign in again";
+
+// Names for BG_COLORS, in its order, for the colour picker's options
+const BG_COLOR_NAMES = ["Red", "Orange", "Yellow", "Green", "Teal", "Blue", "Purple", "Pink"];
 
 function App() {
   const [loading, setLoading] = createSignal(true);
@@ -219,23 +228,22 @@ function App() {
     }
   };
 
-  const handleRsvp = async (threadId: string, eventUid: string | null, status: string) => {
-    if (!eventUid || !selectedAccount()) return;
-
-    // Map UI status to API status
-    const apiStatus = status === "yes" ? "accepted" : status === "maybe" ? "tentative" : "declined";
-
-    // Set loading
+  // Answers an invite from its email; the calendar cards showing the event
+  // pick up the answer too
+  const handleRsvp = async (threadId: string, eventUid: string | null, status: RsvpStatus) => {
+    const account = selectedAccount();
+    if (!eventUid || !account || rsvpLoading[threadId]) return;
     setRsvpLoading(threadId, true);
-
     try {
-      await rsvpCalendarEvent(selectedAccount()!.id, eventUid, apiStatus);
-
-      // Update local state on success
-      setRsvpStatus(threadId, apiStatus);
+      await rsvpCalendarEvent(account.id, eventUid, status);
+      setRsvpStatus(threadId, status);
+      const eventIds = new Set(Object.values(cardCalendarEvents).flatMap(events =>
+        (events ?? []).filter(ev => inviteNamesEvent(eventUid, ev.id)).map(ev => ev.id)));
+      for (const eventId of eventIds) markEventRsvp(eventId, status);
+      showToast(rsvpSentMessage(status));
     } catch (e) {
       console.error("Failed to update RSVP:", e);
-      showToast(`Failed to update RSVP: ${e}`);
+      showToast(`Couldn't RSVP: ${e}`);
     } finally {
       setRsvpLoading(threadId, false);
     }
@@ -261,6 +269,8 @@ function App() {
   } | null>(null);
   let toastTimeoutId: number | undefined;
   let toastHideTimeoutId: number | undefined;
+  // The closed draft the toast's Discard would delete
+  let discardToastDraftKey: string | null = null;
 
   // Undo send state
   const undoableSend = createUndoableSend<PendingSend>({
@@ -269,13 +279,24 @@ function App() {
       await sendPending(pending);
       const draft = pending.draft;
       if (draft) {
+        markDraftSending(draft.key, null);
         drafts.discard(draft.key, pending.accountId, draft.gmailDraftId)
           .finally(() => sendingDraftKeys.delete(draft.key));
       }
     },
     onFailed: (pending, e) => {
       console.error("Failed to send email:", e);
-      restoreSend(pending);
+      // Putting the failed email back would replace the one being written
+      // (and drop its attachments); offer it instead
+      if (composing() && !closingCompose() && (hasDraftContent(composeDraftFields()) || composeAttachments().length > 0)) {
+        if (pending.draft) {
+          sendingDraftKeys.delete(pending.draft.key);
+          markDraftSending(pending.draft.key, null);
+        }
+        showToast(`Couldn't send "${pending.subject || "(no subject)"}"`, { label: "Open", run: () => restoreSend(pending) });
+      } else {
+        restoreSend(pending);
+      }
       setError(`Failed to send email: ${e}`);
     },
   });
@@ -567,18 +588,22 @@ function App() {
 
   // Event quick reply
   const [quickReplyEventId, setQuickReplyEventId] = createSignal<string | null>(null);
+  // Rows read these rather than quickReply(), which changes on every keystroke
+  const isQuickReplyThread = createSelector(createMemo(() => quickReply().threadId));
+  const isQuickReplyEvent = createSelector(quickReplyEventId);
 
   // Open quick reply for a thread/event, closing the other target and clearing
   // draft text whenever the target changes so text never leaks between them
+  // (a reply still sending to the previous target doesn't block the new one)
   function openThreadQuickReply(threadId: string, cardId: string) {
     setQuickReplyEventId(null);
-    setQuickReply(qr => ({ ...qr, threadId, text: qr.threadId === threadId ? qr.text : "" }));
+    setQuickReply(qr => (qr.threadId === threadId ? qr : { threadId, text: "", sending: false }));
     setQuickReplyCardId(cardId);
   }
 
   function openEventQuickReply(eventId: string) {
     const sameTarget = quickReplyEventId() === eventId;
-    setQuickReply(qr => ({ ...qr, threadId: null, text: sameTarget ? qr.text : "" }));
+    setQuickReply(qr => (sameTarget ? { ...qr, threadId: null } : { threadId: null, text: "", sending: false }));
     setQuickReplyCardId(null);
     setQuickReplyEventId(eventId);
   }
@@ -592,6 +617,8 @@ function App() {
   // Event actions wheel
   const [hoveredEvent, setHoveredEvent] = createSignal<string | null>(null);
   const [eventActionsWheelOpen, setEventActionsWheelOpen] = createSignal(false);
+  const isHoveredThread = createSelector(hoveredThread);
+  const isHoveredEvent = createSelector(hoveredEvent);
   let hoverEventActionsTimeout: number | undefined;
 
   function showThreadHoverActions(threadId: string) {
@@ -650,7 +677,10 @@ function App() {
   // before any account was signed in adopts the first one.
   const [composeAccount, setComposeAccount] = createSignal<Account | null>(null);
   createComputed(on([composing, selectedAccount], ([open, account], prev) => {
-    if (open && (!prev?.[0] || !untrack(composeAccount))) setComposeAccount(account);
+    if (!open || (prev?.[0] && untrack(composeAccount))) return;
+    const adopting = !!prev?.[0] && !!account;
+    setComposeAccount(account);
+    if (adopting) untrack(() => moveComposeDraftTo(account.id));
   }));
   // Event creation state
   const [creatingEvent, setCreatingEvent] = createSignal(false);
@@ -728,6 +758,9 @@ function App() {
   const drafts = createDraftSync();
   // Where the open compose keeps its draft, chosen when it opens
   let composeDraftKey = "";
+  // Typed in since it opened; prefilled text alone (a signature, a quoted
+  // message) is no draft
+  let composeEdited = false;
   // Drafts of emails queued or going out; not offered to a new compose
   const sendingDraftKeys = new Set<string>();
 
@@ -742,6 +775,22 @@ function App() {
     };
   }
 
+  // A compose opened before any account saved its draft under no account;
+  // file it under the account it adopted, where that account's composes and
+  // sign-out look for it
+  function moveComposeDraftTo(accountId: string) {
+    const key = sessionDraftKey(draftKey(accountId, {
+      replyThreadId: replyingToThread()?.threadId,
+      forwardThreadId: forwardingThread()?.threadId,
+      replyEventId: replyingToEvent()?.eventId,
+      forwardEventId: forwardingEvent()?.eventId,
+    }));
+    const stored = safeGetItem(composeDraftKey);
+    if (stored !== null && !safeSetItem(key, stored)) return;
+    safeRemoveItem(composeDraftKey);
+    composeDraftKey = key;
+  }
+
   function saveDraft() {
     cancelDraftSave();
     const account = composeAccount();
@@ -753,6 +802,7 @@ function App() {
   // it once typing pauses
   function handleComposeInput() {
     if (!composing() || closingCompose()) return;
+    composeEdited = true;
     drafts.saveLocal(composeDraftKey, composeDraftFields());
     clearTimeout(draftSaveTimeout);
     draftSaveTimeout = window.setTimeout(saveDraft, 3000);
@@ -904,7 +954,7 @@ function App() {
       if (!collapsedCards[card.id] && (mayGainThread || cardsWithModified.has(card.id))) {
         fetchAndCacheThreads(account.id, card.id);
       } else if (cardsWithDeleted.has(card.id)) {
-        saveCachedCardThreads(card.id, updatedCardThreads[card.id], cardPageTokens[card.id] || null)
+        saveCardCache(card.id, updatedCardThreads[card.id], cardPageTokens[card.id] || null)
           .catch(e => console.warn("Failed to update thread cache:", e));
       }
     }
@@ -934,9 +984,13 @@ function App() {
       const cardList = await getCards(account.id);
       if (selectedAccount()?.id !== account.id) return;
       const before = new Map(cards().map(c => [c.id, c.query]));
+      const kept = new Set(cardList.map(c => c.id));
       setCards(cardList);
+      forgetCardState([...before.keys()].filter(id => !kept.has(id)));
       for (const card of cardList) {
-        if (before.get(card.id) !== card.query && !collapsedCards[card.id]) loadCardThreads(card.id);
+        if (before.get(card.id) === card.query || collapsedCards[card.id]) continue;
+        // A changed card's cache holds its old query's threads
+        loadCardThreads(card.id, false, before.has(card.id));
       }
     } catch (e) {
       console.warn("iCloud card pull failed:", e);
@@ -964,7 +1018,7 @@ function App() {
       window.addEventListener("focus", handleWindowFocus);
     }
     fetchContacts(accountId)
-      .then(contacts => setGoogleContacts(contacts))
+      .then(contacts => { if (selectedAccount()?.id === accountId) setGoogleContacts(contacts); })
       .catch(e => console.warn("Failed to fetch contacts (user may need to re-auth):", e));
   }
 
@@ -1003,6 +1057,7 @@ function App() {
         } catch (err) {
           console.error("Failed to persist card order:", err);
           setCards(previousCards);
+          showToast(`Couldn't save the card order: ${err}`);
         }
       }
     }
@@ -1067,6 +1122,7 @@ function App() {
     document.documentElement.style.setProperty("--snippet-lines", String(snippetLines));
 
     loadGeminiKeyState();
+    pruneDrafts(Date.now());
 
     // Listen for mailto: deep-link events whether or not startup succeeds
     listen<MailtoData>(
@@ -1103,6 +1159,7 @@ function App() {
         await loadAccountCards(accts[0]);
         startBackgroundSync(accts[0].id);
       }
+      offerUnsentDraft(accts);
     } catch (e) {
       setError(String(e));
     } finally {
@@ -1155,13 +1212,16 @@ function App() {
     return threads[idx] || null;
   }
 
-  // Check if a specific thread in a card is focused
+  // Selectors notify only the rows whose answer changes, so moving focus or
+  // hovering updates two rows instead of every row of every card
+  const rowKey = (cardId: string, itemId: string) => `${cardId}\n${itemId}`;
+  const focusedThreadKey = createMemo(() => {
+    const thread = getFocusedThread();
+    return thread ? rowKey(focusedCardId()!, thread.gmail_thread_id) : null;
+  });
+  const isFocusedThreadKey = createSelector(focusedThreadKey);
   function isThreadFocused(cardId: string, threadId: string): boolean {
-    if (focusedCardId() !== cardId) return false;
-    const idx = focusedThreadIndex();
-    if (idx < 0) return false;
-    const threads = getCardThreadsFlat(cardId);
-    return threads[idx]?.gmail_thread_id === threadId;
+    return isFocusedThreadKey(rowKey(cardId, threadId));
   }
 
   // Get flattened list of calendar events for a card
@@ -1169,13 +1229,13 @@ function App() {
     return getCalendarEventGroups(cardId).flatMap(g => g.events);
   }
 
-  // Check if a specific event in a card is focused
+  const focusedEventKey = createMemo(() => {
+    const event = getFocusedEvent();
+    return event ? rowKey(focusedCardId()!, event.id) : null;
+  });
+  const isFocusedEventKey = createSelector(focusedEventKey);
   function isEventFocused(cardId: string, eventId: string): boolean {
-    if (focusedCardId() !== cardId) return false;
-    const idx = focusedEventIndex();
-    if (idx < 0) return false;
-    const events = getCardEventsFlat(cardId);
-    return events[idx]?.id === eventId;
+    return isFocusedEventKey(rowKey(cardId, eventId));
   }
 
   // Get the focused event
@@ -1237,6 +1297,12 @@ function App() {
       return;
     }
 
+    if (e.key === 'Escape' && authLoading()) {
+      e.preventDefault();
+      cancelSignIn();
+      return;
+    }
+
     // Cmd/Ctrl+Enter to save card when editing
     if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
       if (editingCardId() && editCardName() && editCardQuery() && !activeThreadId() && !activeEvent()) {
@@ -1248,7 +1314,7 @@ function App() {
 
     // Everything below is a bare-key shortcut; Cmd/Ctrl/Alt combos (Cmd+A
     // select-all, system shortcuts) must never trigger thread/card actions
-    if (e.metaKey || e.ctrlKey || e.altKey) {
+    if (hasCommandModifier(e)) {
       return;
     }
 
@@ -1302,40 +1368,39 @@ function App() {
     }
 
     if (e.key === 'Escape') {
-      // Priority: filter > dropdowns > color pickers > shortcuts help > batch reply > compose > query help > event form > card editing > sidebar > action menu > selection > focus
-      if (showGlobalFilter()) {
-        setShowGlobalFilter(false);
-        setGlobalFilter("");
-      } else if (accountChooserOpen()) {
-        setAccountChooserOpen(false);
-      } else if (colorPickerOpen() || editColorPickerOpen() || bgColorPickerOpen()) {
-        setColorPickerOpen(false);
-        setEditColorPickerOpen(false);
-        setBgColorPickerOpen(false);
-      } else if (shortcutsHelpOpen()) {
-        setShortcutsHelpOpen(false);
-      } else if (batchReplyOpen()) {
-        dismissBatchReply();
-      } else if (composing() && !closingCompose()) {
-        closeCompose();
-      } else if (queryHelpOpen()) {
-        setQueryHelpOpen(false);
-      } else if (creatingEvent()) {
-        closeEventForm();
-      } else if (editingCardId()) {
-        setEditingCardId(null);
-      } else if (settingsOpen()) {
-        setSettingsOpen(false);
-      } else if (actionConfigMenu()) {
-        setActionConfigMenu(null);
-      } else if (focusedCardId() && (selectedThreads()[focusedCardId()!]?.size || selectedEvents()[focusedCardId()!]?.size)) {
-        const cardId = focusedCardId()!;
-        setSelectedThreads({ ...selectedThreads(), [cardId]: new Set() });
-        setSelectedEvents({ ...selectedEvents(), [cardId]: new Set() });
-      } else if (focusedCardId()) {
-        setFocusedCardId(null);
-        setFocusedThreadIndex(-1);
-        setFocusedEventIndex(-1);
+      const focused = focusedCardId();
+      const target = escapeTarget({
+        filter: showGlobalFilter(),
+        accountChooser: accountChooserOpen(),
+        colorPicker: colorPickerOpen() || editColorPickerOpen() || bgColorPickerOpen(),
+        shortcutsHelp: shortcutsHelpOpen(),
+        batchReply: batchReplyOpen(),
+        compose: composing() && !closingCompose(),
+        queryHelp: queryHelpOpen(),
+        eventForm: creatingEvent(),
+        cardEditor: !!editingCardId(),
+        settings: settingsOpen(),
+        actionConfigMenu: !!actionConfigMenu(),
+        selection: !!focused && !!(selectedThreads()[focused]?.size || selectedEvents()[focused]?.size),
+        cardFocus: !!focused,
+      });
+      switch (target) {
+        case "filter": setShowGlobalFilter(false); setGlobalFilter(""); break;
+        case "accountChooser": setAccountChooserOpen(false); break;
+        case "colorPicker": setColorPickerOpen(false); setEditColorPickerOpen(false); setBgColorPickerOpen(false); break;
+        case "shortcutsHelp": setShortcutsHelpOpen(false); break;
+        case "batchReply": dismissBatchReply(); break;
+        case "compose": closeCompose(); break;
+        case "queryHelp": setQueryHelpOpen(false); break;
+        case "eventForm": closeEventForm(); break;
+        case "cardEditor": setEditingCardId(null); break;
+        case "settings": setSettingsOpen(false); break;
+        case "actionConfigMenu": setActionConfigMenu(null); break;
+        case "selection":
+          setSelectedThreads({ ...selectedThreads(), [focused!]: new Set() });
+          setSelectedEvents({ ...selectedEvents(), [focused!]: new Set() });
+          break;
+        case "cardFocus": setFocusedCardId(null); setFocusedThreadIndex(-1); setFocusedEventIndex(-1); break;
       }
       return;
     }
@@ -1519,20 +1584,14 @@ function App() {
     }
   }
 
-  // Post-OAuth: restore the account's layout from iCloud (sync can lag, so pull
-  // once, then retry after a longer delay if the first pull found nothing) and
-  // only offer the preset picker when no layout exists.
+  // Post-OAuth: restore the account's layout from iCloud and only offer the
+  // preset picker when no layout exists.
   async function restoreLayoutAfterAuth(account: Account) {
     upsertAccount(account);
     setSelectedAccount(account);
 
     try {
-      await new Promise(resolve => setTimeout(resolve, 500));
-      const icloudResult = await pullFromICloud();
-      if (!icloudResult) {
-        await new Promise(resolve => setTimeout(resolve, 1000));
-        await pullFromICloud();
-      }
+      await pullLayoutWithRetry(pullFromICloud);
     } catch (e) {
       console.warn("iCloud pull failed:", e);
     }
@@ -1620,7 +1679,7 @@ function App() {
         newCards.push(await createCard(account.id, cardPreset.name, cardPreset.query, cardPreset.color || null, "date", cardType));
       }
     } catch (e) {
-      setError(String(e));
+      setError(`Couldn't create the cards: ${e}`);
       // Nothing was created: stay on the picker so the user can retry
       if (newCards.length === 0) return;
     } finally {
@@ -1638,7 +1697,7 @@ function App() {
   async function handleStartFresh() {
     const currentCards = cards();
     const count = `${currentCards.length} card${currentCards.length === 1 ? "" : "s"}`;
-    if (currentCards.length > 0 && !confirm(`Delete the restored layout's ${count}? This can't be undone.`)) return;
+    if (currentCards.length > 0 && !confirm(`Delete the restored layout's ${count}? They're also removed from your other Macs that sync through iCloud. This can't be undone.`)) return;
     const results = await Promise.allSettled(currentCards.map(card => deleteCard(card.id)));
     // Cards that failed to delete still exist; keep showing them rather than
     // letting a preset pile new cards on top
@@ -1708,7 +1767,7 @@ function App() {
         await switchAccount(remaining[0]);
       }
     } catch (e) {
-      setError(String(e));
+      setError(`Couldn't sign out: ${e}`);
     }
   }
 
@@ -1731,13 +1790,14 @@ function App() {
       // Fetch threads/events for the new card
       loadCardThreads(card.id);
     } catch (e) {
-      setError(String(e));
+      setError(`Couldn't add the card: ${e}`);
     }
   }
 
   function cancelAddCard() {
     setClosingAddCard(true);
     setTimeout(() => {
+      setNewCardName("");
       setNewCardQuery("");
       setNewCardColor(null);
       setNewCardGroupBy("date");
@@ -1794,19 +1854,70 @@ function App() {
   // offers to discard it; a compose never typed in leaves nothing behind
   function closeCompose() {
     if (closingCompose()) return;
-    flushDraftSave();
     const key = composeDraftKey;
     const accountId = composeAccount()?.id;
-    const keep = hasDraftContent(composeDraftFields()) && safeGetItem(key) !== null;
+    const fields = composeDraftFields();
+    const storedHere = safeGetItem(key) !== null;
+    const keep = hasDraftContent(fields) && (storedHere || composeEdited);
+    // Without a local copy Gmail must get the latest text, typed or not
+    let synced: Promise<boolean> | null = null;
+    if (keep && !storedHere) {
+      cancelDraftSave();
+      if (accountId) synced = drafts.save(key, accountId, fields);
+    } else {
+      flushDraftSave();
+    }
     setClosingCompose(true);
-    if (keep) {
+    if (!keep) {
+      drafts.clear(key, accountId);
+    } else {
       markDraftClosed(key);
       drafts.detach();
-      showToast("Draft saved", { label: "Discard", run: () => { if (accountId) drafts.discard(key, accountId); } });
-    } else {
-      drafts.clear(key, accountId);
+      const offerDiscard = (message: string) => {
+        showToast(message, {
+          label: "Discard",
+          run: () => {
+            // A reply opened again since continues this draft
+            if (composing() && !closingCompose() && composeDraftKey === key) return;
+            if (accountId) drafts.discard(key, accountId);
+          },
+        });
+        discardToastDraftKey = key;
+      };
+      if (storedHere) {
+        offerDiscard("Draft saved");
+      } else {
+        const reopen = reopenComposeAction(key, fields);
+        (synced ?? Promise.resolve(false)).then(inGmail => {
+          if (inGmail) offerDiscard("Draft saved in Gmail");
+          else showToast("Couldn't save the draft", reopen);
+        });
+      }
     }
     closeComposeTimeout = window.setTimeout(resetCompose, 200);
+  }
+
+  // Puts a closed compose back as it was, for when its draft could not be saved
+  function reopenComposeAction(key: string, fields: DraftFields) {
+    const init = {
+      ...fields,
+      isHtml: composeIsHtml(),
+      reply: replyingToThread() ?? undefined,
+      forward: forwardingThread() ?? undefined,
+      replyEvent: replyingToEvent() ?? undefined,
+      forwardEvent: forwardingEvent() ?? undefined,
+      signature: false,
+      accountId: composeAccount()?.id,
+      draftKey: key,
+    };
+    const attachments = composeAttachments();
+    return {
+      label: "Reopen",
+      run: () => {
+        startCompose(init);
+        setComposeAttachments(attachments);
+      },
+    };
   }
 
   // A sent email's draft stays saved until the send goes out
@@ -1849,7 +1960,10 @@ function App() {
     const prefilled = !!(init.to || init.subject || init.body);
     const saved = init.draftKey || (isNewEmail && prefilled) ? null : restorableDraft(group, isNewEmail);
     composeDraftKey = init.draftKey ?? saved?.key ?? sessionDraftKey(group);
+    // A draft being continued is the user's own text
+    composeEdited = !!(init.draftKey || saved);
     if (init.draftKey || saved) drafts.load(composeDraftKey);
+    if (composeDraftKey === discardToastDraftKey && toast()?.visible) hideToast();
     const fields = saved?.draft ?? init;
     batch(() => {
       setReplyingToEvent(init.replyEvent ?? null);
@@ -2027,10 +2141,11 @@ function App() {
       isHtml: composeIsHtml(),
     };
 
-    // Saved locally as sent, so a quit during the undo window leaves it as a
-    // draft rather than losing it
+    // Saved locally as being sent, so a quit during the undo window leaves
+    // it as a draft that the next start points out
     cancelDraftSave();
     drafts.saveLocal(composeDraftKey, composeDraftFields());
+    markDraftSending(composeDraftKey, account.id);
     pending.draft = { key: composeDraftKey, gmailDraftId: drafts.gmailDraftId() ?? undefined };
     sendingDraftKeys.add(composeDraftKey);
     closeComposeAfterSend();
@@ -2040,7 +2155,10 @@ function App() {
   // Compose closed when the send was queued, so an undone or failed send puts
   // the email back, continuing its saved draft
   function restoreSend(pending: PendingSend) {
-    if (pending.draft) sendingDraftKeys.delete(pending.draft.key);
+    if (pending.draft) {
+      sendingDraftKeys.delete(pending.draft.key);
+      markDraftSending(pending.draft.key, null);
+    }
     startCompose({
       to: pending.to,
       cc: pending.cc,
@@ -2055,6 +2173,32 @@ function App() {
     });
     setComposeAttachments(pending.attachments);
     setComposeAccount(accounts().find(a => a.id === pending.accountId) ?? null);
+  }
+
+  // An email still marked as being sent was waiting out the undo window
+  // when Posta quit
+  function offerUnsentDraft(known: Account[]) {
+    const unsent = findUnsentDrafts().find(u => known.some(a => a.id === u.draft.accountId));
+    if (!unsent) return;
+    const { key, draft } = unsent;
+    showToast("An email wasn't sent before Posta quit", {
+      label: "Open",
+      run: () => {
+        markDraftSending(key, null);
+        startCompose({
+          to: draft.to,
+          cc: draft.cc,
+          bcc: draft.bcc,
+          subject: draft.subject,
+          body: draft.body,
+          reply: draft.threadId ? { threadId: draft.threadId } : undefined,
+          signature: false,
+          accountId: draft.accountId,
+          draftKey: key,
+        });
+        setComposeAccount(accounts().find(a => a.id === draft.accountId) ?? null);
+      },
+    });
   }
 
   function undoSend() {
@@ -2076,6 +2220,8 @@ function App() {
 
     const subject = addReplyPrefix(thread.subject);
 
+    // The user may have moved on to another quick reply meanwhile
+    const stillOpen = () => quickReply().threadId === threadId;
     setQuickReply(qr => ({ ...qr, sending: true }));
     try {
       // The thread list lacks Reply-To and who wrote last; the full thread has both
@@ -2085,15 +2231,18 @@ function App() {
         showToast("No one else to reply to");
         return;
       }
-      await replyToThread(account.id, threadId, entry.to, "", "", subject, text, entry.messageId, [], false);
-      setQuickReply({ threadId: null, text: "", sending: false });
-      setQuickReplyCardId(null);
+      await replyToThread(account.id, threadId, entry.to, "", "", subject, text + signatureBlock(account.signature), entry.messageId, [], false);
+      if (stillOpen()) {
+        setQuickReply({ threadId: null, text: "", sending: false });
+        setQuickReplyCardId(null);
+      }
       showToast("Reply sent");
+      fetchAndCacheThreads(account.id, cardId);
     } catch (e) {
       console.error("Failed to send reply:", e);
       setError(`Failed to send reply: ${e}`);
     } finally {
-      setQuickReply(qr => ({ ...qr, sending: false }));
+      if (stillOpen()) setQuickReply(qr => ({ ...qr, sending: false }));
     }
   }
 
@@ -2109,17 +2258,20 @@ function App() {
 
     const subject = addReplyPrefix(event.title);
 
+    const stillOpen = () => quickReplyEventId() === event.id;
     setQuickReply(qr => ({ ...qr, sending: true }));
     try {
-      await sendEmail(account.id, to, "", "", subject, text);
-      setQuickReplyEventId(null);
-      setQuickReply(qr => ({ ...qr, text: "", sending: false }));
+      await sendEmail(account.id, to, "", "", subject, text + signatureBlock(account.signature));
+      if (stillOpen()) {
+        setQuickReplyEventId(null);
+        setQuickReply(qr => ({ ...qr, text: "", sending: false }));
+      }
       showToast("Reply sent");
     } catch (e) {
       console.error("Failed to send reply:", e);
       setError(`Failed to send reply: ${e}`);
     } finally {
-      setQuickReply(qr => ({ ...qr, sending: false }));
+      if (stillOpen()) setQuickReply(qr => ({ ...qr, sending: false }));
     }
   }
 
@@ -2215,7 +2367,9 @@ function App() {
   // Label drawer functions
   let labelsAccountId: string | null = null;
   let labelsFetchingFor: string | null = null;
-  async function fetchAccountLabels() {
+  // refresh: reload the list even when it is loaded (labels made in Gmail
+  // since), showing the loaded one meanwhile
+  async function fetchAccountLabels({ refresh = false } = {}) {
     const account = selectedAccount();
     if (!account) return;
 
@@ -2225,11 +2379,12 @@ function App() {
       labelsAccountId = account.id;
     }
 
-    if (accountLabels().length > 0) return; // Already cached
+    const loaded = accountLabels().length > 0;
+    if (loaded && !refresh) return;
     if (labelsFetchingFor === account.id) return;
 
     labelsFetchingFor = account.id;
-    setLabelsLoading(true);
+    setLabelsLoading(!loaded);
     setLabelsFailed(false);
     try {
       const labels = await listLabels(account.id);
@@ -2243,7 +2398,7 @@ function App() {
       setAccountLabels(sorted);
     } catch (e) {
       console.error("Failed to fetch labels:", e);
-      if (selectedAccount()?.id === account.id) setLabelsFailed(true);
+      if (selectedAccount()?.id === account.id && !loaded) setLabelsFailed(true);
     } finally {
       if (labelsFetchingFor === account.id) labelsFetchingFor = null;
       setLabelsLoading(false);
@@ -2252,12 +2407,11 @@ function App() {
 
   const labelNames = createMemo(() => Object.fromEntries(accountLabels().map(l => [l.id, l.name])));
 
-  // "Group by label" shows label names, which only the label list carries
+  // "Group by label" shows label names, and a card query completes label:
+  // from them; only the label list carries them
   createEffect(() => {
     if (!selectedAccount()) return;
-    const wantsLabels = cards().some(c => c.group_by === "label")
-      || (editingCardId() !== null && editCardGroupBy() === "label")
-      || (addingCard() && newCardGroupBy() === "label");
+    const wantsLabels = cards().some(c => c.group_by === "label") || editingCardId() !== null || addingCard();
     if (wantsLabels) untrack(fetchAccountLabels);
   });
 
@@ -2322,7 +2476,7 @@ function App() {
       if (activeEvent()?.id === event.id) closeEvent();
     } catch (e) {
       console.error('Failed to delete event:', e);
-      showToast(String(e));
+      showToast(`Couldn't delete the event: ${e}`);
     }
   }
 
@@ -2480,10 +2634,13 @@ function App() {
   }
 
   // Closing by hand throws away typed replies, so ask first
-  function dismissBatchReply() {
+  function confirmDiscardBatchReplies(): boolean {
     const unsent = Object.values(batchReplyMessages()).filter(m => m.trim()).length;
-    if (unsent > 0 && !confirm(`Discard ${unsent} unsent repl${unsent === 1 ? "y" : "ies"}?`)) return;
-    closeBatchReply();
+    return unsent === 0 || confirm(`Discard ${unsent} unsent repl${unsent === 1 ? "y" : "ies"}?`);
+  }
+
+  function dismissBatchReply() {
+    if (confirmDiscardBatchReplies()) closeBatchReply();
   }
 
   function updateBatchReplyMessage(threadId: string, message: string) {
@@ -2544,7 +2701,7 @@ function App() {
 
     try {
       const replySubject = addReplyPrefix(thread.subject);
-      await replyToThread(account.id, threadId, thread.to, "", "", replySubject, message, thread.messageId, attachments, false);
+      await replyToThread(account.id, threadId, thread.to, "", "", replySubject, message + signatureBlock(account.signature), thread.messageId, attachments, false);
 
       // Remove from batch reply list
       setBatchReplyThreads(batchReplyThreads().filter(t => t.threadId !== threadId));
@@ -2645,6 +2802,7 @@ function App() {
 
       // If query changed, clear cache and refresh
       if (queryChanged) {
+        delete knownCardCache[cardId];
         await clearCardCache(cardId);
         setCardThreads(produce(s => { delete s[cardId]; }));
         setCardPageTokens(produce(s => { delete s[cardId]; }));
@@ -2653,7 +2811,7 @@ function App() {
         loadCardThreads(cardId, false, true);
       }
     } catch (e) {
-      setError(String(e));
+      setError(`Couldn't save the card: ${e}`);
     }
   }
 
@@ -2663,25 +2821,37 @@ function App() {
     setEditCardQuery("");
   }
 
+  // What the app holds for cards that no longer exist. Their threads would
+  // otherwise still count toward the dock badge and be written back to the
+  // cache by thread actions.
+  function forgetCardState(cardIds: string[]) {
+    if (cardIds.length === 0) return;
+    for (const id of cardIds) delete knownCardCache[id];
+    batch(() => {
+      setCardThreads(produce(s => { for (const id of cardIds) delete s[id]; }));
+      setCardPageTokens(produce(s => { for (const id of cardIds) delete s[id]; }));
+      setCardCalendarEvents(produce(s => { for (const id of cardIds) delete s[id]; }));
+      const editing = editingCardId();
+      if (editing && cardIds.includes(editing)) setEditingCardId(null);
+      const focused = focusedCardId();
+      if (focused && cardIds.includes(focused)) {
+        setFocusedCardId(null);
+        setFocusedThreadIndex(-1);
+        setFocusedEventIndex(-1);
+      }
+      const remainingCollapsed = { ...collapsedCards };
+      for (const id of cardIds) delete remainingCollapsed[id];
+      saveCollapsedState(remainingCollapsed);
+    });
+  }
+
   async function handleDeleteCard(cardId: string) {
     const name = cards().find(c => c.id === cardId)?.name || "Untitled";
     if (!confirm(`Delete the card "${name}"? This can't be undone.`)) return;
     try {
       await deleteCard(cardId);
       setCards(cards().filter(c => c.id !== cardId));
-      setEditingCardId(null);
-      // Its threads would otherwise still count toward the dock badge
-      setCardThreads(produce(s => { delete s[cardId]; }));
-      setCardPageTokens(produce(s => { delete s[cardId]; }));
-      setCardCalendarEvents(produce(s => { delete s[cardId]; }));
-      if (focusedCardId() === cardId) {
-        setFocusedCardId(null);
-        setFocusedThreadIndex(-1);
-        setFocusedEventIndex(-1);
-      }
-      // Clean up collapsed state
-      const { [cardId]: _, ...remainingCollapsed } = { ...collapsedCards };
-      saveCollapsedState(remainingCollapsed);
+      forgetCardState([cardId]);
     } catch (err) {
       console.error("Failed to delete card:", err);
       showToast(`Failed to delete card: ${err}`);
@@ -2744,31 +2914,62 @@ function App() {
     setQuickReplyCardId(null);
     setQuickReplyEventId(null);
     setActionsWheelOpen(false);
+    setGoogleContacts([]);
     if (creatingEvent() && eventForm().editing) closeEventForm();
   }
 
   async function switchAccount(account: Account) {
     if (selectedAccount()?.id === account.id) return;
+    if (batchReplyOpen() && !confirmDiscardBatchReplies()) return;
 
     closeAccountViews();
+    // The banner speaks for the account being left; an expired session
+    // stays with its own account
+    setError(expiredAccountId() === account.id ? SESSION_EXPIRED_MESSAGE : null);
     setSelectedAccount(account);
     try {
       if (await loadAccountCards(account)) startBackgroundSync(account.id);
     } catch (e) {
-      setError(String(e));
+      setError(`Couldn't load ${account.email}: ${e}`);
     }
+  }
+
+  // What each card's thread cache was last read or written as, and when. A
+  // refresh that brings back the same groups (inline images and all) skips
+  // sending them across again, but not for long: the cache's time is what
+  // "Last synced" shows at the next start.
+  const knownCardCache: Record<string, { snapshot: string; at: number }> = {};
+  const CACHE_REWRITE_MS = 5 * 60 * 1000;
+  const cacheSnapshot = (groups: ThreadGroup[], pageToken: string | null) => JSON.stringify([groups, pageToken]);
+
+  function saveCardCache(cardId: string, groups: ThreadGroup[], pageToken: string | null): Promise<void> {
+    const snapshot = cacheSnapshot(groups, pageToken);
+    const known = knownCardCache[cardId];
+    const now = Date.now();
+    if (known?.snapshot === snapshot && now - known.at < CACHE_REWRITE_MS) return Promise.resolve();
+    knownCardCache[cardId] = { snapshot, at: now };
+    return saveCachedCardThreads(cardId, groups, pageToken).catch(e => {
+      delete knownCardCache[cardId];
+      throw e;
+    });
+  }
+
+  // The card was edited or deleted since a fetch for `query` started
+  function cardQueryChanged(cardId: string, query: string | undefined): boolean {
+    return cards().find(c => c.id === cardId)?.query !== query;
   }
 
   async function loadCardThreads(cardId: string, append = false, forceRefresh = false) {
     const account = selectedAccount();
     if (!account) return;
 
-    // A response landing after the user switched accounts must not write
-    // the old account's threads into the store (dock badge, autocomplete)
-    const stale = () => selectedAccount()?.id !== account.id;
-
     // Check if this is a calendar card
     const card = cards().find(c => c.id === cardId);
+
+    // A response landing after the user switched accounts must not write
+    // the old account's threads into the store (dock badge, autocomplete),
+    // nor one for a query the card no longer has
+    const stale = () => selectedAccount()?.id !== account.id || cardQueryChanged(cardId, card?.query);
     if (card?.card_type === "calendar") {
       await loadCalendarEvents(cardId, forceRefresh);
       return;
@@ -2793,6 +2994,7 @@ function App() {
         const cached = await getCachedCardThreads(cardId);
         if (stale()) return;
         if (cached && cached.groups.length > 0) {
+          knownCardCache[cardId] = { snapshot: cacheSnapshot(cached.groups, cached.next_page_token), at: cached.cached_at * 1000 };
           // Show cached data immediately
           setCardThreads(cardId, reconcile(cached.groups, { key: "gmail_thread_id" }));
           setCardPageTokens(cardId, cached.next_page_token);
@@ -2817,11 +3019,11 @@ function App() {
         const mergedGroups = mergeThreadGroups(existingGroups, result.groups);
         setCardThreads(cardId, mergedGroups);
         // Save merged groups to cache
-        await saveCachedCardThreads(cardId, mergedGroups, result.next_page_token);
+        await saveCardCache(cardId, mergedGroups, result.next_page_token);
       } else {
         setCardThreads(cardId, reconcile(result.groups, { key: "gmail_thread_id" }));
         // Save to cache
-        await saveCachedCardThreads(cardId, result.groups, result.next_page_token);
+        await saveCardCache(cardId, result.groups, result.next_page_token);
       }
 
       setCardPageTokens(cardId, result.next_page_token);
@@ -2903,7 +3105,7 @@ function App() {
   function markSessionExpired(accountId: string) {
     if (expiredAccountId() === accountId) return;
     setExpiredAccountId(accountId);
-    setError("Session expired - sign in again");
+    setError(SESSION_EXPIRED_MESSAGE);
   }
 
   // Background syncs keep showing cached mail; an expired session must still
@@ -2925,7 +3127,7 @@ function App() {
   async function fetchAndCacheCalendarEvents(accountId: string, cardId: string, query: string) {
     try {
       const events = await fetchCalendarEvents(accountId, query);
-      if (selectedAccount()?.id !== accountId) return;
+      if (selectedAccount()?.id !== accountId || cardQueryChanged(cardId, query)) return;
       setCardCalendarEvents(cardId, events);
       await saveCachedCardEvents(cardId, events);
       setLastSyncTimes(cardId, Date.now());
@@ -2958,9 +3160,10 @@ function App() {
     // Capture pagination state so a page-1 fetch that resolves after the
     // user paginated doesn't wipe appended pages or rewind the page token
     const tokenBeforeFetch = cardPageTokens[cardId] ?? null;
+    const query = cards().find(c => c.id === cardId)?.query;
     try {
       const result = await fetchThreadsPaginated(accountId, cardId, null);
-      if (selectedAccount()?.id !== accountId) return;
+      if (selectedAccount()?.id !== accountId || cardQueryChanged(cardId, query)) return;
       // Skip update if a recent action happened (prevents overwriting optimistic updates)
       const recent = lastAction();
       if (recent && Date.now() - recent.timestamp < 3000) {
@@ -2968,19 +3171,19 @@ function App() {
         // touched this card — this fetch may predate the server-side modify,
         // and caching its groups would resurrect the pre-action state
         if (recent.cardIds.includes(cardId) || recent.cardId === cardId) return;
-        await saveCachedCardThreads(cardId, result.groups, result.next_page_token);
+        await saveCardCache(cardId, result.groups, result.next_page_token);
         return;
       }
       if ((cardPageTokens[cardId] ?? null) !== tokenBeforeFetch || loadingMore[cardId]) {
         // Card paginated while this fetch was in flight; refresh the
         // page-1 cache but leave UI state alone
-        await saveCachedCardThreads(cardId, result.groups, result.next_page_token);
+        await saveCardCache(cardId, result.groups, result.next_page_token);
         return;
       }
       setCardThreads(cardId, reconcile(result.groups, { key: "gmail_thread_id" }));
       setCardPageTokens(cardId, result.next_page_token);
       setCardHasMore(cardId, result.has_more);
-      await saveCachedCardThreads(cardId, result.groups, result.next_page_token);
+      await saveCardCache(cardId, result.groups, result.next_page_token);
       setLastSyncTimes(cardId, Date.now());
       setSyncErrors(cardId, null);
     } catch (e) {
@@ -3072,7 +3275,25 @@ function App() {
     }
   }
 
+  // Each card's grouped and filtered threads and events, recomputed only
+  // when what they are built from changes. Rows ask for their card's groups
+  // on every focus, hover and keystroke.
+  const cardGroupMemos = createMemo(mapArray(() => cards().map(c => c.id), cardId => ({
+    cardId,
+    threads: createMemo(() => computeDisplayGroups(cardId)),
+    events: createMemo(() => computeCalendarEventGroups(cardId)),
+  })));
+  const cardGroupsById = createMemo(() => new Map(cardGroupMemos().map(m => [m.cardId, m])));
+
   function getDisplayGroups(cardId: string): ThreadGroup[] {
+    return cardGroupsById().get(cardId)?.threads() ?? computeDisplayGroups(cardId);
+  }
+
+  function getCalendarEventGroups(cardId: string): CalendarEventGroup[] {
+    return cardGroupsById().get(cardId)?.events() ?? computeCalendarEventGroups(cardId);
+  }
+
+  function computeDisplayGroups(cardId: string): ThreadGroup[] {
     const threads = isPreviewingQuery(cardId) ? queryPreviewThreads() : cardThreads[cardId];
     if (!threads) return [];
     const groupBy = getGroupByForCard(cardId);
@@ -3094,7 +3315,7 @@ function App() {
     return groups;
   }
 
-  function getCalendarEventGroups(cardId: string): CalendarEventGroup[] {
+  function computeCalendarEventGroups(cardId: string): CalendarEventGroup[] {
     const events = isPreviewingQuery(cardId) ? queryPreviewCalendarEvents() : cardCalendarEvents[cardId];
     if (!events) return [];
     const groupBy = getGroupByForCard(cardId);
@@ -3212,52 +3433,11 @@ function App() {
     }
   }
 
+  const userLabelNames = createMemo(() => accountLabels().filter(l => l.label_type === "user").map(l => l.name));
+
   // Gmail search autocomplete suggestions
-  function getQuerySuggestions(query: string): { text: string; desc: string; replace: { start: number; end: number } }[] {
-    if (!query) return [];
-
-    // Find the current "word" being typed (last token after space)
-    const lastSpaceIndex = query.lastIndexOf(' ');
-    const currentToken = query.slice(lastSpaceIndex + 1).toLowerCase();
-    const tokenStart = lastSpaceIndex + 1;
-
-    if (!currentToken) return [];
-
-    const suggestions: { text: string; desc: string; replace: { start: number; end: number } }[] = [];
-
-    // Check if we're typing after an operator that takes email values
-    const emailOperators = ['from:', 'to:', 'cc:', 'bcc:', 'deliveredto:'];
-    for (const op of emailOperators) {
-      if (currentToken.startsWith(op)) {
-        const searchPart = currentToken.slice(op.length).toLowerCase();
-        if (searchPart) {
-          for (const contact of matchContacts(rankedContacts(), searchPart, 6)) {
-            suggestions.push({
-              text: op + contact.email,
-              desc: contact.name ? `${contact.name} (${contact.frequency} emails)` : `${contact.frequency} emails`,
-              replace: { start: tokenStart, end: query.length },
-            });
-          }
-        }
-        return suggestions;
-      }
-    }
-
-    // Fuzzy match operators
-    for (const { op, desc } of GMAIL_OPERATORS) {
-      // Match if the operator starts with the current token or contains it
-      if (op.toLowerCase().startsWith(currentToken) ||
-        (currentToken.length >= 2 && op.toLowerCase().includes(currentToken))) {
-        suggestions.push({
-          text: op,
-          desc,
-          replace: { start: tokenStart, end: query.length },
-        });
-        if (suggestions.length >= 8) break;
-      }
-    }
-
-    return suggestions;
+  function getQuerySuggestions(query: string): QuerySuggestion[] {
+    return querySuggestions(query, rankedContacts(), userLabelNames());
   }
 
   function applyQuerySuggestion(suggestion: { text: string; replace: { start: number; end: number } }) {
@@ -3323,11 +3503,14 @@ function App() {
     }
   }
 
-  // Fetch CID image attachments for inline display
+  // Fetch CID image attachments for inline display; reopening a thread
+  // reuses what was downloaded
+  const cidImageCache = createLruCache<string>(60);
   async function fetchCidAttachments(accountId: string, thread: FullThread) {
     const refs = cidImagesToFetch(thread);
     if (refs.length === 0) return;
-    const data = await fetchCidImages(refs, (messageId, attachmentId) => downloadAttachmentApi(accountId, messageId, attachmentId));
+    const data = await fetchCidImages(refs, (messageId, attachmentId) =>
+      cidImageCache.getOrLoad(`${accountId}:${messageId}:${attachmentId}`, () => downloadAttachmentApi(accountId, messageId, attachmentId)));
     if (Object.keys(data).length > 0 && activeThreadId() === thread.id) {
       setCidAttachmentData(prev => ({ ...prev, ...data }));
     }
@@ -3375,6 +3558,7 @@ function App() {
   }
 
   function showToast(message?: string, action?: { label: string; run: () => void }) {
+    discardToastDraftKey = null;
     clearTimeout(toastTimeoutId);
     // Cancel a pending hide so it can't null out this newer toast
     clearTimeout(toastHideTimeoutId);
@@ -3422,7 +3606,7 @@ function App() {
       }
     } catch (e) {
       console.error("Failed to undo action", e);
-      setError(String(e));
+      setError(`Couldn't undo: ${e}`);
     }
     setLastAction(null);
   }
@@ -3476,7 +3660,8 @@ function App() {
       await modifyThreads(account.id, threadIds, addLabels, removeLabels);
       // Persist the optimistic changes only after the server accepted them
       for (const cId of affectedCardIds) {
-        saveCachedCardThreads(cId, updatedCardThreads[cId], cardPageTokens[cId] || null);
+        saveCardCache(cId, updatedCardThreads[cId], cardPageTokens[cId] || null)
+          .catch(e => console.warn("Failed to update thread cache:", e));
       }
       if (silent) return;
       // Store undo state and show toast
@@ -3501,7 +3686,7 @@ function App() {
           }
         }));
       }
-      setError(String(e));
+      setError(`${actionFailureLabel(action, threadIds.length)}: ${e}`);
     }
   }
 
@@ -3599,12 +3784,13 @@ function App() {
   function selectContact(email: string) {
     setComposeTo(completeRecipient(composeTo(), email));
     setShowAutocomplete(false);
+    handleComposeInput();
   }
 
   return (
     <div class="app" onClick={handleAppClick}>
       {/* Drag region for frameless window */}
-      <div class="drag-region" onMouseDown={() => getCurrentWindow().startDragging()}></div>
+      <div class="drag-region" data-tauri-drag-region></div>
 
       {/* Global filter bar - keyboard activated */}
       <div class={`global-filter-bar ${showGlobalFilter() ? 'visible' : ''}`}>
@@ -3681,12 +3867,7 @@ function App() {
                           style={{ background: getAvatarColor(contact.name || contact.email) }}
                           title={contact.name ? `${contact.name} <${contact.email}>` : contact.email}
                           onClick={writeTo}
-                          onKeyDown={(e) => {
-                            if (e.key !== "Enter" && e.key !== " ") return;
-                            e.preventDefault();
-                            e.stopPropagation();
-                            writeTo();
-                          }}
+                          on:keydown={onActivateKey(writeTo)}
                         >
                           {(contact.name || contact.email).charAt(0).toUpperCase()}
                           <span class="suggestion-label">{contact.name || contact.email}</span>
@@ -3714,9 +3895,11 @@ function App() {
                 class={`color-picker-selected ${selectedBgColorIndex() === null ? 'no-color' : ''}`}
                 style={selectedBgColorIndex() !== null ? { background: BG_COLORS[selectedBgColorIndex()!].hex } : {}}
                 onClick={(e) => { e.stopPropagation(); setBgColorPickerOpen(!bgColorPickerOpen()); }}
+                on:keydown={onActivateKey(() => setBgColorPickerOpen(!bgColorPickerOpen()))}
                 title="Background color"
                 role="button"
                 aria-label="Choose background color"
+                aria-expanded={bgColorPickerOpen()}
                 tabindex="0"
               >
                 <Show when={selectedBgColorIndex() === null}>
@@ -3725,14 +3908,22 @@ function App() {
               </div>
               <div
                 class="color-option no-color-option"
+                role="button"
+                tabIndex={bgColorPickerOpen() ? 0 : -1}
+                aria-label="No color"
                 onClick={() => selectBgColor(null)}
+                on:keydown={onActivateKey(() => selectBgColor(null))}
               ></div>
               <For each={BG_COLORS}>
                 {(color, index) => (
                   <div
                     class="color-option"
                     style={{ background: color.hex }}
+                    role="button"
+                    tabIndex={bgColorPickerOpen() ? 0 : -1}
+                    aria-label={BG_COLOR_NAMES[index()] ?? `Color ${index() + 1}`}
                     onClick={() => selectBgColor(index())}
+                    on:keydown={onActivateKey(() => selectBgColor(index()))}
                   ></div>
                 )}
               </For>
@@ -3743,6 +3934,8 @@ function App() {
                   class="toolbar-avatar"
                   onClick={(e) => { e.stopPropagation(); setAccountChooserOpen(!accountChooserOpen()); }}
                   title={selectedAccount()?.email || "Account"}
+                  aria-haspopup="menu"
+                  aria-expanded={accountChooserOpen()}
                 >
                   {selectedAccount()?.picture ? (
                     <img src={selectedAccount()!.picture!} alt="" class="toolbar-avatar-img" />
@@ -3806,7 +3999,7 @@ function App() {
 
       {/* Error banner */}
       <Show when={error()}>
-        <div class="auth-error">
+        <div class="auth-error" role="alert">
           {error()}
           <Show when={expiredAccountId() && expiredAccountId() === selectedAccount()?.id}>
             <button class="btn btn-primary" onClick={handleReauth}>Sign in again</button>
@@ -3999,7 +4192,7 @@ function App() {
                                     {(event) => (
                                       <>
                                       <div
-                                        class={`calendar-event-item ${event.response_status === "declined" ? "declined" : ""} ${selectedEvents()[card.id]?.has(event.id) ? "selected" : ""} ${isEventFocused(card.id, event.id) ? "focused" : ""} ${quickReplyEventId() === event.id ? "replying" : ""}`}
+                                        class={`calendar-event-item ${event.response_status === "declined" ? "declined" : ""} ${selectedEvents()[card.id]?.has(event.id) ? "selected" : ""} ${isEventFocused(card.id, event.id) ? "focused" : ""} ${isQuickReplyEvent(event.id) ? "replying" : ""}`}
                                         onClick={() => openEvent(event, card.id)}
                                         onMouseEnter={() => showEventHoverActions(event.id)}
                                         onMouseLeave={hideEventHoverActions}
@@ -4051,7 +4244,7 @@ function App() {
                                               toggleEventSelection(card.id, event.id, e);
                                             }}
                                           />
-                                          <Show when={(hoveredEvent() === event.id && eventActionsWheelOpen()) || isEventFocused(card.id, event.id)}>
+                                          <Show when={(isHoveredEvent(event.id) && eventActionsWheelOpen()) || isEventFocused(card.id, event.id)}>
                                             <ActionsWheel
                                               cardId={card.id}
                                               event={event}
@@ -4080,7 +4273,7 @@ function App() {
                                         </div>
                                       </div>
                                       {/* Event Quick Reply */}
-                                      <Show when={quickReplyEventId() === event.id}>
+                                      <Show when={isQuickReplyEvent(event.id)}>
                                         <div class="quick-reply-box" onClick={(e) => e.stopPropagation()}>
                                           <ComposeTextarea
                                             class="quick-reply-input"
@@ -4131,7 +4324,7 @@ function App() {
                                       return (
                                       <>
                                         <div
-                                          class={`thread ${thread.unread_count > 0 ? 'unread' : ''} ${selectedThreads()[card.id]?.has(thread.gmail_thread_id) ? 'selected' : ''} ${isThreadFocused(card.id, thread.gmail_thread_id) ? 'focused' : ''} ${quickReply().threadId === thread.gmail_thread_id ? 'replying' : ''}`}
+                                          class={`thread ${thread.unread_count > 0 ? 'unread' : ''} ${selectedThreads()[card.id]?.has(thread.gmail_thread_id) ? 'selected' : ''} ${isThreadFocused(card.id, thread.gmail_thread_id) ? 'focused' : ''} ${isQuickReplyThread(thread.gmail_thread_id) ? 'replying' : ''}`}
                                           onMouseEnter={() => showThreadHoverActions(thread.gmail_thread_id)}
                                           onMouseLeave={() => hideThreadHoverActions()}
                                           onClick={() => openThread(thread.gmail_thread_id, card.id)}
@@ -4174,17 +4367,17 @@ function App() {
                                                   <button
                                                     class={rsvpStatus[thread.gmail_thread_id] === "accepted" ? "selected" : ""}
                                                     disabled={rsvpLoading[thread.gmail_thread_id]}
-                                                    onClick={() => handleRsvp(thread.gmail_thread_id, thread.calendar_event!.uid, "yes")}
+                                                    onClick={() => handleRsvp(thread.gmail_thread_id, thread.calendar_event!.uid, "accepted")}
                                                   >Yes</button>
                                                   <button
                                                     class={rsvpStatus[thread.gmail_thread_id] === "tentative" ? "selected" : ""}
                                                     disabled={rsvpLoading[thread.gmail_thread_id]}
-                                                    onClick={() => handleRsvp(thread.gmail_thread_id, thread.calendar_event!.uid, "maybe")}
+                                                    onClick={() => handleRsvp(thread.gmail_thread_id, thread.calendar_event!.uid, "tentative")}
                                                   >Maybe</button>
                                                   <button
                                                     class={rsvpStatus[thread.gmail_thread_id] === "declined" ? "selected" : ""}
                                                     disabled={rsvpLoading[thread.gmail_thread_id]}
-                                                    onClick={() => handleRsvp(thread.gmail_thread_id, thread.calendar_event!.uid, "no")}
+                                                    onClick={() => handleRsvp(thread.gmail_thread_id, thread.calendar_event!.uid, "declined")}
                                                   >No</button>
                                                 </div>
                                               </Show>
@@ -4262,7 +4455,7 @@ function App() {
                                                 toggleThreadSelection(card.id, thread.gmail_thread_id, e);
                                               }}
                                             />
-                                            <Show when={(hoveredThread() === thread.gmail_thread_id && actionsWheelOpen()) || isThreadFocused(card.id, thread.gmail_thread_id)}>
+                                            <Show when={(isHoveredThread(thread.gmail_thread_id) && actionsWheelOpen()) || isThreadFocused(card.id, thread.gmail_thread_id)}>
                                               <ActionsWheel
                                                 cardId={card.id}
                                                 threadId={thread.gmail_thread_id}
@@ -4289,7 +4482,7 @@ function App() {
                                             </Show>
                                           </div>
                                         </div>
-                                        <Show when={quickReply().threadId === thread.gmail_thread_id}>
+                                        <Show when={isQuickReplyThread(thread.gmail_thread_id)}>
                                           <div class="quick-reply-box" onClick={(e) => e.stopPropagation()}>
                                             <ComposeTextarea
                                               class="quick-reply-input"
@@ -4656,7 +4849,7 @@ function App() {
           onReply={handleReplyFromThread}
           onForward={handleForwardFromThread}
           onAction={handleThreadViewAction}
-          onOpenLabels={() => { fetchAccountLabels(); setLabelDrawerOpen(true); }}
+          onOpenLabels={() => { fetchAccountLabels({ refresh: true }); setLabelDrawerOpen(true); }}
           isStarred={isThreadStarred()}
           isRead={isThreadRead()}
           isImportant={isThreadImportant()}
@@ -4761,21 +4954,12 @@ function App() {
             if (!event || !account || rsvpLoading[event.id]) return;
             setRsvpLoading(event.id, true);
             try {
-              try {
-                await rsvpCalendarEvent(account.id, event.id, status);
-              } catch (err) {
-                // Google-origin events are looked up by iCalUID, which is "<id>@google.com"
-                if (String(err).includes("not found")) {
-                  await rsvpCalendarEvent(account.id, `${event.id}@google.com`, status);
-                } else {
-                  throw err;
-                }
-              }
+              await rsvpWithFallback(account.id, event.id, status);
               markEventRsvp(event.id, status);
-              showToast(`Response updated to ${status}`);
+              showToast(rsvpSentMessage(status));
             } catch (e) {
               console.error("Failed to update RSVP", e);
-              showToast(`Failed to update RSVP: ${e}`);
+              showToast(`Couldn't RSVP: ${e}`);
             } finally {
               setRsvpLoading(event.id, false);
             }
@@ -5116,7 +5300,7 @@ function App() {
               />
             </div>
             <p class="settings-hint">
-              Redirect URI: <code>http://localhost:8420/callback</code>
+              Sign-in listens on <code>localhost</code> port 8420; another app using that port keeps it from finishing.
             </p>
             <button
               class="btn btn-primary"
@@ -5192,7 +5376,7 @@ function App() {
               <div class="shortcut-row"><kbd>k</kbd> <span>Previous thread</span></div>
               <div class="shortcut-row"><kbd>h</kbd> <span>Previous card</span></div>
               <div class="shortcut-row"><kbd>l</kbd> <span>Next card</span></div>
-              <div class="shortcut-row"><kbd>Enter</kbd> <span>Open thread</span></div>
+              <div class="shortcut-row"><kbd>Enter</kbd> <span>Open thread or event</span></div>
               <div class="shortcut-row"><kbd>Escape</kbd> <span>Close / Go back</span></div>
               <div class="shortcut-row"><kbd>/</kbd> <span>Open filter</span></div>
               <div class="shortcut-row"><kbd>⌘F</kbd> <span>Open filter</span></div>
@@ -5218,6 +5402,23 @@ function App() {
               <div class="shortcut-row"><kbd>⇧R</kbd> <span>Reply all</span></div>
               <div class="shortcut-row"><kbd>f</kbd> <span>Forward message</span></div>
               <div class="shortcut-row"><kbd>l</kbd> <span>Labels</span></div>
+              <div class="shortcut-row"><kbd>a</kbd> <span>Archive</span></div>
+              <div class="shortcut-row"><kbd>s</kbd> <span>Star</span></div>
+              <div class="shortcut-row"><kbd>u</kbd> <span>Toggle read</span></div>
+              <div class="shortcut-row"><kbd>i</kbd> <span>Toggle important</span></div>
+              <div class="shortcut-row"><kbd>!</kbd> <span>Report spam</span></div>
+              <div class="shortcut-row"><kbd>d</kbd> <span>Delete</span></div>
+            </div>
+            <div class="shortcuts-section">
+              <h3>Open event</h3>
+              <div class="shortcut-row"><kbd>r</kbd> <span>Reply to organizer</span></div>
+              <div class="shortcut-row"><kbd>⇧R</kbd> <span>Reply all</span></div>
+              <div class="shortcut-row"><kbd>f</kbd> <span>Forward</span></div>
+              <div class="shortcut-row"><kbd>j</kbd> <span>Join meeting</span></div>
+              <div class="shortcut-row"><kbd>o</kbd> <span>Open in Google Calendar</span></div>
+              <div class="shortcut-row"><kbd>c</kbd> <span>Move to calendar</span></div>
+              <div class="shortcut-row"><kbd>e</kbd> <span>Edit</span></div>
+              <div class="shortcut-row"><kbd>d</kbd> <span>Delete</span></div>
             </div>
             <div class="shortcuts-section">
               <h3>Compose</h3>
@@ -5316,7 +5517,7 @@ function App() {
       {/* Undo Toast - For with key forces remount to restart progress bar animation */}
       <For each={toast()?.visible ? [toast()!.key] : []}>
         {() => (
-          <div class={`undo-toast ${toast()?.closing ? 'closing' : ''}`}>
+          <div class={`undo-toast ${toast()?.closing ? 'closing' : ''}`} role="status">
             <div class="toast-progress"></div>
             <div class="toast-content">
               <span class="toast-message">{toast()?.message || (lastAction() ? actionLabel(lastAction()!.action, lastAction()!.threadIds.length) : '')}</span>
@@ -5338,7 +5539,7 @@ function App() {
 
       {/* Send Toast with Undo */}
       <Show when={undoableSend.toastVisible()}>
-        <div class={`undo-toast send-toast ${undoableSend.toastClosing() ? 'closing' : ''}`}>
+        <div class={`undo-toast send-toast ${undoableSend.toastClosing() ? 'closing' : ''}`} role="status">
           <div class="toast-progress send-progress" style={{ width: `${undoableSend.progress()}%` }}></div>
           <div class="toast-content">
             <span class="toast-message">Sending message...</span>

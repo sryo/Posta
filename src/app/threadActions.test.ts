@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { Thread, ThreadGroup } from "../api/tauri";
-import { actionLabel, actionRemovesFromCard, applyThreadAction, labelChangeFor, threadMayJoinCard, undoLabelChanges } from "./threadActions";
+import { actionFailureLabel, actionLabel, actionRemovesFromCard, applyThreadAction, labelChangeFor, threadMayJoinCard, undoLabelChanges } from "./threadActions";
 
 const thread = (id: string, labels: string[], unread = 0): Thread => ({
   gmail_thread_id: id, account_id: "a", subject: id, snippet: "", last_message_date: 0,
@@ -15,6 +15,15 @@ describe("labelChangeFor", () => {
 
   it("changes nothing for an unknown action", () => {
     expect(labelChangeFor("bogus")).toEqual({ add: [], remove: [] });
+  });
+});
+
+describe("actionFailureLabel", () => {
+  it("says which action failed on how many threads", () => {
+    expect(actionFailureLabel("archive", 1)).toBe("Couldn't archive 1 thread");
+    expect(actionFailureLabel("trash", 3)).toBe("Couldn't delete 3 threads");
+    expect(actionFailureLabel("notImportant", 1)).toBe("Couldn't mark 1 thread as not important");
+    expect(actionFailureLabel("unknown", 2)).toBe("Couldn't change 2 threads");
   });
 });
 

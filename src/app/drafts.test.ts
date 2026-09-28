@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import { createRoot } from "solid-js";
 
 type Handler = (args: Record<string, unknown>) => unknown;
@@ -6,7 +6,7 @@ const handlers: Record<string, Handler> = {};
 const invoke = vi.fn(async (cmd: string, args: Record<string, unknown> = {}) => handlers[cmd](args));
 vi.mock("@tauri-apps/api/core", () => ({ invoke: (cmd: string, args?: Record<string, unknown>) => invoke(cmd, args) }));
 
-import { createDraftSync, draftKey, findLatestDraft, markDraftClosed, removeAccountDrafts, sessionDraftKey } from "./drafts";
+import { createDraftSync, draftKey, findLatestDraft, findUnsentDrafts, markDraftClosed, markDraftSending, pruneDrafts, removeAccountDrafts, sessionDraftKey } from "./drafts";
 
 const fields = (body: string) => ({ to: "bo@x.com", cc: "", bcc: "", subject: "Hi", body });
 const sync = () => createRoot(() => createDraftSync());
@@ -73,6 +73,84 @@ describe("removeAccountDrafts", () => {
     localStorage.setItem("cardWidth", "300");
     removeAccountDrafts("a");
     expect(Object.keys(localStorage).sort()).toEqual(["cardWidth", "draft_new_ab#1", "draft_reply_b_t1"]);
+  });
+});
+
+describe("unsent drafts", () => {
+  it("finds drafts still marked as being sent, newest first, and unmarks them", () => {
+    localStorage.setItem("draft_new_a#1", JSON.stringify({ ...fields("older"), savedAt: 1 }));
+    localStorage.setItem("draft_new_a#2", JSON.stringify({ ...fields("newer"), savedAt: 2 }));
+    localStorage.setItem("draft_new_a#3", JSON.stringify({ ...fields("not sent"), savedAt: 3 }));
+    markDraftSending("draft_new_a#1", "a");
+    markDraftSending("draft_new_a#2", "a");
+    markDraftSending("missing", "a");
+
+    expect(findUnsentDrafts().map(u => u.key)).toEqual(["draft_new_a#2", "draft_new_a#1"]);
+    markDraftSending("draft_new_a#2", null);
+    expect(findUnsentDrafts().map(u => u.key)).toEqual(["draft_new_a#1"]);
+    expect(JSON.parse(localStorage.getItem("draft_new_a#2")!)).toEqual({ ...fields("newer"), savedAt: 2 });
+    expect(localStorage.getItem("missing")).toBeNull();
+  });
+});
+
+describe("pruneDrafts", () => {
+  const DAY = 86400000;
+  const now = 100 * DAY;
+  const store = (key: string, draft: Record<string, unknown>) =>
+    localStorage.setItem(key, JSON.stringify({ ...fields("x"), savedAt: now, ...draft }));
+
+  it("removes closed new emails that Gmail's Drafts already holds", () => {
+    store("draft_new_a#1", { closed: true, gmailDraftId: "d1", syncedAt: now });
+    pruneDrafts(now);
+    expect(localStorage.getItem("draft_new_a#1")).toBeNull();
+  });
+
+  it("keeps a closed draft whose last text never reached Gmail", () => {
+    store("draft_new_a#1", { closed: true, gmailDraftId: "d1", syncedAt: now - DAY });
+    store("draft_new_a#2", { closed: true, gmailDraftId: "d2" });
+    store("draft_reply_a_t1#1", { closed: true, gmailDraftId: "d3", savedAt: now - 31 * DAY, syncedAt: now - 32 * DAY });
+    pruneDrafts(now);
+    expect(Object.keys(localStorage).sort()).toEqual(["draft_new_a#1", "draft_new_a#2", "draft_reply_a_t1#1"]);
+  });
+
+  it("prunes a draft only once its latest save has synced", async () => {
+    let clock = 1000;
+    const dateNow = vi.spyOn(Date, "now").mockImplementation(() => ++clock);
+    onTestFinished(() => dateNow.mockRestore());
+    let online = true;
+    handlers.save_draft = () => { if (!online) throw new Error("offline"); return { id: "g1" }; };
+    const drafts = sync();
+    await drafts.save("draft_new_a#1", "a", fields("synced"));
+    online = false;
+    await drafts.save("draft_new_a#1", "a", fields("typed offline"));
+    markDraftClosed("draft_new_a#1");
+    pruneDrafts(Date.now());
+    expect(JSON.parse(localStorage.getItem("draft_new_a#1")!).body).toBe("typed offline");
+
+    online = true;
+    await drafts.save("draft_new_a#1", "a", fields("typed offline"));
+    markDraftClosed("draft_new_a#1");
+    pruneDrafts(Date.now());
+    expect(localStorage.getItem("draft_new_a#1")).toBeNull();
+  });
+
+  it("keeps a closed reply in Gmail for a month so replying again picks it up", () => {
+    store("draft_reply_a_t1#1", { closed: true, gmailDraftId: "d1", savedAt: now - 29 * DAY, syncedAt: now - 29 * DAY });
+    store("draft_reply_a_t2#1", { closed: true, gmailDraftId: "d2", savedAt: now - 31 * DAY, syncedAt: now - 31 * DAY });
+    pruneDrafts(now);
+    expect(localStorage.getItem("draft_reply_a_t1#1")).not.toBeNull();
+    expect(localStorage.getItem("draft_reply_a_t2#1")).toBeNull();
+  });
+
+  it("keeps every draft that is the only copy, however old", () => {
+    store("draft_new_a#1", { closed: true, savedAt: 0 });
+    store("draft_new_a#2", { savedAt: 0, gmailDraftId: "d2" });
+    store("draft_reply_a_t1#1", { closed: true, savedAt: 0 });
+    store("draft_new_a#3", { closed: true, gmailDraftId: "d3", syncedAt: now, sending: true });
+    localStorage.setItem("draft_new_a#4", "{");
+    localStorage.setItem("cardWidth", "300");
+    pruneDrafts(now);
+    expect(Object.keys(localStorage).sort()).toEqual(["cardWidth", "draft_new_a#1", "draft_new_a#2", "draft_new_a#3", "draft_new_a#4", "draft_reply_a_t1#1"]);
   });
 });
 
@@ -236,6 +314,52 @@ describe("createDraftSync", () => {
     }
   });
 
+  describe("when local storage refuses the draft", () => {
+    const refuseStorage = () => vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => { throw new Error("QuotaExceededError"); });
+
+    it("still syncs a save made just before the compose let go", async () => {
+      handlers.save_draft = () => ({ id: "d1" });
+      const setItem = refuseStorage();
+      try {
+        const drafts = sync();
+        const last = drafts.save("k", "a", fields("only copy"));
+        drafts.detach();
+        expect(await last).toBe(true);
+        expect(invoke).toHaveBeenCalledWith("save_draft", expect.objectContaining({ body: "only copy" }));
+      } finally {
+        setItem.mockRestore();
+      }
+    });
+
+    it("reports a save that reached neither Gmail nor local storage", async () => {
+      handlers.save_draft = () => { throw new Error("offline"); };
+      const setItem = refuseStorage();
+      try {
+        const drafts = sync();
+        const last = drafts.save("k", "a", fields("lost"));
+        drafts.detach();
+        expect(await last).toBe(false);
+      } finally {
+        setItem.mockRestore();
+      }
+    });
+
+    it("discards the Gmail draft it synced to", async () => {
+      handlers.save_draft = () => ({ id: "d1" });
+      const setItem = refuseStorage();
+      try {
+        const drafts = sync();
+        const last = drafts.save("k", "a", fields("only copy"));
+        drafts.detach();
+        await last;
+        await drafts.discard("k", "a");
+        expect(invoke).toHaveBeenCalledWith("delete_draft", { accountId: "a", draftId: "d1" });
+      } finally {
+        setItem.mockRestore();
+      }
+    });
+  });
+
   it("restores a saved draft and updates its Gmail draft from then on", async () => {
     localStorage.setItem("k", JSON.stringify({ ...fields("saved"), gmailDraftId: "d5", savedAt: 1 }));
     handlers.save_draft = () => ({ id: "d5" });
@@ -322,17 +446,14 @@ describe("createDraftSync", () => {
     expect(localStorage.getItem("k")).toBeNull();
   });
 
-  it("creates a new Gmail draft when the one it was updating is gone", async () => {
+  it("adopts the new Gmail draft the backend made when the one it was updating is gone", async () => {
     localStorage.setItem("k", JSON.stringify({ ...fields("saved"), gmailDraftId: "gone", savedAt: 1 }));
-    handlers.save_draft = ({ draftId }) => {
-      if (draftId === "gone") throw "Gmail API error: API error 404 Not Found: Requested entity was not found.";
-      return { id: "d2" };
-    };
+    handlers.save_draft = () => ({ id: "d2" });
     const drafts = sync();
     drafts.load("k");
     await drafts.save("k", "a", fields("edited"));
 
-    expect(invoke).toHaveBeenLastCalledWith("save_draft", expect.objectContaining({ draftId: null, body: "edited" }));
+    expect(invoke).toHaveBeenCalledTimes(1);
     expect(drafts.gmailDraftId()).toBe("d2");
     expect(JSON.parse(localStorage.getItem("k")!)).toMatchObject({ body: "edited", gmailDraftId: "d2" });
   });
