@@ -510,9 +510,8 @@ impl CalendarClient {
             .filter(|e| query.matches(e))
             .collect();
 
-        // Sort by start time
         let mut sorted = filtered;
-        sorted.sort_by_key(|e| e.start_time);
+        sorted.sort_by_key(|e| (day_start_millis(e, timezone), !e.all_day));
 
         // Limit results
         sorted.truncate(max_results as usize);
@@ -946,6 +945,21 @@ fn start_of_day<Z: TimeZone>(tz: &Z, date: NaiveDate) -> DateTime<Utc> {
         .find_map(|hour| tz.from_local_datetime(&date.and_hms_opt(hour, 0, 0)?).earliest())
         .map(|dt| dt.with_timezone(&Utc))
         .unwrap_or_else(|| date.and_hms_opt(0, 0, 0).expect("midnight is a valid time").and_utc())
+}
+
+/// When an event starts, counting an all-day event from its date's midnight
+/// in `timezone` (else the system's) rather than the UTC midnight its
+/// timestamp holds
+fn day_start_millis(event: &CalendarEvent, timezone: Option<&str>) -> i64 {
+    let date = match DateTime::<Utc>::from_timestamp_millis(event.start_time) {
+        Some(start) if event.all_day => start.date_naive(),
+        _ => return event.start_time,
+    };
+    let start = match timezone.and_then(|s| s.parse::<Tz>().ok()) {
+        Some(tz) => start_of_day(&tz, date),
+        None => start_of_day(&Local, date),
+    };
+    start.timestamp_millis()
 }
 
 #[derive(Debug, Default, Clone)]
@@ -1626,6 +1640,38 @@ mod tests {
             .requests()
             .iter()
             .any(|(method, target, _)| method == "PATCH" && target == "/calendars/cal/events/e1"));
+    }
+
+    async fn searched_titles(time_zone: &'static str, events: serde_json::Value, max_results: i32) -> Vec<String> {
+        let server = StubServer::start(move |_, target| {
+            let body = if target.starts_with("/users/me/calendarList") {
+                serde_json::json!({ "items": [{ "id": "me", "primary": true, "accessRole": "owner", "timeZone": time_zone }] })
+            } else {
+                serde_json::json!({ "items": events })
+            };
+            (200, body.to_string())
+        })
+        .await;
+        let found = server.client().search_events(&CalendarQuery::parse("calendar:week"), max_results).await.unwrap();
+        found.into_iter().map(|e| e.title).collect()
+    }
+
+    #[tokio::test]
+    async fn all_day_events_sort_at_the_calendars_midnight() {
+        // All-day timestamps are UTC midnight; the day actually starts at the
+        // calendar's midnight, before (east of UTC) or after (west) that
+        let tokyo = serde_json::json!([
+            { "id": "a", "summary": "Early meeting", "start": { "dateTime": "2024-12-23T08:00:00+09:00" } },
+            { "id": "b", "summary": "Holiday", "start": { "date": "2024-12-23" }, "end": { "date": "2024-12-24" } },
+        ]);
+        assert_eq!(searched_titles("Asia/Tokyo", tokyo.clone(), 10).await, vec!["Holiday", "Early meeting"]);
+        assert_eq!(searched_titles("Asia/Tokyo", tokyo, 1).await, vec!["Holiday"]);
+
+        let buenos_aires = serde_json::json!([
+            { "id": "b", "summary": "Holiday", "start": { "date": "2024-12-23" }, "end": { "date": "2024-12-24" } },
+            { "id": "a", "summary": "Late dinner", "start": { "dateTime": "2024-12-22T22:00:00-03:00" } },
+        ]);
+        assert_eq!(searched_titles("America/Argentina/Buenos_Aires", buenos_aires, 10).await, vec!["Late dinner", "Holiday"]);
     }
 
     #[test]
