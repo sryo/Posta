@@ -3264,12 +3264,14 @@ button:disabled:hover {
     flex-shrink: 0;
 }
 
-.event-info-row a {
+.event-info-row a,
+.event-info-row .link-btn {
     color: var(--accent);
     text-decoration: none;
 }
 
-.event-info-row a:hover {
+.event-info-row a:hover,
+.event-info-row .link-btn:hover {
     text-decoration: underline;
 }
 

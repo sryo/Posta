@@ -76,6 +76,13 @@ describe("App.css cascade", () => {
     }
   });
 
+  it("draws an event's Join video call button like the row's other links", () => {
+    document.body.innerHTML = '<div class="event-info-row"><button type="button" class="link-btn" id="join">Join</button></div>';
+    const decl = cascadedDeclarations(rules, document.getElementById("join")!);
+    expect(decl.get("text-decoration")).toBe("none");
+    expect(decl.get("color")).toBe("var(--accent)");
+  });
+
   it("draws a message's dividers in a border token so they show in dark mode too", () => {
     document.body.innerHTML =
       '<div class="message-card"><div class="message-header" id="header"></div><div class="message-attachments" id="attachments"></div></div>';
