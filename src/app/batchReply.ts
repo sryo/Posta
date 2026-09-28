@@ -9,7 +9,7 @@ export interface BatchReplyThread {
   body: string; // Full HTML body
   from: string;
   date: string;
-  messageId: string;
+  messageId: string; // Gmail id; reply_to_thread threads under it with its full References
   to: string; // Reply-to address
 }
 
