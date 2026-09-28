@@ -2717,11 +2717,11 @@ describe("App sign-in flows", () => {
 
   it("shows a failed sign-in and stops waiting", async () => {
     handlers.get_accounts = () => [];
-    handlers.run_oauth_flow = () => { throw "OAuth callback error: Timeout waiting for OAuth callback"; };
+    handlers.run_oauth_flow = () => { throw "OAuth callback error: Timed out waiting for sign-in in the browser. Try again."; };
     render(() => <App />);
     fireEvent.click(await screen.findByText("Sign in with Google"));
 
-    expect(await screen.findByText(/Timeout waiting for OAuth callback/)).toBeInTheDocument();
+    expect(await screen.findByText(/Timed out waiting for sign-in in the browser/)).toBeInTheDocument();
     expect(screen.queryByText("Complete sign-in in your browser...")).not.toBeInTheDocument();
   });
 });

@@ -35,6 +35,12 @@ describe("needsSignInAgain", () => {
     expect(needsSignInAgain("Calendar access expired. Please re-login to refresh permissions.")).toBe(true);
   });
 
+  it("does not cover a locked keychain, which unlocking fixes", () => {
+    const locked = "Keychain unavailable (locked or access denied). Unlock the keychain and try again. (User interaction is not allowed.)";
+    expect(isSessionExpiredError(locked)).toBe(false);
+    expect(needsSignInAgain(locked)).toBe(false);
+  });
+
   it("does not cover errors that signing in again doesn't fix", () => {
     expect(needsSignInAgain("Calendar access expired. Please re-login.")).toBe(false);
     expect(needsSignInAgain("Calendar API not enabled. Please enable Google Calendar API in your Google Cloud Console and re-login.")).toBe(false);
