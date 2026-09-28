@@ -51,6 +51,8 @@ export const ActionsWheel = (props: {
   startBatchReply: (cardId: string, threadIds: string[]) => void;
   handleForward: (threadId: string, cardId: string) => void;
   handleThreadAction: (action: string, threadIds: string[], cardId: string) => void;
+  // Deletes an event the user can edit; without it the wheel offers no delete
+  onDeleteEvent?: (event: GoogleCalendarEvent) => void;
   showToast: (message?: string) => void;
 }) => {
   const containerRef = (el: HTMLDivElement) => {
@@ -150,20 +152,12 @@ export const ActionsWheel = (props: {
           cls: 'bulk-danger',
           title: 'Delete',
           icon: TrashIcon,
-          onClick: async (e) => {
+          onClick: (e) => {
             e.stopPropagation();
-            // Decline and remove from view
-            const account = props.selectedAccount();
-            if (!account) return;
-            try {
-              await rsvpWithFallback(account.id, evt.id, 'declined');
-              props.showToast('Event declined');
-              props.onClose();
-            } catch (err) {
-              props.showToast('Failed to decline event');
-            }
+            props.onDeleteEvent?.(evt);
+            props.onClose();
           },
-          available: true
+          available: evt.can_edit && !!props.onDeleteEvent
         }
       };
 

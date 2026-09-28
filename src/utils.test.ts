@@ -6,6 +6,7 @@ import {
   extractMessageHtml,
   extractMessageText,
   extractName,
+  formatCalendarEventDate,
   splitEmailList,
   stripHtml,
   truncateMiddle,
@@ -172,5 +173,36 @@ describe("extractMessageHtml in the batch reply panel", () => {
   it("falls back to the snippet, then a placeholder", () => {
     expect(extractMessageHtml({ mimeType: "multipart/mixed", parts: [] }, "snip")).toBe("snip");
     expect(extractMessageHtml(undefined)).toBe("(No content)");
+  });
+});
+
+describe("stripHtml tables", () => {
+  it("separates table cells and puts each row on its own line", () => {
+    expect(stripHtml("<table><tr><td>Name</td><td>Qty</td></tr><tr><td>Apples</td><td>3</td></tr></table>"))
+      .toBe("Name\tQty\nApples\t3");
+    expect(stripHtml("<table><tr><th>A</th><th>B</th></tr></table>")).toBe("A\tB");
+    expect(stripHtml("<table>\n  <tr>\n    <td> Total </td>\n    <td>\n      <b>9</b> items</td>\n  </tr>\n</table>"))
+      .toBe("Total\t9 items");
+  });
+
+  it("starts no line with a tab when the previous cell ended in a block", () => {
+    expect(stripHtml("<table><tr><td><p>Hello</p></td><td><p>World</p></td></tr></table>")).toBe("Hello\nWorld");
+  });
+});
+
+describe("formatCalendarEventDate durations", () => {
+  const start = new Date(2030, 5, 10, 14, 0).getTime();
+  const hours = (h: number) => start + h * 3600_000;
+
+  it("keeps hours and minutes for events under a day", () => {
+    expect(formatCalendarEventDate(start, start + 45 * 60_000, false)).toMatch(/2pm \(45m\)$/);
+    expect(formatCalendarEventDate(start, hours(1.5), false)).toMatch(/2pm \(1h30m\)$/);
+    expect(formatCalendarEventDate(start, hours(23), false)).toMatch(/2pm \(23h\)$/);
+  });
+
+  it("shows days for events of a day or longer", () => {
+    expect(formatCalendarEventDate(start, hours(24), false)).toMatch(/2pm \(1d\)$/);
+    expect(formatCalendarEventDate(start, hours(72), false)).toMatch(/2pm \(3d\)$/);
+    expect(formatCalendarEventDate(start, hours(26), false)).toMatch(/2pm \(1d2h\)$/);
   });
 });

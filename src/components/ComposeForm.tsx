@@ -72,7 +72,7 @@ export const ComposeForm = (props: ComposeFormProps) => {
       } else {
         props.onClose();
       }
-    } else if (e.key === 'Enter' && (e.metaKey || e.ctrlKey) && canSend()) {
+    } else if (e.key === 'Enter' && (e.metaKey || e.ctrlKey) && canSend() && !props.sending) {
       e.preventDefault();
       props.onSend();
     }

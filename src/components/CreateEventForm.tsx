@@ -2,6 +2,34 @@ import { createSignal, onMount, Show, For } from "solid-js";
 import { ChevronLeftIcon, ChevronRightIcon } from "./Icons";
 import { CloseButton } from "./ComposeAtoms";
 
+// One labelled, scrollable single-choice list of the scheduler
+function SchedulerColumn<T>(props: {
+  label: string;
+  listClass?: string;
+  options: { label: string; value: T }[];
+  selected: T;
+  onSelect: (value: T) => void;
+}) {
+  return (
+    <div class="scheduler-column">
+      <label class="scheduler-column-label">{props.label}</label>
+      <div class={`scheduler-list ${props.listClass ?? ''}`}>
+        <For each={props.options}>
+          {(opt) => (
+            <div
+              class={`scheduler-option ${props.selected === opt.value ? 'selected' : ''}`}
+              data-selected={props.selected === opt.value}
+              onClick={() => props.onSelect(opt.value)}
+            >
+              {opt.label}
+            </div>
+          )}
+        </For>
+      </div>
+    </div>
+  );
+}
+
 export const CreateEventForm = (props: {
   closing?: boolean;
   onClose: () => void;
@@ -180,8 +208,14 @@ export const CreateEventForm = (props: {
     return slots;
   };
 
-  const startSlots = () => slotsWithValue(props.startTime);
-  const endSlots = () => slotsWithValue(props.endTime);
+  // Stable option objects so <For> keeps the rendered rows when a time changes
+  const timeOptions = new Map<string, { label: string; value: string }>();
+  const toOptions = (slots: string[]) => slots.map(t => {
+    if (!timeOptions.has(t)) timeOptions.set(t, { label: t, value: t });
+    return timeOptions.get(t)!;
+  });
+  const startOptions = () => toOptions(slotsWithValue(props.startTime));
+  const endOptions = () => toOptions(slotsWithValue(props.endTime));
 
   const formatDateStr = (d: Date) => {
     const year = d.getFullYear();
@@ -232,15 +266,14 @@ export const CreateEventForm = (props: {
         </div>
 
         {/* Custom Scheduler UI */}
-        <div class="scheduler-ui" style={{ padding: "10px 0", "border-bottom": "1px solid var(--border-color)" }}>
+        <div class="scheduler-ui">
 
           {/* Month Header */}
-          <div class="scheduler-header" style={{ display: "flex", "justify-content": "space-between", "align-items": "center", padding: "0 15px 10px" }}>
-            <div style={{ display: "flex", gap: "5px", "align-items": "center" }}>
+          <div class="scheduler-header">
+            <div class="scheduler-header-group">
               <select
                 value={viewDate().getMonth()}
                 onChange={(e) => handleMonthSelect(parseInt(e.currentTarget.value))}
-                style={{ "font-weight": "600", "font-size": "14px", background: "transparent", border: "none", color: "var(--text-primary)", cursor: "pointer" }}
               >
                 <For each={months}>
                   {(m, i) => <option value={i()}>{m}</option>}
@@ -249,138 +282,67 @@ export const CreateEventForm = (props: {
               <select
                 value={viewDate().getFullYear()}
                 onChange={(e) => handleYearSelect(parseInt(e.currentTarget.value))}
-                style={{ "font-weight": "600", "font-size": "14px", background: "transparent", border: "none", color: "var(--text-primary)", cursor: "pointer" }}
               >
                 <For each={years()}>
                   {(y) => <option value={y}>{y}</option>}
                 </For>
               </select>
             </div>
-            <div style={{ display: "flex", gap: "5px" }}>
+            <div class="scheduler-header-group">
               <button class="btn btn-sm btn-ghost" onClick={() => shiftViewDate(-7)} title="Previous Week"><ChevronLeftIcon /></button>
               <button class="btn btn-sm btn-ghost" onClick={() => shiftViewDate(7)} title="Next Week"><ChevronRightIcon /></button>
             </div>
           </div>
 
           {/* Horizontal Days */}
-          <div class="scheduler-days" style={{ display: "flex", gap: "10px", "overflow-x": "auto", padding: "0 15px 15px", "scrollbar-width": "none" }}>
+          <div class="scheduler-days">
             <For each={getDaysInWindow()}>
               {(day) => {
                 const info = formatDateDisplay(day);
-                const selected = () => isSelectedDate(day);
                 return (
                   <div
-                    class={`scheduler-day-card ${selected() ? 'selected' : ''}`}
+                    class={`scheduler-day-card ${isSelectedDate(day) ? 'selected' : ''}`}
                     onClick={() => handleDateSelect(day)}
-                    style={{
-                      display: "flex", "flex-direction": "column", "align-items": "center", "justify-content": "center",
-                      width: "60px", height: "70px",
-                      border: selected() ? "2px solid var(--accent)" : "1px solid var(--border-color)",
-                      "border-radius": "8px",
-                      "background-color": selected() ? "var(--accent)" : "var(--bg-primary)",
-                      cursor: "pointer",
-                      "flex-shrink": 0
-                    }}
                   >
-                    <span style={{ "font-size": "12px", color: selected() ? "#fff" : "var(--text-secondary)" }}>{info.day}</span>
-                    <span style={{ "font-size": "20px", "font-weight": "600", color: selected() ? "#fff" : "var(--text-primary)" }}>{info.date}</span>
+                    <span class="scheduler-day-name">{info.day}</span>
+                    <span class="scheduler-day-number">{info.date}</span>
                   </div>
                 );
               }}
             </For>
           </div>
 
-
           {/* All day toggle */}
-          <div style={{ display: "flex", "justify-content": "flex-start", padding: "0 15px", "margin-bottom": "8px" }}>
-            <label style={{ display: "flex", "align-items": "center", gap: "5px", cursor: "pointer", "font-size": "12px", color: "var(--text-secondary)" }}>
-              <input type="checkbox" checked={props.allDay} onChange={(e) => props.setAllDay(e.currentTarget.checked)} />
-              All day
-            </label>
-          </div>
+          <label class="scheduler-all-day">
+            <input type="checkbox" checked={props.allDay} onChange={(e) => props.setAllDay(e.currentTarget.checked)} />
+            All day
+          </label>
 
-          {/* Vertical Time Lists + Repeat */}
-          <Show when={!props.allDay}>
-            <div class="scheduler-times" style={{ display: "flex", gap: "15px", padding: "0 15px", height: "200px" }}>
-              <div style={{ flex: 1, display: "flex", "flex-direction": "column" }}>
-                <div style={{ display: "flex", "align-items": "center", height: "17px", "margin-bottom": "5px" }}>
-                  <label style={{ "font-size": "12px", color: "var(--text-secondary)" }}>Start</label>
-                </div>
-                <div class="time-picker-start" style={{ flex: 1, "overflow-y": "auto", border: "1px solid var(--border-color)", "border-radius": "6px" }}>
-                  <For each={startSlots()}>
-                    {(t) => (
-                      <div
-                        onClick={() => handleStartTimeChange(t)}
-                        data-selected={props.startTime === t}
-                        style={{
-                          "padding": "6px 10px",
-                          "cursor": "pointer",
-                          "background-color": props.startTime === t ? "var(--accent)" : "transparent",
-                          "color": props.startTime === t ? "#fff" : "var(--text-primary)",
-                          "border-radius": "6px",
-                          "font-size": "13px",
-                          "text-align": "center"
-                        }}
-                      >
-                        {t}
-                      </div>
-                    )}
-                  </For>
-                </div>
-              </div>
-              <div style={{ flex: 1, display: "flex", "flex-direction": "column" }}>
-                <div style={{ display: "flex", "align-items": "center", height: "17px", "margin-bottom": "5px" }}>
-                  <label style={{ "font-size": "12px", color: "var(--text-secondary)" }}>End</label>
-                </div>
-                <div class="time-picker-end" style={{ flex: 1, "overflow-y": "auto", border: "1px solid var(--border-color)", "border-radius": "6px" }}>
-                  <For each={endSlots()}>
-                    {(t) => (
-                      <div
-                        onClick={() => handleEndTimeChange(t)}
-                        data-selected={props.endTime === t}
-                        style={{
-                          "padding": "6px 10px",
-                          "cursor": "pointer",
-                          "background-color": props.endTime === t ? "var(--accent)" : "transparent",
-                          "color": props.endTime === t ? "#fff" : "var(--text-primary)",
-                          "border-radius": "6px",
-                          "font-size": "13px",
-                          "text-align": "center"
-                        }}
-                      >
-                        {t}
-                      </div>
-                    )}
-                  </For>
-                </div>
-              </div>
-              <div style={{ flex: 1, display: "flex", "flex-direction": "column" }}>
-                <div style={{ display: "flex", "align-items": "center", height: "17px", "margin-bottom": "5px" }}>
-                  <label style={{ "font-size": "12px", color: "var(--text-secondary)" }}>Repeat</label>
-                </div>
-                <div style={{ flex: 1, "overflow-y": "auto", border: "1px solid var(--border-color)", "border-radius": "6px" }}>
-                  <For each={recurrenceOptions}>
-                    {(opt) => (
-                      <div
-                        onClick={() => props.setRecurrence(opt.value)}
-                        style={{
-                          "padding": "6px 10px",
-                          "cursor": "pointer",
-                          "background-color": props.recurrence === opt.value ? "var(--accent)" : "transparent",
-                          "color": props.recurrence === opt.value ? "#fff" : "var(--text-primary)",
-                          "border-radius": "6px",
-                          "font-size": "13px",
-                          "text-align": "center"
-                        }}
-                      >
-                        {opt.label}
-                      </div>
-                    )}
-                  </For>
-                </div>
-              </div>
-            </div>
-          </Show>
+          {/* Vertical Time Lists + Repeat; all-day events only repeat */}
+          <div class="scheduler-times">
+            <Show when={!props.allDay}>
+              <SchedulerColumn
+                label="Start"
+                listClass="time-picker-start"
+                options={startOptions()}
+                selected={props.startTime}
+                onSelect={handleStartTimeChange}
+              />
+              <SchedulerColumn
+                label="End"
+                listClass="time-picker-end"
+                options={endOptions()}
+                selected={props.endTime}
+                onSelect={handleEndTimeChange}
+              />
+            </Show>
+            <SchedulerColumn
+              label="Repeat"
+              options={recurrenceOptions}
+              selected={props.recurrence}
+              onSelect={props.setRecurrence}
+            />
+          </div>
         </div>
 
         <div class="compose-field">

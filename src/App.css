@@ -4791,3 +4791,128 @@ button:disabled:hover {
     background: var(--bg-hover);
     color: var(--text-primary);
 }
+/* Event scheduler */
+.scheduler-ui {
+    padding: 10px 0;
+    border-bottom: 1px solid var(--border-color);
+}
+
+.scheduler-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 0 15px 10px;
+}
+
+.scheduler-header-group {
+    display: flex;
+    gap: 5px;
+    align-items: center;
+}
+
+.scheduler-header select {
+    font-weight: 600;
+    font-size: 14px;
+    background: transparent;
+    border: none;
+    color: var(--text-primary);
+    cursor: pointer;
+}
+
+.scheduler-days {
+    display: flex;
+    gap: 10px;
+    overflow-x: auto;
+    padding: 0 15px 15px;
+    scrollbar-width: none;
+}
+
+.scheduler-day-card {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    width: 60px;
+    height: 70px;
+    border: 1px solid var(--border-color);
+    border-radius: 8px;
+    background-color: var(--bg-primary);
+    cursor: pointer;
+    flex-shrink: 0;
+}
+
+.scheduler-day-card.selected {
+    border: 2px solid var(--accent);
+    background-color: var(--accent);
+}
+
+.scheduler-day-name {
+    font-size: 12px;
+    color: var(--text-secondary);
+}
+
+.scheduler-day-number {
+    font-size: 20px;
+    font-weight: 600;
+    color: var(--text-primary);
+}
+
+.scheduler-day-card.selected .scheduler-day-name,
+.scheduler-day-card.selected .scheduler-day-number {
+    color: #fff;
+}
+
+.scheduler-all-day {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    width: fit-content;
+    padding: 0 15px;
+    margin-bottom: 8px;
+    cursor: pointer;
+    font-size: 12px;
+    color: var(--text-secondary);
+}
+
+.scheduler-times {
+    display: flex;
+    gap: 15px;
+    padding: 0 15px;
+    height: 200px;
+}
+
+.scheduler-column {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+}
+
+.scheduler-column-label {
+    display: flex;
+    align-items: center;
+    height: 17px;
+    margin-bottom: 5px;
+    font-size: 12px;
+    color: var(--text-secondary);
+}
+
+.scheduler-list {
+    flex: 1;
+    overflow-y: auto;
+    border: 1px solid var(--border-color);
+    border-radius: 6px;
+}
+
+.scheduler-option {
+    padding: 6px 10px;
+    cursor: pointer;
+    border-radius: 6px;
+    font-size: 13px;
+    text-align: center;
+    color: var(--text-primary);
+}
+
+.scheduler-option.selected {
+    background-color: var(--accent);
+    color: #fff;
+}

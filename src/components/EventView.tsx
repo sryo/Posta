@@ -3,7 +3,7 @@ import DOMPurify from 'dompurify';
 import { DOMPURIFY_CONFIG } from './MessageBody';
 import { openUrl } from '@tauri-apps/plugin-opener';
 import type { GoogleCalendarEvent } from "../api/tauri";
-import { formatCalendarEventDate, getResponseStatusLabel } from "../utils";
+import { formatCalendarEventDate, getResponseStatusLabel, textOrHtmlToHtml } from "../utils";
 import {
   ReplyIcon,
   TrashIcon,
@@ -234,7 +234,7 @@ export const EventView = (props: {
                   {/* Description */}
                   <Show when={props.event!.description}>
                     <div class="message-body">
-                      <div innerHTML={DOMPurify.sanitize(props.event!.description!.replace(/\n/g, '<br>'), DOMPURIFY_CONFIG)} />
+                      <div innerHTML={DOMPurify.sanitize(textOrHtmlToHtml(props.event!.description!), DOMPURIFY_CONFIG)} />
                     </div>
                   </Show>
 

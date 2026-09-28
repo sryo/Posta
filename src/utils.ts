@@ -100,6 +100,14 @@ function plainTextToHtml(text: string): string {
   return `<div style="white-space: pre-wrap">${escapeHtml(text)}</div>`;
 }
 
+// Free-form text that may be either HTML or plain text (e.g. calendar event
+// descriptions) as HTML: markup is kept as is, plain text is escaped with its
+// line breaks kept
+const HTML_TAG = /<\/?(a|b|br|div|em|font|h[1-6]|hr|i|img|li|ol|p|span|strong|table|u|ul)\b[^>]*>/i;
+export function textOrHtmlToHtml(text: string): string {
+  return HTML_TAG.test(text) ? text : plainTextToHtml(text);
+}
+
 // Message body as HTML for display: the HTML alternative when present,
 // otherwise the plain-text body escaped with its line breaks kept
 export function extractMessageHtml(payload: any, snippet?: string): string {
@@ -150,11 +158,13 @@ export function stripHtml(html: string): string {
         let text = child.textContent ?? '';
         if (!inPre) {
           text = text.replace(/\s+/g, ' ');
-          if (!out || out.endsWith('\n')) text = text.trimStart();
+          if (!out || /[\n\t]$/.test(out)) text = text.trimStart();
         }
         out += text;
       } else if (child instanceof Element && !SKIPPED_TAGS.has(child.tagName)) {
         if (child.tagName === 'BR') { out += '\n'; continue; }
+        const isCell = child.tagName === 'TD' || child.tagName === 'TH';
+        if (isCell && child.previousElementSibling && !out.endsWith('\n')) out = out.replace(/ +$/, '') + '\t';
         const isBlock = BLOCK_TAGS.has(child.tagName);
         if (isBlock) newline();
         walk(child, inPre || child.tagName === 'PRE');
@@ -454,6 +464,10 @@ export function formatCalendarEventDate(
     let durationStr: string;
     if (durationMins < 60) {
       durationStr = `${durationMins}m`;
+    } else if (durationMins >= 24 * 60) {
+      const days = Math.floor(durationMins / (24 * 60));
+      const hours = Math.floor((durationMins % (24 * 60)) / 60);
+      durationStr = hours > 0 ? `${days}d${hours}h` : `${days}d`;
     } else {
       const hours = Math.floor(durationMins / 60);
       const mins = durationMins % 60;

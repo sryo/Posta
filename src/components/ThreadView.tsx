@@ -7,6 +7,7 @@ import {
   formatFileSize,
   truncateMiddle,
   extractEmail,
+  extractName,
   formatEmailDate,
   normalizeBase64Url,
   extractMessageHtml,
@@ -82,6 +83,10 @@ export const ThreadView = (props: {
   const [hoveredLinkUrl, setHoveredLinkUrl] = createSignal<string | null>(null);
   const [closing, setClosing] = createSignal(false);
   const [sendingReaction, setSendingReaction] = createSignal(false);
+  // Message a forward was started from in this view; null means the forward
+  // came from elsewhere (e.g. the card list) and sits under the last message
+  const [forwardSourceId, setForwardSourceId] = createSignal<string | null>(null);
+  createEffect(() => { if (!props.inlineCompose?.isForward) setForwardSourceId(null); });
   let hoverTimeout: number | undefined;
 
   // Handle sending a reaction
@@ -200,6 +205,7 @@ export const ThreadView = (props: {
       forward: () => {
         const plainBody = extractMessageText(msg.payload, msg.snippet);
         const fwdBody = `\n\n---------- Forwarded message ----------\nFrom: ${from}\nDate: ${date}\nSubject: ${subject}\n\n${plainBody}`;
+        setForwardSourceId(msg.id);
         props.onForward(addForwardPrefix(subject), fwdBody);
       },
     };
@@ -403,13 +409,23 @@ export const ThreadView = (props: {
 
                 const actions = messageActions(msg);
                 const getRfcMessageId = () => findHeader(headers, 'Message-ID');
+                // One chip per emoji, naming each sender once
                 const receivedReactions = createMemo(() => {
                   const id = getRfcMessageId();
                   if (!id) return [];
                   const target = normalizeMessageId(id);
-                  return props.thread!.messages
-                    .map(m => m.reaction)
-                    .filter((r): r is NonNullable<typeof r> => !!r && normalizeMessageId(r.in_reply_to) === target);
+                  const me = props.currentUserEmail?.toLowerCase();
+                  const groups = new Map<string, { emoji: string; senders: Map<string, string> }>();
+                  for (const m of props.thread!.messages) {
+                    const r = m.reaction;
+                    if (!r || normalizeMessageId(r.in_reply_to) !== target) continue;
+                    const addr = r.from_addr.toLowerCase();
+                    const name = addr === me ? 'You' : extractName(findHeader(m.payload?.headers, 'From') || '') || r.from_addr;
+                    const group = groups.get(r.emoji) ?? { emoji: r.emoji, senders: new Map<string, string>() };
+                    if (!group.senders.has(addr)) group.senders.set(addr, name);
+                    groups.set(r.emoji, group);
+                  }
+                  return Array.from(groups.values(), g => ({ emoji: g.emoji, names: Array.from(g.senders.values()) }));
                 });
 
                 // Match either the Gmail API id or the RFC Message-ID, since
@@ -418,7 +434,12 @@ export const ThreadView = (props: {
                   const rid = props.inlineCompose?.replyToMessageId;
                   return rid != null && (rid === msg.id || rid === getRfcMessageId());
                 };
-                const isForwardingFromThis = () => props.inlineCompose?.isForward && index() === props.thread!.messages.length - 1;
+                const isForwardingFromThis = () => {
+                  if (!props.inlineCompose?.isForward) return false;
+                  const source = forwardSourceId();
+                  const sourceShown = source != null && props.thread!.messages.some(m => m.id === source);
+                  return sourceShown ? source === msg.id : index() === props.thread!.messages.length - 1;
+                };
                 const showInlineCompose = () => isReplyingToThis() || isForwardingFromThis();
 
                 return (
@@ -472,7 +493,7 @@ export const ThreadView = (props: {
                       <Show when={receivedReactions().length > 0}>
                         <div class="message-reactions">
                           <For each={receivedReactions()}>
-                            {(r) => <span class="message-reaction" title={r.from_addr}>{r.emoji}</span>}
+                            {(r) => <span class="message-reaction" title={r.names.join(', ')}>{r.names.length > 1 ? `${r.emoji} ${r.names.length}` : r.emoji}</span>}
                           </For>
                         </div>
                       </Show>
