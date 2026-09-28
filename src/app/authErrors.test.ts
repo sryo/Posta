@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { isSessionExpiredError } from "./authErrors";
+import { isSessionExpiredError, needsSignInAgain } from "./authErrors";
 
 describe("isSessionExpiredError", () => {
   it("treats a revoked or expired refresh token as an expired session", () => {
@@ -22,5 +22,22 @@ describe("isSessionExpiredError", () => {
   it("ignores ordinary API errors", () => {
     expect(isSessionExpiredError("API error 404 Not Found: thread")).toBe(false);
     expect(isSessionExpiredError("Calendar not found.")).toBe(false);
+  });
+});
+
+describe("needsSignInAgain", () => {
+  it("covers an expired session", () => {
+    expect(needsSignInAgain("Keyring error: No refresh token found")).toBe(true);
+  });
+
+  it("covers calendar access that only signing in again can grant", () => {
+    expect(needsSignInAgain("Calendar permission denied. Please re-login to grant calendar access.")).toBe(true);
+    expect(needsSignInAgain("Calendar access expired. Please re-login to refresh permissions.")).toBe(true);
+  });
+
+  it("does not cover errors that signing in again doesn't fix", () => {
+    expect(needsSignInAgain("Calendar access expired. Please re-login.")).toBe(false);
+    expect(needsSignInAgain("Calendar API not enabled. Please enable Google Calendar API in your Google Cloud Console and re-login.")).toBe(false);
+    expect(needsSignInAgain("Too many requests. Please try again later.")).toBe(false);
   });
 });

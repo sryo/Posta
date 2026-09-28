@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { Thread, ThreadGroup } from "../api/tauri";
-import { actionLabel, actionRemovesFromCard, applyThreadAction, labelChangeFor } from "./threadActions";
+import { actionLabel, actionRemovesFromCard, applyThreadAction, labelChangeFor, threadMayJoinCard, undoLabelChanges } from "./threadActions";
 
 const thread = (id: string, labels: string[], unread = 0): Thread => ({
   gmail_thread_id: id, account_id: "a", subject: id, snippet: "", last_message_date: 0,
@@ -69,5 +69,57 @@ describe("applyThreadAction", () => {
     const input = groups(thread("a", ["INBOX"]));
     applyThreadAction(input, ["a"], "archive", false);
     expect(input[0].threads[0].labels).toEqual(["INBOX"]);
+  });
+});
+
+describe("undoLabelChanges", () => {
+  const before = (...threads: Thread[]) => new Map(threads.map(t => [t.gmail_thread_id, t]));
+
+  it("only unstars the threads the star action starred", () => {
+    const undo = undoLabelChanges(["t1", "t2"], labelChangeFor("star"), before(thread("t1", ["STARRED"]), thread("t2", [])));
+    expect(undo).toEqual([{ threadIds: ["t2"], add: [], remove: ["STARRED"] }]);
+  });
+
+  it("does not move a thread into the inbox that archive never took out of it", () => {
+    const undo = undoLabelChanges(["t1", "t2"], labelChangeFor("archive"), before(thread("t1", ["STARRED"]), thread("t2", ["INBOX"])));
+    expect(undo).toEqual([{ threadIds: ["t2"], add: ["INBOX"], remove: [] }]);
+  });
+
+  it("marks unread again only the threads that were unread", () => {
+    const undo = undoLabelChanges(["t1", "t2"], labelChangeFor("read"), before(thread("t1", ["INBOX"], 2), thread("t2", ["INBOX"])));
+    expect(undo).toEqual([{ threadIds: ["t1"], add: ["UNREAD"], remove: [] }]);
+  });
+
+  it("groups threads by the change that reverses them", () => {
+    const undo = undoLabelChanges(["t1", "t2", "t3"], labelChangeFor("spam"), before(thread("t1", ["INBOX"]), thread("t2", []), thread("t3", ["INBOX"])));
+    expect(undo).toEqual([
+      { threadIds: ["t1", "t3"], add: ["INBOX"], remove: ["SPAM"] },
+      { threadIds: ["t2"], add: [], remove: ["SPAM"] },
+    ]);
+  });
+
+  it("reverses the whole change for a thread whose labels were not known", () => {
+    expect(undoLabelChanges(["t9"], labelChangeFor("archive"), before())).toEqual([{ threadIds: ["t9"], add: ["INBOX"], remove: [] }]);
+  });
+});
+
+describe("threadMayJoinCard", () => {
+  it("keeps spam and trash out of cards that don't search them", () => {
+    expect(threadMayJoinCard(thread("t", ["SPAM", "UNREAD"]), "is:inbox")).toBe(false);
+    expect(threadMayJoinCard(thread("t", ["TRASH"]), "has:attachment")).toBe(false);
+  });
+
+  it("lets spam and trash into cards that search them", () => {
+    expect(threadMayJoinCard(thread("t", ["SPAM"]), "in:spam")).toBe(true);
+    expect(threadMayJoinCard(thread("t", ["TRASH"]), "in:anywhere from:bo")).toBe(true);
+    expect(threadMayJoinCard(thread("t", ["TRASH"]), "label:Trash")).toBe(true);
+  });
+
+  it("lets a thread that still has mail in the inbox in", () => {
+    expect(threadMayJoinCard(thread("t", ["TRASH", "INBOX"]), "is:inbox")).toBe(true);
+  });
+
+  it("lets any other thread in", () => {
+    expect(threadMayJoinCard(thread("t", ["SENT"]), "is:inbox")).toBe(true);
   });
 });

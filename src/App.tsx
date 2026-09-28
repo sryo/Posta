@@ -1,4 +1,4 @@
-import { batch, createSignal, onMount, onCleanup, Show, For, createMemo, createEffect, createComputed, on, untrack } from "solid-js";
+import { batch, createSignal, onMount, onCleanup, Show, For, Index, createMemo, createEffect, createComputed, on, untrack } from "solid-js";
 import { createStore, produce, reconcile, unwrap } from "solid-js/store";
 import DOMPurify from 'dompurify';
 import { DOMPURIFY_CONFIG } from './components/MessageBody';
@@ -120,18 +120,22 @@ import { findHeader, lastMessageFromOthers } from "./app/messages";
 import { batchReplyEntry, type BatchReplyThread } from "./app/batchReply";
 import { completeRecipient, currentRecipient, matchContacts, rankContacts } from "./app/contacts";
 import { eventReplyRecipients } from "./app/eventReply";
-import { actionLabel, actionRemovesFromCard, applyThreadAction, labelChangeFor } from "./app/threadActions";
+import { actionLabel, actionRemovesFromCard, applyThreadAction, labelChangeFor, threadMayJoinCard, undoLabelChanges, type LabelReversal } from "./app/threadActions";
 import { PRESETS } from "./app/presets";
 import { normalizeActionOrder } from "./app/actionOrder";
 import { parseStoredWidth } from "./app/storedWidth";
-import { isSessionExpiredError } from "./app/authErrors";
-import { signatureBlock, withSignature } from "./app/signature";
+import { isSessionExpiredError, needsSignInAgain } from "./app/authErrors";
+import { withSignature } from "./app/signature";
 import { readFilesAsAttachments } from "./app/attachments";
 import { eventTimesFromForm, smartEventDefaults } from "./app/eventForm";
 import { composePlacement } from "./app/composePlacement";
 import { cidImagesToFetch, fetchCidImages } from "./app/cidImages";
 import { sendPending, type PendingSend } from "./app/pendingSend";
-import { createDraftSync, draftKey, hasDraftContent, type DraftFields } from "./app/drafts";
+import { parseMailto } from "./app/mailto";
+import { coalesceByKey } from "./app/coalesce";
+import { threadLoadErrorMessage } from "./app/loadErrors";
+import { cardTypeForQuery } from "./app/cardType";
+import { createDraftSync, draftKey, findLatestDraft, hasDraftContent, markDraftClosed, removeAccountDrafts, sessionDraftKey, type DraftFields } from "./app/drafts";
 import { nextCardFocus, nextItemFocus } from "./app/keyboardNav";
 import { getSmartEventTime, groupCalendarEvents, isUserLabel, mergeThreadGroups, regroupThreads, type CalendarEventGroup } from "./app/grouping";
 
@@ -158,11 +162,13 @@ function App() {
   const [calendarsLoading, setCalendarsLoading] = createSignal(false);
   // The account availableCalendars was loaded for
   let calendarsAccountId: string | null = null;
+  let calendarsFetchingFor: string | null = null;
 
   // Label drawer state
   const [labelDrawerOpen, setLabelDrawerOpen] = createSignal(false);
   const [accountLabels, setAccountLabels] = createSignal<GmailLabel[]>([]);
   const [labelsLoading, setLabelsLoading] = createSignal(false);
+  const [labelsFailed, setLabelsFailed] = createSignal(false);
   const [labelSearchQuery, setLabelSearchQuery] = createSignal("");
 
   const [error, setError] = createSignal<string | null>(null);
@@ -239,8 +245,7 @@ function App() {
     threadIds: string[];
     cardId: string;
     cardIds: string[]; // every card the optimistic update touched
-    addedLabels: string[];
-    removedLabels: string[];
+    reversals: LabelReversal[];
     timestamp: number;
   }
   const [lastAction, setLastAction] = createSignal<UndoableAction | null>(null);
@@ -257,7 +262,14 @@ function App() {
   // Undo send state
   const undoableSend = createUndoableSend<PendingSend>({
     delayMs: 5000,
-    send: sendPending,
+    send: async pending => {
+      await sendPending(pending);
+      const draft = pending.draft;
+      if (draft) {
+        drafts.discard(draft.key, pending.accountId, draft.gmailDraftId)
+          .finally(() => sendingDraftKeys.delete(draft.key));
+      }
+    },
     onFailed: (pending, e) => {
       console.error("Failed to send email:", e);
       restoreSend(pending);
@@ -384,7 +396,7 @@ function App() {
 
   function effectiveCardType(card: Card): Card["card_type"] {
     if (editingCardId() === card.id) {
-      return editCardQuery().toLowerCase().includes("calendar:") ? "calendar" : "email";
+      return cardTypeForQuery(editCardQuery());
     }
     return card.card_type;
   }
@@ -427,9 +439,8 @@ function App() {
     try {
       const data = att.inlineData || await downloadAttachmentApi(account.id, att.messageId, att.attachmentId);
       // The compose that is animating out is done; start a new one
-      if (closingCompose()) resetCompose();
+      if (!composing() || closingCompose()) startCompose({});
       setComposeAttachments([...composeAttachments(), { filename: att.filename, mime_type: att.mimeType, data }]);
-      setComposing(true);
     } catch (e) {
       console.error("Failed to forward attachment:", e);
       showToast(`Failed to forward ${att.filename}: ${e}`);
@@ -499,7 +510,7 @@ function App() {
     setQueryPreviewLoading(true);
 
     // Fetch calendar events for calendar queries
-    if (query.toLowerCase().includes("calendar:")) {
+    if (cardTypeForQuery(query) === "calendar") {
       setQueryPreviewThreads([]);
       try {
         const events = await fetchCalendarEvents(account.id, query);
@@ -712,10 +723,10 @@ function App() {
   let fabHoverTimeout: number | undefined;
   let draftSaveTimeout: number | undefined;
   const drafts = createDraftSync();
-
-  function getDraftKey(): string {
-    return draftKey(composeAccount()?.id, { replyThreadId: replyingToThread()?.threadId, forwarding: !!forwardingThread() });
-  }
+  // Where the open compose keeps its draft, chosen when it opens
+  let composeDraftKey = "";
+  // Drafts of emails queued or going out; not offered to a new compose
+  const sendingDraftKeys = new Set<string>();
 
   function composeDraftFields(): DraftFields {
     return {
@@ -729,43 +740,36 @@ function App() {
   }
 
   function saveDraft() {
+    cancelDraftSave();
     const account = composeAccount();
     if (!composing() || closingCompose() || !account) return;
-    drafts.save(getDraftKey(), account.id, composeDraftFields());
+    drafts.save(composeDraftKey, account.id, composeDraftFields());
   }
 
-  function clearDraft() {
-    return drafts.clear(getDraftKey(), composeAccount()?.id);
+  // Every edit is kept locally at once, so a quit can't lose it; Gmail gets
+  // it once typing pauses
+  function handleComposeInput() {
+    if (!composing() || closingCompose()) return;
+    drafts.saveLocal(composeDraftKey, composeDraftFields());
+    clearTimeout(draftSaveTimeout);
+    draftSaveTimeout = window.setTimeout(saveDraft, 3000);
   }
 
-  function debouncedSaveDraft() {
-    if (draftSaveTimeout) clearTimeout(draftSaveTimeout);
-    draftSaveTimeout = setTimeout(saveDraft, 3000) as unknown as number;
+  function flushDraftSave() {
+    if (draftSaveTimeout !== undefined) saveDraft();
   }
 
-  // Load draft when compose opens (only for new emails, not reply/forward with pre-filled content).
-  // untrack keeps the restore a one-shot on open: mailto/avatar prefills must
-  // not be clobbered, and an account switch mid-compose must not re-fire it
-  createEffect(() => {
-    if (composing() && !replyingToThread() && !forwardingThread()) {
-      untrack(() => {
-        const body = composeBody();
-        const prefilled = composeTo() || composeSubject() || (body && body !== signatureBlock(composeAccount()?.signature));
-        if (prefilled) return;
-        const draft = drafts.load(getDraftKey());
-        if (draft) {
-          setComposeTo(draft.to);
-          setComposeCc(draft.cc);
-          setComposeBcc(draft.bcc);
-          setComposeSubject(draft.subject);
-          setComposeBody(draft.body);
-          if (draft.cc || draft.bcc) {
-            setShowCcBcc(true);
-          }
-        }
-      });
-    }
-  });
+  function cancelDraftSave() {
+    clearTimeout(draftSaveTimeout);
+    draftSaveTimeout = undefined;
+  }
+
+  // The saved draft a compose opening on this target picks up again. A new
+  // email only picks up one left behind by a quit, crash or failed sync; one
+  // the user closed is in Gmail's Drafts.
+  function restorableDraft(group: string, forNewEmail: boolean) {
+    return findLatestDraft(group, (draft, key) => !sendingDraftKeys.has(key) && (!forNewEmail || !draft.closed));
+  }
 
   // Batch Reply
   const [batchReplyOpen, setBatchReplyOpen] = createSignal(false);
@@ -841,6 +845,7 @@ function App() {
       }
     } catch (e) {
       console.error("Incremental sync failed:", e);
+      noteBackgroundError(account.id, e);
       // On error, backoff but don't stop polling
       setPollInterval(prev => Math.min(prev * 2, MAX_POLL_INTERVAL));
     } finally {
@@ -889,10 +894,11 @@ function App() {
     // the server can tell, so refetch the affected cards in the background
     const account = selectedAccount();
     if (!account) return;
-    const hasUnmatched = modifiedThreads.some(t => !matchedThreadIds.has(t.gmail_thread_id));
+    const unmatched = modifiedThreads.filter(t => !matchedThreadIds.has(t.gmail_thread_id));
     for (const card of cards()) {
       if (card.card_type === "calendar") continue;
-      if (!collapsedCards[card.id] && (hasUnmatched || cardsWithModified.has(card.id))) {
+      const mayGainThread = unmatched.some(t => threadMayJoinCard(t, card.query));
+      if (!collapsedCards[card.id] && (mayGainThread || cardsWithModified.has(card.id))) {
         fetchAndCacheThreads(account.id, card.id);
       } else if (cardsWithDeleted.has(card.id)) {
         saveCachedCardThreads(card.id, updatedCardThreads[card.id], cardPageTokens[card.id] || null)
@@ -978,24 +984,24 @@ function App() {
     }
   };
 
-  // Update dock badge with total unread count
-  createEffect(() => {
+  // Dock badge: unread threads across cards. The memo only notifies when the
+  // total changes, so refreshes that change nothing don't touch the badge.
+  const totalUnread = createMemo(() => {
     // A thread can match several cards; count it once
     const unreadThreadIds = new Set<string>();
-
     for (const groups of Object.values(cardThreads)) {
       for (const group of groups) {
         for (const thread of group.threads) {
-          if (thread.unread_count > 0) {
-            unreadThreadIds.add(thread.gmail_thread_id);
-          }
+          if (thread.unread_count > 0) unreadThreadIds.add(thread.gmail_thread_id);
         }
       }
     }
-
-    const totalUnread = unreadThreadIds.size;
-    // Update badge (undefined removes it)
-    getCurrentWindow().setBadgeCount(totalUnread > 0 ? totalUnread : undefined).catch(() => {
+    return unreadThreadIds.size;
+  });
+  createEffect(() => {
+    const total = totalUnread();
+    // undefined removes the badge
+    getCurrentWindow().setBadgeCount(total > 0 ? total : undefined).catch(() => {
       // Badge not supported on this platform
     });
   });
@@ -1235,6 +1241,12 @@ function App() {
       return;
     }
 
+    // Same for modals and panels over the cards; Escape still closes them
+    const overlayOpen = settingsOpen() || shortcutsHelpOpen() || queryHelpOpen() || creatingEvent() || showPresetSelection() || showRestorePrompt();
+    if (overlayOpen && e.key !== 'Escape') {
+      return;
+    }
+
     // / to open filter
     if (e.key === '/') {
       e.preventDefault();
@@ -1266,7 +1278,7 @@ function App() {
     }
 
     if (e.key === 'Escape') {
-      // Priority: filter > dropdowns > color pickers > batch reply > compose > card editing > sidebar > action menu > selection > focus
+      // Priority: filter > dropdowns > color pickers > shortcuts help > batch reply > compose > query help > event form > card editing > sidebar > action menu > selection > focus
       if (showGlobalFilter()) {
         setShowGlobalFilter(false);
         setGlobalFilter("");
@@ -1276,16 +1288,18 @@ function App() {
         setColorPickerOpen(false);
         setEditColorPickerOpen(false);
         setBgColorPickerOpen(false);
+      } else if (shortcutsHelpOpen()) {
+        setShortcutsHelpOpen(false);
       } else if (batchReplyOpen()) {
-        closeBatchReply();
-      } else if (composing()) {
+        dismissBatchReply();
+      } else if (composing() && !closingCompose()) {
         closeCompose();
+      } else if (queryHelpOpen()) {
+        setQueryHelpOpen(false);
       } else if (creatingEvent()) {
         closeEventForm();
       } else if (editingCardId()) {
         setEditingCardId(null);
-      } else if (shortcutsHelpOpen()) {
-        setShortcutsHelpOpen(false);
       } else if (settingsOpen()) {
         setSettingsOpen(false);
       } else if (actionConfigMenu()) {
@@ -1432,20 +1446,31 @@ function App() {
   onCleanup(() => {
     document.removeEventListener('keydown', handleGlobalKeyDown);
     document.removeEventListener('click', handleGlobalClick);
+    cancelDraftSave();
   });
 
   function handleGlobalClick(e: MouseEvent) {
     const target = e.target as HTMLElement;
 
-    // Intercept clicks on links to open in external browser
+    // Web links open in the browser and mailto links in compose. Links in an
+    // email must never navigate the app's own page; the app's links (href="#")
+    // are left to their own handlers.
     const link = target.closest('a') as HTMLAnchorElement | null;
-    if (link && link.href) {
-      const href = link.href;
-      // Only intercept http/https links (not javascript:, mailto:, etc.)
-      if (href.startsWith('http://') || href.startsWith('https://')) {
+    if (link && link.href && !e.defaultPrevented) {
+      const inEmail = !!link.closest('.message-body');
+      if (link.protocol === 'mailto:') {
+        e.preventDefault();
+        startCompose(parseMailto(link.href));
+        return;
+      }
+      if ((link.protocol === 'http:' || link.protocol === 'https:') && link.origin !== window.location.origin) {
         e.preventDefault();
         e.stopPropagation();
-        openUrl(href);
+        openUrl(link.href);
+        return;
+      }
+      if (inEmail) {
+        e.preventDefault();
         return;
       }
     }
@@ -1499,11 +1524,12 @@ function App() {
     }
   }
 
-  async function handleSignIn() {
-    const storedCreds = await getStoredCredentials();
-
-    if (!storedCreds) {
-      // No credentials stored - open settings to configure OAuth
+  // Sign in with Google through the browser, then hand the account to
+  // afterAuth. Uses the stored OAuth client unless Settings just configured
+  // one; without either, sends the user to Settings.
+  async function signInWithGoogle(afterAuth: (account: Account) => Promise<unknown>, { configured = false } = {}) {
+    const storedCreds = configured ? null : await getStoredCredentials();
+    if (!configured && !storedCreds) {
       setSettingsOpen(true);
       setError("Connect your Google account in Settings");
       return;
@@ -1512,14 +1538,13 @@ function App() {
     setAuthLoading(true);
     setError(null);
     try {
-      await configureAuth({
-        client_id: storedCreds.client_id,
-        client_secret: storedCreds.client_secret,
-      });
-
-      const account = await runOAuthFlow();
-      console.log("Sign in complete, account:", account.id, account.email);
-      await restoreLayoutAfterAuth(account);
+      if (storedCreds) {
+        await configureAuth({
+          client_id: storedCreds.client_id,
+          client_secret: storedCreds.client_secret,
+        });
+      }
+      await afterAuth(await runOAuthFlow());
     } catch (e) {
       setError(String(e));
     } finally {
@@ -1527,25 +1552,12 @@ function App() {
     }
   }
 
-  async function handleAddAccount() {
-    const storedCreds = await getStoredCredentials();
+  function handleSignIn() {
+    return signInWithGoogle(restoreLayoutAfterAuth);
+  }
 
-    if (!storedCreds) {
-      setSettingsOpen(true);
-      setError("Connect your Google account in Settings");
-      return;
-    }
-
-    setAuthLoading(true);
-    setError(null);
-    try {
-      await configureAuth({
-        client_id: storedCreds.client_id,
-        client_secret: storedCreds.client_secret,
-      });
-
-      const account = await runOAuthFlow();
-
+  function handleAddAccount() {
+    return signInWithGoogle(async account => {
       upsertAccount(account);
       setSelectedAccount(account);
 
@@ -1559,11 +1571,7 @@ function App() {
       startBackgroundSync(account.id);
 
       setSettingsOpen(false);
-    } catch (e) {
-      setError(String(e));
-    } finally {
-      setAuthLoading(false);
-    }
+    });
   }
 
   let applyingPreset = false;
@@ -1576,7 +1584,7 @@ function App() {
     const newCards: Card[] = [];
     try {
       for (const cardPreset of preset.cards) {
-        const cardType = cardPreset.query.toLowerCase().includes("calendar:") ? "calendar" : "email";
+        const cardType = cardTypeForQuery(cardPreset.query);
         newCards.push(await createCard(account.id, cardPreset.name, cardPreset.query, cardPreset.color || null, "date", cardType));
       }
     } catch (e) {
@@ -1597,6 +1605,8 @@ function App() {
 
   async function handleStartFresh() {
     const currentCards = cards();
+    const count = `${currentCards.length} card${currentCards.length === 1 ? "" : "s"}`;
+    if (currentCards.length > 0 && !confirm(`Delete the restored layout's ${count}? This can't be undone.`)) return;
     const results = await Promise.allSettled(currentCards.map(card => deleteCard(card.id)));
     // Cards that failed to delete still exist; keep showing them rather than
     // letting a preset pile new cards on top
@@ -1622,22 +1632,12 @@ function App() {
         client_id: clientId(),
         client_secret: clientSecret(),
       });
-      setSettingsOpen(false);
-
-      // Directly run OAuth flow since we just configured auth
-      setAuthLoading(true);
-      setError(null);
-      try {
-        const account = await runOAuthFlow();
-        await restoreLayoutAfterAuth(account);
-      } catch (e) {
-        setError(String(e));
-      } finally {
-        setAuthLoading(false);
-      }
     } catch (e) {
       setError(`Failed to save credentials: ${e}`);
+      return;
     }
+    setSettingsOpen(false);
+    await signInWithGoogle(restoreLayoutAfterAuth, { configured: true });
   }
 
   async function saveSignature(account: Account, text: string) {
@@ -1655,6 +1655,7 @@ function App() {
   async function handleSignOut() {
     const account = selectedAccount();
     if (!account) return;
+    if (!confirm(`Sign out of ${account.email}? Its cards and the drafts saved on this computer are removed.`)) return;
 
     const signedOutCards = cards();
     try {
@@ -1669,6 +1670,7 @@ function App() {
       const collapsed = safeGetJSON<Record<string, boolean>>("collapsedCards", {});
       for (const card of signedOutCards) delete collapsed[card.id];
       safeSetJSON("collapsedCards", collapsed);
+      removeAccountDrafts(account.id);
       // Fall through to the next account instead of a blank screen
       if (remaining.length > 0) {
         await switchAccount(remaining[0]);
@@ -1683,9 +1685,8 @@ function App() {
     if (!account || !newCardName() || !newCardQuery()) return;
 
     try {
-      // Auto-detect card type from query: if contains "calendar:", it's a calendar card
       const query = newCardQuery();
-      const cardType = query.toLowerCase().includes("calendar:") ? "calendar" : "email";
+      const cardType = cardTypeForQuery(query);
 
       const card = await createCard(account.id, newCardName(), query, newCardColor() || null, newCardGroupBy(), cardType);
       setCards([...cards(), card]);
@@ -1714,12 +1715,72 @@ function App() {
     }, 200);
   }
 
+  // One object per view, read through getters, so typing updates the inline
+  // compose in place instead of handing the view a new object per keystroke
+  function inlineComposeProps(target: { replyToMessageId: () => string | null; isForward: () => boolean; onClose: () => void }) {
+    return {
+      get replyToMessageId() { return target.replyToMessageId(); },
+      get isForward() { return target.isForward(); },
+      get to() { return composeTo(); },
+      setTo: setComposeTo,
+      get cc() { return composeCc(); },
+      setCc: setComposeCc,
+      get bcc() { return composeBcc(); },
+      setBcc: setComposeBcc,
+      get showCcBcc() { return showCcBcc(); },
+      setShowCcBcc: setShowCcBcc,
+      get body() { return composeBody(); },
+      setBody: setComposeBody,
+      get attachments() { return composeAttachments(); },
+      onRemoveAttachment: removeAttachment,
+      onFileSelect: handleFileSelect,
+      get error() { return composeEmailError(); },
+      get draftSaving() { return drafts.saving(); },
+      get draftSaved() { return drafts.saved(); },
+      onSend: handleSendEmail,
+      onClose: target.onClose,
+      onInput: handleComposeInput,
+      get focusBody() { return focusComposeBody(); },
+      get resizing() { return inlineResizing(); },
+      onResizeStart: handleInlineResizeStart,
+    };
+  }
+  const threadInlineCompose = inlineComposeProps({
+    replyToMessageId: () => replyingToThread()?.messageId || null,
+    isForward: () => !!forwardingThread(),
+    onClose: closeCompose,
+  });
+  const eventInlineCompose = inlineComposeProps({
+    replyToMessageId: () => null,
+    isForward: () => !!forwardingEvent(),
+    onClose: () => { closeCompose(); setReplyingToEvent(null); setForwardingEvent(null); },
+  });
+
   // Cancelled by resetCompose when a new compose replaces one animating out
   let closeComposeTimeout: number | undefined;
+  // Closing keeps a draft the user wrote in (saved in Gmail's Drafts too) and
+  // offers to discard it; a compose never typed in leaves nothing behind
   function closeCompose() {
+    if (closingCompose()) return;
+    flushDraftSave();
+    const key = composeDraftKey;
+    const accountId = composeAccount()?.id;
+    const keep = hasDraftContent(composeDraftFields()) && safeGetItem(key) !== null;
     setClosingCompose(true);
-    if (draftSaveTimeout) clearTimeout(draftSaveTimeout);
-    clearDraft(); // Clear draft from localStorage and Gmail when compose closes
+    if (keep) {
+      markDraftClosed(key);
+      drafts.detach();
+      showToast("Draft saved", { label: "Discard", run: () => { if (accountId) drafts.discard(key, accountId); } });
+    } else {
+      drafts.clear(key, accountId);
+    }
+    closeComposeTimeout = window.setTimeout(resetCompose, 200);
+  }
+
+  // A sent email's draft stays saved until the send goes out
+  function closeComposeAfterSend() {
+    setClosingCompose(true);
+    drafts.detach();
     closeComposeTimeout = window.setTimeout(resetCompose, 200);
   }
 
@@ -1739,20 +1800,37 @@ function App() {
     focusBody?: boolean;
     // False when putting back an email that already has its signature
     signature?: boolean;
+    // Defaults to the selected account
+    accountId?: string;
+    // Continue this saved draft instead of looking for one
+    draftKey?: string;
   }) {
     if (composing() || closingCompose()) resetCompose();
+    const accountId = init.accountId ?? selectedAccount()?.id;
+    const group = draftKey(accountId, {
+      replyThreadId: init.reply?.threadId,
+      forwardThreadId: init.forward?.threadId,
+      replyEventId: init.replyEvent?.eventId,
+      forwardEventId: init.forwardEvent?.eventId,
+    });
+    const isNewEmail = !init.reply && !init.forward && !init.replyEvent && !init.forwardEvent;
+    const prefilled = !!(init.to || init.subject || init.body);
+    const saved = init.draftKey || (isNewEmail && prefilled) ? null : restorableDraft(group, isNewEmail);
+    composeDraftKey = init.draftKey ?? saved?.key ?? sessionDraftKey(group);
+    if (init.draftKey || saved) drafts.load(composeDraftKey);
+    const fields = saved?.draft ?? init;
     batch(() => {
       setReplyingToEvent(init.replyEvent ?? null);
       setForwardingEvent(init.forwardEvent ?? null);
       setReplyingToThread(init.reply ?? null);
       setForwardingThread(init.forward ?? null);
-      setComposeTo(init.to ?? "");
-      setComposeCc(init.cc ?? "");
-      setComposeBcc(init.bcc ?? "");
-      setShowCcBcc(!!(init.cc || init.bcc));
-      setComposeSubject(init.subject ?? "");
-      const body = init.body ?? "";
-      setComposeBody(init.signature === false ? body : withSignature(body, selectedAccount()?.signature));
+      setComposeTo(fields.to ?? "");
+      setComposeCc(fields.cc ?? "");
+      setComposeBcc(fields.bcc ?? "");
+      setShowCcBcc(!!(fields.cc || fields.bcc));
+      setComposeSubject(fields.subject ?? "");
+      const body = fields.body ?? "";
+      setComposeBody(saved || init.signature === false ? body : withSignature(body, selectedAccount()?.signature));
       setComposeIsHtml(!!init.isHtml);
       setFocusComposeBody(!!init.focusBody);
       setComposing(true);
@@ -1764,7 +1842,7 @@ function App() {
   function resetCompose() {
     clearTimeout(closeComposeTimeout);
     closeComposeTimeout = undefined;
-    if (draftSaveTimeout) clearTimeout(draftSaveTimeout);
+    flushDraftSave();
     drafts.detach();
     batch(() => {
       setComposeTo("");
@@ -1920,22 +1998,20 @@ function App() {
       isHtml: composeIsHtml(),
     };
 
-    // closeCompose clears the draft and cancels any pending draft save
-    closeCompose();
+    // Saved locally as sent, so a quit during the undo window leaves it as a
+    // draft rather than losing it
+    cancelDraftSave();
+    drafts.saveLocal(composeDraftKey, composeDraftFields());
+    pending.draft = { key: composeDraftKey, gmailDraftId: drafts.gmailDraftId() ?? undefined };
+    sendingDraftKeys.add(composeDraftKey);
+    closeComposeAfterSend();
     undoableSend.queue(pending);
   }
 
-  // The draft was already cleared and compose closed when the send was
-  // queued, so an undone or failed send must put the email back or it's gone
-  // for good. If the user started composing again meanwhile, their
-  // in-progress text gets a best-effort local stash first.
+  // Compose closed when the send was queued, so an undone or failed send puts
+  // the email back, continuing its saved draft
   function restoreSend(pending: PendingSend) {
-    if (composing() && !closingCompose()) {
-      const current = composeDraftFields();
-      if (hasDraftContent(current)) {
-        safeSetJSON(getDraftKey(), { ...current, gmailDraftId: drafts.gmailDraftId() || undefined, savedAt: Date.now() });
-      }
-    }
+    if (pending.draft) sendingDraftKeys.delete(pending.draft.key);
     startCompose({
       to: pending.to,
       cc: pending.cc,
@@ -1945,6 +2021,8 @@ function App() {
       isHtml: pending.isHtml,
       reply: pending.reply,
       signature: false,
+      accountId: pending.accountId,
+      draftKey: pending.draft?.key,
     });
     setComposeAttachments(pending.attachments);
     setComposeAccount(accounts().find(a => a.id === pending.accountId) ?? null);
@@ -1974,10 +2052,14 @@ function App() {
       // The thread list lacks Reply-To and who wrote last; the full thread has both
       const details = await getThreadDetails(account.id, threadId);
       const entry = batchReplyEntry(threadId, details.messages ?? [], account.email);
-      if (!entry?.to) throw new Error("No one to reply to");
+      if (!entry?.to) {
+        showToast("No one else to reply to");
+        return;
+      }
       await replyToThread(account.id, threadId, entry.to, "", "", subject, text, entry.messageId, [], false);
       setQuickReply({ threadId: null, text: "", sending: false });
       setQuickReplyCardId(null);
+      showToast("Reply sent");
     } catch (e) {
       console.error("Failed to send reply:", e);
       setError(`Failed to send reply: ${e}`);
@@ -2021,14 +2103,15 @@ function App() {
     try {
       const fullThread = await getThreadDetails(account.id, threadId);
       const target = lastMessageFromOthers(fullThread.messages, account.email);
-      if (!target) return;
-
-      const fromHeader = findHeader(target.payload?.headers, 'From');
+      const fromHeader = target && findHeader(target.payload?.headers, 'From');
+      const toEmail = fromHeader ? extractEmail(fromHeader) : "";
+      // Only the user's own messages: a reaction would go to themselves
+      if (!target || !toEmail || toEmail.toLowerCase() === account.email.toLowerCase()) {
+        showToast("No one else to react to");
+        return;
+      }
       const messageIdHeader = findHeader(target.payload?.headers, 'Message-ID') || target.id;
 
-      if (!fromHeader) return;
-
-      const toEmail = extractEmail(fromHeader);
       await sendReaction(account.id, threadId, messageIdHeader, emoji, toEmail);
     } catch (e) {
       console.error("Failed to send reaction:", e);
@@ -2114,6 +2197,7 @@ function App() {
 
     labelsFetchingFor = account.id;
     setLabelsLoading(true);
+    setLabelsFailed(false);
     try {
       const labels = await listLabels(account.id);
       if (selectedAccount()?.id !== account.id) return;
@@ -2126,6 +2210,7 @@ function App() {
       setAccountLabels(sorted);
     } catch (e) {
       console.error("Failed to fetch labels:", e);
+      if (selectedAccount()?.id === account.id) setLabelsFailed(true);
     } finally {
       if (labelsFetchingFor === account.id) labelsFetchingFor = null;
       setLabelsLoading(false);
@@ -2154,7 +2239,9 @@ function App() {
     }
 
     if (availableCalendars().length > 0) return; // Already cached
+    if (calendarsFetchingFor === account.id) return;
 
+    calendarsFetchingFor = account.id;
     setCalendarsLoading(true);
     try {
       const calendars = await listCalendars(account.id);
@@ -2170,6 +2257,7 @@ function App() {
       console.error("Failed to fetch calendars:", e);
       if (selectedAccount()?.id === account.id) showToast("Failed to load calendars");
     } finally {
+      if (calendarsFetchingFor === account.id) calendarsFetchingFor = null;
       if (selectedAccount()?.id === account.id) setCalendarsLoading(false);
     }
   }
@@ -2358,6 +2446,13 @@ function App() {
     setBatchReplyAttachments({});
   }
 
+  // Closing by hand throws away typed replies, so ask first
+  function dismissBatchReply() {
+    const unsent = Object.values(batchReplyMessages()).filter(m => m.trim()).length;
+    if (unsent > 0 && !confirm(`Discard ${unsent} unsent repl${unsent === 1 ? "y" : "ies"}?`)) return;
+    closeBatchReply();
+  }
+
   function updateBatchReplyMessage(threadId: string, message: string) {
     setBatchReplyMessages({ ...batchReplyMessages(), [threadId]: message });
   }
@@ -2502,7 +2597,7 @@ function App() {
     try {
       // Detect card type from query
       const newQuery = editCardQuery();
-      const cardType = newQuery.toLowerCase().includes("calendar:") ? "calendar" : "email";
+      const cardType = cardTypeForQuery(newQuery);
       const updatedCard: Card = {
         ...card,
         name: editCardName(),
@@ -2536,6 +2631,8 @@ function App() {
   }
 
   async function handleDeleteCard(cardId: string) {
+    const name = cards().find(c => c.id === cardId)?.name || "Untitled";
+    if (!confirm(`Delete the card "${name}"? This can't be undone.`)) return;
     try {
       await deleteCard(cardId);
       setCards(cards().filter(c => c.id !== cardId));
@@ -2664,7 +2761,7 @@ function App() {
         if (stale()) return;
         if (cached && cached.groups.length > 0) {
           // Show cached data immediately
-          setCardThreads(cardId, cached.groups);
+          setCardThreads(cardId, reconcile(cached.groups, { key: "gmail_thread_id" }));
           setCardPageTokens(cardId, cached.next_page_token);
           setCardHasMore(cardId, !!cached.next_page_token);
           // cached_at is in seconds (Unix timestamp), convert to milliseconds
@@ -2689,7 +2786,7 @@ function App() {
         // Save merged groups to cache
         await saveCachedCardThreads(cardId, mergedGroups, result.next_page_token);
       } else {
-        setCardThreads(cardId, result.groups);
+        setCardThreads(cardId, reconcile(result.groups, { key: "gmail_thread_id" }));
         // Save to cache
         await saveCachedCardThreads(cardId, result.groups, result.next_page_token);
       }
@@ -2763,39 +2860,33 @@ function App() {
       setSyncErrors(cardId, errorMsg);
       return;
     }
-    // The account and its cards stay: signing in again with the same email
-    // reuses the account id, so the layout comes back as it was
     setCardErrors(cardId, "Session expired");
-    setExpiredAccountId(selectedAccount()?.id ?? null);
+    const accountId = selectedAccount()?.id;
+    if (accountId) markSessionExpired(accountId);
+  }
+
+  // The account and its cards stay: signing in again with the same email
+  // reuses the account id, so the layout comes back as it was
+  function markSessionExpired(accountId: string) {
+    if (expiredAccountId() === accountId) return;
+    setExpiredAccountId(accountId);
     setError("Session expired - sign in again");
   }
 
-  async function handleReauth() {
-    const storedCreds = await getStoredCredentials();
-    if (!storedCreds) {
-      setSettingsOpen(true);
-      setError("Connect your Google account in Settings");
-      return;
-    }
+  // Background syncs keep showing cached mail; an expired session must still
+  // surface, or the cards silently go stale
+  function noteBackgroundError(accountId: string, e: unknown) {
+    if (isSessionExpiredError(String(e)) && selectedAccount()?.id === accountId) markSessionExpired(accountId);
+  }
 
-    setAuthLoading(true);
-    setError(null);
-    try {
-      await configureAuth({
-        client_id: storedCreds.client_id,
-        client_secret: storedCreds.client_secret,
-      });
-      const account = await runOAuthFlow();
+  function handleReauth() {
+    return signInWithGoogle(async account => {
       setExpiredAccountId(null);
       upsertAccount(account);
       closeAccountViews();
       setSelectedAccount(account);
       if (await loadAccountCards(account)) startBackgroundSync(account.id);
-    } catch (e) {
-      setError(String(e));
-    } finally {
-      setAuthLoading(false);
-    }
+    });
   }
 
   async function fetchAndCacheCalendarEvents(accountId: string, cardId: string, query: string) {
@@ -2817,9 +2908,19 @@ function App() {
   }
 
   // Background fetch and cache update (no loading state shown)
-  async function fetchAndCacheThreads(accountId: string, cardId: string) {
+  // Background refresh of a card's first page. Overlapping requests for a
+  // card share one follow-up fetch instead of downloading it concurrently.
+  const refreshCardThreads = coalesceByKey((key: string) => {
+    const [accountId, cardId] = JSON.parse(key) as [string, string];
+    return refreshCardThreadsNow(accountId, cardId);
+  });
+  function fetchAndCacheThreads(accountId: string, cardId: string) {
     // Skip for calendar cards (they don't use thread caching)
-    if (isCalendarCard(cardId)) return;
+    if (isCalendarCard(cardId)) return Promise.resolve();
+    return refreshCardThreads(JSON.stringify([accountId, cardId]));
+  }
+
+  async function refreshCardThreadsNow(accountId: string, cardId: string) {
 
     // Capture pagination state so a page-1 fetch that resolves after the
     // user paginated doesn't wipe appended pages or rewind the page token
@@ -2843,7 +2944,7 @@ function App() {
         await saveCachedCardThreads(cardId, result.groups, result.next_page_token);
         return;
       }
-      setCardThreads(cardId, result.groups);
+      setCardThreads(cardId, reconcile(result.groups, { key: "gmail_thread_id" }));
       setCardPageTokens(cardId, result.next_page_token);
       setCardHasMore(cardId, result.has_more);
       await saveCachedCardThreads(cardId, result.groups, result.next_page_token);
@@ -2852,6 +2953,7 @@ function App() {
     } catch (e) {
       // Background refresh failed - set sync error but keep cached data shown
       setSyncErrors(cardId, String(e));
+      noteBackgroundError(accountId, e);
     }
   }
 
@@ -3179,7 +3281,8 @@ function App() {
     } catch (e) {
       if (activeThreadId() !== threadId) return;
       console.error("Failed to load thread details", e);
-      setThreadError("Failed to load email. Please try again.");
+      setThreadError(threadLoadErrorMessage(e));
+      noteBackgroundError(account.id, e);
     } finally {
       if (activeThreadId() === threadId) {
         setThreadLoading(false);
@@ -3274,9 +3377,8 @@ function App() {
 
     hideToast();
 
-    // Reverse the labels: add what was removed, remove what was added
     try {
-      await modifyThreads(action.accountId, action.threadIds, action.removedLabels, action.addedLabels);
+      await Promise.all(action.reversals.map(r => modifyThreads(action.accountId, r.threadIds, r.add, r.remove)));
       // Refresh every card the optimistic update touched, not just the
       // one the action originated from; they are gone after an account switch
       if (selectedAccount()?.id === action.accountId) {
@@ -3314,18 +3416,22 @@ function App() {
     const updatedCardThreads: Record<string, ThreadGroup[]> = {};
     const snapshot: Record<string, ThreadGroup[]> = {};
     const affectedCardIds: string[] = [];
+    const labelsBefore = new Map<string, Pick<Thread, "labels" | "unread_count">>();
 
     for (const [cId, groups] of Object.entries(cardThreads)) {
       if (!groups) continue;
       if (groups.some(g => g.threads.some(t => threadIds.includes(t.gmail_thread_id)))) {
         snapshot[cId] = structuredClone(unwrap(groups));
         affectedCardIds.push(cId);
+        for (const t of snapshot[cId].flatMap(g => g.threads)) {
+          if (threadIds.includes(t.gmail_thread_id)) labelsBefore.set(t.gmail_thread_id, t);
+        }
       }
       const query = cards().find(c => c.id === cId)?.query ?? "";
       updatedCardThreads[cId] = applyThreadAction(groups, threadIds, action, actionRemovesFromCard(action, query));
     }
 
-    setCardThreads(reconcile(updatedCardThreads));
+    setCardThreads(reconcile(updatedCardThreads, { key: "gmail_thread_id" }));
     if (!silent) setActionsWheelOpen(false);
 
     // Clear selection after bulk action
@@ -3347,8 +3453,7 @@ function App() {
         threadIds,
         cardId,
         cardIds: affectedCardIds,
-        addedLabels: addLabels,
-        removedLabels: removeLabels,
+        reversals: undoLabelChanges(threadIds, { add: addLabels, remove: removeLabels }, labelsBefore),
         timestamp: Date.now()
       });
       showToast();
@@ -3503,6 +3608,13 @@ function App() {
               onMouseLeave={() => {
                 fabHoverTimeout = window.setTimeout(() => setComposeFabHovered(false), 250);
               }}
+              onFocusIn={() => {
+                clearTimeout(fabHoverTimeout);
+                setComposeFabHovered(true);
+              }}
+              onFocusOut={(e) => {
+                if (!e.currentTarget.contains(e.relatedTarget as Node | null)) setComposeFabHovered(false);
+              }}
             >
               <div
                 class="compose-btn-wrapper"
@@ -3522,20 +3634,32 @@ function App() {
                 <Show when={contactCandidates().length > 0}>
                   <div class={`compose-suggestions ${composeFabHovered() ? 'visible' : ''}`}>
                     <For each={contactCandidates().slice(0, 5)}>
-                      {(contact) => (
+                      {(contact) => {
+                        const writeTo = () => {
+                          startCompose({ to: contact.email, focusBody: true });
+                          setComposeFabHovered(false);
+                        };
+                        return (
                         <div
                           class="compose-suggestion-avatar"
+                          role="button"
+                          tabindex={composeFabHovered() ? 0 : -1}
+                          aria-label={`New email to ${contact.name || contact.email}`}
                           style={{ background: getAvatarColor(contact.name || contact.email) }}
                           title={contact.name ? `${contact.name} <${contact.email}>` : contact.email}
-                          onClick={() => {
-                            startCompose({ to: contact.email, focusBody: true });
-                            setComposeFabHovered(false);
+                          onClick={writeTo}
+                          onKeyDown={(e) => {
+                            if (e.key !== "Enter" && e.key !== " ") return;
+                            e.preventDefault();
+                            e.stopPropagation();
+                            writeTo();
                           }}
                         >
                           {(contact.name || contact.email).charAt(0).toUpperCase()}
                           <span class="suggestion-label">{contact.name || contact.email}</span>
                         </div>
-                      )}
+                        );
+                      }}
                     </For>
                   </div>
                 </Show>
@@ -3753,7 +3877,11 @@ function App() {
                             onClick={() => { if (!wasDragging) toggleCardCollapse(card.id); }}
                             {...sortable.dragActivators}
                           >
-                            <button class="collapse-btn">
+                            <button
+                              class="collapse-btn"
+                              aria-label={`${collapsedCards[card.id] ? "Expand" : "Collapse"} ${card.name}`}
+                              aria-expanded={!collapsedCards[card.id]}
+                            >
                               <ChevronIcon />
                             </button>
                             <span class="card-title">{card.name}</span>
@@ -3816,7 +3944,7 @@ function App() {
                               <span class="error-icon">⚠</span>
                               <span class="error-text">{cardErrors[card.id]}</span>
                               <Show
-                                when={expiredAccountId() && expiredAccountId() === selectedAccount()?.id}
+                                when={(expiredAccountId() && expiredAccountId() === selectedAccount()?.id) || needsSignInAgain(cardErrors[card.id] ?? "")}
                                 fallback={<button class="retry-btn" onClick={(e) => refreshCard(card.id, e)}>Try again</button>}
                               >
                                 <button class="retry-btn" onClick={handleReauth}>Sign in again</button>
@@ -3953,11 +4081,11 @@ function App() {
                             <Show when={getDisplayGroups(card.id).length === 0 && !(isPreviewingQuery(card.id) && queryPreviewLoading())}>
                               <div class="empty">All clear</div>
                             </Show>
-                            <For each={getDisplayGroups(card.id)}>
+                            <Index each={getDisplayGroups(card.id)}>
                               {(group) => (
                                 <>
-                                  <div class="date-header">{group.label}</div>
-                                  <For each={group.threads}>
+                                  <div class="date-header">{group().label}</div>
+                                  <For each={group().threads}>
                                     {(thread) => {
                                       // Load RSVP status once per invite row (guarded inside fetchRsvpStatus)
                                       createEffect(() => {
@@ -4159,7 +4287,7 @@ function App() {
                                   </For>
                                 </>
                               )}
-                            </For>
+                            </Index>
                             {/* Loading more indicator for infinite scroll */}
                             <Show when={loadingMore[card.id]}>
                               <div class="loading">Loading more...</div>
@@ -4236,7 +4364,7 @@ function App() {
                       <div class="loading">Searching...</div>
                     </Show>
                     {/* Calendar events preview */}
-                    <Show when={!queryPreviewLoading() && newCardQuery().toLowerCase().includes("calendar:")}>
+                    <Show when={!queryPreviewLoading() && cardTypeForQuery(newCardQuery()) === "calendar"}>
                       <Show when={queryPreviewCalendarEvents().length === 0}>
                         <div class="empty">No events</div>
                       </Show>
@@ -4275,7 +4403,7 @@ function App() {
                       </For>
                     </Show>
                     {/* Email threads preview */}
-                    <Show when={!queryPreviewLoading() && queryPreviewThreads().length === 0 && newCardQuery().trim() && !newCardQuery().toLowerCase().includes("calendar:")}>
+                    <Show when={!queryPreviewLoading() && queryPreviewThreads().length === 0 && newCardQuery().trim() && cardTypeForQuery(newCardQuery()) !== "calendar"}>
                       <div class="empty">No matches</div>
                     </Show>
                     <Show when={!queryPreviewLoading() && queryPreviewThreads().length > 0}>
@@ -4370,7 +4498,7 @@ function App() {
             draftSaved={drafts.saved()}
             onSend={handleSendEmail}
             onClose={closeCompose}
-            onInput={debouncedSaveDraft}
+            onInput={handleComposeInput}
             focusBody={focusComposeBody()}
             autocomplete={{
               show: showAutocomplete(),
@@ -4496,32 +4624,7 @@ function App() {
           isInInbox={isThreadInInbox()}
           labelCount={getThreadUserLabelCount()}
           // Inline compose props
-          inlineCompose={composeShownIn() === "thread" ? {
-            replyToMessageId: replyingToThread()?.messageId || null,
-            isForward: !!forwardingThread(),
-            to: composeTo(),
-            setTo: setComposeTo,
-            cc: composeCc(),
-            setCc: setComposeCc,
-            bcc: composeBcc(),
-            setBcc: setComposeBcc,
-            showCcBcc: showCcBcc(),
-            setShowCcBcc: setShowCcBcc,
-            body: composeBody(),
-            setBody: setComposeBody,
-            attachments: composeAttachments(),
-            onRemoveAttachment: removeAttachment,
-            onFileSelect: handleFileSelect,
-            error: composeEmailError(),
-            draftSaving: drafts.saving(),
-            draftSaved: drafts.saved(),
-            onSend: handleSendEmail,
-            onClose: closeCompose,
-            onInput: debouncedSaveDraft,
-            focusBody: focusComposeBody(),
-            resizing: inlineResizing(),
-            onResizeStart: handleInlineResizeStart,
-          } : null}
+          inlineCompose={composeShownIn() === "thread" ? threadInlineCompose : null}
           threadAttachments={(() => {
             const cardId = activeThreadCardId();
             const threadId = activeThreadId();
@@ -4585,7 +4688,13 @@ function App() {
                   }}
                 </For>
 
-                <Show when={!labelsLoading() && accountLabels().filter(l =>
+                <Show when={labelsFailed()}>
+                  <div class="label-drawer-empty">
+                    Couldn't load labels.{" "}
+                    <button class="retry-btn" onClick={() => fetchAccountLabels()}>Try again</button>
+                  </div>
+                </Show>
+                <Show when={!labelsLoading() && !labelsFailed() && accountLabels().filter(l =>
                   !labelSearchQuery() || l.name.toLowerCase().includes(labelSearchQuery().toLowerCase())
                 ).length === 0}>
                   <div class="label-drawer-empty">No labels found</div>
@@ -4698,32 +4807,7 @@ function App() {
           calendarsLoading={calendarsLoading()}
           onMoveToCalendar={handleMoveEventToCalendar}
           rsvpLoading={!!(activeEvent() && rsvpLoading[activeEvent()!.id])}
-          inlineCompose={composeShownIn() === "event" ? {
-            replyToMessageId: null,
-            isForward: !!forwardingEvent(),
-            to: composeTo(),
-            setTo: setComposeTo,
-            cc: composeCc(),
-            setCc: setComposeCc,
-            bcc: composeBcc(),
-            setBcc: setComposeBcc,
-            showCcBcc: showCcBcc(),
-            setShowCcBcc: setShowCcBcc,
-            body: composeBody(),
-            setBody: setComposeBody,
-            attachments: composeAttachments(),
-            onRemoveAttachment: removeAttachment,
-            onFileSelect: handleFileSelect,
-            error: composeEmailError(),
-            draftSaving: drafts.saving(),
-            draftSaved: drafts.saved(),
-            onSend: handleSendEmail,
-            onClose: () => { closeCompose(); setReplyingToEvent(null); setForwardingEvent(null); },
-            onInput: debouncedSaveDraft,
-            focusBody: focusComposeBody(),
-            resizing: inlineResizing(),
-            onResizeStart: handleInlineResizeStart,
-          } : null}
+          inlineCompose={composeShownIn() === "event" ? eventInlineCompose : null}
           inlineEdit={eventForm().editing && activeEvent() && eventForm().editing!.id === activeEvent()!.id ? {
             summary: eventForm().summary,
             setSummary: (v: string) => setEventForm(f => ({ ...f, summary: v })),
@@ -4762,7 +4846,7 @@ function App() {
           <div class="thread-floating-bar">
             {/* Row 1: Close + Title */}
             <div class="thread-floating-bar-row">
-              <CloseButton onClick={closeBatchReply} />
+              <CloseButton onClick={dismissBatchReply} />
               <div class="thread-bar-subject">
                 <h2>Batch Reply</h2>
               </div>
@@ -4821,7 +4905,7 @@ function App() {
                         fileInputId={`batch-reply-file-input-${thread.threadId}`}
                         sending={batchReplySending()[thread.threadId]}
                         onSend={() => sendBatchReply(thread.threadId)}
-                        onClose={closeBatchReply}
+                        onClose={dismissBatchReply}
                         onSkip={() => discardBatchReplyThread(thread.threadId)}
                         canSend={!!batchReplyMessages()[thread.threadId]?.trim()}
                         focusBody={batchReplyThreads()[0]?.threadId === thread.threadId}
@@ -4962,11 +5046,12 @@ function App() {
             <p class="settings-hint">
               <a href="#" onClick={(e) => { e.preventDefault(); openUrl('https://console.cloud.google.com/apis/credentials'); }} class="settings-link">
                 Open Google Cloud Console
-              </a> to create OAuth credentials.
+              </a>, create an OAuth client of type "Desktop app", and enable the Gmail API, Google Calendar API and People API for its project.
             </p>
             <div class="settings-form-group">
-              <label>Client ID</label>
+              <label for="settings-client-id">Client ID</label>
               <input
+                id="settings-client-id"
                 type="text"
                 value={clientId()}
                 onInput={(e) => setClientId(e.currentTarget.value)}
@@ -4978,8 +5063,9 @@ function App() {
               />
             </div>
             <div class="settings-form-group">
-              <label>Client Secret</label>
+              <label for="settings-client-secret">Client Secret</label>
               <input
+                id="settings-client-secret"
                 type="password"
                 value={clientSecret()}
                 onInput={(e) => setClientSecret(e.currentTarget.value)}
@@ -5065,6 +5151,8 @@ function App() {
               <h3>Navigation</h3>
               <div class="shortcut-row"><kbd>j</kbd> <span>Next thread</span></div>
               <div class="shortcut-row"><kbd>k</kbd> <span>Previous thread</span></div>
+              <div class="shortcut-row"><kbd>h</kbd> <span>Previous card</span></div>
+              <div class="shortcut-row"><kbd>l</kbd> <span>Next card</span></div>
               <div class="shortcut-row"><kbd>Enter</kbd> <span>Open thread</span></div>
               <div class="shortcut-row"><kbd>Escape</kbd> <span>Close / Go back</span></div>
               <div class="shortcut-row"><kbd>/</kbd> <span>Open filter</span></div>
@@ -5075,11 +5163,13 @@ function App() {
               <div class="shortcut-row"><kbd>a</kbd> <span>Archive thread</span></div>
               <div class="shortcut-row"><kbd>s</kbd> <span>Star thread</span></div>
               <div class="shortcut-row"><kbd>d</kbd> <span>Delete thread</span></div>
+              <div class="shortcut-row"><kbd>#</kbd> <span>Delete thread</span></div>
               <div class="shortcut-row"><kbd>r</kbd> <span>Reply to thread</span></div>
               <div class="shortcut-row"><kbd>f</kbd> <span>Forward thread</span></div>
               <div class="shortcut-row"><kbd>u</kbd> <span>Toggle read</span></div>
               <div class="shortcut-row"><kbd>i</kbd> <span>Toggle important</span></div>
               <div class="shortcut-row"><kbd>!</kbd> <span>Report spam</span></div>
+              <div class="shortcut-row"><kbd>z</kbd> <span>Undo last action</span></div>
             </div>
             <div class="shortcuts-section">
               <h3>Open thread</h3>
@@ -5093,6 +5183,7 @@ function App() {
             <div class="shortcuts-section">
               <h3>Compose</h3>
               <div class="shortcut-row"><kbd>c</kbd> <span>New email</span></div>
+              <div class="shortcut-row"><kbd>e</kbd> <span>New event</span></div>
               <div class="shortcut-row"><kbd>⌘Enter</kbd> <span>Send email</span></div>
               <div class="shortcut-row"><kbd>Escape</kbd> <span>Close compose</span></div>
             </div>

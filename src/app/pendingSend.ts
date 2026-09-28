@@ -12,6 +12,8 @@ export interface PendingSend {
   attachments: SendAttachment[];
   reply?: { threadId: string; messageId?: string };
   isHtml?: boolean;
+  // The compose's saved draft, kept until the send goes out
+  draft?: { key: string; gmailDraftId?: string };
 }
 
 // Compose is plain text; "send as HTML" only changes how it goes out
