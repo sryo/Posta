@@ -75,6 +75,12 @@ describe("frontend ↔ Rust command contract", () => {
     expect(calls.length).toBeGreaterThan(30);
   });
 
+  it("parses every invoke call, so none escapes the comparison", () => {
+    const starts = sources.flatMap(([file, src]) =>
+      Array.from(src.matchAll(/\binvoke(?:<[^(]*>)?\(\s*["'](\w+)["']/g), m => `${file}: ${m[1]}`));
+    expect(calls.map(c => `${c.file}: ${c.command}`).sort()).toEqual(starts.sort());
+  });
+
   it("registers every command the frontend invokes", () => {
     const missing = calls.filter(c => !registered.has(c.command) || !commands.has(c.command));
     expect(missing.map(c => `${c.file}: ${c.command}`)).toEqual([]);

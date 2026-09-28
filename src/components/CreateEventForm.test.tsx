@@ -116,6 +116,16 @@ describe("CreateEventForm keyboard access", () => {
     fireEvent.keyDown(nine, { key: " " });
     expect(startTime()).toBe("09:00");
   });
+
+  it("still saves with Cmd+Enter while a day or time is focused", () => {
+    const onSave = vi.fn();
+    const { container, startDate } = renderForm({ startDate: "2031-03-03", onSave });
+    const days = container.querySelectorAll<HTMLElement>(".scheduler-day-card");
+    fireEvent.keyDown(days[2], { key: "Enter", metaKey: true });
+    fireEvent.keyDown(slot(container, "start", "09:00"), { key: "Enter", ctrlKey: true });
+    expect(onSave).toHaveBeenCalledTimes(2);
+    expect(startDate()).toBe("2031-03-03");
+  });
 });
 
 describe("CreateEventForm time pickers", () => {
