@@ -2180,21 +2180,39 @@ describe("App new card form", () => {
 });
 
 describe("App card order", () => {
-  it("says so when a dragged card's new place can't be saved, and puts it back", async () => {
-    cardsByAccount.a = [card("card-a", "a", "Alpha"), { ...card("card-b", "a", "Beta"), position: 1 }];
-    handlers.reorder_cards = () => { throw new Error("db locked"); };
-    render(() => <App />);
-    await screen.findByRole("region", { name: "Beta email card" });
+  function dragFirstCardOntoSecond() {
     const wrappers = Array.from(document.querySelectorAll(".card-wrapper")) as HTMLElement[];
     wrappers.forEach((el, i) => {
       el.getBoundingClientRect = () => DOMRect.fromRect({ x: i * 320, y: 0, width: 300, height: 600 });
     });
-
     const pointer = (type: string, x: number) => new MouseEvent(type, { bubbles: true, button: 0, clientX: x, clientY: 10 });
     wrappers[0].querySelector(".card-header")!.dispatchEvent(pointer("pointerdown", 10));
     document.dispatchEvent(pointer("pointermove", 200));
     document.dispatchEvent(pointer("pointermove", 400));
     document.dispatchEvent(pointer("pointerup", 400));
+  }
+
+  it("moves the dragged card's column instead of rebuilding every card", async () => {
+    cardsByAccount.a = [card("card-a", "a", "Alpha"), { ...card("card-b", "a", "Beta"), position: 1 }];
+    handlers.reorder_cards = () => null;
+    render(() => <App />);
+    const beta = await screen.findByRole("region", { name: "Beta email card" });
+    const alpha = screen.getByRole("region", { name: "Alpha email card" });
+    dragFirstCardOntoSecond();
+
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith("reorder_cards", { orders: [["card-b", 0], ["card-a", 1]] }));
+    const names = Array.from(document.querySelectorAll(".card-title")).map(el => el.textContent);
+    expect(names).toEqual(["Beta", "Alpha"]);
+    expect(screen.getByRole("region", { name: "Alpha email card" })).toBe(alpha);
+    expect(screen.getByRole("region", { name: "Beta email card" })).toBe(beta);
+  });
+
+  it("says so when a dragged card's new place can't be saved, and puts it back", async () => {
+    cardsByAccount.a = [card("card-a", "a", "Alpha"), { ...card("card-b", "a", "Beta"), position: 1 }];
+    handlers.reorder_cards = () => { throw new Error("db locked"); };
+    render(() => <App />);
+    await screen.findByRole("region", { name: "Beta email card" });
+    dragFirstCardOntoSecond();
 
     await waitFor(() => expect(invoke).toHaveBeenCalledWith("reorder_cards", expect.anything()));
     expect(await screen.findByText(/Couldn't save the card order/)).toBeInTheDocument();
