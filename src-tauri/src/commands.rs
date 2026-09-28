@@ -1647,10 +1647,7 @@ pub async fn open_attachment(
     ).await?;
 
     let dir = attachment_temp_dir(&std::env::temp_dir(), &message_id);
-    std::fs::create_dir_all(&dir).map_err(|e| format!("Failed to create temp dir: {}", e))?;
-    let temp_path = write_unique_file(&dir, &final_filename, &bytes, true)
-        .map_err(|e| format!("Failed to write temp file: {}", e))?;
-    mark_quarantined(&temp_path);
+    let temp_path = write_attachment(&state, dir, final_filename, bytes, true).await?;
 
     // Open with system default application
     tauri_plugin_opener::open_path(&temp_path, None::<&str>).map_err(|e| format!("Failed to open file: {}", e))?;
@@ -1679,11 +1676,27 @@ pub async fn save_attachment(
         .download_dir()
         .map_err(|e| format!("Failed to get downloads dir: {}", e))?;
 
-    let path = write_unique_file(&download_dir, &final_filename, &bytes, false)
-        .map_err(|e| format!("Failed to write file: {}", e))?;
-    mark_quarantined(&path);
-
+    let path = write_attachment(&state, download_dir, final_filename, bytes, false).await?;
     Ok(path.to_string_lossy().to_string())
+}
+
+/// Write an attachment into `dir` under a name no other file has (see
+/// `write_unique_file`) and quarantine it
+async fn write_attachment(
+    state: &AppState,
+    dir: std::path::PathBuf,
+    filename: String,
+    bytes: Vec<u8>,
+    reuse_identical: bool,
+) -> Result<std::path::PathBuf, String> {
+    blocking(state, move |_| {
+        std::fs::create_dir_all(&dir).map_err(|e| format!("Failed to create folder {:?}: {}", dir, e))?;
+        let path = write_unique_file(&dir, &filename, &bytes, reuse_identical)
+            .map_err(|e| format!("Failed to write file: {}", e))?;
+        mark_quarantined(&path);
+        Ok(path)
+    })
+    .await
 }
 
 #[tauri::command]
@@ -2781,6 +2794,24 @@ mod tests {
         std::fs::remove_dir_all(dir).unwrap();
     }
 
+    #[tokio::test]
+    async fn attachments_are_written_into_a_new_folder_without_replacing_a_file() {
+        let base = scratch_dir();
+        let dir = base.join("posta-attachments").join("m1");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("a.pdf"), b"other").unwrap();
+        let state = super::AppState::new();
+
+        let path = super::write_attachment(&state, dir.clone(), "a.pdf".into(), b"%PDF".to_vec(), true).await.unwrap();
+        assert_eq!(path, dir.join("a (1).pdf"));
+        assert_eq!(std::fs::read(dir.join("a.pdf")).unwrap(), b"other");
+
+        let fresh = base.join("new");
+        let path = super::write_attachment(&state, fresh.clone(), "b.txt".into(), b"x".to_vec(), false).await.unwrap();
+        assert_eq!(std::fs::read(path).unwrap(), b"x");
+        std::fs::remove_dir_all(base).unwrap();
+    }
+
     fn message(id: &str, from: &str, text: &str, labels: &[&str], reaction: bool) -> serde_json::Value {
         use base64::Engine;
         let data = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(text);
@@ -3075,7 +3106,9 @@ mod tests {
     /// Lines of async fns in `source` that touch the database or secure
     /// storage outside a `blocking` closure
     fn blocking_work_on_async_workers(source: &str) -> Vec<String> {
-        const BLOCKING_WORK: &[&str] = &["with_db(", ".db.lock()", "auth::get_", "auth::store_", "auth::delete_"];
+        const BLOCKING_WORK: &[&str] = &[
+            "with_db(", ".db.lock()", "auth::get_", "auth::store_", "auth::delete_", "write_unique_file(", "mark_quarantined(",
+        ];
         // Calls that take a closure and run it on the blocking pool
         const OFFLOADERS: &[&str] = &["blocking(", "refreshed_access_token("];
         let mut offending = Vec::new();
