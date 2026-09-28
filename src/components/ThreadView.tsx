@@ -9,8 +9,8 @@ import {
   extractEmail,
   formatEmailDate,
   normalizeBase64Url,
-  extractMessageBody,
-  stripHtml,
+  extractMessageHtml,
+  extractMessageText,
   buildQuotedBody,
   addReplyPrefix,
   addForwardPrefix,
@@ -166,7 +166,7 @@ export const ThreadView = (props: {
     const isHtml = msg.payload?.mimeType === 'text/html' || !!findContent(msg.payload?.parts, 'text/html');
     // Reply-To takes precedence over From when present
     const replyTo = extractEmail(findHeader(headers, 'Reply-To') || from);
-    const quotedBody = () => buildQuotedBody(date, from, stripHtml(extractMessageBody(msg.payload, msg.snippet)));
+    const quotedBody = () => buildQuotedBody(date, from, extractMessageText(msg.payload, msg.snippet));
 
     return {
       reply: (prefix = '') => props.onReply(replyTo, "", addReplyPrefix(subject), prefix + quotedBody(), rfcMessageId, isHtml),
@@ -182,7 +182,7 @@ export const ThreadView = (props: {
         props.onReply(replyTo, ccList, addReplyPrefix(subject), quotedBody(), rfcMessageId, isHtml);
       },
       forward: () => {
-        const plainBody = stripHtml(extractMessageBody(msg.payload, msg.snippet));
+        const plainBody = extractMessageText(msg.payload, msg.snippet);
         const fwdBody = `\n\n---------- Forwarded message ----------\nFrom: ${from}\nDate: ${date}\nSubject: ${subject}\n\n${plainBody}`;
         props.onForward(addForwardPrefix(subject), fwdBody);
       },
@@ -349,7 +349,7 @@ export const ThreadView = (props: {
                 const from = findHeader(headers, 'From') || 'Unknown';
                 const date = findHeader(headers, 'Date') || '';
 
-                const getBody = () => extractMessageBody(msg.payload, msg.snippet);
+                const getBody = () => extractMessageHtml(msg.payload, msg.snippet);
 
                 // Extract attachments from message parts, enriched with inline_data from threadAttachments
                 const getAttachments = () => {
