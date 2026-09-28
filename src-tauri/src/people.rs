@@ -138,7 +138,7 @@ impl PeopleClient {
 
             all_contacts.extend(contacts);
 
-            if all_contacts.len() >= max_contacts || next_token.is_none() {
+            if all_contacts.len() >= max_contacts || next_token.is_none() || next_token == page_token {
                 break;
             }
 
@@ -258,6 +258,17 @@ mod tests {
         let contacts = stub_client(&server).fetch_all_contacts(3).await.unwrap();
         let names: Vec<&str> = contacts.iter().map(|c| c.resource_name.as_str()).collect();
         assert_eq!(names, vec!["people/1", "people/2", "people/3"]);
+        assert_eq!(server.requests().len(), 2);
+    }
+
+    #[tokio::test]
+    async fn contacts_stop_paging_when_google_repeats_a_page_token() {
+        let server = StubServer::start(|_, _| (200, serde_json::json!({ "connections": [], "nextPageToken": "again" }).to_string())).await;
+        let contacts = tokio::time::timeout(std::time::Duration::from_secs(10), stub_client(&server).fetch_all_contacts(10))
+            .await
+            .expect("paged forever")
+            .unwrap();
+        assert!(contacts.is_empty());
         assert_eq!(server.requests().len(), 2);
     }
 
