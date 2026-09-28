@@ -129,7 +129,7 @@ import { normalizeActionOrder } from "./app/actionOrder";
 import { parseStoredWidth } from "./app/storedWidth";
 import { isSessionExpiredError, needsSignInAgain } from "./app/authErrors";
 import { signatureBlock, withSignature } from "./app/signature";
-import { readFilesAsAttachments } from "./app/attachments";
+import { isCalendarAttachment, readFilesAsAttachments } from "./app/attachments";
 import { eventAttendees, eventTimesFromForm, smartEventDefaults } from "./app/eventForm";
 import { composePlacement } from "./app/composePlacement";
 import { cidImagesToFetch, createLruCache, fetchCidImages } from "./app/cidImages";
@@ -4397,10 +4397,8 @@ function App() {
                                           </div>
                                           {/* Attachment previews (filter out .ics when calendar event is shown) */}
                                           {(() => {
-                                            const isCalendarFile = (a: { mime_type: string; filename: string }) =>
-                                              a.mime_type === "text/calendar" || a.mime_type === "application/ics" || a.filename.endsWith(".ics");
                                             const attachments = thread.calendar_event
-                                              ? thread.attachments?.filter(a => !isCalendarFile(a))
+                                              ? thread.attachments?.filter(a => !isCalendarAttachment(a))
                                               : thread.attachments;
                                             const imageAttachments = attachments?.filter(a => a.inline_data && a.mime_type.startsWith("image/")) ?? [];
                                             const fileAttachments = attachments?.filter(a => !a.inline_data || !a.mime_type.startsWith("image/")) ?? [];

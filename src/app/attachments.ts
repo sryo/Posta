@@ -37,3 +37,9 @@ export async function readFilesAsAttachments(
   }
   return { attachments, skipped };
 }
+
+// Matches the backend's Attachment::is_calendar, which decides whether a thread gets invite UI
+export function isCalendarAttachment(a: { filename: string; mime_type: string }): boolean {
+  const mime = a.mime_type.toLowerCase();
+  return mime === "text/calendar" || mime === "application/ics" || a.filename.toLowerCase().endsWith(".ics");
+}
