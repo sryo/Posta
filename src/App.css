@@ -1721,6 +1721,19 @@ button:disabled:hover {
     height: 18px;
 }
 
+.auth-settings-btn {
+    margin-top: var(--space-2xl);
+    background: none;
+    border: none;
+    color: var(--text-secondary);
+    cursor: pointer;
+    font-size: var(--font-size-sm);
+}
+
+.auth-settings-btn:hover {
+    color: var(--text-primary);
+}
+
 .auth-error {
     color: var(--danger);
     font-size: var(--font-size-md);
@@ -3676,8 +3689,13 @@ button:disabled:hover {
     transition: background 0.15s;
 }
 
-.label-item:hover {
+.label-item:hover,
+.label-item-selected {
     background: var(--bg-hover);
+}
+
+.label-item-selected .label-name {
+    font-weight: 600;
 }
 
 .label-item input[type="checkbox"],

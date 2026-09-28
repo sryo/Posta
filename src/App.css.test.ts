@@ -74,6 +74,55 @@ function standaloneDeclarations(classes: string[]): Map<string, string> {
   return out;
 }
 
+// Classes rendered only so code and tests can find the element; inline styles
+// or other classes carry their look.
+const UNSTYLED_HOOKS = new Set([
+  "scheduler-ui",
+  "scheduler-header",
+  "scheduler-days",
+  "scheduler-day-card",
+  "scheduler-times",
+  "time-picker-start",
+  "time-picker-end",
+  // Redundant in the markup; each should go from the TSX and from this list.
+  "btn-lg",
+  "btn-secondary",
+  "clickable",
+  "compose-textarea",
+  "restore-modal",
+  "sending",
+  "thread-actions-wheel-placeholder",
+]);
+
+// Class names in `class="..."`, and every string literal or template text
+// inside `class={...}` / `classList={{...}}` expressions (ternary branches,
+// classList keys).
+function renderedClasses(tsx: string): string[] {
+  const out: string[] = [];
+  const addTokens = (s: string) => {
+    for (const t of s.split(/\s+/)) if (/^-?[A-Za-z_][\w-]*$/.test(t)) out.push(t);
+  };
+  for (const m of tsx.matchAll(/\bclass="([^"]*)"/g)) addTokens(m[1]);
+  for (const m of tsx.matchAll(/\bclass(?:List)?=\{/g)) {
+    let depth = 1;
+    let j = m.index! + m[0].length;
+    const start = j;
+    while (j < tsx.length && depth > 0) {
+      if (tsx[j] === "{") depth++;
+      else if (tsx[j] === "}") depth--;
+      j++;
+    }
+    const expr = tsx.slice(start, j - 1);
+    // Literals compared against (`state === 'fresh'`) are values, not classes.
+    for (const lit of expr.matchAll(/(?<![=!]=\s*)(?:"([^"\n]*)"|'([^'\n]*)')/g)) addTokens(lit[1] ?? lit[2]);
+    for (const tpl of expr.matchAll(/`([^`]*)`/g)) addTokens(tpl[1].replace(/\$\{[^}]*\}/g, " "));
+    if (m[0].startsWith("classList")) {
+      for (const key of expr.matchAll(/(?:^|[{,])\s*([A-Za-z_][\w-]*)\s*:/g)) out.push(key[1]);
+    }
+  }
+  return out;
+}
+
 describe("App.css", () => {
   it("parses a meaningful number of rules", () => {
     expect(rules.length).toBeGreaterThan(300);
@@ -121,6 +170,23 @@ describe("App.css", () => {
       (c) => !new RegExp(`(?<![\\w-])${c}(?![\\w-])`).test(literals),
     );
     expect(unused.sort()).toEqual([]);
+  });
+
+  it("styles every class the app renders", () => {
+    const styled = new Set<string>();
+    for (const rule of rules) {
+      for (const sel of rule.selectors) {
+        for (const m of sel.matchAll(/\.(-?[A-Za-z_][\w-]*)/g)) styled.add(m[1]);
+      }
+    }
+    const unstyled = new Set<string>();
+    for (const [path, text] of sources) {
+      if (!path.endsWith(".tsx")) continue;
+      for (const cls of renderedClasses(text)) {
+        if (!styled.has(cls) && !UNSTYLED_HOOKS.has(cls)) unstyled.add(cls);
+      }
+    }
+    expect([...unstyled].sort()).toEqual([]);
   });
 
   it("never declares the same property twice in one rule", () => {
