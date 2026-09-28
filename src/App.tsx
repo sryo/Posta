@@ -161,11 +161,13 @@ function App() {
   const [calendarsLoading, setCalendarsLoading] = createSignal(false);
   // The account availableCalendars was loaded for
   let calendarsAccountId: string | null = null;
+  let calendarsFetchingFor: string | null = null;
 
   // Label drawer state
   const [labelDrawerOpen, setLabelDrawerOpen] = createSignal(false);
   const [accountLabels, setAccountLabels] = createSignal<GmailLabel[]>([]);
   const [labelsLoading, setLabelsLoading] = createSignal(false);
+  const [labelsFailed, setLabelsFailed] = createSignal(false);
   const [labelSearchQuery, setLabelSearchQuery] = createSignal("");
 
   const [error, setError] = createSignal<string | null>(null);
@@ -2209,6 +2211,7 @@ function App() {
 
     labelsFetchingFor = account.id;
     setLabelsLoading(true);
+    setLabelsFailed(false);
     try {
       const labels = await listLabels(account.id);
       if (selectedAccount()?.id !== account.id) return;
@@ -2221,6 +2224,7 @@ function App() {
       setAccountLabels(sorted);
     } catch (e) {
       console.error("Failed to fetch labels:", e);
+      if (selectedAccount()?.id === account.id) setLabelsFailed(true);
     } finally {
       if (labelsFetchingFor === account.id) labelsFetchingFor = null;
       setLabelsLoading(false);
@@ -2249,7 +2253,9 @@ function App() {
     }
 
     if (availableCalendars().length > 0) return; // Already cached
+    if (calendarsFetchingFor === account.id) return;
 
+    calendarsFetchingFor = account.id;
     setCalendarsLoading(true);
     try {
       const calendars = await listCalendars(account.id);
@@ -2265,6 +2271,7 @@ function App() {
       console.error("Failed to fetch calendars:", e);
       if (selectedAccount()?.id === account.id) showToast("Failed to load calendars");
     } finally {
+      if (calendarsFetchingFor === account.id) calendarsFetchingFor = null;
       if (selectedAccount()?.id === account.id) setCalendarsLoading(false);
     }
   }
@@ -4706,7 +4713,13 @@ function App() {
                   }}
                 </For>
 
-                <Show when={!labelsLoading() && accountLabels().filter(l =>
+                <Show when={labelsFailed()}>
+                  <div class="label-drawer-empty">
+                    Couldn't load labels.{" "}
+                    <button class="retry-btn" onClick={() => fetchAccountLabels()}>Try again</button>
+                  </div>
+                </Show>
+                <Show when={!labelsLoading() && !labelsFailed() && accountLabels().filter(l =>
                   !labelSearchQuery() || l.name.toLowerCase().includes(labelSearchQuery().toLowerCase())
                 ).length === 0}>
                   <div class="label-drawer-empty">No labels found</div>

@@ -969,6 +969,23 @@ describe("App calendar", () => {
       [calendarEvent(`ev-${accountId}`, `Event of ${accountId}`)];
   }
 
+  it("loads the calendar list once when the calendar picker is opened twice quickly", async () => {
+    calendarCards();
+    let release!: () => void;
+    const slow = new Promise<void>(r => { release = r; });
+    handlers.list_calendars = async () => { await slow; return [{ id: "primary", name: "Main", is_primary: true }]; };
+    render(() => <App />);
+    fireEvent.click(await screen.findByText("Event of a"));
+    const move = await screen.findByTitle("Move to calendar");
+    fireEvent.click(move);
+    fireEvent.click(move);
+    release();
+
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith("list_calendars", expect.anything()));
+    await new Promise(r => setTimeout(r, 20));
+    expect(invoke.mock.calls.filter(([cmd]) => cmd === "list_calendars")).toHaveLength(1);
+  });
+
   it("offers to sign in again when calendar access needs it", async () => {
     calendarCards();
     handlers.fetch_calendar_events = () => { throw "Calendar permission denied. Please re-login to grant calendar access."; };
@@ -1812,5 +1829,26 @@ describe("App accessibility", () => {
     fireEvent.keyDown(suggestion, { key: "Enter" });
 
     await waitFor(() => expect(screen.getByPlaceholderText("Recipients")).toHaveValue("bo@y.com"));
+  });
+});
+
+describe("App label drawer", () => {
+  it("says the labels could not be loaded and loads them again on retry", async () => {
+    handlers.get_thread_details = () => ({ id: "t-a", messages: [fullMessage("m1", "Ana <ana@x.com>")] });
+    let fail = true;
+    handlers.list_labels = () => {
+      if (fail) throw new Error("offline");
+      return [{ id: "Label_7", name: "Receipts", messageListVisibility: null, labelListVisibility: null, label_type: "user" }];
+    };
+    render(() => <App />);
+    fireEvent.click(await screen.findByText("Mail for A"));
+    await screen.findByText("body m1");
+    fireEvent.keyDown(document, { key: "l" });
+
+    expect(await screen.findByText(/Couldn't load labels/)).toBeInTheDocument();
+    expect(screen.queryByText("No labels found")).not.toBeInTheDocument();
+    fail = false;
+    fireEvent.click(screen.getByRole("button", { name: "Try again" }));
+    expect(await screen.findByText("Receipts")).toBeInTheDocument();
   });
 });
