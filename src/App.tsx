@@ -1826,6 +1826,7 @@ function App() {
     const signedOutCards = cards();
     try {
       await deleteAccount(account.id);
+      closeAccountViews();
       const remaining = accounts().filter(a => a.id !== account.id);
       setAccounts(remaining);
       setSelectedAccount(null);
@@ -2797,9 +2798,32 @@ function App() {
     return cardList;
   }
 
+  // Views bound to the selected account's threads and events. Compose stays
+  // open: it remembers the account it was opened in.
+  function closeAccountViews() {
+    setActiveThreadId(null);
+    setActiveThreadCardId(null);
+    setActiveThread(null);
+    setFocusedMessageIndex(0);
+    setLabelDrawerOpen(false);
+    setCidAttachmentData({});
+    setActiveEvent(null);
+    setActiveEventCardId(null);
+    setReplyingToEvent(null);
+    setForwardingEvent(null);
+    setCalendarDrawerOpen(false);
+    if (batchReplyOpen()) closeBatchReply();
+    setQuickReply({ threadId: null, text: "", sending: false });
+    setQuickReplyCardId(null);
+    setQuickReplyEventId(null);
+    setActionsWheelOpen(false);
+    if (creatingEvent() && eventForm().editing) closeEventForm();
+  }
+
   async function switchAccount(account: Account) {
     if (selectedAccount()?.id === account.id) return;
 
+    closeAccountViews();
     setSelectedAccount(account);
     try {
       if (await loadAccountCards(account)) startBackgroundSync(account.id);

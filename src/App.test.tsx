@@ -250,6 +250,20 @@ describe("App accounts", () => {
     await waitFor(() => expect(screen.queryByText("Mail for A")).not.toBeInTheDocument());
   });
 
+  it("closes the previous account's open thread when switching accounts", async () => {
+    handlers.get_accounts = () => [account("a", "a@x.com"), account("b", "b@x.com")];
+    handlers.get_thread_details = () => ({ id: "t-a", messages: [fullMessage("m1", "Ana <ana@x.com>")] });
+    render(() => <App />);
+    fireEvent.click(await screen.findByText("Mail for A"));
+    await screen.findByText("body m1");
+
+    fireEvent.click(screen.getByTitle("a@x.com"));
+    fireEvent.click(await screen.findByText("b@x.com"));
+
+    await screen.findByText("Mail for B");
+    expect(screen.queryByText("body m1")).not.toBeInTheDocument();
+  });
+
   it("collapsing a card keeps other accounts' collapsed cards", async () => {
     localStorage.setItem("collapsedCards", JSON.stringify({ "card-b": true }));
     render(() => <App />);
