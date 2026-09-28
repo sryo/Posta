@@ -97,6 +97,23 @@ describe("landing page (docs/index.html)", () => {
     expect(document.querySelectorAll("#demo-deck .card").length).toBeGreaterThan(0);
   });
 
+  it("stills entrances, transitions and scrolling under reduced motion but keeps the undo countdown running", () => {
+    const reduced = rules.filter((r) => r.context.includes("prefers-reduced-motion: reduce"));
+    const calming = reduced.find((r) => {
+      const decl = new Map(r.declarations);
+      return /!important/.test(decl.get("animation-duration") ?? "") && /!important/.test(decl.get("transition-duration") ?? "");
+    });
+    expect(calming).toBeDefined();
+    document.body.innerHTML = markup + '<div class="undo-toast" id="toast"><div class="toast-progress" id="countdown"></div></div>';
+    const calmed = (el: Element) => calming!.selectors.some((sel) => el.matches(sel));
+    expect(calmed(document.getElementById("toast")!)).toBe(true);
+    expect(calmed(document.getElementById("countdown")!)).toBe(false);
+
+    const html = reduced.find((r) => r.selectors.includes("html"));
+    expect(new Map(html?.declarations ?? []).get("scroll-behavior")).toBe("auto");
+    for (const m of script.matchAll(/behavior:\s*([^,}]+)/g)) expect(m[1]).toMatch(/prefers-reduced-motion/);
+  });
+
   it("links only to anchors that exist", () => {
     const ids = new Set([...markup.matchAll(/\bid="([^"]+)"/g)].map((m) => m[1]));
     const targets = [...markup.matchAll(/href="#([^"]+)"/g)].map((m) => m[1]);
