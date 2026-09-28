@@ -4010,6 +4010,10 @@ button:disabled:hover {
     font-size: 0.95rem;
     overflow-wrap: break-word;
     word-break: break-word;
+    /* Email HTML may carry position:fixed and huge z-indexes; containment
+       keeps it from covering the app, and wide tables scroll in place. */
+    contain: layout;
+    overflow-x: auto;
 }
 
 .message-body a {

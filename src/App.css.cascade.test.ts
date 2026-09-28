@@ -30,6 +30,16 @@ describe("App.css cascade", () => {
     expect(decl("block").get("background")).toBe("none");
   });
 
+  it("keeps an email's fixed or absolutely positioned content inside the message", () => {
+    document.body.innerHTML =
+      '<div class="message-body" id="body"><div style="position:fixed;inset:0;z-index:2147483647">x</div></div>';
+    const decl = cascadedDeclarations(rules, document.getElementById("body")!);
+    // Layout containment makes the message the containing block and stacking
+    // context for positioned descendants; the overflow rule clips them to it.
+    expect(decl.get("contain") ?? "").toMatch(/\b(layout|strict|content)\b/);
+    expect(decl.get("overflow-x")).toBe("auto");
+  });
+
   it("floats the app's error banner below the window drag strip, on its own surface", () => {
     document.body.innerHTML =
       '<div class="app"><div class="drag-region"></div><div class="auth-error" id="banner">Oops<button class="btn">×</button></div></div>';
