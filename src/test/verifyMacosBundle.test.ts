@@ -91,7 +91,9 @@ function verify(env: Record<string, string> = {}, args = [app, join(dir, "expect
   return { status: result.status, output: result.stdout + result.stderr };
 }
 
-describe.skipIf(!canRun)("verify-macos-bundle.sh", () => {
+// Each run spawns a dozen short processes, which a loaded machine slows well
+// past the default timeout.
+describe.skipIf(!canRun)("verify-macos-bundle.sh", { timeout: 60_000 }, () => {
   it("passes a bundle signed with every entitlement and a profile that grants them", () => {
     const { status, output } = verify();
     expect(output).toBe("");
@@ -127,6 +129,9 @@ describe.skipIf(!canRun)("verify-macos-bundle.sh", () => {
     const repoEntitlements = readRepoFile("src-tauri/Entitlements.plist");
     fs.writeFileSync(join(dir, "signed.plist"), repoEntitlements);
     expect(verify({}, [app])).toEqual({ status: 0, output: "" });
+  });
+
+  it("fails against the repo's Entitlements.plist when the signature carries none", () => {
     fs.writeFileSync(join(dir, "signed.plist"), plist(dict({})));
     expect(verify({}, [app]).status).not.toBe(0);
   });
