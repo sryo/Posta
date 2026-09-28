@@ -115,6 +115,7 @@ import { safeGetItem, safeSetItem, safeRemoveItem, safeGetJSON, safeSetJSON } fr
 import { BG_COLORS, GMAIL_OPERATORS, type ActionSettings, type CardColor, type GroupBy } from "./shared/constants";
 import { createUndoableSend } from "./app/undoableSend";
 import { messageBodyHtml } from "./app/messageHtml";
+import { getSmartEventTime, groupCalendarEvents, isUserLabel, mergeThreadGroups, regroupThreads, type CalendarEventGroup } from "./app/grouping";
 
 function App() {
   const [loading, setLoading] = createSignal(true);
@@ -2421,6 +2422,7 @@ function App() {
 
   // Label drawer functions
   let labelsAccountId: string | null = null;
+  let labelsFetchingFor: string | null = null;
   async function fetchAccountLabels() {
     const account = selectedAccount();
     if (!account) return;
@@ -2432,10 +2434,13 @@ function App() {
     }
 
     if (accountLabels().length > 0) return; // Already cached
+    if (labelsFetchingFor === account.id) return;
 
+    labelsFetchingFor = account.id;
     setLabelsLoading(true);
     try {
       const labels = await listLabels(account.id);
+      if (selectedAccount()?.id !== account.id) return;
       // Sort: user labels first (alphabetically), then system labels
       const sorted = labels.sort((a, b) => {
         if (a.label_type === 'user' && b.label_type !== 'user') return -1;
@@ -2446,9 +2451,21 @@ function App() {
     } catch (e) {
       console.error("Failed to fetch labels:", e);
     } finally {
+      if (labelsFetchingFor === account.id) labelsFetchingFor = null;
       setLabelsLoading(false);
     }
   }
+
+  const labelNames = createMemo(() => Object.fromEntries(accountLabels().map(l => [l.id, l.name])));
+
+  // "Group by label" shows label names, which only the label list carries
+  createEffect(() => {
+    if (!selectedAccount()) return;
+    const wantsLabels = cards().some(c => c.group_by === "label")
+      || (editingCardId() !== null && editCardGroupBy() === "label")
+      || (addingCard() && newCardGroupBy() === "label");
+    if (wantsLabels) untrack(fetchAccountLabels);
+  });
 
   // Calendar drawer functions (for events)
   async function fetchAvailableCalendars() {
@@ -2547,10 +2564,7 @@ function App() {
   }
 
   function getThreadUserLabelCount(): number {
-    const labels = getCurrentThreadLabels();
-    // System labels are uppercase (INBOX, SENT, STARRED, etc.) or start with CATEGORY_
-    const systemLabels = ['INBOX', 'SENT', 'DRAFT', 'SPAM', 'TRASH', 'STARRED', 'UNREAD', 'IMPORTANT', 'CHAT', 'FORUMS', 'UPDATES', 'PROMOTIONS', 'SOCIAL', 'PERSONAL'];
-    return labels.filter(l => !systemLabels.includes(l) && !l.startsWith('CATEGORY_')).length;
+    return getCurrentThreadLabels().filter(isUserLabel).length;
   }
 
   async function handleThreadViewAction(action: string) {
@@ -3241,204 +3255,11 @@ function App() {
     }
   }
 
-  type CalendarEventGroup = { label: string; events: GoogleCalendarEvent[] };
-
-  function getSmartEventTime(event: GoogleCalendarEvent): string {
-    const now = Date.now();
-
-    // All-day events: compare dates only, not times
-    if (event.all_day) {
-      return formatCalendarEventDate(event.start_time, event.end_time, event.all_day);
-    }
-
-    const endTime = event.end_time || (event.start_time + 3600000);
-
-    // Currently happening
-    if (now >= event.start_time && now < endTime) {
-      return "Now";
-    }
-
-    // In the future
-    const startsIn = event.start_time - now;
-    if (startsIn > 0) {
-      const minutes = Math.floor(startsIn / 60000);
-      if (minutes < 1) return "Starting";
-      if (minutes < 60) return `in ${minutes} min`;
-      const hours = Math.floor(minutes / 60);
-      if (hours < 24) return `in ${hours}h`;
-    }
-
-    // Fall back to regular time format
-    return formatCalendarEventDate(event.start_time, event.end_time, event.all_day);
-  }
-
-  function groupCalendarEvents(events: GoogleCalendarEvent[], groupBy: GroupBy): CalendarEventGroup[] {
-    if (groupBy === "date") {
-      const groups: Record<string, GoogleCalendarEvent[]> = {};
-      // Each label's actual day, for chronological group ordering (sorting by
-      // first event start_time misorders groups once multi-day events repeat)
-      const groupDays: Record<string, number> = {};
-
-      // Setup date boundaries
-      const now = new Date();
-      const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-      const tomorrow = new Date(today);
-      tomorrow.setDate(tomorrow.getDate() + 1);
-      const yesterday = new Date(today);
-      yesterday.setDate(yesterday.getDate() - 1);
-
-      // Compare calendar days by components; midnight-to-midnight ms math
-      // breaks on DST-transition days (23h/25h)
-      const sameDay = (a: Date, b: Date) =>
-        a.getFullYear() === b.getFullYear() && a.getMonth() === b.getMonth() && a.getDate() === b.getDate();
-
-      const labelFor = (day: Date) =>
-        sameDay(day, today) ? "Today"
-          : sameDay(day, tomorrow) ? "Tomorrow"
-            : sameDay(day, yesterday) ? "Yesterday"
-              : day.toLocaleDateString(undefined, { weekday: 'long', month: 'short', day: 'numeric' });
-
-      const addToDay = (event: GoogleCalendarEvent, day: Date) => {
-        const label = labelFor(day);
-        if (!groups[label]) {
-          groups[label] = [];
-          groupDays[label] = day.getTime();
-        }
-        groups[label].push(event);
-      };
-
-      for (const event of events) {
-        // First/last calendar day the event covers (local; UTC components for
-        // all-day, whose timestamps are UTC midnight with an exclusive end)
-        let firstDay: Date;
-        let lastDay: Date;
-        if (event.all_day) {
-          const s = new Date(event.start_time);
-          firstDay = new Date(s.getUTCFullYear(), s.getUTCMonth(), s.getUTCDate());
-          if (event.end_time) {
-            const e = new Date(event.end_time - 86400000);
-            lastDay = new Date(e.getUTCFullYear(), e.getUTCMonth(), e.getUTCDate());
-          } else {
-            lastDay = firstDay;
-          }
-        } else {
-          const s = new Date(event.start_time);
-          firstDay = new Date(s.getFullYear(), s.getMonth(), s.getDate());
-          if (event.end_time && event.end_time > event.start_time) {
-            // -1ms so an event ending exactly at midnight stays on its own day
-            const e = new Date(event.end_time - 1);
-            lastDay = new Date(e.getFullYear(), e.getMonth(), e.getDate());
-          } else {
-            lastDay = firstDay;
-          }
-        }
-        if (lastDay < firstDay) lastDay = firstDay;
-
-        // Ongoing/multi-day events appear under their start day and every
-        // remaining day they span from today on (capped so month-long events
-        // don't flood the list)
-        addToDay(event, firstDay);
-        const horizon = new Date(today.getFullYear(), today.getMonth(), today.getDate() + 31);
-        const from = firstDay < today
-          ? today
-          : new Date(firstDay.getFullYear(), firstDay.getMonth(), firstDay.getDate() + 1);
-        for (let day = from; day <= lastDay && day <= horizon; day = new Date(day.getFullYear(), day.getMonth(), day.getDate() + 1)) {
-          addToDay(event, day);
-        }
-      }
-
-      return Object.entries(groups)
-        .map(([label, events]) => ({
-          label,
-          events: events.sort((a, b) => a.start_time - b.start_time),
-        }))
-        .sort((a, b) => groupDays[a.label] - groupDays[b.label]);
-    }
-
-    if (groupBy === "organizer") {
-      const groups: Record<string, GoogleCalendarEvent[]> = {};
-      for (const event of events) {
-        const organizer = event.organizer || "Unknown";
-        if (!groups[organizer]) groups[organizer] = [];
-        groups[organizer].push(event);
-      }
-      return Object.entries(groups)
-        .sort(([a], [b]) => a.localeCompare(b))
-        .map(([label, events]) => ({
-          label,
-          events: events.sort((a, b) => a.start_time - b.start_time),
-        }));
-    }
-
-    if (groupBy === "calendar") {
-      const groups: Record<string, GoogleCalendarEvent[]> = {};
-      for (const event of events) {
-        const label = event.calendar_name || event.calendar_id;
-        if (!groups[label]) groups[label] = [];
-        groups[label].push(event);
-      }
-      return Object.entries(groups)
-        .sort(([a], [b]) => a.localeCompare(b))
-        .map(([label, events]) => ({
-          label,
-          events: events.sort((a, b) => a.start_time - b.start_time),
-        }));
-    }
-
-    // Default: single group with all events
-    return [{ label: "Events", events }];
-  }
-
-  function regroupThreads(threads: ThreadGroup[], groupBy: GroupBy): ThreadGroup[] {
-    // Flatten all threads first
-    const allThreads = threads.flatMap(g => g.threads);
-
-    if (groupBy === "date") {
-      // Already grouped by date from API, just return as-is
-      return threads;
-    }
-
-    if (groupBy === "sender") {
-      const groups: Record<string, typeof allThreads> = {};
-      for (const thread of allThreads) {
-        const sender = thread.participants[0] || "Unknown";
-        if (!groups[sender]) groups[sender] = [];
-        groups[sender].push(thread);
-      }
-      // Sort by sender name, then by date within each group
-      return Object.entries(groups)
-        .sort(([a], [b]) => a.localeCompare(b))
-        .map(([label, threads]) => ({
-          label,
-          threads: threads.sort((a, b) => b.last_message_date - a.last_message_date),
-        }));
-    }
-
-    if (groupBy === "label") {
-      const groups: Record<string, typeof allThreads> = {};
-      for (const thread of allThreads) {
-        // Use the first non-system label, or "Inbox" as fallback
-        const label = thread.labels.find(l => !l.startsWith("CATEGORY_") && l !== "UNREAD" && l !== "STARRED") || "Inbox";
-        if (!groups[label]) groups[label] = [];
-        groups[label].push(thread);
-      }
-      // Sort labels alphabetically
-      return Object.entries(groups)
-        .sort(([a], [b]) => a.localeCompare(b))
-        .map(([label, threads]) => ({
-          label,
-          threads: threads.sort((a, b) => b.last_message_date - a.last_message_date),
-        }));
-    }
-
-    return threads;
-  }
-
   function getDisplayGroups(cardId: string): ThreadGroup[] {
     const threads = isPreviewingQuery(cardId) ? queryPreviewThreads() : cardThreads[cardId];
     if (!threads) return [];
     const groupBy = getGroupByForCard(cardId);
-    let groups = regroupThreads(threads, groupBy);
+    let groups = regroupThreads(threads, groupBy, labelNames());
 
     // Apply global filter
     const filter = globalFilter().toLowerCase().trim();
@@ -3484,35 +3305,6 @@ function App() {
     if (!groups) return 0;
     return groups.reduce((total, group) =>
       total + group.threads.filter(t => t.unread_count > 0).length, 0);
-  }
-
-  function mergeThreadGroups(existing: ThreadGroup[], incoming: ThreadGroup[]): ThreadGroup[] {
-    const groups: Record<string, ThreadGroup> = {};
-    // Dedupe globally: the same thread must not appear in two date groups.
-    // Incoming copies are fresher, so claim their ids first and drop stale
-    // copies from the existing groups.
-    const seen = new Set<string>();
-
-    for (const group of incoming) {
-      const threads = group.threads.filter(t => !seen.has(t.gmail_thread_id));
-      threads.forEach(t => seen.add(t.gmail_thread_id));
-      groups[group.label] = { ...group, threads };
-    }
-
-    for (const group of existing) {
-      const threads = group.threads.filter(t => !seen.has(t.gmail_thread_id));
-      threads.forEach(t => seen.add(t.gmail_thread_id));
-      if (groups[group.label]) {
-        // Keep load order within a group: previously loaded pages first
-        groups[group.label] = { ...groups[group.label], threads: [...threads, ...groups[group.label].threads] };
-      } else {
-        groups[group.label] = { ...group, threads };
-      }
-    }
-
-    // Return in date order, dropping groups emptied by deduplication
-    const order = ["Today", "Yesterday", "This week", "Last 30 days", "Older"];
-    return order.filter(label => groups[label] && groups[label].threads.length > 0).map(label => groups[label]);
   }
 
   async function refreshCard(cardId: string, e: MouseEvent) {
@@ -4562,7 +4354,7 @@ function App() {
                                         <div class="calendar-event-row">
                                           <span class="calendar-event-title">{event.title}</span>
                                           <span class="calendar-event-time-compact">
-                                            {getSmartEventTime(event)}
+                                            {getSmartEventTime(event, currentTime())}
                                           </span>
                                         </div>
                                         <Show when={event.description}>
@@ -4966,7 +4758,7 @@ function App() {
                                   <div class="calendar-event-row">
                                     <span class="calendar-event-title">{event.title}</span>
                                     <span class="calendar-event-time-compact">
-                                      {getSmartEventTime(event)}
+                                      {getSmartEventTime(event, currentTime())}
                                     </span>
                                   </div>
                                   <Show when={event.description}>
@@ -4995,7 +4787,7 @@ function App() {
                       <div class="empty">No matches</div>
                     </Show>
                     <Show when={!queryPreviewLoading() && queryPreviewThreads().length > 0}>
-                      <For each={regroupThreads(queryPreviewThreads(), newCardGroupBy())}>
+                      <For each={regroupThreads(queryPreviewThreads(), newCardGroupBy(), labelNames())}>
                         {(group) => (
                           <>
                             <div class="date-header">{group.label}</div>
