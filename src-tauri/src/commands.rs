@@ -1738,15 +1738,26 @@ fn reply_context(thread: &crate::gmail::FullThread) -> String {
 }
 
 #[tauri::command]
+pub fn set_gemini_api_key(api_key: String, app_handle: tauri::AppHandle) -> Result<(), String> {
+    let app_data_dir = get_app_data_dir(&app_handle)?;
+    auth::store_gemini_api_key(&api_key, &app_data_dir).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn has_gemini_api_key(app_handle: tauri::AppHandle) -> Result<bool, String> {
+    let app_data_dir = get_app_data_dir(&app_handle)?;
+    Ok(auth::get_gemini_api_key(&app_data_dir).is_some())
+}
+
+#[tauri::command]
 pub async fn suggest_replies(
     account_id: String,
     thread_id: String,
-    api_key: String,
     app_handle: tauri::AppHandle, state: State<'_, AppState>,
 ) -> Result<Vec<String>, String> {
-    if api_key.is_empty() {
-        return Err("Gemini API key is required for smart replies.".to_string());
-    }
+    let app_data_dir = get_app_data_dir(&app_handle)?;
+    let api_key = auth::get_gemini_api_key(&app_data_dir)
+        .ok_or_else(|| "Gemini API key is required for smart replies.".to_string())?;
 
     let user_email = get_account_email(&state, &account_id)?;
 

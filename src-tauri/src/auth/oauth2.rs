@@ -203,6 +203,12 @@ fn get_credentials_file_path(app_data_dir: &Path) -> PathBuf {
     app_data_dir.join("tokens").join("oauth_credentials.json")
 }
 
+fn get_gemini_key_file_path(app_data_dir: &Path) -> PathBuf {
+    app_data_dir.join("tokens").join("gemini_api_key")
+}
+
+const GEMINI_KEYCHAIN_KEY: &str = "gemini:api_key";
+
 /// Store a secret in the keychain and verify it can be read back
 /// (keychain can silently fail in sandboxed apps)
 fn keychain_store_verified(key: &str, secret: &str) -> bool {
@@ -376,6 +382,46 @@ pub fn get_oauth_credentials(app_data_dir: &Path) -> Result<OAuthCredentials, Au
     }
 
     Err(AuthError::NoCredentials)
+}
+
+/// Stores the Gemini API key used for smart replies; an empty key removes it
+pub fn store_gemini_api_key(api_key: &str, app_data_dir: &Path) -> Result<(), AuthError> {
+    let path = get_gemini_key_file_path(app_data_dir);
+    let api_key = api_key.trim();
+
+    if api_key.is_empty() {
+        if let Ok(entry) = keyring::Entry::new(KEYRING_SERVICE, GEMINI_KEYCHAIN_KEY) {
+            let _ = entry.delete_credential();
+        }
+        let _ = std::fs::remove_file(&path);
+        return Ok(());
+    }
+
+    // Keychain is the primary store; the plaintext file is only a fallback
+    if keychain_store_verified(GEMINI_KEYCHAIN_KEY, api_key) {
+        if path.exists() {
+            let _ = std::fs::remove_file(&path);
+        }
+        return Ok(());
+    }
+
+    tracing::warn!("Keychain storage failed for the Gemini API key, using file fallback");
+    write_secret_file(&path, api_key, "Gemini API key")
+}
+
+pub fn get_gemini_api_key(app_data_dir: &Path) -> Option<String> {
+    if let Ok(entry) = keyring::Entry::new(KEYRING_SERVICE, GEMINI_KEYCHAIN_KEY) {
+        if let Ok(key) = entry.get_password() {
+            if !key.is_empty() {
+                return Some(key);
+            }
+        }
+    }
+
+    std::fs::read_to_string(get_gemini_key_file_path(app_data_dir))
+        .ok()
+        .map(|key| key.trim().to_string())
+        .filter(|key| !key.is_empty())
 }
 
 #[cfg(test)]

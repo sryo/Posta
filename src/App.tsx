@@ -28,6 +28,8 @@ import {
   reorderCards,
   deleteAccount,
   updateAccountSignature,
+  setGeminiApiKey,
+  hasGeminiApiKey,
   fetchThreadsPaginated,
   searchThreadsPreview,
   modifyThreads,
@@ -777,7 +779,8 @@ function App() {
   // Settings form
   const [clientId, setClientId] = createSignal("");
   const [clientSecret, setClientSecret] = createSignal("");
-  const [geminiApiKey, setGeminiApiKey] = createSignal(safeGetItem("gemini_api_key") || "");
+  const [geminiKeyDraft, setGeminiKeyDraft] = createSignal("");
+  const [geminiKeySaved, setGeminiKeySaved] = createSignal(false);
   const [smartRepliesOpen, setSmartRepliesOpen] = createSignal(false);
 
   // Preset selection for new accounts
@@ -1032,6 +1035,8 @@ function App() {
 
     // Set snippet lines CSS variable
     document.documentElement.style.setProperty("--snippet-lines", String(snippetLines));
+
+    loadGeminiKeyState();
 
     // Listen for mailto: deep-link events whether or not startup succeeds
     listen<MailtoData>(
@@ -3209,6 +3214,30 @@ function App() {
     }
   }
 
+  async function saveGeminiApiKey(apiKey: string) {
+    try {
+      await setGeminiApiKey(apiKey);
+      setGeminiKeySaved(!!apiKey.trim());
+      setGeminiKeyDraft("");
+    } catch (e) {
+      showToast(`Couldn't save the Gemini API key: ${e}`);
+    }
+  }
+
+  // Earlier builds kept the key in localStorage; move it to the keychain
+  async function loadGeminiKeyState() {
+    try {
+      const legacyKey = safeGetItem("gemini_api_key");
+      if (legacyKey) {
+        await setGeminiApiKey(legacyKey);
+        safeRemoveItem("gemini_api_key");
+      }
+      setGeminiKeySaved(await hasGeminiApiKey());
+    } catch (e) {
+      console.warn("Gemini API key unavailable:", e);
+    }
+  }
+
   function showToast(message?: string, action?: { label: string; run: () => void }) {
     clearTimeout(toastTimeoutId);
     // Cancel a pending hide so it can't null out this newer toast
@@ -5003,14 +5032,16 @@ function App() {
                 <label>API Key</label>
                 <input
                   type="password"
-                  value={geminiApiKey()}
-                  onInput={(e) => {
-                    setGeminiApiKey(e.currentTarget.value);
-                    safeSetItem("gemini_api_key", e.currentTarget.value);
-                  }}
-                  placeholder="AIza..."
+                  aria-label="Gemini API key"
+                  value={geminiKeyDraft()}
+                  onInput={(e) => setGeminiKeyDraft(e.currentTarget.value)}
+                  onChange={(e) => { if (e.currentTarget.value.trim()) saveGeminiApiKey(e.currentTarget.value); }}
+                  placeholder={geminiKeySaved() ? "Saved in the keychain" : "AIza..."}
                 />
               </div>
+              <Show when={geminiKeySaved()}>
+                <button class="link-btn" onClick={() => saveGeminiApiKey("")}>Remove key</button>
+              </Show>
             </Show>
           </div>
         </div>

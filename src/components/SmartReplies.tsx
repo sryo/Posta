@@ -1,6 +1,5 @@
 import { createSignal, onMount, Show, For } from "solid-js";
-import { suggestReplies } from "../api/tauri";
-import { safeGetItem } from "../shared/storage";
+import { hasGeminiApiKey, suggestReplies } from "../api/tauri";
 
 interface SmartRepliesProps {
     accountId: string;
@@ -13,15 +12,15 @@ export const SmartReplies = (props: SmartRepliesProps) => {
     const [loading, setLoading] = createSignal(false);
     const [error, setError] = createSignal<string | null>(null);
 
-    const apiKey = () => safeGetItem("gemini_api_key") || "";
+    const [enabled, setEnabled] = createSignal(false);
 
     const fetchSuggestions = async () => {
-        if (!props.threadId || !props.accountId || !apiKey()) return;
+        if (!props.threadId || !props.accountId) return;
 
         setLoading(true);
         setError(null);
         try {
-            const results = await suggestReplies(props.accountId, props.threadId, apiKey());
+            const results = await suggestReplies(props.accountId, props.threadId);
             setSuggestions(results);
         } catch (e: any) {
             setError(typeof e === 'string' ? e : e.message);
@@ -30,16 +29,20 @@ export const SmartReplies = (props: SmartRepliesProps) => {
         }
     };
 
-    onMount(() => {
-        if (apiKey()) {
-            fetchSuggestions();
+    onMount(async () => {
+        try {
+            if (!(await hasGeminiApiKey())) return;
+        } catch {
+            return;
         }
+        setEnabled(true);
+        fetchSuggestions();
     });
 
     // Gate in JSX rather than an early return: a top-level `return null`
     // freezes this instance as null forever, while <Show> re-evaluates
     return (
-        <Show when={apiKey()}>
+        <Show when={enabled()}>
         <div class="smart-replies-container">
             <Show when={loading()}>
                 <div class="smart-replies-loading">

@@ -235,6 +235,8 @@ pub fn run() {
             commands::delete_calendar_event,
             commands::update_calendar_event,
             commands::suggest_replies,
+            commands::set_gemini_api_key,
+            commands::has_gemini_api_key,
             take_pending_mailtos,
         ])
         .build(tauri::generate_context!())

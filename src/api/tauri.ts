@@ -534,12 +534,17 @@ export async function updateCalendarEvent(
   });
 }
 
-export async function suggestReplies(
-  accountId: string,
-  threadId: string,
-  apiKey: string
-): Promise<string[]> {
-  return invoke("suggest_replies", { accountId, threadId, apiKey });
+export async function suggestReplies(accountId: string, threadId: string): Promise<string[]> {
+  return invoke("suggest_replies", { accountId, threadId });
+}
+
+// Kept in the system keychain; an empty key removes it
+export async function setGeminiApiKey(apiKey: string): Promise<void> {
+  return invoke("set_gemini_api_key", { apiKey });
+}
+
+export async function hasGeminiApiKey(): Promise<boolean> {
+  return invoke("has_gemini_api_key");
 }
 
 // Email Reactions

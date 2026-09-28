@@ -71,6 +71,7 @@ beforeEach(() => {
     sync_threads_incremental: () => ({ modified_threads: [], deleted_thread_ids: [], is_full_sync: false }),
     fetch_contacts: () => [],
     take_pending_mailtos: () => [],
+    has_gemini_api_key: () => false,
   } satisfies Record<string, Handler>);
   cardsByAccount.a = [card("card-a", "a", "Alpha")];
   cardsByAccount.b = [card("card-b", "b", "Beta")];
@@ -576,6 +577,48 @@ describe("App expired session after dismissing the banner", () => {
     fireEvent.click(within(cardError).getByRole("button", { name: "Sign in again" }));
 
     await screen.findByText("Mail for A");
+  });
+});
+
+describe("App Gemini API key", () => {
+  it("moves a key left in localStorage by earlier builds into the keychain", async () => {
+    localStorage.setItem("gemini_api_key", "AIza-old");
+    let stored = "";
+    handlers.set_gemini_api_key = ({ apiKey }) => { stored = apiKey as string; return null; };
+    handlers.has_gemini_api_key = () => stored !== "";
+    render(() => <App />);
+
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith("set_gemini_api_key", { apiKey: "AIza-old" }));
+    await waitFor(() => expect(localStorage.getItem("gemini_api_key")).toBeNull());
+    fireEvent.click(screen.getByText("Smart Replies"));
+    expect(await screen.findByPlaceholderText("Saved in the keychain")).toBeInTheDocument();
+  });
+
+  it("keeps the old copy when the keychain refuses the key", async () => {
+    localStorage.setItem("gemini_api_key", "AIza-old");
+    handlers.set_gemini_api_key = () => { throw new Error("keychain locked"); };
+    render(() => <App />);
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith("set_gemini_api_key", { apiKey: "AIza-old" }));
+    await new Promise(r => setTimeout(r, 0));
+    expect(localStorage.getItem("gemini_api_key")).toBe("AIza-old");
+  });
+
+  it("saves and removes the key from Settings without keeping it in localStorage", async () => {
+    handlers.set_gemini_api_key = () => null;
+    render(() => <App />);
+    await screen.findByText("Mail for A");
+    fireEvent.click(screen.getByText("Smart Replies"));
+
+    const field = screen.getByLabelText("Gemini API key");
+    fireEvent.input(field, { target: { value: "AIza-new" } });
+    fireEvent.change(field, { target: { value: "AIza-new" } });
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith("set_gemini_api_key", { apiKey: "AIza-new" }));
+    expect(localStorage.getItem("gemini_api_key")).toBeNull();
+    expect(await screen.findByPlaceholderText("Saved in the keychain")).toHaveValue("");
+
+    fireEvent.click(screen.getByRole("button", { name: "Remove key" }));
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith("set_gemini_api_key", { apiKey: "" }));
+    expect(await screen.findByPlaceholderText("AIza...")).toBeInTheDocument();
   });
 });
 
