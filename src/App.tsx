@@ -3620,12 +3620,12 @@ function App() {
 
       {/* Error banner */}
       <Show when={error()}>
-        <div class="auth-error" style="position: fixed; top: 12px; left: 50%; transform: translateX(-50%); z-index: 100;">
+        <div class="auth-error">
           {error()}
           <Show when={expiredAccountId() && expiredAccountId() === selectedAccount()?.id}>
-            <button class="btn btn-primary" style="margin-left: 8px;" onClick={handleReauth}>Sign in again</button>
+            <button class="btn btn-primary" onClick={handleReauth}>Sign in again</button>
           </Show>
-          <button class="btn" style="margin-left: 8px;" onClick={() => setError(null)} aria-label="Dismiss error">×</button>
+          <button class="btn" onClick={() => setError(null)} aria-label="Dismiss error">×</button>
         </div>
       </Show>
 
@@ -3645,9 +3645,6 @@ function App() {
             <GoogleLogo />
             Sign in with Google
           </button>
-          <Show when={error()}>
-            <p class="auth-error">{error()}</p>
-          </Show>
           <button
             class="auth-settings-btn"
             onClick={() => setSettingsOpen(true)}
@@ -3661,7 +3658,7 @@ function App() {
       <Show when={authLoading()}>
         <div class="auth-screen">
           <div class="auth-spinner"></div>
-          <p style="margin-top: 16px;">Complete sign-in in your browser...</p>
+          <p>Complete sign-in in your browser...</p>
         </div>
       </Show>
 
@@ -4933,7 +4930,7 @@ function App() {
         <div class="settings-body">
           <div class="settings-section">
             <div class="settings-section-title">Google API</div>
-            <p class="settings-hint" style="margin-bottom: 12px;">
+            <p class="settings-hint">
               <a href="#" onClick={(e) => { e.preventDefault(); openUrl('https://console.cloud.google.com/apis/credentials'); }} class="settings-link">
                 Open Google Cloud Console
               </a> to create OAuth credentials.
@@ -4971,7 +4968,6 @@ function App() {
               class="btn btn-primary"
               onClick={handleSaveSettings}
               disabled={!clientId() || !clientSecret()}
-              style="margin-top: 12px; width: 100%;"
             >
               Connect <span class="shortcut-hint">↵</span>
             </button>
@@ -4980,7 +4976,7 @@ function App() {
             {(account) => (
               <div class="settings-section">
                 <div class="settings-section-title">Signature</div>
-                <p class="settings-hint" style="margin-bottom: 12px;">
+                <p class="settings-hint">
                   Added to new emails, replies and forwards from {account().email}.
                 </p>
                 <div class="settings-form-group">
@@ -5000,7 +4996,7 @@ function App() {
               <span class="collapse-icon">{smartRepliesOpen() ? '−' : '+'}</span>
             </div>
             <Show when={smartRepliesOpen()}>
-              <p class="settings-hint" style="margin-bottom: 12px;">
+              <p class="settings-hint">
                 AI-powered reply suggestions via Gemini.
               </p>
               <div class="settings-form-group">

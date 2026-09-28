@@ -541,6 +541,20 @@ describe("App expired session", () => {
   });
 });
 
+describe("App error banner", () => {
+  it("shows a startup error once, positioned by the stylesheet rather than inline", async () => {
+    handlers.get_accounts = () => [];
+    handlers.init_app = () => { throw new Error("database is locked"); };
+    render(() => <App />);
+    await screen.findByText("Sign in with Google");
+    await screen.findByText(/database is locked/);
+    expect(screen.getAllByText(/database is locked/)).toHaveLength(1);
+    const banner = document.querySelector(".auth-error") as HTMLElement;
+    expect(banner.getAttribute("style")).toBeNull();
+    banner.querySelectorAll("button").forEach(b => expect(b.getAttribute("style")).toBeNull());
+  });
+});
+
 describe("App expired session after dismissing the banner", () => {
   it("still offers to sign in again from the card", async () => {
     let expired = true;

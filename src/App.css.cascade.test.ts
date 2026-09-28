@@ -42,13 +42,6 @@ describe("App.css cascade", () => {
     expect(decl.get("gap")).toBeDefined();
   });
 
-  it("keeps the sign-in screen's error in the page flow", () => {
-    document.body.innerHTML = '<div class="auth-screen"><p class="auth-error" id="err">Oops</p></div>';
-    const decl = cascadedDeclarations(rules, document.getElementById("err")!);
-    expect(decl.get("position")).toBeUndefined();
-    expect(decl.get("background")).toBeUndefined();
-  });
-
   it("spaces a settings section's intro hint from its fields, and widens its submit button", () => {
     document.body.innerHTML = `<div class="settings-section">
         <div class="settings-section-title">Google API</div>

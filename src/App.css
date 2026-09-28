@@ -1734,15 +1734,10 @@ button:disabled:hover {
     color: var(--text-primary);
 }
 
+/* The app-wide error banner */
 .auth-error {
     color: var(--danger);
     font-size: var(--font-size-md);
-    max-width: 400px;
-    text-align: center;
-}
-
-/* The app-wide error banner, as opposed to the sign-in screen's inline error */
-.app > .auth-error {
     position: fixed;
     top: calc(var(--drag-region-height) + var(--space-sm));
     left: 50%;
@@ -1757,7 +1752,6 @@ button:disabled:hover {
     border: 1px solid var(--danger-bg);
     border-radius: var(--radius-lg);
     box-shadow: 0 4px 16px var(--shadow);
-    text-align: left;
 }
 
 .auth-spinner,
