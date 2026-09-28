@@ -14,6 +14,8 @@ pub enum CacheError {
     Lock,
     #[error("This card no longer exists. It may have been deleted on another device.")]
     CardNotFound,
+    #[error("{0} is already signed in to Posta.")]
+    AccountEmailTaken(String),
 }
 
 /// Cached thread groups, next page token, and cache time in Unix seconds
@@ -130,12 +132,19 @@ impl CacheDb {
     /// replacing that row would orphan its cards.
     pub fn insert_account(&self, account: &Account) -> Result<(), CacheError> {
         let conn = self.conn.lock().map_err(|_| CacheError::Lock)?;
-        conn.execute(
+        let result = conn.execute(
             "INSERT INTO accounts (id, email, picture, signature) VALUES (?1, ?2, ?3, ?4)
              ON CONFLICT(id) DO UPDATE SET email = excluded.email, picture = excluded.picture, signature = excluded.signature",
             params![account.id, account.email, account.picture, account.signature],
-        )?;
-        Ok(())
+        );
+        match result {
+            Err(rusqlite::Error::SqliteFailure(e, Some(message)))
+                if e.extended_code == rusqlite::ffi::SQLITE_CONSTRAINT_UNIQUE && message.contains("accounts.email") =>
+            {
+                Err(CacheError::AccountEmailTaken(account.email.clone()))
+            }
+            result => result.map(|_| ()).map_err(Into::into),
+        }
     }
 
     pub fn update_account_signature(&self, account_id: &str, signature: Option<&str>) -> Result<(), CacheError> {
@@ -600,7 +609,8 @@ mod tests {
         db.insert_account(&first).unwrap();
         db.insert_card(&Card::new(first.id.clone(), "Inbox".into(), "in:inbox".into(), 0)).unwrap();
 
-        assert!(db.insert_account(&account("me@x.com")).is_err());
+        let err = db.insert_account(&account("me@x.com")).unwrap_err().to_string();
+        assert_eq!(err, "me@x.com is already signed in to Posta.");
 
         let accounts = db.get_accounts().unwrap();
         assert_eq!(accounts.len(), 1);
