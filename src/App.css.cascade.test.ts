@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeAll } from "vitest";
-import { cascadedDeclarations, parseRules } from "./test/css";
+import { cascadedDeclarations, parseRules, specificity } from "./test/css";
 import { readRepoFile } from "./test/files";
 
 const css = readRepoFile("src/App.css");
@@ -38,6 +38,42 @@ describe("App.css cascade", () => {
     // context for positioned descendants; the overflow rule clips them to it.
     expect(decl.get("contain") ?? "").toMatch(/\b(layout|strict|content)\b/);
     expect(decl.get("overflow-x")).toBe("auto");
+  });
+
+  it("rings every keyboard-reachable control on keyboard focus, inset on list rows", () => {
+    document.body.innerHTML = `<button class="collapse-btn" id="collapse"></button>
+      <a href="#" id="link">x</a>
+      <div class="compose-suggestion-avatar" role="button" tabindex="0" id="suggestion"></div>
+      <div class="color-picker-selected" role="button" tabindex="0" id="swatch"></div>
+      <div class="scheduler-day-card" role="button" tabindex="0" id="day"></div>
+      <div class="scheduler-option" role="option" tabindex="0" id="option"></div>
+      <div class="attachment-thumb" role="button" tabindex="0" id="thumb"></div>
+      <div class="card"><div class="thread" role="article" tabindex="0" id="thread"></div>
+      <div class="calendar-event-item" tabindex="0" id="event"></div></div>`;
+    // The winning declarations among rules that apply only while :focus-visible.
+    const focusRing = (el: Element) => {
+      const hits: { spec: [number, number, number]; order: number; decl: [string, string][] }[] = [];
+      rules.forEach((rule, order) => {
+        if (rule.context) return;
+        for (const sel of rule.selectors) {
+          if (!sel.endsWith(":focus-visible")) continue;
+          if (!el.matches(sel.slice(0, -":focus-visible".length))) continue;
+          hits.push({ spec: specificity(sel), order, decl: rule.declarations });
+        }
+      });
+      hits.sort((a, b) => a.spec[0] - b.spec[0] || a.spec[1] - b.spec[1] || a.spec[2] - b.spec[2] || a.order - b.order);
+      const out = new Map<string, string>();
+      for (const hit of hits) for (const [prop, value] of hit.decl) out.set(prop, value);
+      return out;
+    };
+    for (const id of ["collapse", "link", "suggestion", "swatch", "day", "option", "thumb", "thread", "event"]) {
+      const ring = focusRing(document.getElementById(id)!);
+      expect(ring.get("outline"), id).toMatch(/^2px solid var\(--accent\)$/);
+    }
+    // Rows sit flush in scrolling cards, which would clip an outset ring.
+    for (const id of ["thread", "event"]) {
+      expect(focusRing(document.getElementById(id)!).get("outline-offset"), id).toMatch(/^-/);
+    }
   });
 
   it("floats the app's error banner below the window drag strip, on its own surface", () => {
