@@ -54,6 +54,11 @@ export function getResponseStatusLabel(status: string | null | undefined): strin
   }
 }
 
+// Deleting a calendar event has no undo in Posta, unlike trashing a thread
+export function confirmEventDelete(title: string | null | undefined): boolean {
+  return confirm(`Delete "${title || '(No title)'}"? This can't be undone.`);
+}
+
 /**
  * Decode HTML entities like &amp; &#39; etc.
  */

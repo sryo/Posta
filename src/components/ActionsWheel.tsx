@@ -25,6 +25,7 @@ import {
   VideoIcon,
   CheckIcon,
 } from "./Icons";
+import { confirmEventDelete } from "../utils";
 
 // Half Pie Menu Component
 export const ActionsWheel = (props: {
@@ -154,6 +155,7 @@ export const ActionsWheel = (props: {
           icon: TrashIcon,
           onClick: (e) => {
             e.stopPropagation();
+            if (!confirmEventDelete(evt.title)) return;
             props.onDeleteEvent?.(evt);
             props.onClose();
           },

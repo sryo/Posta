@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { fireEvent, render, screen } from "@solidjs/testing-library";
 import { ActionsWheel } from "./ActionsWheel";
 import type { GoogleCalendarEvent, Thread } from "../api/tauri";
@@ -89,13 +89,25 @@ describe("ActionsWheel key hints", () => {
 });
 
 describe("ActionsWheel event delete", () => {
+  afterEach(() => vi.restoreAllMocks());
+
   it("deletes an event the user can edit instead of declining it", () => {
+    vi.spyOn(window, "confirm").mockReturnValue(true);
     const onDeleteEvent = vi.fn();
     const onClose = vi.fn();
     render(() => <ActionsWheel {...baseProps} onClose={onClose} selectedAccount={() => ({ id: "acc" } as any)} event={event} onDeleteEvent={onDeleteEvent} />);
     fireEvent.click(screen.getByTitle("Delete"));
     expect(onDeleteEvent).toHaveBeenCalledWith(event);
     expect(rsvpCalendarEvent).not.toHaveBeenCalled();
+  });
+
+  it("asks before deleting and keeps the event when the user cancels", () => {
+    const confirm = vi.spyOn(window, "confirm").mockReturnValue(false);
+    const onDeleteEvent = vi.fn();
+    render(() => <ActionsWheel {...baseProps} event={event} onDeleteEvent={onDeleteEvent} />);
+    fireEvent.click(screen.getByTitle("Delete"));
+    expect(confirm).toHaveBeenCalledWith(expect.stringContaining("Sync"));
+    expect(onDeleteEvent).not.toHaveBeenCalled();
   });
 
   it("offers no delete on events the user cannot edit, where RSVP No already declines", () => {
