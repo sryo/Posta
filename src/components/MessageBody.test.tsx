@@ -84,6 +84,32 @@ describe("MessageBody", () => {
     ));
     expect(container.querySelector("img")!.getAttribute("src")).toBe("data:image/png;base64,QUJD");
   });
+
+  it("takes an inline part's data from this message's listing entry with the same attachment id", () => {
+    const parts = [{
+      mimeType: "image/gif",
+      headers: [{ name: "Content-ID", value: "<logo@x>" }],
+      body: { attachmentId: "a1" },
+    }];
+    const threadAttachments = [
+      { message_id: "m0", attachment_id: "a1", content_id: "logo@x", inline_data: "T1RIRVI=", mime_type: "image/png" },
+      { message_id: "m1", attachment_id: "a1", content_id: null, inline_data: "R0lG", mime_type: "image/gif" },
+    ];
+    const { container } = render(() => (
+      <MessageBody body={'<img src="cid:logo@x">'} msgId="m1" msgPayloadParts={parts} threadAttachments={threadAttachments} />
+    ));
+    expect(container.querySelector("img")!.getAttribute("src")).toBe("data:image/gif;base64,R0lG");
+  });
+
+  it("ignores another message's attachments with the same Content-ID", () => {
+    const threadAttachments = [{
+      message_id: "m0", attachment_id: "a1", content_id: "logo@x", inline_data: "QUJD", mime_type: "image/png",
+    }];
+    const { container } = render(() => (
+      <MessageBody body={'<img src="cid:logo@x">'} msgId="m1" threadAttachments={threadAttachments} />
+    ));
+    expect(container.querySelector("img")!.getAttribute("src")).toBe("cid:logo@x");
+  });
 });
 
 describe("MessageBody cid image updates", () => {
