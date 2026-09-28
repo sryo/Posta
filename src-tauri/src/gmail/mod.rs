@@ -564,15 +564,11 @@ impl GmailClient {
             if attachment.is_calendar() {
                 match self.get_attachment(&attachment.message_id, &attachment.attachment_id).await {
                     Ok(data) => {
-                        use base64::Engine;
-                        let normalized = data.replace('-', "+").replace('_', "/");
-                        if let Ok(decoded_bytes) = base64::engine::general_purpose::STANDARD.decode(&normalized) {
-                            if let Ok(ics_content) = String::from_utf8(decoded_bytes) {
-                                if let Some(event) = parse_ics_content(&ics_content) {
-                                    calendar_event = Some(event);
-                                    break;
-                                }
-                            }
+                        if let Some(event) =
+                            decode_base64_body(&data).and_then(|ics| parse_ics_content(&ics))
+                        {
+                            calendar_event = Some(event);
+                            break;
                         }
                     }
                     Err(e) => {
@@ -1472,77 +1468,56 @@ fn group_threads_by_date(threads: Vec<Thread>) -> Vec<ThreadGroup> {
         .collect()
 }
 
-/// Extract plain text body from a FullMessage
-/// Recursively searches through message parts to find text/plain content
+/// Extract the first text/plain body from a FullMessage, searching nested
+/// multipart parts depth-first
 pub fn extract_body_text_from_message(message: &FullMessage) -> Option<String> {
     let payload = message.payload.as_ref()?;
-
-    // Try to get body directly from payload
-    if let Some(body_text) = extract_text_from_payload(payload) {
-        return Some(body_text);
+    if payload.mime_type.as_deref() == Some("text/plain") {
+        if let Some(text) = payload.body.as_ref().and_then(decode_part_text) {
+            return Some(text);
+        }
     }
-
-    None
+    payload.parts.as_deref().and_then(find_text_in_parts)
 }
 
-fn extract_text_from_payload(payload: &MessagePayload) -> Option<String> {
-    // Check if this payload itself is text/plain
-    if let Some(mime_type) = &payload.mime_type {
-        if mime_type == "text/plain" {
-            if let Some(body) = &payload.body {
-                if let Some(data) = &body.data {
-                    return decode_base64_body(data);
-                }
+fn find_text_in_parts(parts: &[MessagePart]) -> Option<String> {
+    parts.iter().find_map(|part| {
+        if part.mime_type == "text/plain" {
+            let is_attached_file = part.filename.as_deref().is_some_and(|f| !f.is_empty());
+            if is_attached_file {
+                return None;
             }
+            part.body.as_ref().and_then(decode_part_text)
+        } else {
+            part.parts.as_deref().and_then(find_text_in_parts)
         }
-    }
-
-    // Check parts recursively
-    if let Some(parts) = &payload.parts {
-        // First, look for text/plain
-        for part in parts {
-            if part.mime_type == "text/plain" {
-                if let Some(body) = &part.body {
-                    if let Some(data) = &body.data {
-                        if let Some(text) = decode_base64_body(data) {
-                            return Some(text);
-                        }
-                    }
-                }
-            }
-        }
-
-        // If no text/plain, recurse into multipart alternatives
-        for part in parts {
-            if part.mime_type.starts_with("multipart/") {
-                if let Some(nested_parts) = &part.parts {
-                    for nested in nested_parts {
-                        if nested.mime_type == "text/plain" {
-                            if let Some(body) = &nested.body {
-                                if let Some(data) = &body.data {
-                                    if let Some(text) = decode_base64_body(data) {
-                                        return Some(text);
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    None
+    })
 }
 
+fn decode_part_text(body: &MessageBody) -> Option<String> {
+    decode_base64_body(body.data.as_deref()?)
+}
+
+/// Decode Gmail's base64url data, with or without padding. Bodies in a legacy
+/// charset are decoded lossily rather than dropped.
 fn decode_base64_body(data: &str) -> Option<String> {
+    decode_base64_lenient(data).map(|bytes| String::from_utf8_lossy(&bytes).into_owned())
+}
+
+fn decode_base64_lenient(data: &str) -> Option<Vec<u8>> {
     use base64::Engine;
-    // Gmail uses URL-safe base64 encoding
-    let normalized = data.replace('-', "+").replace('_', "/");
-    base64::engine::general_purpose::STANDARD
-        .decode(&normalized)
+    let normalized: String = data
+        .chars()
+        .filter(|c| !c.is_ascii_whitespace() && *c != '=')
+        .map(|c| match c {
+            '+' => '-',
+            '/' => '_',
+            c => c,
+        })
+        .collect();
+    base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .decode(normalized)
         .ok()
-        .and_then(|bytes| String::from_utf8(bytes).ok())
 }
 
 /// Strip HTML tags to create plain text fallback
@@ -2325,6 +2300,63 @@ mod tests {
             reply_headers_from_thread(&thread, Some("m1")),
             Some(("<one@example.com>".to_string(), "<one@example.com>".to_string()))
         );
+    }
+
+    fn b64url(s: &[u8]) -> String {
+        use base64::Engine;
+        base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(s)
+    }
+
+    fn part(mime: &str, data: Option<String>, parts: Option<Vec<MessagePart>>) -> MessagePart {
+        MessagePart {
+            part_id: None,
+            mime_type: mime.to_string(),
+            filename: None,
+            headers: None,
+            body: Some(MessageBody { size: None, data, attachment_id: None }),
+            parts,
+        }
+    }
+
+    fn message_with_parts(parts: Vec<MessagePart>) -> FullMessage {
+        let mut msg = full_message("m1", &[], vec![]);
+        msg.payload = Some(MessagePayload {
+            headers: Some(vec![]),
+            body: None,
+            parts: Some(parts),
+            mime_type: Some("multipart/mixed".to_string()),
+        });
+        msg
+    }
+
+    #[test]
+    fn body_text_found_in_deeply_nested_multipart() {
+        // mixed > related > alternative > text/plain, as sent by Apple Mail
+        // with inline images and an attachment
+        let msg = message_with_parts(vec![part(
+            "multipart/related",
+            None,
+            Some(vec![part(
+                "multipart/alternative",
+                None,
+                Some(vec![
+                    part("text/plain", Some(b64url("hello there".as_bytes())), None),
+                    part("text/html", Some(b64url(b"<p>hello there</p>")), None),
+                ]),
+            )]),
+        )]);
+        assert_eq!(extract_body_text_from_message(&msg).as_deref(), Some("hello there"));
+    }
+
+    #[test]
+    fn body_text_decodes_unpadded_base64_and_non_utf8() {
+        let msg = message_with_parts(vec![part("text/plain", Some(b64url(b"ab")), None)]);
+        assert_eq!(extract_body_text_from_message(&msg).as_deref(), Some("ab"));
+
+        // ISO-8859-1 "caf\xe9" must not make the whole body disappear
+        let msg = message_with_parts(vec![part("text/plain", Some(b64url(b"caf\xe9 ok")), None)]);
+        let text = extract_body_text_from_message(&msg).expect("body present");
+        assert!(text.starts_with("caf") && text.ends_with(" ok"));
     }
 
     #[test]
