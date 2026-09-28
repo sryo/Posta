@@ -88,9 +88,13 @@ pub struct Attachment {
 
 impl Attachment {
     pub fn is_calendar(&self) -> bool {
-        self.mime_type == "text/calendar"
-            || self.mime_type == "application/ics"
-            || self.filename.ends_with(".ics")
+        let has_ics_extension = self
+            .filename
+            .rsplit_once('.')
+            .is_some_and(|(_, ext)| ext.eq_ignore_ascii_case("ics"));
+        self.mime_type.eq_ignore_ascii_case("text/calendar")
+            || self.mime_type.eq_ignore_ascii_case("application/ics")
+            || has_ics_extension
     }
 }
 
@@ -173,5 +177,33 @@ impl DateBucket {
             DateBucket::Last30Days => "Last 30 days",
             DateBucket::Older => "Older",
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Attachment;
+
+    fn attachment(filename: &str, mime_type: &str) -> Attachment {
+        Attachment {
+            message_id: "m".into(),
+            attachment_id: "a".into(),
+            filename: filename.into(),
+            mime_type: mime_type.into(),
+            size: 1,
+            inline_data: None,
+            content_id: None,
+        }
+    }
+
+    #[test]
+    fn calendar_invites_are_recognised_whatever_the_case() {
+        assert!(attachment("invite.ics", "application/octet-stream").is_calendar());
+        assert!(attachment("INVITE.ICS", "application/octet-stream").is_calendar());
+        assert!(attachment("", "text/calendar").is_calendar());
+        assert!(attachment("", "Text/Calendar").is_calendar());
+        assert!(attachment("", "application/ics").is_calendar());
+        assert!(!attachment("notes.txt", "text/plain").is_calendar());
+        assert!(!attachment("topics", "text/plain").is_calendar());
     }
 }
