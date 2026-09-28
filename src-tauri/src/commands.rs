@@ -1155,25 +1155,18 @@ pub async fn modify_threads(
     app_handle: tauri::AppHandle, state: State<'_, AppState>,
 ) -> Result<(), String> {
     let access_token = account_access_token(&state, &app_handle, &account_id).await?;
-    let gmail = std::sync::Arc::new(GmailClient::new(access_token));
+    let gmail = GmailClient::new(access_token);
 
-    // Process in parallel for better performance
-    let futures: Vec<_> = thread_ids
-        .into_iter()
-        .map(|thread_id| {
-            let gmail = gmail.clone();
-            let add = add_labels.clone();
-            let remove = remove_labels.clone();
-            async move {
-                gmail
-                    .modify_thread(&thread_id, add, remove)
-                    .await
-                    .map_err(|e| format!("Failed to modify thread {}: {}", thread_id, e))
-            }
-        })
-        .collect();
-
-    let results = futures::future::join_all(futures).await;
+    let results = for_each_thread(thread_ids, |thread_id| {
+        let (gmail, add, remove) = (&gmail, add_labels.clone(), remove_labels.clone());
+        async move {
+            gmail
+                .modify_thread(&thread_id, add, remove)
+                .await
+                .map_err(|e| format!("Failed to modify thread {}: {}", thread_id, e))
+        }
+    })
+    .await;
 
     // Return first error if any
     for result in results {
@@ -1181,6 +1174,24 @@ pub async fn modify_threads(
     }
 
     Ok(())
+}
+
+/// Gmail answers 429 "Too many concurrent requests for user" past a few
+/// requests in flight, so a bulk action on a large selection runs this many
+/// at a time
+const MAX_CONCURRENT_THREAD_REQUESTS: usize = 8;
+
+async fn for_each_thread<F, Fut>(thread_ids: Vec<String>, request: F) -> Vec<Result<(), String>>
+where
+    F: FnMut(String) -> Fut,
+    Fut: std::future::Future<Output = Result<(), String>>,
+{
+    use futures::StreamExt;
+    futures::stream::iter(thread_ids)
+        .map(request)
+        .buffer_unordered(MAX_CONCURRENT_THREAD_REQUESTS)
+        .collect()
+        .await
 }
 
 /// Search threads by query (for preview, limited results)
@@ -2251,6 +2262,31 @@ mod tests {
         assert!(result.is_full_sync);
         assert_eq!(result.new_history_id, "300");
         assert_eq!(gmail.calls(), vec!["history 1", "profile"]);
+    }
+
+    #[tokio::test]
+    async fn bulk_thread_requests_stay_under_gmails_concurrency_limit() {
+        use std::sync::atomic::AtomicUsize;
+        let in_flight = AtomicUsize::new(0);
+        let peak = AtomicUsize::new(0);
+        let ids: Vec<String> = (0..60).map(|i| format!("t{}", i)).collect();
+
+        let results = super::for_each_thread(ids, |id| {
+            let (in_flight, peak) = (&in_flight, &peak);
+            async move {
+                let now = in_flight.fetch_add(1, Ordering::SeqCst) + 1;
+                peak.fetch_max(now, Ordering::SeqCst);
+                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+                in_flight.fetch_sub(1, Ordering::SeqCst);
+                if id == "t7" { Err("429".into()) } else { Ok(()) }
+            }
+        })
+        .await;
+
+        assert_eq!(results.len(), 60, "a failure does not stop the others");
+        assert_eq!(results.iter().filter(|r| r.is_err()).count(), 1);
+        let peak = peak.load(Ordering::SeqCst);
+        assert!(peak > 1 && peak <= super::MAX_CONCURRENT_THREAD_REQUESTS, "peak {}", peak);
     }
 
     #[test]
