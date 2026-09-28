@@ -68,8 +68,6 @@ import {
 } from "./api/tauri";
 import { Menu, MenuItem, PredefinedMenuItem } from "@tauri-apps/api/menu";
 import {
-  decodeBase64Utf8,
-  findContent,
   formatFileSize,
   formatTime,
   formatSyncTime,
@@ -116,6 +114,7 @@ import { CardForm } from "./components/CardForm";
 import { safeGetItem, safeSetItem, safeRemoveItem, safeGetJSON, safeSetJSON } from "./shared/storage";
 import { BG_COLORS, GMAIL_OPERATORS, type ActionSettings, type CardColor, type GroupBy } from "./shared/constants";
 import { createUndoableSend } from "./app/undoableSend";
+import { messageBodyHtml } from "./app/messageHtml";
 
 function App() {
   const [loading, setLoading] = createSignal(true);
@@ -2612,19 +2611,6 @@ function App() {
     setBatchReplyMessages({});
     setBatchReplySending({});
 
-    // Helper to extract body from message
-    const extractBody = (msg: any): string => {
-      if (msg.payload?.body?.data) return decodeBase64Utf8(msg.payload.body.data);
-
-      const htmlContent = findContent(msg.payload?.parts, 'text/html');
-      if (htmlContent) return htmlContent;
-
-      const textContent = findContent(msg.payload?.parts, 'text/plain');
-      if (textContent) return `<pre style="white-space: pre-wrap; font-family: inherit;">${textContent}</pre>`;
-
-      return msg.snippet || '(No content)';
-    };
-
     const accountEmail = account.email.toLowerCase();
     const cardThreadList = getCardThreadsFlat(cardId);
 
@@ -2658,7 +2644,7 @@ function App() {
               threadId,
               subject,
               snippet: replyMsg.snippet || '',
-              body: extractBody(replyMsg),
+              body: messageBodyHtml(replyMsg.payload, replyMsg.snippet),
               from,
               date,
               messageId: replyMsg.id,
