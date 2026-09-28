@@ -1,5 +1,7 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { createSignal } from "solid-js";
 import { render } from "@solidjs/testing-library";
+import DOMPurify from "dompurify";
 import { MessageBody } from "./MessageBody";
 
 describe("MessageBody", () => {
@@ -84,3 +86,25 @@ describe("MessageBody", () => {
   });
 });
 
+describe("MessageBody cid image updates", () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  it("does not re-sanitize a message when cid images for other messages arrive", () => {
+    const [cidData, setCidData] = createSignal<Record<string, string>>({});
+    const sanitize = vi.spyOn(DOMPurify, "sanitize");
+    const { container } = render(() => (
+      <>
+        <MessageBody body={"<p>plain</p>"} msgId="m1" cidAttachmentData={cidData()} />
+        <MessageBody body={'<img src="cid:a@x"><p>see above</p>'} msgId="m2" cidAttachmentData={cidData()} />
+      </>
+    ));
+    expect(sanitize).toHaveBeenCalledTimes(2);
+
+    setCidData({ "b@x": "QUJD" });
+    expect(sanitize).toHaveBeenCalledTimes(2);
+
+    setCidData({ "b@x": "QUJD", "a@x": "REVG" });
+    expect(sanitize).toHaveBeenCalledTimes(3);
+    expect(container.querySelectorAll("img")[0].getAttribute("src")).toBe("data:image/png;base64,REVG");
+  });
+});

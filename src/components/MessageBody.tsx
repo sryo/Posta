@@ -40,87 +40,70 @@ interface MessageBodyProps {
   threadAttachments?: { message_id: string; attachment_id: string; content_id: string | null; inline_data: string | null; mime_type: string }[];
 }
 
+const CID_SRC = /src=["']cid:([^"']+)["']/gi;
+
+type CidImage = { cid: string; mimeType: string; data: string };
+
+const sameCidImages = (a: CidImage[], b: CidImage[]) =>
+  a.length === b.length && a.every((x, i) => x.cid === b[i].cid && x.mimeType === b[i].mimeType && x.data === b[i].data);
+
+const partsByContentId = (parts: any[] | undefined) => {
+  const byCid = new Map<string, any>();
+  const walk = (list: any[] | undefined) => list?.forEach(part => {
+    const header = part.headers?.find((h: any) => h.name?.toLowerCase() === 'content-id');
+    const cid = header?.value?.replace(/^<|>$/g, '') || '';
+    if (cid && !byCid.has(cid)) byCid.set(cid, part);
+    if (part.parts) walk(part.parts);
+  });
+  walk(parts);
+  return byCid;
+};
+
 export const MessageBody = (props: MessageBodyProps) => {
-  // Use createMemo to reactively recompute when cidAttachmentData changes
-  const processedHtml = createMemo(() => {
-    const cidMap = new Map<string, string>();
+  // Only the cids this body references matter; cidAttachmentData and
+  // threadAttachments are thread-wide and change as other messages load
+  const cidImages = createMemo<CidImage[]>(() => {
+    const cids = new Set(Array.from(props.body.matchAll(CID_SRC), m => m[1]));
+    if (cids.size === 0) return [];
 
-    // First, use fetched CID data (from downloadAttachment calls)
-    if (props.cidAttachmentData) {
-      for (const [cid, data] of Object.entries(props.cidAttachmentData)) {
+    const parts = partsByContentId(props.msgPayloadParts);
+    const ownAttachment = (match: (a: NonNullable<MessageBodyProps['threadAttachments']>[number]) => boolean) =>
+      props.threadAttachments?.find(a => a.message_id === props.msgId && match(a));
+    const images: CidImage[] = [];
+    for (const cid of cids) {
+      const part = parts.get(cid);
+      // Fetched on demand (downloadAttachment), then inline part data, then
+      // the thread listing's inline data
+      const fetched = props.cidAttachmentData?.[cid];
+      if (fetched) {
+        images.push({ cid, mimeType: part?.mimeType || 'image/png', data: fetched });
+        continue;
+      }
+      if (part?.mimeType?.startsWith('image/')) {
+        const attachmentId = part.body?.attachmentId;
+        const data = part.body?.data
+          || (attachmentId ? ownAttachment(a => a.attachment_id === attachmentId)?.inline_data : null);
         if (data) {
-          const base64Data = normalizeBase64Url(data);
-          // Find the mimeType for this CID from message parts
-          let mimeType = 'image/png';
-          const findMimeType = (parts: any[]) => {
-            parts?.forEach(part => {
-              const contentIdHeader = part.headers?.find((h: any) =>
-                h.name?.toLowerCase() === 'content-id'
-              );
-              if (contentIdHeader) {
-                const partCid = contentIdHeader.value?.replace(/^<|>$/g, '') || '';
-                if (partCid === cid && part.mimeType) {
-                  mimeType = part.mimeType;
-                }
-              }
-              if (part.parts) findMimeType(part.parts);
-            });
-          };
-          findMimeType(props.msgPayloadParts || []);
-          cidMap.set(cid, `data:${mimeType};base64,${base64Data}`);
+          images.push({ cid, mimeType: part.mimeType, data });
+          continue;
         }
       }
+      const att = ownAttachment(a => a.content_id === cid && !!a.inline_data && a.mime_type.startsWith('image/'));
+      if (att) images.push({ cid, mimeType: att.mime_type, data: att.inline_data! });
     }
+    return images;
+  }, [], { equals: sameCidImages });
 
-    // Then scan message parts for Content-ID headers with inline data
-    const findCidImages = (parts: any[]) => {
-      parts?.forEach(part => {
-        const contentIdHeader = part.headers?.find((h: any) =>
-          h.name?.toLowerCase() === 'content-id'
-        );
-        if (contentIdHeader && part.mimeType?.startsWith('image/')) {
-          const cid = contentIdHeader.value?.replace(/^<|>$/g, '') || '';
-          if (cid && !cidMap.has(cid)) {
-            const attachmentId = part.body?.attachmentId;
-            let data = part.body?.data;
-
-            if (!data && attachmentId) {
-              const threadAtt = props.threadAttachments?.find(
-                a => a.message_id === props.msgId && a.attachment_id === attachmentId
-              );
-              data = threadAtt?.inline_data;
-            }
-
-            if (data) {
-              const base64Data = normalizeBase64Url(data);
-              cidMap.set(cid, `data:${part.mimeType};base64,${base64Data}`);
-            }
-          }
-        }
-        if (part.parts) findCidImages(part.parts);
-      });
-    };
-    findCidImages(props.msgPayloadParts || []);
-
-    // Also check threadAttachments with content_id (as backup)
-    props.threadAttachments?.forEach(att => {
-      if (att.message_id === props.msgId && att.content_id && att.inline_data && att.mime_type.startsWith('image/')) {
-        if (!cidMap.has(att.content_id)) {
-          const base64Data = normalizeBase64Url(att.inline_data);
-          cidMap.set(att.content_id, `data:${att.mime_type};base64,${base64Data}`);
-        }
-      }
-    });
-
-    // Replace cid: URLs with data URLs
+  const processedHtml = createMemo(() => {
+    const images = cidImages();
     let html = props.body;
-    if (cidMap.size > 0) {
-      html = html.replace(/src=["']cid:([^"']+)["']/gi, (match, cid) => {
-        const dataUrl = cidMap.get(cid);
+    if (images.length > 0) {
+      const dataUrls = new Map(images.map(img => [img.cid, `data:${img.mimeType};base64,${normalizeBase64Url(img.data)}`]));
+      html = html.replace(CID_SRC, (match, cid) => {
+        const dataUrl = dataUrls.get(cid);
         return dataUrl ? `src="${dataUrl}"` : match;
       });
     }
-
     return DOMPurify.sanitize(html, DOMPURIFY_CONFIG);
   });
 
