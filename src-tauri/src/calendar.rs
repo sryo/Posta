@@ -947,6 +947,15 @@ fn unquote(value: &str) -> &str {
     value.trim_matches('"')
 }
 
+/// Local midnight, or the first instant after a DST gap that swallows
+/// midnight (e.g. America/Santiago springs forward at 00:00)
+fn start_of_day<Z: TimeZone>(tz: &Z, date: NaiveDate) -> DateTime<Utc> {
+    (0..=3)
+        .find_map(|hour| tz.from_local_datetime(&date.and_hms_opt(hour, 0, 0)?).earliest())
+        .map(|dt| dt.with_timezone(&Utc))
+        .unwrap_or_else(|| date.and_hms_opt(0, 0, 0).expect("midnight is a valid time").and_utc())
+}
+
 #[derive(Debug, Default, Clone)]
 pub enum TimeRange {
     #[default]
@@ -1012,33 +1021,24 @@ impl CalendarQuery {
 
     /// Same as get_time_range but with an injectable `now` for testability
     fn get_time_range_at(&self, timezone: Option<&str>, now: DateTime<Utc>) -> (DateTime<Utc>, DateTime<Utc>) {
-        // Midnight may not exist on a DST spring-forward day (e.g. Chile,
-        // Cuba transition at 00:00); fall back to UTC midnight instead of panicking
-        let utc_midnight = || now.date_naive().and_hms_opt(0, 0, 0).expect("midnight is a valid time").and_utc();
-
-        // Use calendar timezone for "today", fall back to local
-        let today_start = if let Some(tz) = timezone.and_then(|s| s.parse::<Tz>().ok()) {
-            let tz_today = now.with_timezone(&tz).date_naive();
-            tz.from_local_datetime(&tz_today.and_hms_opt(0, 0, 0).expect("midnight is a valid time"))
-                .single()
-                .map(|dt| dt.with_timezone(&Utc))
-                .unwrap_or_else(utc_midnight)
-        } else {
-            let local_today = now.with_timezone(&Local).date_naive();
-            Local.from_local_datetime(&local_today.and_hms_opt(0, 0, 0).expect("midnight is a valid time"))
-                .single()
-                .map(|dt| dt.with_timezone(&Utc))
-                .unwrap_or_else(utc_midnight)
+        // Days are counted in the calendar's time zone, falling back to the
+        // system's; `day(n)` is the start of the nth day from today
+        let day: Box<dyn Fn(i64) -> DateTime<Utc>> = match timezone.and_then(|s| s.parse::<Tz>().ok()) {
+            Some(tz) => {
+                let today = now.with_timezone(&tz).date_naive();
+                Box::new(move |n| start_of_day(&tz, today + Duration::days(n)))
+            }
+            None => {
+                let today = now.with_timezone(&Local).date_naive();
+                Box::new(move |n| start_of_day(&Local, today + Duration::days(n)))
+            }
         };
 
         match &self.time_range {
-            TimeRange::Today => (today_start, today_start + Duration::days(1)),
-            TimeRange::Tomorrow => (
-                today_start + Duration::days(1),
-                today_start + Duration::days(2),
-            ),
-            TimeRange::Week => (today_start, today_start + Duration::days(7)),
-            TimeRange::Month => (today_start, today_start + Duration::days(30)),
+            TimeRange::Today => (day(0), day(1)),
+            TimeRange::Tomorrow => (day(1), day(2)),
+            TimeRange::Week => (day(0), day(7)),
+            TimeRange::Month => (day(0), day(30)),
             // For upcoming, we start from NOW to avoid missing things that just started
             TimeRange::Upcoming(duration) => (now, now + *duration),
             TimeRange::Custom { start, end } => (*start, *end),
@@ -1620,21 +1620,19 @@ mod tests {
         assert_eq!(start, utc_midnight + Duration::days(1) - Duration::hours(9));
     }
 
+    fn utc(s: &str) -> DateTime<Utc> {
+        s.parse().unwrap()
+    }
+
     #[test]
     fn test_get_time_range_dst_gap() {
         // Chile springs forward at local midnight: 2024-09-08 00:00 does not
-        // exist in America/Santiago. Must fall back to UTC midnight, not panic.
+        // exist in America/Santiago, so the day starts at 01:00 (-03)
         let cq = CalendarQuery::parse("calendar:today");
-        let now = "2024-09-08T15:00:00Z".parse::<DateTime<Utc>>().unwrap();
+        let now = utc("2024-09-08T15:00:00Z");
         let (start, end) = cq.get_time_range_at(Some("America/Santiago"), now);
-
-        let expected = NaiveDate::from_ymd_opt(2024, 9, 8)
-            .unwrap()
-            .and_hms_opt(0, 0, 0)
-            .unwrap()
-            .and_utc();
-        assert_eq!(start, expected);
-        assert_eq!(end, expected + Duration::days(1));
+        assert_eq!(start, utc("2024-09-08T04:00:00Z"));
+        assert_eq!(end, utc("2024-09-09T03:00:00Z"));
 
         // A normal day resolves to actual local midnight (UTC-4 in July)
         let now = "2024-07-01T15:00:00Z".parse::<DateTime<Utc>>().unwrap();
@@ -1645,5 +1643,28 @@ mod tests {
             .unwrap()
             .and_utc();
         assert_eq!(start, expected);
+    }
+
+    #[test]
+    fn day_ranges_follow_local_midnights_across_dst_changes() {
+        let range = |q: &str, now: &str| CalendarQuery::parse(q).get_time_range_at(Some("America/New_York"), utc(now));
+
+        // 2024-03-10 is 23 hours long in New York; 2024-11-03 is 25
+        assert_eq!(
+            range("calendar:today", "2024-03-10T15:00:00Z"),
+            (utc("2024-03-10T05:00:00Z"), utc("2024-03-11T04:00:00Z"))
+        );
+        assert_eq!(
+            range("calendar:tomorrow", "2024-03-09T15:00:00Z"),
+            (utc("2024-03-10T05:00:00Z"), utc("2024-03-11T04:00:00Z"))
+        );
+        assert_eq!(
+            range("calendar:week", "2024-03-08T15:00:00Z"),
+            (utc("2024-03-08T05:00:00Z"), utc("2024-03-15T04:00:00Z"))
+        );
+        assert_eq!(
+            range("calendar:today", "2024-11-03T15:00:00Z"),
+            (utc("2024-11-03T04:00:00Z"), utc("2024-11-04T05:00:00Z"))
+        );
     }
 }
