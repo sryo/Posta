@@ -1588,9 +1588,7 @@ fn reply_context(thread: &crate::gmail::FullThread) -> String {
         .first()
         .and_then(|m| header(m, "Subject"))
         .unwrap_or("(No Subject)");
-    let mut context = format!("Subject: {}
-
-", subject);
+    let mut context = format!("Subject: {}\n\n", subject);
 
     let is_draft = |m: &crate::gmail::FullMessage| {
         m.label_ids.as_ref().is_some_and(|l| l.iter().any(|x| x == "DRAFT"))
@@ -1617,13 +1615,7 @@ fn reply_context(thread: &crate::gmail::FullThread) -> String {
         };
 
         context.push_str(&format!(
-            "From: {}
-Date: {}
-{}
-
----
-
-",
+            "From: {}\nDate: {}\n{}\n\n---\n\n",
             header(msg, "From").unwrap_or("Unknown"),
             header(msg, "Date").unwrap_or(""),
             body
