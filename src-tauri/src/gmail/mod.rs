@@ -559,29 +559,12 @@ impl GmailClient {
             .filter(|m| {
                 m.label_ids
                     .as_ref()
-                    .map(|labels| labels.contains(&"UNREAD".to_string()))
-                    .unwrap_or(false)
+                    .is_some_and(|labels| labels.iter().any(|l| l == "UNREAD"))
             })
             .count() as i32;
 
-        let mut participants: Vec<String> = messages
-            .iter()
-            .filter_map(|m| {
-                m.payload.as_ref().and_then(|p| {
-                    p.headers.as_ref().and_then(|headers| {
-                        headers
-                            .iter()
-                            .find(|h| h.name.eq_ignore_ascii_case("From"))
-                            .map(|h| extract_email_address(&h.value))
-                    })
-                })
-            })
-            .collect();
-        participants.dedup();
-
-        let labels: Vec<String> = latest_msg
-            .and_then(|m| m.label_ids.clone())
-            .unwrap_or_default();
+        let participants = thread_participants(&messages);
+        let labels = thread_labels(&messages);
 
         // Extract attachments from all messages
         let mut attachments: Vec<Attachment> = Vec::new();
@@ -1315,6 +1298,43 @@ fn extract_email_address(from: &str) -> String {
     }
     // Already just an email address
     from.trim().to_string()
+}
+
+/// Thread-level labels as Gmail defines them: a thread carries a label when any
+/// of its messages does (the latest message alone may be a reply with only SENT)
+fn thread_labels(messages: &[MessageDetail]) -> Vec<String> {
+    let mut labels: Vec<String> = Vec::new();
+    for label in messages.iter().filter_map(|m| m.label_ids.as_ref()).flatten() {
+        if !labels.contains(label) {
+            labels.push(label.clone());
+        }
+    }
+    labels
+}
+
+/// Sender addresses in first-seen order, without duplicates
+fn thread_participants(messages: &[MessageDetail]) -> Vec<String> {
+    let mut participants: Vec<String> = Vec::new();
+    for message in messages {
+        let from = message
+            .payload
+            .as_ref()
+            .and_then(|p| find_header(p.headers.as_deref(), "From"));
+        if let Some(from) = from {
+            let email = extract_email_address(from);
+            if !participants.iter().any(|p| p.eq_ignore_ascii_case(&email)) {
+                participants.push(email);
+            }
+        }
+    }
+    participants
+}
+
+fn find_header<'a>(headers: Option<&'a [Header]>, name: &str) -> Option<&'a str> {
+    headers?
+        .iter()
+        .find(|h| h.name.eq_ignore_ascii_case(name))
+        .map(|h| h.value.as_str())
 }
 
 /// Check that `line` is property `name`, i.e. the name is followed by ':' or ';'
@@ -2257,5 +2277,50 @@ mod tests {
         assert_eq!(event.description, None);
         assert_eq!(event.start_time, 1705330800000);
         assert_eq!(event.end_time, Some(1705334400000));
+    }
+
+    fn header(name: &str, value: &str) -> Header {
+        Header { name: name.to_string(), value: value.to_string() }
+    }
+
+    fn detail(id: &str, labels: &[&str], from: &str) -> MessageDetail {
+        MessageDetail {
+            id: id.to_string(),
+            label_ids: Some(labels.iter().map(|l| l.to_string()).collect()),
+            snippet: None,
+            internal_date: None,
+            payload: Some(MessagePayload {
+                headers: Some(vec![header("From", from)]),
+                body: None,
+                parts: None,
+                mime_type: None,
+            }),
+        }
+    }
+
+    #[test]
+    fn thread_labels_are_the_union_of_all_message_labels() {
+        // Replying to an inbox thread leaves the latest message with only SENT;
+        // the thread is still in the inbox and still starred
+        let messages = vec![
+            detail("1", &["INBOX", "STARRED", "IMPORTANT"], "a@example.com"),
+            detail("2", &["INBOX", "UNREAD"], "b@example.com"),
+            detail("3", &["SENT"], "me@example.com"),
+        ];
+        assert_eq!(
+            thread_labels(&messages),
+            vec!["INBOX", "STARRED", "IMPORTANT", "UNREAD", "SENT"]
+        );
+    }
+
+    #[test]
+    fn thread_participants_are_unique_in_first_seen_order() {
+        let messages = vec![
+            detail("1", &[], "Alice <a@example.com>"),
+            detail("2", &[], "me@example.com"),
+            detail("3", &[], "Alice <A@example.com>"),
+            detail("4", &[], "me@example.com"),
+        ];
+        assert_eq!(thread_participants(&messages), vec!["a@example.com", "me@example.com"]);
     }
 }
