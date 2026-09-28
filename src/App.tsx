@@ -128,6 +128,7 @@ import { composePlacement } from "./app/composePlacement";
 import { cidImagesToFetch, fetchCidImages } from "./app/cidImages";
 import { sendPending, type PendingSend } from "./app/pendingSend";
 import { createDraftSync, draftKey, hasDraftContent, type DraftFields } from "./app/drafts";
+import { nextCardFocus, nextItemFocus } from "./app/keyboardNav";
 import { getSmartEventTime, groupCalendarEvents, isUserLabel, mergeThreadGroups, regroupThreads, type CalendarEventGroup } from "./app/grouping";
 
 function App() {
@@ -1290,37 +1291,22 @@ function App() {
     // Card navigation - h/l/ArrowLeft/ArrowRight for left/right between cards
     if (e.key === 'h' || e.key === 'l' || e.key === 'ArrowLeft' || e.key === 'ArrowRight') {
       e.preventDefault();
-      const cardsList = cards().filter(c => !collapsedCards[c.id]);
-      if (cardsList.length === 0) return;
-
-      const isRight = e.key === 'l' || e.key === 'ArrowRight';
-      const lastCard = cardsList[cardsList.length - 1];
-      const cardId = focusedCardId();
-
-      if (!cardId) {
-        // From the add card form (or no focus), left goes to the last card
-        if (addingCard() && !isRight) setAddingCard(false);
-        focusCardItem(isRight ? cardsList[0].id : lastCard.id, 0);
-        return;
-      }
-
-      const newCardIndex = cardsList.findIndex(c => c.id === cardId) + (isRight ? 1 : -1);
-
-      if (newCardIndex >= 0 && newCardIndex < cardsList.length) {
-        focusCardItem(cardsList[newCardIndex].id, 0);
-      } else if (isRight && !addingCard()) {
-        // Past last card - open add card form
-        setFocusedCardId(null);
-        setFocusedThreadIndex(-1);
-        setFocusedEventIndex(-1);
+      const cardIds = cards().filter(c => !collapsedCards[c.id]).map(c => c.id);
+      const move = nextCardFocus(cardIds, focusedCardId(), e.key === 'l' || e.key === 'ArrowRight', addingCard());
+      if (!move) return;
+      if (move.addingCard && !addingCard()) {
         setNewCardColor(null);
         setQueryPreviewThreads([]);
         setQueryPreviewCalendarEvents([]);
         setQueryPreviewLoading(false);
-        setAddingCard(true);
-      } else if (!isRight && addingCard()) {
-        setAddingCard(false);
-        focusCardItem(lastCard.id, 0);
+      }
+      setAddingCard(move.addingCard);
+      if (move.cardId) {
+        focusCardItem(move.cardId, 0);
+      } else {
+        setFocusedCardId(null);
+        setFocusedThreadIndex(-1);
+        setFocusedEventIndex(-1);
       }
       return;
     }
@@ -1328,33 +1314,14 @@ function App() {
     // Item navigation - j/k/ArrowUp/ArrowDown for up/down within cards (threads or events)
     if (e.key === 'j' || e.key === 'k' || e.key === 'ArrowDown' || e.key === 'ArrowUp') {
       e.preventDefault();
-      const cardsList = cards().filter(c => !collapsedCards[c.id]);
-      if (cardsList.length === 0) return;
-
-      const isDown = e.key === 'j' || e.key === 'ArrowDown';
+      const visible = cards().filter(c => !collapsedCards[c.id]).map(c => ({
+        id: c.id,
+        count: (isCalendarCard(c.id) ? getCardEventsFlat(c.id) : getCardThreadsFlat(c.id)).length,
+      }));
       const cardId = focusedCardId();
-
-      // If no focus, start at first card
-      if (!cardId) {
-        focusCardItem(cardsList[0].id, isDown ? 0 : -1);
-        return;
-      }
-
-      const itemCount = (id: string) => (isCalendarCard(id) ? getCardEventsFlat(id) : getCardThreadsFlat(id)).length;
-      const idx = isCalendarCard(cardId) ? focusedEventIndex() : focusedThreadIndex();
-      const newIdx = isDown ? idx + 1 : idx - 1;
-      const cardIndex = cardsList.findIndex(c => c.id === cardId);
-
-      if (newIdx >= 0 && newIdx < itemCount(cardId)) {
-        focusCardItem(cardId, newIdx);
-      } else if (isDown && newIdx >= itemCount(cardId)) {
-        if (cardIndex < cardsList.length - 1) focusCardItem(cardsList[cardIndex + 1].id, 0);
-      } else if (!isDown && newIdx < 0 && idx >= 0) {
-        if (cardIndex > 0) {
-          const prevCardId = cardsList[cardIndex - 1].id;
-          focusCardItem(prevCardId, itemCount(prevCardId) - 1);
-        }
-      }
+      const current = cardId ? { cardId, index: isCalendarCard(cardId) ? focusedEventIndex() : focusedThreadIndex() } : null;
+      const next = nextItemFocus(visible, current, e.key === 'j' || e.key === 'ArrowDown');
+      if (next) focusCardItem(next.cardId, next.index);
       return;
     }
 
