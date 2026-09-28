@@ -264,7 +264,11 @@ function App() {
     delayMs: 5000,
     send: async pending => {
       await sendPending(pending);
-      if (pending.draft) drafts.discard(pending.draft.key, pending.accountId, pending.draft.gmailDraftId);
+      const draft = pending.draft;
+      if (draft) {
+        drafts.discard(draft.key, pending.accountId, draft.gmailDraftId)
+          .finally(() => sendingDraftKeys.delete(draft.key));
+      }
     },
     onFailed: (pending, e) => {
       console.error("Failed to send email:", e);
@@ -721,6 +725,8 @@ function App() {
   const drafts = createDraftSync();
   // Where the open compose keeps its draft, chosen when it opens
   let composeDraftKey = "";
+  // Drafts of emails queued or going out; not offered to a new compose
+  const sendingDraftKeys = new Set<string>();
 
   function composeDraftFields(): DraftFields {
     return {
@@ -762,7 +768,7 @@ function App() {
   // email only picks up one left behind by a quit, crash or failed sync; one
   // the user closed is in Gmail's Drafts.
   function restorableDraft(group: string, forNewEmail: boolean) {
-    return findLatestDraft(group, draft => !forNewEmail || !draft.closed);
+    return findLatestDraft(group, (draft, key) => !sendingDraftKeys.has(key) && (!forNewEmail || !draft.closed));
   }
 
   // Batch Reply
@@ -1997,6 +2003,7 @@ function App() {
     cancelDraftSave();
     drafts.saveLocal(composeDraftKey, composeDraftFields());
     pending.draft = { key: composeDraftKey, gmailDraftId: drafts.gmailDraftId() ?? undefined };
+    sendingDraftKeys.add(composeDraftKey);
     closeComposeAfterSend();
     undoableSend.queue(pending);
   }
@@ -2004,6 +2011,7 @@ function App() {
   // Compose closed when the send was queued, so an undone or failed send puts
   // the email back, continuing its saved draft
   function restoreSend(pending: PendingSend) {
+    if (pending.draft) sendingDraftKeys.delete(pending.draft.key);
     startCompose({
       to: pending.to,
       cc: pending.cc,

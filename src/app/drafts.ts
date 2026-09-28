@@ -52,12 +52,12 @@ function storageKeys(): string[] {
 
 // The group's most recently saved draft. A bare group key is where earlier
 // versions saved.
-export function findLatestDraft(group: string, accept: (draft: Draft) => boolean = () => true): { key: string; draft: Draft } | null {
+export function findLatestDraft(group: string, accept: (draft: Draft, key: string) => boolean = () => true): { key: string; draft: Draft } | null {
   let latest: { key: string; draft: Draft } | null = null;
   for (const key of storageKeys()) {
     if (key !== group && !key.startsWith(`${group}#`)) continue;
     const draft = safeGetJSON<Draft | null>(key, null);
-    if (!draft || typeof draft.savedAt !== "number" || !accept(draft)) continue;
+    if (!draft || typeof draft.savedAt !== "number" || !accept(draft, key)) continue;
     if (!latest || draft.savedAt > latest.draft.savedAt) latest = { key, draft };
   }
   return latest;

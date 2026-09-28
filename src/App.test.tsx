@@ -1359,6 +1359,22 @@ describe("App drafts", () => {
     expect(draftKeys("draft_new_a")).toEqual([]);
   });
 
+  it("does not reopen an email that is being sent as a draft", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    handlers.send_email = () => null;
+    render(() => <App />);
+    await screen.findByText("Mail for A");
+    fireEvent.keyDown(document, { key: "c" });
+    fireEvent.input(await screen.findByPlaceholderText("Recipients"), { target: { value: "bo@y.com" } });
+    fireEvent.input(screen.getByPlaceholderText("Subject"), { target: { value: "Hello" } });
+    fireEvent.click(screen.getByRole("button", { name: /^Send/ }));
+    await vi.advanceTimersByTimeAsync(1000);
+
+    fireEvent.keyDown(document, { key: "c" });
+    await waitFor(() => expect(screen.getByPlaceholderText("Subject")).toHaveValue(""));
+    expect(screen.getByPlaceholderText("Recipients")).toHaveValue("");
+  });
+
   it("keeps the draft of a send that failed", async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
     handlers.send_email = () => { throw new Error("offline"); };
