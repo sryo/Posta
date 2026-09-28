@@ -313,24 +313,29 @@ fn merged_card(local: &Card, remote: &Card, base: Option<&Card>, remote_wins: bo
 }
 
 /// Backup cards not tombstoned, split into those owned by a local account
-/// (re-keyed to its local id) and those of accounts this device lacks
+/// (re-keyed to its local id) and those of accounts this device lacks. A card
+/// id the backup holds more than once, which a torn read of the cards and
+/// mappings can produce, is kept once: the first copy a local account owns,
+/// else the first copy.
 fn split_backup_cards(
     backup_cards: Vec<Card>,
     emails: &HashMap<String, String>,
     tombstones: &HashMap<String, i64>,
     accounts: &[Account],
 ) -> (Vec<Card>, Vec<Card>) {
-    let mut own = Vec::new();
-    let mut foreign = Vec::new();
+    let mut own: Vec<Card> = Vec::new();
+    let mut foreign: Vec<Card> = Vec::new();
     for mut card in backup_cards {
-        if tombstones.contains_key(&card.id) {
+        if tombstones.contains_key(&card.id) || own.iter().any(|c| c.id == card.id) {
             continue;
         }
         match icloud_card_account(&card.account_id, emails, accounts) {
             Some(account_id) => {
                 card.account_id = account_id;
+                foreign.retain(|c| c.id != card.id);
                 own.push(card);
             }
+            None if foreign.iter().any(|c| c.id == card.id) => {}
             None => foreign.push(card),
         }
     }
@@ -360,7 +365,9 @@ fn plan_push(
     }
 
     let tombstones = merged_tombstones(&record.tombstones, &backup.tombstones, now_ms);
-    let (mut remote, foreign) = split_backup_cards(backup.cards, &backup.emails, &tombstones, accounts);
+    let (mut remote, mut foreign) = split_backup_cards(backup.cards, &backup.emails, &tombstones, accounts);
+    // The backup copy of a local card whose owner mapping is missing
+    foreign.retain(|f| !local_cards.iter().any(|c| c.id == f.id));
     let mut new_record = SyncRecord { base: HashMap::new(), tombstones: tombstones.clone(), seen_backup: record.seen_backup };
 
     let mut cards = Vec::new();
@@ -2722,6 +2729,37 @@ mod tests {
         let (pushed, _) =
             plan_push(&accounts, vec![mine.clone()], backup(vec![theirs], &[], &[]), &synced(&[card]), NOW).unwrap();
         assert_eq!(pushed.cards, vec![mine]);
+    }
+
+    #[test]
+    fn a_card_id_the_backup_holds_twice_is_pulled_once() {
+        // Inserting it twice would fail the whole pull, on every focus
+        let accounts = [account("a1", "me@x.com"), account("a2", "b@x.com")];
+        let first = owned_card("x", "a1");
+        let b = backup(
+            vec![first.clone(), renamed(&first, "Again"), owned_card("x", "w9")],
+            &[("a1", "me@x.com"), ("w9", "work@x.com")],
+            &[],
+        );
+        let merge = plan_pull(&accounts, &[], b, &SyncRecord::default(), NOW);
+        assert_eq!(merge.insert, vec![first]);
+    }
+
+    #[test]
+    fn push_writes_each_card_id_once() {
+        // "x" is a local card whose backup copy lost its owner mapping, plus
+        // a duplicate of "y" from an earlier torn write
+        let accounts = [account("a1", "me@x.com"), account("a2", "b@x.com")];
+        let x = owned_card("x", "a1");
+        let y = owned_card("y", "a1");
+        let b = backup(
+            vec![owned_card("x", "lost"), y.clone(), renamed(&y, "Again"), owned_card("w", "w9"), owned_card("w", "w9")],
+            &[("a1", "me@x.com"), ("w9", "work@x.com")],
+            &[],
+        );
+        let (pushed, _) = plan_push(&accounts, vec![x.clone()], b, &synced(&[x]), NOW).unwrap();
+        assert_eq!(sorted_ids(&pushed.cards), vec!["w", "x", "y"]);
+        assert_eq!(pushed.cards.iter().find(|c| c.id == "y"), Some(&y));
     }
 
     #[test]
