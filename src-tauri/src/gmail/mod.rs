@@ -149,6 +149,17 @@ pub struct DraftMessage {
     pub thread_id: Option<String>,
 }
 
+/// Turn a non-2xx response into an "API error <status>: <body>" error.
+/// Callers match on that text (e.g. "API error 404", "401").
+async fn ensure_success(resp: reqwest::Response) -> Result<reqwest::Response, String> {
+    if resp.status().is_success() {
+        return Ok(resp);
+    }
+    let status = resp.status();
+    let body = resp.text().await.unwrap_or_default();
+    Err(format!("API error {}: {}", status, body))
+}
+
 impl GmailClient {
     pub fn new(access_token: String) -> Self {
         Self {
@@ -159,52 +170,24 @@ impl GmailClient {
 
     /// Search threads with a custom limit (for preview)
     pub async fn search_threads_limited(&self, query: &str, max_results: usize) -> Result<Vec<ThreadGroup>, String> {
-        let url = format!(
-            "{}/users/me/threads?q={}&maxResults={}",
-            GMAIL_API_BASE,
-            urlencoding::encode(query),
-            max_results
-        );
-
-        let resp = self
-            .client
-            .get(&url)
-            .bearer_auth(&self.access_token)
-            .send()
-            .await
-            .map_err(|e| format!("Request failed: {}", e))?;
-
-        if !resp.status().is_success() {
-            let status = resp.status();
-            let body = resp.text().await.unwrap_or_default();
-            return Err(format!("API error {}: {}", status, body));
-        }
-
-        let list: ThreadListResponse = resp
-            .json()
-            .await
-            .map_err(|e| format!("Failed to parse response: {}", e))?;
-
-        let thread_refs = list.threads.unwrap_or_default();
-
-        if thread_refs.is_empty() {
-            return Ok(Vec::new());
-        }
-
-        // Batch fetch thread details (much faster than sequential)
-        let thread_ids: Vec<String> = thread_refs.iter().map(|t| t.id.clone()).collect();
-        let threads = self.batch_get_thread_details(&thread_ids).await?;
-
-        Ok(group_threads_by_date(threads))
+        Ok(self.search_threads(query, max_results, None).await?.groups)
     }
 
     pub async fn search_threads_paginated(&self, query: &str, page_token: Option<&str>) -> Result<SearchResult, String> {
-        // Search for threads
+        self.search_threads(query, PAGE_SIZE, page_token).await
+    }
+
+    async fn search_threads(
+        &self,
+        query: &str,
+        max_results: usize,
+        page_token: Option<&str>,
+    ) -> Result<SearchResult, String> {
         let mut url = format!(
             "{}/users/me/threads?q={}&maxResults={}",
             GMAIL_API_BASE,
             urlencoding::encode(query),
-            PAGE_SIZE
+            max_results
         );
 
         if let Some(token) = page_token {
@@ -219,22 +202,14 @@ impl GmailClient {
             .await
             .map_err(|e| format!("Request failed: {}", e))?;
 
-        if !resp.status().is_success() {
-            let status = resp.status();
-            let body = resp.text().await.unwrap_or_default();
-            return Err(format!("API error {}: {}", status, body));
-        }
-
-        let list: ThreadListResponse = resp
+        let list: ThreadListResponse = ensure_success(resp)
+            .await?
             .json()
             .await
             .map_err(|e| format!("Failed to parse response: {}", e))?;
 
-        let thread_refs = list.threads.unwrap_or_default();
-        let next_page_token = list.next_page_token.clone();
-        let has_more = next_page_token.is_some();
-
-        if thread_refs.is_empty() {
+        let thread_ids: Vec<String> = list.threads.unwrap_or_default().into_iter().map(|t| t.id).collect();
+        if thread_ids.is_empty() {
             return Ok(SearchResult {
                 groups: Vec::new(),
                 next_page_token: None,
@@ -242,15 +217,11 @@ impl GmailClient {
             });
         }
 
-        // Batch fetch thread details (much faster than sequential)
-        let thread_ids: Vec<String> = thread_refs.iter().map(|t| t.id.clone()).collect();
         let threads = self.batch_get_thread_details(&thread_ids).await?;
-
-        // Group by date
         Ok(SearchResult {
             groups: group_threads_by_date(threads),
-            next_page_token,
-            has_more,
+            has_more: list.next_page_token.is_some(),
+            next_page_token: list.next_page_token,
         })
     }
 
@@ -265,11 +236,7 @@ impl GmailClient {
             .await
             .map_err(|e| format!("Request failed: {}", e))?;
 
-        if !resp.status().is_success() {
-            let status = resp.status();
-            let body = resp.text().await.unwrap_or_default();
-            return Err(format!("API error {}: {}", status, body));
-        }
+        let resp = ensure_success(resp).await?;
 
         let mut thread: FullThread = resp
             .json()
@@ -305,11 +272,7 @@ impl GmailClient {
             .await
             .map_err(|e| format!("Request failed: {}", e))?;
 
-        if !resp.status().is_success() {
-            let status = resp.status();
-            let body = resp.text().await.unwrap_or_default();
-            return Err(format!("API error {}: {}", status, body));
-        }
+        ensure_success(resp).await?;
 
         Ok(())
     }
@@ -332,11 +295,7 @@ impl GmailClient {
             .await
             .map_err(|e| format!("Request failed: {}", e))?;
 
-        if !resp.status().is_success() {
-            let status = resp.status();
-            let body = resp.text().await.unwrap_or_default();
-            return Err(format!("API error {}: {}", status, body));
-        }
+        let resp = ensure_success(resp).await?;
 
         #[derive(Deserialize)]
         struct AttachmentResponse {
@@ -366,11 +325,7 @@ impl GmailClient {
             .await
             .map_err(|e| format!("Request failed: {}", e))?;
 
-        if !resp.status().is_success() {
-            let status = resp.status();
-            let body = resp.text().await.unwrap_or_default();
-            return Err(format!("API error {}: {}", status, body));
-        }
+        let resp = ensure_success(resp).await?;
 
         let detail: ThreadDetail = resp
             .json()
@@ -674,11 +629,7 @@ impl GmailClient {
             .await
             .map_err(|e| format!("Request failed: {}", e))?;
 
-        if !resp.status().is_success() {
-            let status = resp.status();
-            let body = resp.text().await.unwrap_or_default();
-            return Err(format!("API error {}: {}", status, body));
-        }
+        ensure_success(resp).await?;
 
         Ok(())
     }
@@ -717,11 +668,7 @@ impl GmailClient {
             .await
             .map_err(|e| format!("Request failed: {}", e))?;
 
-        if !resp.status().is_success() {
-            let status = resp.status();
-            let body = resp.text().await.unwrap_or_default();
-            return Err(format!("API error {}: {}", status, body));
-        }
+        let resp = ensure_success(resp).await?;
 
         let response: ListLabelsResponse = resp
             .json()
@@ -799,11 +746,7 @@ impl GmailClient {
             .await
             .map_err(|e| format!("Request failed: {}", e))?;
 
-        if !resp.status().is_success() {
-            let status = resp.status();
-            let body = resp.text().await.unwrap_or_default();
-            return Err(format!("API error {}: {}", status, body));
-        }
+        let resp = ensure_success(resp).await?;
 
         resp.json()
             .await
@@ -822,11 +765,7 @@ impl GmailClient {
             .await
             .map_err(|e| format!("Request failed: {}", e))?;
 
-        if !resp.status().is_success() {
-            let status = resp.status();
-            let body = resp.text().await.unwrap_or_default();
-            return Err(format!("API error {}: {}", status, body));
-        }
+        ensure_success(resp).await?;
 
         Ok(())
     }
@@ -845,11 +784,7 @@ impl GmailClient {
             .await
             .map_err(|e| format!("Request failed: {}", e))?;
 
-        if !resp.status().is_success() {
-            let status = resp.status();
-            let body = resp.text().await.unwrap_or_default();
-            return Err(format!("API error {}: {}", status, body));
-        }
+        let resp = ensure_success(resp).await?;
 
         #[derive(Deserialize)]
         struct Profile {
@@ -898,11 +833,7 @@ impl GmailClient {
                 return Err("History ID expired".to_string());
             }
 
-            if !resp.status().is_success() {
-                let status = resp.status();
-                let body = resp.text().await.unwrap_or_default();
-                return Err(format!("API error {}: {}", status, body));
-            }
+            let resp = ensure_success(resp).await?;
 
             let history_resp: HistoryListResponse = resp
                 .json()
@@ -992,11 +923,7 @@ impl GmailClient {
             return Ok(false);
         }
 
-        if !resp.status().is_success() {
-            let status = resp.status();
-            let body = resp.text().await.unwrap_or_default();
-            return Err(format!("API error {}: {}", status, body));
-        }
+        ensure_success(resp).await?;
 
         Ok(true)
     }
