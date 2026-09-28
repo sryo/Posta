@@ -13,7 +13,7 @@ export const MessageActionsWheel = (props: {
 }) => {
   const actions = [
     { title: 'Reply', keyHint: 'R', icon: ReplyIcon, onClick: props.onReply },
-    { title: 'Reply All', keyHint: 'A', icon: ReplyAllIcon, onClick: props.onReplyAll },
+    { title: 'Reply All', keyHint: '⇧R', icon: ReplyAllIcon, onClick: props.onReplyAll },
     { title: 'Forward', keyHint: 'F', icon: ForwardIcon, onClick: props.onForward },
   ];
 

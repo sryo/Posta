@@ -1,7 +1,7 @@
 import { createSignal, createEffect, createMemo, onMount, onCleanup, Show, For } from "solid-js";
-import DOMPurify from 'dompurify';
-import { MessageBody, DOMPURIFY_CONFIG } from './MessageBody';
-import { sendReaction, type FullThread, type Attachment } from "../api/tauri";
+import { MessageBody } from './MessageBody';
+import { sendReaction, type FullThread, type FullMessage, type Attachment } from "../api/tauri";
+import { isTypingTarget, hasCommandModifier } from "../shared/keyboard";
 import {
   findContent,
   formatFileSize,
@@ -155,8 +155,42 @@ export const ThreadView = (props: {
     }, 150);
   };
 
+  // Reply / reply-all / forward for one message; shared by the per-message
+  // actions wheel and the r / R / f shortcuts on the focused message
+  const messageActions = (msg: FullMessage) => {
+    const headers = msg.payload?.headers || [];
+    const from = findHeader(headers, 'From') || 'Unknown';
+    const date = findHeader(headers, 'Date') || '';
+    const subject = findHeader(headers, 'Subject') || '';
+    const rfcMessageId = findHeader(headers, 'Message-ID');
+    const isHtml = msg.payload?.mimeType === 'text/html' || !!findContent(msg.payload?.parts, 'text/html');
+    // Reply-To takes precedence over From when present
+    const replyTo = extractEmail(findHeader(headers, 'Reply-To') || from);
+    const quotedBody = () => buildQuotedBody(date, from, stripHtml(extractMessageBody(msg.payload, msg.snippet)));
+
+    return {
+      reply: (prefix = '') => props.onReply(replyTo, "", addReplyPrefix(subject), prefix + quotedBody(), rfcMessageId, isHtml),
+      replyAll: () => {
+        const excluded = new Set([replyTo.toLowerCase(), extractEmail(from).toLowerCase()]);
+        if (props.currentUserEmail) excluded.add(props.currentUserEmail.toLowerCase());
+        const toHeader = findHeader(headers, 'To') || '';
+        const ccHeader = findHeader(headers, 'Cc') || '';
+        const ccList = splitEmailList([toHeader, ccHeader].filter(Boolean).join(', '))
+          .map(e => extractEmail(e))
+          .filter(e => e && !excluded.has(e.toLowerCase()))
+          .join(', ');
+        props.onReply(replyTo, ccList, addReplyPrefix(subject), quotedBody(), rfcMessageId, isHtml);
+      },
+      forward: () => {
+        const plainBody = stripHtml(extractMessageBody(msg.payload, msg.snippet));
+        const fwdBody = `\n\n---------- Forwarded message ----------\nFrom: ${from}\nDate: ${date}\nSubject: ${subject}\n\n${plainBody}`;
+        props.onForward(addForwardPrefix(subject), fwdBody);
+      },
+    };
+  };
+
   const handleKeyDown = (e: KeyboardEvent) => {
-    const isTyping = document.activeElement?.tagName === 'INPUT' || document.activeElement?.tagName === 'TEXTAREA';
+    const isTyping = isTypingTarget(e.target);
 
     if (e.key === 'Escape') {
       if (isTyping) return; // input-level handlers (e.g. ComposeForm) own Escape
@@ -164,31 +198,38 @@ export const ThreadView = (props: {
       handleClose();
       return;
     }
-    if (!isTyping && props.thread) {
-      if (e.key === 'a') { e.preventDefault(); props.onAction(props.isInInbox ? 'archive' : 'inbox'); return; }
-      if (e.key === 's') { e.preventDefault(); props.onAction(props.isStarred ? 'unstar' : 'star'); return; }
-      if (e.key === 'u') { e.preventDefault(); props.onAction(props.isRead ? 'unread' : 'read'); return; }
-      if (e.key === 'i') { e.preventDefault(); props.onAction(props.isImportant ? 'notImportant' : 'important'); return; }
-      if (e.key === '!') { e.preventDefault(); props.onAction('spam'); return; }
-      if (e.key === '#' || e.key === 'd') { e.preventDefault(); props.onAction('trash'); return; }
-      if (e.key === 'l') { e.preventDefault(); props.onOpenLabels(); return; }
+    if (isTyping || hasCommandModifier(e) || !props.thread) return;
+
+    if (e.key === 'a') { e.preventDefault(); props.onAction(props.isInInbox ? 'archive' : 'inbox'); return; }
+    if (e.key === 's') { e.preventDefault(); props.onAction(props.isStarred ? 'unstar' : 'star'); return; }
+    if (e.key === 'u') { e.preventDefault(); props.onAction(props.isRead ? 'unread' : 'read'); return; }
+    if (e.key === 'i') { e.preventDefault(); props.onAction(props.isImportant ? 'notImportant' : 'important'); return; }
+    if (e.key === '!') { e.preventDefault(); props.onAction('spam'); return; }
+    if (e.key === '#' || e.key === 'd') { e.preventDefault(); props.onAction('trash'); return; }
+    if (e.key === 'l') { e.preventDefault(); props.onOpenLabels(); return; }
+
+    // Reply shortcuts advertised by the focused message's actions wheel
+    if ((e.key === 'r' || e.key === 'R' || e.key === 'f') && !props.inlineCompose) {
+      const msg = props.thread.messages[props.focusedMessageIndex];
+      if (!msg) return;
+      e.preventDefault();
+      const actions = messageActions(msg);
+      if (e.key === 'r') actions.reply();
+      else if (e.key === 'R') actions.replyAll();
+      else actions.forward();
+      return;
     }
 
     // j/k for message navigation
-    if (!isTyping && props.thread && (e.key === 'j' || e.key === 'k')) {
+    if (e.key === 'j' || e.key === 'k') {
       e.preventDefault();
       const maxIndex = props.thread.messages.length - 1;
-      let newIndex = props.focusedMessageIndex;
-
-      if (e.key === 'j') {
-        newIndex = Math.min(props.focusedMessageIndex + 1, maxIndex);
-      } else if (e.key === 'k') {
-        newIndex = Math.max(props.focusedMessageIndex - 1, 0);
-      }
+      const newIndex = e.key === 'j'
+        ? Math.min(props.focusedMessageIndex + 1, maxIndex)
+        : Math.max(props.focusedMessageIndex - 1, 0);
 
       if (newIndex !== props.focusedMessageIndex) {
         props.onFocusChange(newIndex);
-        // Scroll to focused message
         messageRefs[newIndex]?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
       }
     }
@@ -344,45 +385,8 @@ export const ThreadView = (props: {
                 const isImage = (mime: string) => mime.startsWith('image/');
                 const isPdf = (mime: string) => mime === 'application/pdf';
 
-                const getReplySubject = () => addReplyPrefix(findHeader(headers, 'Subject') || '');
-                const getPlainTextBody = () => stripHtml(getBody());
-
-                // Detect if original message was HTML
-                const isOriginalHtml = () => {
-                  if (msg.payload?.mimeType === 'text/html') return true;
-                  return !!findContent(msg.payload?.parts, 'text/html');
-                };
-
+                const actions = messageActions(msg);
                 const getRfcMessageId = () => findHeader(headers, 'Message-ID');
-                // Reply-To takes precedence over From when present
-                const getReplyTo = () => extractEmail(findHeader(headers, 'Reply-To') || from);
-
-                const handleReply = () => {
-                  const quotedBody = buildQuotedBody(date, from, getPlainTextBody());
-                  props.onReply(getReplyTo(), "", getReplySubject(), quotedBody, getRfcMessageId(), isOriginalHtml());
-                };
-
-                const handleReplyAll = () => {
-                  const replyTo = getReplyTo();
-                  const excluded = new Set([replyTo.toLowerCase(), extractEmail(from).toLowerCase()]);
-                  if (props.currentUserEmail) excluded.add(props.currentUserEmail.toLowerCase());
-                  const toHeader = findHeader(headers, 'To') || '';
-                  const ccHeader = findHeader(headers, 'Cc') || '';
-                  const allRecipients = splitEmailList([toHeader, ccHeader].filter(Boolean).join(', '))
-                    .map(e => extractEmail(e))
-                    .filter(e => e && !excluded.has(e.toLowerCase()));
-                  const ccList = allRecipients.join(', ');
-                  const quotedBody = buildQuotedBody(date, from, getPlainTextBody());
-                  props.onReply(replyTo, ccList, getReplySubject(), quotedBody, getRfcMessageId(), isOriginalHtml());
-                };
-
-                const handleForward = () => {
-                  const origSubject = findHeader(headers, 'Subject') || '';
-                  const fwdSubject = addForwardPrefix(origSubject);
-                  const plainBody = getPlainTextBody();
-                  const fwdBody = `\n\n---------- Forwarded message ----------\nFrom: ${from}\nDate: ${date}\nSubject: ${origSubject}\n\n${plainBody}`;
-                  props.onForward(fwdSubject, fwdBody);
-                };
 
                 // Match either the Gmail API id or the RFC Message-ID, since
                 // onReply now reports the RFC id back through inlineCompose
@@ -416,9 +420,9 @@ export const ThreadView = (props: {
                       {/* Message Actions Wheel - show for focused or hovered message */}
                       <Show when={((hoveredMessageId() === msg.id && wheelOpen()) || props.focusedMessageIndex === index()) && !showInlineCompose()}>
                         <MessageActionsWheel
-                          onReply={handleReply}
-                          onReplyAll={handleReplyAll}
-                          onForward={handleForward}
+                          onReply={() => actions.reply()}
+                          onReplyAll={actions.replyAll}
+                          onForward={actions.forward}
                           open={true}
                           showHints={props.focusedMessageIndex === index()}
                           onMouseEnter={() => showMessageWheel(msg.id)}
@@ -520,21 +524,7 @@ export const ThreadView = (props: {
             threadId={props.thread!.id}
             onSelect={(suggestion) => {
               const lastMsg = props.thread!.messages[props.thread!.messages.length - 1];
-              if (!lastMsg) return;
-
-              const headers = lastMsg.payload?.headers || [];
-              const from = findHeader(headers, 'From') || 'Unknown';
-              const date = findHeader(headers, 'Date') || '';
-              const replyTo = extractEmail(findHeader(headers, 'Reply-To') || from);
-
-              const subject = addReplyPrefix(findHeader(headers, 'Subject') || '');
-              const body = extractMessageBody(lastMsg.payload, lastMsg.snippet);
-              const plainBody = stripHtml(DOMPurify.sanitize(body, DOMPURIFY_CONFIG));
-              const quotedBody = buildQuotedBody(date, from, plainBody);
-              const fullBody = `${suggestion}${quotedBody}`;
-
-              const isHtml = lastMsg.payload?.mimeType === 'text/html' || !!findContent(lastMsg.payload?.parts, 'text/html');
-              props.onReply(replyTo, "", subject, fullBody, findHeader(headers, 'Message-ID'), isHtml);
+              if (lastMsg) messageActions(lastMsg).reply(suggestion);
             }}
           />
         </Show>

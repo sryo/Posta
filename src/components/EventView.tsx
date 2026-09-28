@@ -17,6 +17,7 @@ import { ComposeForm } from "./ComposeForm";
 import { CreateEventForm } from "./CreateEventForm";
 import { MessageActionsWheel } from "./MessageActionsWheel";
 import { COLOR_HEX } from "../shared/constants";
+import { isTypingTarget, hasCommandModifier } from "../shared/keyboard";
 import type { InlineComposeProps, InlineEditEventProps } from "./types";
 
 // Event View Component
@@ -48,9 +49,9 @@ export const EventView = (props: {
     setTimeout(() => props.onClose(), 200);
   };
 
-  // Toolbar shortcuts advertised by the shortcut-hint badges (R/J/O/C/E/#)
+  // Shortcuts advertised by the toolbar badges (R/J/O/C/E/#) and the actions wheel (R/⇧R/F)
   const handleKeyDown = (e: KeyboardEvent) => {
-    const isTyping = document.activeElement?.tagName === 'INPUT' || document.activeElement?.tagName === 'TEXTAREA';
+    const isTyping = isTypingTarget(e.target);
 
     if (e.key === 'Escape') {
       if (isTyping) return; // input-level handlers (e.g. ComposeForm) own Escape
@@ -61,10 +62,12 @@ export const EventView = (props: {
       return;
     }
 
-    if (isTyping || !props.event || props.inlineCompose || props.inlineEdit) return;
+    if (isTyping || hasCommandModifier(e) || !props.event || props.inlineCompose || props.inlineEdit) return;
     const event = props.event;
 
     if (e.key === 'r' && event.organizer) { e.preventDefault(); props.onReplyOrganizer(); return; }
+    if (e.key === 'R') { e.preventDefault(); props.onReplyAll(); return; }
+    if (e.key === 'f') { e.preventDefault(); props.onForward(); return; }
     if (e.key === 'j' && event.hangout_link) { e.preventDefault(); openUrl(event.hangout_link); return; }
     if (e.key === 'o' && event.html_link) { e.preventDefault(); openUrl(event.html_link); return; }
     if (e.key === 'c') {
