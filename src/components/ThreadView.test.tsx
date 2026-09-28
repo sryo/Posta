@@ -210,6 +210,30 @@ describe("ThreadView reactions", () => {
     expect(cards[0].querySelector(".add-reaction-btn")).not.toBeNull();
   });
 
+  it("groups identical emojis with a count and names who reacted", () => {
+    const thread = makeThread([
+      { from: "Alice <alice@example.com>", body: "first" },
+      { from: "Bob Stone <bob@example.com>", body: "r1" },
+      { from: "carol@example.com", body: "r2" },
+      { from: "Me <me@example.com>", body: "r3" },
+      { from: "Bob Stone <bob@example.com>", body: "r4" },
+      { from: "Dan <dan@example.com>", body: "r5" },
+    ]);
+    const react = (i: number, emoji: string, from_addr: string) => {
+      thread.messages[i].reaction = { emoji, from_addr, in_reply_to: "<msg0@example.com>", message_id: `m${i}` };
+    };
+    react(1, "👍", "bob@example.com");
+    react(2, "👍", "carol@example.com");
+    react(3, "👍", "me@example.com");
+    react(4, "👍", "bob@example.com");
+    react(5, "🎉", "dan@example.com");
+    const { container } = renderThread({ thread });
+    const chips = Array.from(container.querySelectorAll(".message-card")[0].querySelectorAll(".message-reaction"));
+    expect(chips.map(c => c.textContent)).toEqual(["👍 3", "🎉"]);
+    expect(chips[0].getAttribute("title")).toBe("Bob Stone, carol@example.com, You");
+    expect(chips[1].getAttribute("title")).toBe("Dan");
+  });
+
   it("offers no reaction on the user's own messages", () => {
     const thread = makeThread([
       { from: "Alice <alice@example.com>", body: "first" },
