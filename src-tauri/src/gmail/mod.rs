@@ -2167,8 +2167,10 @@ fn strip_html_tags(html: &str) -> String {
         if i < skip_to {
             continue;
         }
+        // Style and script end at their closing tag even inside "<!--"
+        let raw_text = matches!(hidden_element.as_deref(), Some("style" | "script"));
         match c {
-            '<' if html[i..].starts_with("<!--") => {
+            '<' if !in_tag && !raw_text && html[i..].starts_with("<!--") => {
                 // Comments may hold '>' and whole elements (Outlook's
                 // conditional markup); "<!-->" and "<!--->" end at once
                 let body = &html[i + 4..];
@@ -2827,6 +2829,14 @@ mod tests {
         assert_eq!(strip_html_tags("a<!-- x > y -->b"), "ab");
         assert_eq!(strip_html_tags("a<!-->b<!--->c"), "abc");
         assert_eq!(strip_html_tags("a<!-- never closed"), "a");
+        assert_eq!(strip_html_tags("<head><!--[if mso]><body>x</body><![endif]--></head>b"), "b");
+    }
+
+    #[test]
+    fn strip_html_does_not_treat_comment_openers_in_raw_text_or_tags_as_comments() {
+        assert_eq!(strip_html_tags("<style>a{}<!-- </style>shown"), "shown");
+        assert_eq!(strip_html_tags("<script>if (a<!--b) {}</script>shown"), "shown");
+        assert_eq!(strip_html_tags("<a title=\"<!--\">x</a>y"), "xy");
     }
 
     #[test]
