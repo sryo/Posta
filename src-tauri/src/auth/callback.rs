@@ -81,7 +81,7 @@ impl CallbackServer {
                 return Err("OAuth flow cancelled".to_string());
             }
             if start.elapsed() > timeout {
-                return Err("Timeout waiting for OAuth callback".to_string());
+                return Err("Timed out waiting for sign-in in the browser. Try again.".to_string());
             }
 
             for listener in &self.listeners {
@@ -93,7 +93,7 @@ impl CallbackServer {
                             let _ = outcomes.send(handle_connection(stream, &expected_state));
                         });
                     }
-                    Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {}
+                    Err(ref e) if accept_error_is_transient(e.kind()) => {}
                     Err(e) => return Err(format!("Accept error: {}", e)),
                 }
             }
@@ -106,6 +106,16 @@ impl CallbackServer {
             }
         }
     }
+}
+
+/// Nothing waiting, or a client (often a browser preconnect) that hung up
+/// before its connection was accepted
+fn accept_error_is_transient(kind: std::io::ErrorKind) -> bool {
+    use std::io::ErrorKind;
+    matches!(
+        kind,
+        ErrorKind::WouldBlock | ErrorKind::ConnectionAborted | ErrorKind::ConnectionReset | ErrorKind::Interrupted
+    )
 }
 
 enum ConnectionOutcome {
@@ -228,8 +238,14 @@ fn parse_redirect(request: &str) -> Option<Redirect> {
     let query = extract_query_string(request)?;
     let outcome = match get_query_param(query, "code") {
         Some(code) => Ok(code),
-        None => Err(get_query_param(query, "error_description")
-            .or_else(|| get_query_param(query, "error"))?),
+        None => {
+            let error = get_query_param(query, "error");
+            Err(if error.as_deref() == Some("access_denied") {
+                "Access was denied in the browser. Sign in again and allow Posta access to continue.".to_string()
+            } else {
+                get_query_param(query, "error_description").or(error)?
+            })
+        }
     };
     Some(Redirect {
         outcome,
@@ -264,13 +280,38 @@ mod tests {
 
     #[test]
     fn error_description_is_form_decoded() {
-        let line = "GET /callback?error=access_denied&error_description=User+denied%20access HTTP/1.1";
+        let line = "GET /callback?error=invalid_request&error_description=Missing+required%20parameter HTTP/1.1";
         assert_eq!(
             parse_redirect(line).unwrap().outcome.unwrap_err(),
-            "User denied access"
+            "Missing required parameter"
         );
-        let line = "GET /callback?error=access_denied HTTP/1.1";
-        assert_eq!(parse_redirect(line).unwrap().outcome.unwrap_err(), "access_denied");
+        let line = "GET /callback?error=server_error HTTP/1.1";
+        assert_eq!(parse_redirect(line).unwrap().outcome.unwrap_err(), "server_error");
+    }
+
+    #[test]
+    fn declined_consent_is_explained_in_words() {
+        let line = "GET /callback?error=access_denied&state=s HTTP/1.1";
+        assert_eq!(
+            parse_redirect(line).unwrap().outcome.unwrap_err(),
+            "Access was denied in the browser. Sign in again and allow Posta access to continue."
+        );
+    }
+
+    #[test]
+    fn timeout_is_explained_in_words() {
+        let server = bind_ephemeral();
+        let err = server.wait_for_callback(0, Arc::new(AtomicBool::new(false)), "s").err().unwrap();
+        assert_eq!(err, "Timed out waiting for sign-in in the browser. Try again.");
+    }
+
+    #[test]
+    fn a_connection_dropped_before_accept_does_not_end_the_wait() {
+        use std::io::ErrorKind;
+        for kind in [ErrorKind::WouldBlock, ErrorKind::ConnectionAborted, ErrorKind::ConnectionReset, ErrorKind::Interrupted] {
+            assert!(accept_error_is_transient(kind), "{:?}", kind);
+        }
+        assert!(!accept_error_is_transient(ErrorKind::PermissionDenied));
     }
 
     #[test]
@@ -341,7 +382,7 @@ mod tests {
         send(addr, "GET /callback?error=access_denied HTTP/1.1");
         send(addr, "GET /callback?error=access_denied&state=expected HTTP/1.1");
         let err = handle.join().unwrap().err().unwrap();
-        assert_eq!(err, "access_denied");
+        assert!(err.starts_with("Access was denied"), "{}", err);
     }
 
     #[test]

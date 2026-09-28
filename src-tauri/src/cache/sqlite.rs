@@ -12,6 +12,8 @@ pub enum CacheError {
     Database(#[from] rusqlite::Error),
     #[error("Lock error")]
     Lock,
+    #[error("This card no longer exists. It may have been deleted on another device.")]
+    CardNotFound,
 }
 
 /// Cached thread groups, next page token, and cache time in Unix seconds
@@ -124,10 +126,13 @@ impl CacheDb {
             .map_err(Into::into)
     }
 
+    /// Insert or update by id. Another id with the same email is an error:
+    /// replacing that row would orphan its cards.
     pub fn insert_account(&self, account: &Account) -> Result<(), CacheError> {
         let conn = self.conn.lock().map_err(|_| CacheError::Lock)?;
         conn.execute(
-            "INSERT OR REPLACE INTO accounts (id, email, picture, signature) VALUES (?1, ?2, ?3, ?4)",
+            "INSERT INTO accounts (id, email, picture, signature) VALUES (?1, ?2, ?3, ?4)
+             ON CONFLICT(id) DO UPDATE SET email = excluded.email, picture = excluded.picture, signature = excluded.signature",
             params![account.id, account.email, account.picture, account.signature],
         )?;
         Ok(())
@@ -189,9 +194,18 @@ impl CacheDb {
         insert_card_row(&conn, card)
     }
 
+    /// Save a card edit. The position is left alone: `reorder_cards` owns
+    /// it, and the edited copy may predate a reorder.
     pub fn update_card(&self, card: &Card) -> Result<(), CacheError> {
         let conn = self.conn.lock().map_err(|_| CacheError::Lock)?;
-        update_card_row(&conn, card)
+        let updated = conn.execute(
+            "UPDATE cards SET name = ?1, query = ?2, collapsed = ?3, color = ?4, group_by = ?5, card_type = ?6 WHERE id = ?7",
+            params![card.name, card.query, card.collapsed as i32, card.color, card.group_by, card.card_type, card.id],
+        )?;
+        if updated == 0 {
+            return Err(CacheError::CardNotFound);
+        }
+        Ok(())
     }
 
     pub fn delete_card(&self, id: &str) -> Result<(), CacheError> {
@@ -548,6 +562,71 @@ mod tests {
         assert_eq!(cards[0].color.as_deref(), Some("red"));
         assert_eq!(cards[0].group_by, "sender");
         assert_eq!(cards[0].card_type, "calendar");
+    }
+
+    #[test]
+    fn saving_an_account_again_updates_it_in_place() {
+        let db = db();
+        let mut a = account("me@x.com");
+        db.insert_account(&a).unwrap();
+        db.update_account_signature(&a.id, Some("-- me")).unwrap();
+        a.picture = Some("new-pic".into());
+        a.signature = Some("-- me".into());
+        db.insert_account(&a).unwrap();
+
+        let accounts = db.get_accounts().unwrap();
+        assert_eq!(accounts.len(), 1);
+        assert_eq!(accounts[0].picture.as_deref(), Some("new-pic"));
+        assert_eq!(accounts[0].signature.as_deref(), Some("-- me"));
+    }
+
+    #[test]
+    fn a_second_account_id_for_the_same_email_does_not_replace_the_first() {
+        let db = db();
+        let first = account("me@x.com");
+        db.insert_account(&first).unwrap();
+        db.insert_card(&Card::new(first.id.clone(), "Inbox".into(), "in:inbox".into(), 0)).unwrap();
+
+        assert!(db.insert_account(&account("me@x.com")).is_err());
+
+        let accounts = db.get_accounts().unwrap();
+        assert_eq!(accounts.len(), 1);
+        assert_eq!(accounts[0].id, first.id, "the cards' account must stay");
+    }
+
+    #[test]
+    fn editing_a_card_from_a_stale_copy_keeps_its_current_position() {
+        let db = db();
+        let card = Card::new("a".into(), "One".into(), "q1".into(), 0);
+        db.insert_card(&card).unwrap();
+        db.reorder_cards(&[(card.id.clone(), 4)]).unwrap();
+
+        let mut edited = card.clone();
+        edited.name = "Renamed".into();
+        db.update_card(&edited).unwrap();
+
+        let stored = &db.get_cards("a").unwrap()[0];
+        assert_eq!(stored.name, "Renamed");
+        assert_eq!(stored.position, 4);
+    }
+
+    #[test]
+    fn editing_a_card_deleted_meanwhile_is_an_error() {
+        let db = db();
+        let card = Card::new("a".into(), "One".into(), "q1".into(), 0);
+        let err = db.update_card(&card).unwrap_err();
+        assert!(err.to_string().contains("deleted on another device"), "{}", err);
+        assert!(db.get_cards("a").unwrap().is_empty());
+    }
+
+    #[test]
+    fn pulled_card_changes_carry_their_position() {
+        let db = db();
+        let card = Card::new("a".into(), "One".into(), "q1".into(), 0);
+        db.insert_card(&card).unwrap();
+        let moved = Card { position: 3, ..card };
+        db.apply_card_changes(&[], std::slice::from_ref(&moved), &[]).unwrap();
+        assert_eq!(db.get_cards("a").unwrap()[0].position, 3);
     }
 
     #[test]

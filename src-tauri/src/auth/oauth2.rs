@@ -19,6 +19,9 @@ pub enum AuthError {
     TokenRefresh(String),
     #[error("Keyring error: {0}")]
     Keyring(String),
+    /// The secret may well be there, so this must not read as a lost sign-in
+    #[error("Keychain unavailable (locked or access denied). Unlock the keychain and try again. ({0})")]
+    KeychainUnavailable(String),
     #[error("No credentials configured")]
     NoCredentials,
     #[error("HTTP error: {0}")]
@@ -147,7 +150,7 @@ impl GmailAuth {
         tracing::info!("Token response status: {}", status);
 
         if !status.is_success() {
-            return Err(AuthError::OAuth2(format!("Token exchange failed ({}): {}", status, body)));
+            return Err(AuthError::OAuth2(format!("Token exchange failed ({}): {}", status, token_error_text(&body))));
         }
 
         // A successful body carries the tokens, so keep it out of the error
@@ -177,11 +180,23 @@ impl GmailAuth {
 
         if !resp.status().is_success() {
             let error_text = resp.text().await.unwrap_or_default();
-            return Err(AuthError::TokenRefresh(error_text));
+            return Err(AuthError::TokenRefresh(token_error_text(&error_text)));
         }
 
         let token_resp: TokenResponse = resp.json().await?;
         Ok((token_resp.access_token, token_resp.expires_in))
+    }
+}
+
+/// Google's token endpoint errors are JSON with an `error` code and usually
+/// an `error_description`; anything else is passed through trimmed
+fn token_error_text(body: &str) -> String {
+    let parsed = serde_json::from_str::<serde_json::Value>(body).ok();
+    let field = |name: &str| parsed.as_ref().and_then(|v| v[name].as_str().map(str::to_string));
+    match (field("error"), field("error_description")) {
+        (Some(code), Some(description)) => format!("{}: {}", code, description),
+        (Some(code), None) => code,
+        _ => body.trim().to_string(),
     }
 }
 
@@ -208,7 +223,9 @@ fn keychain_entry(key: &str) -> Option<keyring::Entry> {
 /// Keychain operations behind the secret storage, so the fallback-file logic
 /// can be exercised without the real keychain
 trait SecretStore {
-    fn get(&self, key: &str) -> Option<String>;
+    /// `Ok(None)` only when there is no such entry; a locked keychain or a
+    /// denied access prompt is an error
+    fn get(&self, key: &str) -> Result<Option<String>, String>;
     /// Whether the secret was stored and reads back unchanged (keychain can
     /// silently fail in sandboxed apps)
     fn set(&self, key: &str, secret: &str) -> bool;
@@ -217,16 +234,29 @@ trait SecretStore {
 
 struct Keychain;
 
-impl SecretStore for Keychain {
-    fn get(&self, key: &str) -> Option<String> {
-        match keychain_entry(key)?.get_password() {
-            Ok(secret) => Some(secret),
-            Err(keyring::Error::NoEntry) => None,
-            Err(e) => {
-                tracing::warn!("Keychain get_password failed for {}: {:?}", key, e);
-                None
-            }
+/// A secret that isn't UTF-8 is as good as missing, and signing in again
+/// overwrites it; any other failure (locked, access denied) is an error
+fn keychain_read(key: &str, read: keyring::Result<String>) -> Result<Option<String>, String> {
+    match read {
+        Ok(secret) => Ok(Some(secret)),
+        Err(keyring::Error::NoEntry) => Ok(None),
+        Err(keyring::Error::BadEncoding(_)) => {
+            tracing::warn!("Keychain entry {} is not valid UTF-8; ignoring it", key);
+            Ok(None)
         }
+        Err(e) => {
+            tracing::warn!("Keychain get_password failed for {}: {:?}", key, e);
+            Err(e.to_string())
+        }
+    }
+}
+
+impl SecretStore for Keychain {
+    fn get(&self, key: &str) -> Result<Option<String>, String> {
+        let Some(entry) = keychain_entry(key) else {
+            return Ok(None);
+        };
+        keychain_read(key, entry.get_password())
     }
 
     fn set(&self, key: &str, secret: &str) -> bool {
@@ -263,20 +293,35 @@ fn token_keychain_key(account_id: &str) -> String {
 const CREDENTIALS_KEYCHAIN_KEY: &str = "oauth:credentials";
 const GEMINI_KEYCHAIN_KEY: &str = "gemini:api_key";
 
-/// Write a secret to the plaintext fallback file, restricting it to the
-/// current user on unix
+/// Write a secret to the plaintext fallback file, readable only by the
+/// current user on unix. The file may be the only copy of a refresh token,
+/// so the new one is written beside it and renamed over it: a crash leaves
+/// the old secret or the new one, never a truncated file.
 fn write_secret_file(path: &Path, secret: &str, what: &str) -> Result<(), AuthError> {
-    if let Some(parent) = path.parent() {
-        let _ = std::fs::create_dir_all(parent);
-    }
-    std::fs::write(path, secret)
-        .map_err(|e| AuthError::Keyring(format!("Failed to store {}: {}", what, e)))?;
+    let fail = |e: std::io::Error| AuthError::Keyring(format!("Failed to store {}: {}", what, e));
+    let parent = path.parent().ok_or_else(|| fail(std::io::ErrorKind::InvalidInput.into()))?;
+    let mut dir = std::fs::DirBuilder::new();
+    dir.recursive(true);
     #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600));
+    std::os::unix::fs::DirBuilderExt::mode(&mut dir, 0o700);
+    dir.create(parent).map_err(fail)?;
+
+    let tmp = parent.join(format!(".{}.tmp", uuid::Uuid::new_v4().simple()));
+    let written = (|| {
+        use std::io::Write;
+        let mut options = std::fs::OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
+        let mut file = options.open(&tmp)?;
+        file.write_all(secret.as_bytes())?;
+        file.sync_all()?;
+        std::fs::rename(&tmp, path)
+    })();
+    if written.is_err() {
+        let _ = std::fs::remove_file(&tmp);
     }
-    Ok(())
+    written.map_err(fail)
 }
 
 /// Keychain is the primary store; the plaintext file is only a fallback
@@ -303,26 +348,33 @@ fn store_secret(
 }
 
 /// The keychain copy if `valid`, else the fallback file's, which moves into
-/// the keychain once the keychain copy is verified readable
+/// the keychain once the keychain copy is verified readable. Errors when the
+/// keychain can't be read and there is no usable file.
 fn load_secret(
     keychain: &dyn SecretStore,
     key: &str,
     path: &Path,
     valid: impl Fn(&str) -> bool,
-) -> Option<String> {
-    if let Some(secret) = keychain.get(key).filter(|s| valid(s)) {
-        return Some(secret);
+) -> Result<Option<String>, String> {
+    let keychain_copy = keychain.get(key);
+    if let Ok(Some(secret)) = &keychain_copy {
+        if valid(secret) {
+            return Ok(Some(secret.clone()));
+        }
     }
 
-    let secret = std::fs::read_to_string(path).ok()?.trim().to_string();
-    if !valid(&secret) {
-        return None;
-    }
-    if keychain.set(key, &secret) {
+    let file_copy = std::fs::read_to_string(path)
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| valid(s));
+    let Some(secret) = file_copy else {
+        return keychain_copy.map(|_| None);
+    };
+    if keychain_copy.is_ok() && keychain.set(key, &secret) {
         let _ = std::fs::remove_file(path);
         tracing::info!("Moved {:?} into the keychain", path.file_name().unwrap_or_default());
     }
-    Some(secret)
+    Ok(Some(secret))
 }
 
 fn delete_secret(keychain: &dyn SecretStore, key: &str, path: &Path) {
@@ -337,11 +389,17 @@ pub fn store_refresh_token(account_id: &str, token: &str, app_data_dir: &Path) -
 }
 
 pub fn get_refresh_token(account_id: &str, app_data_dir: &Path) -> Result<String, AuthError> {
+    refresh_token_from(&Keychain, account_id, app_data_dir)
+}
+
+fn refresh_token_from(keychain: &dyn SecretStore, account_id: &str, app_data_dir: &Path) -> Result<String, AuthError> {
     let path = get_token_file_path(app_data_dir, account_id);
-    load_secret(&Keychain, &token_keychain_key(account_id), &path, |s| !s.is_empty()).ok_or_else(|| {
-        tracing::warn!("No token found for account: {}", account_id);
-        AuthError::Keyring("No matching entry found in secure storage".to_string())
-    })
+    load_secret(keychain, &token_keychain_key(account_id), &path, |s| !s.is_empty())
+        .map_err(AuthError::KeychainUnavailable)?
+        .ok_or_else(|| {
+            tracing::warn!("No token found for account: {}", account_id);
+            AuthError::Keyring("No matching entry found in secure storage".to_string())
+        })
 }
 
 pub fn delete_refresh_token(account_id: &str, app_data_dir: &Path) -> Result<(), AuthError> {
@@ -373,7 +431,10 @@ pub fn store_oauth_credentials(client_id: &str, client_secret: &str, app_data_di
 pub fn get_oauth_credentials(app_data_dir: &Path) -> Result<OAuthCredentials, AuthError> {
     let parse = |json: &str| serde_json::from_str::<OAuthCredentials>(json).ok();
     let path = get_credentials_file_path(app_data_dir);
+    // An unreadable keychain counts as no credentials: the caller fails
+    // startup on any other error
     load_secret(&Keychain, CREDENTIALS_KEYCHAIN_KEY, &path, |json| parse(json).is_some())
+        .unwrap_or_default()
         .and_then(|json| parse(&json))
         .ok_or(AuthError::NoCredentials)
 }
@@ -393,6 +454,7 @@ pub fn store_gemini_api_key(api_key: &str, app_data_dir: &Path) -> Result<(), Au
 
 pub fn get_gemini_api_key(app_data_dir: &Path) -> Option<String> {
     load_secret(&Keychain, GEMINI_KEYCHAIN_KEY, &get_gemini_key_file_path(app_data_dir), |key| !key.is_empty())
+        .unwrap_or_default()
 }
 
 #[cfg(test)]
@@ -427,34 +489,89 @@ mod tests {
     }
 
     /// In-memory keychain; with `writable` false every set fails while
-    /// entries already there stay readable
+    /// entries already there stay readable, and with `locked` true every
+    /// operation fails the way a locked or denied keychain does
     struct FakeKeychain {
         entries: std::sync::Mutex<std::collections::HashMap<String, String>>,
         writable: bool,
+        locked: bool,
     }
 
     impl FakeKeychain {
         fn new(writable: bool, entries: &[(&str, &str)]) -> Self {
             let entries = entries.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect();
-            Self { entries: std::sync::Mutex::new(entries), writable }
+            Self { entries: std::sync::Mutex::new(entries), writable, locked: false }
+        }
+
+        fn locked(entries: &[(&str, &str)]) -> Self {
+            Self { locked: true, ..Self::new(false, entries) }
         }
     }
 
     impl SecretStore for FakeKeychain {
-        fn get(&self, key: &str) -> Option<String> {
-            self.entries.lock().unwrap().get(key).cloned()
+        fn get(&self, key: &str) -> Result<Option<String>, String> {
+            if self.locked {
+                return Err("User interaction is not allowed.".to_string());
+            }
+            Ok(self.entries.lock().unwrap().get(key).cloned())
         }
 
         fn set(&self, key: &str, secret: &str) -> bool {
-            if self.writable {
+            if self.writable && !self.locked {
                 self.entries.lock().unwrap().insert(key.to_string(), secret.to_string());
             }
             self.writable
         }
 
         fn delete(&self, key: &str) {
-            self.entries.lock().unwrap().remove(key);
+            if !self.locked {
+                self.entries.lock().unwrap().remove(key);
+            }
         }
+    }
+
+    #[test]
+    fn only_an_unreadable_keychain_is_an_error() {
+        assert_eq!(keychain_read("k", Ok("s".into())), Ok(Some("s".into())));
+        assert_eq!(keychain_read("k", Err(keyring::Error::NoEntry)), Ok(None));
+        assert_eq!(keychain_read("k", Err(keyring::Error::BadEncoding(vec![0xff]))), Ok(None));
+        let locked = keyring::Error::PlatformFailure("User interaction is not allowed.".into());
+        assert!(keychain_read("k", Err(locked)).is_err());
+        let unavailable = keyring::Error::NoStorageAccess("no keychain".into());
+        assert!(keychain_read("k", Err(unavailable)).is_err());
+    }
+
+    #[test]
+    fn locked_keychain_is_not_reported_as_a_missing_sign_in() {
+        let dir = temp_dir("locked");
+        let keychain = FakeKeychain::locked(&[("token:acct", "refresh")]);
+
+        let err = refresh_token_from(&keychain, "acct", &dir).unwrap_err().to_string();
+
+        assert!(err.contains("Keychain unavailable"), "{}", err);
+        // The frontend treats "Keyring error" as an expired session
+        assert!(!err.contains("Keyring error"), "{}", err);
+        assert_eq!(keychain.entries.lock().unwrap().get("token:acct").map(String::as_str), Some("refresh"));
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn missing_refresh_token_still_reads_as_an_expired_session() {
+        let dir = temp_dir("missing");
+        let err = refresh_token_from(&FakeKeychain::new(true, &[]), "acct", &dir).unwrap_err();
+        assert!(err.to_string().contains("Keyring error"), "{}", err);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn locked_keychain_falls_back_to_the_file() {
+        let dir = temp_dir("locked-file");
+        store_secret(&FakeKeychain::new(false, &[]), &token_keychain_key("acct"), "from-file", &get_token_file_path(&dir, "acct"), "token").unwrap();
+
+        let keychain = FakeKeychain::locked(&[]);
+        assert_eq!(refresh_token_from(&keychain, "acct", &dir).unwrap(), "from-file");
+        assert!(get_token_file_path(&dir, "acct").exists());
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     fn temp_dir(name: &str) -> PathBuf {
@@ -464,14 +581,36 @@ mod tests {
     }
 
     #[test]
+    fn rewriting_a_secret_file_replaces_it_whole_instead_of_truncating_it() {
+        use std::os::unix::fs::{MetadataExt, PermissionsExt};
+        let dir = temp_dir("replace");
+        let path = dir.join("tokens").join("acct.token");
+        write_secret_file(&path, "old-refresh", "token").unwrap();
+        // A second name for the first file: an in-place rewrite would show
+        // through it, and a crash mid-write would leave it truncated
+        let first = dir.join("first");
+        std::fs::hard_link(&path, &first).unwrap();
+
+        write_secret_file(&path, "new-refresh", "token").unwrap();
+
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "new-refresh");
+        assert_eq!(std::fs::read_to_string(&first).unwrap(), "old-refresh");
+        assert_ne!(std::fs::metadata(&path).unwrap().ino(), std::fs::metadata(&first).unwrap().ino());
+        assert_eq!(std::fs::metadata(&path).unwrap().permissions().mode() & 0o777, 0o600);
+        let names: Vec<_> = std::fs::read_dir(path.parent().unwrap()).unwrap().map(|e| e.unwrap().file_name()).collect();
+        assert_eq!(names, ["acct.token"], "no temporary file is left behind");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
     fn fallback_file_moves_into_a_working_keychain() {
         let dir = temp_dir("migrate");
         let path = dir.join("secret");
         std::fs::write(&path, "legacy\n").unwrap();
         let keychain = FakeKeychain::new(true, &[]);
 
-        assert_eq!(load_secret(&keychain, "k", &path, |s| !s.is_empty()).as_deref(), Some("legacy"));
-        assert_eq!(keychain.get("k").as_deref(), Some("legacy"));
+        assert_eq!(load_secret(&keychain, "k", &path, |s| !s.is_empty()).unwrap().as_deref(), Some("legacy"));
+        assert_eq!(keychain.get("k").unwrap().as_deref(), Some("legacy"));
         assert!(!path.exists());
         std::fs::remove_dir_all(&dir).unwrap();
     }
@@ -484,7 +623,7 @@ mod tests {
         let keychain = FakeKeychain::new(true, &[]);
 
         store_secret(&keychain, "k", "new", &path, "token").unwrap();
-        assert_eq!(keychain.get("k").as_deref(), Some("new"));
+        assert_eq!(keychain.get("k").unwrap().as_deref(), Some("new"));
         assert!(!path.exists());
         std::fs::remove_dir_all(&dir).unwrap();
     }
@@ -497,7 +636,7 @@ mod tests {
 
         store_secret(&keychain, "k", "new", &path, "token").unwrap();
 
-        assert_eq!(load_secret(&keychain, "k", &path, |s| !s.is_empty()).as_deref(), Some("new"));
+        assert_eq!(load_secret(&keychain, "k", &path, |s| !s.is_empty()).unwrap().as_deref(), Some("new"));
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
@@ -510,7 +649,7 @@ mod tests {
         let keychain = FakeKeychain::new(false, &[("k", "old")]);
 
         assert!(store_secret(&keychain, "k", "new", &path, "token").is_err());
-        assert_eq!(keychain.get("k").as_deref(), Some("old"));
+        assert_eq!(keychain.get("k").unwrap().as_deref(), Some("old"));
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
@@ -522,7 +661,7 @@ mod tests {
         let keychain = FakeKeychain::new(false, &[("k", "not json")]);
         let parses = |s: &str| serde_json::from_str::<OAuthCredentials>(s).is_ok();
 
-        let json = load_secret(&keychain, "k", &path, parses).unwrap();
+        let json = load_secret(&keychain, "k", &path, parses).unwrap().unwrap();
         assert!(json.contains("\"s\""));
         assert!(path.exists(), "the file stays while the keychain can't take it");
         std::fs::remove_dir_all(&dir).unwrap();
@@ -622,6 +761,7 @@ mod tests {
         let err = auth.refresh_access_token("rt").await.unwrap_err().to_string();
         assert!(err.contains("invalid_grant"), "{}", err);
         assert_eq!(err.matches("Token refresh failed").count(), 1, "{}", err);
+        assert_eq!(err, "Token refresh failed: invalid_grant: Token has been expired or revoked.");
     }
 
     #[tokio::test]
@@ -643,6 +783,26 @@ mod tests {
         let tokens = auth.exchange_code("code".into(), Some(&state)).await.unwrap();
         assert_eq!(tokens, ("at".to_string(), "rt".to_string(), Some(3599)));
         assert!(auth.pending_auth.lock().await.is_none());
+    }
+
+    #[tokio::test]
+    async fn rejected_exchange_reports_googles_reason_not_raw_json() {
+        let auth = auth_at(
+            token_stub(Some("{\n  \"error\": \"invalid_client\",\n  \"error_description\": \"The OAuth client was not found.\"\n}")),
+            Duration::from_secs(5),
+        );
+        let (_, state) = auth.start_auth_flow().await.unwrap();
+        let err = auth.exchange_code("code".into(), Some(&state)).await.unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            "OAuth2 error: Token exchange failed (400 Bad Request): invalid_client: The OAuth client was not found."
+        );
+    }
+
+    #[test]
+    fn token_error_without_json_keeps_the_body() {
+        assert_eq!(token_error_text(" bad gateway \n"), "bad gateway");
+        assert_eq!(token_error_text(r#"{"error": "invalid_grant"}"#), "invalid_grant");
     }
 
     #[tokio::test]
