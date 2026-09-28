@@ -1619,6 +1619,71 @@ pub async fn update_calendar_event(
     evict_token_on_auth_error(&state, &account_id, result)
 }
 
+/// Prompt context for smart replies: the subject and the full bodies of the
+/// last few real messages (reactions and unsent drafts left out)
+fn reply_context(thread: &crate::gmail::FullThread) -> String {
+    const MAX_MESSAGES: usize = 3;
+    const MAX_BODY_BYTES: usize = 2000;
+
+    fn header<'a>(msg: &'a crate::gmail::FullMessage, name: &str) -> Option<&'a str> {
+        msg.payload
+            .as_ref()?
+            .headers
+            .as_ref()?
+            .iter()
+            .find(|h| h.name.eq_ignore_ascii_case(name))
+            .map(|h| h.value.as_str())
+    }
+
+    let subject = thread
+        .messages
+        .first()
+        .and_then(|m| header(m, "Subject"))
+        .unwrap_or("(No Subject)");
+    let mut context = format!("Subject: {}
+
+", subject);
+
+    let is_draft = |m: &crate::gmail::FullMessage| {
+        m.label_ids.as_ref().is_some_and(|l| l.iter().any(|x| x == "DRAFT"))
+    };
+    let messages: Vec<_> = thread
+        .messages
+        .iter()
+        .filter(|m| m.reaction.is_none() && !is_draft(m))
+        .collect();
+
+    for msg in &messages[messages.len().saturating_sub(MAX_MESSAGES)..] {
+        let body = crate::gmail::extract_body_text_from_message(msg)
+            .unwrap_or_else(|| msg.snippet.clone().unwrap_or_default());
+
+        // Keep the prompt within token limits; slicing mid-UTF-8 would panic
+        let body = if body.len() > MAX_BODY_BYTES {
+            let mut cut = MAX_BODY_BYTES;
+            while !body.is_char_boundary(cut) {
+                cut -= 1;
+            }
+            format!("{}...", &body[..cut])
+        } else {
+            body
+        };
+
+        context.push_str(&format!(
+            "From: {}
+Date: {}
+{}
+
+---
+
+",
+            header(msg, "From").unwrap_or("Unknown"),
+            header(msg, "Date").unwrap_or(""),
+            body
+        ));
+    }
+    context
+}
+
 #[tauri::command]
 pub async fn suggest_replies(
     account_id: String,
@@ -1636,61 +1701,12 @@ pub async fn suggest_replies(
 
     let access_token = get_access_token(&state, &account_id, &app_data_dir).await?;
 
-    // 1. Get thread details to build context
     let gmail = GmailClient::new(access_token);
     let thread = evict_token_on_auth_error(&state, &account_id, gmail.get_thread(&thread_id).await)
         .map_err(|e| format!("Failed to fetch thread: {}", e))?;
 
-    // 2. Build email context from the last few messages with FULL bodies
-    let mut context = String::new();
+    let context = reply_context(&thread);
 
-    // Get subject
-    let subject = thread.messages.first()
-        .and_then(|m| m.payload.as_ref())
-        .and_then(|p| p.headers.as_ref())
-        .and_then(|h| h.iter().find(|x| x.name.eq_ignore_ascii_case("Subject")))
-        .map(|x| x.value.as_str())
-        .unwrap_or("(No Subject)");
-
-    context.push_str(&format!("Subject: {}\n\n", subject));
-
-    // Take last 3 messages with full bodies
-    let count = thread.messages.len();
-    let skip = count.saturating_sub(3);
-
-    for msg in thread.messages.iter().skip(skip) {
-        let from = msg.payload.as_ref()
-            .and_then(|p| p.headers.as_ref())
-            .and_then(|h| h.iter().find(|x| x.name.eq_ignore_ascii_case("From")))
-            .map(|x| x.value.as_str())
-            .unwrap_or("Unknown");
-
-        let date = msg.payload.as_ref()
-            .and_then(|p| p.headers.as_ref())
-            .and_then(|h| h.iter().find(|x| x.name.eq_ignore_ascii_case("Date")))
-            .map(|x| x.value.as_str())
-            .unwrap_or("");
-
-        // Get full body text instead of snippet
-        let body = crate::gmail::extract_body_text_from_message(msg)
-            .unwrap_or_else(|| msg.snippet.clone().unwrap_or_default());
-
-        // Truncate very long messages to avoid token limits; back off to a
-        // char boundary since slicing mid-UTF-8 panics
-        let body_truncated = if body.len() > 2000 {
-            let mut cut = 2000;
-            while !body.is_char_boundary(cut) {
-                cut -= 1;
-            }
-            format!("{}...", &body[..cut])
-        } else {
-            body
-        };
-
-        context.push_str(&format!("From: {}\nDate: {}\n{}\n\n---\n\n", from, date, body_truncated));
-    }
-
-    // 3. Call Gemini API
     let gemini = GeminiClient::new(api_key);
     gemini.suggest_replies(&context, &user_email).await
 }
@@ -1699,7 +1715,7 @@ pub async fn suggest_replies(
 mod tests {
     use super::{
         attachment_filename, attachment_temp_dir, icloud_card_account, icloud_snapshot, is_auth_error,
-        is_executable_attachment, mark_quarantined, next_card_position,
+        is_executable_attachment, mark_quarantined, next_card_position, reply_context,
         sanitize_attachment_filename, vanished_thread_ids, write_unique_file,
     };
     use crate::models::{Account, Card, Thread};
@@ -1916,6 +1932,65 @@ mod tests {
         let value = String::from_utf8_lossy(&out.stdout);
         assert!(value.starts_with("0083;") && value.trim_end().ends_with(";Posta;"), "{}", value);
         std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    fn message(id: &str, from: &str, text: &str, labels: &[&str], reaction: bool) -> serde_json::Value {
+        use base64::Engine;
+        let data = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(text);
+        serde_json::json!({
+            "id": id,
+            "threadId": "t",
+            "labelIds": labels,
+            "snippet": "snip",
+            "payload": {
+                "mimeType": "text/plain",
+                "headers": [
+                    {"name": "Subject", "value": "Lunch"},
+                    {"name": "from", "value": from},
+                    {"name": "Date", "value": "Mon, 1 Jan 2024 10:00:00 +0000"}
+                ],
+                "body": {"data": data}
+            },
+            "reaction": if reaction {
+                serde_json::json!({"emoji": "👍", "from_addr": from, "in_reply_to": "<x>", "message_id": id})
+            } else {
+                serde_json::Value::Null
+            }
+        })
+    }
+
+    fn full_thread(messages: Vec<serde_json::Value>) -> crate::gmail::FullThread {
+        serde_json::from_value(serde_json::json!({"id": "t", "messages": messages})).unwrap()
+    }
+
+    #[test]
+    fn reply_context_uses_the_last_three_sent_messages() {
+        let thread = full_thread(vec![
+            message("1", "a@x.com", "first", &["INBOX"], false),
+            message("2", "b@x.com", "second", &["INBOX"], false),
+            message("3", "a@x.com", "third", &["SENT"], false),
+            message("4", "b@x.com", "fourth", &["INBOX"], false),
+            message("5", "b@x.com", "👍", &["INBOX"], true),
+            message("6", "me@x.com", "unsent draft", &["DRAFT"], false),
+        ]);
+        let context = reply_context(&thread);
+        assert!(context.starts_with("Subject: Lunch\n\n"), "{}", context);
+        assert!(!context.contains("first"));
+        for body in ["second", "third", "fourth"] {
+            assert!(context.contains(body), "missing {}: {}", body, context);
+        }
+        assert!(!context.contains("👍"));
+        assert!(!context.contains("unsent draft"));
+        assert!(context.contains("From: b@x.com\nDate: Mon, 1 Jan 2024"));
+    }
+
+    #[test]
+    fn reply_context_truncates_long_bodies_on_a_char_boundary() {
+        let body = "é".repeat(1500);
+        let context = reply_context(&full_thread(vec![message("1", "a@x.com", &body, &[], false)]));
+        let kept = context.matches('é').count();
+        assert_eq!(kept, 1000);
+        assert!(context.contains("é..."));
     }
 
     fn card_at(position: i32) -> Card {
