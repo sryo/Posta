@@ -2269,7 +2269,8 @@ fn encode_address_header(addresses: &str) -> String {
 }
 
 fn encode_single_address(addr: &str) -> String {
-    let Some(pos) = addr.find('<') else {
+    // The address is the last bracketed group; a quoted name may contain '<'
+    let Some(pos) = addr.rfind('<') else {
         // Bare email address - nothing to encode
         return addr.to_string();
     };
@@ -2665,6 +2666,14 @@ mod tests {
         let mixed = encode_address_header("Müller <m@example.com>, plain@example.com");
         assert!(mixed.contains("=?UTF-8?B?"));
         assert!(mixed.ends_with(", plain@example.com"));
+    }
+
+    #[test]
+    fn encode_address_header_keeps_angle_brackets_inside_quoted_names() {
+        let encoded = encode_address_header("\"Zoë <dev>\" <z@example.com>");
+        assert!(encoded.ends_with(" <z@example.com>"), "{}", encoded);
+        let name = encoded.trim_end_matches(" <z@example.com>");
+        assert_eq!(decode_encoded_words(name), "Zoë <dev>");
     }
 
     #[test]
