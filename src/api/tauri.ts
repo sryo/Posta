@@ -213,6 +213,8 @@ interface MessagePayload {
   body?: MessageBody;
   parts?: MessagePart[];
   mimeType?: string;
+  // Set when the whole message is a single attached file
+  filename?: string;
 }
 
 export interface FullMessage {

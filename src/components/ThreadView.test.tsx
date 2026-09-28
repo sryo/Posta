@@ -314,3 +314,21 @@ describe("ThreadView inline forward", () => {
     expect(rowWithCompose(container)).toBe(2);
   });
 });
+
+describe("ThreadView attachments", () => {
+  it("lists a message that is itself a single attached file", () => {
+    const thread = makeThread([{ from: "Alice <alice@example.com>", body: "" }]);
+    thread.messages[0].payload = {
+      ...thread.messages[0].payload,
+      mimeType: "application/pdf",
+      filename: "invoice.pdf",
+      body: { attachmentId: "att-1", size: 2048 },
+    };
+    const { container, props } = renderThread({ thread, focusedMessageIndex: 0 });
+    const thumb = container.querySelector(".attachment-thumb") as HTMLElement;
+    expect(thumb).not.toBeNull();
+    expect(thumb).toHaveTextContent("invoice.pdf");
+    fireEvent.click(thumb);
+    expect(props.onOpenAttachment).toHaveBeenCalledWith("m0", "att-1", "invoice.pdf", "application/pdf", undefined);
+  });
+});

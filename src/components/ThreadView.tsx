@@ -398,7 +398,8 @@ export const ThreadView = (props: {
                       if (part.parts) findAttachments(part.parts);
                     });
                   };
-                  findAttachments(msg.payload?.parts || []);
+                  const payload = msg.payload;
+                  findAttachments(payload?.parts?.length ? payload.parts : payload?.filename ? [payload] : []);
                   return attachments;
                 };
 
