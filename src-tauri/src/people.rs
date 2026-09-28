@@ -112,9 +112,15 @@ impl PeopleClient {
 
     /// Fetch all contacts up to a limit (handles pagination internally)
     pub async fn fetch_all_contacts(&self, max_contacts: i32) -> Result<Vec<Contact>, String> {
+        let Ok(max_contacts) = usize::try_from(max_contacts) else {
+            return Ok(Vec::new());
+        };
+        if max_contacts == 0 {
+            return Ok(Vec::new());
+        }
         let mut all_contacts = Vec::new();
         let mut page_token: Option<String> = None;
-        let page_size = 100.min(max_contacts);
+        let page_size = max_contacts.min(100) as i32;
 
         loop {
             let (contacts, next_token) = self
@@ -123,15 +129,14 @@ impl PeopleClient {
 
             all_contacts.extend(contacts);
 
-            if all_contacts.len() >= max_contacts as usize || next_token.is_none() {
+            if all_contacts.len() >= max_contacts || next_token.is_none() {
                 break;
             }
 
             page_token = next_token;
         }
 
-        // Trim to max
-        all_contacts.truncate(max_contacts as usize);
+        all_contacts.truncate(max_contacts);
         Ok(all_contacts)
     }
 }
@@ -188,6 +193,14 @@ mod tests {
         assert!(!url.contains("pageToken"));
 
         assert!(connections_url(100, Some("a+b/c")).contains("&pageToken=a%2Bb%2Fc"));
+    }
+
+    #[tokio::test]
+    async fn fetch_all_contacts_with_no_budget_makes_no_request() {
+        // An invalid token would fail any real request, so Ok proves none was made
+        let client = PeopleClient::new("invalid".to_string());
+        assert!(client.fetch_all_contacts(0).await.unwrap().is_empty());
+        assert!(client.fetch_all_contacts(-5).await.unwrap().is_empty());
     }
 
     fn connection(json: serde_json::Value) -> PeopleConnection {
