@@ -2475,6 +2475,62 @@ mod tests {
     }
 
     #[test]
+    fn thread_summary_fields_request_part_headers_at_every_level() {
+        // Each nesting level of the mask must ask for the part headers (for
+        // Content-ID) and the attachment id, or inline images deeper down lose them
+        let level = "parts(mimeType,filename,headers,body(size,attachmentId)";
+        assert_eq!(THREAD_SUMMARY_FIELDS.matches(level).count(), 3);
+        assert_eq!(THREAD_SUMMARY_FIELDS.matches('(').count(), THREAD_SUMMARY_FIELDS.matches(')').count());
+    }
+
+    #[test]
+    fn thread_summary_with_image_three_levels_deep_parses() {
+        // mixed > alternative > related > image, as trimmed by THREAD_SUMMARY_FIELDS
+        let response = r#"{
+            "id": "t1",
+            "messages": [{
+                "id": "m1",
+                "labelIds": ["INBOX", "UNREAD"],
+                "snippet": "See attached",
+                "internalDate": "1705330800000",
+                "payload": {
+                    "mimeType": "multipart/mixed",
+                    "headers": [{"name": "From", "value": "Ann <ann@example.com>"},
+                                {"name": "Subject", "value": "Plans"}],
+                    "parts": [
+                        {"mimeType": "multipart/alternative", "filename": "", "headers": [], "body": {"size": 0},
+                         "parts": [
+                            {"mimeType": "text/plain", "filename": "", "body": {"size": 12}},
+                            {"mimeType": "multipart/related", "filename": "", "body": {"size": 0},
+                             "parts": [
+                                {"mimeType": "text/html", "filename": "", "body": {"size": 40}},
+                                {"mimeType": "image/png", "filename": "",
+                                 "headers": [{"name": "Content-Id", "value": "<logo@x>"}],
+                                 "body": {"size": 2048, "attachmentId": "att-img"}}
+                             ]}
+                         ]},
+                        {"mimeType": "application/pdf", "filename": "plan.pdf",
+                         "headers": [{"name": "Content-Disposition", "value": "attachment"}],
+                         "body": {"size": 90000, "attachmentId": "att-pdf"}}
+                    ]
+                }
+            }]
+        }"#;
+        let detail: ThreadDetail = serde_json::from_str(response).expect("summary parses");
+        let messages = detail.messages.expect("messages");
+        let attachments = extract_attachments_from_parts(&messages[0].payload.as_ref().unwrap().parts);
+        let summary: Vec<(&str, &str, Option<&str>)> = attachments
+            .iter()
+            .map(|a| (a.attachment_id.as_str(), a.filename.as_str(), a.content_id.as_deref()))
+            .collect();
+        assert_eq!(
+            summary,
+            vec![("att-img", "logo@x.png", Some("logo@x")), ("att-pdf", "plan.pdf", None)]
+        );
+        assert_eq!(thread_participants(&messages), vec!["ann@example.com"]);
+    }
+
+    #[test]
     fn batch_boundary_ignores_trailing_parameters() {
         assert_eq!(
             batch_boundary("multipart/mixed; boundary=batch_abc; charset=UTF-8").as_deref(),
