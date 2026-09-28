@@ -3,7 +3,7 @@ import { fireEvent, render, screen } from "@solidjs/testing-library";
 import { createSignal } from "solid-js";
 import { ComposeForm } from "./ComposeForm";
 
-function renderCompose(initialTo = "") {
+function renderCompose(initialTo = "", sending = false) {
   const [to, setTo] = createSignal(initialTo);
   const onSend = vi.fn();
   render(() => (
@@ -19,6 +19,7 @@ function renderCompose(initialTo = "") {
       fileInputId="file"
       onSend={onSend}
       onClose={vi.fn()}
+      sending={sending}
     />
   ));
   return { to, onSend };
@@ -42,5 +43,11 @@ describe("ComposeForm recipients", () => {
     fireEvent.input(screen.getByPlaceholderText("Recipients"), { target: { value: "a@example.com" } });
     fireEvent.keyDown(body, { key: "Enter", metaKey: true });
     expect(onSend).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not send again on Cmd+Enter while a send is in flight", () => {
+    const { onSend } = renderCompose("a@example.com", true);
+    fireEvent.keyDown(screen.getByPlaceholderText("Write something..."), { key: "Enter", metaKey: true });
+    expect(onSend).not.toHaveBeenCalled();
   });
 });
