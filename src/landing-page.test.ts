@@ -63,6 +63,28 @@ describe("landing page (docs/index.html)", () => {
     expect(repeated).toEqual([]);
   });
 
+  it("uses the app's palette for every theme token it shares with App.css", () => {
+    const appRules = parseRules(readRepoFile("src/App.css").replace(/\/\*[\s\S]*?\*\//g, ""));
+    const tokens = (from: typeof rules, context: string) =>
+      new Map(
+        from
+          .filter((r) => r.context === context && r.selectors.join(",") === ":root")
+          .flatMap((r) => r.declarations.filter(([prop]) => prop.startsWith("--"))),
+      );
+    const drift: string[] = [];
+    let shared = 0;
+    for (const context of ["", "@media (prefers-color-scheme: dark)"]) {
+      const app = tokens(appRules, context);
+      for (const [prop, value] of tokens(rules, context)) {
+        if (!app.has(prop)) continue;
+        shared++;
+        if (app.get(prop) !== value) drift.push(`${context || "light"} ${prop}: ${value} vs app ${app.get(prop)}`);
+      }
+    }
+    expect(shared).toBeGreaterThan(20);
+    expect(drift).toEqual([]);
+  });
+
   it("runs the demo script against its markup without throwing", () => {
     document.body.innerHTML = markup;
     expect(() => new Function(script)()).not.toThrow();
