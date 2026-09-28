@@ -1258,10 +1258,17 @@ fn parse_ics_datetime(s: &str, params: &str) -> Option<(i64, bool)> {
 /// back is its first occurrence; a time skipped when they go forward is read
 /// with the offset in force before the change (02:30 becomes 03:30).
 fn resolve_wall_time<Tz: TimeZone>(tz: &Tz, datetime: chrono::NaiveDateTime) -> Option<DateTime<Utc>> {
-    let resolved = tz.from_local_datetime(&datetime).earliest().or_else(|| {
-        tz.from_local_datetime(&(datetime + Duration::hours(1))).earliest()
-    })?;
-    Some(resolved.with_timezone(&Utc))
+    use chrono::Offset;
+    if let Some(resolved) = tz.from_local_datetime(&datetime).earliest() {
+        return Some(resolved.with_timezone(&Utc));
+    }
+    // Zones change offset at most once a day, so a day earlier is before the gap
+    let offset_before = tz
+        .offset_from_utc_datetime(&(datetime - Duration::days(1)))
+        .fix()
+        .local_minus_utc();
+    let utc = datetime.checked_sub_signed(Duration::seconds(offset_before.into()))?;
+    Some(DateTime::from_naive_utc_and_offset(utc, Utc))
 }
 
 /// Represents attachment metadata extracted from message parts
@@ -2155,6 +2162,16 @@ mod tests {
         assert_eq!(
             ics_utc("20240310T023000", ny),
             Some(("2024-03-10T07:30:00+00:00".to_string(), false))
+        );
+    }
+
+    #[test]
+    fn parse_ics_skipped_time_uses_the_actual_dst_shift() {
+        // Lord Howe moves from +10:30 to +11:00 at 02:00 on 2024-10-06, so
+        // 02:00-02:29 do not exist; 02:15 read at +10:30 is 02:45 daylight time
+        assert_eq!(
+            ics_utc("20241006T021500", "TZID=Australia/Lord_Howe"),
+            Some(("2024-10-05T15:45:00+00:00".to_string(), false))
         );
     }
 
