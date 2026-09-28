@@ -1,9 +1,11 @@
 import { describe, expect, it, vi } from "vitest";
-import { render, screen } from "@solidjs/testing-library";
+import { fireEvent, render, screen } from "@solidjs/testing-library";
 import { ActionsWheel } from "./ActionsWheel";
 import type { GoogleCalendarEvent, Thread } from "../api/tauri";
 
 vi.mock("@tauri-apps/plugin-opener", () => ({ openUrl: vi.fn() }));
+const rsvpCalendarEvent = vi.hoisted(() => vi.fn());
+vi.mock("../api/tauri", () => ({ rsvpCalendarEvent }));
 
 const thread: Thread = {
   gmail_thread_id: "t1",
@@ -76,12 +78,29 @@ describe("ActionsWheel key hints", () => {
   });
 
   it("does not advertise unbound keys on event actions", () => {
-    render(() => <ActionsWheel {...baseProps} event={event} />);
+    render(() => <ActionsWheel {...baseProps} event={event} onDeleteEvent={vi.fn()} />);
     expect(hint("Reply to organizer")).toBe("r");
     expect(hint("Join meeting")).toBeNull();
     expect(hint("Open in Calendar")).toBeNull();
     expect(hint("RSVP Yes")).toBeNull();
     expect(hint("RSVP No")).toBeNull();
     expect(hint("Delete")).toBeNull();
+  });
+});
+
+describe("ActionsWheel event delete", () => {
+  it("deletes an event the user can edit instead of declining it", () => {
+    const onDeleteEvent = vi.fn();
+    const onClose = vi.fn();
+    render(() => <ActionsWheel {...baseProps} onClose={onClose} selectedAccount={() => ({ id: "acc" } as any)} event={event} onDeleteEvent={onDeleteEvent} />);
+    fireEvent.click(screen.getByTitle("Delete"));
+    expect(onDeleteEvent).toHaveBeenCalledWith(event);
+    expect(rsvpCalendarEvent).not.toHaveBeenCalled();
+  });
+
+  it("offers no delete on events the user cannot edit, where RSVP No already declines", () => {
+    render(() => <ActionsWheel {...baseProps} event={{ ...event, can_edit: false }} onDeleteEvent={vi.fn()} />);
+    expect(screen.queryByTitle("Delete")).toBeNull();
+    expect(screen.getByTitle("RSVP No")).toBeInTheDocument();
   });
 });
