@@ -3489,11 +3489,6 @@ function App() {
                           onClick={() => {
                             startCompose({ to: contact.email, focusBody: true });
                             setComposeFabHovered(false);
-                            // Focus body after compose panel opens
-                            setTimeout(() => {
-                              const bodyTextarea = document.querySelector('.compose-content textarea') as HTMLTextAreaElement;
-                              bodyTextarea?.focus();
-                            }, 100);
                           }}
                         >
                           {(contact.name || contact.email).charAt(0).toUpperCase()}
