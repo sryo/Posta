@@ -16,6 +16,10 @@ const PAGE_SIZE: usize = 20;
 /// The API's maximum; its default of 100 takes five times the requests
 const HISTORY_PAGE_SIZE: usize = 500;
 const MAX_BATCH_SIZE: usize = 50; // Gmail allows up to 100, but 50 is safer
+/// Batch requests per chunk of threads before fetching the rest one by one
+const BATCH_ATTEMPTS: usize = 2;
+/// Pause before batching again the threads a batch missed, mostly to rate limits
+const BATCH_RETRY_DELAY: std::time::Duration = std::time::Duration::from_secs(1);
 const MAX_INLINE_IMAGE_SIZE: i32 = 100_000; // 100KB max for inline images
 const MAX_INLINE_IMAGES: usize = 3;
 
@@ -43,6 +47,7 @@ pub struct GmailClient {
     api_base: String,
     batch_endpoint: String,
     upload_base: String,
+    batch_retry_delay: std::time::Duration,
 }
 
 #[derive(Debug, Deserialize)]
@@ -324,6 +329,7 @@ impl GmailClient {
             api_base: GMAIL_API_BASE.to_string(),
             batch_endpoint: BATCH_API_ENDPOINT.to_string(),
             upload_base: GMAIL_UPLOAD_BASE.to_string(),
+            batch_retry_delay: BATCH_RETRY_DELAY,
         }
     }
 
@@ -495,41 +501,40 @@ impl GmailClient {
 
     /// Thread list entries for `thread_ids`, with the data of their small
     /// images and calendar invites. Threads and attachments are each fetched
-    /// with batch requests; threads a batch misses are fetched one by one.
+    /// with batch requests. Threads a batch misses (429, 5xx) are batched
+    /// again after a pause, then fetched one by one; threads deleted since
+    /// they were listed (404) are left out.
     pub async fn batch_get_thread_details(&self, thread_ids: &[String]) -> Result<Vec<Thread>, String> {
         let mut all_threads = Vec::new();
 
         for chunk in thread_ids.chunks(MAX_BATCH_SIZE) {
-            let missing: Vec<String> = match self.execute_batch_thread_fetch(chunk).await {
-                Ok(threads) => {
-                    // Individual sub-responses can fail (429/5xx) even when the
-                    // batch itself succeeds; retry those threads sequentially
-                    let fetched: HashSet<&str> =
-                        threads.iter().map(|t| t.gmail_thread_id.as_str()).collect();
-                    let missing = chunk
-                        .iter()
-                        .filter(|id| !fetched.contains(id.as_str()))
-                        .cloned()
-                        .collect();
-                    all_threads.extend(threads);
-                    missing
+            let mut pending: Vec<String> = chunk.to_vec();
+            for attempt in 0..BATCH_ATTEMPTS {
+                if pending.is_empty() {
+                    break;
                 }
-                Err(e) => {
-                    tracing::warn!("Batch fetch failed, falling back to sequential: {}", e);
-                    chunk.to_vec()
+                if attempt > 0 {
+                    tokio::time::sleep(self.batch_retry_delay).await;
                 }
-            };
+                match self.execute_batch_thread_fetch(&pending).await {
+                    Ok((threads, missed)) => {
+                        all_threads.extend(threads);
+                        pending = missed;
+                    }
+                    Err(e) => tracing::warn!("Batch fetch failed: {}", e),
+                }
+            }
 
-            for thread_id in &missing {
+            for thread_id in &pending {
                 match self.get_thread_detail(thread_id).await {
                     Ok(thread) => all_threads.push(thread),
-                    // 404 means the thread was deleted after being listed; anything
-                    // else must fail the whole call so callers don't treat the
-                    // result as complete (incremental sync would otherwise advance
-                    // the history ID past a change it never fetched)
                     Err(e) if e.contains("API error 404") => {
                         tracing::warn!("Thread {} no longer exists, skipping", thread_id);
                     }
+                    // Anything else must fail the whole call so callers don't
+                    // treat the result as complete (incremental sync would
+                    // otherwise advance the history ID past a change it never
+                    // fetched)
                     Err(e) => return Err(format!("Failed to fetch thread {}: {}", thread_id, e)),
                 }
             }
@@ -539,23 +544,33 @@ impl GmailClient {
         Ok(all_threads)
     }
 
-    /// Summaries of the threads a single batch request returns
-    async fn execute_batch_thread_fetch(&self, thread_ids: &[String]) -> Result<Vec<Thread>, String> {
+    /// Summaries of the threads a single batch request returns, and the ids
+    /// it missed. A thread answered with 404 is in neither: it was deleted.
+    async fn execute_batch_thread_fetch(&self, thread_ids: &[String]) -> Result<(Vec<Thread>, Vec<String>), String> {
         let paths: Vec<String> = thread_ids
             .iter()
             .map(|id| format!("/gmail/v1/users/me/threads/{}?format=full&fields={}", id, THREAD_SUMMARY_FIELDS))
             .collect();
-        let bodies = self.execute_batch_get(&paths).await?;
-        Ok(bodies
-            .into_iter()
-            .flatten()
-            .filter_map(|body| {
-                serde_json::from_str::<ThreadDetail>(&body)
+        let items = self.execute_batch(&paths).await?;
+        let mut threads = Vec::new();
+        let mut missed = Vec::new();
+        for (thread_id, item) in thread_ids.iter().zip(items) {
+            let detail = match item {
+                Some((200..=299, body)) => serde_json::from_str::<ThreadDetail>(&body)
                     .map_err(|e| tracing::warn!("Failed to parse thread from batch: {}", e))
-                    .ok()
-            })
-            .map(thread_summary)
-            .collect())
+                    .ok(),
+                Some((404, _)) => {
+                    tracing::warn!("Thread {} no longer exists, skipping", thread_id);
+                    continue;
+                }
+                _ => None,
+            };
+            match detail {
+                Some(detail) => threads.push(thread_summary(detail)),
+                None => missed.push(thread_id.clone()),
+            }
+        }
+        Ok((threads, missed))
     }
 
     /// Fetch the data the list shows with a thread: its first few small images

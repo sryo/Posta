@@ -144,6 +144,7 @@ impl StubServer {
             api_base: format!("{}/gmail/v1", self.base),
             batch_endpoint: format!("{}/batch/gmail/v1", self.base),
             upload_base: format!("{}/upload/gmail/v1", self.base),
+            batch_retry_delay: StdDuration::from_millis(10),
             ..GmailClient::new("token".into())
         }
     }
@@ -586,4 +587,73 @@ async fn failed_calls_report_the_friendly_error() {
         .await
         .unwrap_err();
     assert!(err.contains("API error 429 Too Many Requests: Too many requests"), "{}", err);
+}
+
+fn thread_json(id: &str) -> String {
+    serde_json::json!({ "id": id, "messages": [{ "id": format!("m-{}", id), "internalDate": "1700000000000" }] })
+        .to_string()
+}
+
+#[tokio::test]
+async fn thread_fetches_a_batch_misses_are_batched_again_and_deleted_ones_skipped() {
+    let failed_once: Arc<Mutex<HashSet<String>>> = Default::default();
+    let server = StubServer::start({
+        let failed_once = failed_once.clone();
+        move |request| {
+            if !request.target.starts_with("/batch/") {
+                return Reply::Json(500, "{}".into());
+            }
+            batch_reply(request, |path| match thread_id_of(path) {
+                id if id.starts_with("gone") => (404, google_error(404, "NOT_FOUND", "notFound", "Not Found")),
+                id if id.starts_with("busy") && failed_once.lock().unwrap().insert(id.to_string()) => {
+                    (429, google_error(429, "RESOURCE_EXHAUSTED", "rateLimitExceeded", "slow down"))
+                }
+                id => (200, thread_json(id)),
+            })
+        }
+    })
+    .await;
+
+    let mut ids: Vec<String> = (0..40).map(|i| format!("ok{}", i)).collect();
+    ids.extend((0..12).map(|i| format!("busy{}", i)));
+    ids.extend((0..3).map(|i| format!("gone{}", i)));
+
+    let threads = within(server.client().batch_get_thread_details(&ids)).await.unwrap();
+
+    let mut fetched: Vec<&str> = threads.iter().map(|t| t.gmail_thread_id.as_str()).collect();
+    fetched.sort();
+    let mut expected: Vec<&str> = ids.iter().map(String::as_str).filter(|id| !id.starts_with("gone")).collect();
+    expected.sort();
+    assert_eq!(fetched, expected);
+
+    let requests = server.requests();
+    assert!(requests.iter().all(|r| r.target.starts_with("/batch/")), "fetched one by one");
+    let batch_sizes: Vec<usize> = requests.iter().map(batch_paths).map(|p| p.len()).collect();
+    // Two chunks (50 + 5), each followed by a batch retrying its 429s; the
+    // 404s are not asked for again
+    assert_eq!(batch_sizes, [50, 10, 5, 2]);
+}
+
+#[tokio::test]
+async fn a_thread_batch_that_is_rate_limited_is_retried_as_a_batch() {
+    let batches = Arc::new(AtomicUsize::new(0));
+    let server = StubServer::start({
+        let batches = batches.clone();
+        move |request| {
+            if !request.target.starts_with("/batch/") {
+                return Reply::Json(500, "{}".into());
+            }
+            if batches.fetch_add(1, Ordering::SeqCst) == 0 {
+                return Reply::Json(429, google_error(429, "RESOURCE_EXHAUSTED", "rateLimitExceeded", "slow down"));
+            }
+            batch_reply(request, |path| (200, thread_json(thread_id_of(path))))
+        }
+    })
+    .await;
+    let ids: Vec<String> = (0..20).map(|i| format!("t{}", i)).collect();
+
+    let threads = within(server.client().batch_get_thread_details(&ids)).await.unwrap();
+
+    assert_eq!(threads.len(), 20);
+    assert_eq!(server.requests().len(), 2, "one batch retry instead of 20 single fetches");
 }
