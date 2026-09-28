@@ -4025,8 +4025,11 @@ button:disabled:hover {
 }
 
 /* Containment stops the first block's top margin from collapsing into the
-   header's gap, so drop it to keep the spacing it had before. */
-.message-body > :first-child {
+   header's gap, so drop it to keep the spacing it had before. Emails often
+   wrap the opening paragraph in divs whose margins it collapses through. */
+.message-body > :first-child,
+.message-body > :first-child > :first-child,
+.message-body > :first-child > :first-child > :first-child {
     margin-top: 0;
 }
 

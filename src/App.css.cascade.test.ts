@@ -40,6 +40,14 @@ describe("App.css cascade", () => {
     expect(marginTop("second")).toBeUndefined();
   });
 
+  it("keeps the gap under the header the same when the opening paragraph sits in wrapper divs", () => {
+    document.body.innerHTML = `<div class="message-body"><div dir="ltr" id="outer"><div id="inner">
+        <p id="first">a</p><p id="second">b</p></div></div></div>`;
+    const marginTop = (id: string) => cascadedDeclarations(rules, document.getElementById(id)!).get("margin-top");
+    for (const id of ["outer", "inner", "first"]) expect(marginTop(id), id).toBe("0");
+    expect(marginTop("second")).toBeUndefined();
+  });
+
   it("rings every keyboard-reachable control on keyboard focus, inset on list rows", () => {
     document.body.innerHTML = `<button class="collapse-btn" id="collapse"></button>
       <a href="#" id="link">x</a>
