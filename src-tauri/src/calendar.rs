@@ -495,8 +495,8 @@ impl CalendarClient {
                 break;
             }
             match page.next_page_token {
-                Some(token) => page_token = Some(token),
-                None => break,
+                Some(token) if page_token.as_ref() != Some(&token) => page_token = Some(token),
+                _ => break,
             }
         }
         Ok(items)
@@ -1866,6 +1866,19 @@ mod tests {
         let calendars = server.client().list_calendars().await.unwrap();
         let ids: Vec<&str> = calendars.iter().map(|c| c.id.as_str()).collect();
         assert_eq!(ids, vec!["first", "second"]);
+        assert_eq!(server.requests().len(), 2);
+    }
+
+    #[tokio::test]
+    async fn paging_stops_when_google_repeats_a_page_token() {
+        // Empty pages can carry a token; one that never changes would
+        // otherwise be followed forever, since no items reach the cap
+        let server = StubServer::start(|_, _| (200, serde_json::json!({ "items": [], "nextPageToken": "again" }).to_string())).await;
+        let calendars = tokio::time::timeout(std::time::Duration::from_secs(10), server.client().list_calendars())
+            .await
+            .expect("paged forever")
+            .unwrap();
+        assert!(calendars.is_empty());
         assert_eq!(server.requests().len(), 2);
     }
 
