@@ -16,6 +16,8 @@ export interface Draft extends DraftFields {
   savedAt: number;
   // The user closed its compose and kept the draft
   closed?: boolean;
+  // The savedAt of the version Gmail's Drafts holds
+  syncedAt?: number;
   // Queued to send when last saved, from this account
   sending?: boolean;
   accountId?: string;
@@ -94,15 +96,17 @@ export function findUnsentDrafts(): { key: string; draft: Draft }[] {
 
 const CLOSED_DRAFT_KEPT_MS = 30 * 24 * 60 * 60 * 1000;
 
-// Closed drafts that Gmail's Drafts already holds. A closed new email is
-// never offered again, so its local copy goes at once; a closed reply or
-// forward stays a month for replying to the same thread again. Anything that
-// may be the only copy stays.
+// Closed drafts whose latest text Gmail's Drafts already holds. A closed new
+// email is never offered again, so its local copy goes at once; a closed
+// reply or forward stays a month for replying to the same thread again.
+// Anything that may be the only copy stays.
 export function pruneDrafts(now: number) {
   for (const key of storageKeys()) {
     if (!DRAFT_KINDS.some(kind => key.startsWith(`draft_${kind}_`))) continue;
     const draft = safeGetJSON<Draft | null>(key, null);
     if (!draft || !draft.closed || !draft.gmailDraftId || draft.sending) continue;
+    // Text saved after the last sync (typed offline) is only here
+    if (typeof draft.syncedAt !== "number" || draft.syncedAt < draft.savedAt) continue;
     const newEmail = key.startsWith("draft_new_");
     if (newEmail || now - draft.savedAt > CLOSED_DRAFT_KEPT_MS) safeRemoveItem(key);
   }
@@ -193,7 +197,8 @@ export function createDraftSync() {
         syncedDraftIds.set(key, result.id);
         if (stored && (!stored.gmailDraftId || stored.gmailDraftId === sentDraftId)) {
           // The compose was replaced, not discarded: its draft stays saved
-          safeSetJSON(key, { ...stored, gmailDraftId: result.id });
+          const syncedAt = stored.savedAt === draft.savedAt ? draft.savedAt : stored.syncedAt;
+          safeSetJSON(key, { ...stored, gmailDraftId: result.id, syncedAt });
         }
         return true;
       }
@@ -202,7 +207,7 @@ export function createDraftSync() {
       // A later save may already have stored newer text locally
       const stored = safeGetJSON<Draft | null>(key, null);
       const latest = stored && stored.savedAt >= draft.savedAt ? stored : draft;
-      safeSetJSON(key, { ...latest, gmailDraftId: result.id });
+      safeSetJSON(key, { ...latest, gmailDraftId: result.id, syncedAt: draft.savedAt });
       flashSaved();
       return true;
     } catch (e) {

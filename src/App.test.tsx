@@ -1526,7 +1526,7 @@ describe("App drafts", () => {
   const storedDrafts = (prefix: string) => draftKeys(prefix).map(k => JSON.parse(localStorage.getItem(k)!));
 
   it("clears out closed drafts that Gmail already holds when it starts", async () => {
-    localStorage.setItem("draft_new_a#old", JSON.stringify({ to: "", cc: "", bcc: "", subject: "Kept in Gmail", body: "", savedAt: 1, closed: true, gmailDraftId: "d1" }));
+    localStorage.setItem("draft_new_a#old", JSON.stringify({ to: "", cc: "", bcc: "", subject: "Kept in Gmail", body: "", savedAt: 1, syncedAt: 1, closed: true, gmailDraftId: "d1" }));
     localStorage.setItem("draft_new_a#mine", JSON.stringify({ to: "", cc: "", bcc: "", subject: "Only here", body: "", savedAt: 1, closed: true }));
     render(() => <App />);
     await screen.findByText("Mail for A");

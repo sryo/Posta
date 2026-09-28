@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import { createRoot } from "solid-js";
 
 type Handler = (args: Record<string, unknown>) => unknown;
@@ -100,14 +100,43 @@ describe("pruneDrafts", () => {
     localStorage.setItem(key, JSON.stringify({ ...fields("x"), savedAt: now, ...draft }));
 
   it("removes closed new emails that Gmail's Drafts already holds", () => {
-    store("draft_new_a#1", { closed: true, gmailDraftId: "d1" });
+    store("draft_new_a#1", { closed: true, gmailDraftId: "d1", syncedAt: now });
     pruneDrafts(now);
     expect(localStorage.getItem("draft_new_a#1")).toBeNull();
   });
 
+  it("keeps a closed draft whose last text never reached Gmail", () => {
+    store("draft_new_a#1", { closed: true, gmailDraftId: "d1", syncedAt: now - DAY });
+    store("draft_new_a#2", { closed: true, gmailDraftId: "d2" });
+    store("draft_reply_a_t1#1", { closed: true, gmailDraftId: "d3", savedAt: now - 31 * DAY, syncedAt: now - 32 * DAY });
+    pruneDrafts(now);
+    expect(Object.keys(localStorage).sort()).toEqual(["draft_new_a#1", "draft_new_a#2", "draft_reply_a_t1#1"]);
+  });
+
+  it("prunes a draft only once its latest save has synced", async () => {
+    let clock = 1000;
+    const dateNow = vi.spyOn(Date, "now").mockImplementation(() => ++clock);
+    onTestFinished(() => dateNow.mockRestore());
+    let online = true;
+    handlers.save_draft = () => { if (!online) throw new Error("offline"); return { id: "g1" }; };
+    const drafts = sync();
+    await drafts.save("draft_new_a#1", "a", fields("synced"));
+    online = false;
+    await drafts.save("draft_new_a#1", "a", fields("typed offline"));
+    markDraftClosed("draft_new_a#1");
+    pruneDrafts(Date.now());
+    expect(JSON.parse(localStorage.getItem("draft_new_a#1")!).body).toBe("typed offline");
+
+    online = true;
+    await drafts.save("draft_new_a#1", "a", fields("typed offline"));
+    markDraftClosed("draft_new_a#1");
+    pruneDrafts(Date.now());
+    expect(localStorage.getItem("draft_new_a#1")).toBeNull();
+  });
+
   it("keeps a closed reply in Gmail for a month so replying again picks it up", () => {
-    store("draft_reply_a_t1#1", { closed: true, gmailDraftId: "d1", savedAt: now - 29 * DAY });
-    store("draft_reply_a_t2#1", { closed: true, gmailDraftId: "d2", savedAt: now - 31 * DAY });
+    store("draft_reply_a_t1#1", { closed: true, gmailDraftId: "d1", savedAt: now - 29 * DAY, syncedAt: now - 29 * DAY });
+    store("draft_reply_a_t2#1", { closed: true, gmailDraftId: "d2", savedAt: now - 31 * DAY, syncedAt: now - 31 * DAY });
     pruneDrafts(now);
     expect(localStorage.getItem("draft_reply_a_t1#1")).not.toBeNull();
     expect(localStorage.getItem("draft_reply_a_t2#1")).toBeNull();
@@ -117,7 +146,7 @@ describe("pruneDrafts", () => {
     store("draft_new_a#1", { closed: true, savedAt: 0 });
     store("draft_new_a#2", { savedAt: 0, gmailDraftId: "d2" });
     store("draft_reply_a_t1#1", { closed: true, savedAt: 0 });
-    store("draft_new_a#3", { closed: true, gmailDraftId: "d3", sending: true });
+    store("draft_new_a#3", { closed: true, gmailDraftId: "d3", syncedAt: now, sending: true });
     localStorage.setItem("draft_new_a#4", "{");
     localStorage.setItem("cardWidth", "300");
     pruneDrafts(now);
