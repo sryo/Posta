@@ -16,6 +16,10 @@ const PAGE_SIZE: usize = 20;
 /// The API's maximum; its default of 100 takes five times the requests
 const HISTORY_PAGE_SIZE: usize = 500;
 const MAX_BATCH_SIZE: usize = 50; // Gmail allows up to 100, but 50 is safer
+/// Batch requests per chunk of threads before fetching the rest one by one
+const BATCH_ATTEMPTS: usize = 2;
+/// Pause before batching again the threads a batch missed, mostly to rate limits
+const BATCH_RETRY_DELAY: std::time::Duration = std::time::Duration::from_secs(1);
 const MAX_INLINE_IMAGE_SIZE: i32 = 100_000; // 100KB max for inline images
 const MAX_INLINE_IMAGES: usize = 3;
 
@@ -43,6 +47,7 @@ pub struct GmailClient {
     api_base: String,
     batch_endpoint: String,
     upload_base: String,
+    batch_retry_delay: std::time::Duration,
 }
 
 #[derive(Debug, Deserialize)]
@@ -290,6 +295,13 @@ fn shared_http_client() -> reqwest::Client {
     CLIENT.get_or_init(|| build_http_client(READ_TIMEOUT)).clone()
 }
 
+/// An id as one URL path segment. Gmail's ids never need escaping, but
+/// one holding '/' or ".." would otherwise send the request, with the
+/// user's token, to a different endpoint.
+fn path_id(id: &str) -> std::borrow::Cow<'_, str> {
+    urlencoding::encode(id)
+}
+
 /// A transport failure in words the user can act on, without the request
 /// URL (it can hold the user's search query)
 fn request_error(e: reqwest::Error) -> String {
@@ -302,6 +314,20 @@ fn request_error(e: reqwest::Error) -> String {
     }
 }
 
+/// A failure to read or parse a response body `what`. Only a body that
+/// arrived whole and is not what Gmail sends is a parse error; one cut off
+/// or stalled by the network reads like a failed request.
+fn body_error(what: &str, e: reqwest::Error) -> String {
+    let unparsable = std::error::Error::source(&e).is_some_and(|source| source.is::<serde_json::Error>());
+    if unparsable {
+        format!("Failed to parse {}: {}", what, e)
+    } else if e.is_timeout() {
+        request_error(e)
+    } else {
+        "Request failed: the network connection to Gmail dropped. Check your connection and try again.".to_string()
+    }
+}
+
 impl GmailClient {
     pub fn new(access_token: String) -> Self {
         Self {
@@ -310,6 +336,7 @@ impl GmailClient {
             api_base: GMAIL_API_BASE.to_string(),
             batch_endpoint: BATCH_API_ENDPOINT.to_string(),
             upload_base: GMAIL_UPLOAD_BASE.to_string(),
+            batch_retry_delay: BATCH_RETRY_DELAY,
         }
     }
 
@@ -351,7 +378,7 @@ impl GmailClient {
             .await?
             .json()
             .await
-            .map_err(|e| format!("Failed to parse response: {}", e))?;
+            .map_err(|e| body_error("response", e))?;
 
         let thread_ids: Vec<String> = list.threads.unwrap_or_default().into_iter().map(|t| t.id).collect();
         if thread_ids.is_empty() {
@@ -371,7 +398,7 @@ impl GmailClient {
     }
 
     pub async fn get_thread(&self, thread_id: &str) -> Result<FullThread, String> {
-        let url = format!("{}/users/me/threads/{}?format=full", self.api_base, thread_id);
+        let url = format!("{}/users/me/threads/{}?format=full", self.api_base, path_id(thread_id));
 
         let resp = self
             .client
@@ -386,7 +413,7 @@ impl GmailClient {
         let mut thread: FullThread = resp
             .json()
             .await
-            .map_err(|e| format!("Failed to parse thread: {}", e))?;
+            .map_err(|e| body_error("thread", e))?;
 
         for message in &mut thread.messages {
             message.reaction = parse_reaction_from_message(message);
@@ -401,7 +428,7 @@ impl GmailClient {
         add_label_ids: Vec<String>,
         remove_label_ids: Vec<String>,
     ) -> Result<(), String> {
-        let url = format!("{}/users/me/threads/{}/modify", self.api_base, thread_id);
+        let url = format!("{}/users/me/threads/{}/modify", self.api_base, path_id(thread_id));
 
         let body = ModifyThreadRequest {
             add_label_ids,
@@ -429,7 +456,9 @@ impl GmailClient {
     ) -> Result<String, String> {
         let url = format!(
             "{}/users/me/messages/{}/attachments/{}",
-            self.api_base, message_id, attachment_id
+            self.api_base,
+            path_id(message_id),
+            path_id(attachment_id)
         );
 
         let resp = self
@@ -450,7 +479,7 @@ impl GmailClient {
         let attachment: AttachmentResponse = resp
             .json()
             .await
-            .map_err(|e| format!("Failed to parse attachment: {}", e))?;
+            .map_err(|e| body_error("attachment", e))?;
 
         Ok(attachment.data)
     }
@@ -458,7 +487,9 @@ impl GmailClient {
     async fn get_thread_detail(&self, thread_id: &str) -> Result<Thread, String> {
         let url = format!(
             "{}/users/me/threads/{}?format=full&fields={}",
-            self.api_base, thread_id, THREAD_SUMMARY_FIELDS
+            self.api_base,
+            path_id(thread_id),
+            THREAD_SUMMARY_FIELDS
         );
 
         let resp = self
@@ -474,48 +505,47 @@ impl GmailClient {
         let detail: ThreadDetail = resp
             .json()
             .await
-            .map_err(|e| format!("Failed to parse thread: {}", e))?;
+            .map_err(|e| body_error("thread", e))?;
 
         Ok(thread_summary(detail))
     }
 
     /// Thread list entries for `thread_ids`, with the data of their small
     /// images and calendar invites. Threads and attachments are each fetched
-    /// with batch requests; threads a batch misses are fetched one by one.
+    /// with batch requests. Threads a batch misses (429, 5xx) are batched
+    /// again after a pause, then fetched one by one; threads deleted since
+    /// they were listed (404) are left out.
     pub async fn batch_get_thread_details(&self, thread_ids: &[String]) -> Result<Vec<Thread>, String> {
         let mut all_threads = Vec::new();
 
         for chunk in thread_ids.chunks(MAX_BATCH_SIZE) {
-            let missing: Vec<String> = match self.execute_batch_thread_fetch(chunk).await {
-                Ok(threads) => {
-                    // Individual sub-responses can fail (429/5xx) even when the
-                    // batch itself succeeds; retry those threads sequentially
-                    let fetched: HashSet<&str> =
-                        threads.iter().map(|t| t.gmail_thread_id.as_str()).collect();
-                    let missing = chunk
-                        .iter()
-                        .filter(|id| !fetched.contains(id.as_str()))
-                        .cloned()
-                        .collect();
-                    all_threads.extend(threads);
-                    missing
+            let mut pending: Vec<String> = chunk.to_vec();
+            for attempt in 0..BATCH_ATTEMPTS {
+                if pending.is_empty() {
+                    break;
                 }
-                Err(e) => {
-                    tracing::warn!("Batch fetch failed, falling back to sequential: {}", e);
-                    chunk.to_vec()
+                if attempt > 0 {
+                    tokio::time::sleep(self.batch_retry_delay).await;
                 }
-            };
+                match self.execute_batch_thread_fetch(&pending).await {
+                    Ok((threads, missed)) => {
+                        all_threads.extend(threads);
+                        pending = missed;
+                    }
+                    Err(e) => tracing::warn!("Batch fetch failed: {}", e),
+                }
+            }
 
-            for thread_id in &missing {
+            for thread_id in &pending {
                 match self.get_thread_detail(thread_id).await {
                     Ok(thread) => all_threads.push(thread),
-                    // 404 means the thread was deleted after being listed; anything
-                    // else must fail the whole call so callers don't treat the
-                    // result as complete (incremental sync would otherwise advance
-                    // the history ID past a change it never fetched)
                     Err(e) if e.contains("API error 404") => {
                         tracing::warn!("Thread {} no longer exists, skipping", thread_id);
                     }
+                    // Anything else must fail the whole call so callers don't
+                    // treat the result as complete (incremental sync would
+                    // otherwise advance the history ID past a change it never
+                    // fetched)
                     Err(e) => return Err(format!("Failed to fetch thread {}: {}", thread_id, e)),
                 }
             }
@@ -525,23 +555,33 @@ impl GmailClient {
         Ok(all_threads)
     }
 
-    /// Summaries of the threads a single batch request returns
-    async fn execute_batch_thread_fetch(&self, thread_ids: &[String]) -> Result<Vec<Thread>, String> {
+    /// Summaries of the threads a single batch request returns, and the ids
+    /// it missed. A thread answered with 404 is in neither: it was deleted.
+    async fn execute_batch_thread_fetch(&self, thread_ids: &[String]) -> Result<(Vec<Thread>, Vec<String>), String> {
         let paths: Vec<String> = thread_ids
             .iter()
-            .map(|id| format!("/gmail/v1/users/me/threads/{}?format=full&fields={}", id, THREAD_SUMMARY_FIELDS))
+            .map(|id| format!("/gmail/v1/users/me/threads/{}?format=full&fields={}", path_id(id), THREAD_SUMMARY_FIELDS))
             .collect();
-        let bodies = self.execute_batch_get(&paths).await?;
-        Ok(bodies
-            .into_iter()
-            .flatten()
-            .filter_map(|body| {
-                serde_json::from_str::<ThreadDetail>(&body)
+        let items = self.execute_batch(&paths).await?;
+        let mut threads = Vec::new();
+        let mut missed = Vec::new();
+        for (thread_id, item) in thread_ids.iter().zip(items) {
+            let detail = match item {
+                Some((200..=299, body)) => serde_json::from_str::<ThreadDetail>(&body)
                     .map_err(|e| tracing::warn!("Failed to parse thread from batch: {}", e))
-                    .ok()
-            })
-            .map(thread_summary)
-            .collect())
+                    .ok(),
+                Some((404, _)) => {
+                    tracing::warn!("Thread {} no longer exists, skipping", thread_id);
+                    continue;
+                }
+                _ => None,
+            };
+            match detail {
+                Some(detail) => threads.push(thread_summary(detail)),
+                None => missed.push(thread_id.clone()),
+            }
+        }
+        Ok((threads, missed))
     }
 
     /// Fetch the data the list shows with a thread: its first few small images
@@ -620,7 +660,7 @@ impl GmailClient {
             .and_then(batch_boundary)
             .ok_or("Missing boundary in response")?;
 
-        let resp_body = resp.text().await.map_err(|e| format!("Failed to read response: {}", e))?;
+        let resp_body = resp.text().await.map_err(|e| body_error("batch response", e))?;
 
         let mut items = vec![None; paths.len()];
         for response in parse_batch_responses(&resp_body, &resp_boundary) {
@@ -720,7 +760,7 @@ impl GmailClient {
             .await?
             .json()
             .await
-            .map_err(|e| format!("Failed to parse thread: {}", e))
+            .map_err(|e| body_error("thread", e))
     }
 
     /// List all labels for the authenticated user
@@ -740,7 +780,7 @@ impl GmailClient {
         let response: ListLabelsResponse = resp
             .json()
             .await
-            .map_err(|e| format!("Failed to parse labels: {}", e))?;
+            .map_err(|e| body_error("labels", e))?;
 
         Ok(response.labels.unwrap_or_default())
     }
@@ -760,7 +800,7 @@ impl GmailClient {
         message: &OutgoingMessage<'_>,
         thread_id: Option<&str>,
     ) -> Result<GmailDraft, String> {
-        let url = format!("{}/users/me/drafts/{}", self.api_base, draft_id);
+        let url = format!("{}/users/me/drafts/{}", self.api_base, path_id(draft_id));
         match self.upsert_draft(self.client.put(&url), message, thread_id).await {
             // Sent or discarded from another device while this compose stayed
             // open; without a new draft the text would never reach Gmail again
@@ -806,12 +846,12 @@ impl GmailClient {
 
         resp.json()
             .await
-            .map_err(|e| format!("Failed to parse draft: {}", e))
+            .map_err(|e| body_error("draft", e))
     }
 
     /// Delete a draft
     pub async fn delete_draft(&self, draft_id: &str) -> Result<(), String> {
-        let url = format!("{}/users/me/drafts/{}", self.api_base, draft_id);
+        let url = format!("{}/users/me/drafts/{}", self.api_base, path_id(draft_id));
 
         let resp = self
             .client
@@ -855,7 +895,7 @@ impl GmailClient {
         let profile: Profile = resp
             .json()
             .await
-            .map_err(|e| format!("Failed to parse profile: {}", e))?;
+            .map_err(|e| body_error("profile", e))?;
 
         Ok(profile.history_id)
     }
@@ -873,7 +913,7 @@ impl GmailClient {
             let mut url = format!(
                 "{}/users/me/history?startHistoryId={}&maxResults={}&historyTypes=messageAdded&historyTypes=messageDeleted&historyTypes=labelAdded&historyTypes=labelRemoved",
                 self.api_base,
-                start_history_id,
+                urlencoding::encode(start_history_id),
                 HISTORY_PAGE_SIZE
             );
 
@@ -899,7 +939,7 @@ impl GmailClient {
             let history_resp: HistoryListResponse = resp
                 .json()
                 .await
-                .map_err(|e| format!("Failed to parse history: {}", e))?;
+                .map_err(|e| body_error("history", e))?;
 
             new_history_id = history_resp.history_id;
 
@@ -976,7 +1016,7 @@ impl GmailClient {
         for chunk in thread_ids.chunks(MAX_BATCH_SIZE) {
             let paths: Vec<String> = chunk
                 .iter()
-                .map(|id| format!("/gmail/v1/users/me/threads/{}?format=minimal&fields=id", id))
+                .map(|id| format!("/gmail/v1/users/me/threads/{}?format=minimal&fields=id", path_id(id)))
                 .collect();
             let statuses: Vec<Option<u16>> = match self.execute_batch(&paths).await {
                 Ok(items) => items.into_iter().map(|item| item.map(|(status, _)| status)).collect(),
@@ -1008,7 +1048,8 @@ impl GmailClient {
     async fn thread_exists(&self, thread_id: &str) -> Result<bool, String> {
         let url = format!(
             "{}/users/me/threads/{}?format=minimal&fields=id",
-            self.api_base, thread_id
+            self.api_base,
+            path_id(thread_id)
         );
 
         let resp = self
@@ -1167,7 +1208,8 @@ fn attachment_fetches(threads: &[Thread]) -> Vec<AttachmentFetch> {
 fn attachment_path(attachment: &Attachment) -> String {
     format!(
         "/gmail/v1/users/me/messages/{}/attachments/{}",
-        attachment.message_id, attachment.attachment_id
+        path_id(&attachment.message_id),
+        path_id(&attachment.attachment_id)
     )
 }
 
@@ -1308,7 +1350,9 @@ fn thread_metadata_url(api_base: &str, thread_id: &str, header_names: &[&str]) -
         .collect();
     format!(
         "{}/users/me/threads/{}?format=metadata{}&fields=id,messages(id,threadId,labelIds,payload/headers)",
-        api_base, thread_id, headers
+        api_base,
+        path_id(thread_id),
+        headers
     )
 }
 
@@ -1999,7 +2043,7 @@ fn classify_date<Tz: TimeZone>(date: DateTime<Utc>, now: &DateTime<Tz>) -> DateB
     let today = now.date_naive();
     let msg_date = date.with_timezone(&now.timezone()).date_naive();
 
-    if msg_date == today {
+    if msg_date >= today {
         return DateBucket::Today;
     }
     if msg_date == today - Duration::days(1) {
@@ -2118,8 +2162,27 @@ fn strip_html_tags(html: &str) -> String {
         }
     }
 
-    for c in html.chars() {
+    let mut skip_to = 0;
+    for (i, c) in html.char_indices() {
+        if i < skip_to {
+            continue;
+        }
+        // Style and script end at their closing tag even inside "<!--"
+        let raw_text = matches!(hidden_element.as_deref(), Some("style" | "script"));
         match c {
+            '<' if !in_tag && !raw_text && html[i..].starts_with("<!--") => {
+                // Comments may hold '>' and whole elements (Outlook's
+                // conditional markup); "<!-->" and "<!--->" end at once
+                let body = &html[i + 4..];
+                let len = if body.starts_with('>') {
+                    1
+                } else if body.starts_with("->") {
+                    2
+                } else {
+                    body.find("-->").map_or(body.len(), |end| end + 3)
+                };
+                skip_to = i + 4 + len;
+            }
             '<' => {
                 in_tag = true;
                 tag.clear();
@@ -2150,6 +2213,9 @@ fn strip_html_tags(html: &str) -> String {
                         if is_closing =>
                     {
                         end_line(&mut result, false)
+                    }
+                    "td" | "th" if is_closing && !(result.is_empty() || result.ends_with([' ', '\n'])) => {
+                        result.push(' ')
                     }
                     _ => {}
                 }
@@ -2751,6 +2817,32 @@ mod tests {
         assert_eq!(strip_html_tags("<div>one</div><div>two</div>"), "one\ntwo\n");
         assert_eq!(strip_html_tags("<ul><li>a</li><li>b</li></ul>"), "a\nb\n");
         assert_eq!(strip_html_tags("<div>a<br></div><div>b</div>"), "a\nb\n");
+    }
+
+    #[test]
+    fn strip_html_drops_comments_including_outlook_conditionals() {
+        // Newsletters draw a button twice: once for Outlook inside a
+        // conditional comment, once for everyone else
+        let html = "<!--[if mso]><v:roundrect><center>Shop now</center></v:roundrect><![endif]-->\
+                    <!--[if !mso]><!--><a href=\"x\">Shop now</a><!--<![endif]-->";
+        assert_eq!(strip_html_tags(html), "Shop now");
+        assert_eq!(strip_html_tags("a<!-- x > y -->b"), "ab");
+        assert_eq!(strip_html_tags("a<!-->b<!--->c"), "abc");
+        assert_eq!(strip_html_tags("a<!-- never closed"), "a");
+        assert_eq!(strip_html_tags("<head><!--[if mso]><body>x</body><![endif]--></head>b"), "b");
+    }
+
+    #[test]
+    fn strip_html_does_not_treat_comment_openers_in_raw_text_or_tags_as_comments() {
+        assert_eq!(strip_html_tags("<style>a{}<!-- </style>shown"), "shown");
+        assert_eq!(strip_html_tags("<script>if (a<!--b) {}</script>shown"), "shown");
+        assert_eq!(strip_html_tags("<a title=\"<!--\">x</a>y"), "xy");
+    }
+
+    #[test]
+    fn strip_html_keeps_table_cells_apart() {
+        let html = "<table><tr><th>Item</th><th>Price</th></tr>\n<tr><td>Tea</td><td> $5 </td></tr></table>";
+        assert_eq!(strip_html_tags(html), "Item Price\nTea $5\n");
     }
 
     #[test]
@@ -3900,6 +3992,15 @@ mod tests {
         let now = "2024-01-15T09:00:00+09:00";
         assert_eq!(bucket("2024-01-14T12:00:00+09:00", now), "Yesterday");
         assert_eq!(bucket("2024-01-13T12:00:00+09:00", now), "Last 30 days");
+    }
+
+    #[test]
+    fn classify_date_puts_future_dates_in_today() {
+        // A sender whose clock runs ahead; "This week" would file it under
+        // days that have already passed
+        let now = "2024-01-17T10:00:00-03:00";
+        assert_eq!(bucket("2024-01-18T09:00:00-03:00", now), "Today");
+        assert_eq!(bucket("2024-03-01T09:00:00-03:00", now), "Today");
     }
 
     fn thread_at(id: &str, date: &str) -> Thread {

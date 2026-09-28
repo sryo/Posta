@@ -24,6 +24,10 @@ pub(super) enum Reply {
     Raw { status: u16, content_type: String, body: String },
     /// Keep the connection open without ever answering
     Hang,
+    /// Send the headers and `sent` of a longer JSON body, then stall
+    StallBody { sent: String },
+    /// Send the headers and `sent` of a longer JSON body, then close
+    CutBody { sent: String },
 }
 
 type Handler = dyn Fn(&StubRequest) -> Reply + Send + Sync;
@@ -87,6 +91,22 @@ impl StubServer {
                         buf.drain(..header_end + content_length);
                         let reply = handler(&request);
                         log.lock().unwrap().push(request);
+                        let partial = match &reply {
+                            Reply::StallBody { sent } | Reply::CutBody { sent } => Some(format!(
+                                "HTTP/1.1 200 Stub\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+                                sent.len() + 1000,
+                                sent
+                            )),
+                            _ => None,
+                        };
+                        if let Some(partial) = partial {
+                            let _ = socket.write_all(partial.as_bytes()).await;
+                            let _ = socket.flush().await;
+                            if matches!(reply, Reply::StallBody { .. }) {
+                                tokio::time::sleep(StdDuration::from_secs(3600)).await;
+                            }
+                            return;
+                        }
                         let (status, content_type, body) = match reply {
                             Reply::Json(status, body) => (status, "application/json".to_string(), body),
                             Reply::Raw { status, content_type, body } => (status, content_type, body),
@@ -94,6 +114,7 @@ impl StubServer {
                                 tokio::time::sleep(StdDuration::from_secs(3600)).await;
                                 return;
                             }
+                            Reply::StallBody { .. } | Reply::CutBody { .. } => return,
                         };
                         let response = format!(
                             "HTTP/1.1 {} Stub\r\nContent-Type: {}\r\nContent-Length: {}\r\n\r\n{}",
@@ -123,6 +144,7 @@ impl StubServer {
             api_base: format!("{}/gmail/v1", self.base),
             batch_endpoint: format!("{}/batch/gmail/v1", self.base),
             upload_base: format!("{}/upload/gmail/v1", self.base),
+            batch_retry_delay: StdDuration::from_millis(10),
             ..GmailClient::new("token".into())
         }
     }
@@ -150,6 +172,39 @@ async fn a_request_the_server_never_answers_fails_instead_of_hanging() {
 
     let err = within(gmail.get_current_history_id()).await.unwrap_err();
     assert!(err.contains("timed out"), "{}", err);
+}
+
+#[test]
+fn the_client_every_command_uses_has_the_timeouts() {
+    // The timeout tests above use their own short-timeout client; this pins
+    // that the shared one is built the same way
+    let config = format!("{:?}", GmailClient::new("token".into()).client);
+    assert!(config.contains(&format!("read_timeout: {:?}", READ_TIMEOUT)), "{}", config);
+    assert!(config.contains(&format!("{:?}", REQUEST_TIMEOUT)), "{}", config);
+}
+
+#[tokio::test]
+async fn a_response_body_that_stops_arriving_reads_as_a_connection_problem() {
+    let sent = r#"{"id":"t1","messages":[{"id":"m1","#.to_string();
+    let stalled = StubServer::start({
+        let sent = sent.clone();
+        move |_| Reply::StallBody { sent: sent.clone() }
+    })
+    .await;
+    let gmail = stalled.client_with(build_http_client(StdDuration::from_millis(300)));
+    let err = within(gmail.get_thread("t1")).await.unwrap_err();
+    assert!(err.contains("timed out"), "{}", err);
+
+    // A connection dropped mid-body, as when the Mac changes networks
+    let cut = StubServer::start(move |_| Reply::CutBody { sent: sent.clone() }).await;
+    let err = within(cut.client().get_thread("t1")).await.unwrap_err();
+    assert!(err.contains("network"), "{}", err);
+    assert!(!err.contains("parse"), "{}", err);
+
+    // A complete body that is not what Gmail sends is still a parse error
+    let garbled = StubServer::start(|_| Reply::Json(200, "[1,2]".into())).await;
+    let err = within(garbled.client().get_thread("t1")).await.unwrap_err();
+    assert!(err.starts_with("Failed to parse thread"), "{}", err);
 }
 
 #[tokio::test]
@@ -541,4 +596,106 @@ async fn failed_calls_report_the_friendly_error() {
         .await
         .unwrap_err();
     assert!(err.contains("API error 429 Too Many Requests: Too many requests"), "{}", err);
+}
+
+fn thread_json(id: &str) -> String {
+    serde_json::json!({ "id": id, "messages": [{ "id": format!("m-{}", id), "internalDate": "1700000000000" }] })
+        .to_string()
+}
+
+#[tokio::test]
+async fn thread_fetches_a_batch_misses_are_batched_again_and_deleted_ones_skipped() {
+    let failed_once: Arc<Mutex<HashSet<String>>> = Default::default();
+    let server = StubServer::start({
+        let failed_once = failed_once.clone();
+        move |request| {
+            if !request.target.starts_with("/batch/") {
+                return Reply::Json(500, "{}".into());
+            }
+            batch_reply(request, |path| match thread_id_of(path) {
+                id if id.starts_with("gone") => (404, google_error(404, "NOT_FOUND", "notFound", "Not Found")),
+                id if id.starts_with("busy") && failed_once.lock().unwrap().insert(id.to_string()) => {
+                    (429, google_error(429, "RESOURCE_EXHAUSTED", "rateLimitExceeded", "slow down"))
+                }
+                id => (200, thread_json(id)),
+            })
+        }
+    })
+    .await;
+
+    let mut ids: Vec<String> = (0..40).map(|i| format!("ok{}", i)).collect();
+    ids.extend((0..12).map(|i| format!("busy{}", i)));
+    ids.extend((0..3).map(|i| format!("gone{}", i)));
+
+    let threads = within(server.client().batch_get_thread_details(&ids)).await.unwrap();
+
+    let mut fetched: Vec<&str> = threads.iter().map(|t| t.gmail_thread_id.as_str()).collect();
+    fetched.sort();
+    let mut expected: Vec<&str> = ids.iter().map(String::as_str).filter(|id| !id.starts_with("gone")).collect();
+    expected.sort();
+    assert_eq!(fetched, expected);
+
+    let requests = server.requests();
+    assert!(requests.iter().all(|r| r.target.starts_with("/batch/")), "fetched one by one");
+    let batch_sizes: Vec<usize> = requests.iter().map(batch_paths).map(|p| p.len()).collect();
+    // Two chunks (50 + 5), each followed by a batch retrying its 429s; the
+    // 404s are not asked for again
+    assert_eq!(batch_sizes, [50, 10, 5, 2]);
+}
+
+#[tokio::test]
+async fn a_thread_batch_that_is_rate_limited_is_retried_as_a_batch() {
+    let batches = Arc::new(AtomicUsize::new(0));
+    let server = StubServer::start({
+        let batches = batches.clone();
+        move |request| {
+            if !request.target.starts_with("/batch/") {
+                return Reply::Json(500, "{}".into());
+            }
+            if batches.fetch_add(1, Ordering::SeqCst) == 0 {
+                return Reply::Json(429, google_error(429, "RESOURCE_EXHAUSTED", "rateLimitExceeded", "slow down"));
+            }
+            batch_reply(request, |path| (200, thread_json(thread_id_of(path))))
+        }
+    })
+    .await;
+    let ids: Vec<String> = (0..20).map(|i| format!("t{}", i)).collect();
+
+    let threads = within(server.client().batch_get_thread_details(&ids)).await.unwrap();
+
+    assert_eq!(threads.len(), 20);
+    assert_eq!(server.requests().len(), 2, "one batch retry instead of 20 single fetches");
+}
+
+#[tokio::test]
+async fn ids_are_escaped_in_request_paths() {
+    let server = StubServer::start(|request| {
+        if request.target.starts_with("/batch/") {
+            return batch_reply(request, |_| (200, thread_json("t")));
+        }
+        Reply::Json(200, r#"{"id":"t","messages":[],"data":""}"#.into())
+    })
+    .await;
+    let gmail = server.client();
+    let odd = "a/../b?c#d";
+
+    let _ = within(gmail.get_thread(odd)).await;
+    let _ = within(gmail.modify_thread(odd, vec![], vec!["UNREAD".into()])).await;
+    let _ = within(gmail.get_attachment(odd, odd)).await;
+    let _ = within(gmail.delete_draft(odd)).await;
+    let _ = within(gmail.batch_get_thread_details(&[odd.to_string()])).await;
+
+    let escaped = "a%2F..%2Fb%3Fc%23d";
+    let mut targets: Vec<String> = Vec::new();
+    for request in server.requests() {
+        if request.target.starts_with("/batch/") {
+            targets.extend(batch_paths(&request));
+        } else {
+            targets.push(request.target.clone());
+        }
+    }
+    assert_eq!(targets.len(), 5);
+    for target in &targets {
+        assert!(target.contains(escaped) && !target.contains(odd), "{}", target);
+    }
 }
