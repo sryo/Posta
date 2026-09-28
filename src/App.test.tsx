@@ -147,6 +147,19 @@ describe("App attachments", () => {
     expect(document.querySelector(".compose-panel")).not.toHaveTextContent("report.pdf");
   });
 
+  it("opens a new email on c while the previous one is still closing", async () => {
+    render(() => <App />);
+    await screen.findByText("Mail for A");
+    fireEvent.keyDown(document, { key: "c" });
+    fireEvent.input(await screen.findByPlaceholderText("Subject"), { target: { value: "Old subject" } });
+    fireEvent.keyDown(document, { key: "Escape" });
+    fireEvent.keyDown(document, { key: "c" });
+    await new Promise(r => setTimeout(r, 300));
+
+    expect(document.querySelector(".compose-panel")).not.toBeNull();
+    expect(screen.getByPlaceholderText("Subject")).toHaveValue("");
+  });
+
   it("forwards into a fresh email when compose is still closing", async () => {
     threadsByCard["card-a"] = [{
       ...thread("t-a", "Mail for A"),

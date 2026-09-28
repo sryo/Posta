@@ -1389,11 +1389,7 @@ function App() {
     // c to compose new email
     if (e.key === 'c') {
       e.preventDefault();
-      if (!composing()) {
-        setReplyingToThread(null);
-        setForwardingThread(null);
-        setComposing(true);
-      }
+      if (!composing() || closingCompose()) startCompose({});
       return;
     }
 
@@ -3828,7 +3824,7 @@ function App() {
               >
                 <button
                   class="compose-btn"
-                  onClick={() => setComposing(true)}
+                  onClick={() => { if (!composing() || closingCompose()) startCompose({}); }}
                   title="Compose"
                   aria-label="Compose new email"
                 >
@@ -3843,8 +3839,7 @@ function App() {
                           style={{ background: getAvatarColor(contact.name || contact.email) }}
                           title={contact.name ? `${contact.name} <${contact.email}>` : contact.email}
                           onClick={() => {
-                            setComposeTo(contact.email);
-                            setComposing(true);
+                            startCompose({ to: contact.email, focusBody: true });
                             setComposeFabHovered(false);
                             // Focus body after compose panel opens
                             setTimeout(() => {
