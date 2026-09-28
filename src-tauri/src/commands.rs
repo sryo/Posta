@@ -597,6 +597,19 @@ pub async fn sync_threads_incremental(
     evict_token_on_auth_error(&state, &account_id, result)
 }
 
+/// Requested thread ids that the fetch did not return
+fn vanished_thread_ids(requested: &[String], fetched: &[crate::models::Thread]) -> Vec<String> {
+    let fetched: std::collections::HashSet<&str> =
+        fetched.iter().map(|t| t.gmail_thread_id.as_str()).collect();
+    let mut vanished: Vec<String> = Vec::new();
+    for id in requested {
+        if !fetched.contains(id.as_str()) && !vanished.contains(id) {
+            vanished.push(id.clone());
+        }
+    }
+    vanished
+}
+
 async fn sync_threads_incremental_impl(
     account_id: &str,
     app_handle: &tauri::AppHandle,
@@ -658,6 +671,10 @@ async fn sync_threads_incremental_impl(
                         for thread in &mut modified_threads {
                             thread.account_id = account_id.to_string();
                         }
+
+                        // A thread deleted between the history call and the
+                        // fetch comes back missing rather than as an error
+                        deleted_thread_ids.extend(vanished_thread_ids(&modified_thread_ids, &modified_threads));
                     }
 
                     // Update stored history ID
@@ -675,7 +692,7 @@ async fn sync_threads_incremental_impl(
                         is_full_sync: false,
                     })
                 }
-                Err(e) if e.starts_with("History ID expired") => {
+                Err(e) if e == crate::gmail::HISTORY_EXPIRED => {
                     tracing::warn!("History ID expired, performing full sync");
                     // Clear the stale history ID and do full sync
                     {
@@ -1577,13 +1594,37 @@ pub async fn suggest_replies(
 mod tests {
     use super::{
         attachment_filename, icloud_card_account, is_auth_error, next_card_position,
-        sanitize_attachment_filename,
+        sanitize_attachment_filename, vanished_thread_ids,
     };
-    use crate::models::{Account, Card};
+    use crate::models::{Account, Card, Thread};
     use std::collections::HashMap;
 
     fn account(id: &str, email: &str) -> Account {
         Account { id: id.into(), ..Account::new(email.into(), None) }
+    }
+
+    fn thread(id: &str) -> Thread {
+        Thread {
+            gmail_thread_id: id.into(),
+            account_id: "acc".into(),
+            subject: String::new(),
+            snippet: String::new(),
+            last_message_date: chrono::Utc::now(),
+            unread_count: 0,
+            labels: Vec::new(),
+            participants: Vec::new(),
+            has_attachment: false,
+            attachments: Vec::new(),
+            calendar_event: None,
+        }
+    }
+
+    #[test]
+    fn threads_missing_from_the_fetch_are_reported_as_deleted() {
+        let requested = vec!["a".to_string(), "b".to_string(), "c".to_string(), "b".to_string()];
+        let fetched = vec![thread("a"), thread("c")];
+        assert_eq!(vanished_thread_ids(&requested, &fetched), vec!["b".to_string()]);
+        assert!(vanished_thread_ids(&requested[..1], &fetched).is_empty());
     }
 
     fn mappings(pairs: &[(&str, &str)]) -> HashMap<String, String> {

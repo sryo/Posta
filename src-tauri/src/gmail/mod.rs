@@ -5,6 +5,8 @@ use chrono::{DateTime, Datelike, Duration, Local, TimeZone, Utc};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 
+/// Error returned by get_history_changes when the start history ID is too old
+pub const HISTORY_EXPIRED: &str = "History ID expired";
 const GMAIL_API_BASE: &str = "https://gmail.googleapis.com/gmail/v1";
 const BATCH_API_ENDPOINT: &str = "https://www.googleapis.com/batch/gmail/v1";
 const PAGE_SIZE: usize = 20;
@@ -837,7 +839,7 @@ impl GmailClient {
 
             if resp.status().as_u16() == 404 {
                 // History ID is too old or invalid - caller should do full sync
-                return Err("History ID expired".to_string());
+                return Err(HISTORY_EXPIRED.to_string());
             }
 
             let resp = ensure_success(resp).await?;
