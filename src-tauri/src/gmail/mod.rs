@@ -661,7 +661,14 @@ impl GmailClient {
             }
         }
 
-        let thread = self.get_thread(thread_id).await.ok()?;
+        let resp = self
+            .client
+            .get(thread_reply_metadata_url(thread_id))
+            .bearer_auth(&self.access_token)
+            .send()
+            .await
+            .ok()?;
+        let thread: FullThread = ensure_success(resp).await.ok()?.json().await.ok()?;
         reply_headers_from_thread(&thread, message_id)
     }
 
@@ -1063,6 +1070,16 @@ fn thread_participants(messages: &[MessageDetail]) -> Vec<String> {
         }
     }
     participants
+}
+
+/// A thread's messages with only the headers reply_headers_from_thread needs,
+/// so resolving them (on every draft autosave) does not download bodies
+fn thread_reply_metadata_url(thread_id: &str) -> String {
+    format!(
+        "{}/users/me/threads/{}?format=metadata&metadataHeaders=Message-ID&metadataHeaders=References\
+         &fields=id,messages(id,threadId,labelIds,payload/headers)",
+        GMAIL_API_BASE, thread_id
+    )
 }
 
 /// Threading headers (In-Reply-To, References) for a reply to `thread`.
@@ -2173,6 +2190,33 @@ mod tests {
         // An explicit Gmail id still wins
         assert_eq!(
             reply_headers_from_thread(&thread, Some("m1")),
+            Some(("<one@example.com>".to_string(), "<one@example.com>".to_string()))
+        );
+    }
+
+    #[test]
+    fn reply_headers_come_from_a_metadata_fetch() {
+        let url = thread_reply_metadata_url("t1");
+        assert!(url.starts_with(&format!("{}/users/me/threads/t1?", GMAIL_API_BASE)));
+        assert!(url.contains("format=metadata"));
+        assert!(!url.contains("format=full"));
+        assert!(url.contains("metadataHeaders=Message-ID"));
+        assert!(url.contains("metadataHeaders=References"));
+
+        // What Gmail returns for that request: headers only, no bodies or parts
+        let response = r#"{
+            "id": "t1",
+            "messages": [
+                {"id": "m1", "threadId": "t1", "labelIds": ["INBOX"],
+                 "payload": {"headers": [{"name": "Message-Id", "value": "<one@example.com>"}]}},
+                {"id": "d1", "threadId": "t1", "labelIds": ["DRAFT"],
+                 "payload": {"headers": [{"name": "Message-ID", "value": "<draft@example.com>"},
+                                         {"name": "References", "value": "<one@example.com>"}]}}
+            ]
+        }"#;
+        let thread: FullThread = serde_json::from_str(response).expect("metadata thread parses");
+        assert_eq!(
+            reply_headers_from_thread(&thread, None),
             Some(("<one@example.com>".to_string(), "<one@example.com>".to_string()))
         );
     }
