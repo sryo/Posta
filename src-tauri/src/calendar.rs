@@ -148,6 +148,8 @@ struct Page<T> {
 struct CalendarListEntry {
     id: String,
     summary: Option<String>,
+    #[serde(rename = "summaryOverride")]
+    summary_override: Option<String>,
     primary: Option<bool>,
     #[serde(rename = "accessRole")]
     access_role: Option<String>,
@@ -159,7 +161,7 @@ impl From<CalendarListEntry> for CalendarInfo {
     fn from(c: CalendarListEntry) -> Self {
         CalendarInfo {
             id: c.id,
-            name: c.summary.unwrap_or_default(),
+            name: c.summary_override.filter(|s| !s.is_empty()).or(c.summary).unwrap_or_default(),
             is_primary: c.primary.unwrap_or(false),
             access_role: c.access_role.unwrap_or_else(|| "reader".to_string()),
             timezone: c.time_zone,
@@ -1923,6 +1925,15 @@ mod tests {
 
     fn calendar_entry(id: &str) -> serde_json::Value {
         serde_json::json!({ "id": id, "summary": id, "accessRole": "owner", "timeZone": "UTC" })
+    }
+
+    #[test]
+    fn calendars_go_by_the_name_the_user_gave_them() {
+        let info = |json: serde_json::Value| CalendarInfo::from(serde_json::from_value::<CalendarListEntry>(json).unwrap());
+        let renamed = info(serde_json::json!({ "id": "c1", "summary": "Team Rota 2024", "summaryOverride": "Rota" }));
+        assert_eq!(renamed.name, "Rota");
+        assert_eq!(info(serde_json::json!({ "id": "c2", "summary": "Work" })).name, "Work");
+        assert_eq!(info(serde_json::json!({ "id": "c3", "summaryOverride": "" , "summary": "Home" })).name, "Home");
     }
 
     #[tokio::test]
