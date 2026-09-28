@@ -136,6 +136,12 @@ describe("App.css", () => {
     expect([...unstyled].sort()).toEqual([]);
   });
 
+  it("lets native controls and scrollbars follow the dark palette", () => {
+    const root = rules.find((r) => r.context === "" && r.selectors.join(",") === ":root");
+    const scheme = new Map(root?.declarations ?? []).get("color-scheme") ?? "";
+    expect(scheme.split(/\s+/).sort()).toEqual(["dark", "light"]);
+  });
+
   it("has no keyframes that no animation plays", () => {
     expect(unusedKeyframes(css)).toEqual([]);
   });
