@@ -410,6 +410,24 @@ describe("App calendar", () => {
     await waitFor(() => expect(invoke).toHaveBeenCalledWith("send_email", expect.objectContaining({ to: "bo@y.com" })));
   });
 
+  it("removes a deleted event from every calendar card showing it", async () => {
+    calendarCards();
+    cardsByAccount.a = [
+      { ...card("cal-1", "a", "Week"), query: "calendar:7d", card_type: "calendar" },
+      { ...card("cal-2", "a", "Month"), query: "calendar:30d", card_type: "calendar", position: 1 },
+    ];
+    handlers.fetch_calendar_events = () => [calendarEvent("ev-1", "Planning")];
+    handlers.delete_calendar_event = () => null;
+    render(() => <App />);
+    await waitFor(() => expect(screen.getAllByText("Planning")).toHaveLength(2));
+
+    fireEvent.click(screen.getAllByText("Planning")[0]);
+    fireEvent.keyDown(document, { key: "d" });
+
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith("delete_calendar_event", expect.anything()));
+    await waitFor(() => expect(screen.queryAllByText("Planning")).toHaveLength(0));
+  });
+
   it("does not show an account's calendars once another account is selected", async () => {
     calendarCards();
     let releaseA!: () => void;
