@@ -128,7 +128,7 @@ import { PRESETS } from "./app/presets";
 import { normalizeActionOrder } from "./app/actionOrder";
 import { parseStoredWidth } from "./app/storedWidth";
 import { isSessionExpiredError, needsSignInAgain } from "./app/authErrors";
-import { withSignature } from "./app/signature";
+import { signatureBlock, withSignature } from "./app/signature";
 import { readFilesAsAttachments } from "./app/attachments";
 import { eventAttendees, eventTimesFromForm, smartEventDefaults } from "./app/eventForm";
 import { composePlacement } from "./app/composePlacement";
@@ -2209,12 +2209,13 @@ function App() {
         showToast("No one else to reply to");
         return;
       }
-      await replyToThread(account.id, threadId, entry.to, "", "", subject, text, entry.messageId, [], false);
+      await replyToThread(account.id, threadId, entry.to, "", "", subject, text + signatureBlock(account.signature), entry.messageId, [], false);
       if (stillOpen()) {
         setQuickReply({ threadId: null, text: "", sending: false });
         setQuickReplyCardId(null);
       }
       showToast("Reply sent");
+      fetchAndCacheThreads(account.id, cardId);
     } catch (e) {
       console.error("Failed to send reply:", e);
       setError(`Failed to send reply: ${e}`);
@@ -2238,7 +2239,7 @@ function App() {
     const stillOpen = () => quickReplyEventId() === event.id;
     setQuickReply(qr => ({ ...qr, sending: true }));
     try {
-      await sendEmail(account.id, to, "", "", subject, text);
+      await sendEmail(account.id, to, "", "", subject, text + signatureBlock(account.signature));
       if (stillOpen()) {
         setQuickReplyEventId(null);
         setQuickReply(qr => ({ ...qr, text: "", sending: false }));
@@ -2676,7 +2677,7 @@ function App() {
 
     try {
       const replySubject = addReplyPrefix(thread.subject);
-      await replyToThread(account.id, threadId, thread.to, "", "", replySubject, message, thread.messageId, attachments, false);
+      await replyToThread(account.id, threadId, thread.to, "", "", replySubject, message + signatureBlock(account.signature), thread.messageId, attachments, false);
 
       // Remove from batch reply list
       setBatchReplyThreads(batchReplyThreads().filter(t => t.threadId !== threadId));

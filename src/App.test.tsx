@@ -1070,6 +1070,7 @@ describe("App calendar", () => {
       ],
     }];
     handlers.send_email = () => null;
+    handlers.get_accounts = () => [{ ...account("a", "a@x.com"), signature: "Ana" }];
     render(() => <App />);
     await screen.findByText("Planning");
 
@@ -1079,7 +1080,7 @@ describe("App calendar", () => {
     fireEvent.input(input, { target: { value: "See you there" } });
     fireEvent.keyDown(input, { key: "Enter", metaKey: true });
 
-    await waitFor(() => expect(invoke).toHaveBeenCalledWith("send_email", expect.objectContaining({ to: "bo@y.com" })));
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith("send_email", expect.objectContaining({ to: "bo@y.com", body: "See you there\n\n-- \nAna" })));
   });
 
   it("labels calendar cards as calendar cards", async () => {
@@ -1307,6 +1308,21 @@ describe("App batch reply", () => {
     fireEvent.click(screen.getByRole("button", { name: /^Send ⌘/ }));
 
     await waitFor(() => expect(invoke).toHaveBeenCalledWith("reply_to_thread", expect.objectContaining({ to: "team@x.com" })));
+  });
+
+  it("signs each reply", async () => {
+    handlers.get_accounts = () => [{ ...account("a", "a@x.com"), signature: "Ana" }];
+    handlers.get_thread_details = () => ({ id: "t-a", messages: [fullMessage("m1", "Bo <bo@x.com>")] });
+    handlers.reply_to_thread = () => null;
+    render(() => <App />);
+    await screen.findByText("Mail for A");
+    fireEvent.keyDown(document, { key: "l" });
+    fireEvent.keyDown(document, { key: "x" });
+    fireEvent.click(await screen.findByTitle("Batch Reply"));
+    fireEvent.input(await screen.findByPlaceholderText(/^Reply to/), { target: { value: "Thanks" } });
+    fireEvent.click(screen.getByRole("button", { name: /^Send ⌘/ }));
+
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith("reply_to_thread", expect.objectContaining({ body: "Thanks\n\n-- \nAna" })));
   });
 
   it("replies to the message it shows, not to the user's own later one", async () => {
@@ -2227,6 +2243,21 @@ describe("App quick reply feedback", () => {
     fireEvent.keyDown(input, { key: "Enter", metaKey: true });
 
     expect(await screen.findByText("Reply sent")).toBeInTheDocument();
+  });
+
+  it("signs a quick reply and refreshes its card once sent", async () => {
+    handlers.get_accounts = () => [{ ...account("a", "a@x.com"), signature: "Ana" }];
+    handlers.get_thread_details = () => ({ id: "t-a", messages: [fullMessage("m1", "Bo <bo@x.com>")] });
+    handlers.reply_to_thread = () => null;
+    render(() => <App />);
+    await screen.findByText("Mail for A");
+    const input = openQuickReply();
+    fireEvent.input(input, { target: { value: "Thanks" } });
+    invoke.mockClear();
+    fireEvent.keyDown(input, { key: "Enter", metaKey: true });
+
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith("reply_to_thread", expect.objectContaining({ body: "Thanks\n\n-- \nAna" })));
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith("fetch_threads_paginated", expect.objectContaining({ cardId: "card-a" })));
   });
 
   it("keeps text typed into another quick reply while the first one sends", async () => {
