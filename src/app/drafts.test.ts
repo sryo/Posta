@@ -6,7 +6,7 @@ const handlers: Record<string, Handler> = {};
 const invoke = vi.fn(async (cmd: string, args: Record<string, unknown> = {}) => handlers[cmd](args));
 vi.mock("@tauri-apps/api/core", () => ({ invoke: (cmd: string, args?: Record<string, unknown>) => invoke(cmd, args) }));
 
-import { createDraftSync, draftKey, findLatestDraft, markDraftClosed, pruneDrafts, removeAccountDrafts, sessionDraftKey } from "./drafts";
+import { createDraftSync, draftKey, findLatestDraft, findUnsentDrafts, markDraftClosed, markDraftSending, pruneDrafts, removeAccountDrafts, sessionDraftKey } from "./drafts";
 
 const fields = (body: string) => ({ to: "bo@x.com", cc: "", bcc: "", subject: "Hi", body });
 const sync = () => createRoot(() => createDraftSync());
@@ -73,6 +73,23 @@ describe("removeAccountDrafts", () => {
     localStorage.setItem("cardWidth", "300");
     removeAccountDrafts("a");
     expect(Object.keys(localStorage).sort()).toEqual(["cardWidth", "draft_new_ab#1", "draft_reply_b_t1"]);
+  });
+});
+
+describe("unsent drafts", () => {
+  it("finds drafts still marked as being sent, newest first, and unmarks them", () => {
+    localStorage.setItem("draft_new_a#1", JSON.stringify({ ...fields("older"), savedAt: 1 }));
+    localStorage.setItem("draft_new_a#2", JSON.stringify({ ...fields("newer"), savedAt: 2 }));
+    localStorage.setItem("draft_new_a#3", JSON.stringify({ ...fields("not sent"), savedAt: 3 }));
+    markDraftSending("draft_new_a#1", "a");
+    markDraftSending("draft_new_a#2", "a");
+    markDraftSending("missing", "a");
+
+    expect(findUnsentDrafts().map(u => u.key)).toEqual(["draft_new_a#2", "draft_new_a#1"]);
+    markDraftSending("draft_new_a#2", null);
+    expect(findUnsentDrafts().map(u => u.key)).toEqual(["draft_new_a#1"]);
+    expect(JSON.parse(localStorage.getItem("draft_new_a#2")!)).toEqual({ ...fields("newer"), savedAt: 2 });
+    expect(localStorage.getItem("missing")).toBeNull();
   });
 });
 

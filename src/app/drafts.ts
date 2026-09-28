@@ -16,8 +16,9 @@ export interface Draft extends DraftFields {
   savedAt: number;
   // The user closed its compose and kept the draft
   closed?: boolean;
-  // Queued to send when last saved
+  // Queued to send when last saved, from this account
   sending?: boolean;
+  accountId?: string;
 }
 
 export interface DraftTarget {
@@ -68,6 +69,27 @@ export function findLatestDraft(group: string, accept: (draft: Draft, key: strin
 export function markDraftClosed(key: string) {
   const draft = safeGetJSON<Draft | null>(key, null);
   if (draft) safeSetJSON(key, { ...draft, closed: true });
+}
+
+// A draft stays marked while its email waits out the undo window, so one
+// still marked at startup was never sent
+export function markDraftSending(key: string, accountId: string | null) {
+  const draft = safeGetJSON<Draft | null>(key, null);
+  if (!draft) return;
+  const rest: Draft = { ...draft };
+  delete rest.sending;
+  delete rest.accountId;
+  safeSetJSON(key, accountId ? { ...rest, sending: true, accountId } : rest);
+}
+
+export function findUnsentDrafts(): { key: string; draft: Draft }[] {
+  const found: { key: string; draft: Draft }[] = [];
+  for (const key of storageKeys()) {
+    if (!key.startsWith("draft_")) continue;
+    const draft = safeGetJSON<Draft | null>(key, null);
+    if (draft?.sending && draft.accountId && typeof draft.savedAt === "number") found.push({ key, draft });
+  }
+  return found.sort((a, b) => b.draft.savedAt - a.draft.savedAt);
 }
 
 const CLOSED_DRAFT_KEPT_MS = 30 * 24 * 60 * 60 * 1000;

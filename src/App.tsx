@@ -138,7 +138,7 @@ import { parseMailto } from "./app/mailto";
 import { coalesceByKey } from "./app/coalesce";
 import { threadLoadErrorMessage } from "./app/loadErrors";
 import { cardTypeForQuery } from "./app/cardType";
-import { createDraftSync, draftKey, findLatestDraft, hasDraftContent, markDraftClosed, pruneDrafts, removeAccountDrafts, sessionDraftKey, type DraftFields } from "./app/drafts";
+import { createDraftSync, draftKey, findLatestDraft, findUnsentDrafts, hasDraftContent, markDraftClosed, markDraftSending, pruneDrafts, removeAccountDrafts, sessionDraftKey, type DraftFields } from "./app/drafts";
 import { nextCardFocus, nextItemFocus } from "./app/keyboardNav";
 import { getSmartEventTime, groupCalendarEvents, isUserLabel, mergeThreadGroups, regroupThreads, type CalendarEventGroup } from "./app/grouping";
 import { pullLayoutWithRetry } from "./app/icloudRestore";
@@ -270,6 +270,7 @@ function App() {
       await sendPending(pending);
       const draft = pending.draft;
       if (draft) {
+        markDraftSending(draft.key, null);
         drafts.discard(draft.key, pending.accountId, draft.gmailDraftId)
           .finally(() => sendingDraftKeys.delete(draft.key));
       }
@@ -1105,6 +1106,7 @@ function App() {
         await loadAccountCards(accts[0]);
         startBackgroundSync(accts[0].id);
       }
+      offerUnsentDraft(accts);
     } catch (e) {
       setError(String(e));
     } finally {
@@ -2064,10 +2066,11 @@ function App() {
       isHtml: composeIsHtml(),
     };
 
-    // Saved locally as sent, so a quit during the undo window leaves it as a
-    // draft rather than losing it
+    // Saved locally as being sent, so a quit during the undo window leaves
+    // it as a draft that the next start points out
     cancelDraftSave();
     drafts.saveLocal(composeDraftKey, composeDraftFields());
+    markDraftSending(composeDraftKey, account.id);
     pending.draft = { key: composeDraftKey, gmailDraftId: drafts.gmailDraftId() ?? undefined };
     sendingDraftKeys.add(composeDraftKey);
     closeComposeAfterSend();
@@ -2077,7 +2080,10 @@ function App() {
   // Compose closed when the send was queued, so an undone or failed send puts
   // the email back, continuing its saved draft
   function restoreSend(pending: PendingSend) {
-    if (pending.draft) sendingDraftKeys.delete(pending.draft.key);
+    if (pending.draft) {
+      sendingDraftKeys.delete(pending.draft.key);
+      markDraftSending(pending.draft.key, null);
+    }
     startCompose({
       to: pending.to,
       cc: pending.cc,
@@ -2092,6 +2098,32 @@ function App() {
     });
     setComposeAttachments(pending.attachments);
     setComposeAccount(accounts().find(a => a.id === pending.accountId) ?? null);
+  }
+
+  // An email still marked as being sent was waiting out the undo window
+  // when Posta quit
+  function offerUnsentDraft(known: Account[]) {
+    const unsent = findUnsentDrafts().find(u => known.some(a => a.id === u.draft.accountId));
+    if (!unsent) return;
+    const { key, draft } = unsent;
+    showToast("An email wasn't sent before Posta quit", {
+      label: "Open",
+      run: () => {
+        markDraftSending(key, null);
+        startCompose({
+          to: draft.to,
+          cc: draft.cc,
+          bcc: draft.bcc,
+          subject: draft.subject,
+          body: draft.body,
+          reply: draft.threadId ? { threadId: draft.threadId } : undefined,
+          signature: false,
+          accountId: draft.accountId,
+          draftKey: key,
+        });
+        setComposeAccount(accounts().find(a => a.id === draft.accountId) ?? null);
+      },
+    });
   }
 
   function undoSend() {

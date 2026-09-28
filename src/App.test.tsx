@@ -1377,6 +1377,34 @@ describe("App drafts", () => {
     expect(draftKeys("draft_new_a")).toEqual([]);
   });
 
+  it("marks an email waiting out the undo window as being sent, and unmarks it on undo", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    render(() => <App />);
+    await screen.findByText("Mail for A");
+    fireEvent.keyDown(document, { key: "c" });
+    fireEvent.input(await screen.findByPlaceholderText("Recipients"), { target: { value: "bo@y.com" } });
+    fireEvent.input(screen.getByPlaceholderText("Subject"), { target: { value: "Hello" } });
+    fireEvent.click(screen.getByRole("button", { name: /^Send/ }));
+
+    expect(storedDrafts("draft_new_a")).toEqual([expect.objectContaining({ subject: "Hello", sending: true, accountId: "a" })]);
+    fireEvent.click(await screen.findByRole("button", { name: "Undo" }));
+    await waitFor(() => expect(screen.getByPlaceholderText("Subject")).toHaveValue("Hello"));
+    expect(storedDrafts("draft_new_a")).toEqual([expect.not.objectContaining({ sending: true })]);
+  });
+
+  it("says when an email was still waiting to be sent when Posta quit", async () => {
+    handlers.get_thread_details = () => ({ id: "t-a", messages: [fullMessage("m1", "Ana <ana@x.com>")] });
+    localStorage.setItem("draft_reply_a_t-a#q", JSON.stringify({
+      to: "ana@x.com", cc: "", bcc: "", subject: "Re: Hi", body: "unsent reply", threadId: "t-a", savedAt: 5, sending: true, accountId: "a",
+    }));
+    render(() => <App />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "Open" }));
+    expect(screen.getByText("An email wasn't sent before Posta quit")).toBeInTheDocument();
+    await waitFor(() => expect(screen.getByDisplayValue("unsent reply")).toBeInTheDocument());
+    expect(storedDrafts("draft_reply_a_t-a")).toEqual([expect.not.objectContaining({ sending: true })]);
+  });
+
   it("does not reopen an email that is being sent as a draft", async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
     handlers.send_email = () => null;
