@@ -1016,7 +1016,6 @@ async fn sync_threads_incremental_impl(
 ) -> Result<IncrementalSyncResult, String> {
     tracing::info!("sync_threads_incremental for account: {}", account_id);
 
-    // Get stored history ID
     let stored_history_id = {
         let db_guard = state.db.lock().map_err(|_| "Lock error")?;
         let db = db_guard.as_ref().ok_or("Database not initialized")?;
@@ -1025,104 +1024,120 @@ async fn sync_threads_incremental_impl(
 
     let access_token = get_access_token(state, app_handle, account_id).await?;
     let gmail = GmailClient::new(access_token);
-
-    match stored_history_id {
-        Some(history_id) => {
-            // Incremental sync - get changes since last sync
-            match gmail.get_history_changes(&history_id).await {
-                Ok(changes) => {
-                    tracing::info!(
-                        "Incremental sync: {} modified threads, {} deletion candidates, {} deleted messages",
-                        changes.modified_thread_ids.len(),
-                        changes.deleted_thread_ids.len(),
-                        changes.deleted_message_ids.len()
-                    );
-
-                    // Verify deletion candidates: a thread that still exists only
-                    // lost some messages and must be treated as modified
-                    let mut modified_thread_ids = changes.modified_thread_ids;
-                    let (still_existing, mut deleted_thread_ids) =
-                        gmail.split_deleted_threads(&changes.deleted_thread_ids).await?;
-                    modified_thread_ids.extend(still_existing);
-
-                    // Batch fetch the modified threads; propagate errors so the
-                    // frontend keeps its current data and retries (the history ID
-                    // is not advanced on failure)
-                    let mut modified_threads = Vec::new();
-                    if !modified_thread_ids.is_empty() {
-                        modified_threads = gmail
-                            .batch_get_thread_details(&modified_thread_ids)
-                            .await
-                            .map_err(|e| format!("Failed to fetch modified threads: {}", e))?;
-
-                        // Set account_id on all threads
-                        for thread in &mut modified_threads {
-                            thread.account_id = account_id.to_string();
-                        }
-
-                        // A thread deleted between the history call and the
-                        // fetch comes back missing rather than as an error
-                        deleted_thread_ids.extend(vanished_thread_ids(&modified_thread_ids, &modified_threads));
-                    }
-
-                    // Update stored history ID
-                    {
-                        let db_guard = state.db.lock().map_err(|_| "Lock error")?;
-                        let db = db_guard.as_ref().ok_or("Database not initialized")?;
-                        db.set_history_id(account_id, &changes.new_history_id)
-                            .map_err(|e| e.to_string())?;
-                    }
-
-                    Ok(IncrementalSyncResult {
-                        modified_threads,
-                        deleted_thread_ids,
-                        new_history_id: changes.new_history_id,
-                        is_full_sync: false,
-                    })
-                }
-                Err(e) if e == crate::gmail::HISTORY_EXPIRED => {
-                    tracing::warn!("History ID expired, performing full sync");
-                    // Clear the stale history ID and do full sync
-                    {
-                        let db_guard = state.db.lock().map_err(|_| "Lock error")?;
-                        let db = db_guard.as_ref().ok_or("Database not initialized")?;
-                        db.clear_history_id(account_id).map_err(|e| e.to_string())?;
-                    }
-                    perform_full_sync(&gmail, account_id, state).await
-                }
-                Err(e) => Err(e),
-            }
-        }
-        None => {
-            // No history ID stored - this is the first sync
-            tracing::info!("No history ID found, performing initial full sync");
-            perform_full_sync(&gmail, account_id, state).await
-        }
+    let mut result = sync_mail_history(&gmail, stored_history_id.as_deref()).await?;
+    for thread in &mut result.modified_threads {
+        thread.account_id = account_id.to_string();
     }
-}
 
-/// Perform a full sync and establish history ID for future incremental syncs
-async fn perform_full_sync(
-    gmail: &GmailClient,
-    account_id: &str,
-    state: &State<'_, AppState>,
-) -> Result<IncrementalSyncResult, String> {
-    // Get current history ID for future syncs
-    let history_id = gmail
-        .get_current_history_id()
-        .await
-        .map_err(|e| format!("Failed to get history ID: {}", e))?;
-
-    // Store the history ID
+    // Only advanced once the changes are in hand, so a failed sync is
+    // retried from the same point
     {
         let db_guard = state.db.lock().map_err(|_| "Lock error")?;
         let db = db_guard.as_ref().ok_or("Database not initialized")?;
-        db.set_history_id(account_id, &history_id)
-            .map_err(|e| e.to_string())?;
+        db.set_history_id(account_id, &result.new_history_id).map_err(|e| e.to_string())?;
+    }
+    Ok(result)
+}
+
+/// The Gmail calls an incremental sync makes
+trait MailHistory {
+    async fn history_changes(&self, since: &str) -> Result<crate::gmail::HistoryChanges, String>;
+    async fn split_deleted_threads(&self, thread_ids: &[String]) -> Result<(Vec<String>, Vec<String>), String>;
+    async fn thread_details(&self, thread_ids: &[String]) -> Result<Vec<crate::models::Thread>, String>;
+    async fn current_history_id(&self) -> Result<String, String>;
+}
+
+impl MailHistory for GmailClient {
+    async fn history_changes(&self, since: &str) -> Result<crate::gmail::HistoryChanges, String> {
+        self.get_history_changes(since).await
     }
 
-    // Return empty result - frontend should do its normal fetch
-    // This avoids duplicating the card-specific query logic here
+    async fn split_deleted_threads(&self, thread_ids: &[String]) -> Result<(Vec<String>, Vec<String>), String> {
+        GmailClient::split_deleted_threads(self, thread_ids).await
+    }
+
+    async fn thread_details(&self, thread_ids: &[String]) -> Result<Vec<crate::models::Thread>, String> {
+        self.batch_get_thread_details(thread_ids).await
+    }
+
+    async fn current_history_id(&self) -> Result<String, String> {
+        self.get_current_history_id().await
+    }
+}
+
+/// Past this many changed threads, fetching each one costs more than the
+/// frontend refetching its open cards, which it does anyway for most of them
+const MAX_INCREMENTAL_THREADS: usize = 100;
+
+/// Changes since `stored_history_id`, or a full sync (the frontend refetches
+/// its cards) when there is none, it expired, or the backlog is too large
+async fn sync_mail_history(
+    gmail: &impl MailHistory,
+    stored_history_id: Option<&str>,
+) -> Result<IncrementalSyncResult, String> {
+    let Some(history_id) = stored_history_id else {
+        tracing::info!("No history ID found, performing initial full sync");
+        return full_sync(gmail).await;
+    };
+
+    let changes = match gmail.history_changes(history_id).await {
+        Ok(changes) => changes,
+        Err(e) if e == crate::gmail::HISTORY_EXPIRED => {
+            tracing::warn!("History ID expired, performing full sync");
+            return full_sync(gmail).await;
+        }
+        Err(e) => return Err(e),
+    };
+    tracing::info!(
+        "Incremental sync: {} modified threads, {} deletion candidates, {} deleted messages",
+        changes.modified_thread_ids.len(),
+        changes.deleted_thread_ids.len(),
+        changes.deleted_message_ids.len()
+    );
+
+    if changes.modified_thread_ids.len() + changes.deleted_thread_ids.len() > MAX_INCREMENTAL_THREADS {
+        tracing::info!("Too many changed threads to fetch one by one, refetching cards instead");
+        return Ok(IncrementalSyncResult {
+            modified_threads: Vec::new(),
+            deleted_thread_ids: Vec::new(),
+            new_history_id: changes.new_history_id,
+            is_full_sync: true,
+        });
+    }
+
+    // Verify deletion candidates: a thread that still exists only lost some
+    // messages and must be treated as modified
+    let mut modified_thread_ids = changes.modified_thread_ids;
+    let (still_existing, mut deleted_thread_ids) = gmail.split_deleted_threads(&changes.deleted_thread_ids).await?;
+    modified_thread_ids.extend(still_existing);
+
+    let mut modified_threads = Vec::new();
+    if !modified_thread_ids.is_empty() {
+        modified_threads = gmail
+            .thread_details(&modified_thread_ids)
+            .await
+            .map_err(|e| format!("Failed to fetch modified threads: {}", e))?;
+
+        // A thread deleted between the history call and the fetch comes back
+        // missing rather than as an error
+        deleted_thread_ids.extend(vanished_thread_ids(&modified_thread_ids, &modified_threads));
+    }
+
+    Ok(IncrementalSyncResult {
+        modified_threads,
+        deleted_thread_ids,
+        new_history_id: changes.new_history_id,
+        is_full_sync: false,
+    })
+}
+
+/// Establish a history ID for later incremental syncs; the frontend does its
+/// normal card fetch, so the card queries aren't duplicated here
+async fn full_sync(gmail: &impl MailHistory) -> Result<IncrementalSyncResult, String> {
+    let history_id = gmail
+        .current_history_id()
+        .await
+        .map_err(|e| format!("Failed to get history ID: {}", e))?;
     Ok(IncrementalSyncResult {
         modified_threads: Vec::new(),
         deleted_thread_ids: Vec::new(),
@@ -2144,6 +2159,98 @@ mod tests {
             attachments: Vec::new(),
             calendar_event: None,
         }
+    }
+
+    /// Gmail history with `modified` changed threads and `candidates` threads
+    /// that lost messages, of which `gone` no longer exist
+    #[derive(Default)]
+    struct FakeMail {
+        modified: Vec<String>,
+        candidates: Vec<String>,
+        gone: Vec<String>,
+        expired: bool,
+        calls: std::sync::Mutex<Vec<String>>,
+    }
+
+    impl FakeMail {
+        fn with_changes(modified: usize, candidates: usize) -> Self {
+            FakeMail {
+                modified: (0..modified).map(|i| format!("m{}", i)).collect(),
+                candidates: (0..candidates).map(|i| format!("d{}", i)).collect(),
+                ..Default::default()
+            }
+        }
+
+        fn calls(&self) -> Vec<String> {
+            self.calls.lock().unwrap().clone()
+        }
+    }
+
+    impl super::MailHistory for FakeMail {
+        async fn history_changes(&self, since: &str) -> Result<crate::gmail::HistoryChanges, String> {
+            self.calls.lock().unwrap().push(format!("history {}", since));
+            if self.expired {
+                return Err(crate::gmail::HISTORY_EXPIRED.to_string());
+            }
+            Ok(crate::gmail::HistoryChanges {
+                modified_thread_ids: self.modified.clone(),
+                deleted_thread_ids: self.candidates.clone(),
+                deleted_message_ids: Vec::new(),
+                new_history_id: "200".into(),
+            })
+        }
+
+        async fn split_deleted_threads(&self, ids: &[String]) -> Result<(Vec<String>, Vec<String>), String> {
+            self.calls.lock().unwrap().push(format!("split {}", ids.len()));
+            Ok(ids.iter().cloned().partition(|id| !self.gone.contains(id)))
+        }
+
+        async fn thread_details(&self, ids: &[String]) -> Result<Vec<Thread>, String> {
+            self.calls.lock().unwrap().push(format!("details {}", ids.len()));
+            Ok(ids.iter().filter(|id| !self.gone.contains(id)).map(|id| thread(id)).collect())
+        }
+
+        async fn current_history_id(&self) -> Result<String, String> {
+            self.calls.lock().unwrap().push("profile".into());
+            Ok("300".into())
+        }
+    }
+
+    #[tokio::test]
+    async fn a_large_history_backlog_refetches_cards_instead_of_every_thread() {
+        let gmail = FakeMail::with_changes(90, 20);
+        let result = super::sync_mail_history(&gmail, Some("100")).await.unwrap();
+        assert!(result.is_full_sync);
+        assert!(result.modified_threads.is_empty() && result.deleted_thread_ids.is_empty());
+        assert_eq!(result.new_history_id, "200", "the backlog is not fetched again");
+        assert_eq!(gmail.calls(), vec!["history 100"]);
+    }
+
+    #[tokio::test]
+    async fn a_small_history_backlog_fetches_the_changed_threads() {
+        let gmail = FakeMail { gone: vec!["d1".into()], ..FakeMail::with_changes(2, 2) };
+        let result = super::sync_mail_history(&gmail, Some("100")).await.unwrap();
+        assert!(!result.is_full_sync);
+        let mut fetched: Vec<&str> = result.modified_threads.iter().map(|t| t.gmail_thread_id.as_str()).collect();
+        fetched.sort();
+        assert_eq!(fetched, vec!["d0", "m0", "m1"]);
+        assert_eq!(result.deleted_thread_ids, vec!["d1".to_string()]);
+        assert_eq!(result.new_history_id, "200");
+        assert_eq!(gmail.calls(), vec!["history 100", "split 2", "details 3"]);
+    }
+
+    #[tokio::test]
+    async fn a_missing_or_expired_history_id_starts_a_full_sync() {
+        let gmail = FakeMail::default();
+        let result = super::sync_mail_history(&gmail, None).await.unwrap();
+        assert!(result.is_full_sync);
+        assert_eq!(result.new_history_id, "300");
+
+        let gmail = FakeMail { expired: true, ..Default::default() };
+        let result = super::sync_mail_history(&gmail, Some("1")).await.unwrap();
+        assert!(result.is_full_sync);
+        assert_eq!(result.new_history_id, "300");
+        assert_eq!(gmail.calls(), vec!["history 1", "profile"]);
     }
 
     #[test]
