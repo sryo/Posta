@@ -99,6 +99,35 @@ describe("App background sync", () => {
   });
 });
 
+describe("App background sync while the first page is being cached", () => {
+  it("applies a refresh that lands before the first page's cache write finishes", async () => {
+    let releaseSave!: () => void;
+    const slowSave = new Promise<void>(r => { releaseSave = r; });
+    let saves = 0;
+    handlers.save_cached_card_threads = async () => { if (saves++ === 0) await slowSave; return null; };
+    render(() => <App />);
+    await screen.findByText("Mail for A");
+
+    handlers.sync_threads_incremental = () => ({
+      modified_threads: [{ ...thread("t-a", "Mail for A"), labels: [] }],
+      deleted_thread_ids: [],
+      is_full_sync: false,
+    });
+    let releaseFetch!: () => void;
+    const slowFetch = new Promise<void>(r => { releaseFetch = r; });
+    const fetchPage = handlers.fetch_threads_paginated;
+    handlers.fetch_threads_paginated = async (args) => { await slowFetch; return fetchPage({ ...args, cardId: "empty" }); };
+    window.dispatchEvent(new Event("focus"));
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith("sync_threads_incremental", expect.anything()));
+
+    releaseSave();
+    await new Promise(r => setTimeout(r, 10));
+    releaseFetch();
+
+    await waitFor(() => expect(screen.queryByText("Mail for A")).not.toBeInTheDocument());
+  });
+});
+
 describe("App background sync after an account switch", () => {
   it("ignores a sync result for the account that is no longer selected", async () => {
     handlers.get_accounts = () => [account("a", "a@x.com"), account("b", "b@x.com")];
@@ -666,6 +695,29 @@ describe("App thread view compose", () => {
 
     await waitFor(() => expect(invoke).toHaveBeenCalledWith("send_email", expect.objectContaining({ to: "cy@z.com" })));
     expect(invoke).not.toHaveBeenCalledWith("reply_to_thread", expect.anything());
+  });
+});
+
+describe("App quick reply", () => {
+  it("replies at the Reply-To address", async () => {
+    threadsByCard["card-a"] = [{ ...thread("t-a", "Mail for A"), participants: ["List <noreply@x.com>"] }];
+    handlers.get_thread_details = () => ({
+      id: "t-a",
+      messages: [{
+        ...fullMessage("m1", "List <noreply@x.com>"),
+        payload: { mimeType: "text/plain", headers: [{ name: "From", value: "List <noreply@x.com>" }, { name: "Reply-To", value: "team@x.com" }], body: { size: 0 } },
+      }],
+    });
+    handlers.reply_to_thread = () => null;
+    render(() => <App />);
+    await screen.findByText("Mail for A");
+    fireEvent.keyDown(document, { key: "l" });
+    fireEvent.keyDown(document, { key: "r" });
+    const input = document.querySelector(".quick-reply-input") as HTMLTextAreaElement;
+    fireEvent.input(input, { target: { value: "Thanks" } });
+    fireEvent.keyDown(input, { key: "Enter", metaKey: true });
+
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith("reply_to_thread", expect.objectContaining({ to: "team@x.com", subject: "Re: Mail for A" })));
   });
 });
 

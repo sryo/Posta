@@ -2139,15 +2139,14 @@ function App() {
     const thread = threads.find(t => t.gmail_thread_id === threadId);
     if (!thread) return;
 
-    // Get the sender to reply to — on sent threads participants[0] can be
-    // the user themselves, so prefer the first other participant
-    const accountEmail = account.email.toLowerCase();
-    const replyTo = thread.participants.find(p => extractEmail(p).toLowerCase() !== accountEmail)
-      || thread.participants[0] || "";
     const subject = addReplyPrefix(thread.subject);
 
     setQuickReply(qr => ({ ...qr, sending: true }));
     try {
+      // The thread list lacks Reply-To and who wrote last; the full thread has both
+      const details = await getThreadDetails(account.id, threadId);
+      const replyTo = batchReplyEntry(threadId, details.messages ?? [], account.email)?.to;
+      if (!replyTo) throw new Error("No one to reply to");
       await replyToThread(account.id, threadId, replyTo, "", "", subject, text, undefined, [], false);
       setQuickReply({ threadId: null, text: "", sending: false });
       setQuickReplyCardId(null);
@@ -2927,7 +2926,7 @@ function App() {
 
     // Capture pagination state so a page-1 fetch that resolves after the
     // user paginated doesn't wipe appended pages or rewind the page token
-    const tokenBeforeFetch = cardPageTokens[cardId];
+    const tokenBeforeFetch = cardPageTokens[cardId] ?? null;
     try {
       const result = await fetchThreadsPaginated(accountId, cardId, null);
       if (selectedAccount()?.id !== accountId) return;
@@ -2941,7 +2940,7 @@ function App() {
         await saveCachedCardThreads(cardId, result.groups, result.next_page_token);
         return;
       }
-      if (cardPageTokens[cardId] !== tokenBeforeFetch || loadingMore[cardId]) {
+      if ((cardPageTokens[cardId] ?? null) !== tokenBeforeFetch || loadingMore[cardId]) {
         // Card paginated while this fetch was in flight; refresh the
         // page-1 cache but leave UI state alone
         await saveCachedCardThreads(cardId, result.groups, result.next_page_token);
