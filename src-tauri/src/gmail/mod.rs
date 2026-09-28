@@ -2140,6 +2140,9 @@ mod tests {
             encode_address_header("\"Doe, John\" <jd@example.com>, x@example.com"),
             "\"Doe, John\" <jd@example.com>, x@example.com"
         );
+        let quoted = encode_address_header("\"Müller, J\" <m@example.com>, x@example.com");
+        assert!(quoted.starts_with("=?UTF-8?B?"));
+        assert!(quoted.ends_with(" <m@example.com>, x@example.com"));
         let mixed = encode_address_header("Müller <m@example.com>, plain@example.com");
         assert!(mixed.contains("=?UTF-8?B?"));
         assert!(mixed.ends_with(", plain@example.com"));

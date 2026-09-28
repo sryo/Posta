@@ -1162,36 +1162,32 @@ mod tests {
 
     #[test]
     fn test_get_time_range() {
-        // Test "week" which uses today-based range (no timezone = local)
-        let cq = CalendarQuery::parse("calendar:week");
-        let (start, end) = cq.get_time_range(None);
-
-        let local_now = Local::now();
-        let local_today = local_now.date_naive();
-        let today = Local.from_local_datetime(&local_today.and_hms_opt(0, 0, 0).expect("midnight is a valid time"))
-            .single()
+        let now = "2024-07-10T15:30:00Z".parse::<DateTime<Utc>>().unwrap();
+        let utc_midnight = NaiveDate::from_ymd_opt(2024, 7, 10)
             .unwrap()
-            .with_timezone(&Utc);
+            .and_hms_opt(0, 0, 0)
+            .unwrap()
+            .and_utc();
+        let range = |q: &str, tz: &str| CalendarQuery::parse(q).get_time_range_at(Some(tz), now);
 
-        // Start should be today (midnight local time, converted to UTC)
-        assert_eq!(start, today);
-        // End should be today + 7 days
-        assert_eq!(end, today + Duration::days(7));
+        assert_eq!(range("calendar:today", "UTC"), (utc_midnight, utc_midnight + Duration::days(1)));
+        assert_eq!(
+            range("calendar:tomorrow", "UTC"),
+            (utc_midnight + Duration::days(1), utc_midnight + Duration::days(2))
+        );
+        assert_eq!(range("calendar:week", "UTC"), (utc_midnight, utc_midnight + Duration::days(7)));
+        assert_eq!(range("calendar:month", "UTC"), (utc_midnight, utc_midnight + Duration::days(30)));
+        // Upcoming ranges start at `now`, not midnight
+        assert_eq!(range("calendar:3d", "UTC"), (now, now + Duration::days(3)));
 
-        // Test "7d" which uses Upcoming (from now, not midnight)
-        let cq_upcoming = CalendarQuery::parse("calendar:7d");
-        let (start_up, end_up) = cq_upcoming.get_time_range(None);
-        let now = Utc::now();
-        // Upcoming should start within a second of now
-        assert!((start_up - now).num_seconds().abs() < 2);
-        // End should be ~7 days from start
-        assert_eq!((end_up - start_up).num_days(), 7);
+        // "today" is the calendar's day: Buenos Aires (UTC-3) midnight is 03:00 UTC
+        let (start, end) = range("calendar:today", "America/Argentina/Buenos_Aires");
+        assert_eq!(start, utc_midnight + Duration::hours(3));
+        assert_eq!(end, start + Duration::days(1));
 
-        // Test with explicit timezone
-        let cq_today = CalendarQuery::parse("calendar:today");
-        let (start_tz, _end_tz) = cq_today.get_time_range(Some("America/Argentina/Buenos_Aires"));
-        // Should successfully parse and return a valid time
-        assert!(start_tz <= Utc::now());
+        // Late evening in Tokyo is already the next calendar day there
+        let (start, _) = range("calendar:today", "Asia/Tokyo");
+        assert_eq!(start, utc_midnight + Duration::days(1) - Duration::hours(9));
     }
 
     #[test]
