@@ -1708,6 +1708,47 @@ function App() {
     }, 200);
   }
 
+  // One object per view, read through getters, so typing updates the inline
+  // compose in place instead of handing the view a new object per keystroke
+  function inlineComposeProps(target: { replyToMessageId: () => string | null; isForward: () => boolean; onClose: () => void }) {
+    return {
+      get replyToMessageId() { return target.replyToMessageId(); },
+      get isForward() { return target.isForward(); },
+      get to() { return composeTo(); },
+      setTo: setComposeTo,
+      get cc() { return composeCc(); },
+      setCc: setComposeCc,
+      get bcc() { return composeBcc(); },
+      setBcc: setComposeBcc,
+      get showCcBcc() { return showCcBcc(); },
+      setShowCcBcc: setShowCcBcc,
+      get body() { return composeBody(); },
+      setBody: setComposeBody,
+      get attachments() { return composeAttachments(); },
+      onRemoveAttachment: removeAttachment,
+      onFileSelect: handleFileSelect,
+      get error() { return composeEmailError(); },
+      get draftSaving() { return drafts.saving(); },
+      get draftSaved() { return drafts.saved(); },
+      onSend: handleSendEmail,
+      onClose: target.onClose,
+      onInput: handleComposeInput,
+      get focusBody() { return focusComposeBody(); },
+      get resizing() { return inlineResizing(); },
+      onResizeStart: handleInlineResizeStart,
+    };
+  }
+  const threadInlineCompose = inlineComposeProps({
+    replyToMessageId: () => replyingToThread()?.messageId || null,
+    isForward: () => !!forwardingThread(),
+    onClose: closeCompose,
+  });
+  const eventInlineCompose = inlineComposeProps({
+    replyToMessageId: () => null,
+    isForward: () => !!forwardingEvent(),
+    onClose: () => { closeCompose(); setReplyingToEvent(null); setForwardingEvent(null); },
+  });
+
   // Cancelled by resetCompose when a new compose replaces one animating out
   let closeComposeTimeout: number | undefined;
   // Closing keeps a draft the user wrote in (saved in Gmail's Drafts too) and
@@ -4524,32 +4565,7 @@ function App() {
           isInInbox={isThreadInInbox()}
           labelCount={getThreadUserLabelCount()}
           // Inline compose props
-          inlineCompose={composeShownIn() === "thread" ? {
-            replyToMessageId: replyingToThread()?.messageId || null,
-            isForward: !!forwardingThread(),
-            to: composeTo(),
-            setTo: setComposeTo,
-            cc: composeCc(),
-            setCc: setComposeCc,
-            bcc: composeBcc(),
-            setBcc: setComposeBcc,
-            showCcBcc: showCcBcc(),
-            setShowCcBcc: setShowCcBcc,
-            body: composeBody(),
-            setBody: setComposeBody,
-            attachments: composeAttachments(),
-            onRemoveAttachment: removeAttachment,
-            onFileSelect: handleFileSelect,
-            error: composeEmailError(),
-            draftSaving: drafts.saving(),
-            draftSaved: drafts.saved(),
-            onSend: handleSendEmail,
-            onClose: closeCompose,
-            onInput: handleComposeInput,
-            focusBody: focusComposeBody(),
-            resizing: inlineResizing(),
-            onResizeStart: handleInlineResizeStart,
-          } : null}
+          inlineCompose={composeShownIn() === "thread" ? threadInlineCompose : null}
           threadAttachments={(() => {
             const cardId = activeThreadCardId();
             const threadId = activeThreadId();
@@ -4726,32 +4742,7 @@ function App() {
           calendarsLoading={calendarsLoading()}
           onMoveToCalendar={handleMoveEventToCalendar}
           rsvpLoading={!!(activeEvent() && rsvpLoading[activeEvent()!.id])}
-          inlineCompose={composeShownIn() === "event" ? {
-            replyToMessageId: null,
-            isForward: !!forwardingEvent(),
-            to: composeTo(),
-            setTo: setComposeTo,
-            cc: composeCc(),
-            setCc: setComposeCc,
-            bcc: composeBcc(),
-            setBcc: setComposeBcc,
-            showCcBcc: showCcBcc(),
-            setShowCcBcc: setShowCcBcc,
-            body: composeBody(),
-            setBody: setComposeBody,
-            attachments: composeAttachments(),
-            onRemoveAttachment: removeAttachment,
-            onFileSelect: handleFileSelect,
-            error: composeEmailError(),
-            draftSaving: drafts.saving(),
-            draftSaved: drafts.saved(),
-            onSend: handleSendEmail,
-            onClose: () => { closeCompose(); setReplyingToEvent(null); setForwardingEvent(null); },
-            onInput: handleComposeInput,
-            focusBody: focusComposeBody(),
-            resizing: inlineResizing(),
-            onResizeStart: handleInlineResizeStart,
-          } : null}
+          inlineCompose={composeShownIn() === "event" ? eventInlineCompose : null}
           inlineEdit={eventForm().editing && activeEvent() && eventForm().editing!.id === activeEvent()!.id ? {
             summary: eventForm().summary,
             setSummary: (v: string) => setEventForm(f => ({ ...f, summary: v })),

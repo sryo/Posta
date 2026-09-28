@@ -1375,3 +1375,17 @@ describe("App drafts", () => {
   });
 });
 
+describe("App inline reply", () => {
+  it("keeps the same text box while typing", async () => {
+    handlers.get_thread_details = () => ({ id: "t-a", messages: [fullMessage("m1", "Ana <ana@x.com>")] });
+    render(() => <App />);
+    fireEvent.click(await screen.findByText("Mail for A"));
+    await screen.findByText("body m1");
+    fireEvent.keyDown(document, { key: "r" });
+
+    const body = await screen.findByPlaceholderText("Write your reply...");
+    fireEvent.input(body, { target: { value: "typing" } });
+    expect(body.isConnected).toBe(true);
+    expect(screen.getByPlaceholderText("Write your reply...")).toBe(body);
+  });
+});
