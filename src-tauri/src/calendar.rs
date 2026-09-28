@@ -214,6 +214,31 @@ pub struct CalendarClient {
     access_token: String,
 }
 
+fn events_list_url(
+    calendar_id: &str,
+    time_min: DateTime<Utc>,
+    time_max: DateTime<Utc>,
+    query: &CalendarQuery,
+) -> String {
+    let mut url = format!(
+        "{}/calendars/{}/events?timeMin={}&timeMax={}&maxResults={}&singleEvents=true&orderBy=startTime",
+        CALENDAR_API_BASE,
+        urlencoding::encode(calendar_id),
+        urlencoding::encode(&time_min.to_rfc3339()),
+        urlencoding::encode(&time_max.to_rfc3339()),
+        EVENTS_PAGE_SIZE
+    );
+    if let Some(q) = &query.text {
+        url.push_str(&format!("&q={}", urlencoding::encode(q)));
+    }
+    // The API omits cancelled events unless asked, so status:cancelled
+    // would otherwise never match anything
+    if query.status.as_deref().is_some_and(|s| s.eq_ignore_ascii_case("cancelled")) {
+        url.push_str("&showDeleted=true");
+    }
+    url
+}
+
 /// Build a CreateEventRequest from raw parameters (shared by create and update)
 fn build_event_request(
     summary: String,
@@ -354,18 +379,7 @@ impl CalendarClient {
         let (time_min, time_max) = query.get_time_range(timezone);
 
         let fetch_futures: Vec<_> = calendars.iter().map(|cal| {
-            let mut base_url = format!(
-                "{}/calendars/{}/events?timeMin={}&timeMax={}&maxResults={}&singleEvents=true&orderBy=startTime",
-                CALENDAR_API_BASE,
-                urlencoding::encode(&cal.id),
-                urlencoding::encode(&time_min.to_rfc3339()),
-                urlencoding::encode(&time_max.to_rfc3339()),
-                EVENTS_PAGE_SIZE
-            );
-
-            if let Some(q) = &query.text {
-                base_url.push_str(&format!("&q={}", urlencoding::encode(q)));
-            }
+            let base_url = events_list_url(&cal.id, time_min, time_max, query);
 
             async move {
                 let mut items: Vec<ApiEvent> = Vec::new();
@@ -1262,6 +1276,23 @@ mod tests {
         let mut no_location = ev;
         no_location.location = None;
         assert!(!CalendarQuery::parse("location:york").matches(&no_location));
+    }
+
+    #[test]
+    fn events_url_requests_cancelled_events_only_when_filtering_for_them() {
+        let now = "2024-07-10T15:30:00Z".parse::<DateTime<Utc>>().unwrap();
+        let url = |q: &str| events_list_url("me@x.com", now, now + Duration::days(1), &CalendarQuery::parse(q));
+
+        let plain = url("calendar:today");
+        assert!(plain.starts_with("https://www.googleapis.com/calendar/v3/calendars/me%40x.com/events?"));
+        assert!(plain.contains("timeMin=2024-07-10T15%3A30%3A00%2B00%3A00"));
+        assert!(plain.contains("singleEvents=true"));
+        assert!(!plain.contains("showDeleted"));
+        assert!(!plain.contains("&q="));
+
+        assert!(url("calendar:week status:Cancelled").contains("&showDeleted=true"));
+        assert!(!url("calendar:week status:confirmed").contains("showDeleted"));
+        assert!(url("calendar:week team sync").contains("&q=team%20sync"));
     }
 
     #[test]
