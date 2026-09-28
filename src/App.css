@@ -141,7 +141,8 @@ a:focus-visible,
 }
 
 .thread:focus-visible,
-.calendar-event-item:focus-visible {
+.calendar-event-item:focus-visible,
+.message-body a:focus-visible {
     outline-offset: -2px;
 }
 

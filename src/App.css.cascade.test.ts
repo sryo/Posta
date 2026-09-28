@@ -48,6 +48,7 @@ describe("App.css cascade", () => {
       <div class="scheduler-day-card" role="button" tabindex="0" id="day"></div>
       <div class="scheduler-option" role="option" tabindex="0" id="option"></div>
       <div class="attachment-thumb" role="button" tabindex="0" id="thumb"></div>
+      <div class="message-body"><a href="#" id="email-link">x</a></div>
       <div class="card"><div class="thread" role="article" tabindex="0" id="thread"></div>
       <div class="calendar-event-item" tabindex="0" id="event"></div></div>`;
     // The winning declarations among rules that apply only while :focus-visible.
@@ -66,12 +67,13 @@ describe("App.css cascade", () => {
       for (const hit of hits) for (const [prop, value] of hit.decl) out.set(prop, value);
       return out;
     };
-    for (const id of ["collapse", "link", "suggestion", "swatch", "day", "option", "thumb", "thread", "event"]) {
+    for (const id of ["collapse", "link", "suggestion", "swatch", "day", "option", "thumb", "email-link", "thread", "event"]) {
       const ring = focusRing(document.getElementById(id)!);
       expect(ring.get("outline"), id).toMatch(/^2px solid var\(--accent\)$/);
     }
-    // Rows sit flush in scrolling cards, which would clip an outset ring.
-    for (const id of ["thread", "event"]) {
+    // Rows sit flush in scrolling cards, and a message body scrolls wide
+    // content sideways; either would clip an outset ring.
+    for (const id of ["thread", "event", "email-link"]) {
       expect(focusRing(document.getElementById(id)!).get("outline-offset"), id).toMatch(/^-/);
     }
   });
