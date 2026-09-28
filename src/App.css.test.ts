@@ -147,6 +147,19 @@ describe("App.css", () => {
     expect(dragRules.map((r) => r.selectors.join(", "))).toEqual([]);
   });
 
+  it("reveals whatever hovering a control reveals on keyboard focus too", () => {
+    const hoverOnly: string[] = [];
+    for (const rule of rules) {
+      if (new Map(rule.declarations).get("opacity") !== "1") continue;
+      for (const sel of rule.selectors) {
+        if (!/:hover\s+\S/.test(sel)) continue;
+        const keyboard = [sel.replace(":hover", ":focus-visible"), sel.replace(":hover", ".focused")];
+        if (!keyboard.some((k) => rule.selectors.includes(k))) hoverOnly.push(sel);
+      }
+    }
+    expect(hoverOnly).toEqual([]);
+  });
+
   it("has no keyframes that no animation plays", () => {
     expect(unusedKeyframes(css)).toEqual([]);
   });

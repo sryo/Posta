@@ -582,7 +582,8 @@ a:focus-visible,
     transform: scale(1.1);
 }
 
-.compose-suggestion-avatar:hover .suggestion-label {
+.compose-suggestion-avatar:hover .suggestion-label,
+.compose-suggestion-avatar:focus-visible .suggestion-label {
     opacity: 1;
 }
 
@@ -3986,7 +3987,8 @@ button:disabled:hover {
     pointer-events: none;
 }
 
-.message-action-btn:hover .action-key-hint {
+.message-action-btn:hover .action-key-hint,
+.message-action-btn:focus-visible .action-key-hint {
     opacity: 1;
 }
 
