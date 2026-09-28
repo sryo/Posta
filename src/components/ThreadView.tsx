@@ -190,9 +190,10 @@ export const ThreadView = (props: {
         const to = unique(addresses('To'));
         if (to.length > 0) return { to: to.join(', '), cc: all ? unique(addresses('Cc')).join(', ') : '' };
       }
-      const replyTo = unique(addresses(findHeader(headers, 'Reply-To') ? 'Reply-To' : 'From'));
-      seen.add(extractEmail(from).toLowerCase());
-      const to = replyTo.length > 0 ? replyTo.join(', ') : extractEmail(from);
+      const replyTo = unique(addresses('Reply-To'));
+      const sender = extractEmail(from);
+      seen.add(sender.toLowerCase());
+      const to = replyTo.length > 0 ? replyTo.join(', ') : sender;
       return { to, cc: all ? unique([...addresses('To'), ...addresses('Cc')]).join(', ') : '' };
     };
 

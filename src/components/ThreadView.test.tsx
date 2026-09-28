@@ -131,6 +131,15 @@ describe("ThreadView keyboard shortcuts", () => {
     expect(cc).toBe("carol@example.com");
   });
 
+  it("replies to the sender's address even when an unquoted display name has a comma", () => {
+    const { props } = renderThread({
+      thread: makeThread([{ from: "Doe, John <jd@example.com>", body: "hi" }]),
+      focusedMessageIndex: 0,
+    });
+    fireEvent.keyDown(document, { key: "r" });
+    expect((props.onReply as any).mock.calls[0][0]).toBe("jd@example.com");
+  });
+
   it("replies to the original recipients when the message was sent by the current user", () => {
     const { props } = renderThread({
       thread: makeThread([
