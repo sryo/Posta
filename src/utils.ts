@@ -150,11 +150,13 @@ export function stripHtml(html: string): string {
         let text = child.textContent ?? '';
         if (!inPre) {
           text = text.replace(/\s+/g, ' ');
-          if (!out || out.endsWith('\n')) text = text.trimStart();
+          if (!out || /[\n\t]$/.test(out)) text = text.trimStart();
         }
         out += text;
       } else if (child instanceof Element && !SKIPPED_TAGS.has(child.tagName)) {
         if (child.tagName === 'BR') { out += '\n'; continue; }
+        const isCell = child.tagName === 'TD' || child.tagName === 'TH';
+        if (isCell && child.previousElementSibling) out = out.replace(/ +$/, '') + '\t';
         const isBlock = BLOCK_TAGS.has(child.tagName);
         if (isBlock) newline();
         walk(child, inPre || child.tagName === 'PRE');

@@ -174,3 +174,13 @@ describe("extractMessageHtml in the batch reply panel", () => {
     expect(extractMessageHtml(undefined)).toBe("(No content)");
   });
 });
+
+describe("stripHtml tables", () => {
+  it("separates table cells and puts each row on its own line", () => {
+    expect(stripHtml("<table><tr><td>Name</td><td>Qty</td></tr><tr><td>Apples</td><td>3</td></tr></table>"))
+      .toBe("Name\tQty\nApples\t3");
+    expect(stripHtml("<table><tr><th>A</th><th>B</th></tr></table>")).toBe("A\tB");
+    expect(stripHtml("<table>\n  <tr>\n    <td> Total </td>\n    <td>\n      <b>9</b> items</td>\n  </tr>\n</table>"))
+      .toBe("Total\t9 items");
+  });
+});
