@@ -600,15 +600,13 @@ impl CalendarClient {
 
         let existing_attendees = async {
             if fields.attendees.is_none() {
-                return Vec::new();
+                return Ok(Vec::new());
             }
-            self.event_attendees(calendar_id, event_id).await.unwrap_or_else(|e| {
-                tracing::warn!("Failed to read attendees of event {}: {}", event_id, e);
-                Vec::new()
-            })
+            self.event_attendees(calendar_id, event_id).await
         };
         let (calendar, existing_attendees) =
             futures::join!(self.calendar_info(calendar_id), existing_attendees);
+        let existing_attendees = existing_attendees?;
         let time_zone = recurrence_time_zone(&fields, calendar.as_ref());
         let body = build_event_request(fields, time_zone, &existing_attendees)?;
         let api_event: ApiEvent = self.send_json(self.http_client.patch(&url).json(&body)).await?;
@@ -1601,6 +1599,33 @@ mod tests {
         let ids: Vec<&str> = calendars.iter().map(|c| c.id.as_str()).collect();
         assert_eq!(ids, vec!["first", "second"]);
         assert_eq!(server.requests().len(), 2);
+    }
+
+    fn update_stub(method: &str, target: &str) -> (u16, String) {
+        match method {
+            "GET" if target.contains("fields=id,attendees") => (500, "{}".to_string()),
+            "GET" => (200, calendar_entry("cal").to_string()),
+            _ => (200, serde_json::json!({ "id": "e1", "start": { "date": "2024-12-23" } }).to_string()),
+        }
+    }
+
+    #[tokio::test]
+    async fn update_with_guests_fails_rather_than_resetting_their_responses() {
+        // Without the current guest list, a bare-address PATCH would wipe
+        // every guest's response, so the edit must not be sent
+        let server = StubServer::start(update_stub).await;
+        let edited = EventFields { attendees: Some(vec!["bob@x.com".into()]), ..fields(0, 3_600_000, false) };
+        assert!(server.client().update_event("cal", "e1", edited).await.is_err());
+        assert!(server.requests().iter().all(|(method, _, _)| method != "PATCH"));
+
+        // Without guests in the form there is nothing to look up
+        let server = StubServer::start(update_stub).await;
+        let updated = server.client().update_event("cal", "e1", fields(0, 3_600_000, false)).await.unwrap();
+        assert_eq!(updated.calendar_name, "cal");
+        assert!(server
+            .requests()
+            .iter()
+            .any(|(method, target, _)| method == "PATCH" && target == "/calendars/cal/events/e1"));
     }
 
     #[test]
