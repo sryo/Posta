@@ -1,11 +1,10 @@
-// Shared data types for the Gmail IMAP client
+// Shared data types
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 pub use crate::calendar::CalendarEvent as GoogleCalendarEvent;
-pub use crate::calendar::EventAttendee as GoogleCalendarEventAttendee;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Account {
@@ -98,10 +97,6 @@ pub struct Attachment {
 }
 
 impl Attachment {
-    pub fn is_image(&self) -> bool {
-        self.mime_type.starts_with("image/")
-    }
-
     pub fn is_calendar(&self) -> bool {
         self.mime_type == "text/calendar"
             || self.mime_type == "application/ics"
@@ -165,37 +160,9 @@ pub struct Thread {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Message {
-    pub gmail_msg_id: String,
-    pub thread_id: String,
-    pub from_addr: String,
-    pub to_addrs: Vec<String>,
-    pub date: DateTime<Utc>,
-    pub body_text: Option<String>,
-    pub body_html: Option<String>,
-}
-
-/// Email reaction (emoji response to a message)
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Reaction {
-    /// The emoji used for this reaction
-    pub emoji: String,
-    /// Email address of the person who reacted
-    pub from_addr: String,
-    /// Message ID this reaction is in response to
-    pub in_reply_to: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ThreadGroup {
     pub label: String,
     pub threads: Vec<Thread>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct FetchResult {
-    pub groups: Vec<ThreadGroup>,
-    pub next_page_token: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

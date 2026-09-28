@@ -1,5 +1,8 @@
 // Tauri command handlers
 
+// Command parameters are the frontend's invoke() argument names, so they stay flat
+#![allow(clippy::too_many_arguments)]
+
 use crate::auth::{self, CallbackServer, GmailAuth};
 use crate::ai::GeminiClient;
 use crate::cache::CacheDb;
@@ -106,7 +109,7 @@ fn sync_cards_to_icloud(state: &AppState) {
     };
 
     let mut all_cards = Vec::new();
-    let mut account_mappings = std::collections::HashMap::new();
+    let mut account_mappings = HashMap::new();
 
     for account in &accounts {
         // Build account_id -> email mapping for iCloud restore
@@ -121,7 +124,11 @@ fn sync_cards_to_icloud(state: &AppState) {
     drop(db_guard); // Release db lock before acquiring icloud lock
     if let Ok(icloud) = state.icloud.lock() {
         let _ = icloud.sync_cards(&all_cards);
-        let _ = icloud.sync_account_mappings(&account_mappings);
+        // Keep other devices' id -> email entries so their cards can still be
+        // matched to the right account when this device pulls them
+        let mut merged = icloud.load_account_mappings().ok().flatten().unwrap_or_default();
+        merged.extend(account_mappings);
+        let _ = icloud.sync_account_mappings(&merged);
     }
 }
 
@@ -202,8 +209,6 @@ pub async fn run_oauth_flow(
     app_handle: tauri::AppHandle,
     state: State<'_, AppState>,
 ) -> Result<Account, String> {
-    let _app_data_dir = get_app_data_dir(&app_handle)?;
-
     // Cancel any previous in-flight flow so it releases port 8420 promptly
     let cancel_flag = {
         let mut slot = state.oauth_cancel.lock().map_err(|_| "Lock error")?;
@@ -298,7 +303,7 @@ async fn finalize_oauth(
 
     // Reuse the existing account id on re-login so cards keep pointing at it;
     // only mint a new UUID for genuinely new emails
-    let existing = with_db(&state, |db| {
+    let existing = with_db(state, |db| {
         db.get_account_by_email(&user_info.email).map_err(|e| e.to_string())
     })?;
     let account = match existing {
@@ -310,14 +315,14 @@ async fn finalize_oauth(
     };
 
     // Get app data directory for secure storage
-    let app_data_dir = get_app_data_dir(&app_handle)?;
+    let app_data_dir = get_app_data_dir(app_handle)?;
 
     // Store refresh token securely
     auth::store_refresh_token(&account.id, refresh_token, &app_data_dir)
         .map_err(|e| e.to_string())?;
 
     // Save account to database
-    with_db(&state, |db| db.insert_account(&account).map_err(|e| e.to_string()))?;
+    with_db(state, |db| db.insert_account(&account).map_err(|e| e.to_string()))?;
 
     // Cache the fresh access token, replacing any stale entry for this account
     let expiry = Instant::now() + Duration::from_secs(expires_in.unwrap_or(3600));
@@ -405,7 +410,7 @@ pub fn create_card(
 ) -> Result<Card, String> {
     let card = with_db(&state, |db| {
         let cards = db.get_cards(&account_id).map_err(|e| e.to_string())?;
-        let position = cards.len() as i32;
+        let position = next_card_position(&cards);
 
         let card_type_value = card_type.unwrap_or_else(|| "email".to_string());
         let mut card = if card_type_value == "calendar" {
@@ -445,6 +450,11 @@ pub fn reorder_cards(orders: Vec<(String, i32)>, state: State<'_, AppState>) -> 
 
     sync_cards_to_icloud(&state);
     Ok(())
+}
+
+/// Positions keep gaps after a delete, so count-based numbering can collide
+fn next_card_position(cards: &[Card]) -> i32 {
+    cards.iter().map(|c| c.position + 1).max().unwrap_or(0)
 }
 
 /// Helper to get account and card from database
@@ -507,6 +517,15 @@ async fn get_access_token(state: &AppState, account_id: &str, app_data_dir: &std
     Ok(access_token)
 }
 
+/// Gmail and People errors embed the HTTP status ("401 Unauthorized"), most
+/// calendar errors are rewritten into friendly messages, and the RSVP calls
+/// carry only Google's JSON error body, whose status is "UNAUTHENTICATED"
+fn is_auth_error(e: &str) -> bool {
+    e.contains("401 Unauthorized")
+        || e.contains("Calendar access expired")
+        || e.contains("\"UNAUTHENTICATED\"")
+}
+
 /// Evict the account's cached access token when an API call failed with an
 /// auth error (revoked/expired token), so the next call refreshes the token
 /// instead of reusing the stale one for its remaining cached lifetime.
@@ -517,7 +536,7 @@ fn evict_token_on_auth_error<T>(
     result: Result<T, String>,
 ) -> Result<T, String> {
     if let Err(e) = &result {
-        if e.contains("401") || e.contains("Calendar access expired") {
+        if is_auth_error(e) {
             if let Ok(mut cache) = state.token_cache.lock() {
                 if cache.remove(account_id).is_some() {
                     tracing::info!(
@@ -656,7 +675,7 @@ async fn sync_threads_incremental_impl(
                         is_full_sync: false,
                     })
                 }
-                Err(e) if e.contains("expired") => {
+                Err(e) if e.starts_with("History ID expired") => {
                     tracing::warn!("History ID expired, performing full sync");
                     // Clear the stale history ID and do full sync
                     {
@@ -986,7 +1005,6 @@ fn sanitize_attachment_filename(name: &str) -> String {
     std::path::Path::new(name)
         .file_name()
         .map(|s| s.to_string_lossy().into_owned())
-        .filter(|s| !s.is_empty() && s.as_str() != "..")
         .unwrap_or_else(|| "attachment".to_string())
 }
 
@@ -1023,17 +1041,20 @@ async fn resolve_attachment_file(
         .decode(cleaned)
         .map_err(|e| format!("Failed to decode base64: {}", e))?;
 
-    // Ensure filename has extension based on mime type
-    let final_filename = if !filename.contains('.') {
-        mime_type
-            .and_then(get_extension_for_mime)
-            .map(|ext| format!("{}.{}", filename, ext))
-            .unwrap_or_else(|| filename.to_string())
-    } else {
-        filename.to_string()
-    };
+    Ok((attachment_filename(filename, mime_type), bytes))
+}
 
-    Ok((sanitize_attachment_filename(&final_filename), bytes))
+/// Safe on-disk name for an attachment, with an extension derived from the
+/// MIME type when the sender's name has none
+fn attachment_filename(filename: &str, mime_type: Option<&str>) -> String {
+    let name = sanitize_attachment_filename(filename);
+    if name.contains('.') {
+        return name;
+    }
+    match mime_type.and_then(get_extension_for_mime) {
+        Some(ext) => format!("{}.{}", name, ext),
+        None => name,
+    }
 }
 
 #[tauri::command]
@@ -1209,6 +1230,27 @@ pub async fn get_calendar_rsvp_status(
 
 // iCloud sync commands
 
+/// Local account that owns a card pulled from iCloud. `mappings` records the
+/// email behind each account id on the device that pushed the card.
+fn icloud_card_account(
+    card_account_id: &str,
+    mappings: &HashMap<String, String>,
+    accounts: &[Account],
+) -> Option<String> {
+    if accounts.iter().any(|a| a.id == card_account_id) {
+        return Some(card_account_id.to_string());
+    }
+    match mappings.get(card_account_id) {
+        Some(email) => accounts
+            .iter()
+            .find(|a| a.email.eq_ignore_ascii_case(email))
+            .map(|a| a.id.clone()),
+        // Owner unknown: a lone local account adopts it
+        None if accounts.len() == 1 => Some(accounts[0].id.clone()),
+        None => None,
+    }
+}
+
 /// Pull cards from iCloud and merge with local. Returns true if changes were made.
 #[tauri::command]
 pub fn pull_from_icloud(state: State<'_, AppState>) -> Result<bool, String> {
@@ -1235,19 +1277,13 @@ pub fn pull_from_icloud(state: State<'_, AppState>) -> Result<bool, String> {
 
     // Get existing local accounts and cards
     let accounts = db.get_accounts().map_err(|e| e.to_string())?;
-    let mut local_cards: std::collections::HashMap<String, Card> = std::collections::HashMap::new();
+    let mut local_cards: HashMap<String, Card> = HashMap::new();
     for account in &accounts {
         let cards = db.get_cards(&account.id).map_err(|e| e.to_string())?;
         for card in cards {
             local_cards.insert(card.id.clone(), card);
         }
     }
-
-    // Build local account lookup by ID and by email
-    let local_account_ids: std::collections::HashSet<String> =
-        accounts.iter().map(|a| a.id.clone()).collect();
-    let local_account_by_email: std::collections::HashMap<String, &crate::models::Account> =
-        accounts.iter().map(|a| (a.email.to_lowercase(), a)).collect();
 
     let mut changes_made = false;
 
@@ -1260,36 +1296,20 @@ pub fn pull_from_icloud(state: State<'_, AppState>) -> Result<bool, String> {
 
     // Merge: iCloud cards that don't exist locally get inserted
     for mut card in icloud_cards {
-        // Check if this card's account exists locally
-        if !local_account_ids.contains(&card.account_id) {
-            // Try to match by email mapping first
-            let email_match = account_mappings
-                .get(&card.account_id)
-                .and_then(|old_email| local_account_by_email.get(&old_email.to_lowercase()))
-                .map(|local_account| local_account.id.clone());
-
-            if let Some(new_id) = email_match {
-                tracing::info!(
-                    "Remapping card {} from {} to {} via email",
-                    card.name,
-                    card.account_id,
-                    new_id
-                );
-                card.account_id = new_id;
-            } else if accounts.len() == 1 {
-                // Fallback: a single local account adopts orphaned cards
-                tracing::info!(
-                    "Remapping orphaned card {} to single account {}",
-                    card.name,
-                    accounts[0].id
-                );
-                card.account_id = accounts[0].id.clone();
-            } else {
-                tracing::warn!(
-                    "Skipping card {} - no matching account (have {} accounts)",
-                    card.name,
-                    accounts.len()
-                );
+        match icloud_card_account(&card.account_id, &account_mappings, &accounts) {
+            Some(account_id) => {
+                if account_id != card.account_id {
+                    tracing::info!(
+                        "Remapping card {} from {} to {}",
+                        card.name,
+                        card.account_id,
+                        account_id
+                    );
+                    card.account_id = account_id;
+                }
+            }
+            None => {
+                tracing::warn!("Skipping card {} - no matching local account", card.name);
                 continue;
             }
         }
@@ -1313,13 +1333,6 @@ pub fn pull_from_icloud(state: State<'_, AppState>) -> Result<bool, String> {
     Ok(changes_made)
 }
 
-/// Force sync all cards to iCloud
-#[tauri::command]
-pub fn force_icloud_sync(state: State<'_, AppState>) -> Result<(), String> {
-    sync_cards_to_icloud(&state);
-    Ok(())
-}
-
 // People API commands (contacts)
 
 #[tauri::command]
@@ -1337,22 +1350,6 @@ pub async fn fetch_contacts(
 
     // Fetch up to 200 contacts
     evict_token_on_auth_error(&state, &account_id, people.fetch_all_contacts(200).await)
-}
-
-#[tauri::command]
-pub async fn search_contacts(
-    account_id: String,
-    query: String,
-    app_handle: tauri::AppHandle, state: State<'_, AppState>,
-) -> Result<Vec<crate::people::Contact>, String> {
-    let app_data_dir = get_app_data_dir(&app_handle)?;
-
-    verify_account_exists(&state, &account_id)?;
-
-    let access_token = get_access_token(&state, &account_id, &app_data_dir).await?;
-    let people = crate::people::PeopleClient::new(access_token);
-
-    evict_token_on_auth_error(&state, &account_id, people.search_contacts(&query).await)
 }
 
 // Calendar API commands
@@ -1518,7 +1515,7 @@ pub async fn suggest_replies(
     let access_token = get_access_token(&state, &account_id, &app_data_dir).await?;
 
     // 1. Get thread details to build context
-    let gmail = GmailClient::new(access_token.clone());
+    let gmail = GmailClient::new(access_token);
     let thread = evict_token_on_auth_error(&state, &account_id, gmail.get_thread(&thread_id).await)
         .map_err(|e| format!("Failed to fetch thread: {}", e))?;
 
@@ -1578,7 +1575,99 @@ pub async fn suggest_replies(
 
 #[cfg(test)]
 mod tests {
-    use super::sanitize_attachment_filename;
+    use super::{
+        attachment_filename, icloud_card_account, is_auth_error, next_card_position,
+        sanitize_attachment_filename,
+    };
+    use crate::models::{Account, Card};
+    use std::collections::HashMap;
+
+    fn account(id: &str, email: &str) -> Account {
+        Account { id: id.into(), ..Account::new(email.into(), None) }
+    }
+
+    fn mappings(pairs: &[(&str, &str)]) -> HashMap<String, String> {
+        pairs.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect()
+    }
+
+    #[test]
+    fn icloud_card_keeps_a_local_account_id() {
+        let accounts = [account("a1", "me@x.com"), account("a2", "work@x.com")];
+        assert_eq!(icloud_card_account("a2", &mappings(&[]), &accounts), Some("a2".into()));
+    }
+
+    #[test]
+    fn icloud_card_is_remapped_by_email_case_insensitively() {
+        let accounts = [account("a1", "me@x.com"), account("a2", "work@x.com")];
+        let m = mappings(&[("old", "Work@X.com")]);
+        assert_eq!(icloud_card_account("old", &m, &accounts), Some("a2".into()));
+    }
+
+    #[test]
+    fn single_account_adopts_only_cards_with_unknown_owner() {
+        let accounts = [account("a1", "me@x.com")];
+        assert_eq!(icloud_card_account("old", &mappings(&[]), &accounts), Some("a1".into()));
+        // The card belongs to an account this device doesn't have; adopting it
+        // would run another mailbox's query against this one
+        let m = mappings(&[("other", "work@x.com")]);
+        assert_eq!(icloud_card_account("other", &m, &accounts), None);
+    }
+
+    #[test]
+    fn icloud_card_without_match_is_skipped_with_several_accounts() {
+        let accounts = [account("a1", "me@x.com"), account("a2", "work@x.com")];
+        assert_eq!(icloud_card_account("old", &mappings(&[]), &accounts), None);
+    }
+
+    #[test]
+    fn auth_errors_are_recognised_across_apis() {
+        assert!(is_auth_error("Search failed: API error 401 Unauthorized: {}"));
+        assert!(is_auth_error("People API error (401 Unauthorized): {}"));
+        assert!(is_auth_error("Calendar access expired. Please re-login."));
+        assert!(is_auth_error(
+            r#"Failed to update RSVP: {"error": {"code": 401, "status": "UNAUTHENTICATED"}}"#
+        ));
+    }
+
+    #[test]
+    fn ids_containing_401_are_not_auth_errors() {
+        assert!(!is_auth_error(
+            "Failed to modify thread 18c4015fe2: API error 500 Internal Server Error: {}"
+        ));
+        assert!(!is_auth_error("Calendar not found."));
+    }
+
+    #[test]
+    fn attachment_filename_adds_extension_from_mime() {
+        assert_eq!(attachment_filename("scan", Some("application/pdf")), "scan.pdf");
+        assert_eq!(attachment_filename("scan.PDF", Some("application/pdf")), "scan.PDF");
+        assert_eq!(attachment_filename("notes", Some("application/x-unknown")), "notes");
+        assert_eq!(attachment_filename("notes", None), "notes");
+    }
+
+    #[test]
+    fn attachment_filename_never_yields_hidden_extension_only_name() {
+        assert_eq!(attachment_filename("", Some("application/pdf")), "attachment.pdf");
+        assert_eq!(attachment_filename("/", Some("image/png")), "attachment.png");
+    }
+
+    #[test]
+    fn attachment_filename_checks_extension_on_the_final_component() {
+        assert_eq!(attachment_filename("v1.2/invoice", Some("application/pdf")), "invoice.pdf");
+        assert_eq!(attachment_filename("../../evil.sh", Some("application/pdf")), "evil.sh");
+    }
+
+    fn card_at(position: i32) -> Card {
+        Card::new("acct".into(), "c".into(), "q".into(), position)
+    }
+
+    #[test]
+    fn next_card_position_goes_after_the_last_card_even_with_gaps() {
+        assert_eq!(next_card_position(&[]), 0);
+        assert_eq!(next_card_position(&[card_at(0), card_at(1)]), 2);
+        // After deleting the middle card of [0, 1, 2] the remaining positions are [0, 2]
+        assert_eq!(next_card_position(&[card_at(0), card_at(2)]), 3);
+    }
 
     #[test]
     fn sanitize_keeps_plain_filenames() {

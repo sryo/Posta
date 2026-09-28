@@ -26,7 +26,28 @@ pub struct MailtoData {
     pub body: String,
 }
 
-/// Parse a mailto: URL into structured data
+const MAILTO_SCHEME: &str = "mailto:";
+
+fn is_mailto(url: &str) -> bool {
+    url.get(..MAILTO_SCHEME.len())
+        .is_some_and(|scheme| scheme.eq_ignore_ascii_case(MAILTO_SCHEME))
+}
+
+fn percent_decode(s: &str) -> String {
+    String::from_utf8_lossy(&urlencoding::decode_binary(s.as_bytes())).into_owned()
+}
+
+fn append_recipients(field: &mut String, recipients: &str) {
+    if recipients.is_empty() {
+        return;
+    }
+    if !field.is_empty() {
+        field.push_str(", ");
+    }
+    field.push_str(recipients);
+}
+
+/// Parse a mailto: URL (RFC 6068) into structured data
 fn parse_mailto(url: &str) -> MailtoData {
     let mut data = MailtoData {
         to: String::new(),
@@ -36,32 +57,23 @@ fn parse_mailto(url: &str) -> MailtoData {
         body: String::new(),
     };
 
-    // Remove "mailto:" prefix
-    let url = url.strip_prefix("mailto:").unwrap_or(url);
+    let url = if is_mailto(url) { &url[MAILTO_SCHEME.len()..] } else { url };
 
-    // Split by ? to get the email and query params
     let (email_part, query_part) = match url.split_once('?') {
         Some((e, q)) => (e, Some(q)),
         None => (url, None),
     };
 
-    // URL-decode the email part
-    data.to = urlencoding::decode(email_part).unwrap_or_default().to_string();
+    data.to = percent_decode(email_part);
 
-    // Parse query parameters
     if let Some(query) = query_part {
         for param in query.split('&') {
             if let Some((key, value)) = param.split_once('=') {
-                let decoded = urlencoding::decode(value).unwrap_or_default().to_string();
+                let decoded = percent_decode(value);
                 match key.to_lowercase().as_str() {
-                    "to" => {
-                        if !data.to.is_empty() {
-                            data.to.push_str(", ");
-                        }
-                        data.to.push_str(&decoded);
-                    }
-                    "cc" => data.cc = decoded,
-                    "bcc" => data.bcc = decoded,
+                    "to" => append_recipients(&mut data.to, &decoded),
+                    "cc" => append_recipients(&mut data.cc, &decoded),
+                    "bcc" => append_recipients(&mut data.bcc, &decoded),
                     "subject" => data.subject = decoded,
                     "body" => data.body = decoded,
                     _ => {}
@@ -153,7 +165,7 @@ pub fn run() {
                     // The payload is a JSON array of URLs
                     if let Ok(url_list) = serde_json::from_str::<Vec<String>>(urls) {
                         for url in url_list {
-                            if url.starts_with("mailto:") {
+                            if is_mailto(&url) {
                                 deliver_mailto(&handle, &url);
                             }
                         }
@@ -165,7 +177,7 @@ pub fn run() {
                 match app.deep_link().get_current() {
                     Ok(Some(urls)) => {
                         for url in urls {
-                            if url.as_str().starts_with("mailto:") {
+                            if is_mailto(url.as_str()) {
                                 deliver_mailto(app.handle(), url.as_str());
                             }
                         }
@@ -222,9 +234,7 @@ pub fn run() {
             commands::rsvp_calendar_event,
             commands::get_calendar_rsvp_status,
             commands::pull_from_icloud,
-            commands::force_icloud_sync,
             commands::fetch_contacts,
-            commands::search_contacts,
             commands::list_calendars,
             commands::fetch_calendar_events,
             commands::create_calendar_event,
@@ -268,4 +278,64 @@ pub fn run() {
             _ => {}
         }
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{is_mailto, parse_mailto};
+
+    #[test]
+    fn mailto_parses_address_and_fields() {
+        let d = parse_mailto("mailto:a@x.com?subject=Hello%20there&body=Line%201%0D%0Aa%26b&cc=c@x.com");
+        assert_eq!(d.to, "a@x.com");
+        assert_eq!(d.subject, "Hello there");
+        assert_eq!(d.body, "Line 1\r\na&b");
+        assert_eq!(d.cc, "c@x.com");
+        assert_eq!(d.bcc, "");
+    }
+
+    #[test]
+    fn mailto_keeps_plus_literal() {
+        assert_eq!(parse_mailto("mailto:a+tag@x.com?subject=1+1").subject, "1+1");
+        assert_eq!(parse_mailto("mailto:a+tag@x.com").to, "a+tag@x.com");
+    }
+
+    #[test]
+    fn mailto_joins_repeated_recipient_fields() {
+        let d = parse_mailto("mailto:a@x.com?to=b@x.com&cc=c@x.com&cc=d@x.com&bcc=e@x.com&BCC=f@x.com");
+        assert_eq!(d.to, "a@x.com, b@x.com");
+        assert_eq!(d.cc, "c@x.com, d@x.com");
+        assert_eq!(d.bcc, "e@x.com, f@x.com");
+    }
+
+    #[test]
+    fn mailto_scheme_is_case_insensitive() {
+        assert_eq!(parse_mailto("MAILTO:a@x.com").to, "a@x.com");
+        assert!(is_mailto("MailTo:a@x.com"));
+        assert!(!is_mailto("https://x.com"));
+        assert!(!is_mailto("mail"));
+    }
+
+    #[test]
+    fn mailto_invalid_utf8_escape_does_not_drop_the_field() {
+        let d = parse_mailto("mailto:a@x.com?subject=caf%E9%20menu");
+        assert!(d.subject.starts_with("caf"), "subject was {:?}", d.subject);
+        assert!(d.subject.ends_with(" menu"), "subject was {:?}", d.subject);
+    }
+
+    #[test]
+    fn capabilities_allow_window_calls_made_by_the_frontend() {
+        let caps: serde_json::Value =
+            serde_json::from_str(include_str!("../capabilities/default.json")).unwrap();
+        let perms: Vec<&str> = caps["permissions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|p| p.as_str())
+            .collect();
+        // App.tsx calls getCurrentWindow().startDragging() and .setBadgeCount();
+        // core:default grants neither
+        assert!(perms.contains(&"core:window:allow-start-dragging"));
+        assert!(perms.contains(&"core:window:allow-set-badge-count"));
+    }
 }
