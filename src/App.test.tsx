@@ -2229,6 +2229,29 @@ describe("App quick reply feedback", () => {
     expect(await screen.findByText("Reply sent")).toBeInTheDocument();
   });
 
+  it("keeps text typed into another quick reply while the first one sends", async () => {
+    threadsByCard["card-a"] = [thread("t-a", "Mail for A"), thread("t-2", "Second mail")];
+    handlers.get_thread_details = ({ threadId }) => ({ id: threadId, messages: [fullMessage("m1", "Ana <ana@x.com>")] });
+    let releaseSend!: () => void;
+    const slowSend = new Promise<void>(r => { releaseSend = r; });
+    handlers.reply_to_thread = async () => { await slowSend; return null; };
+    render(() => <App />);
+    await screen.findByText("Second mail");
+    const first = openQuickReply();
+    fireEvent.input(first, { target: { value: "Thanks" } });
+    fireEvent.keyDown(first, { key: "Enter", metaKey: true });
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith("reply_to_thread", expect.anything()));
+
+    fireEvent.keyDown(document, { key: "j" });
+    fireEvent.keyDown(document, { key: "r" });
+    const second = document.querySelector(".quick-reply-input") as HTMLTextAreaElement;
+    fireEvent.input(second, { target: { value: "Half typed" } });
+    releaseSend();
+    await screen.findByText("Reply sent");
+
+    expect((document.querySelector(".quick-reply-input") as HTMLTextAreaElement).value).toBe("Half typed");
+  });
+
   it("says when there is no one else to react to", async () => {
     handlers.get_thread_details = () => ({ id: "t-a", messages: [fullMessage("m1", "Me <a@x.com>")] });
     handlers.send_reaction = () => null;

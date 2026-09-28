@@ -584,15 +584,16 @@ function App() {
 
   // Open quick reply for a thread/event, closing the other target and clearing
   // draft text whenever the target changes so text never leaks between them
+  // (a reply still sending to the previous target doesn't block the new one)
   function openThreadQuickReply(threadId: string, cardId: string) {
     setQuickReplyEventId(null);
-    setQuickReply(qr => ({ ...qr, threadId, text: qr.threadId === threadId ? qr.text : "" }));
+    setQuickReply(qr => (qr.threadId === threadId ? qr : { threadId, text: "", sending: false }));
     setQuickReplyCardId(cardId);
   }
 
   function openEventQuickReply(eventId: string) {
     const sameTarget = quickReplyEventId() === eventId;
-    setQuickReply(qr => ({ ...qr, threadId: null, text: sameTarget ? qr.text : "" }));
+    setQuickReply(qr => (sameTarget ? { ...qr, threadId: null } : { threadId: null, text: "", sending: false }));
     setQuickReplyCardId(null);
     setQuickReplyEventId(eventId);
   }
@@ -2197,6 +2198,8 @@ function App() {
 
     const subject = addReplyPrefix(thread.subject);
 
+    // The user may have moved on to another quick reply meanwhile
+    const stillOpen = () => quickReply().threadId === threadId;
     setQuickReply(qr => ({ ...qr, sending: true }));
     try {
       // The thread list lacks Reply-To and who wrote last; the full thread has both
@@ -2207,14 +2210,16 @@ function App() {
         return;
       }
       await replyToThread(account.id, threadId, entry.to, "", "", subject, text, entry.messageId, [], false);
-      setQuickReply({ threadId: null, text: "", sending: false });
-      setQuickReplyCardId(null);
+      if (stillOpen()) {
+        setQuickReply({ threadId: null, text: "", sending: false });
+        setQuickReplyCardId(null);
+      }
       showToast("Reply sent");
     } catch (e) {
       console.error("Failed to send reply:", e);
       setError(`Failed to send reply: ${e}`);
     } finally {
-      setQuickReply(qr => ({ ...qr, sending: false }));
+      if (stillOpen()) setQuickReply(qr => ({ ...qr, sending: false }));
     }
   }
 
@@ -2230,17 +2235,20 @@ function App() {
 
     const subject = addReplyPrefix(event.title);
 
+    const stillOpen = () => quickReplyEventId() === event.id;
     setQuickReply(qr => ({ ...qr, sending: true }));
     try {
       await sendEmail(account.id, to, "", "", subject, text);
-      setQuickReplyEventId(null);
-      setQuickReply(qr => ({ ...qr, text: "", sending: false }));
+      if (stillOpen()) {
+        setQuickReplyEventId(null);
+        setQuickReply(qr => ({ ...qr, text: "", sending: false }));
+      }
       showToast("Reply sent");
     } catch (e) {
       console.error("Failed to send reply:", e);
       setError(`Failed to send reply: ${e}`);
     } finally {
-      setQuickReply(qr => ({ ...qr, sending: false }));
+      if (stillOpen()) setQuickReply(qr => ({ ...qr, sending: false }));
     }
   }
 
