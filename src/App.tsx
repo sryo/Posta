@@ -2071,10 +2071,14 @@ function App() {
       // The thread list lacks Reply-To and who wrote last; the full thread has both
       const details = await getThreadDetails(account.id, threadId);
       const entry = batchReplyEntry(threadId, details.messages ?? [], account.email);
-      if (!entry?.to) throw new Error("No one to reply to");
+      if (!entry?.to) {
+        showToast("No one else to reply to");
+        return;
+      }
       await replyToThread(account.id, threadId, entry.to, "", "", subject, text, entry.messageId, [], false);
       setQuickReply({ threadId: null, text: "", sending: false });
       setQuickReplyCardId(null);
+      showToast("Reply sent");
     } catch (e) {
       console.error("Failed to send reply:", e);
       setError(`Failed to send reply: ${e}`);
@@ -2118,14 +2122,15 @@ function App() {
     try {
       const fullThread = await getThreadDetails(account.id, threadId);
       const target = lastMessageFromOthers(fullThread.messages, account.email);
-      if (!target) return;
-
-      const fromHeader = findHeader(target.payload?.headers, 'From');
+      const fromHeader = target && findHeader(target.payload?.headers, 'From');
+      const toEmail = fromHeader ? extractEmail(fromHeader) : "";
+      // Only the user's own messages: a reaction would go to themselves
+      if (!target || !toEmail || toEmail.toLowerCase() === account.email.toLowerCase()) {
+        showToast("No one else to react to");
+        return;
+      }
       const messageIdHeader = findHeader(target.payload?.headers, 'Message-ID') || target.id;
 
-      if (!fromHeader) return;
-
-      const toEmail = extractEmail(fromHeader);
       await sendReaction(account.id, threadId, messageIdHeader, emoji, toEmail);
     } catch (e) {
       console.error("Failed to send reaction:", e);

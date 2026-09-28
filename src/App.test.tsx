@@ -1852,3 +1852,36 @@ describe("App label drawer", () => {
     expect(await screen.findByText("Receipts")).toBeInTheDocument();
   });
 });
+
+describe("App quick reply feedback", () => {
+  function openQuickReply() {
+    fireEvent.keyDown(document, { key: "l" });
+    fireEvent.keyDown(document, { key: "r" });
+    return document.querySelector(".quick-reply-input") as HTMLTextAreaElement;
+  }
+
+  it("confirms a sent quick reply", async () => {
+    handlers.get_thread_details = () => ({ id: "t-a", messages: [fullMessage("m1", "Ana <ana@x.com>")] });
+    handlers.reply_to_thread = () => null;
+    render(() => <App />);
+    await screen.findByText("Mail for A");
+    const input = openQuickReply();
+    fireEvent.input(input, { target: { value: "Thanks" } });
+    fireEvent.keyDown(input, { key: "Enter", metaKey: true });
+
+    expect(await screen.findByText("Reply sent")).toBeInTheDocument();
+  });
+
+  it("says when there is no one else to react to", async () => {
+    handlers.get_thread_details = () => ({ id: "t-a", messages: [fullMessage("m1", "Me <a@x.com>")] });
+    handlers.send_reaction = () => null;
+    render(() => <App />);
+    await screen.findByText("Mail for A");
+    openQuickReply();
+    fireEvent.click(await screen.findByTitle("Add reaction"));
+    fireEvent.click(document.querySelector<HTMLButtonElement>(".emoji-picker .emoji-btn")!);
+
+    expect(await screen.findByText("No one else to react to")).toBeInTheDocument();
+    expect(invoke).not.toHaveBeenCalledWith("send_reaction", expect.anything());
+  });
+});
