@@ -1116,11 +1116,10 @@ impl GmailClient {
     /// Get changes since a given history ID
     /// Returns thread IDs that were modified or deleted
     pub async fn get_history_changes(&self, start_history_id: &str) -> Result<HistoryChanges, String> {
-        let mut all_modified_thread_ids = std::collections::HashSet::new();
-        let mut deleted_candidate_thread_ids = std::collections::HashSet::new();
-        let mut all_deleted_message_ids = std::collections::HashSet::new();
-        #[allow(unused_assignments)]
-        let mut new_history_id = start_history_id.to_string();
+        let mut all_modified_thread_ids = HashSet::new();
+        let mut deleted_candidate_thread_ids = HashSet::new();
+        let mut all_deleted_message_ids = HashSet::new();
+        let mut new_history_id;
         let mut page_token: Option<String> = None;
 
         loop {
@@ -1503,11 +1502,9 @@ fn extract_attachments_from_parts(parts: &Option<Vec<MessagePart>>) -> Vec<Attac
                         let filename = part.filename.clone()
                             .filter(|f| !f.is_empty())
                             .unwrap_or_else(|| {
-                                if let Some(ref cid) = content_id {
-                                    format!("{}.{}", cid, part.mime_type.split('/').last().unwrap_or("bin"))
-                                } else {
-                                    format!("attachment.{}", part.mime_type.split('/').last().unwrap_or("bin"))
-                                }
+                                let stem = content_id.as_deref().unwrap_or("attachment");
+                                let extension = part.mime_type.rsplit('/').next().unwrap_or("bin");
+                                format!("{}.{}", stem, extension)
                             });
                         attachments.push(AttachmentInfo {
                             attachment_id: attachment_id.clone(),
