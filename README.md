@@ -16,21 +16,6 @@ A card-based Gmail and Calendar client. Organize your inbox into columns using s
 
 ---
 
-## Getting Started
+## Download
 
-```bash
-npm install
-npm run tauri dev
-```
-
-`npm test` runs the frontend tests. `npm run check` runs the full gate: typecheck, frontend tests, production build, Rust tests and clippy.
-
-Debug builds keep their data in a `dev` folder inside the app data directory and store secrets there in owner-only files instead of the keychain, so they never touch an installed Posta's accounts.
-
-## Releasing
-
-Pushing a tag that starts with a digit runs `.github/workflows/release.yml` and drafts a GitHub release. macOS builds are signed with the Developer ID identity in `src-tauri/tauri.conf.json` and the iCloud entitlement in `src-tauri/Entitlements.plist`, and embed `src-tauri/Posta.provisionprofile` (a Developer ID profile for `com.posta.app` with iCloud enabled), which must be present in the checkout the release builds from. The workflow reads the `APPLE_CERTIFICATE`, `APPLE_CERTIFICATE_PASSWORD`, `APPLE_ID`, `APPLE_PASSWORD` and `APPLE_TEAM_ID` repository secrets to sign and notarize.
-
-## Tech
-
-SolidJS · Rust · Tauri · SQLite · Gmail API · Google Calendar API
+Get the latest version from [Releases](https://github.com/sryo/Posta/releases).

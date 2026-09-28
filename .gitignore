@@ -28,3 +28,6 @@ src-tauri/gen/
 
 # Backups
 *.bak
+
+# Agent worktrees
+.claude/
