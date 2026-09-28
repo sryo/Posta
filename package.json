@@ -1,7 +1,7 @@
 {
-  "name": "tauri-app",
+  "name": "posta",
   "version": "2026.7.4",
-  "description": "",
+  "description": "A card-based Gmail and Google Calendar client",
   "type": "module",
   "scripts": {
     "start": "vite",
