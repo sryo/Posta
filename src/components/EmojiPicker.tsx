@@ -132,13 +132,17 @@ export const EmojiPicker = (props: EmojiPickerProps) => {
   // handler, also on document, doesn't close the whole thread too. Letters
   // typed while a category tab or emoji has focus go to the search box
   // instead of reaching the thread's single-letter shortcuts (a archives).
+  // WebKit leaves focus on the body after a button click, so that counts as
+  // the picker too; a field outside it keeps its own typing.
   const handleKeyDown = (e: KeyboardEvent) => {
     if (e.key === "Escape") {
       e.stopImmediatePropagation();
       props.onClose();
       return;
     }
-    if (e.key.length === 1 && e.key !== " " && !hasCommandModifier(e) && document.activeElement !== searchRef) {
+    const active = document.activeElement;
+    const focusInPicker = !active || active === document.body || !!containerRef?.contains(active);
+    if (e.key.length === 1 && e.key !== " " && !hasCommandModifier(e) && focusInPicker && active !== searchRef) {
       e.stopImmediatePropagation();
       searchRef?.focus();
     }

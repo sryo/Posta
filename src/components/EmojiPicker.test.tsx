@@ -53,7 +53,23 @@ describe("EmojiPicker", () => {
     fireEvent.keyDown(tab, { key: " " });
     fireEvent.keyDown(tab, { key: "c", metaKey: true });
     expect(pageShortcut).toHaveBeenCalledTimes(2);
+
+    // WebKit leaves a clicked button unfocused, so focus sits on the body
+    (document.activeElement as HTMLElement).blur();
+    fireEvent.keyDown(document.body, { key: "h" });
+    expect(pageShortcut).toHaveBeenCalledTimes(2);
+    expect(document.activeElement).toBe(container.querySelector(".emoji-search"));
     document.removeEventListener("keydown", pageShortcut);
+  });
+
+  it("leaves letters typed in a field outside the picker to that field", () => {
+    const reply = document.createElement("textarea");
+    document.body.appendChild(reply);
+    render(() => <EmojiPicker onSelect={vi.fn()} onClose={vi.fn()} />);
+    reply.focus();
+    fireEvent.keyDown(reply, { key: "h" });
+    expect(document.activeElement).toBe(reply);
+    reply.remove();
   });
 
   it("says so when no category matches the search", () => {
