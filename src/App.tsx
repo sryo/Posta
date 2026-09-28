@@ -922,11 +922,32 @@ function App() {
     }, pollInterval());
   }
 
+  // Card changes made on another Mac, merged in without clearing what the
+  // existing cards show
+  async function pullCardsFromICloud() {
+    const account = selectedAccount();
+    if (!account) return;
+    try {
+      if (!(await pullFromICloud())) return;
+      if (selectedAccount()?.id !== account.id) return;
+      const cardList = await getCards(account.id);
+      if (selectedAccount()?.id !== account.id) return;
+      const before = new Map(cards().map(c => [c.id, c.query]));
+      setCards(cardList);
+      for (const card of cardList) {
+        if (before.get(card.id) !== card.query && !collapsedCards[card.id]) loadCardThreads(card.id);
+      }
+    } catch (e) {
+      console.warn("iCloud card pull failed:", e);
+    }
+  }
+
   // Handle window focus - reset to fast polling and sync immediately
   function handleWindowFocus() {
     setPollInterval(BASE_POLL_INTERVAL);
     setCurrentTime(Date.now());
     performIncrementalSync();
+    pullCardsFromICloud();
     // Re-arm the timer so the fast interval applies now, not after the
     // previously scheduled (possibly backed-off) timeout fires
     schedulePoll();

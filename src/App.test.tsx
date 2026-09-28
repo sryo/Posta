@@ -1607,6 +1607,32 @@ describe("App undo", () => {
   });
 });
 
+describe("App iCloud cards", () => {
+  it("shows cards changed on another Mac when the window regains focus", async () => {
+    render(() => <App />);
+    expect(await screen.findByRole("region", { name: "Alpha email card" })).toBeInTheDocument();
+
+    handlers.pull_from_icloud = () => true;
+    cardsByAccount.a = [...cardsByAccount.a, { ...card("card-new", "a", "From my laptop"), position: 5 }];
+    fireEvent.focus(window);
+
+    expect(await screen.findByRole("region", { name: "From my laptop email card" })).toBeInTheDocument();
+    expect(screen.getByRole("region", { name: "Alpha email card" })).toBeInTheDocument();
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith("fetch_threads_paginated", expect.objectContaining({ cardId: "card-new" })));
+  });
+
+  it("keeps the cards as they are when iCloud can't be reached", async () => {
+    render(() => <App />);
+    await screen.findByRole("region", { name: "Alpha email card" });
+    handlers.pull_from_icloud = () => { throw new Error("iCloud unavailable"); };
+    invoke.mockClear();
+    fireEvent.focus(window);
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith("pull_from_icloud", undefined));
+    expect(invoke.mock.calls.some(([cmd]) => cmd === "get_cards")).toBe(false);
+    expect(screen.getByRole("region", { name: "Alpha email card" })).toBeInTheDocument();
+  });
+});
+
 describe("App forward from a card", () => {
   it("names the forwarded message's recipients", async () => {
     handlers.get_thread_details = () => ({
