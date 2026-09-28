@@ -1320,13 +1320,6 @@ pub fn pull_from_icloud(state: State<'_, AppState>) -> Result<bool, String> {
     Ok(changes_made)
 }
 
-/// Force sync all cards to iCloud
-#[tauri::command]
-pub fn force_icloud_sync(state: State<'_, AppState>) -> Result<(), String> {
-    sync_cards_to_icloud(&state);
-    Ok(())
-}
-
 // People API commands (contacts)
 
 #[tauri::command]
@@ -1344,22 +1337,6 @@ pub async fn fetch_contacts(
 
     // Fetch up to 200 contacts
     evict_token_on_auth_error(&state, &account_id, people.fetch_all_contacts(200).await)
-}
-
-#[tauri::command]
-pub async fn search_contacts(
-    account_id: String,
-    query: String,
-    app_handle: tauri::AppHandle, state: State<'_, AppState>,
-) -> Result<Vec<crate::people::Contact>, String> {
-    let app_data_dir = get_app_data_dir(&app_handle)?;
-
-    verify_account_exists(&state, &account_id)?;
-
-    let access_token = get_access_token(&state, &account_id, &app_data_dir).await?;
-    let people = crate::people::PeopleClient::new(access_token);
-
-    evict_token_on_auth_error(&state, &account_id, people.search_contacts(&query).await)
 }
 
 // Calendar API commands
