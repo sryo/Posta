@@ -932,20 +932,62 @@ pub struct CalendarQuery {
     pub exclude: Vec<String>,   // Keywords to exclude
 }
 
+const MAX_UPCOMING_DAYS: i64 = 100 * 365;
+
+/// Parses "<n><unit>" (d, w, m = 30 days, y = 365 days) into a positive
+/// duration of at most MAX_UPCOMING_DAYS
 fn parse_duration(s: &str) -> Option<Duration> {
-    let len = s.len();
-    if len < 2 {
+    let unit = s.chars().last()?;
+    let num_str = &s[..s.len() - unit.len_utf8()];
+    if num_str.is_empty() || !num_str.bytes().all(|b| b.is_ascii_digit()) {
         return None;
     }
-    let (num_str, unit) = s.split_at(len - 1);
     let num: i64 = num_str.parse().ok()?;
-    match unit {
-        "d" => Some(Duration::days(num)),
-        "w" => Some(Duration::weeks(num)),
-        "m" => Some(Duration::days(num * 30)),
-        "y" => Some(Duration::days(num * 365)),
-        _ => None,
+    let days_per_unit = match unit {
+        'd' => 1,
+        'w' => 7,
+        'm' => 30,
+        'y' => 365,
+        _ => return None,
+    };
+    let days = num.checked_mul(days_per_unit)?;
+    if !(1..=MAX_UPCOMING_DAYS).contains(&days) {
+        return None;
     }
+    Some(Duration::days(days))
+}
+
+/// Splits on whitespace, except inside double quotes, so values like
+/// `location:"New York"` stay one token. Quotes are kept in the token.
+fn tokenize_query(query: &str) -> Vec<String> {
+    let mut tokens = Vec::new();
+    let mut current = String::new();
+    let mut in_quotes = false;
+    for c in query.chars() {
+        if c == '"' {
+            in_quotes = !in_quotes;
+            current.push(c);
+        } else if c.is_whitespace() && !in_quotes {
+            if !current.is_empty() {
+                tokens.push(std::mem::take(&mut current));
+            }
+        } else {
+            current.push(c);
+        }
+    }
+    if !current.is_empty() {
+        tokens.push(current);
+    }
+    tokens
+}
+
+fn strip_operator<'a>(token: &'a str, operator: &str) -> Option<&'a str> {
+    let head = token.get(..operator.len())?;
+    head.eq_ignore_ascii_case(operator).then(|| &token[operator.len()..])
+}
+
+fn unquote(value: &str) -> &str {
+    value.trim_matches('"')
 }
 
 #[derive(Debug, Default, Clone)]
@@ -964,11 +1006,11 @@ impl CalendarQuery {
         let mut cq = CalendarQuery::default();
         let mut remaining_text = Vec::new();
 
-        for token in query.split_whitespace() {
-            let token_lower = token.to_lowercase();
+        for token in tokenize_query(query) {
+            let token = token.as_str();
+            let value_of = |op: &str| strip_operator(token, op).map(unquote);
 
-            if token_lower.starts_with("calendar:") {
-                let value = &token[9..];
+            if let Some(value) = value_of("calendar:") {
                 cq.time_range = match value.to_lowercase().as_str() {
                     "today" => TimeRange::Today,
                     "tomorrow" => TimeRange::Tomorrow,
@@ -983,18 +1025,18 @@ impl CalendarQuery {
                         }
                     }
                 };
-            } else if token_lower.starts_with("with:") {
-                cq.with.push(token[5..].to_string());
-            } else if token_lower.starts_with("organizer:") {
-                cq.organizer = Some(token[10..].to_string());
-            } else if token_lower.starts_with("location:") {
-                cq.location = Some(token[9..].trim_matches('"').to_string());
-            } else if token_lower.starts_with("status:") {
-                cq.status = Some(token[7..].to_string());
-            } else if token_lower.starts_with("response:") {
-                cq.response = Some(token[9..].to_string());
-            } else if token.starts_with('-') && token.len() > 1 {
-                cq.exclude.push(token[1..].to_string());
+            } else if let Some(value) = value_of("with:") {
+                cq.with.push(value.to_string());
+            } else if let Some(value) = value_of("organizer:") {
+                cq.organizer = Some(value.to_string());
+            } else if let Some(value) = value_of("location:") {
+                cq.location = Some(value.to_string());
+            } else if let Some(value) = value_of("status:") {
+                cq.status = Some(value.to_string());
+            } else if let Some(value) = value_of("response:") {
+                cq.response = Some(value.to_string());
+            } else if let Some(value) = token.strip_prefix('-').map(unquote).filter(|v| !v.is_empty()) {
+                cq.exclude.push(value.to_string());
             } else {
                 remaining_text.push(token.to_string());
             }
@@ -1137,6 +1179,56 @@ mod tests {
         assert_eq!(parse_duration("2m"), Some(Duration::days(60)));
         assert_eq!(parse_duration("1y"), Some(Duration::days(365)));
         assert_eq!(parse_duration("invalid"), None);
+    }
+
+    #[test]
+    fn parse_duration_rejects_non_ascii_without_panicking() {
+        assert_eq!(parse_duration("3é"), None);
+        assert_eq!(parse_duration("é"), None);
+        assert_eq!(parse_duration("ñd"), None);
+        let cq = CalendarQuery::parse("calendar:3é");
+        assert!(matches!(cq.time_range, TimeRange::Today));
+    }
+
+    #[test]
+    fn parse_duration_rejects_negative_and_zero() {
+        assert_eq!(parse_duration("-3d"), None);
+        assert_eq!(parse_duration("0d"), None);
+        assert_eq!(parse_duration("+3d"), None);
+    }
+
+    #[test]
+    fn huge_durations_do_not_panic() {
+        assert_eq!(parse_duration("9223372036854775807d"), None);
+        assert_eq!(parse_duration("9999999999999999y"), None);
+        assert_eq!(parse_duration("100y"), Some(Duration::days(36500)));
+        assert_eq!(parse_duration("101y"), None);
+        let now = "2024-07-10T15:30:00Z".parse::<DateTime<Utc>>().unwrap();
+        for q in ["calendar:100000000w", "calendar:99999999y"] {
+            let (start, end) = CalendarQuery::parse(q).get_time_range_at(Some("UTC"), now);
+            assert!(start <= now && end > now);
+        }
+    }
+
+    #[test]
+    fn parse_query_keeps_quoted_values_together() {
+        let cq = CalendarQuery::parse(r#"calendar:week location:"New York" standup"#);
+        assert_eq!(cq.location.as_deref(), Some("New York"));
+        assert_eq!(cq.text.as_deref(), Some("standup"));
+
+        let cq = CalendarQuery::parse(r#"with:"Ana María" -"team sync""#);
+        assert_eq!(cq.with, vec!["Ana María".to_string()]);
+        assert_eq!(cq.exclude, vec!["team sync".to_string()]);
+        assert!(cq.text.is_none());
+    }
+
+    #[test]
+    fn parse_query_operators_are_case_insensitive() {
+        let cq = CalendarQuery::parse("CALENDAR:Tomorrow With:Bob Organizer:alice STATUS:cancelled");
+        assert!(matches!(cq.time_range, TimeRange::Tomorrow));
+        assert_eq!(cq.with, vec!["Bob".to_string()]);
+        assert_eq!(cq.organizer.as_deref(), Some("alice"));
+        assert_eq!(cq.status.as_deref(), Some("cancelled"));
     }
 
     #[test]
