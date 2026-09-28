@@ -91,6 +91,18 @@ struct CalendarListEntry {
     time_zone: Option<String>,
 }
 
+impl From<CalendarListEntry> for CalendarInfo {
+    fn from(c: CalendarListEntry) -> Self {
+        CalendarInfo {
+            id: c.id,
+            name: c.summary.unwrap_or_default(),
+            is_primary: c.primary.unwrap_or(false),
+            access_role: c.access_role.unwrap_or_else(|| "reader".to_string()),
+            timezone: c.time_zone,
+        }
+    }
+}
+
 #[derive(Debug, Deserialize)]
 struct EventsListResponse {
     items: Option<Vec<ApiEvent>>,
@@ -100,7 +112,6 @@ struct EventsListResponse {
 
 #[derive(Debug, Deserialize)]
 struct EventCreator {
-    email: Option<String>,
     #[serde(rename = "self")]
     is_self: Option<bool>,
 }
@@ -162,6 +173,7 @@ struct CreateEventRequest {
     start: EventDateTimeInput,
     end: EventDateTimeInput,
     attendees: Option<Vec<AttendeeInput>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     recurrence: Option<Vec<String>>,
 }
 
@@ -170,6 +182,9 @@ struct EventDateTimeInput {
     #[serde(rename = "dateTime")]
     date_time: Option<String>,
     date: Option<String>,
+    // Required by the API for recurring events: the zone the rule expands in
+    #[serde(rename = "timeZone", skip_serializing_if = "Option::is_none")]
+    time_zone: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -215,6 +230,31 @@ pub struct CalendarClient {
     access_token: String,
 }
 
+fn events_list_url(
+    calendar_id: &str,
+    time_min: DateTime<Utc>,
+    time_max: DateTime<Utc>,
+    query: &CalendarQuery,
+) -> String {
+    let mut url = format!(
+        "{}/calendars/{}/events?timeMin={}&timeMax={}&maxResults={}&singleEvents=true&orderBy=startTime",
+        CALENDAR_API_BASE,
+        urlencoding::encode(calendar_id),
+        urlencoding::encode(&time_min.to_rfc3339()),
+        urlencoding::encode(&time_max.to_rfc3339()),
+        EVENTS_PAGE_SIZE
+    );
+    if let Some(q) = &query.text {
+        url.push_str(&format!("&q={}", urlencoding::encode(q)));
+    }
+    // The API omits cancelled events unless asked, so status:cancelled
+    // would otherwise never match anything
+    if query.status.as_deref().is_some_and(|s| s.eq_ignore_ascii_case("cancelled")) {
+        url.push_str("&showDeleted=true");
+    }
+    url
+}
+
 /// Build a CreateEventRequest from raw parameters (shared by create and update)
 fn build_event_request(
     summary: String,
@@ -225,36 +265,27 @@ fn build_event_request(
     location: Option<String>,
     attendees: Option<Vec<String>>,
     recurrence: Option<Vec<String>>,
+    time_zone: Option<&str>,
 ) -> Result<CreateEventRequest, String> {
-    let start_dt = DateTime::<Utc>::from_timestamp(start_time / 1000, (start_time % 1000 * 1_000_000) as u32)
-        .ok_or("Invalid start time")?;
-    let end_dt = DateTime::<Utc>::from_timestamp(end_time / 1000, (end_time % 1000 * 1_000_000) as u32)
-        .ok_or("Invalid end time")?;
+    let start_dt = DateTime::<Utc>::from_timestamp_millis(start_time).ok_or("Invalid start time")?;
+    let end_dt = DateTime::<Utc>::from_timestamp_millis(end_time).ok_or("Invalid end time")?;
 
     let (start, end) = if all_day {
         // The form's end date is inclusive; Google's all-day end date is exclusive
-        let exclusive_end = end_dt + Duration::days(1);
-        (
-            EventDateTimeInput {
-                date: Some(start_dt.format("%Y-%m-%d").to_string()),
-                date_time: None,
-            },
-            EventDateTimeInput {
-                date: Some(exclusive_end.format("%Y-%m-%d").to_string()),
-                date_time: None,
-            },
-        )
+        let exclusive_end = end_dt.checked_add_signed(Duration::days(1)).ok_or("Invalid end time")?;
+        let date = |dt: DateTime<Utc>| EventDateTimeInput {
+            date: Some(dt.format("%Y-%m-%d").to_string()),
+            date_time: None,
+            time_zone: None,
+        };
+        (date(start_dt), date(exclusive_end))
     } else {
-        (
-            EventDateTimeInput {
-                date_time: Some(start_dt.to_rfc3339()),
-                date: None,
-            },
-            EventDateTimeInput {
-                date_time: Some(end_dt.to_rfc3339()),
-                date: None,
-            },
-        )
+        let date_time = |dt: DateTime<Utc>| EventDateTimeInput {
+            date_time: Some(dt.to_rfc3339()),
+            date: None,
+            time_zone: time_zone.map(str::to_string),
+        };
+        (date_time(start_dt), date_time(end_dt))
     };
 
     Ok(CreateEventRequest {
@@ -325,62 +356,39 @@ impl CalendarClient {
             .items
             .unwrap_or_default()
             .into_iter()
-            .map(|c| CalendarInfo {
-                id: c.id,
-                name: c.summary.unwrap_or_default(),
-                is_primary: c.primary.unwrap_or(false),
-                access_role: c.access_role.unwrap_or_else(|| "reader".to_string()),
-                timezone: c.time_zone,
-            })
+            .map(CalendarInfo::from)
             .collect())
     }
 
-    /// Fetch events from a calendar within a time range
-    pub async fn list_events(
-        &self,
-        calendar_id: &str,
-        calendar_name: &str,
-        access_role: &str,
-        time_min: DateTime<Utc>,
-        time_max: DateTime<Utc>,
-        max_results: i32,
-    ) -> Result<Vec<CalendarEvent>, String> {
+    /// Look up one calendar (accepts "primary"). Best-effort: used to label
+    /// events returned by write calls and to pick a recurrence time zone.
+    async fn calendar_info(&self, calendar_id: &str) -> Option<CalendarInfo> {
         let url = format!(
-            "{}/calendars/{}/events?timeMin={}&timeMax={}&maxResults={}&singleEvents=true&orderBy=startTime",
+            "{}/users/me/calendarList/{}",
             CALENDAR_API_BASE,
-            urlencoding::encode(calendar_id),
-            urlencoding::encode(&time_min.to_rfc3339()),
-            urlencoding::encode(&time_max.to_rfc3339()),
-            max_results
+            urlencoding::encode(calendar_id)
         );
-
-        let resp = self
-            .http_client
-            .get(&url)
-            .bearer_auth(&self.access_token)
-            .send()
-            .await
-            .map_err(|e| format!("Calendar events request failed: {}", e))?;
-
-        if !resp.status().is_success() {
-            let status = resp.status();
-            let body = resp.text().await.unwrap_or_default();
-            return Err(friendly_calendar_error(status, &body));
+        let result = async {
+            let resp = self
+                .http_client
+                .get(&url)
+                .bearer_auth(&self.access_token)
+                .send()
+                .await
+                .map_err(|e| e.to_string())?;
+            if !resp.status().is_success() {
+                return Err(format!("HTTP {}", resp.status()));
+            }
+            resp.json::<CalendarListEntry>().await.map_err(|e| e.to_string())
         }
-
-        let data: EventsListResponse = resp
-            .json()
-            .await
-            .map_err(|e| format!("Failed to parse events: {}", e))?;
-
-        let events = data
-            .items
-            .unwrap_or_default()
-            .into_iter()
-            .filter_map(|e| self.api_event_to_calendar_event(e, calendar_id, calendar_name, access_role))
-            .collect();
-
-        Ok(events)
+        .await;
+        match result {
+            Ok(entry) => Some(entry.into()),
+            Err(e) => {
+                tracing::warn!("Failed to look up calendar {}: {}", calendar_id, e);
+                None
+            }
+        }
     }
 
     /// Search events across all calendars
@@ -403,18 +411,7 @@ impl CalendarClient {
         let (time_min, time_max) = query.get_time_range(timezone);
 
         let fetch_futures: Vec<_> = calendars.iter().map(|cal| {
-            let mut base_url = format!(
-                "{}/calendars/{}/events?timeMin={}&timeMax={}&maxResults={}&singleEvents=true&orderBy=startTime",
-                CALENDAR_API_BASE,
-                urlencoding::encode(&cal.id),
-                urlencoding::encode(&time_min.to_rfc3339()),
-                urlencoding::encode(&time_max.to_rfc3339()),
-                EVENTS_PAGE_SIZE
-            );
-
-            if let Some(q) = &query.text {
-                base_url.push_str(&format!("&q={}", urlencoding::encode(q)));
-            }
+            let base_url = events_list_url(&cal.id, time_min, time_max, query);
 
             async move {
                 let mut items: Vec<ApiEvent> = Vec::new();
@@ -471,7 +468,7 @@ impl CalendarClient {
                 Ok(items) => {
                     let events: Vec<CalendarEvent> = items
                         .into_iter()
-                        .filter_map(|e| self.api_event_to_calendar_event(e, &cal.id, &cal.name, &cal.access_role))
+                        .filter_map(|e| api_event_to_calendar_event(e, &cal.id, &cal.name, &cal.access_role))
                         .collect();
                     all_events.extend(events);
                 }
@@ -526,8 +523,14 @@ impl CalendarClient {
             urlencoding::encode(calendar_id)
         );
 
+        let calendar = self.calendar_info(calendar_id).await;
+        let time_zone = recurrence
+            .as_ref()
+            .and(calendar.as_ref())
+            .and_then(|c| c.timezone.as_deref());
         let body = build_event_request(
             summary, description, start_time, end_time, all_day, location, attendees, recurrence,
+            time_zone,
         )?;
 
         let resp = self
@@ -550,9 +553,7 @@ impl CalendarClient {
             .await
             .map_err(|e| format!("Failed to parse created event: {}", e))?;
 
-        // We can use "primary" as calendar name for the returned object since we don't have it easily here, 
-        // or just empty string. It's mostly for display.
-        self.api_event_to_calendar_event(api_event, calendar_id, "", "owner")
+        written_event(api_event, calendar_id, calendar.as_ref())
             .ok_or_else(|| "Failed to convert created event".to_string())
     }
 
@@ -590,7 +591,8 @@ impl CalendarClient {
             .await
             .map_err(|e| format!("Failed to parse moved event: {}", e))?;
 
-        self.api_event_to_calendar_event(api_event, destination_calendar_id, "", "owner")
+        let calendar = self.calendar_info(destination_calendar_id).await;
+        written_event(api_event, destination_calendar_id, calendar.as_ref())
             .ok_or_else(|| "Failed to convert moved event".to_string())
     }
 
@@ -624,6 +626,9 @@ impl CalendarClient {
         Ok(())
     }
 
+    /// PATCH, not PUT: a PUT replaces the whole resource and would wipe
+    /// everything the form doesn't send (reminders, color, visibility,
+    /// availability, attachments, recurrence)
     pub async fn update_event(
         &self,
         calendar_id: &str,
@@ -644,13 +649,19 @@ impl CalendarClient {
             urlencoding::encode(event_id)
         );
 
+        let calendar = self.calendar_info(calendar_id).await;
+        let time_zone = recurrence
+            .as_ref()
+            .and(calendar.as_ref())
+            .and_then(|c| c.timezone.as_deref());
         let body = build_event_request(
             summary, description, start_time, end_time, all_day, location, attendees, recurrence,
+            time_zone,
         )?;
 
         let resp = self
             .http_client
-            .put(&url)
+            .patch(&url)
             .bearer_auth(&self.access_token)
             .json(&body)
             .send()
@@ -668,85 +679,8 @@ impl CalendarClient {
             .await
             .map_err(|e| format!("Failed to parse updated event: {}", e))?;
 
-        self.api_event_to_calendar_event(api_event, calendar_id, "", "owner")
+        written_event(api_event, calendar_id, calendar.as_ref())
             .ok_or_else(|| "Failed to convert updated event".to_string())
-    }
-
-    fn api_event_to_calendar_event(&self, event: ApiEvent, calendar_id: &str, calendar_name: &str, calendar_access_role: &str) -> Option<CalendarEvent> {
-        let (start_time, all_day) = self.parse_event_datetime(&event.start)?;
-        let end_time = event.end.as_ref().and_then(|e| self.parse_event_datetime(&Some(e.clone())).map(|(t, _)| t));
-
-        let attendees: Vec<EventAttendee> = event
-            .attendees
-            .unwrap_or_default()
-            .into_iter()
-            .filter_map(|a| {
-                Some(EventAttendee {
-                    email: a.email?,
-                    display_name: a.display_name,
-                    response_status: a.response_status,
-                    is_self: a.is_self.unwrap_or(false),
-                    is_organizer: a.organizer.unwrap_or(false),
-                })
-            })
-            .collect();
-
-        // Find current user's response status
-        let response_status = attendees
-            .iter()
-            .find(|a| a.is_self)
-            .and_then(|a| a.response_status.clone());
-
-        // Extract organizer and creator info before consuming
-        let is_self_organizer = event.organizer.as_ref()
-            .and_then(|o| o.is_self)
-            .unwrap_or(false);
-        let is_self_creator = event.creator.as_ref()
-            .and_then(|c| c.is_self)
-            .unwrap_or(false);
-        let organizer_display = event.organizer.and_then(|o| o.email.or(o.display_name));
-
-        // Determine if user can edit this event:
-        // Calendar must have write access (owner or writer), event must not be locked, and one of:
-        // 1. User is the organizer (from organizer.self field)
-        // 2. User is the creator (from creator.self field)
-        // 3. guestsCanModify is true and user is an attendee
-        let has_calendar_write_access = calendar_access_role == "owner" || calendar_access_role == "writer";
-        let is_locked = event.locked.unwrap_or(false);
-        let is_attendee = attendees.iter().any(|a| a.is_self);
-        let guests_can_modify = event.guests_can_modify.unwrap_or(false);
-        let can_edit = has_calendar_write_access && !is_locked && (is_self_organizer || is_self_creator || (guests_can_modify && is_attendee));
-
-        tracing::debug!(
-            "Event '{}': calendar_access={}, is_self_organizer={}, is_self_creator={}, guests_can_modify={}, is_attendee={}, is_locked={}, can_edit={}",
-            event.summary.as_deref().unwrap_or("(no title)"),
-            calendar_access_role,
-            is_self_organizer,
-            is_self_creator,
-            guests_can_modify,
-            is_attendee,
-            is_locked,
-            can_edit
-        );
-
-        Some(CalendarEvent {
-            id: event.id,
-            calendar_id: calendar_id.to_string(),
-            calendar_name: calendar_name.to_string(),
-            title: event.summary.unwrap_or_else(|| "(No title)".to_string()),
-            description: event.description,
-            location: event.location,
-            start_time,
-            end_time,
-            all_day,
-            status: event.status.unwrap_or_else(|| "confirmed".to_string()),
-            organizer: organizer_display,
-            attendees,
-            html_link: event.html_link,
-            hangout_link: event.hangout_link,
-            response_status,
-            can_edit,
-        })
     }
 
     /// Query a single calendar for an event by iCalUID
@@ -819,16 +753,10 @@ impl CalendarClient {
         user_email: &str,
         event_uid: &str,
     ) -> Option<String> {
-        let (_, event) = self.find_event_by_ical_uid(event_uid, false).await.ok()??;
+        let (calendar_id, event) = self.find_event_by_ical_uid(event_uid, false).await.ok()??;
         let attendees = event.attendees.as_ref()?;
-
-        for attendee in attendees {
-            if attendee.email.to_lowercase() == user_email.to_lowercase() {
-                return attendee.response_status.clone();
-            }
-        }
-
-        None
+        let index = self_attendee_index(attendees, user_email, calendar_id == "primary")?;
+        attendees[index].response_status.clone()
     }
 
     /// Send RSVP response to a calendar event via Google Calendar API
@@ -847,27 +775,12 @@ impl CalendarClient {
 
         let event_id = &event.id;
 
-        // Update attendee status
-        let mut attendees: Vec<CalEventAttendee> = event.attendees.clone().unwrap_or_default();
-        let mut found_self = false;
-
-        for attendee in attendees.iter_mut() {
-            if attendee.email.to_lowercase() == user_email.to_lowercase() {
-                attendee.response_status = Some(status.to_string());
-                found_self = true;
-                break;
-            }
-        }
-
-        if !found_self {
-            // Add ourselves as an attendee
-            attendees.push(CalEventAttendee {
-                email: user_email.to_string(),
-                response_status: Some(status.to_string()),
-                is_self: Some(true),
-                ..Default::default()
-            });
-        }
+        let attendees = with_rsvp(
+            event.attendees.clone().unwrap_or_default(),
+            user_email,
+            status,
+            calendar_id == "primary",
+        );
 
         // Patch the event with updated attendees
         let patch_url = format!(
@@ -900,22 +813,137 @@ impl CalendarClient {
 
         Ok(())
     }
+}
 
-    fn parse_event_datetime(&self, dt: &Option<EventDateTime>) -> Option<(i64, bool)> {
-        let dt = dt.as_ref()?;
+fn api_event_to_calendar_event(event: ApiEvent, calendar_id: &str, calendar_name: &str, calendar_access_role: &str) -> Option<CalendarEvent> {
+    let (start_time, all_day) = parse_event_datetime(event.start.as_ref()?)?;
+    let end_time = event.end.as_ref().and_then(parse_event_datetime).map(|(t, _)| t);
 
-        if let Some(datetime_str) = &dt.date_time {
-            // DateTime format: 2024-12-23T10:00:00-08:00
-            let parsed = DateTime::parse_from_rfc3339(datetime_str).ok()?;
-            Some((parsed.timestamp_millis(), false))
-        } else if let Some(date_str) = &dt.date {
-            // All-day event: 2024-12-23
-            let parsed = NaiveDate::parse_from_str(date_str, "%Y-%m-%d").ok()?;
-            let datetime = parsed.and_hms_opt(0, 0, 0)?.and_utc();
-            Some((datetime.timestamp_millis(), true))
-        } else {
-            None
-        }
+    let attendees: Vec<EventAttendee> = event
+        .attendees
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(|a| {
+            Some(EventAttendee {
+                email: a.email?,
+                display_name: a.display_name,
+                response_status: a.response_status,
+                is_self: a.is_self.unwrap_or(false),
+                is_organizer: a.organizer.unwrap_or(false),
+            })
+        })
+        .collect();
+
+    // Find current user's response status
+    let response_status = attendees
+        .iter()
+        .find(|a| a.is_self)
+        .and_then(|a| a.response_status.clone());
+
+    // Extract organizer and creator info before consuming
+    let is_self_organizer = event.organizer.as_ref()
+        .and_then(|o| o.is_self)
+        .unwrap_or(false);
+    let is_self_creator = event.creator.as_ref()
+        .and_then(|c| c.is_self)
+        .unwrap_or(false);
+    let organizer_display = event.organizer.and_then(|o| o.email.or(o.display_name));
+
+    // Determine if user can edit this event:
+    // Calendar must have write access (owner or writer), event must not be locked, and one of:
+    // 1. User is the organizer (from organizer.self field)
+    // 2. User is the creator (from creator.self field)
+    // 3. guestsCanModify is true and user is an attendee
+    let has_calendar_write_access = calendar_access_role == "owner" || calendar_access_role == "writer";
+    let is_locked = event.locked.unwrap_or(false);
+    let is_attendee = attendees.iter().any(|a| a.is_self);
+    let guests_can_modify = event.guests_can_modify.unwrap_or(false);
+    let can_edit = has_calendar_write_access && !is_locked && (is_self_organizer || is_self_creator || (guests_can_modify && is_attendee));
+
+    tracing::debug!(
+        "Event '{}': calendar_access={}, is_self_organizer={}, is_self_creator={}, guests_can_modify={}, is_attendee={}, is_locked={}, can_edit={}",
+        event.summary.as_deref().unwrap_or("(no title)"),
+        calendar_access_role,
+        is_self_organizer,
+        is_self_creator,
+        guests_can_modify,
+        is_attendee,
+        is_locked,
+        can_edit
+    );
+
+    Some(CalendarEvent {
+        id: event.id,
+        calendar_id: calendar_id.to_string(),
+        calendar_name: calendar_name.to_string(),
+        title: event.summary.unwrap_or_else(|| "(No title)".to_string()),
+        description: event.description,
+        location: event.location,
+        start_time,
+        end_time,
+        all_day,
+        status: event.status.unwrap_or_else(|| "confirmed".to_string()),
+        organizer: organizer_display,
+        attendees,
+        html_link: event.html_link,
+        hangout_link: event.hangout_link,
+        response_status,
+        can_edit,
+    })
+}
+
+/// The user's entry in an attendee list. The API's `self` flag marks the
+/// owner of the calendar the event was read from, so on the primary
+/// calendar it also finds invites sent to one of the user's aliases; on
+/// other calendars it would be someone else.
+fn self_attendee_index(attendees: &[CalEventAttendee], user_email: &str, on_primary: bool) -> Option<usize> {
+    attendees
+        .iter()
+        .position(|a| a.email.eq_ignore_ascii_case(user_email))
+        .or_else(|| on_primary.then(|| attendees.iter().position(|a| a.is_self == Some(true))).flatten())
+}
+
+/// The attendee list with the user's response set, adding the user if absent
+fn with_rsvp(
+    mut attendees: Vec<CalEventAttendee>,
+    user_email: &str,
+    status: &str,
+    on_primary: bool,
+) -> Vec<CalEventAttendee> {
+    match self_attendee_index(&attendees, user_email, on_primary) {
+        Some(i) => attendees[i].response_status = Some(status.to_string()),
+        None => attendees.push(CalEventAttendee {
+            email: user_email.to_string(),
+            response_status: Some(status.to_string()),
+            is_self: Some(true),
+            ..Default::default()
+        }),
+    }
+    attendees
+}
+
+/// Convert an event returned by a write call. Without the calendar's list
+/// entry, fall back to the requested id and assume write access (the write
+/// just succeeded).
+fn written_event(event: ApiEvent, calendar_id: &str, calendar: Option<&CalendarInfo>) -> Option<CalendarEvent> {
+    match calendar {
+        Some(c) => api_event_to_calendar_event(event, &c.id, &c.name, &c.access_role),
+        None => api_event_to_calendar_event(event, calendar_id, "", "writer"),
+    }
+}
+
+fn parse_event_datetime(dt: &EventDateTime) -> Option<(i64, bool)> {
+    if let Some(datetime_str) = &dt.date_time {
+        // DateTime format: 2024-12-23T10:00:00-08:00
+        let parsed = DateTime::parse_from_rfc3339(datetime_str).ok()?;
+        Some((parsed.timestamp_millis(), false))
+    } else if let Some(date_str) = &dt.date {
+        // All-day event: 2024-12-23
+        let parsed = NaiveDate::parse_from_str(date_str, "%Y-%m-%d").ok()?;
+        let datetime = parsed.and_hms_opt(0, 0, 0)?.and_utc();
+        Some((datetime.timestamp_millis(), true))
+    } else {
+        None
     }
 }
 
@@ -932,20 +960,62 @@ pub struct CalendarQuery {
     pub exclude: Vec<String>,   // Keywords to exclude
 }
 
+const MAX_UPCOMING_DAYS: i64 = 100 * 365;
+
+/// Parses "<n><unit>" (d, w, m = 30 days, y = 365 days) into a positive
+/// duration of at most MAX_UPCOMING_DAYS
 fn parse_duration(s: &str) -> Option<Duration> {
-    let len = s.len();
-    if len < 2 {
+    let unit = s.chars().last()?;
+    let num_str = &s[..s.len() - unit.len_utf8()];
+    if num_str.is_empty() || !num_str.bytes().all(|b| b.is_ascii_digit()) {
         return None;
     }
-    let (num_str, unit) = s.split_at(len - 1);
     let num: i64 = num_str.parse().ok()?;
-    match unit {
-        "d" => Some(Duration::days(num)),
-        "w" => Some(Duration::weeks(num)),
-        "m" => Some(Duration::days(num * 30)),
-        "y" => Some(Duration::days(num * 365)),
-        _ => None,
+    let days_per_unit = match unit {
+        'd' => 1,
+        'w' => 7,
+        'm' => 30,
+        'y' => 365,
+        _ => return None,
+    };
+    let days = num.checked_mul(days_per_unit)?;
+    if !(1..=MAX_UPCOMING_DAYS).contains(&days) {
+        return None;
     }
+    Some(Duration::days(days))
+}
+
+/// Splits on whitespace, except inside double quotes, so values like
+/// `location:"New York"` stay one token. Quotes are kept in the token.
+fn tokenize_query(query: &str) -> Vec<String> {
+    let mut tokens = Vec::new();
+    let mut current = String::new();
+    let mut in_quotes = false;
+    for c in query.chars() {
+        if c == '"' {
+            in_quotes = !in_quotes;
+            current.push(c);
+        } else if c.is_whitespace() && !in_quotes {
+            if !current.is_empty() {
+                tokens.push(std::mem::take(&mut current));
+            }
+        } else {
+            current.push(c);
+        }
+    }
+    if !current.is_empty() {
+        tokens.push(current);
+    }
+    tokens
+}
+
+fn strip_operator<'a>(token: &'a str, operator: &str) -> Option<&'a str> {
+    let head = token.get(..operator.len())?;
+    head.eq_ignore_ascii_case(operator).then(|| &token[operator.len()..])
+}
+
+fn unquote(value: &str) -> &str {
+    value.trim_matches('"')
 }
 
 #[derive(Debug, Default, Clone)]
@@ -964,11 +1034,11 @@ impl CalendarQuery {
         let mut cq = CalendarQuery::default();
         let mut remaining_text = Vec::new();
 
-        for token in query.split_whitespace() {
-            let token_lower = token.to_lowercase();
+        for token in tokenize_query(query) {
+            let token = token.as_str();
+            let value_of = |op: &str| strip_operator(token, op).map(unquote);
 
-            if token_lower.starts_with("calendar:") {
-                let value = &token[9..];
+            if let Some(value) = value_of("calendar:") {
                 cq.time_range = match value.to_lowercase().as_str() {
                     "today" => TimeRange::Today,
                     "tomorrow" => TimeRange::Tomorrow,
@@ -983,18 +1053,18 @@ impl CalendarQuery {
                         }
                     }
                 };
-            } else if token_lower.starts_with("with:") {
-                cq.with.push(token[5..].to_string());
-            } else if token_lower.starts_with("organizer:") {
-                cq.organizer = Some(token[10..].to_string());
-            } else if token_lower.starts_with("location:") {
-                cq.location = Some(token[9..].trim_matches('"').to_string());
-            } else if token_lower.starts_with("status:") {
-                cq.status = Some(token[7..].to_string());
-            } else if token_lower.starts_with("response:") {
-                cq.response = Some(token[9..].to_string());
-            } else if token.starts_with('-') && token.len() > 1 {
-                cq.exclude.push(token[1..].to_string());
+            } else if let Some(value) = value_of("with:") {
+                cq.with.push(value.to_string());
+            } else if let Some(value) = value_of("organizer:") {
+                cq.organizer = Some(value.to_string());
+            } else if let Some(value) = value_of("location:") {
+                cq.location = Some(value.to_string());
+            } else if let Some(value) = value_of("status:") {
+                cq.status = Some(value.to_string());
+            } else if let Some(value) = value_of("response:") {
+                cq.response = Some(value.to_string());
+            } else if let Some(value) = token.strip_prefix('-').map(unquote).filter(|v| !v.is_empty()) {
+                cq.exclude.push(value.to_string());
             } else {
                 remaining_text.push(token.to_string());
             }
@@ -1129,6 +1199,282 @@ impl CalendarQuery {
 mod tests {
     use super::*;
 
+    fn api_event(json: serde_json::Value) -> ApiEvent {
+        serde_json::from_value(json).unwrap()
+    }
+
+    #[test]
+    fn converts_timed_and_all_day_events() {
+        let ev = api_event(serde_json::json!({
+            "id": "e1",
+            "start": { "dateTime": "2024-12-23T10:00:00-03:00" },
+            "end": { "dateTime": "2024-12-23T11:30:00-03:00" },
+        }));
+        let ev = api_event_to_calendar_event(ev, "cal", "Work", "owner").unwrap();
+        assert!(!ev.all_day);
+        assert_eq!(ev.start_time, "2024-12-23T13:00:00Z".parse::<DateTime<Utc>>().unwrap().timestamp_millis());
+        assert_eq!(ev.end_time, Some(ev.start_time + 90 * 60 * 1000));
+        assert_eq!(ev.title, "(No title)");
+        assert_eq!(ev.status, "confirmed");
+        assert_eq!((ev.calendar_id.as_str(), ev.calendar_name.as_str()), ("cal", "Work"));
+
+        // All-day dates are anchored at UTC midnight, end exclusive
+        let ev = api_event(serde_json::json!({
+            "id": "e2", "summary": "Trip",
+            "start": { "date": "2024-12-23" }, "end": { "date": "2024-12-25" },
+        }));
+        let ev = api_event_to_calendar_event(ev, "cal", "", "owner").unwrap();
+        assert!(ev.all_day);
+        let midnight = NaiveDate::from_ymd_opt(2024, 12, 23).unwrap().and_hms_opt(0, 0, 0).unwrap().and_utc();
+        assert_eq!(ev.start_time, midnight.timestamp_millis());
+        assert_eq!(ev.end_time, Some((midnight + Duration::days(2)).timestamp_millis()));
+
+        // Events without a usable start are dropped
+        let ev = api_event(serde_json::json!({ "id": "e3", "start": { "date": "garbage" } }));
+        assert!(api_event_to_calendar_event(ev, "cal", "", "owner").is_none());
+        let ev = api_event(serde_json::json!({ "id": "e4" }));
+        assert!(api_event_to_calendar_event(ev, "cal", "", "owner").is_none());
+    }
+
+    #[test]
+    fn event_response_status_and_attendees() {
+        let ev = api_event(serde_json::json!({
+            "id": "e1",
+            "start": { "date": "2024-12-23" },
+            "organizer": { "email": "boss@x.com", "displayName": "Boss" },
+            "attendees": [
+                { "email": "boss@x.com", "organizer": true, "responseStatus": "accepted" },
+                { "email": "me@x.com", "self": true, "responseStatus": "tentative" },
+                { "displayName": "No email resource" },
+            ],
+        }));
+        let ev = api_event_to_calendar_event(ev, "cal", "", "owner").unwrap();
+        assert_eq!(ev.organizer.as_deref(), Some("boss@x.com"));
+        assert_eq!(ev.response_status.as_deref(), Some("tentative"));
+        assert_eq!(ev.attendees.len(), 2);
+        assert!(ev.attendees[0].is_organizer && !ev.attendees[0].is_self);
+        assert!(ev.attendees[1].is_self);
+    }
+
+    #[test]
+    fn event_can_edit_rules() {
+        let can_edit = |json: serde_json::Value, role: &str| {
+            let mut json = json;
+            json["id"] = "e".into();
+            json["start"] = serde_json::json!({ "date": "2024-12-23" });
+            api_event_to_calendar_event(api_event(json), "cal", "", role).unwrap().can_edit
+        };
+        let organizer = serde_json::json!({ "organizer": { "self": true } });
+        assert!(can_edit(organizer.clone(), "owner"));
+        assert!(can_edit(organizer.clone(), "writer"));
+        assert!(!can_edit(organizer.clone(), "reader"));
+        assert!(!can_edit(organizer.clone(), "freeBusyReader"));
+
+        let mut locked = organizer.clone();
+        locked["locked"] = true.into();
+        assert!(!can_edit(locked, "owner"));
+
+        assert!(can_edit(serde_json::json!({ "creator": { "self": true } }), "owner"));
+
+        let guest = serde_json::json!({ "attendees": [{ "email": "me@x.com", "self": true }] });
+        assert!(!can_edit(guest.clone(), "owner"));
+        let mut modifiable = guest;
+        modifiable["guestsCanModify"] = true.into();
+        assert!(can_edit(modifiable, "owner"));
+        assert!(!can_edit(serde_json::json!({ "guestsCanModify": true }), "owner"));
+    }
+
+    fn event_for_matching() -> CalendarEvent {
+        CalendarEvent {
+            id: "e".into(),
+            calendar_id: "cal".into(),
+            calendar_name: "Work".into(),
+            title: "Weekly Standup".into(),
+            description: Some("Bring the Roadmap".into()),
+            location: Some("Room 4, New York".into()),
+            start_time: 0,
+            end_time: None,
+            all_day: false,
+            status: "confirmed".into(),
+            organizer: Some("Alice@Example.com".into()),
+            attendees: vec![EventAttendee {
+                email: "bob@example.com".into(),
+                display_name: Some("Bob Builder".into()),
+                response_status: None,
+                is_self: false,
+                is_organizer: false,
+            }],
+            html_link: None,
+            hangout_link: None,
+            response_status: Some("accepted".into()),
+            can_edit: false,
+        }
+    }
+
+    #[test]
+    fn query_matches_filters() {
+        let ev = event_for_matching();
+        let m = |q: &str| CalendarQuery::parse(q).matches(&ev);
+
+        assert!(m("calendar:today"));
+        assert!(m("with:bob"));
+        assert!(m("with:builder"));
+        assert!(m("with:nobody with:BOB"));
+        assert!(!m("with:carol"));
+        assert!(m("organizer:alice"));
+        assert!(!m("organizer:bob"));
+        assert!(m(r#"location:"new york""#));
+        assert!(!m("location:paris"));
+        assert!(m("status:Confirmed"));
+        assert!(!m("status:cancelled"));
+        assert!(m("response:accepted"));
+        assert!(!m("response:declined"));
+        assert!(!m("-standup"));
+        assert!(!m("-roadmap"));
+        assert!(m("-retro"));
+        // Free text is sent to the API, not filtered locally
+        assert!(m("unrelated words"));
+
+        let mut no_response = ev.clone();
+        no_response.response_status = None;
+        assert!(CalendarQuery::parse("response:needsAction").matches(&no_response));
+        let mut no_location = ev;
+        no_location.location = None;
+        assert!(!CalendarQuery::parse("location:york").matches(&no_location));
+    }
+
+    #[test]
+    fn events_url_requests_cancelled_events_only_when_filtering_for_them() {
+        let now = "2024-07-10T15:30:00Z".parse::<DateTime<Utc>>().unwrap();
+        let url = |q: &str| events_list_url("me@x.com", now, now + Duration::days(1), &CalendarQuery::parse(q));
+
+        let plain = url("calendar:today");
+        assert!(plain.starts_with("https://www.googleapis.com/calendar/v3/calendars/me%40x.com/events?"));
+        assert!(plain.contains("timeMin=2024-07-10T15%3A30%3A00%2B00%3A00"));
+        assert!(plain.contains("singleEvents=true"));
+        assert!(!plain.contains("showDeleted"));
+        assert!(!plain.contains("&q="));
+
+        assert!(url("calendar:week status:Cancelled").contains("&showDeleted=true"));
+        assert!(!url("calendar:week status:confirmed").contains("showDeleted"));
+        assert!(url("calendar:week team sync").contains("&q=team%20sync"));
+    }
+
+    fn request_json(all_day: bool, recurrence: Option<Vec<String>>, time_zone: Option<&str>) -> serde_json::Value {
+        // 2024-12-23 12:00 UTC to 2024-12-24 12:00 UTC, as the form sends all-day dates
+        let start = 1_734_955_200_000;
+        let end = start + 24 * 3600 * 1000;
+        let req = build_event_request(
+            "Title".into(), None, start, end, all_day, None, None, recurrence, time_zone,
+        )
+        .unwrap();
+        serde_json::to_value(req).unwrap()
+    }
+
+    #[test]
+    fn all_day_request_uses_exclusive_end_date() {
+        let json = request_json(true, None, Some("America/New_York"));
+        assert_eq!(json["start"], serde_json::json!({ "date": "2024-12-23", "dateTime": null }));
+        assert_eq!(json["end"], serde_json::json!({ "date": "2024-12-25", "dateTime": null }));
+    }
+
+    #[test]
+    fn timed_request_carries_time_zone_for_recurrence_expansion() {
+        let json = request_json(false, Some(vec!["FREQ=WEEKLY".into()]), Some("America/New_York"));
+        assert_eq!(json["start"]["dateTime"], "2024-12-23T12:00:00+00:00");
+        assert_eq!(json["start"]["timeZone"], "America/New_York");
+        assert_eq!(json["end"]["timeZone"], "America/New_York");
+        assert_eq!(json["recurrence"], serde_json::json!(["RRULE:FREQ=WEEKLY"]));
+
+        let json = request_json(false, Some(vec!["RRULE:FREQ=DAILY".into(), "EXDATE:20241225".into()]), None);
+        assert_eq!(json["recurrence"], serde_json::json!(["RRULE:FREQ=DAILY", "EXDATE:20241225"]));
+        assert!(json["start"].get("timeZone").is_none());
+    }
+
+    #[test]
+    fn request_accepts_pre_epoch_timestamps() {
+        // 1969-12-31T23:59:58.500Z
+        let req = build_event_request(
+            "Title".into(), None, -1_500, 0, false, None, None, None, None,
+        )
+        .unwrap();
+        let json = serde_json::to_value(req).unwrap();
+        assert_eq!(json["start"]["dateTime"], "1969-12-31T23:59:58.500+00:00");
+        assert_eq!(json["end"]["dateTime"], "1970-01-01T00:00:00+00:00");
+    }
+
+    #[test]
+    fn request_without_recurrence_leaves_existing_recurrence_alone() {
+        // Updates are PATCHes; a null recurrence would strip a series' rules
+        let json = request_json(false, None, None);
+        assert!(json.get("recurrence").is_none());
+        // Cleared optional fields are sent as null so a PATCH clears them
+        assert!(json["description"].is_null() && json.get("description").is_some());
+        assert!(json.get("attendees").is_some());
+    }
+
+    fn attendee(email: &str, is_self: bool, status: &str) -> CalEventAttendee {
+        CalEventAttendee {
+            email: email.into(),
+            response_status: Some(status.into()),
+            is_self: is_self.then_some(true),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn rsvp_updates_the_self_attendee_even_when_invited_under_an_alias() {
+        // Invite went to an alias; the API marks that attendee as self
+        let attendees = vec![
+            attendee("boss@x.com", false, "accepted"),
+            attendee("me.alias@x.com", true, "needsAction"),
+        ];
+        assert_eq!(self_attendee_index(&attendees, "me@x.com", true), Some(1));
+
+        let updated = with_rsvp(attendees.clone(), "me@x.com", "declined", true);
+        assert_eq!(updated.len(), 2);
+        assert_eq!(updated[0].response_status.as_deref(), Some("accepted"));
+        assert_eq!(updated[1].response_status.as_deref(), Some("declined"));
+
+        // On someone else's calendar, `self` is that calendar's owner
+        assert_eq!(self_attendee_index(&attendees, "me@x.com", false), None);
+        let updated = with_rsvp(attendees, "me@x.com", "declined", false);
+        assert_eq!(updated.len(), 3);
+        assert_eq!(updated[1].response_status.as_deref(), Some("needsAction"));
+    }
+
+    #[test]
+    fn rsvp_prefers_the_exact_email_over_the_self_flag() {
+        let attendees = vec![
+            attendee("shared@x.com", true, "needsAction"),
+            attendee("me@x.com", false, "needsAction"),
+        ];
+        assert_eq!(self_attendee_index(&attendees, "me@x.com", true), Some(1));
+    }
+
+    #[test]
+    fn rsvp_matches_email_case_insensitively_and_adds_self_when_missing() {
+        let updated = with_rsvp(vec![attendee("Me@X.com", false, "needsAction")], "me@x.com", "accepted", true);
+        assert_eq!(updated.len(), 1);
+        assert_eq!(updated[0].response_status.as_deref(), Some("accepted"));
+
+        let updated = with_rsvp(vec![attendee("boss@x.com", false, "accepted")], "me@x.com", "tentative", true);
+        assert_eq!(updated.len(), 2);
+        assert_eq!(updated[1].email, "me@x.com");
+        assert_eq!(updated[1].response_status.as_deref(), Some("tentative"));
+        assert_eq!(updated[1].is_self, Some(true));
+    }
+
+    #[test]
+    fn rsvp_patch_round_trips_attendee_fields() {
+        let json = serde_json::json!({
+            "email": "a@x.com", "displayName": "A", "responseStatus": "accepted",
+            "optional": true, "comment": "late", "additionalGuests": 2, "resource": false,
+        });
+        let parsed: CalEventAttendee = serde_json::from_value(json.clone()).unwrap();
+        assert_eq!(serde_json::to_value(parsed).unwrap(), json);
+    }
+
     #[test]
     fn test_parse_duration() {
         assert_eq!(parse_duration("7d"), Some(Duration::days(7)));
@@ -1137,6 +1483,56 @@ mod tests {
         assert_eq!(parse_duration("2m"), Some(Duration::days(60)));
         assert_eq!(parse_duration("1y"), Some(Duration::days(365)));
         assert_eq!(parse_duration("invalid"), None);
+    }
+
+    #[test]
+    fn parse_duration_rejects_non_ascii_without_panicking() {
+        assert_eq!(parse_duration("3é"), None);
+        assert_eq!(parse_duration("é"), None);
+        assert_eq!(parse_duration("ñd"), None);
+        let cq = CalendarQuery::parse("calendar:3é");
+        assert!(matches!(cq.time_range, TimeRange::Today));
+    }
+
+    #[test]
+    fn parse_duration_rejects_negative_and_zero() {
+        assert_eq!(parse_duration("-3d"), None);
+        assert_eq!(parse_duration("0d"), None);
+        assert_eq!(parse_duration("+3d"), None);
+    }
+
+    #[test]
+    fn huge_durations_do_not_panic() {
+        assert_eq!(parse_duration("9223372036854775807d"), None);
+        assert_eq!(parse_duration("9999999999999999y"), None);
+        assert_eq!(parse_duration("100y"), Some(Duration::days(36500)));
+        assert_eq!(parse_duration("101y"), None);
+        let now = "2024-07-10T15:30:00Z".parse::<DateTime<Utc>>().unwrap();
+        for q in ["calendar:100000000w", "calendar:99999999y"] {
+            let (start, end) = CalendarQuery::parse(q).get_time_range_at(Some("UTC"), now);
+            assert!(start <= now && end > now);
+        }
+    }
+
+    #[test]
+    fn parse_query_keeps_quoted_values_together() {
+        let cq = CalendarQuery::parse(r#"calendar:week location:"New York" standup"#);
+        assert_eq!(cq.location.as_deref(), Some("New York"));
+        assert_eq!(cq.text.as_deref(), Some("standup"));
+
+        let cq = CalendarQuery::parse(r#"with:"Ana María" -"team sync""#);
+        assert_eq!(cq.with, vec!["Ana María".to_string()]);
+        assert_eq!(cq.exclude, vec!["team sync".to_string()]);
+        assert!(cq.text.is_none());
+    }
+
+    #[test]
+    fn parse_query_operators_are_case_insensitive() {
+        let cq = CalendarQuery::parse("CALENDAR:Tomorrow With:Bob Organizer:alice STATUS:cancelled");
+        assert!(matches!(cq.time_range, TimeRange::Tomorrow));
+        assert_eq!(cq.with, vec!["Bob".to_string()]);
+        assert_eq!(cq.organizer.as_deref(), Some("alice"));
+        assert_eq!(cq.status.as_deref(), Some("cancelled"));
     }
 
     #[test]

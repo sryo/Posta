@@ -62,6 +62,17 @@ struct SearchResponse {
     results: Option<Vec<SearchResult>>,
 }
 
+fn connections_url(page_size: i32, page_token: Option<&str>) -> String {
+    let mut url = format!(
+        "{}/people/me/connections?personFields=names,emailAddresses,photos&sortOrder=LAST_MODIFIED_DESCENDING&pageSize={}",
+        PEOPLE_API_BASE, page_size
+    );
+    if let Some(token) = page_token {
+        url.push_str(&format!("&pageToken={}", urlencoding::encode(token)));
+    }
+    url
+}
+
 pub struct PeopleClient {
     http_client: reqwest::Client,
     access_token: String,
@@ -81,14 +92,7 @@ impl PeopleClient {
         page_size: i32,
         page_token: Option<&str>,
     ) -> Result<(Vec<Contact>, Option<String>), String> {
-        let mut url = format!(
-            "{}/people/me/connections?personFields=names,emailAddresses,photos&pageSize={}",
-            PEOPLE_API_BASE, page_size
-        );
-
-        if let Some(token) = page_token {
-            url.push_str(&format!("&pageToken={}", urlencoding::encode(token)));
-        }
+        let url = connections_url(page_size, page_token);
 
         let resp = self
             .http_client
@@ -113,7 +117,7 @@ impl PeopleClient {
             .connections
             .unwrap_or_default()
             .into_iter()
-            .filter_map(|c| self.connection_to_contact(c))
+            .filter_map(connection_to_contact)
             .collect();
 
         Ok((contacts, data.next_page_token))
@@ -218,45 +222,100 @@ impl PeopleClient {
             .unwrap_or_default()
             .into_iter()
             .filter_map(|r| r.person)
-            .filter_map(|c| self.connection_to_contact(c))
+            .filter_map(connection_to_contact)
             .collect();
 
         Ok(contacts)
     }
+}
 
-    fn connection_to_contact(&self, conn: PeopleConnection) -> Option<Contact> {
-        let email_addresses: Vec<String> = conn
-            .email_addresses
-            .unwrap_or_default()
-            .into_iter()
-            .filter_map(|e| e.value)
-            .filter(|e| !e.is_empty())
-            .collect();
+fn connection_to_contact(conn: PeopleConnection) -> Option<Contact> {
+    let email_addresses: Vec<String> = conn
+        .email_addresses
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(|e| e.value)
+        .filter(|e| !e.is_empty())
+        .collect();
 
-        // Skip contacts without email addresses
-        if email_addresses.is_empty() {
-            return None;
-        }
+    // Skip contacts without email addresses
+    if email_addresses.is_empty() {
+        return None;
+    }
 
-        let display_name = conn
-            .names
-            .and_then(|names| names.into_iter().next())
-            .and_then(|n| n.display_name);
+    let display_name = conn
+        .names
+        .and_then(|names| names.into_iter().next())
+        .and_then(|n| n.display_name);
 
-        let photo_url = conn
-            .photos
-            .and_then(|photos| {
-                photos
-                    .into_iter()
-                    .find(|p| p.default != Some(true)) // Prefer non-default photos
-            })
-            .and_then(|p| p.url);
-
-        Some(Contact {
-            resource_name: conn.resource_name,
-            display_name,
-            email_addresses,
-            photo_url,
+    let photo_url = conn
+        .photos
+        .and_then(|photos| {
+            photos
+                .into_iter()
+                .find(|p| p.default != Some(true)) // Prefer non-default photos
         })
+        .and_then(|p| p.url);
+
+    Some(Contact {
+        resource_name: conn.resource_name,
+        display_name,
+        email_addresses,
+        photo_url,
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn connections_url_asks_for_most_recently_modified_first() {
+        // The list is capped, so with the API's default (oldest first) a
+        // large address book would only yield its stalest contacts
+        let url = connections_url(100, None);
+        assert!(url.starts_with("https://people.googleapis.com/v1/people/me/connections?"));
+        assert!(url.contains("personFields=names,emailAddresses,photos"));
+        assert!(url.contains("pageSize=100"));
+        assert!(url.contains("sortOrder=LAST_MODIFIED_DESCENDING"));
+        assert!(!url.contains("pageToken"));
+
+        assert!(connections_url(100, Some("a+b/c")).contains("&pageToken=a%2Bb%2Fc"));
+    }
+
+    fn connection(json: serde_json::Value) -> PeopleConnection {
+        serde_json::from_value(json).unwrap()
+    }
+
+    #[test]
+    fn contact_conversion() {
+        let contact = connection_to_contact(connection(serde_json::json!({
+            "resourceName": "people/1",
+            "names": [{ "displayName": "Ana" }, { "displayName": "Other" }],
+            "emailAddresses": [{ "value": "ana@x.com" }, { "value": "" }, {}, { "value": "ana@y.com" }],
+            "photos": [{ "url": "default.png", "default": true }, { "url": "real.png" }],
+        })))
+        .unwrap();
+        assert_eq!(contact.resource_name, "people/1");
+        assert_eq!(contact.display_name.as_deref(), Some("Ana"));
+        assert_eq!(contact.email_addresses, vec!["ana@x.com", "ana@y.com"]);
+        assert_eq!(contact.photo_url.as_deref(), Some("real.png"));
+
+        let no_photo = connection_to_contact(connection(serde_json::json!({
+            "resourceName": "people/2",
+            "emailAddresses": [{ "value": "b@x.com" }],
+            "photos": [{ "url": "default.png", "default": true }],
+        })))
+        .unwrap();
+        assert_eq!(no_photo.display_name, None);
+        assert_eq!(no_photo.photo_url, None);
+
+        // Contacts without an address are useless for autocomplete
+        let no_email = connection(serde_json::json!({
+            "resourceName": "people/3",
+            "names": [{ "displayName": "Phone only" }],
+            "emailAddresses": [{ "value": "" }],
+        }));
+        assert!(connection_to_contact(no_email).is_none());
     }
 }
