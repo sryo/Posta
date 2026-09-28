@@ -1034,7 +1034,7 @@ function App() {
     document.documentElement.style.setProperty("--snippet-lines", String(snippetLines));
 
     // Listen for mailto: deep-link events whether or not startup succeeds
-    listen<{ to: string; cc: string; bcc: string; subject: string; body: string }>(
+    listen<MailtoData>(
       "mailto-received",
       (event) => startCompose(event.payload),
     ).then(unlisten => {
@@ -1079,12 +1079,10 @@ function App() {
       }
     }
 
-    // Outside the startup try so a failed load still opens mailto links; the
-    // backend holds links until they are taken, including the launch link
+    // The backend holds links, including the launch link, until they are
+    // taken; taking them after startup lets compose pick up the account's
+    // signature, and outside the startup try a failed load still opens them
     try {
-      unlistenMailto = await listen<MailtoData>("mailto-received", (event) => {
-        startCompose(event.payload);
-      });
       for (const mailto of await takePendingMailtos()) startCompose(mailto);
     } catch (e) {
       console.warn("mailto links unavailable:", e);

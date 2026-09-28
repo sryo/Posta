@@ -15,8 +15,10 @@ vi.mock("@tauri-apps/api/window", () => ({
   getCurrentWindow: () => ({ setBadgeCount: (count?: number) => setBadgeCount(count), startDragging: async () => {} }),
 }));
 const eventListeners: Record<string, (event: { payload: unknown }) => void> = {};
+const listenedEvents: string[] = [];
 vi.mock("@tauri-apps/api/event", () => ({
   listen: async (name: string, handler: (event: { payload: unknown }) => void) => {
+    listenedEvents.push(name);
     eventListeners[name] = handler;
     return () => {};
   },
@@ -312,6 +314,14 @@ describe("App mailto links", () => {
     await waitFor(() => expect(eventListeners["mailto-received"]).toBeDefined());
     eventListeners["mailto-received"]({ payload: { to: "bo@y.com", cc: "", bcc: "", subject: "Hi", body: "" } });
     await waitFor(() => expect(screen.getByPlaceholderText("Recipients")).toHaveValue("bo@y.com"));
+  });
+
+  it("listens for mailto links only once", async () => {
+    listenedEvents.length = 0;
+    render(() => <App />);
+    await screen.findByText("Mail for A");
+    await waitFor(() => expect(invoke.mock.calls.some(([cmd]) => cmd === "take_pending_mailtos")).toBe(true));
+    expect(listenedEvents.filter(name => name === "mailto-received")).toHaveLength(1);
   });
 });
 
