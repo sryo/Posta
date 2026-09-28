@@ -197,6 +197,13 @@ fn build_http_client(read_timeout: std::time::Duration) -> reqwest::Client {
         .unwrap_or_else(|_| reqwest::Client::new())
 }
 
+/// One client for every GmailClient, so commands reuse pooled connections
+/// instead of each opening (and TLS-handshaking) its own
+fn shared_http_client() -> reqwest::Client {
+    static CLIENT: std::sync::OnceLock<reqwest::Client> = std::sync::OnceLock::new();
+    CLIENT.get_or_init(|| build_http_client(READ_TIMEOUT)).clone()
+}
+
 /// A transport failure in words the user can act on
 fn request_error(e: reqwest::Error) -> String {
     if e.is_timeout() {
@@ -211,7 +218,7 @@ fn request_error(e: reqwest::Error) -> String {
 impl GmailClient {
     pub fn new(access_token: String) -> Self {
         Self {
-            client: build_http_client(READ_TIMEOUT),
+            client: shared_http_client(),
             access_token,
             api_base: GMAIL_API_BASE.to_string(),
             batch_endpoint: BATCH_API_ENDPOINT.to_string(),

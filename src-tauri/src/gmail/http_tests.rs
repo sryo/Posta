@@ -150,3 +150,23 @@ async fn a_request_the_server_never_answers_fails_instead_of_hanging() {
     let err = within(gmail.get_current_history_id()).await.unwrap_err();
     assert!(err.contains("timed out"), "{}", err);
 }
+
+#[tokio::test]
+async fn clients_share_one_connection_pool() {
+    let server = StubServer::start(|_| Reply::Json(200, r#"{"historyId":"42"}"#.into())).await;
+    let pointed_at_stub = || GmailClient {
+        api_base: format!("{}/gmail/v1", server.base),
+        ..GmailClient::new("token".into())
+    };
+
+    // Each command builds its own GmailClient; the second must reuse the
+    // first one's connection rather than open (and TLS-handshake) a new one
+    assert_eq!(within(pointed_at_stub().get_current_history_id()).await, Ok("42".to_string()));
+    assert_eq!(within(pointed_at_stub().get_current_history_id()).await, Ok("42".to_string()));
+
+    let requests = server.requests();
+    assert_eq!(requests.len(), 2);
+    assert!(requests.iter().all(|r| r.method == "GET" && r.target == "/gmail/v1/users/me/profile"));
+    assert!(requests[0].head.to_ascii_lowercase().contains("authorization: bearer token"));
+    assert_eq!(server.connections(), 1);
+}
