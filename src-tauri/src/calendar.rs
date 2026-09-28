@@ -4,7 +4,8 @@ use chrono::{DateTime, Duration, Local, NaiveDate, TimeZone, Utc};
 use chrono_tz::Tz;
 use reqwest::StatusCode;
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
-use std::sync::LazyLock;
+use std::collections::HashMap;
+use std::sync::{Arc, LazyLock, Mutex};
 
 const CALENDAR_API_BASE: &str = "https://www.googleapis.com/calendar/v3";
 // Events-list page size (the API default) and a per-calendar safety cap so a
@@ -13,6 +14,7 @@ const EVENTS_PAGE_SIZE: i32 = 250;
 const PER_CALENDAR_EVENT_CAP: usize = 500;
 const CALENDAR_LIST_PAGE_SIZE: i32 = 250;
 const CALENDAR_LIST_CAP: usize = 1000;
+const CALENDAR_LIST_TTL: std::time::Duration = std::time::Duration::from_secs(120);
 const REQUEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 
 fn build_http_client(timeout: std::time::Duration) -> reqwest::Client {
@@ -25,6 +27,11 @@ fn build_http_client(timeout: std::time::Duration) -> reqwest::Client {
 /// One connection pool for every Google API client, so each command doesn't
 /// pay for a fresh TLS handshake
 static HTTP_CLIENT: LazyLock<reqwest::Client> = LazyLock::new(|| build_http_client(REQUEST_TIMEOUT));
+
+type CalendarListSlot = Arc<tokio::sync::Mutex<Option<(std::time::Instant, Arc<Vec<CalendarInfo>>)>>>;
+
+/// Calendar lists for iCalUID lookups, keyed by (API base, access token)
+static CALENDAR_LISTS: LazyLock<Mutex<HashMap<(String, String), CalendarListSlot>>> = LazyLock::new(Default::default);
 
 /// Calendar info returned to frontend
 #[derive(Debug, Clone, Serialize)]
@@ -696,23 +703,60 @@ impl CalendarClient {
             return Ok(Some(("primary".to_string(), item)));
         }
 
-        let calendars = self.list_calendars().await.unwrap_or_else(|e| {
-            tracing::warn!("Failed to list calendars for iCalUID lookup: {}", e);
-            Vec::new()
-        });
+        let calendars = self.calendars_for_invite_lookup().await;
+        let candidates: Vec<&CalendarInfo> = calendars
+            .iter()
+            .filter(|c| {
+                !c.is_primary
+                    && can_hold_invites(c)
+                    && (!writable_only || c.access_role == "owner" || c.access_role == "writer")
+            })
+            .collect();
+        let results = futures::future::join_all(
+            candidates.iter().map(|cal| self.search_calendar_for_ical_uid(&cal.id, event_uid)),
+        )
+        .await;
 
-        for cal in calendars.iter().filter(|c| {
-            !c.is_primary
-                && (!writable_only || c.access_role == "owner" || c.access_role == "writer")
-        }) {
-            match self.search_calendar_for_ical_uid(&cal.id, event_uid).await {
-                Ok(Some(item)) => return Ok(Some((cal.id.clone(), item))),
-                Ok(None) => {}
+        let mut found = None;
+        for (cal, result) in candidates.into_iter().zip(results) {
+            match result {
+                Ok(Some(item)) if found.is_none() => found = Some((cal.id.clone(), item)),
+                Ok(_) => {}
                 Err(e) => tracing::warn!("iCalUID lookup failed for calendar {}: {}", cal.id, e),
             }
         }
+        Ok(found)
+    }
 
-        Ok(None)
+    /// The account's calendar list, cached briefly: every invite row looks
+    /// up its event, and without the cache each would list the calendars
+    /// again. Concurrent lookups for one account wait for a single fetch.
+    async fn calendars_for_invite_lookup(&self) -> Arc<Vec<CalendarInfo>> {
+        let slot = {
+            let mut lists = CALENDAR_LISTS.lock().unwrap_or_else(|e| e.into_inner());
+            lists.retain(|_, slot| slot.try_lock().map_or(true, |s| s.as_ref().is_some_and(|(at, _)| at.elapsed() < CALENDAR_LIST_TTL)));
+            lists
+                .entry((self.api_base.clone(), self.access_token.clone()))
+                .or_default()
+                .clone()
+        };
+        let mut cached = slot.lock().await;
+        if let Some((at, list)) = cached.as_ref() {
+            if at.elapsed() < CALENDAR_LIST_TTL {
+                return list.clone();
+            }
+        }
+        match self.list_calendars().await {
+            Ok(list) => {
+                let list = Arc::new(list);
+                *cached = Some((std::time::Instant::now(), list.clone()));
+                list
+            }
+            Err(e) => {
+                tracing::warn!("Failed to list calendars for iCalUID lookup: {}", e);
+                Default::default()
+            }
+        }
     }
 
     /// Get the user's RSVP status for a calendar event from Calendar API
@@ -846,6 +890,13 @@ fn api_event_to_calendar_event(event: ApiEvent, calendar_id: &str, calendar_name
         can_edit,
         recurring_event_id: event.recurring_event_id,
     })
+}
+
+/// Free/busy calendars show no attendees, and Google's generated calendars
+/// (holidays, contacts' birthdays, week numbers: ids under
+/// group.v.calendar.google.com) never receive invitations
+fn can_hold_invites(calendar: &CalendarInfo) -> bool {
+    calendar.access_role != "freeBusyReader" && !calendar.id.ends_with("@group.v.calendar.google.com")
 }
 
 /// The user's entry in an attendee list. The API's `self` flag marks the
@@ -1708,6 +1759,110 @@ mod tests {
         let ids: Vec<&str> = calendars.iter().map(|c| c.id.as_str()).collect();
         assert_eq!(ids, vec!["first", "second"]);
         assert_eq!(server.requests().len(), 2);
+    }
+
+    fn invite_lookup_stub(calendars: serde_json::Value, found_on: &'static str) -> impl Fn(&str, &str) -> (u16, String) + Send + Sync + 'static {
+        move |method, target| {
+            if target.starts_with("/users/me/calendarList") {
+                return (200, serde_json::json!({ "items": calendars }).to_string());
+            }
+            if method == "PATCH" {
+                return (200, "{}".to_string());
+            }
+            let items = if target.starts_with(&format!("/calendars/{}/events?iCalUID=", urlencoding::encode(found_on))) {
+                serde_json::json!([{ "id": "e1", "attendees": [{ "email": "me@x.com", "responseStatus": "accepted" }] }])
+            } else {
+                serde_json::json!([])
+            };
+            (200, serde_json::json!({ "items": items }).to_string())
+        }
+    }
+
+    fn calendar_with_role(id: &str, role: &str) -> serde_json::Value {
+        serde_json::json!({ "id": id, "summary": id, "accessRole": role })
+    }
+
+    fn searched_calendars(server: &StubServer) -> Vec<String> {
+        server
+            .requests()
+            .into_iter()
+            .filter(|(_, target, _)| target.contains("/events?iCalUID="))
+            .map(|(_, target, _)| target.trim_start_matches("/calendars/").split('/').next().unwrap().to_string())
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn invite_lookup_searches_secondary_calendars_concurrently() {
+        let calendars = serde_json::json!([
+            { "id": "me@x.com", "primary": true, "accessRole": "owner" },
+            calendar_with_role("work", "owner"),
+            calendar_with_role("team", "writer"),
+            calendar_with_role("shared", "reader"),
+        ]);
+        // One at a time, the first secondary search would wait forever
+        let server = StubServer::start_gated(
+            invite_lookup_stub(calendars, "team"),
+            |target| target.contains("/events?iCalUID=") && !target.starts_with("/calendars/primary/"),
+            3,
+        )
+        .await;
+        let status = tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            server.client().get_calendar_event_status("me@x.com", "uid-1"),
+        )
+        .await
+        .expect("secondary calendars were searched one at a time");
+        assert_eq!(status.as_deref(), Some("accepted"));
+    }
+
+    #[tokio::test]
+    async fn invite_lookup_skips_calendars_that_cannot_hold_invites() {
+        let calendars = serde_json::json!([
+            { "id": "me@x.com", "primary": true, "accessRole": "owner" },
+            calendar_with_role("work", "owner"),
+            calendar_with_role("shared", "reader"),
+            calendar_with_role("busy", "freeBusyReader"),
+            calendar_with_role("en.usa#holiday@group.v.calendar.google.com", "reader"),
+            calendar_with_role("addressbook#contacts@group.v.calendar.google.com", "reader"),
+        ]);
+        let server = StubServer::start(invite_lookup_stub(calendars, "nowhere")).await;
+        assert_eq!(server.client().get_calendar_event_status("me@x.com", "uid-1").await, None);
+        let mut searched = searched_calendars(&server);
+        searched.sort();
+        assert_eq!(searched, vec!["primary", "shared", "work"]);
+
+        // An RSVP can only be written to a calendar the user can modify
+        let calendars = serde_json::json!([calendar_with_role("work", "owner"), calendar_with_role("shared", "reader")]);
+        let rsvp_server = StubServer::start(invite_lookup_stub(calendars, "work")).await;
+        rsvp_server.client().rsvp_calendar_event("me@x.com", "uid-1", "declined").await.unwrap();
+        let mut searched = searched_calendars(&rsvp_server);
+        searched.sort();
+        assert_eq!(searched, vec!["primary", "work"]);
+        let patches: Vec<_> = rsvp_server.requests().into_iter().filter(|(m, _, _)| m == "PATCH").collect();
+        assert_eq!(patches.len(), 1);
+        assert!(patches[0].1.starts_with("/calendars/work/events/e1?"), "{:?}", patches[0]);
+        assert!(patches[0].2.contains("declined"), "{:?}", patches[0]);
+    }
+
+    #[tokio::test]
+    async fn invite_lookups_share_one_calendar_list_request() {
+        // Each invite row looks up its own event; the account's calendar
+        // list is fetched once for all of them, not once per row
+        let calendars = serde_json::json!([calendar_with_role("work", "owner")]);
+        let server = StubServer::start(invite_lookup_stub(calendars, "work")).await;
+        let client = server.client();
+        let lookups: Vec<_> = (0..4).map(|i| client.get_calendar_event_status("me@x.com", ["a", "b", "c", "d"][i])).collect();
+        let statuses = futures::future::join_all(lookups).await;
+        assert!(statuses.iter().all(|s| s.as_deref() == Some("accepted")), "{statuses:?}");
+        server.client().get_calendar_event_status("me@x.com", "e").await;
+        let list_requests = server.requests().iter().filter(|(_, t, _)| t.starts_with("/users/me/calendarList")).count();
+        assert_eq!(list_requests, 1);
+
+        // Another account (token) gets its own list
+        let other = CalendarClient { access_token: "other-token".into(), ..server.client() };
+        other.get_calendar_event_status("me@x.com", "f").await;
+        let list_requests = server.requests().iter().filter(|(_, t, _)| t.starts_with("/users/me/calendarList")).count();
+        assert_eq!(list_requests, 2);
     }
 
     #[tokio::test]
