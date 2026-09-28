@@ -34,6 +34,13 @@ describe("address parsing", () => {
     expect(extractName("plain@example.com")).toBeUndefined();
   });
 
+  it("takes the address from the final angle brackets when the name has its own", () => {
+    const from = '"Jira <jira@tracker.test>" <noreply@tracker.test>';
+    expect(extractEmail(from)).toBe("noreply@tracker.test");
+    expect(extractName(from)).toBe("Jira <jira@tracker.test>");
+    expect(validateEmailList(from)).toEqual({ valid: true, invalidEmails: [] });
+  });
+
   it("does not split on commas inside quoted names", () => {
     expect(splitEmailList('"Doe, John" <jd@example.com>, x@example.com')).toEqual([
       '"Doe, John" <jd@example.com>',

@@ -281,7 +281,7 @@ export function getInitial(email: string): string {
  * Extract email address from "Name <email@example.com>" format
  */
 export function extractEmail(fromStr: string): string {
-  const match = fromStr.match(/<([^>]+)>/);
+  const match = fromStr.match(/<([^<>]+)>\s*$/) ?? fromStr.match(/<([^<>]+)>/);
   return match ? match[1] : fromStr;
 }
 
