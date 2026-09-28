@@ -216,7 +216,7 @@ describe("App attachments", () => {
       }],
     }];
     handlers.open_attachment = () => {
-      throw "setup.pkg can run code on your computer, so Posta won't open it. Save it and open it yourself only if you trust the sender.";
+      throw "EXECUTABLE_ATTACHMENT: setup.pkg can run code on your computer, so Posta won't open it. Save it and open it yourself only if you trust the sender.";
     };
     handlers.save_attachment = () => "/Users/me/Downloads/setup.pkg";
     render(() => <App />);

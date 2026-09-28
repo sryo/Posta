@@ -3013,7 +3013,7 @@ function App() {
       console.error('Failed to open attachment:', e);
       // The backend refuses to open files that can run code; saving them is
       // still allowed
-      if (String(e).includes("won't open it")) {
+      if (String(e).startsWith("EXECUTABLE_ATTACHMENT:")) {
         showToast(`${filename} can run code, so Posta won't open it`, {
           label: "Save instead",
           run: () => downloadAttachment(messageId, attachmentId, filename, mimeType, inlineData),

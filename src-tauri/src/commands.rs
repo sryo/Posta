@@ -1170,6 +1170,20 @@ const EXECUTABLE_EXTENSIONS: &[&str] = &[
     "wsf", "wsh", "hta", "lnk", "reg", "cpl",
 ];
 
+/// Leads the error open_attachment returns for a file it refuses to open;
+/// the frontend matches it to offer saving instead
+const EXECUTABLE_ATTACHMENT_ERROR: &str = "EXECUTABLE_ATTACHMENT";
+
+fn refuse_executable_attachment(filename: &str, mime_type: Option<&str>) -> Result<(), String> {
+    if is_executable_attachment(&attachment_filename(filename, mime_type)) {
+        return Err(format!(
+            "{}: {} can run code on your computer, so Posta won't open it. Save it and open it yourself only if you trust the sender.",
+            EXECUTABLE_ATTACHMENT_ERROR, filename
+        ));
+    }
+    Ok(())
+}
+
 fn is_executable_attachment(filename: &str) -> bool {
     let trimmed = filename.trim_end_matches(|c: char| c == '.' || c.is_whitespace());
     match trimmed.rsplit_once('.') {
@@ -1262,12 +1276,7 @@ pub async fn open_attachment(
     inline_data: Option<String>,
     app_handle: tauri::AppHandle, state: State<'_, AppState>,
 ) -> Result<(), String> {
-    if is_executable_attachment(&attachment_filename(&filename, mime_type.as_deref())) {
-        return Err(format!(
-            "{} can run code on your computer, so Posta won't open it. Save it and open it yourself only if you trust the sender.",
-            filename
-        ));
-    }
+    refuse_executable_attachment(&filename, mime_type.as_deref())?;
 
     let (final_filename, bytes) = resolve_attachment_file(
         &account_id, &message_id, attachment_id, &filename,
@@ -1757,8 +1766,8 @@ pub async fn suggest_replies(
 mod tests {
     use super::{
         attachment_filename, attachment_temp_dir, cached_access_token, icloud_card_account, icloud_snapshot, is_auth_error,
-        is_executable_attachment, mark_quarantined, merge_icloud_cards, next_card_position, reply_context,
-        sanitize_attachment_filename, vanished_thread_ids, write_unique_file,
+        is_executable_attachment, mark_quarantined, merge_icloud_cards, next_card_position, refuse_executable_attachment,
+        reply_context, sanitize_attachment_filename, vanished_thread_ids, write_unique_file,
     };
     use crate::models::{Account, Card, Thread};
     use std::collections::HashMap;
@@ -1983,6 +1992,13 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("posta-test-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
         dir
+    }
+
+    #[test]
+    fn refused_attachments_carry_the_error_prefix_the_frontend_matches() {
+        let err = refuse_executable_attachment("setup.pkg", None).unwrap_err();
+        assert!(err.starts_with("EXECUTABLE_ATTACHMENT: "), "{}", err);
+        assert!(refuse_executable_attachment("report.pdf", Some("application/pdf")).is_ok());
     }
 
     #[test]
