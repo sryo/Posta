@@ -1293,11 +1293,21 @@ function App() {
 
   function scrollFocusedIntoView() {
     requestAnimationFrame(() => {
-      const focusedCard = document.querySelector('.card-wrapper:has(.card.card-focused)');
+      const cardId = focusedCardId();
+      const focusedCard = cardId ? document.querySelector(`.card[data-id="${CSS.escape(cardId)}"]`)?.closest('.card-wrapper') : null;
       focusedCard?.scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'center' });
       const focused = document.querySelector('.thread.focused, .calendar-event-item.focused');
       focused?.scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'nearest' });
     });
+  }
+
+  // Focus a card and the item at `index` in it (-1 focuses the card only)
+  function focusCardItem(cardId: string, index: number) {
+    setFocusedCardId(cardId);
+    const calendar = isCalendarCard(cardId);
+    setFocusedEventIndex(calendar ? index : -1);
+    setFocusedThreadIndex(calendar ? -1 : index);
+    scrollFocusedIntoView();
   }
 
   // Global keyboard shortcuts
@@ -1427,54 +1437,21 @@ function App() {
       if (cardsList.length === 0) return;
 
       const isRight = e.key === 'l' || e.key === 'ArrowRight';
-      let cardId = focusedCardId();
+      const lastCard = cardsList[cardsList.length - 1];
+      const cardId = focusedCardId();
 
       if (!cardId) {
-        // From add card form, go back to last card
-        if (addingCard() && !isRight) {
-          setAddingCard(false);
-          if (cardsList.length > 0) {
-            const lastCard = cardsList[cardsList.length - 1];
-            setFocusedCardId(lastCard.id);
-            if (isCalendarCard(lastCard.id)) {
-              setFocusedEventIndex(0);
-              setFocusedThreadIndex(-1);
-            } else {
-              setFocusedThreadIndex(0);
-              setFocusedEventIndex(-1);
-            }
-            scrollFocusedIntoView();
-          }
-          return;
-        }
-        const targetCard = isRight ? cardsList[0] : cardsList[cardsList.length - 1];
-        setFocusedCardId(targetCard.id);
-        if (isCalendarCard(targetCard.id)) {
-          setFocusedEventIndex(0);
-          setFocusedThreadIndex(-1);
-        } else {
-          setFocusedThreadIndex(0);
-          setFocusedEventIndex(-1);
-        }
-        scrollFocusedIntoView();
+        // From the add card form (or no focus), left goes to the last card
+        if (addingCard() && !isRight) setAddingCard(false);
+        focusCardItem(isRight ? cardsList[0].id : lastCard.id, 0);
         return;
       }
 
-      const cardIndex = cardsList.findIndex(c => c.id === cardId);
-      const newCardIndex = isRight ? cardIndex + 1 : cardIndex - 1;
+      const newCardIndex = cardsList.findIndex(c => c.id === cardId) + (isRight ? 1 : -1);
 
       if (newCardIndex >= 0 && newCardIndex < cardsList.length) {
-        const newCardId = cardsList[newCardIndex].id;
-        setFocusedCardId(newCardId);
-        if (isCalendarCard(newCardId)) {
-          setFocusedEventIndex(0);
-          setFocusedThreadIndex(-1);
-        } else {
-          setFocusedThreadIndex(0);
-          setFocusedEventIndex(-1);
-        }
-        scrollFocusedIntoView();
-      } else if (isRight && newCardIndex >= cardsList.length && !addingCard()) {
+        focusCardItem(cardsList[newCardIndex].id, 0);
+      } else if (isRight && !addingCard()) {
         // Past last card - open add card form
         setFocusedCardId(null);
         setFocusedThreadIndex(-1);
@@ -1484,20 +1461,9 @@ function App() {
         setQueryPreviewCalendarEvents([]);
         setQueryPreviewLoading(false);
         setAddingCard(true);
-      } else if (!isRight && newCardIndex < 0 && addingCard()) {
+      } else if (!isRight && addingCard()) {
         setAddingCard(false);
-        if (cardsList.length > 0) {
-          const lastCard = cardsList[cardsList.length - 1];
-          setFocusedCardId(lastCard.id);
-          if (isCalendarCard(lastCard.id)) {
-            setFocusedEventIndex(0);
-            setFocusedThreadIndex(-1);
-          } else {
-            setFocusedThreadIndex(0);
-            setFocusedEventIndex(-1);
-          }
-          scrollFocusedIntoView();
-        }
+        focusCardItem(lastCard.id, 0);
       }
       return;
     }
@@ -1509,68 +1475,27 @@ function App() {
       if (cardsList.length === 0) return;
 
       const isDown = e.key === 'j' || e.key === 'ArrowDown';
-      let cardId = focusedCardId();
+      const cardId = focusedCardId();
 
       // If no focus, start at first card
       if (!cardId) {
-        cardId = cardsList[0].id;
-        setFocusedCardId(cardId);
-        if (isCalendarCard(cardId)) {
-          setFocusedEventIndex(isDown ? 0 : -1);
-          setFocusedThreadIndex(-1);
-        } else {
-          setFocusedThreadIndex(isDown ? 0 : -1);
-          setFocusedEventIndex(-1);
-        }
-        scrollFocusedIntoView();
+        focusCardItem(cardsList[0].id, isDown ? 0 : -1);
         return;
       }
 
-      // Get items based on card type
-      const isCalendar = isCalendarCard(cardId);
-      const items = isCalendar ? getCardEventsFlat(cardId) : getCardThreadsFlat(cardId);
-      const idx = isCalendar ? focusedEventIndex() : focusedThreadIndex();
+      const itemCount = (id: string) => (isCalendarCard(id) ? getCardEventsFlat(id) : getCardThreadsFlat(id)).length;
+      const idx = isCalendarCard(cardId) ? focusedEventIndex() : focusedThreadIndex();
       const newIdx = isDown ? idx + 1 : idx - 1;
+      const cardIndex = cardsList.findIndex(c => c.id === cardId);
 
-      if (newIdx >= 0 && newIdx < items.length) {
-        // Move within same card
-        if (isCalendar) {
-          setFocusedEventIndex(newIdx);
-        } else {
-          setFocusedThreadIndex(newIdx);
-        }
-        scrollFocusedIntoView();
-      } else if (isDown && newIdx >= items.length) {
-        // Move to next card
-        const cardIndex = cardsList.findIndex(c => c.id === cardId);
-        if (cardIndex < cardsList.length - 1) {
-          const nextCardId = cardsList[cardIndex + 1].id;
-          setFocusedCardId(nextCardId);
-          if (isCalendarCard(nextCardId)) {
-            setFocusedEventIndex(0);
-            setFocusedThreadIndex(-1);
-          } else {
-            setFocusedThreadIndex(0);
-            setFocusedEventIndex(-1);
-          }
-          scrollFocusedIntoView();
-        }
+      if (newIdx >= 0 && newIdx < itemCount(cardId)) {
+        focusCardItem(cardId, newIdx);
+      } else if (isDown && newIdx >= itemCount(cardId)) {
+        if (cardIndex < cardsList.length - 1) focusCardItem(cardsList[cardIndex + 1].id, 0);
       } else if (!isDown && newIdx < 0 && idx >= 0) {
-        // Move to previous card
-        const cardIndex = cardsList.findIndex(c => c.id === cardId);
         if (cardIndex > 0) {
           const prevCardId = cardsList[cardIndex - 1].id;
-          setFocusedCardId(prevCardId);
-          if (isCalendarCard(prevCardId)) {
-            const prevItems = getCardEventsFlat(prevCardId);
-            setFocusedEventIndex(prevItems.length - 1);
-            setFocusedThreadIndex(-1);
-          } else {
-            const prevItems = getCardThreadsFlat(prevCardId);
-            setFocusedThreadIndex(prevItems.length - 1);
-            setFocusedEventIndex(-1);
-          }
-          scrollFocusedIntoView();
+          focusCardItem(prevCardId, itemCount(prevCardId) - 1);
         }
       }
       return;
