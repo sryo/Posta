@@ -91,44 +91,69 @@ fn get_account_email(state: &AppState, account_id: &str) -> Result<String, Strin
     })
 }
 
-// Sync all cards to iCloud after any card operation
-fn sync_cards_to_icloud(state: &AppState) {
-    let db_guard = match state.db.lock() {
-        Ok(g) => g,
-        Err(_) => return,
-    };
-    let db = match db_guard.as_ref() {
-        Some(d) => d,
-        None => return,
-    };
+/// The cards and id -> email mappings to write back to iCloud after a local
+/// card change: every local card, plus iCloud cards owned by accounts this
+/// device doesn't have (another device's, or one signed out here). Mappings
+/// are kept only for owners of those cards. None without local accounts,
+/// since nothing on this device can then speak for the backup.
+fn icloud_snapshot(
+    accounts: &[Account],
+    local_cards: Vec<Card>,
+    icloud_cards: Vec<Card>,
+    icloud_mappings: HashMap<String, String>,
+) -> Option<(Vec<Card>, HashMap<String, String>)> {
+    if accounts.is_empty() {
+        return None;
+    }
 
-    // Collect all cards from all accounts and build account mappings
-    let accounts = match db.get_accounts() {
-        Ok(a) => a,
-        Err(_) => return,
-    };
-
-    let mut all_cards = Vec::new();
-    let mut account_mappings = HashMap::new();
-
-    for account in &accounts {
-        // Build account_id -> email mapping for iCloud restore
-        account_mappings.insert(account.id.clone(), account.email.clone());
-
-        if let Ok(cards) = db.get_cards(&account.id) {
-            all_cards.extend(cards);
+    let mut cards = local_cards;
+    for card in icloud_cards {
+        let foreign = icloud_card_account(&card.account_id, &icloud_mappings, accounts).is_none();
+        if foreign && !cards.iter().any(|c| c.id == card.id) {
+            cards.push(card);
         }
     }
 
-    // Sync to iCloud (no-op on non-iOS)
-    drop(db_guard); // Release db lock before acquiring icloud lock
-    if let Ok(icloud) = state.icloud.lock() {
-        let _ = icloud.sync_cards(&all_cards);
-        // Keep other devices' id -> email entries so their cards can still be
-        // matched to the right account when this device pulls them
-        let mut merged = icloud.load_account_mappings().ok().flatten().unwrap_or_default();
-        merged.extend(account_mappings);
-        let _ = icloud.sync_account_mappings(&merged);
+    let mut mappings = icloud_mappings;
+    mappings.extend(accounts.iter().map(|a| (a.id.clone(), a.email.clone())));
+    let owners: std::collections::HashSet<&str> = cards.iter().map(|c| c.account_id.as_str()).collect();
+    mappings.retain(|id, _| owners.contains(id.as_str()));
+
+    Some((cards, mappings))
+}
+
+// Sync all cards to iCloud after any card operation
+fn sync_cards_to_icloud(state: &AppState) {
+    let (accounts, local_cards) = {
+        let Ok(db_guard) = state.db.lock() else { return };
+        let Some(db) = db_guard.as_ref() else { return };
+        let Ok(accounts) = db.get_accounts() else { return };
+        let mut cards = Vec::new();
+        for account in &accounts {
+            match db.get_cards(&account.id) {
+                Ok(c) => cards.extend(c),
+                // A partial list would delete the missing cards from iCloud
+                Err(_) => return,
+            }
+        }
+        (accounts, cards)
+    };
+
+    let Ok(icloud) = state.icloud.lock() else { return };
+    // Unreadable (corrupt) iCloud values are replaced by the local state
+    let Some((cards, mappings)) = icloud_snapshot(
+        &accounts,
+        local_cards,
+        icloud.load_cards().ok().flatten().unwrap_or_default(),
+        icloud.load_account_mappings().ok().flatten().unwrap_or_default(),
+    ) else {
+        return;
+    };
+    if let Err(e) = icloud.sync_cards(&cards) {
+        tracing::warn!("iCloud card sync failed: {}", e);
+    }
+    if let Err(e) = icloud.sync_account_mappings(&mappings) {
+        tracing::warn!("iCloud account mapping sync failed: {}", e);
     }
 }
 
@@ -472,7 +497,11 @@ fn get_account_and_card(
 }
 
 /// Helper to get a valid access token for an account (refreshing if needed)
-async fn get_access_token(state: &AppState, account_id: &str, app_data_dir: &std::path::Path) -> Result<String, String> {
+async fn get_access_token(
+    state: &AppState,
+    app_handle: &tauri::AppHandle,
+    account_id: &str,
+) -> Result<String, String> {
     // Serve from cache if the token is good for at least another 60s
     {
         let cache = state.token_cache.lock().map_err(|_| "Lock error")?;
@@ -483,8 +512,8 @@ async fn get_access_token(state: &AppState, account_id: &str, app_data_dir: &std
         }
     }
 
-    // Get stored refresh token
-    let refresh_token = auth::get_refresh_token(account_id, app_data_dir).map_err(|e| e.to_string())?;
+    let app_data_dir = get_app_data_dir(app_handle)?;
+    let refresh_token = auth::get_refresh_token(account_id, &app_data_dir).map_err(|e| e.to_string())?;
 
     // Refresh the access token
     let (access_token, expires_in) = {
@@ -506,6 +535,16 @@ async fn get_access_token(state: &AppState, account_id: &str, app_data_dir: &std
         .insert(account_id.to_string(), (access_token.clone(), expiry));
 
     Ok(access_token)
+}
+
+/// Access token for an account that must exist locally
+async fn account_access_token(
+    state: &AppState,
+    app_handle: &tauri::AppHandle,
+    account_id: &str,
+) -> Result<String, String> {
+    verify_account_exists(state, account_id)?;
+    get_access_token(state, app_handle, account_id).await
 }
 
 /// Gmail and People errors embed the HTTP status ("401 Unauthorized"), most
@@ -548,12 +587,10 @@ pub async fn fetch_threads_paginated(
     page_token: Option<String>,
     app_handle: tauri::AppHandle, state: State<'_, AppState>,
 ) -> Result<SearchResult, String> {
-    let app_data_dir = get_app_data_dir(&app_handle)?;
-
     tracing::info!("fetch_threads_paginated for card: {}, page_token: {:?}", card_id, page_token);
 
     let (account, card) = get_account_and_card(&state, &account_id, &card_id)?;
-    let access_token = get_access_token(&state, &account.id, &app_data_dir).await?;
+    let access_token = get_access_token(&state, &app_handle, &account.id).await?;
 
     let gmail = GmailClient::new(access_token);
     let result = evict_token_on_auth_error(
@@ -606,8 +643,6 @@ async fn sync_threads_incremental_impl(
     app_handle: &tauri::AppHandle,
     state: &State<'_, AppState>,
 ) -> Result<IncrementalSyncResult, String> {
-    let app_data_dir = get_app_data_dir(app_handle)?;
-
     tracing::info!("sync_threads_incremental for account: {}", account_id);
 
     // Get stored history ID
@@ -617,7 +652,7 @@ async fn sync_threads_incremental_impl(
         db.get_history_id(account_id).map_err(|e| e.to_string())?
     };
 
-    let access_token = get_access_token(state, account_id, &app_data_dir).await?;
+    let access_token = get_access_token(state, app_handle, account_id).await?;
     let gmail = GmailClient::new(access_token);
 
     match stored_history_id {
@@ -742,11 +777,7 @@ pub async fn modify_threads(
     remove_labels: Vec<String>,
     app_handle: tauri::AppHandle, state: State<'_, AppState>,
 ) -> Result<(), String> {
-    let app_data_dir = get_app_data_dir(&app_handle)?;
-
-    verify_account_exists(&state, &account_id)?;
-
-    let access_token = get_access_token(&state, &account_id, &app_data_dir).await?;
+    let access_token = account_access_token(&state, &app_handle, &account_id).await?;
     let gmail = std::sync::Arc::new(GmailClient::new(access_token));
 
     // Process in parallel for better performance
@@ -782,11 +813,7 @@ pub async fn search_threads_preview(
     query: String,
     app_handle: tauri::AppHandle, state: State<'_, AppState>,
 ) -> Result<Vec<ThreadGroup>, String> {
-    let app_data_dir = get_app_data_dir(&app_handle)?;
-
-    verify_account_exists(&state, &account_id)?;
-
-    let access_token = get_access_token(&state, &account_id, &app_data_dir).await?;
+    let access_token = account_access_token(&state, &app_handle, &account_id).await?;
     let gmail = GmailClient::new(access_token);
 
     // Limit to 5 threads for preview
@@ -800,11 +827,7 @@ pub async fn get_thread_details(
     thread_id: String,
     app_handle: tauri::AppHandle, state: State<'_, AppState>,
 ) -> Result<crate::gmail::FullThread, String> {
-    let app_data_dir = get_app_data_dir(&app_handle)?;
-
-    verify_account_exists(&state, &account_id)?;
-
-    let access_token = get_access_token(&state, &account_id, &app_data_dir).await?;
+    let access_token = account_access_token(&state, &app_handle, &account_id).await?;
     let gmail = GmailClient::new(access_token);
 
     evict_token_on_auth_error(&state, &account_id, gmail.get_thread(&thread_id).await)
@@ -822,11 +845,7 @@ pub async fn send_email(
     is_html: Option<bool>,
     app_handle: tauri::AppHandle, state: State<'_, AppState>,
 ) -> Result<(), String> {
-    let app_data_dir = get_app_data_dir(&app_handle)?;
-
-    verify_account_exists(&state, &account_id)?;
-
-    let access_token = get_access_token(&state, &account_id, &app_data_dir).await?;
+    let access_token = account_access_token(&state, &app_handle, &account_id).await?;
     let gmail = GmailClient::new(access_token);
 
     let message = OutgoingMessage {
@@ -856,11 +875,7 @@ pub async fn reply_to_thread(
     is_html: Option<bool>,
     app_handle: tauri::AppHandle, state: State<'_, AppState>,
 ) -> Result<(), String> {
-    let app_data_dir = get_app_data_dir(&app_handle)?;
-
-    verify_account_exists(&state, &account_id)?;
-
-    let access_token = get_access_token(&state, &account_id, &app_data_dir).await?;
+    let access_token = account_access_token(&state, &app_handle, &account_id).await?;
     let gmail = GmailClient::new(access_token);
 
     let message = OutgoingMessage {
@@ -886,9 +901,8 @@ pub async fn send_reaction(
     app_handle: tauri::AppHandle,
     state: State<'_, AppState>,
 ) -> Result<(), String> {
-    let app_data_dir = get_app_data_dir(&app_handle)?;
     let from_email = get_account_email(&state, &account_id)?;
-    let access_token = get_access_token(&state, &account_id, &app_data_dir).await?;
+    let access_token = get_access_token(&state, &app_handle, &account_id).await?;
     let gmail = GmailClient::new(access_token);
 
     let result = gmail.send_reaction(&thread_id, &message_id, &emoji, &from_email, &to_email).await;
@@ -981,11 +995,7 @@ pub async fn download_attachment(
     app_handle: tauri::AppHandle,
     state: State<'_, AppState>,
 ) -> Result<String, String> {
-    let app_data_dir = get_app_data_dir(&app_handle)?;
-
-    verify_account_exists(&state, &account_id)?;
-
-    let access_token = get_access_token(&state, &account_id, &app_data_dir).await?;
+    let access_token = account_access_token(&state, &app_handle, &account_id).await?;
     let gmail = GmailClient::new(access_token);
 
     evict_token_on_auth_error(
@@ -1051,8 +1061,7 @@ async fn resolve_attachment_file(
         let attachment_id = attachment_id.ok_or("No attachment ID or inline data")?;
         verify_account_exists(state, account_id)?;
 
-        let app_data_dir = get_app_data_dir(app_handle)?;
-        let access_token = get_access_token(state, account_id, &app_data_dir).await?;
+        let access_token = get_access_token(state, app_handle, account_id).await?;
         let gmail = GmailClient::new(access_token);
         evict_token_on_auth_error(
             state,
@@ -1083,6 +1092,99 @@ fn attachment_filename(filename: &str, mime_type: Option<&str>) -> String {
     }
 }
 
+/// Extensions that run code or change the system when opened from the file
+/// manager, rather than being shown by a viewer
+const EXECUTABLE_EXTENSIONS: &[&str] = &[
+    "app", "command", "terminal", "tool", "sh", "bash", "zsh", "csh", "ksh", "fish",
+    "pkg", "mpkg", "workflow", "action", "scpt", "scptd", "applescript", "osax",
+    "prefpane", "mobileconfig", "kext", "plugin", "jar", "py", "pl", "rb", "php",
+    "fileloc", "inetloc", "webloc", "url", "desktop", "appimage", "run", "deb", "rpm",
+    "exe", "com", "scr", "msi", "msp", "bat", "cmd", "ps1", "vbs", "vbe", "js", "jse",
+    "wsf", "wsh", "hta", "lnk", "reg", "cpl",
+];
+
+fn is_executable_attachment(filename: &str) -> bool {
+    let trimmed = filename.trim_end_matches(|c: char| c == '.' || c.is_whitespace());
+    match trimmed.rsplit_once('.') {
+        Some((_, ext)) => EXECUTABLE_EXTENSIONS.iter().any(|e| e.eq_ignore_ascii_case(ext)),
+        None => false,
+    }
+}
+
+/// Per-message directory under `base`, so same-named attachments from
+/// different messages don't overwrite each other
+fn attachment_temp_dir(base: &std::path::Path, message_id: &str) -> std::path::PathBuf {
+    let safe: String = message_id
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric() || *c == '-' || *c == '_')
+        .collect();
+    base.join("posta-attachments")
+        .join(if safe.is_empty() { "message" } else { safe.as_str() })
+}
+
+/// Write `bytes` to `dir/filename`, or to `name (1).ext`, `name (2).ext`...
+/// when taken; checking and creating the name is one atomic step. With
+/// `reuse_identical`, a taken name that already holds these exact bytes is
+/// returned instead of writing another copy.
+fn write_unique_file(
+    dir: &std::path::Path,
+    filename: &str,
+    bytes: &[u8],
+    reuse_identical: bool,
+) -> std::io::Result<std::path::PathBuf> {
+    use std::io::Write;
+
+    let (stem, ext) = match filename.rsplit_once('.') {
+        Some((s, e)) if !s.is_empty() => (s, Some(e)),
+        _ => (filename, None),
+    };
+    for counter in 0..10_000 {
+        let candidate = match (counter, ext) {
+            (0, _) => filename.to_string(),
+            (n, Some(e)) => format!("{} ({}).{}", stem, n, e),
+            (n, None) => format!("{} ({})", stem, n),
+        };
+        let path = dir.join(candidate);
+        match std::fs::OpenOptions::new().write(true).create_new(true).open(&path) {
+            Ok(mut file) => {
+                if let Err(e) = file.write_all(bytes) {
+                    drop(file);
+                    let _ = std::fs::remove_file(&path);
+                    return Err(e);
+                }
+                return Ok(path);
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+                if reuse_identical && std::fs::read(&path).is_ok_and(|existing| existing == bytes) {
+                    return Ok(path);
+                }
+            }
+            Err(e) => return Err(e),
+        }
+    }
+    Err(std::io::Error::new(
+        std::io::ErrorKind::AlreadyExists,
+        format!("Too many files named {}", filename),
+    ))
+}
+
+/// Tag a file written from a sender's attachment with the quarantine
+/// attribute browsers put on downloads, so Gatekeeper vets it before it runs
+#[cfg(target_os = "macos")]
+fn mark_quarantined(path: &std::path::Path) {
+    let value = format!("0083;{:x};Posta;", chrono::Utc::now().timestamp());
+    let status = std::process::Command::new("/usr/bin/xattr")
+        .args(["-w", "com.apple.quarantine", &value])
+        .arg(path)
+        .status();
+    if !matches!(status, Ok(s) if s.success()) {
+        tracing::warn!("Failed to quarantine {:?}: {:?}", path, status);
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+fn mark_quarantined(_path: &std::path::Path) {}
+
 #[tauri::command]
 pub async fn open_attachment(
     account_id: String,
@@ -1093,16 +1195,26 @@ pub async fn open_attachment(
     inline_data: Option<String>,
     app_handle: tauri::AppHandle, state: State<'_, AppState>,
 ) -> Result<(), String> {
+    if is_executable_attachment(&attachment_filename(&filename, mime_type.as_deref())) {
+        return Err(format!(
+            "{} can run code on your computer, so Posta won't open it. Save it and open it yourself only if you trust the sender.",
+            filename
+        ));
+    }
+
     let (final_filename, bytes) = resolve_attachment_file(
         &account_id, &message_id, attachment_id, &filename,
         mime_type.as_deref(), inline_data, &app_handle, &state,
     ).await?;
 
-    let temp_path = std::env::temp_dir().join(&final_filename);
-    std::fs::write(&temp_path, &bytes).map_err(|e| format!("Failed to write temp file: {}", e))?;
+    let dir = attachment_temp_dir(&std::env::temp_dir(), &message_id);
+    std::fs::create_dir_all(&dir).map_err(|e| format!("Failed to create temp dir: {}", e))?;
+    let temp_path = write_unique_file(&dir, &final_filename, &bytes, true)
+        .map_err(|e| format!("Failed to write temp file: {}", e))?;
+    mark_quarantined(&temp_path);
 
     // Open with system default application
-    open::that(&temp_path).map_err(|e| format!("Failed to open file: {}", e))?;
+    tauri_plugin_opener::open_path(&temp_path, None::<&str>).map_err(|e| format!("Failed to open file: {}", e))?;
 
     Ok(())
 }
@@ -1128,23 +1240,9 @@ pub async fn save_attachment(
         .download_dir()
         .map_err(|e| format!("Failed to get downloads dir: {}", e))?;
 
-    // Avoid clobbering an existing file: name.ext, name (1).ext, name (2).ext...
-    let (stem, ext) = match final_filename.rsplit_once('.') {
-        Some((s, e)) if !s.is_empty() => (s.to_string(), Some(e.to_string())),
-        _ => (final_filename.clone(), None),
-    };
-    let mut path = download_dir.join(&final_filename);
-    let mut counter = 1;
-    while path.exists() {
-        let candidate = match &ext {
-            Some(e) => format!("{} ({}).{}", stem, counter, e),
-            None => format!("{} ({})", stem, counter),
-        };
-        path = download_dir.join(candidate);
-        counter += 1;
-    }
-
-    std::fs::write(&path, &bytes).map_err(|e| format!("Failed to write file: {}", e))?;
+    let path = write_unique_file(&download_dir, &final_filename, &bytes, false)
+        .map_err(|e| format!("Failed to write file: {}", e))?;
+    mark_quarantined(&path);
 
     Ok(path.to_string_lossy().to_string())
 }
@@ -1154,11 +1252,7 @@ pub async fn list_labels(
     account_id: String,
     app_handle: tauri::AppHandle, state: State<'_, AppState>,
 ) -> Result<Vec<GmailLabel>, String> {
-    let app_data_dir = get_app_data_dir(&app_handle)?;
-
-    verify_account_exists(&state, &account_id)?;
-
-    let access_token = get_access_token(&state, &account_id, &app_data_dir).await?;
+    let access_token = account_access_token(&state, &app_handle, &account_id).await?;
     let gmail = GmailClient::new(access_token);
 
     evict_token_on_auth_error(&state, &account_id, gmail.list_labels().await)
@@ -1176,11 +1270,7 @@ pub async fn save_draft(
     thread_id: Option<String>,
     app_handle: tauri::AppHandle, state: State<'_, AppState>,
 ) -> Result<GmailDraft, String> {
-    let app_data_dir = get_app_data_dir(&app_handle)?;
-
-    verify_account_exists(&state, &account_id)?;
-
-    let access_token = get_access_token(&state, &account_id, &app_data_dir).await?;
+    let access_token = account_access_token(&state, &app_handle, &account_id).await?;
     let gmail = GmailClient::new(access_token);
 
     let message = OutgoingMessage { to: &to, cc: &cc, bcc: &bcc, subject: &subject, body: &body, ..Default::default() };
@@ -1197,11 +1287,7 @@ pub async fn delete_draft(
     draft_id: String,
     app_handle: tauri::AppHandle, state: State<'_, AppState>,
 ) -> Result<(), String> {
-    let app_data_dir = get_app_data_dir(&app_handle)?;
-
-    verify_account_exists(&state, &account_id)?;
-
-    let access_token = get_access_token(&state, &account_id, &app_data_dir).await?;
+    let access_token = account_access_token(&state, &app_handle, &account_id).await?;
     let gmail = GmailClient::new(access_token);
 
     evict_token_on_auth_error(&state, &account_id, gmail.delete_draft(&draft_id).await)
@@ -1214,8 +1300,6 @@ pub async fn rsvp_calendar_event(
     status: String, // "accepted", "tentative", or "declined"
     app_handle: tauri::AppHandle, state: State<'_, AppState>,
 ) -> Result<(), String> {
-    let app_data_dir = get_app_data_dir(&app_handle)?;
-
     // Validate status
     let valid_statuses = ["accepted", "tentative", "declined"];
     if !valid_statuses.contains(&status.as_str()) {
@@ -1224,7 +1308,7 @@ pub async fn rsvp_calendar_event(
 
     let user_email = get_account_email(&state, &account_id)?;
 
-    let access_token = get_access_token(&state, &account_id, &app_data_dir).await?;
+    let access_token = get_access_token(&state, &app_handle, &account_id).await?;
     let calendar = crate::calendar::CalendarClient::new(access_token);
 
     let result = calendar.rsvp_calendar_event(&user_email, &event_uid, &status).await;
@@ -1237,11 +1321,9 @@ pub async fn get_calendar_rsvp_status(
     event_uid: String,
     app_handle: tauri::AppHandle, state: State<'_, AppState>,
 ) -> Result<Option<String>, String> {
-    let app_data_dir = get_app_data_dir(&app_handle)?;
-
     let user_email = get_account_email(&state, &account_id)?;
 
-    let access_token = get_access_token(&state, &account_id, &app_data_dir).await?;
+    let access_token = get_access_token(&state, &app_handle, &account_id).await?;
     let calendar = crate::calendar::CalendarClient::new(access_token);
 
     Ok(calendar.get_calendar_event_status(&user_email, &event_uid).await)
@@ -1360,11 +1442,7 @@ pub async fn fetch_contacts(
     app_handle: tauri::AppHandle,
     state: State<'_, AppState>,
 ) -> Result<Vec<crate::people::Contact>, String> {
-    let app_data_dir = get_app_data_dir(&app_handle)?;
-
-    verify_account_exists(&state, &account_id)?;
-
-    let access_token = get_access_token(&state, &account_id, &app_data_dir).await?;
+    let access_token = account_access_token(&state, &app_handle, &account_id).await?;
     let people = crate::people::PeopleClient::new(access_token);
 
     // Fetch up to 200 contacts
@@ -1378,11 +1456,7 @@ pub async fn list_calendars(
     account_id: String,
     app_handle: tauri::AppHandle, state: State<'_, AppState>,
 ) -> Result<Vec<crate::calendar::CalendarInfo>, String> {
-    let app_data_dir = get_app_data_dir(&app_handle)?;
-
-    verify_account_exists(&state, &account_id)?;
-
-    let access_token = get_access_token(&state, &account_id, &app_data_dir).await?;
+    let access_token = account_access_token(&state, &app_handle, &account_id).await?;
     let calendar = crate::calendar::CalendarClient::new(access_token);
 
     evict_token_on_auth_error(&state, &account_id, calendar.list_calendars().await)
@@ -1394,11 +1468,7 @@ pub async fn fetch_calendar_events(
     query: String,
     app_handle: tauri::AppHandle, state: State<'_, AppState>,
 ) -> Result<Vec<crate::calendar::CalendarEvent>, String> {
-    let app_data_dir = get_app_data_dir(&app_handle)?;
-
-    verify_account_exists(&state, &account_id)?;
-
-    let access_token = get_access_token(&state, &account_id, &app_data_dir).await?;
+    let access_token = account_access_token(&state, &app_handle, &account_id).await?;
     let calendar = crate::calendar::CalendarClient::new(access_token);
 
     let parsed_query = crate::calendar::CalendarQuery::parse(&query);
@@ -1421,9 +1491,7 @@ pub async fn create_calendar_event(
     app_handle: tauri::AppHandle,
     state: State<'_, AppState>,
 ) -> Result<crate::models::GoogleCalendarEvent, String> {
-    let app_data_dir = get_app_data_dir(&app_handle)?;
-
-    let access_token = get_access_token(&state, &account_id, &app_data_dir).await?;
+    let access_token = account_access_token(&state, &app_handle, &account_id).await?;
     let calendar = crate::calendar::CalendarClient::new(access_token);
 
     let result = calendar
@@ -1451,9 +1519,7 @@ pub async fn move_calendar_event(
     app_handle: tauri::AppHandle,
     state: State<'_, AppState>,
 ) -> Result<crate::models::GoogleCalendarEvent, String> {
-    let app_data_dir = get_app_data_dir(&app_handle)?;
-
-    let access_token = get_access_token(&state, &account_id, &app_data_dir).await?;
+    let access_token = account_access_token(&state, &app_handle, &account_id).await?;
     let calendar = crate::calendar::CalendarClient::new(access_token);
 
     let result = calendar
@@ -1470,9 +1536,7 @@ pub async fn delete_calendar_event(
     app_handle: tauri::AppHandle,
     state: State<'_, AppState>,
 ) -> Result<(), String> {
-    let app_data_dir = get_app_data_dir(&app_handle)?;
-
-    let access_token = get_access_token(&state, &account_id, &app_data_dir).await?;
+    let access_token = account_access_token(&state, &app_handle, &account_id).await?;
     let calendar = crate::calendar::CalendarClient::new(access_token);
 
     evict_token_on_auth_error(&state, &account_id, calendar.delete_event(&calendar_id, &event_id).await)
@@ -1494,9 +1558,7 @@ pub async fn update_calendar_event(
     app_handle: tauri::AppHandle,
     state: State<'_, AppState>,
 ) -> Result<crate::models::GoogleCalendarEvent, String> {
-    let app_data_dir = get_app_data_dir(&app_handle)?;
-
-    let access_token = get_access_token(&state, &account_id, &app_data_dir).await?;
+    let access_token = account_access_token(&state, &app_handle, &account_id).await?;
     let calendar = crate::calendar::CalendarClient::new(access_token);
 
     let result = calendar
@@ -1516,66 +1578,45 @@ pub async fn update_calendar_event(
     evict_token_on_auth_error(&state, &account_id, result)
 }
 
-#[tauri::command]
-pub async fn suggest_replies(
-    account_id: String,
-    thread_id: String,
-    api_key: String,
-    app_handle: tauri::AppHandle, state: State<'_, AppState>,
-) -> Result<Vec<String>, String> {
-    let app_data_dir = get_app_data_dir(&app_handle)?;
+/// Prompt context for smart replies: the subject and the full bodies of the
+/// last few real messages (reactions and unsent drafts left out)
+fn reply_context(thread: &crate::gmail::FullThread) -> String {
+    const MAX_MESSAGES: usize = 3;
+    const MAX_BODY_BYTES: usize = 2000;
 
-    if api_key.is_empty() {
-        return Err("Gemini API key is required for smart replies.".to_string());
+    fn header<'a>(msg: &'a crate::gmail::FullMessage, name: &str) -> Option<&'a str> {
+        msg.payload
+            .as_ref()?
+            .headers
+            .as_ref()?
+            .iter()
+            .find(|h| h.name.eq_ignore_ascii_case(name))
+            .map(|h| h.value.as_str())
     }
 
-    let user_email = get_account_email(&state, &account_id)?;
-
-    let access_token = get_access_token(&state, &account_id, &app_data_dir).await?;
-
-    // 1. Get thread details to build context
-    let gmail = GmailClient::new(access_token);
-    let thread = evict_token_on_auth_error(&state, &account_id, gmail.get_thread(&thread_id).await)
-        .map_err(|e| format!("Failed to fetch thread: {}", e))?;
-
-    // 2. Build email context from the last few messages with FULL bodies
-    let mut context = String::new();
-
-    // Get subject
-    let subject = thread.messages.first()
-        .and_then(|m| m.payload.as_ref())
-        .and_then(|p| p.headers.as_ref())
-        .and_then(|h| h.iter().find(|x| x.name.eq_ignore_ascii_case("Subject")))
-        .map(|x| x.value.as_str())
+    let subject = thread
+        .messages
+        .first()
+        .and_then(|m| header(m, "Subject"))
         .unwrap_or("(No Subject)");
+    let mut context = format!("Subject: {}\n\n", subject);
 
-    context.push_str(&format!("Subject: {}\n\n", subject));
+    let is_draft = |m: &crate::gmail::FullMessage| {
+        m.label_ids.as_ref().is_some_and(|l| l.iter().any(|x| x == "DRAFT"))
+    };
+    let messages: Vec<_> = thread
+        .messages
+        .iter()
+        .filter(|m| m.reaction.is_none() && !is_draft(m))
+        .collect();
 
-    // Take last 3 messages with full bodies
-    let count = thread.messages.len();
-    let skip = count.saturating_sub(3);
-
-    for msg in thread.messages.iter().skip(skip) {
-        let from = msg.payload.as_ref()
-            .and_then(|p| p.headers.as_ref())
-            .and_then(|h| h.iter().find(|x| x.name.eq_ignore_ascii_case("From")))
-            .map(|x| x.value.as_str())
-            .unwrap_or("Unknown");
-
-        let date = msg.payload.as_ref()
-            .and_then(|p| p.headers.as_ref())
-            .and_then(|h| h.iter().find(|x| x.name.eq_ignore_ascii_case("Date")))
-            .map(|x| x.value.as_str())
-            .unwrap_or("");
-
-        // Get full body text instead of snippet
+    for msg in &messages[messages.len().saturating_sub(MAX_MESSAGES)..] {
         let body = crate::gmail::extract_body_text_from_message(msg)
             .unwrap_or_else(|| msg.snippet.clone().unwrap_or_default());
 
-        // Truncate very long messages to avoid token limits; back off to a
-        // char boundary since slicing mid-UTF-8 panics
-        let body_truncated = if body.len() > 2000 {
-            let mut cut = 2000;
+        // Keep the prompt within token limits; slicing mid-UTF-8 would panic
+        let body = if body.len() > MAX_BODY_BYTES {
+            let mut cut = MAX_BODY_BYTES;
             while !body.is_char_boundary(cut) {
                 cut -= 1;
             }
@@ -1584,10 +1625,37 @@ pub async fn suggest_replies(
             body
         };
 
-        context.push_str(&format!("From: {}\nDate: {}\n{}\n\n---\n\n", from, date, body_truncated));
+        context.push_str(&format!(
+            "From: {}\nDate: {}\n{}\n\n---\n\n",
+            header(msg, "From").unwrap_or("Unknown"),
+            header(msg, "Date").unwrap_or(""),
+            body
+        ));
+    }
+    context
+}
+
+#[tauri::command]
+pub async fn suggest_replies(
+    account_id: String,
+    thread_id: String,
+    api_key: String,
+    app_handle: tauri::AppHandle, state: State<'_, AppState>,
+) -> Result<Vec<String>, String> {
+    if api_key.is_empty() {
+        return Err("Gemini API key is required for smart replies.".to_string());
     }
 
-    // 3. Call Gemini API
+    let user_email = get_account_email(&state, &account_id)?;
+
+    let access_token = get_access_token(&state, &app_handle, &account_id).await?;
+
+    let gmail = GmailClient::new(access_token);
+    let thread = evict_token_on_auth_error(&state, &account_id, gmail.get_thread(&thread_id).await)
+        .map_err(|e| format!("Failed to fetch thread: {}", e))?;
+
+    let context = reply_context(&thread);
+
     let gemini = GeminiClient::new(api_key);
     gemini.suggest_replies(&context, &user_email).await
 }
@@ -1595,8 +1663,9 @@ pub async fn suggest_replies(
 #[cfg(test)]
 mod tests {
     use super::{
-        attachment_filename, icloud_card_account, is_auth_error, next_card_position,
-        sanitize_attachment_filename, vanished_thread_ids,
+        attachment_filename, attachment_temp_dir, icloud_card_account, icloud_snapshot, is_auth_error,
+        is_executable_attachment, mark_quarantined, next_card_position, reply_context,
+        sanitize_attachment_filename, vanished_thread_ids, write_unique_file,
     };
     use crate::models::{Account, Card, Thread};
     use std::collections::HashMap;
@@ -1631,6 +1700,41 @@ mod tests {
 
     fn mappings(pairs: &[(&str, &str)]) -> HashMap<String, String> {
         pairs.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect()
+    }
+
+    fn owned_card(id: &str, account_id: &str) -> Card {
+        Card { id: id.into(), ..Card::new(account_id.into(), id.into(), "q".into(), 0) }
+    }
+
+    #[test]
+    fn icloud_snapshot_is_skipped_without_local_accounts() {
+        let backup = vec![owned_card("c1", "gone")];
+        assert!(icloud_snapshot(&[], Vec::new(), backup, mappings(&[("gone", "me@x.com")])).is_none());
+    }
+
+    #[test]
+    fn icloud_snapshot_keeps_cards_of_accounts_this_device_lacks() {
+        let accounts = [account("a1", "me@x.com")];
+        let local = vec![owned_card("mine", "a1")];
+        let backup = vec![
+            owned_card("mine", "a1"),
+            owned_card("deleted-here", "a1"),
+            owned_card("work", "w9"),
+        ];
+        let m = mappings(&[("w9", "work@x.com")]);
+        let (cards, new_mappings) = icloud_snapshot(&accounts, local, backup, m).unwrap();
+        let ids: Vec<&str> = cards.iter().map(|c| c.id.as_str()).collect();
+        assert_eq!(ids, vec!["mine", "work"]);
+        assert_eq!(new_mappings, mappings(&[("a1", "me@x.com"), ("w9", "work@x.com")]));
+    }
+
+    #[test]
+    fn icloud_snapshot_drops_mappings_no_card_uses() {
+        let accounts = [account("a1", "me@x.com"), account("a2", "other@x.com")];
+        let local = vec![owned_card("mine", "a1")];
+        let m = mappings(&[("stale", "old@x.com"), ("a1-old", "me@x.com")]);
+        let (_, new_mappings) = icloud_snapshot(&accounts, local, Vec::new(), m).unwrap();
+        assert_eq!(new_mappings, mappings(&[("a1", "me@x.com")]));
     }
 
     #[test]
@@ -1698,6 +1802,144 @@ mod tests {
     fn attachment_filename_checks_extension_on_the_final_component() {
         assert_eq!(attachment_filename("v1.2/invoice", Some("application/pdf")), "invoice.pdf");
         assert_eq!(attachment_filename("../../evil.sh", Some("application/pdf")), "evil.sh");
+    }
+
+    fn scratch_dir() -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!("posta-test-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn executable_attachments_are_recognised_whatever_the_case() {
+        for name in ["run.command", "Setup.PKG", "x.terminal", "script.sh", "App.app", "evil.command. "] {
+            assert!(is_executable_attachment(name), "{}", name);
+        }
+        for name in ["report.pdf", "photo.jpeg", "notes", "command", "archive.zip", "sh.txt"] {
+            assert!(!is_executable_attachment(name), "{}", name);
+        }
+    }
+
+    #[test]
+    fn same_named_attachments_from_different_messages_get_different_dirs() {
+        let base = std::path::Path::new("/tmp/base");
+        let a = attachment_temp_dir(base, "18c4a");
+        let b = attachment_temp_dir(base, "18c4b");
+        assert_ne!(a, b);
+        assert!(a.starts_with(base));
+    }
+
+    #[test]
+    fn attachment_temp_dir_ignores_path_characters_in_the_message_id() {
+        let base = std::path::Path::new("/tmp/base");
+        let dir = attachment_temp_dir(base, "../../etc");
+        assert_eq!(dir, base.join("posta-attachments").join("etc"));
+        assert_eq!(attachment_temp_dir(base, "/.."), base.join("posta-attachments").join("message"));
+    }
+
+    #[test]
+    fn write_unique_file_never_overwrites() {
+        let dir = scratch_dir();
+        let first = write_unique_file(&dir, "a.txt", b"one", false).unwrap();
+        let second = write_unique_file(&dir, "a.txt", b"two", false).unwrap();
+        let third = write_unique_file(&dir, "a.txt", b"one", false).unwrap();
+        let bare = write_unique_file(&dir, "README", b"x", false).unwrap();
+        let bare2 = write_unique_file(&dir, "README", b"y", false).unwrap();
+        assert_eq!(first, dir.join("a.txt"));
+        assert_eq!(second, dir.join("a (1).txt"));
+        assert_eq!(third, dir.join("a (2).txt"));
+        assert_eq!(bare2, dir.join("README (1)"));
+        assert_eq!(std::fs::read(&first).unwrap(), b"one");
+        assert_eq!(std::fs::read(&second).unwrap(), b"two");
+        assert_eq!(std::fs::read(&bare).unwrap(), b"x");
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn write_unique_file_reuses_an_identical_copy_when_asked() {
+        let dir = scratch_dir();
+        let first = write_unique_file(&dir, "a.txt", b"one", true).unwrap();
+        assert_eq!(write_unique_file(&dir, "a.txt", b"one", true).unwrap(), first);
+        let other = write_unique_file(&dir, "a.txt", b"two", true).unwrap();
+        assert_eq!(other, dir.join("a (1).txt"));
+        assert_eq!(std::fs::read(&first).unwrap(), b"one");
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn written_attachments_carry_the_quarantine_attribute() {
+        let dir = scratch_dir();
+        let path = write_unique_file(&dir, "x.pdf", b"%PDF", false).unwrap();
+        mark_quarantined(&path);
+        let out = std::process::Command::new("/usr/bin/xattr")
+            .args(["-p", "com.apple.quarantine"])
+            .arg(&path)
+            .output()
+            .unwrap();
+        assert!(out.status.success());
+        let value = String::from_utf8_lossy(&out.stdout);
+        assert!(value.starts_with("0083;") && value.trim_end().ends_with(";Posta;"), "{}", value);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    fn message(id: &str, from: &str, text: &str, labels: &[&str], reaction: bool) -> serde_json::Value {
+        use base64::Engine;
+        let data = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(text);
+        serde_json::json!({
+            "id": id,
+            "threadId": "t",
+            "labelIds": labels,
+            "snippet": "snip",
+            "payload": {
+                "mimeType": "text/plain",
+                "headers": [
+                    {"name": "Subject", "value": "Lunch"},
+                    {"name": "from", "value": from},
+                    {"name": "Date", "value": "Mon, 1 Jan 2024 10:00:00 +0000"}
+                ],
+                "body": {"data": data}
+            },
+            "reaction": if reaction {
+                serde_json::json!({"emoji": "👍", "from_addr": from, "in_reply_to": "<x>", "message_id": id})
+            } else {
+                serde_json::Value::Null
+            }
+        })
+    }
+
+    fn full_thread(messages: Vec<serde_json::Value>) -> crate::gmail::FullThread {
+        serde_json::from_value(serde_json::json!({"id": "t", "messages": messages})).unwrap()
+    }
+
+    #[test]
+    fn reply_context_uses_the_last_three_sent_messages() {
+        let thread = full_thread(vec![
+            message("1", "a@x.com", "first", &["INBOX"], false),
+            message("2", "b@x.com", "second", &["INBOX"], false),
+            message("3", "a@x.com", "third", &["SENT"], false),
+            message("4", "b@x.com", "fourth", &["INBOX"], false),
+            message("5", "b@x.com", "👍", &["INBOX"], true),
+            message("6", "me@x.com", "unsent draft", &["DRAFT"], false),
+        ]);
+        let context = reply_context(&thread);
+        assert!(context.starts_with("Subject: Lunch\n\n"), "{}", context);
+        assert!(!context.contains("first"));
+        for body in ["second", "third", "fourth"] {
+            assert!(context.contains(body), "missing {}: {}", body, context);
+        }
+        assert!(!context.contains("👍"));
+        assert!(!context.contains("unsent draft"));
+        assert!(context.contains("From: b@x.com\nDate: Mon, 1 Jan 2024"));
+    }
+
+    #[test]
+    fn reply_context_truncates_long_bodies_on_a_char_boundary() {
+        let body = "é".repeat(1500);
+        let context = reply_context(&full_thread(vec![message("1", "a@x.com", &body, &[], false)]));
+        let kept = context.matches('é').count();
+        assert_eq!(kept, 1000);
+        assert!(context.contains("é..."));
     }
 
     fn card_at(position: i32) -> Card {

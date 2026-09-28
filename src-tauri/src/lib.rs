@@ -12,7 +12,11 @@ pub mod ai;
 
 use commands::AppState;
 use std::sync::Mutex;
-use tauri::{Emitter, Listener, Manager, RunEvent, WindowEvent};
+use tauri::{Emitter, Manager};
+#[cfg(target_os = "macos")]
+use tauri::{RunEvent, WindowEvent};
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+use tauri::Listener;
 #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
 use tauri_plugin_deep_link::DeepLinkExt;
 
@@ -246,38 +250,32 @@ pub fn run() {
         .build(tauri::generate_context!())
         .expect("error while building tauri application");
 
-    app.run(|app_handle, event| {
-        match event {
-            RunEvent::WindowEvent {
-                event: WindowEvent::CloseRequested { api, .. },
-                label,
-                ..
-            } => {
-                // On macOS, hide the window instead of closing it
-                #[cfg(target_os = "macos")]
-                {
-                    if let Some(window) = app_handle.get_webview_window(&label) {
-                        let _ = window.hide();
-                        api.prevent_close();
-                    }
-                }
+    // On macOS closing the window hides it and the dock icon brings it back;
+    // elsewhere closing the window quits
+    #[cfg(target_os = "macos")]
+    app.run(|app_handle, event| match event {
+        RunEvent::WindowEvent {
+            event: WindowEvent::CloseRequested { api, .. },
+            label,
+            ..
+        } => {
+            if let Some(window) = app_handle.get_webview_window(&label) {
+                let _ = window.hide();
+                api.prevent_close();
             }
-            RunEvent::ExitRequested { api, .. } => {
-                // Prevent the app from exiting when all windows are closed
-                #[cfg(target_os = "macos")]
-                api.prevent_exit();
-            }
-            #[cfg(target_os = "macos")]
-            RunEvent::Reopen { .. } => {
-                // Show the main window when clicking the dock icon
-                if let Some(window) = app_handle.get_webview_window("main") {
-                    let _ = window.show();
-                    let _ = window.set_focus();
-                }
-            }
-            _ => {}
         }
+        RunEvent::ExitRequested { api, .. } => api.prevent_exit(),
+        RunEvent::Reopen { .. } => {
+            if let Some(window) = app_handle.get_webview_window("main") {
+                let _ = window.show();
+                let _ = window.set_focus();
+            }
+        }
+        _ => {}
     });
+
+    #[cfg(not(target_os = "macos"))]
+    app.run(|_, _| {});
 }
 
 #[cfg(test)]

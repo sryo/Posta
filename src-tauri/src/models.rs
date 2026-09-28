@@ -67,15 +67,8 @@ impl Card {
 
     pub fn new_calendar(account_id: String, name: String, query: String, position: i32) -> Self {
         Self {
-            id: Uuid::new_v4().to_string(),
-            account_id,
-            name,
-            query,
-            position,
-            collapsed: false,
-            color: None,
-            group_by: "date".to_string(),
             card_type: "calendar".to_string(),
+            ..Self::new(account_id, name, query, position)
         }
     }
 }
@@ -162,7 +155,7 @@ pub struct ThreadGroup {
     pub threads: Vec<Thread>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug)]
 pub enum DateBucket {
     Today,
     Yesterday,
