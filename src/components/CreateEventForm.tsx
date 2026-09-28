@@ -1,7 +1,7 @@
 import { createSignal, onCleanup, onMount, Show, For } from "solid-js";
 import { ChevronLeftIcon, ChevronRightIcon } from "./Icons";
 import { CloseButton } from "./ComposeAtoms";
-import { onActivateKey } from "../shared/keyboard";
+import { isImeComposing, isTypingTarget, onActivateKey } from "../shared/keyboard";
 
 // One labelled, scrollable single-choice list of the scheduler
 function SchedulerColumn<T>(props: {
@@ -129,6 +129,12 @@ export const CreateEventForm = (props: {
   // by the saving flag, set synchronously by onSave.
   const hasTitle = () => props.summary.trim().length > 0;
   const handleKeyDown = (e: KeyboardEvent) => {
+    // The title field has focus from the start, and the app-level Escape
+    // skips text fields; elsewhere the hosting view's Escape closes the form
+    if (e.key === 'Escape' && isTypingTarget(e.target) && !isImeComposing(e)) {
+      props.onClose();
+      return;
+    }
     if (e.key === 'Enter' && (e.metaKey || e.ctrlKey) && !props.saving && hasTitle()) {
       e.preventDefault();
       props.onSave();

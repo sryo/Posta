@@ -3,14 +3,14 @@ import { fireEvent, render } from "@solidjs/testing-library";
 import { createSignal } from "solid-js";
 import { CreateEventForm } from "./CreateEventForm";
 
-function renderForm(init: { startDate: string; endDate?: string; startTime?: string; endTime?: string; isEditing?: boolean; allDay?: boolean; setRecurrence?: (v: string | null) => void; summary?: string; onSave?: () => void }) {
+function renderForm(init: { startDate: string; endDate?: string; startTime?: string; endTime?: string; isEditing?: boolean; allDay?: boolean; setRecurrence?: (v: string | null) => void; summary?: string; onSave?: () => void; onClose?: () => void }) {
   const [startDate, setStartDate] = createSignal(init.startDate);
   const [endDate, setEndDate] = createSignal(init.endDate ?? init.startDate);
   const [startTime, setStartTime] = createSignal(init.startTime ?? "10:00");
   const [endTime, setEndTime] = createSignal(init.endTime ?? "11:00");
   const result = render(() => (
     <CreateEventForm
-      onClose={vi.fn()}
+      onClose={init.onClose ?? vi.fn()}
       summary={init.summary ?? "Trip"}
       setSummary={vi.fn()}
       description=""
@@ -49,6 +49,30 @@ const slot = (container: HTMLElement, picker: "start" | "end", time: string) =>
 // jsdom has no layout; the form scrolls the selected times into view on open
 beforeAll(() => {
   Element.prototype.scrollIntoView = vi.fn();
+});
+
+describe("CreateEventForm closing", () => {
+  it("closes on Escape from the title, like the compose form", () => {
+    const onClose = vi.fn();
+    const { container } = renderForm({ startDate: "2025-03-10", onClose });
+    fireEvent.keyDown(container.querySelector<HTMLInputElement>('input[placeholder="Event title"]')!, { key: "Escape" });
+    expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps the Escape that cancels an input method composition", () => {
+    const onClose = vi.fn();
+    const { container } = renderForm({ startDate: "2025-03-10", onClose });
+    fireEvent.keyDown(container.querySelector("textarea")!, { key: "Escape", isComposing: true });
+    expect(onClose).not.toHaveBeenCalled();
+  });
+
+  // Outside text fields the view hosting the form owns Escape
+  it("leaves Escape on a focused day to the hosting view", () => {
+    const onClose = vi.fn();
+    const { container } = renderForm({ startDate: "2025-03-10", onClose });
+    fireEvent.keyDown(container.querySelector(".scheduler-day-card")!, { key: "Escape" });
+    expect(onClose).not.toHaveBeenCalled();
+  });
 });
 
 describe("CreateEventForm saving", () => {
