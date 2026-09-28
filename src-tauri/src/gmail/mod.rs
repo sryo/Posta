@@ -12,6 +12,9 @@ const BATCH_API_ENDPOINT: &str = "https://www.googleapis.com/batch/gmail/v1";
 const PAGE_SIZE: usize = 20;
 const MAX_BATCH_SIZE: usize = 50; // Gmail allows up to 100, but 50 is safer
 const MAX_INLINE_IMAGE_SIZE: i32 = 100_000; // 100KB max for inline images
+const MAX_INLINE_IMAGES: usize = 3;
+/// Threads of a batch whose attachments are loaded at the same time
+const THREAD_LOAD_CONCURRENCY: usize = 5;
 
 /// Partial-response fields for thread list entries: message headers and the
 /// part tree (with part headers, for Content-ID) three levels deep, without bodies
@@ -230,7 +233,7 @@ impl GmailClient {
 
         let threads = self.batch_get_thread_details(&thread_ids).await?;
         Ok(SearchResult {
-            groups: group_threads_by_date(threads),
+            groups: group_threads_by_date(threads, &Local::now()),
             has_more: list.next_page_token.is_some(),
             next_page_token: list.next_page_token,
         })
@@ -438,187 +441,72 @@ impl GmailClient {
 
         let resp_body = resp.text().await.map_err(|e| format!("Failed to read response: {}", e))?;
 
-        let mut threads = Vec::new();
-        for detail in parse_batch_body(&resp_body, &resp_boundary) {
-            threads.push(self.thread_detail_to_thread(detail).await);
-        }
+        use futures::StreamExt;
+        let threads = futures::stream::iter(parse_batch_body(&resp_body, &resp_boundary))
+            .map(|detail| self.thread_detail_to_thread(detail))
+            .buffered(THREAD_LOAD_CONCURRENCY)
+            .collect()
+            .await;
         Ok(threads)
     }
 
     async fn thread_detail_to_thread(&self, detail: ThreadDetail) -> Thread {
-        let messages = detail.messages.unwrap_or_default();
-        let latest_msg = messages.last();
+        let mut thread = thread_summary(detail);
+        let calendar_attachments: Vec<Attachment> =
+            thread.attachments.iter().filter(|a| a.is_calendar()).cloned().collect();
+        let (_, calendar_event) = futures::join!(
+            self.load_inline_images(&mut thread.attachments),
+            self.load_calendar_event(&calendar_attachments)
+        );
+        thread.calendar_event = calendar_event;
+        thread
+    }
 
-        let subject = latest_msg
-            .and_then(|m| m.payload.as_ref())
-            .and_then(|p| p.headers.as_ref())
-            .and_then(|headers| {
-                headers
-                    .iter()
-                    .find(|h| h.name.eq_ignore_ascii_case("Subject"))
-                    .map(|h| h.value.clone())
-            })
-            .unwrap_or_else(|| "(No Subject)".to_string());
-
-        let snippet = latest_msg
-            .and_then(|m| m.snippet.clone())
-            .unwrap_or_default();
-
-        let last_date = latest_msg
-            .and_then(|m| m.internal_date.as_ref())
-            .and_then(|d| d.parse::<i64>().ok())
-            .map(|ms| DateTime::from_timestamp_millis(ms).unwrap_or_else(Utc::now))
-            .unwrap_or_else(Utc::now);
-
-        let unread_count = messages
-            .iter()
-            .filter(|m| {
-                m.label_ids
-                    .as_ref()
-                    .is_some_and(|labels| labels.iter().any(|l| l == "UNREAD"))
-            })
-            .count() as i32;
-
-        let participants = thread_participants(&messages);
-        let labels = thread_labels(&messages);
-
-        // Extract attachments from all messages
-        let mut attachments: Vec<Attachment> = Vec::new();
-        for msg in &messages {
-            if let Some(payload) = &msg.payload {
-                let infos = extract_attachments_from_parts(&payload.parts);
-                for info in infos {
-                    attachments.push(Attachment {
-                        message_id: msg.id.clone(),
-                        attachment_id: info.attachment_id,
-                        filename: info.filename,
-                        mime_type: info.mime_type,
-                        size: info.size,
-                        inline_data: None,
-                        content_id: info.content_id,
-                    });
-                }
+    /// Fetch the data of the first few small images so the list can show them
+    async fn load_inline_images(&self, attachments: &mut [Attachment]) {
+        let images = attachments
+            .iter_mut()
+            .filter(|a| a.mime_type.starts_with("image/") && a.size < MAX_INLINE_IMAGE_SIZE)
+            .take(MAX_INLINE_IMAGES);
+        futures::future::join_all(images.map(|attachment| async move {
+            match self.get_attachment(&attachment.message_id, &attachment.attachment_id).await {
+                Ok(data) => attachment.inline_data = Some(data),
+                Err(e) => tracing::warn!("Failed to fetch attachment {}: {}", attachment.filename, e),
             }
-        }
+        }))
+        .await;
+    }
 
-        // Fetch small image attachments inline (limit to first 3 images, < 100KB each)
-        // Collect indices and metadata for parallel fetch
-        let image_indices: Vec<(usize, String, String)> = attachments
-            .iter()
-            .enumerate()
-            .filter(|(_, a)| a.mime_type.starts_with("image/") && a.size < MAX_INLINE_IMAGE_SIZE)
-            .take(3)
-            .map(|(i, a)| (i, a.message_id.clone(), a.attachment_id.clone()))
-            .collect();
-
-        // Fetch all images in parallel
-        let fetch_futures = image_indices.iter().map(|(_, msg_id, att_id)| {
-            self.get_attachment(msg_id, att_id)
-        });
-        let results: Vec<Result<String, String>> = futures::future::join_all(fetch_futures).await;
-
-        // Apply results to attachments
-        for ((idx, _, _), result) in image_indices.into_iter().zip(results) {
-            match result {
+    /// The event of the first calendar attachment that parses
+    async fn load_calendar_event(&self, attachments: &[Attachment]) -> Option<CalendarEvent> {
+        for attachment in attachments {
+            match self.get_attachment(&attachment.message_id, &attachment.attachment_id).await {
                 Ok(data) => {
-                    attachments[idx].inline_data = Some(data);
-                }
-                Err(e) => {
-                    tracing::warn!("Failed to fetch attachment {}: {}", attachments[idx].filename, e);
-                }
-            }
-        }
-
-        // Parse calendar events from ICS attachments
-        let mut calendar_event: Option<CalendarEvent> = None;
-        for attachment in attachments.iter() {
-            if attachment.is_calendar() {
-                match self.get_attachment(&attachment.message_id, &attachment.attachment_id).await {
-                    Ok(data) => {
-                        if let Some(event) =
-                            decode_base64_body(&data).and_then(|ics| parse_ics_content(&ics))
-                        {
-                            calendar_event = Some(event);
-                            break;
-                        }
-                    }
-                    Err(e) => {
-                        tracing::warn!("Failed to fetch calendar attachment: {}", e);
+                    if let Some(event) = decode_base64_body(&data).and_then(|ics| parse_ics_content(&ics)) {
+                        return Some(event);
                     }
                 }
+                Err(e) => tracing::warn!("Failed to fetch calendar attachment: {}", e),
             }
         }
-
-        let has_attachment = !attachments.is_empty();
-
-        Thread {
-            gmail_thread_id: detail.id,
-            account_id: String::new(),
-            subject,
-            snippet,
-            last_message_date: last_date,
-            unread_count,
-            labels,
-            participants,
-            has_attachment,
-            attachments,
-            calendar_event,
-        }
+        None
     }
 
-    /// Send an email (with optional attachments)
-    #[allow(clippy::too_many_arguments)]
-    pub async fn send_email(
-        &self,
-        to: &str,
-        cc: &str,
-        bcc: &str,
-        subject: &str,
-        body: &str,
-        attachments: &[SendAttachment],
-        is_html: bool,
-    ) -> Result<(), String> {
-        let message = build_mime_message(&MimeMessage {
-            to,
-            cc,
-            bcc,
-            subject,
-            body,
-            attachments,
-            reply_headers: None,
-            is_html,
-        });
-        self.send_raw(&message, None).await
+    pub async fn send_email(&self, message: &OutgoingMessage<'_>) -> Result<(), String> {
+        self.send_raw(&build_mime_message(message, None), None).await
     }
 
-    /// Reply to a thread (with optional attachments)
-    #[allow(clippy::too_many_arguments)]
+    /// Reply in `thread_id`; `message_id` is the message replied to, as its
+    /// Message-ID header value or Gmail id (the latest message when absent)
     pub async fn reply_to_thread(
         &self,
         thread_id: &str,
-        to: &str,
-        cc: &str,
-        bcc: &str,
-        subject: &str,
-        body: &str,
         message_id: Option<&str>,
-        attachments: &[SendAttachment],
-        is_html: bool,
+        message: &OutgoingMessage<'_>,
     ) -> Result<(), String> {
         let reply_headers = self.resolve_reply_headers(thread_id, message_id).await;
-        let message = build_mime_message(&MimeMessage {
-            to,
-            cc,
-            bcc,
-            subject,
-            body,
-            attachments,
-            reply_headers: reply_headers
-                .as_ref()
-                .map(|(in_reply_to, references)| (in_reply_to.as_str(), references.as_str())),
-            is_html,
-        });
-        self.send_raw(&message, Some(thread_id)).await
+        let raw = build_mime_message(message, reply_headers.as_ref());
+        self.send_raw(&raw, Some(thread_id)).await
     }
 
     async fn send_raw(&self, message: &str, thread_id: Option<&str>) -> Result<(), String> {
@@ -661,7 +549,14 @@ impl GmailClient {
             }
         }
 
-        let thread = self.get_thread(thread_id).await.ok()?;
+        let resp = self
+            .client
+            .get(thread_reply_metadata_url(thread_id))
+            .bearer_auth(&self.access_token)
+            .send()
+            .await
+            .ok()?;
+        let thread: FullThread = ensure_success(resp).await.ok()?.json().await.ok()?;
         reply_headers_from_thread(&thread, message_id)
     }
 
@@ -687,45 +582,29 @@ impl GmailClient {
         Ok(response.labels.unwrap_or_default())
     }
 
-    /// Create a new draft
-    #[allow(clippy::too_many_arguments)]
     pub async fn create_draft(
         &self,
-        to: &str,
-        cc: &str,
-        bcc: &str,
-        subject: &str,
-        body: &str,
+        message: &OutgoingMessage<'_>,
         thread_id: Option<&str>,
-        is_html: bool,
     ) -> Result<GmailDraft, String> {
         let url = format!("{}/users/me/drafts", GMAIL_API_BASE);
-        let draft = MimeMessage { to, cc, bcc, subject, body, is_html, ..Default::default() };
-        self.upsert_draft(self.client.post(&url), draft, thread_id).await
+        self.upsert_draft(self.client.post(&url), message, thread_id).await
     }
 
-    /// Update an existing draft
-    #[allow(clippy::too_many_arguments)]
     pub async fn update_draft(
         &self,
         draft_id: &str,
-        to: &str,
-        cc: &str,
-        bcc: &str,
-        subject: &str,
-        body: &str,
+        message: &OutgoingMessage<'_>,
         thread_id: Option<&str>,
-        is_html: bool,
     ) -> Result<GmailDraft, String> {
         let url = format!("{}/users/me/drafts/{}", GMAIL_API_BASE, draft_id);
-        let draft = MimeMessage { to, cc, bcc, subject, body, is_html, ..Default::default() };
-        self.upsert_draft(self.client.put(&url), draft, thread_id).await
+        self.upsert_draft(self.client.put(&url), message, thread_id).await
     }
 
     async fn upsert_draft(
         &self,
         request: reqwest::RequestBuilder,
-        mut draft: MimeMessage<'_>,
+        message: &OutgoingMessage<'_>,
         thread_id: Option<&str>,
     ) -> Result<GmailDraft, String> {
         // Gmail only files a draft into a thread when it carries the RFC 2822
@@ -734,13 +613,10 @@ impl GmailClient {
             Some(tid) => self.resolve_reply_headers(tid, None).await,
             None => None,
         };
-        draft.reply_headers = reply_headers
-            .as_ref()
-            .map(|(in_reply_to, references)| (in_reply_to.as_str(), references.as_str()));
 
         let mut request_body = serde_json::json!({
             "message": {
-                "raw": encode_raw_message(&build_mime_message(&draft))
+                "raw": encode_raw_message(&build_mime_message(message, reply_headers.as_ref()))
             }
         });
 
@@ -1035,6 +911,76 @@ fn extract_email_address(from: &str) -> String {
     from.trim().to_string()
 }
 
+/// A thread list entry built from a summary fetch, before any attachment data
+/// (inline images, calendar invites) is loaded
+fn thread_summary(detail: ThreadDetail) -> Thread {
+    let messages = detail.messages.unwrap_or_default();
+    let latest = messages.last();
+    // A reaction's subject is "Re: <emoji>" and its snippet "Reacted with ..."
+    let latest_content = messages.iter().rev().find(|m| !is_reaction_summary(m)).or(latest);
+
+    let subject = latest_content
+        .and_then(|m| m.payload.as_ref())
+        .and_then(|p| find_header(p.headers.as_deref(), "Subject"))
+        .map(str::to_string)
+        .unwrap_or_else(|| "(No Subject)".to_string());
+
+    let snippet = latest_content.and_then(|m| m.snippet.clone()).unwrap_or_default();
+
+    let last_message_date = latest
+        .and_then(|m| m.internal_date.as_ref())
+        .and_then(|d| d.parse::<i64>().ok())
+        .and_then(DateTime::from_timestamp_millis)
+        .unwrap_or_else(Utc::now);
+
+    let unread_count = messages
+        .iter()
+        .filter(|m| m.label_ids.as_ref().is_some_and(|labels| labels.iter().any(|l| l == "UNREAD")))
+        .count() as i32;
+
+    let attachments: Vec<Attachment> = messages
+        .iter()
+        .flat_map(|msg| {
+            let parts = msg.payload.as_ref().map(|p| &p.parts).unwrap_or(&None);
+            extract_attachments_from_parts(parts).into_iter().map(|info| Attachment {
+                message_id: msg.id.clone(),
+                attachment_id: info.attachment_id,
+                filename: info.filename,
+                mime_type: info.mime_type,
+                size: info.size,
+                inline_data: None,
+                content_id: info.content_id,
+            })
+        })
+        .collect();
+
+    Thread {
+        gmail_thread_id: detail.id,
+        account_id: String::new(),
+        subject,
+        snippet,
+        last_message_date,
+        unread_count,
+        labels: thread_labels(&messages),
+        participants: thread_participants(&messages),
+        has_attachment: !attachments.is_empty(),
+        attachments,
+        calendar_event: None,
+    }
+}
+
+fn is_reaction_summary(message: &MessageDetail) -> bool {
+    fn has_reaction_part(parts: &[MessagePart]) -> bool {
+        parts.iter().any(|p| {
+            p.mime_type == REACTION_MIME_TYPE || p.parts.as_deref().is_some_and(has_reaction_part)
+        })
+    }
+    message.payload.as_ref().is_some_and(|p| {
+        p.mime_type.as_deref() == Some(REACTION_MIME_TYPE)
+            || p.parts.as_deref().is_some_and(has_reaction_part)
+    })
+}
+
 /// Thread-level labels as Gmail defines them: a thread carries a label when any
 /// of its messages does (the latest message alone may be a reply with only SENT)
 fn thread_labels(messages: &[MessageDetail]) -> Vec<String> {
@@ -1063,6 +1009,16 @@ fn thread_participants(messages: &[MessageDetail]) -> Vec<String> {
         }
     }
     participants
+}
+
+/// A thread's messages with only the headers reply_headers_from_thread needs,
+/// so resolving them (on every draft autosave) does not download bodies
+fn thread_reply_metadata_url(thread_id: &str) -> String {
+    format!(
+        "{}/users/me/threads/{}?format=metadata&metadataHeaders=Message-ID&metadataHeaders=References\
+         &fields=id,messages(id,threadId,labelIds,payload/headers)",
+        GMAIL_API_BASE, thread_id
+    )
 }
 
 /// Threading headers (In-Reply-To, References) for a reply to `thread`.
@@ -1283,17 +1239,12 @@ fn parse_ics_datetime(s: &str, params: &str) -> Option<(i64, bool)> {
 
             let utc = if is_utc {
                 DateTime::<Utc>::from_naive_utc_and_offset(datetime, Utc)
-            } else if let Some(resolved) = tzid
-                .and_then(|tz| tz.parse::<chrono_tz::Tz>().ok())
-                .and_then(|tz| tz.from_local_datetime(&datetime).single())
-            {
-                resolved.with_timezone(&Utc)
             } else {
-                // No TZID (or unknown zone / ambiguous local time):
-                // assume machine-local time, convert to UTC
-                let local = chrono::Local::now().timezone();
-                let local_dt = datetime.and_local_timezone(local).single()?;
-                local_dt.with_timezone(&Utc)
+                // No TZID or an unknown zone: assume machine-local time
+                match tzid.and_then(|tz| tz.parse::<chrono_tz::Tz>().ok()) {
+                    Some(tz) => resolve_wall_time(&tz, datetime)?,
+                    None => resolve_wall_time(&Local, datetime)?,
+                }
             };
 
             return Some((utc.timestamp_millis(), false));
@@ -1301,6 +1252,16 @@ fn parse_ics_datetime(s: &str, params: &str) -> Option<(i64, bool)> {
     }
 
     None
+}
+
+/// The instant a wall-clock time in `tz` denotes. A time repeated when clocks go
+/// back is its first occurrence; a time skipped when they go forward is read
+/// with the offset in force before the change (02:30 becomes 03:30).
+fn resolve_wall_time<Tz: TimeZone>(tz: &Tz, datetime: chrono::NaiveDateTime) -> Option<DateTime<Utc>> {
+    let resolved = tz.from_local_datetime(&datetime).earliest().or_else(|| {
+        tz.from_local_datetime(&(datetime + Duration::hours(1))).earliest()
+    })?;
+    Some(resolved.with_timezone(&Utc))
 }
 
 /// Represents attachment metadata extracted from message parts
@@ -1353,62 +1314,57 @@ fn extract_attachments_from_parts(parts: &Option<Vec<MessagePart>>) -> Vec<Attac
     attachments
 }
 
-fn classify_date(date: DateTime<Utc>) -> DateBucket {
-    let now = Local::now();
-    let local_date = date.with_timezone(&Local);
-
+/// Date bucket of `date` relative to `now`, compared as calendar days in
+/// `now`'s time zone
+fn classify_date<Tz: TimeZone>(date: DateTime<Utc>, now: &DateTime<Tz>) -> DateBucket {
     let today = now.date_naive();
-    let msg_date = local_date.date_naive();
+    let msg_date = date.with_timezone(&now.timezone()).date_naive();
 
     if msg_date == today {
         return DateBucket::Today;
     }
-
-    let yesterday = today - Duration::days(1);
-    if msg_date == yesterday {
+    if msg_date == today - Duration::days(1) {
         return DateBucket::Yesterday;
     }
 
-    // Start of current week (Monday)
     let days_since_monday = now.weekday().num_days_from_monday() as i64;
-    let week_start = today - Duration::days(days_since_monday);
-
-    if msg_date >= week_start {
+    if msg_date >= today - Duration::days(days_since_monday) {
         return DateBucket::ThisWeek;
     }
 
-    let thirty_days_ago = today - Duration::days(30);
-    if msg_date >= thirty_days_ago {
+    if msg_date >= today - Duration::days(30) {
         return DateBucket::Last30Days;
     }
 
     DateBucket::Older
 }
 
-fn group_threads_by_date(threads: Vec<Thread>) -> Vec<ThreadGroup> {
-    let mut groups: HashMap<String, Vec<Thread>> = HashMap::new();
-
+fn group_threads_by_date<Tz: TimeZone>(threads: Vec<Thread>, now: &DateTime<Tz>) -> Vec<ThreadGroup> {
+    let mut groups: HashMap<&'static str, Vec<Thread>> = HashMap::new();
     for thread in threads {
-        let bucket = classify_date(thread.last_message_date);
-        let label = bucket.as_str().to_string();
+        let label = classify_date(thread.last_message_date, now).as_str();
         groups.entry(label).or_default().push(thread);
     }
 
-    // Order: Today, Yesterday, This week, Last 30 days, Older
-    let order = ["Today", "Yesterday", "This week", "Last 30 days", "Older"];
-
-    order
-        .iter()
-        .filter_map(|&label| {
-            groups.remove(label).map(|mut threads| {
-                threads.sort_by(|a, b| b.last_message_date.cmp(&a.last_message_date));
-                ThreadGroup {
-                    label: label.to_string(),
-                    threads,
-                }
-            })
+    [
+        DateBucket::Today,
+        DateBucket::Yesterday,
+        DateBucket::ThisWeek,
+        DateBucket::Last30Days,
+        DateBucket::Older,
+    ]
+    .iter()
+    .map(DateBucket::as_str)
+    .filter_map(|label| {
+        groups.remove(label).map(|mut threads| {
+            threads.sort_by(|a, b| b.last_message_date.cmp(&a.last_message_date));
+            ThreadGroup {
+                label: label.to_string(),
+                threads,
+            }
         })
-        .collect()
+    })
+    .collect()
 }
 
 /// Extract the first text/plain body from a FullMessage, searching nested
@@ -1468,6 +1424,8 @@ fn strip_html_tags(html: &str) -> String {
     let mut result = String::new();
     let mut tag = String::new();
     let mut in_tag = false;
+    // Element whose content is not text (style, script, head) until it closes
+    let mut hidden_element: Option<String> = None;
 
     for c in html.chars() {
         match c {
@@ -1477,7 +1435,7 @@ fn strip_html_tags(html: &str) -> String {
             }
             '>' if in_tag => {
                 in_tag = false;
-                // Line-breaking tags become newlines instead of vanishing
+                let is_closing = tag.starts_with('/');
                 let name = tag
                     .trim_start_matches('/')
                     .split_whitespace()
@@ -1485,11 +1443,20 @@ fn strip_html_tags(html: &str) -> String {
                     .unwrap_or("")
                     .trim_end_matches('/')
                     .to_ascii_lowercase();
-                if name == "br" || name == "p" {
+                if let Some(hidden) = &hidden_element {
+                    // </head> may be omitted; <body> then ends the head
+                    if (is_closing && *hidden == name) || (hidden == "head" && name == "body") {
+                        hidden_element = None;
+                    }
+                } else if !is_closing && matches!(name.as_str(), "style" | "script" | "head") {
+                    hidden_element = Some(name);
+                } else if name == "br" || name == "p" {
+                    // Line-breaking tags become newlines instead of vanishing
                     result.push('\n');
                 }
             }
             _ if in_tag => tag.push(c),
+            _ if hidden_element.is_some() => {}
             _ => result.push(c),
         }
     }
@@ -1505,17 +1472,16 @@ fn strip_html_tags(html: &str) -> String {
         .replace("&amp;", "&")
 }
 
+/// The user-written fields of an outgoing message or draft
 #[derive(Default)]
-struct MimeMessage<'a> {
-    to: &'a str,
-    cc: &'a str,
-    bcc: &'a str,
-    subject: &'a str,
-    body: &'a str,
-    attachments: &'a [SendAttachment],
-    /// (In-Reply-To, References)
-    reply_headers: Option<(&'a str, &'a str)>,
-    is_html: bool,
+pub struct OutgoingMessage<'a> {
+    pub to: &'a str,
+    pub cc: &'a str,
+    pub bcc: &'a str,
+    pub subject: &'a str,
+    pub body: &'a str,
+    pub attachments: &'a [SendAttachment],
+    pub is_html: bool,
 }
 
 /// Base64url encoding the Gmail API expects in a message's `raw` field
@@ -1535,6 +1501,54 @@ fn push_part(message: &mut String, boundary: &str, content_type: &str, content: 
     message.push_str("\r\n");
 }
 
+/// Content headers and quoted-printable body of a UTF-8 text part (the part's
+/// Content-Type is `mime_type`)
+fn text_part_content(mime_type: &str, text: &str) -> String {
+    format!(
+        "Content-Type: {}; charset=utf-8\r\nContent-Transfer-Encoding: quoted-printable\r\n\r\n{}",
+        mime_type,
+        encode_quoted_printable(text)
+    )
+}
+
+fn push_text_part(message: &mut String, boundary: &str, mime_type: &str, text: &str) {
+    message.push_str(&format!("--{}\r\n", boundary));
+    message.push_str(&text_part_content(mime_type, text));
+    message.push_str("\r\n");
+}
+
+/// RFC 2045 quoted-printable: 7-bit output in lines of at most 76 characters
+/// (SMTP rejects lines over 998), with line breaks normalized to CRLF
+fn encode_quoted_printable(text: &str) -> String {
+    const MAX_LINE: usize = 76;
+    let mut out = String::with_capacity(text.len() + text.len() / 8);
+    for (i, line) in text.split('\n').enumerate() {
+        if i > 0 {
+            out.push_str("\r\n");
+        }
+        let bytes = line.strip_suffix('\r').unwrap_or(line).as_bytes();
+        let mut line_len = 0;
+        for (j, &b) in bytes.iter().enumerate() {
+            let is_last = j + 1 == bytes.len();
+            let literal = (b'!'..=b'~').contains(&b) && b != b'='
+                || (matches!(b, b' ' | b'\t') && !is_last);
+            let token = if literal {
+                (b as char).to_string()
+            } else {
+                format!("={:02X}", b)
+            };
+            // Leave room for the '=' of a soft line break
+            if line_len + token.len() > MAX_LINE - 1 {
+                out.push_str("=\r\n");
+                line_len = 0;
+            }
+            out.push_str(&token);
+            line_len += token.len();
+        }
+    }
+    out
+}
+
 /// multipart/alternative body with a plain text fallback for an HTML body
 fn push_html_alternative(message: &mut String, html: &str) {
     let alt_boundary = new_boundary("Alt");
@@ -1542,14 +1556,15 @@ fn push_html_alternative(message: &mut String, html: &str) {
         "Content-Type: multipart/alternative; boundary=\"{}\"\r\n\r\n",
         alt_boundary
     ));
-    push_part(message, &alt_boundary, "text/plain; charset=utf-8", &strip_html_tags(html));
-    push_part(message, &alt_boundary, "text/html; charset=utf-8", html);
+    push_text_part(message, &alt_boundary, "text/plain", &strip_html_tags(html));
+    push_text_part(message, &alt_boundary, "text/html", html);
     message.push_str(&format!("--{}--\r\n", alt_boundary));
 }
 
 /// Build a raw RFC 5322 message: plain text, HTML with a plain text
-/// alternative, or multipart/mixed when there are attachments
-fn build_mime_message(msg: &MimeMessage) -> String {
+/// alternative, or multipart/mixed when there are attachments.
+/// `reply_headers` are (In-Reply-To, References).
+fn build_mime_message(msg: &OutgoingMessage, reply_headers: Option<&(String, String)>) -> String {
     let mut message = format!("To: {}\r\n", encode_address_header(msg.to));
 
     if !msg.cc.trim().is_empty() {
@@ -1562,7 +1577,7 @@ fn build_mime_message(msg: &MimeMessage) -> String {
     message.push_str(&format!("Subject: {}\r\n", encode_header_value(msg.subject)));
     message.push_str("MIME-Version: 1.0\r\n");
 
-    if let Some((in_reply_to, references)) = msg.reply_headers {
+    if let Some((in_reply_to, references)) = reply_headers {
         message.push_str(&format!(
             "In-Reply-To: {}\r\nReferences: {}\r\n",
             sanitize_header_value(in_reply_to),
@@ -1574,8 +1589,7 @@ fn build_mime_message(msg: &MimeMessage) -> String {
         if msg.is_html {
             push_html_alternative(&mut message, msg.body);
         } else {
-            message.push_str("Content-Type: text/plain; charset=utf-8\r\n\r\n");
-            message.push_str(msg.body);
+            message.push_str(&text_part_content("text/plain", msg.body));
         }
         return message;
     }
@@ -1590,7 +1604,7 @@ fn build_mime_message(msg: &MimeMessage) -> String {
         message.push_str(&format!("--{}\r\n", boundary));
         push_html_alternative(&mut message, msg.body);
     } else {
-        push_part(&mut message, &boundary, "text/plain; charset=utf-8", msg.body);
+        push_text_part(&mut message, &boundary, "text/plain", msg.body);
     }
 
     for attachment in msg.attachments {
@@ -1624,7 +1638,8 @@ fn build_mime_message(msg: &MimeMessage) -> String {
 /// Quoted-string for a `name`/`filename` parameter: RFC 2047 encoded when
 /// non-ASCII (widely understood even though not strictly allowed in parameters)
 fn quoted_filename_param(filename: &str) -> String {
-    let value = encode_header_value(filename);
+    let value = sanitize_header_value(filename);
+    let value = if value.is_ascii() { value } else { encoded_word(&value) };
     format!("\"{}\"", value.replace('\\', "\\\\").replace('"', "\\\""))
 }
 
@@ -1654,12 +1669,32 @@ fn sanitize_header_value(value: &str) -> String {
     value.replace("\r\n", " ").replace(['\r', '\n'], " ")
 }
 
-/// RFC 2047 encode a header value when it contains non-ASCII characters
+/// RFC 2047 encode a header value when it contains non-ASCII characters, as
+/// folded encoded-words short enough to keep "Subject: <word>" within 78 columns
 fn encode_header_value(value: &str) -> String {
     let value = sanitize_header_value(value);
     if value.is_ascii() {
         return value;
     }
+    encoded_words(&value).join("\r\n ")
+}
+
+/// UTF-8 "B" encoded-words, each holding whole characters
+fn encoded_words(value: &str) -> Vec<String> {
+    const MAX_WORD_BYTES: usize = 42;
+    let mut words = Vec::new();
+    let mut chunk_start = 0;
+    for (i, c) in value.char_indices() {
+        if i + c.len_utf8() - chunk_start > MAX_WORD_BYTES {
+            words.push(&value[chunk_start..i]);
+            chunk_start = i;
+        }
+    }
+    words.push(&value[chunk_start..]);
+    words.into_iter().map(encoded_word).collect()
+}
+
+fn encoded_word(value: &str) -> String {
     use base64::Engine;
     format!(
         "=?UTF-8?B?{}?=",
@@ -1928,6 +1963,15 @@ mod tests {
     }
 
     #[test]
+    fn strip_html_drops_style_script_and_head_contents() {
+        // A reply quoting an HTML newsletter carries its <head> and <style>
+        let html = "<html><head><title>Promo</title><style>p { color: red; }</style></head>\
+                    <body><STYLE type=\"text/css\">.x{}</STYLE>Hi<script>alert(1)</script> there</body></html>";
+        assert_eq!(strip_html_tags(html), "Hi there");
+        assert_eq!(strip_html_tags("<head><title>Promo</title><body>Hi</body>"), "Hi");
+    }
+
+    #[test]
     fn strip_html_decodes_entities_without_double_decoding() {
         assert_eq!(strip_html_tags("a &amp; b"), "a & b");
         assert_eq!(strip_html_tags("&lt;tag&gt;"), "<tag>");
@@ -1962,17 +2006,24 @@ mod tests {
 
     #[test]
     fn build_mime_message_rejects_header_injection() {
-        let message = build_mime_message(&MimeMessage {
+        let message = build_mime_message(&OutgoingMessage {
             to: "victim@example.com\r\nBcc: evil@example.com",
             subject: "Hi\r\nX-Injected: 1",
             body: "body",
             ..Default::default()
-        });
+        }, None);
 
         assert!(!message.contains("\r\nBcc: evil@example.com"));
         assert!(!message.contains("\r\nX-Injected: 1"));
         assert!(message.starts_with("To: victim@example.com Bcc: evil@example.com\r\n"));
         assert!(message.contains("Subject: Hi X-Injected: 1\r\n"));
+
+        let reply_headers = ("<a@x>\r\nBcc: evil@example.com".to_string(), "<r@x> <a@x>".to_string());
+        let reply = build_mime_message(
+            &OutgoingMessage { to: "a@example.com", body: "body", ..Default::default() },
+            Some(&reply_headers),
+        );
+        assert!(reply.contains("\r\nIn-Reply-To: <a@x> Bcc: evil@example.com\r\nReferences: <r@x> <a@x>\r\n"));
     }
 
     #[test]
@@ -1984,6 +2035,34 @@ mod tests {
         let b64 = &encoded["=?UTF-8?B?".len()..encoded.len() - 2];
         let decoded = base64::engine::general_purpose::STANDARD.decode(b64).unwrap();
         assert_eq!(String::from_utf8(decoded).unwrap(), "Café ☕");
+    }
+
+    fn decode_encoded_words(value: &str) -> String {
+        use base64::Engine;
+        let mut bytes = Vec::new();
+        for word in value.split("\r\n ") {
+            let b64 = word.strip_prefix("=?UTF-8?B?").and_then(|w| w.strip_suffix("?=")).expect("encoded word");
+            let chunk = base64::engine::general_purpose::STANDARD.decode(b64).unwrap();
+            // Each word must hold whole characters (RFC 2047 section 5)
+            assert!(std::str::from_utf8(&chunk).is_ok(), "word splits a character");
+            bytes.extend(chunk);
+        }
+        String::from_utf8(bytes).unwrap()
+    }
+
+    #[test]
+    fn long_non_ascii_header_values_fold_into_short_encoded_words() {
+        let subject = "Reunión de planificación del año próximo — revisión del presupuesto ☕ y más";
+        let encoded = encode_header_value(subject);
+        for word in encoded.split("\r\n ") {
+            assert!(word.len() <= 75, "encoded word of {} chars", word.len());
+        }
+        assert!(encoded.contains("\r\n "));
+        assert_eq!(decode_encoded_words(&encoded), subject);
+
+        let message = build_mime_message(&OutgoingMessage { to: "x@example.com", subject, body: "b", ..Default::default() }, None);
+        assert!(message.contains("\r\nSubject: =?UTF-8?B?"));
+        assert!(message.lines().all(|l| l.len() <= 78));
     }
 
     #[test]
@@ -2033,6 +2112,41 @@ mod tests {
         assert_eq!(parse_ics_datetime("202é115", ""), None);
         assert_eq!(parse_ics_datetime("20240115T1é0000", ""), None);
         assert_eq!(parse_ics_datetime("é0240115T100000Z", ""), None);
+    }
+
+    fn ics_utc(s: &str, params: &str) -> Option<(String, bool)> {
+        parse_ics_datetime(s, params).map(|(ms, all_day)| {
+            (DateTime::from_timestamp_millis(ms).unwrap().to_rfc3339(), all_day)
+        })
+    }
+
+    #[test]
+    fn parse_ics_all_day_is_utc_midnight_of_that_date() {
+        // The frontend reads all-day dates back with getUTC*, so the stored
+        // instant must be midnight UTC regardless of the machine's zone
+        assert_eq!(
+            ics_utc("20240115", "VALUE=DATE"),
+            Some(("2024-01-15T00:00:00+00:00".to_string(), true))
+        );
+    }
+
+    #[test]
+    fn parse_ics_resolves_tzid_times_across_dst_changes() {
+        let ny = "TZID=America/New_York";
+        assert_eq!(
+            ics_utc("20240115T100000", ny),
+            Some(("2024-01-15T15:00:00+00:00".to_string(), false))
+        );
+        // 01:30 happens twice on 2024-11-03; take the first (EDT)
+        assert_eq!(
+            ics_utc("20241103T013000", ny),
+            Some(("2024-11-03T05:30:00+00:00".to_string(), false))
+        );
+        // 02:30 is skipped on 2024-03-10; it means 03:30 EDT
+        assert_eq!(
+            ics_utc("20240310T023000", ny),
+            Some(("2024-03-10T07:30:00+00:00".to_string(), false))
+        );
     }
 
     const FOLDED_INVITE: &str = concat!(
@@ -2182,6 +2296,33 @@ mod tests {
         );
     }
 
+    #[test]
+    fn reply_headers_come_from_a_metadata_fetch() {
+        let url = thread_reply_metadata_url("t1");
+        assert!(url.starts_with(&format!("{}/users/me/threads/t1?", GMAIL_API_BASE)));
+        assert!(url.contains("format=metadata"));
+        assert!(!url.contains("format=full"));
+        assert!(url.contains("metadataHeaders=Message-ID"));
+        assert!(url.contains("metadataHeaders=References"));
+
+        // What Gmail returns for that request: headers only, no bodies or parts
+        let response = r#"{
+            "id": "t1",
+            "messages": [
+                {"id": "m1", "threadId": "t1", "labelIds": ["INBOX"],
+                 "payload": {"headers": [{"name": "Message-Id", "value": "<one@example.com>"}]}},
+                {"id": "d1", "threadId": "t1", "labelIds": ["DRAFT"],
+                 "payload": {"headers": [{"name": "Message-ID", "value": "<draft@example.com>"},
+                                         {"name": "References", "value": "<one@example.com>"}]}}
+            ]
+        }"#;
+        let thread: FullThread = serde_json::from_str(response).expect("metadata thread parses");
+        assert_eq!(
+            reply_headers_from_thread(&thread, None),
+            Some(("<one@example.com>".to_string(), "<one@example.com>".to_string()))
+        );
+    }
+
     fn b64url(s: &[u8]) -> String {
         use base64::Engine;
         base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(s)
@@ -2248,12 +2389,12 @@ mod tests {
             mime_type: "application/pdf".to_string(),
             data: "QUJD".to_string(),
         };
-        let message = build_mime_message(&MimeMessage {
+        let message = build_mime_message(&OutgoingMessage {
             to: "x@example.com",
             body: "hi",
             attachments: std::slice::from_ref(&attachment),
             ..Default::default()
-        });
+        }, None);
         assert!(message.is_ascii(), "raw non-ASCII in headers");
         assert!(message.contains("filename*=UTF-8''a%C3%B1o%20%22final%22%20.pdf\r\n"));
         assert!(message.contains("Content-Disposition: attachment; filename=\"=?UTF-8?B?"));
@@ -2265,14 +2406,85 @@ mod tests {
             mime_type: "text/plain".to_string(),
             data: "QUJD".to_string(),
         };
-        let message = build_mime_message(&MimeMessage {
+        let message = build_mime_message(&OutgoingMessage {
             to: "x@example.com",
             body: "hi",
             attachments: std::slice::from_ref(&ascii),
             ..Default::default()
-        });
+        }, None);
         assert!(message.contains("Content-Type: text/plain; name=\"say \\\"hi\\\".txt\"\r\n"));
         assert!(message.contains("Content-Disposition: attachment; filename=\"say \\\"hi\\\".txt\"\r\n"));
+    }
+
+    /// Independent RFC 2045 quoted-printable decoder for checking encoded bodies
+    fn decode_qp(encoded: &str) -> String {
+        let joined = encoded.replace("=\r\n", "");
+        let bytes = joined.as_bytes();
+        let mut out = Vec::new();
+        let mut i = 0;
+        while i < bytes.len() {
+            if bytes[i] == b'=' {
+                let hex = std::str::from_utf8(&bytes[i + 1..i + 3]).unwrap();
+                out.push(u8::from_str_radix(hex, 16).unwrap());
+                i += 3;
+            } else {
+                out.push(bytes[i]);
+                i += 1;
+            }
+        }
+        String::from_utf8(out).unwrap()
+    }
+
+    /// The body of the part declared by `content_type_line`, up to the next boundary
+    fn part_body<'a>(message: &'a str, content_type_line: &str) -> &'a str {
+        let start = message.find(content_type_line).expect("part present");
+        let headers_end = start + message[start..].find("\r\n\r\n").unwrap() + 4;
+        let rest = &message[headers_end..];
+        let end = rest.find("\r\n--").unwrap_or(rest.len());
+        &rest[..end]
+    }
+
+    fn assert_lines_within_limit(message: &str, limit: usize) {
+        for line in message.split("\r\n") {
+            assert!(line.len() <= limit, "line of {} chars: {:.40}...", line.len(), line);
+        }
+    }
+
+    #[test]
+    fn text_bodies_are_quoted_printable_with_short_lines() {
+        let long_line = "word ".repeat(400);
+        let body = format!("Hola, ¿qué tal? ☕\n{}\nend = 1 \n", long_line.trim_end());
+
+        let plain = build_mime_message(&OutgoingMessage { to: "x@example.com", body: &body, ..Default::default() }, None);
+        assert!(plain.is_ascii(), "raw 8-bit text in the message");
+        assert_lines_within_limit(&plain, 998);
+        assert!(plain.contains("Content-Type: text/plain; charset=utf-8\r\nContent-Transfer-Encoding: quoted-printable\r\n\r\n"));
+        let encoded = &plain[plain.find("\r\n\r\n").unwrap() + 4..];
+        assert_lines_within_limit(encoded, 76);
+        assert_eq!(decode_qp(encoded), body.replace('\n', "\r\n"));
+
+        let html = format!("<p>{}</p><p>Café</p>", long_line);
+        let attachment = SendAttachment {
+            filename: "a.txt".to_string(),
+            mime_type: "text/plain".to_string(),
+            data: "QUJD".to_string(),
+        };
+        for attachments in [&[][..], std::slice::from_ref(&attachment)] {
+            let message = build_mime_message(&OutgoingMessage {
+                to: "x@example.com",
+                body: &html,
+                is_html: true,
+                attachments,
+                ..Default::default()
+            }, None);
+            assert!(message.is_ascii());
+            assert_lines_within_limit(&message, 998);
+            let html_part = part_body(&message, "Content-Type: text/html; charset=utf-8\r\n");
+            assert_lines_within_limit(html_part, 76);
+            assert_eq!(decode_qp(html_part), html);
+            let text_part = part_body(&message, "Content-Type: text/plain; charset=utf-8\r\n");
+            assert!(decode_qp(text_part).ends_with("\r\nCafé\r\n"));
+        }
     }
 
     #[test]
@@ -2300,6 +2512,101 @@ mod tests {
     }
 
     #[test]
+    fn thread_summary_fields_request_part_headers_at_every_level() {
+        // Each nesting level of the mask must ask for the part headers (for
+        // Content-ID) and the attachment id, or inline images deeper down lose them
+        let level = "parts(mimeType,filename,headers,body(size,attachmentId)";
+        assert_eq!(THREAD_SUMMARY_FIELDS.matches(level).count(), 3);
+        assert_eq!(THREAD_SUMMARY_FIELDS.matches('(').count(), THREAD_SUMMARY_FIELDS.matches(')').count());
+    }
+
+    #[test]
+    fn thread_summary_with_image_three_levels_deep_parses() {
+        // mixed > alternative > related > image, as trimmed by THREAD_SUMMARY_FIELDS
+        let response = r#"{
+            "id": "t1",
+            "messages": [{
+                "id": "m1",
+                "labelIds": ["INBOX", "UNREAD"],
+                "snippet": "See attached",
+                "internalDate": "1705330800000",
+                "payload": {
+                    "mimeType": "multipart/mixed",
+                    "headers": [{"name": "From", "value": "Ann <ann@example.com>"},
+                                {"name": "Subject", "value": "Plans"}],
+                    "parts": [
+                        {"mimeType": "multipart/alternative", "filename": "", "headers": [], "body": {"size": 0},
+                         "parts": [
+                            {"mimeType": "text/plain", "filename": "", "body": {"size": 12}},
+                            {"mimeType": "multipart/related", "filename": "", "body": {"size": 0},
+                             "parts": [
+                                {"mimeType": "text/html", "filename": "", "body": {"size": 40}},
+                                {"mimeType": "image/png", "filename": "",
+                                 "headers": [{"name": "Content-Id", "value": "<logo@x>"}],
+                                 "body": {"size": 2048, "attachmentId": "att-img"}}
+                             ]}
+                         ]},
+                        {"mimeType": "application/pdf", "filename": "plan.pdf",
+                         "headers": [{"name": "Content-Disposition", "value": "attachment"}],
+                         "body": {"size": 90000, "attachmentId": "att-pdf"}}
+                    ]
+                }
+            }]
+        }"#;
+        let detail: ThreadDetail = serde_json::from_str(response).expect("summary parses");
+        let messages = detail.messages.expect("messages");
+        let attachments = extract_attachments_from_parts(&messages[0].payload.as_ref().unwrap().parts);
+        let summary: Vec<(&str, &str, Option<&str>)> = attachments
+            .iter()
+            .map(|a| (a.attachment_id.as_str(), a.filename.as_str(), a.content_id.as_deref()))
+            .collect();
+        assert_eq!(
+            summary,
+            vec![("att-img", "logo@x.png", Some("logo@x")), ("att-pdf", "plan.pdf", None)]
+        );
+        assert_eq!(thread_participants(&messages), vec!["ann@example.com"]);
+    }
+
+    #[test]
+    fn thread_summary_takes_subject_from_latest_message_that_is_not_a_reaction() {
+        let response = r#"{
+            "id": "t1",
+            "messages": [
+                {"id": "m1", "labelIds": ["INBOX", "UNREAD"], "snippet": "Lunch at noon?",
+                 "internalDate": "1705330800000",
+                 "payload": {"mimeType": "text/plain",
+                             "headers": [{"name": "From", "value": "ann@example.com"},
+                                         {"name": "Subject", "value": "Plans"}]}},
+                {"id": "m2", "labelIds": ["INBOX", "UNREAD"], "snippet": "Reacted with 👍",
+                 "internalDate": "1705334400000",
+                 "payload": {"mimeType": "multipart/alternative",
+                             "headers": [{"name": "From", "value": "bob@example.com"},
+                                         {"name": "Subject", "value": "Re: 👍"}],
+                             "parts": [{"mimeType": "text/plain", "body": {"size": 5}},
+                                       {"mimeType": "text/vnd.google.email-reaction+json", "body": {"size": 30}}]}}
+            ]
+        }"#;
+        let thread = thread_summary(serde_json::from_str(response).unwrap());
+        assert_eq!(thread.gmail_thread_id, "t1");
+        assert_eq!(thread.subject, "Plans");
+        assert_eq!(thread.snippet, "Lunch at noon?");
+        // Ordering still follows the newest activity
+        assert_eq!(thread.last_message_date.timestamp_millis(), 1705334400000);
+        assert_eq!(thread.unread_count, 2);
+        assert_eq!(thread.participants, vec!["ann@example.com", "bob@example.com"]);
+        assert!(!thread.has_attachment);
+        assert!(thread.calendar_event.is_none());
+    }
+
+    #[test]
+    fn thread_summary_defaults_when_headers_are_missing() {
+        let thread = thread_summary(serde_json::from_str(r#"{"id": "t2"}"#).unwrap());
+        assert_eq!(thread.subject, "(No Subject)");
+        assert_eq!(thread.snippet, "");
+        assert_eq!(thread.unread_count, 0);
+    }
+
+    #[test]
     fn batch_boundary_ignores_trailing_parameters() {
         assert_eq!(
             batch_boundary("multipart/mixed; boundary=batch_abc; charset=UTF-8").as_deref(),
@@ -2307,6 +2614,76 @@ mod tests {
         );
         assert_eq!(batch_boundary("multipart/mixed; boundary=\"batch_q\"").as_deref(), Some("batch_q"));
         assert_eq!(batch_boundary("application/json"), None);
+    }
+
+    fn at(rfc3339: &str) -> DateTime<Utc> {
+        DateTime::parse_from_rfc3339(rfc3339).unwrap().with_timezone(&Utc)
+    }
+
+    fn bucket(date: &str, now: &str) -> &'static str {
+        classify_date(at(date), &DateTime::parse_from_rfc3339(now).unwrap()).as_str()
+    }
+
+    #[test]
+    fn classify_date_buckets_by_local_calendar_day() {
+        // Wednesday 2024-01-17, 10:00 in Buenos Aires (UTC-3)
+        let now = "2024-01-17T10:00:00-03:00";
+        assert_eq!(bucket("2024-01-17T04:00:00Z", now), "Today"); // 01:00 local
+        assert_eq!(bucket("2024-01-17T02:00:00Z", now), "Yesterday"); // 23:00 local on the 16th
+        assert_eq!(bucket("2024-01-15T12:00:00-03:00", now), "This week"); // Monday
+        assert_eq!(bucket("2024-01-14T23:59:00-03:00", now), "Last 30 days"); // Sunday before
+        assert_eq!(bucket("2023-12-18T00:00:00-03:00", now), "Last 30 days");
+        assert_eq!(bucket("2023-12-17T23:59:00-03:00", now), "Older");
+    }
+
+    #[test]
+    fn classify_date_on_monday_keeps_sunday_as_yesterday() {
+        let now = "2024-01-15T09:00:00+09:00";
+        assert_eq!(bucket("2024-01-14T12:00:00+09:00", now), "Yesterday");
+        assert_eq!(bucket("2024-01-13T12:00:00+09:00", now), "Last 30 days");
+    }
+
+    fn thread_at(id: &str, date: &str) -> Thread {
+        Thread {
+            gmail_thread_id: id.to_string(),
+            account_id: String::new(),
+            subject: String::new(),
+            snippet: String::new(),
+            last_message_date: at(date),
+            unread_count: 0,
+            labels: Vec::new(),
+            participants: Vec::new(),
+            has_attachment: false,
+            attachments: Vec::new(),
+            calendar_event: None,
+        }
+    }
+
+    #[test]
+    fn group_threads_orders_buckets_and_sorts_newest_first() {
+        let now = DateTime::parse_from_rfc3339("2024-01-17T10:00:00Z").unwrap();
+        let groups = group_threads_by_date(
+            vec![
+                thread_at("old", "2023-01-01T00:00:00Z"),
+                thread_at("today-early", "2024-01-17T01:00:00Z"),
+                thread_at("yesterday", "2024-01-16T12:00:00Z"),
+                thread_at("today-late", "2024-01-17T09:00:00Z"),
+            ],
+            &now,
+        );
+        let shape: Vec<(String, Vec<String>)> = groups
+            .into_iter()
+            .map(|g| (g.label, g.threads.into_iter().map(|t| t.gmail_thread_id).collect()))
+            .collect();
+        let expected: Vec<(String, Vec<String>)> = [
+            ("Today", vec!["today-late", "today-early"]),
+            ("Yesterday", vec!["yesterday"]),
+            ("Older", vec!["old"]),
+        ]
+        .into_iter()
+        .map(|(l, ids)| (l.to_string(), ids.into_iter().map(String::from).collect()))
+        .collect();
+        assert_eq!(shape, expected);
     }
 
     fn reaction_part(json: &str) -> MessagePart {
