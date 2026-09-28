@@ -28,6 +28,11 @@ pub struct CacheDb {
 impl CacheDb {
     pub fn new(db_path: &Path) -> Result<Self, CacheError> {
         let conn = Connection::open(db_path)?;
+        // A cache refresh rewrites whole JSON rows; the log turns each commit
+        // into one appended write instead of a rollback journal's several
+        // syncs. FULL keeps every commit durable: cards live in this file.
+        conn.query_row("PRAGMA journal_mode = WAL", [], |_| Ok(()))?;
+        conn.pragma_update(None, "synchronous", "FULL")?;
         let db = Self {
             conn: Mutex::new(conn),
         };
@@ -527,6 +532,36 @@ mod tests {
         db.set_history_id("a2", "7").unwrap();
         assert_eq!(db.get_history_id("a2").unwrap().as_deref(), Some("7"));
         assert!(!has_column(&self::db().conn.lock().unwrap(), "sync_state", "last_sync_at").unwrap());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn database_file_uses_a_write_ahead_log_and_keeps_every_write_through_a_reopen() {
+        let dir = std::env::temp_dir().join(format!("posta-test-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("wal.db");
+        let a = account("me@x.com");
+        let card = Card::new(a.id.clone(), "Inbox".into(), "in:inbox".into(), 0);
+        {
+            let db = CacheDb::new(&path).unwrap();
+            {
+                let conn = db.conn.lock().unwrap();
+                let mode: String = conn.query_row("PRAGMA journal_mode", [], |r| r.get(0)).unwrap();
+                assert_eq!(mode, "wal");
+                // Cards are the only local copy of the layout: commits stay durable
+                let synchronous: i64 = conn.query_row("PRAGMA synchronous", [], |r| r.get(0)).unwrap();
+                assert_eq!(synchronous, 2, "FULL");
+            }
+            db.insert_account(&a).unwrap();
+            db.insert_card(&card).unwrap();
+            db.save_card_threads(&card.id, &[], Some("next")).unwrap();
+        }
+
+        let db = CacheDb::new(&path).unwrap();
+        assert_eq!(db.get_accounts().unwrap()[0].id, a.id);
+        assert_eq!(db.get_cards(&a.id).unwrap()[0].id, card.id);
+        assert_eq!(db.get_card_threads(&card.id).unwrap().unwrap().1.as_deref(), Some("next"));
+        drop(db);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
