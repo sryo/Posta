@@ -1986,12 +1986,7 @@ function App() {
         // Sync the open EventView and the card's copy immediately; the
         // background refetch below lands later
         setActiveEvent(ev => (ev && ev.id === updated.id ? updated : ev));
-        const cardId = activeEventCardId();
-        if (cardId && cardCalendarEvents[cardId]) {
-          setCardCalendarEvents(cardId, cardCalendarEvents[cardId].map(ev =>
-            ev.id === updated.id ? updated : ev
-          ));
-        }
+        updateEventInCards(updated.id, () => updated);
       } else {
         // Create new event
         await createCalendarEvent(
@@ -2348,19 +2343,29 @@ function App() {
     }
   }
 
+  // An event can show in several calendar cards; change every copy, and each
+  // card's saved cache, so none of them shows the old state until a refetch.
+  // `update` returning null removes the event.
+  function updateEventInCards(eventId: string, update: (ev: GoogleCalendarEvent) => GoogleCalendarEvent | null) {
+    for (const [cId, events] of Object.entries(cardCalendarEvents)) {
+      if (!events?.some(e => e.id === eventId)) continue;
+      const next = events.flatMap(e => (e.id === eventId ? update(e) ?? [] : [e]));
+      setCardCalendarEvents(cId, next);
+      saveCachedCardEvents(cId, next).catch(e => console.warn("Failed to update event cache:", e));
+    }
+  }
+
+  function markEventRsvp(eventId: string, status: string) {
+    setActiveEvent(ev => (ev && ev.id === eventId ? { ...ev, response_status: status } : ev));
+    updateEventInCards(eventId, ev => ({ ...ev, response_status: status }));
+  }
+
   async function deleteEvent(event: GoogleCalendarEvent) {
     const account = selectedAccount();
     if (!account) return;
     try {
       await deleteCalendarEvent(account.id, event.calendar_id, event.id);
-      // Every calendar card can be showing the event, in view and in its
-      // saved cache
-      for (const [cId, events] of Object.entries(cardCalendarEvents)) {
-        if (!events?.some(e => e.id === event.id)) continue;
-        const remaining = events.filter(e => e.id !== event.id);
-        setCardCalendarEvents(cId, remaining);
-        saveCachedCardEvents(cId, remaining).catch(e => console.warn("Failed to update event cache:", e));
-      }
+      updateEventInCards(event.id, () => null);
       showToast('Event deleted');
       if (activeEvent()?.id === event.id) closeEvent();
     } catch (e) {
@@ -2385,14 +2390,9 @@ function App() {
       // Update the active event with new calendar info
       setActiveEvent(movedEvent);
 
-      // The card's copy must pick up the new calendar_id too, or a later
-      // delete/edit from the card targets the old calendar and 404s
-      const cardId = activeEventCardId();
-      if (cardId && cardCalendarEvents[cardId]) {
-        setCardCalendarEvents(cardId, cardCalendarEvents[cardId].map(ev =>
-          ev.id === event.id ? movedEvent : ev
-        ));
-      }
+      // The cards' copies must pick up the new calendar_id too, or a later
+      // delete/edit from a card targets the old calendar and 404s
+      updateEventInCards(event.id, () => movedEvent);
       cards().forEach(card => {
         if (isCalendarCard(card.id)) {
           fetchAndCacheCalendarEvents(account.id, card.id, card.query);
@@ -4787,14 +4787,7 @@ function App() {
                   throw err;
                 }
               }
-              setRsvpStatus(event.id, status);
-              setActiveEvent(ev => (ev && ev.id === event.id ? { ...ev, response_status: status } : ev));
-              const cardId = activeEventCardId();
-              if (cardId && cardCalendarEvents[cardId]) {
-                setCardCalendarEvents(cardId, cardCalendarEvents[cardId].map(ev =>
-                  ev.id === event.id ? { ...ev, response_status: status } : ev
-                ));
-              }
+              markEventRsvp(event.id, status);
               showToast(`Response updated to ${status}`);
             } catch (e) {
               console.error("Failed to update RSVP", e);

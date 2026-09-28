@@ -775,6 +775,26 @@ describe("App calendar", () => {
     }));
   });
 
+  it("updates the response in every calendar card and its cache after an RSVP", async () => {
+    calendarCards();
+    cardsByAccount.a = [
+      { ...card("cal-1", "a", "Week"), query: "calendar:7d", card_type: "calendar" },
+      { ...card("cal-2", "a", "Month"), query: "calendar:30d", card_type: "calendar", position: 1 },
+    ];
+    handlers.fetch_calendar_events = () => [{ ...calendarEvent("ev-1", "Planning"), response_status: "needsAction" }];
+    handlers.rsvp_calendar_event = () => null;
+    render(() => <App />);
+    await waitFor(() => expect(screen.getAllByText("Planning")).toHaveLength(2));
+    fireEvent.click(screen.getAllByText("Planning")[0]);
+    fireEvent.click(await screen.findByRole("button", { name: "Yes" }));
+
+    for (const cardId of ["cal-1", "cal-2"]) {
+      await waitFor(() => expect(invoke).toHaveBeenCalledWith("save_cached_card_events", {
+        cardId, events: [expect.objectContaining({ id: "ev-1", response_status: "accepted" })],
+      }));
+    }
+  });
+
   it("does not show an account's calendars once another account is selected", async () => {
     calendarCards();
     let releaseA!: () => void;
