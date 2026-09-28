@@ -79,7 +79,13 @@ beforeEach(() => {
   threadsByCard["card-b"] = [thread("t-b", "Mail for B")];
 });
 
+let confirmSpy: { mockReturnValue: (v: boolean) => unknown; mockRestore: () => void };
+beforeEach(() => {
+  confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(true);
+});
+
 afterEach(() => {
+  confirmSpy.mockRestore();
   vi.useRealTimers();
   // jsdom has no layout, so no scrollIntoView
   Element.prototype.scrollIntoView = () => {};
@@ -1387,5 +1393,71 @@ describe("App inline reply", () => {
     fireEvent.input(body, { target: { value: "typing" } });
     expect(body.isConnected).toBe(true);
     expect(screen.getByPlaceholderText("Write your reply...")).toBe(body);
+  });
+});
+
+describe("App layout removal", () => {
+  it("asks before deleting a card and keeps it when cancelled", async () => {
+    handlers.delete_card = () => null;
+    render(() => <App />);
+    await screen.findByText("Mail for A");
+    fireEvent.click(screen.getByTitle("Edit query"));
+    confirmSpy.mockReturnValue(false);
+    fireEvent.click(await screen.findByRole("button", { name: /Delete/ }));
+
+    expect(confirmSpy).toHaveBeenCalledWith(expect.stringContaining("Alpha"));
+    expect(invoke).not.toHaveBeenCalledWith("delete_card", expect.anything());
+    expect(screen.getByRole("region", { name: "Alpha email card" })).toBeInTheDocument();
+  });
+
+  it("deletes a card once confirmed", async () => {
+    handlers.delete_card = () => null;
+    render(() => <App />);
+    await screen.findByText("Mail for A");
+    fireEvent.click(screen.getByTitle("Edit query"));
+    fireEvent.click(await screen.findByRole("button", { name: /Delete/ }));
+
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith("delete_card", { id: "card-a" }));
+  });
+
+  it("asks before starting from scratch and keeps the restored layout when cancelled", async () => {
+    handlers.get_accounts = () => [];
+    handlers.run_oauth_flow = () => account("a", "a@x.com");
+    handlers.pull_from_icloud = () => true;
+    handlers.delete_card = () => null;
+    render(() => <App />);
+    fireEvent.click(await screen.findByText("Sign in with Google"));
+    confirmSpy.mockReturnValue(false);
+    fireEvent.click(await screen.findByText("Start from scratch", {}, { timeout: 3000 }));
+
+    expect(confirmSpy).toHaveBeenCalledWith(expect.stringContaining("1 card"));
+    expect(invoke).not.toHaveBeenCalledWith("delete_card", expect.anything());
+    expect(screen.getByText("Start from scratch")).toBeInTheDocument();
+  });
+
+  it("asks before signing out and keeps the account when cancelled", async () => {
+    handlers.delete_account = () => null;
+    render(() => <App />);
+    await screen.findByText("Mail for A");
+    confirmSpy.mockReturnValue(false);
+    fireEvent.click(screen.getByText("Sign out"));
+
+    expect(confirmSpy).toHaveBeenCalledWith(expect.stringContaining("a@x.com"));
+    expect(invoke).not.toHaveBeenCalledWith("delete_account", expect.anything());
+    expect(screen.getByText("Mail for A")).toBeInTheDocument();
+  });
+
+  it("removes the signed-out account's local drafts", async () => {
+    handlers.get_accounts = () => [account("a", "a@x.com"), account("b", "b@x.com")];
+    handlers.delete_account = () => null;
+    localStorage.setItem("draft_new_a#1", JSON.stringify({ to: "", cc: "", bcc: "", subject: "secret", body: "", savedAt: 1 }));
+    localStorage.setItem("draft_new_b#1", JSON.stringify({ to: "", cc: "", bcc: "", subject: "keep", body: "", savedAt: 1 }));
+    render(() => <App />);
+    await screen.findByText("Mail for A");
+    fireEvent.click(screen.getByText("Sign out"));
+
+    await screen.findByText("Mail for B");
+    expect(localStorage.getItem("draft_new_a#1")).toBeNull();
+    expect(localStorage.getItem("draft_new_b#1")).not.toBeNull();
   });
 });

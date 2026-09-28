@@ -131,7 +131,7 @@ import { eventTimesFromForm, smartEventDefaults } from "./app/eventForm";
 import { composePlacement } from "./app/composePlacement";
 import { cidImagesToFetch, fetchCidImages } from "./app/cidImages";
 import { sendPending, type PendingSend } from "./app/pendingSend";
-import { createDraftSync, draftKey, findLatestDraft, hasDraftContent, markDraftClosed, sessionDraftKey, type DraftFields } from "./app/drafts";
+import { createDraftSync, draftKey, findLatestDraft, hasDraftContent, markDraftClosed, removeAccountDrafts, sessionDraftKey, type DraftFields } from "./app/drafts";
 import { nextCardFocus, nextItemFocus } from "./app/keyboardNav";
 import { getSmartEventTime, groupCalendarEvents, isUserLabel, mergeThreadGroups, regroupThreads, type CalendarEventGroup } from "./app/grouping";
 
@@ -1591,6 +1591,8 @@ function App() {
 
   async function handleStartFresh() {
     const currentCards = cards();
+    const count = `${currentCards.length} card${currentCards.length === 1 ? "" : "s"}`;
+    if (currentCards.length > 0 && !confirm(`Delete the restored layout's ${count}? This can't be undone.`)) return;
     const results = await Promise.allSettled(currentCards.map(card => deleteCard(card.id)));
     // Cards that failed to delete still exist; keep showing them rather than
     // letting a preset pile new cards on top
@@ -1649,6 +1651,7 @@ function App() {
   async function handleSignOut() {
     const account = selectedAccount();
     if (!account) return;
+    if (!confirm(`Sign out of ${account.email}? Its cards and the drafts saved on this computer are removed.`)) return;
 
     const signedOutCards = cards();
     try {
@@ -1663,6 +1666,7 @@ function App() {
       const collapsed = safeGetJSON<Record<string, boolean>>("collapsedCards", {});
       for (const card of signedOutCards) delete collapsed[card.id];
       safeSetJSON("collapsedCards", collapsed);
+      removeAccountDrafts(account.id);
       // Fall through to the next account instead of a blank screen
       if (remaining.length > 0) {
         await switchAccount(remaining[0]);
@@ -2605,6 +2609,8 @@ function App() {
   }
 
   async function handleDeleteCard(cardId: string) {
+    const name = cards().find(c => c.id === cardId)?.name || "Untitled";
+    if (!confirm(`Delete the card "${name}"? This can't be undone.`)) return;
     try {
       await deleteCard(cardId);
       setCards(cards().filter(c => c.id !== cardId));
