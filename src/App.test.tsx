@@ -2314,6 +2314,9 @@ describe("App Google API settings", () => {
     const hints = Array.from(document.querySelectorAll(".settings-hint")).map(el => el.textContent).join(" ");
     expect(hints).toMatch(/Desktop app/);
     expect(hints).toMatch(/Gmail API.*Google Calendar API.*People API/);
+    // A Desktop app client has no redirect URI to set
+    expect(hints).not.toMatch(/Redirect URI/);
+    expect(hints).toMatch(/port 8420/);
   });
 });
 

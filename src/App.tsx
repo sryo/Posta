@@ -5331,7 +5331,7 @@ function App() {
               />
             </div>
             <p class="settings-hint">
-              Redirect URI: <code>http://localhost:8420/callback</code>
+              Sign-in listens on <code>localhost</code> port 8420; another app using that port keeps it from finishing.
             </p>
             <button
               class="btn btn-primary"
