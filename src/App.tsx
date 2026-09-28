@@ -143,6 +143,7 @@ import { escapeTarget, nextCardFocus, nextItemFocus } from "./app/keyboardNav";
 import { getSmartEventTime, groupCalendarEvents, isUserLabel, mergeThreadGroups, regroupThreads, type CalendarEventGroup } from "./app/grouping";
 import { pullLayoutWithRetry } from "./app/icloudRestore";
 import { querySuggestions, type QuerySuggestion } from "./app/querySuggestions";
+import { inviteNamesEvent, rsvpSentMessage, rsvpWithFallback, type RsvpStatus } from "./app/rsvp";
 import { hasCommandModifier, onActivateKey } from "./shared/keyboard";
 
 const SESSION_EXPIRED_MESSAGE = "Session expired - sign in again";
@@ -227,23 +228,22 @@ function App() {
     }
   };
 
-  const handleRsvp = async (threadId: string, eventUid: string | null, status: string) => {
-    if (!eventUid || !selectedAccount()) return;
-
-    // Map UI status to API status
-    const apiStatus = status === "yes" ? "accepted" : status === "maybe" ? "tentative" : "declined";
-
-    // Set loading
+  // Answers an invite from its email; the calendar cards showing the event
+  // pick up the answer too
+  const handleRsvp = async (threadId: string, eventUid: string | null, status: RsvpStatus) => {
+    const account = selectedAccount();
+    if (!eventUid || !account || rsvpLoading[threadId]) return;
     setRsvpLoading(threadId, true);
-
     try {
-      await rsvpCalendarEvent(selectedAccount()!.id, eventUid, apiStatus);
-
-      // Update local state on success
-      setRsvpStatus(threadId, apiStatus);
+      await rsvpCalendarEvent(account.id, eventUid, status);
+      setRsvpStatus(threadId, status);
+      const eventIds = new Set(Object.values(cardCalendarEvents).flatMap(events =>
+        (events ?? []).filter(ev => inviteNamesEvent(eventUid, ev.id)).map(ev => ev.id)));
+      for (const eventId of eventIds) markEventRsvp(eventId, status);
+      showToast(rsvpSentMessage(status));
     } catch (e) {
       console.error("Failed to update RSVP:", e);
-      showToast(`Failed to update RSVP: ${e}`);
+      showToast(`Couldn't RSVP: ${e}`);
     } finally {
       setRsvpLoading(threadId, false);
     }
@@ -4361,17 +4361,17 @@ function App() {
                                                   <button
                                                     class={rsvpStatus[thread.gmail_thread_id] === "accepted" ? "selected" : ""}
                                                     disabled={rsvpLoading[thread.gmail_thread_id]}
-                                                    onClick={() => handleRsvp(thread.gmail_thread_id, thread.calendar_event!.uid, "yes")}
+                                                    onClick={() => handleRsvp(thread.gmail_thread_id, thread.calendar_event!.uid, "accepted")}
                                                   >Yes</button>
                                                   <button
                                                     class={rsvpStatus[thread.gmail_thread_id] === "tentative" ? "selected" : ""}
                                                     disabled={rsvpLoading[thread.gmail_thread_id]}
-                                                    onClick={() => handleRsvp(thread.gmail_thread_id, thread.calendar_event!.uid, "maybe")}
+                                                    onClick={() => handleRsvp(thread.gmail_thread_id, thread.calendar_event!.uid, "tentative")}
                                                   >Maybe</button>
                                                   <button
                                                     class={rsvpStatus[thread.gmail_thread_id] === "declined" ? "selected" : ""}
                                                     disabled={rsvpLoading[thread.gmail_thread_id]}
-                                                    onClick={() => handleRsvp(thread.gmail_thread_id, thread.calendar_event!.uid, "no")}
+                                                    onClick={() => handleRsvp(thread.gmail_thread_id, thread.calendar_event!.uid, "declined")}
                                                   >No</button>
                                                 </div>
                                               </Show>
@@ -4948,21 +4948,12 @@ function App() {
             if (!event || !account || rsvpLoading[event.id]) return;
             setRsvpLoading(event.id, true);
             try {
-              try {
-                await rsvpCalendarEvent(account.id, event.id, status);
-              } catch (err) {
-                // Google-origin events are looked up by iCalUID, which is "<id>@google.com"
-                if (String(err).includes("not found")) {
-                  await rsvpCalendarEvent(account.id, `${event.id}@google.com`, status);
-                } else {
-                  throw err;
-                }
-              }
+              await rsvpWithFallback(account.id, event.id, status);
               markEventRsvp(event.id, status);
-              showToast(`Response updated to ${status}`);
+              showToast(rsvpSentMessage(status));
             } catch (e) {
               console.error("Failed to update RSVP", e);
-              showToast(`Failed to update RSVP: ${e}`);
+              showToast(`Couldn't RSVP: ${e}`);
             } finally {
               setRsvpLoading(event.id, false);
             }

@@ -1260,6 +1260,32 @@ describe("App calendar", () => {
     }
   });
 
+  it("answers an invite from its email and shows the answer on the event in calendar cards", async () => {
+    calendarCards();
+    cardsByAccount.a = [card("card-a", "a", "Alpha"), { ...card("cal-1", "a", "Week"), query: "calendar:7d", card_type: "calendar", position: 1 }];
+    threadsByCard["card-a"] = [{
+      ...thread("t-inv", "Invitation: Planning"),
+      calendar_event: {
+        uid: "ev-1@google.com", title: "Planning", start_time: Date.now() + 3600_000, end_time: null, all_day: false,
+        location: null, description: null, organizer: "org@x.com", attendees: [], method: "REQUEST", status: null, response_status: null,
+      },
+    }];
+    handlers.fetch_calendar_events = () => [{ ...calendarEvent("ev-1", "Planning"), response_status: "needsAction" }];
+    handlers.get_calendar_rsvp_status = () => null;
+    handlers.rsvp_calendar_event = () => null;
+    render(() => <App />);
+    await screen.findByText("Invitation: Planning");
+    await screen.findByText("Pending");
+
+    const invite = screen.getByText("Invitation: Planning").closest(".thread") as HTMLElement;
+    fireEvent.click(within(invite).getByRole("button", { name: "Yes" }));
+
+    expect(await screen.findByText("RSVP sent: Going")).toBeInTheDocument();
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith("save_cached_card_events", {
+      cardId: "cal-1", events: [expect.objectContaining({ id: "ev-1", response_status: "accepted" })],
+    }));
+  });
+
   it("does not show an account's calendars once another account is selected", async () => {
     calendarCards();
     let releaseA!: () => void;
