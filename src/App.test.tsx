@@ -1,5 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { fireEvent, render, screen, waitFor, within } from "@solidjs/testing-library";
+import { configure, fireEvent, render, screen, waitFor, within } from "@solidjs/testing-library";
+
+// Every test renders the whole app; on a loaded machine the defaults (5s per
+// test, 1s per waitFor) fail tests that are only slow
+vi.setConfig({ testTimeout: 20000 });
+configure({ asyncUtilTimeout: 4000 });
 
 type Handler = (args: Record<string, unknown>) => unknown;
 const handlers: Record<string, Handler> = {};
@@ -35,6 +40,10 @@ vi.mock("@tauri-apps/api/menu", () => ({
 
 import App from "./App";
 import type { Account, Card, Thread } from "./api/tauri";
+import { ICLOUD_RESTORE_DELAYS_MS } from "./app/icloudRestore";
+
+ICLOUD_RESTORE_DELAYS_MS.first = 0;
+ICLOUD_RESTORE_DELAYS_MS.retry = 0;
 
 const account = (id: string, email: string): Account => ({ id, email, picture: null, signature: null });
 const card = (id: string, accountId: string, name: string): Card => ({
@@ -394,7 +403,7 @@ describe("App presets", () => {
   it("creates the preset's cards once even when clicked twice", async () => {
     signInToEmptyLayout();
     fireEvent.click(await screen.findByText("Sign in with Google"));
-    const option = (await screen.findByText("Traditional", {}, { timeout: 3000 })).closest(".preset-option")!;
+    const option = (await screen.findByText("Traditional")).closest(".preset-option")!;
 
     fireEvent.click(option);
     fireEvent.click(option);
@@ -412,7 +421,7 @@ describe("App presets", () => {
       return create(args);
     };
     fireEvent.click(await screen.findByText("Sign in with Google"));
-    fireEvent.click((await screen.findByText("Traditional", {}, { timeout: 3000 })).closest(".preset-option")!);
+    fireEvent.click((await screen.findByText("Traditional")).closest(".preset-option")!);
 
     expect(await screen.findByRole("region", { name: "Inbox email card" })).toBeInTheDocument();
     expect(screen.getByRole("region", { name: "Starred email card" })).toBeInTheDocument();
@@ -430,7 +439,7 @@ describe("App presets", () => {
     render(() => <App />);
 
     fireEvent.click(await screen.findByText("Sign in with Google"));
-    fireEvent.click(await screen.findByText("Start from scratch", {}, { timeout: 3000 }));
+    fireEvent.click(await screen.findByText("Start from scratch"));
 
     expect(await screen.findByText(/db locked/)).toBeInTheDocument();
     expect(screen.queryByText("How do you email?")).not.toBeInTheDocument();
@@ -442,7 +451,7 @@ describe("App presets", () => {
     signInToEmptyLayout();
     handlers.create_card = () => { throw new Error("db locked"); };
     fireEvent.click(await screen.findByText("Sign in with Google"));
-    fireEvent.click((await screen.findByText("Traditional", {}, { timeout: 3000 })).closest(".preset-option")!);
+    fireEvent.click((await screen.findByText("Traditional")).closest(".preset-option")!);
 
     await waitFor(() => expect(invoke).toHaveBeenCalledWith("create_card", expect.anything()));
     await new Promise(r => setTimeout(r, 50));
@@ -1501,7 +1510,7 @@ describe("App layout removal", () => {
     render(() => <App />);
     fireEvent.click(await screen.findByText("Sign in with Google"));
     confirmSpy.mockReturnValue(false);
-    fireEvent.click(await screen.findByText("Start from scratch", {}, { timeout: 3000 }));
+    fireEvent.click(await screen.findByText("Start from scratch"));
 
     expect(confirmSpy).toHaveBeenCalledWith(expect.stringContaining("1 card"));
     expect(invoke).not.toHaveBeenCalledWith("delete_card", expect.anything());
@@ -1987,7 +1996,7 @@ describe("App sign-in flows", () => {
     fireEvent.input(screen.getByLabelText("Client Secret"), { target: { value: "csecret" } });
     fireEvent.click(screen.getByRole("button", { name: /Connect/ }));
 
-    expect(await screen.findByText("Start from scratch", {}, { timeout: 3000 })).toBeInTheDocument();
+    expect(await screen.findByText("Start from scratch")).toBeInTheDocument();
     expect(invoke).toHaveBeenCalledWith("configure_auth", { config: { client_id: "cid", client_secret: "csecret" } });
     expect(invoke).not.toHaveBeenCalledWith("get_stored_credentials", expect.anything());
   });

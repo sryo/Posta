@@ -141,6 +141,7 @@ import { cardTypeForQuery } from "./app/cardType";
 import { createDraftSync, draftKey, findLatestDraft, hasDraftContent, markDraftClosed, removeAccountDrafts, sessionDraftKey, type DraftFields } from "./app/drafts";
 import { nextCardFocus, nextItemFocus } from "./app/keyboardNav";
 import { getSmartEventTime, groupCalendarEvents, isUserLabel, mergeThreadGroups, regroupThreads, type CalendarEventGroup } from "./app/grouping";
+import { pullLayoutWithRetry } from "./app/icloudRestore";
 
 function App() {
   const [loading, setLoading] = createSignal(true);
@@ -1519,20 +1520,14 @@ function App() {
     }
   }
 
-  // Post-OAuth: restore the account's layout from iCloud (sync can lag, so pull
-  // once, then retry after a longer delay if the first pull found nothing) and
-  // only offer the preset picker when no layout exists.
+  // Post-OAuth: restore the account's layout from iCloud and only offer the
+  // preset picker when no layout exists.
   async function restoreLayoutAfterAuth(account: Account) {
     upsertAccount(account);
     setSelectedAccount(account);
 
     try {
-      await new Promise(resolve => setTimeout(resolve, 500));
-      const icloudResult = await pullFromICloud();
-      if (!icloudResult) {
-        await new Promise(resolve => setTimeout(resolve, 1000));
-        await pullFromICloud();
-      }
+      await pullLayoutWithRetry(pullFromICloud);
     } catch (e) {
       console.warn("iCloud pull failed:", e);
     }
