@@ -795,6 +795,26 @@ describe("App thread view compose", () => {
   });
 });
 
+describe("App new email while a thread is open", () => {
+  it("shows the new email over the thread and keeps it when the thread closes", async () => {
+    handlers.get_thread_details = () => ({ id: "t-a", messages: [fullMessage("m1", "Ana <ana@x.com>")] });
+    render(() => <App />);
+    fireEvent.click(await screen.findByText("Mail for A"));
+    await screen.findByText("body m1");
+
+    eventListeners["mailto-received"]({ payload: { to: "bo@y.com", cc: "", bcc: "", subject: "Hello", body: "" } });
+    await waitFor(() => expect(document.querySelector(".compose-panel")).not.toBeNull());
+    expect(screen.getByPlaceholderText("Subject")).toHaveValue("Hello");
+    expect(screen.queryByPlaceholderText("Write your reply...")).not.toBeInTheDocument();
+
+    fireEvent.keyDown(document, { key: "Escape" });
+    await waitFor(() => expect(screen.queryByText("body m1")).not.toBeInTheDocument());
+    await new Promise(r => setTimeout(r, 300));
+    expect(document.querySelector(".compose-panel")).not.toBeNull();
+    expect(screen.getByPlaceholderText("Subject")).toHaveValue("Hello");
+  });
+});
+
 describe("App quick reply", () => {
   it("replies at the Reply-To address", async () => {
     threadsByCard["card-a"] = [{ ...thread("t-a", "Mail for A"), participants: ["List <noreply@x.com>"] }];

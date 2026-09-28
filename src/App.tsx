@@ -127,6 +127,7 @@ import { isSessionExpiredError } from "./app/authErrors";
 import { signatureBlock, withSignature } from "./app/signature";
 import { readFilesAsAttachments } from "./app/attachments";
 import { eventTimesFromForm, smartEventDefaults } from "./app/eventForm";
+import { composePlacement } from "./app/composePlacement";
 import { getSmartEventTime, groupCalendarEvents, isUserLabel, mergeThreadGroups, regroupThreads, type CalendarEventGroup } from "./app/grouping";
 
 function App() {
@@ -701,6 +702,15 @@ function App() {
   const [replyingToThread, setReplyingToThread] = createSignal<{ threadId: string; messageId?: string } | null>(null);
   const [replyingToEvent, setReplyingToEvent] = createSignal<{ eventId: string } | null>(null);
   const [forwardingEvent, setForwardingEvent] = createSignal<{ eventId: string } | null>(null);
+  const composeShownIn = createMemo(() => composePlacement({
+    composing: composing(),
+    activeThreadId: activeThreadId(),
+    replyThreadId: replyingToThread()?.threadId,
+    forwardThreadId: forwardingThread()?.threadId,
+    activeEventId: activeEvent()?.id,
+    replyEventId: replyingToEvent()?.eventId,
+    forwardEventId: forwardingEvent()?.eventId,
+  }));
   const [focusComposeBody, setFocusComposeBody] = createSignal(false);
   const [composeEmailError, setComposeEmailError] = createSignal<string | null>(null);
   const [draftSaved, setDraftSaved] = createSignal(false);
@@ -1855,6 +1865,8 @@ function App() {
     isHtml?: boolean;
     reply?: { threadId: string; messageId?: string };
     forward?: { threadId: string; subject: string; body: string };
+    replyEvent?: { eventId: string };
+    forwardEvent?: { eventId: string };
     focusBody?: boolean;
     // False when putting back an email that already has its signature
     signature?: boolean;
@@ -1864,8 +1876,8 @@ function App() {
       resetCompose();
     }
     batch(() => {
-      setReplyingToEvent(null);
-      setForwardingEvent(null);
+      setReplyingToEvent(init.replyEvent ?? null);
+      setForwardingEvent(init.forwardEvent ?? null);
       setReplyingToThread(init.reply ?? null);
       setForwardingThread(init.forward ?? null);
       setComposeTo(init.to ?? "");
@@ -2108,9 +2120,6 @@ function App() {
     });
     setComposeAttachments(pending.attachments);
     setComposeAccount(accounts().find(a => a.id === pending.accountId) ?? null);
-    // An open thread only shows a compose that replies to it
-    const threadId = activeThreadId();
-    if (threadId && threadId !== pending.reply?.threadId) closeThreadView();
   }
 
   function undoSend() {
@@ -3376,7 +3385,7 @@ function App() {
   }
 
   function closeEvent() {
-    const wasComposing = replyingToEvent() || forwardingEvent();
+    const wasComposing = composeShownIn() === "event";
     setActiveEvent(null);
     setActiveEventCardId(null);
     setReplyingToEvent(null);
@@ -4490,8 +4499,8 @@ function App() {
 
       </Show>
 
-      {/* Compose Panel (standalone, when not replying from thread) */}
-      <Show when={composing() && !activeThreadId()}>
+      {/* Compose Panel (standalone, when not inline in the open thread or event) */}
+      <Show when={composeShownIn() === "panel"}>
         <div class={`compose-panel ${closingCompose() ? 'closing' : ''}`}>
           <ComposeForm
             mode="new"
@@ -4627,7 +4636,7 @@ function App() {
             return c ? { name: c.name, color: (c.color as CardColor) || null } : null;
           })() : null}
           focusColor={selectedBgColorIndex() !== null ? BG_COLORS[selectedBgColorIndex()!].hex : null}
-          onClose={() => { closeThreadView(); if (composing()) closeCompose(); }}
+          onClose={() => { if (composeShownIn() === "thread") closeCompose(); closeThreadView(); }}
           focusedMessageIndex={focusedMessageIndex()}
           onFocusChange={setFocusedMessageIndex}
           onOpenAttachment={(messageId, attachmentId, filename, mimeType, inlineData) => openAttachment(messageId, attachmentId, filename, mimeType, inlineData)}
@@ -4643,7 +4652,7 @@ function App() {
           isInInbox={isThreadInInbox()}
           labelCount={getThreadUserLabelCount()}
           // Inline compose props
-          inlineCompose={composing() ? {
+          inlineCompose={composeShownIn() === "thread" ? {
             replyToMessageId: replyingToThread()?.messageId || null,
             isForward: !!forwardingThread(),
             to: composeTo(),
@@ -4791,16 +4800,14 @@ function App() {
             if (!event) return;
             const subject = addReplyPrefix(event.title);
             const { to } = eventReplyRecipients(event, selectedAccount()?.email ?? '');
-            startCompose({ to, subject, focusBody: true });
-            setReplyingToEvent({ eventId: event.id });
+            startCompose({ to, subject, focusBody: true, replyEvent: { eventId: event.id } });
           }}
           onReplyAll={() => {
             const event = activeEvent();
             if (!event) return;
             const subject = addReplyPrefix(event.title);
             const { to, cc } = eventReplyRecipients(event, selectedAccount()?.email ?? '', true);
-            startCompose({ to, cc, subject, focusBody: true });
-            setReplyingToEvent({ eventId: event.id });
+            startCompose({ to, cc, subject, focusBody: true, replyEvent: { eventId: event.id } });
           }}
           onForward={() => {
             const event = activeEvent();
@@ -4812,8 +4819,7 @@ function App() {
               (event.location ? `Where: ${event.location}\n` : '') +
               (event.organizer ? `Organizer: ${event.organizer}\n` : '') +
               (event.description ? `\n${event.description}` : '');
-            startCompose({ subject, body, focusBody: true });
-            setForwardingEvent({ eventId: event.id });
+            startCompose({ subject, body, focusBody: true, forwardEvent: { eventId: event.id } });
           }}
           onEdit={() => {
             const event = activeEvent();
@@ -4854,7 +4860,7 @@ function App() {
           calendarsLoading={calendarsLoading()}
           onMoveToCalendar={handleMoveEventToCalendar}
           rsvpLoading={!!(activeEvent() && rsvpLoading[activeEvent()!.id])}
-          inlineCompose={composing() && activeEvent() && (replyingToEvent()?.eventId === activeEvent()!.id || forwardingEvent()?.eventId === activeEvent()!.id) ? {
+          inlineCompose={composeShownIn() === "event" ? {
             replyToMessageId: null,
             isForward: !!forwardingEvent(),
             to: composeTo(),
