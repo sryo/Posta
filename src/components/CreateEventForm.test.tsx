@@ -3,7 +3,7 @@ import { fireEvent, render } from "@solidjs/testing-library";
 import { createSignal } from "solid-js";
 import { CreateEventForm } from "./CreateEventForm";
 
-function renderForm(init: { startDate: string; endDate?: string; startTime?: string; endTime?: string; isEditing?: boolean }) {
+function renderForm(init: { startDate: string; endDate?: string; startTime?: string; endTime?: string; isEditing?: boolean; allDay?: boolean; setRecurrence?: (v: string | null) => void }) {
   const [startDate, setStartDate] = createSignal(init.startDate);
   const [endDate, setEndDate] = createSignal(init.endDate ?? init.startDate);
   const [startTime, setStartTime] = createSignal(init.startTime ?? "10:00");
@@ -25,12 +25,12 @@ function renderForm(init: { startDate: string; endDate?: string; startTime?: str
       setEndDate={setEndDate}
       endTime={endTime()}
       setEndTime={setEndTime}
-      allDay={false}
+      allDay={init.allDay ?? false}
       setAllDay={vi.fn()}
       attendees=""
       setAttendees={vi.fn()}
       recurrence={null}
-      setRecurrence={vi.fn()}
+      setRecurrence={init.setRecurrence ?? vi.fn()}
       saving={false}
       onSave={vi.fn()}
       error={null}
@@ -105,3 +105,13 @@ describe("CreateEventForm time pickers", () => {
   });
 });
 
+
+describe("CreateEventForm repeat", () => {
+  it("offers repeat options for all-day events and hides the time pickers", () => {
+    const setRecurrence = vi.fn();
+    const { container, getByText } = renderForm({ startDate: "2024-06-10", allDay: true, setRecurrence });
+    expect(container.querySelector(".time-picker-start")).toBeNull();
+    fireEvent.click(getByText("Weekly"));
+    expect(setRecurrence).toHaveBeenCalledWith("FREQ=WEEKLY");
+  });
+});

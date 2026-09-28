@@ -299,9 +299,9 @@ export const CreateEventForm = (props: {
             </label>
           </div>
 
-          {/* Vertical Time Lists + Repeat */}
-          <Show when={!props.allDay}>
-            <div class="scheduler-times" style={{ display: "flex", gap: "15px", padding: "0 15px", height: "200px" }}>
+          {/* Vertical Time Lists + Repeat; all-day events only repeat */}
+          <div class="scheduler-times" style={{ display: "flex", gap: "15px", padding: "0 15px", height: "200px" }}>
+            <Show when={!props.allDay}>
               <div style={{ flex: 1, display: "flex", "flex-direction": "column" }}>
                 <div style={{ display: "flex", "align-items": "center", height: "17px", "margin-bottom": "5px" }}>
                   <label style={{ "font-size": "12px", color: "var(--text-secondary)" }}>Start</label>
@@ -354,33 +354,33 @@ export const CreateEventForm = (props: {
                   </For>
                 </div>
               </div>
-              <div style={{ flex: 1, display: "flex", "flex-direction": "column" }}>
-                <div style={{ display: "flex", "align-items": "center", height: "17px", "margin-bottom": "5px" }}>
-                  <label style={{ "font-size": "12px", color: "var(--text-secondary)" }}>Repeat</label>
-                </div>
-                <div style={{ flex: 1, "overflow-y": "auto", border: "1px solid var(--border-color)", "border-radius": "6px" }}>
-                  <For each={recurrenceOptions}>
-                    {(opt) => (
-                      <div
-                        onClick={() => props.setRecurrence(opt.value)}
-                        style={{
-                          "padding": "6px 10px",
-                          "cursor": "pointer",
-                          "background-color": props.recurrence === opt.value ? "var(--accent)" : "transparent",
-                          "color": props.recurrence === opt.value ? "#fff" : "var(--text-primary)",
-                          "border-radius": "6px",
-                          "font-size": "13px",
-                          "text-align": "center"
-                        }}
-                      >
-                        {opt.label}
-                      </div>
-                    )}
-                  </For>
-                </div>
+            </Show>
+            <div style={{ flex: 1, display: "flex", "flex-direction": "column" }}>
+              <div style={{ display: "flex", "align-items": "center", height: "17px", "margin-bottom": "5px" }}>
+                <label style={{ "font-size": "12px", color: "var(--text-secondary)" }}>Repeat</label>
+              </div>
+              <div style={{ flex: 1, "overflow-y": "auto", border: "1px solid var(--border-color)", "border-radius": "6px" }}>
+                <For each={recurrenceOptions}>
+                  {(opt) => (
+                    <div
+                      onClick={() => props.setRecurrence(opt.value)}
+                      style={{
+                        "padding": "6px 10px",
+                        "cursor": "pointer",
+                        "background-color": props.recurrence === opt.value ? "var(--accent)" : "transparent",
+                        "color": props.recurrence === opt.value ? "#fff" : "var(--text-primary)",
+                        "border-radius": "6px",
+                        "font-size": "13px",
+                        "text-align": "center"
+                      }}
+                    >
+                      {opt.label}
+                    </div>
+                  )}
+                </For>
               </div>
             </div>
-          </Show>
+          </div>
         </div>
 
         <div class="compose-field">
