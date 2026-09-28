@@ -46,6 +46,7 @@ export const ThreadView = (props: {
   thread: FullThread | null,
   loading: boolean,
   error: string | null,
+  onRetry?: () => void,
   card: { name: string; color: string | null } | null,
   focusColor: string | null,
   onClose: () => void,
@@ -368,7 +369,12 @@ export const ThreadView = (props: {
         </Show>
 
         <Show when={props.error}>
-          <div class="error-message">{props.error}</div>
+          <div class="error-message">
+            {props.error}
+            <Show when={props.onRetry}>
+              <button class="retry-btn" onClick={() => props.onRetry?.()}>Try again</button>
+            </Show>
+          </div>
         </Show>
 
         <Show when={props.thread}>

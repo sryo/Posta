@@ -3783,6 +3783,8 @@ button:disabled:hover {
 }
 
 .thread-content .error-message {
+    flex-direction: column;
+    gap: var(--space-sm);
     color: var(--danger);
 }
 

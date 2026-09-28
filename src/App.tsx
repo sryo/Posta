@@ -4603,6 +4603,11 @@ function App() {
           onError={showToast}
           loading={threadLoading()}
           error={threadError()}
+          onRetry={() => {
+            const threadId = activeThreadId();
+            const cardId = activeThreadCardId();
+            if (threadId && cardId) openThread(threadId, cardId);
+          }}
           card={activeThreadCardId() ? (() => {
             const c = cards().find(c => c.id === activeThreadCardId());
             return c ? { name: c.name, color: (c.color as CardColor) || null } : null;

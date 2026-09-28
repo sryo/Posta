@@ -382,3 +382,12 @@ describe("ThreadView attachments", () => {
     expect(props.onOpenAttachment).toHaveBeenCalledTimes(1);
   });
 });
+
+describe("ThreadView load errors", () => {
+  it("offers to try loading the thread again", () => {
+    const onRetry = vi.fn();
+    const { getByRole } = renderThread({ thread: null, error: "Couldn't load this conversation.", onRetry });
+    fireEvent.click(getByRole("button", { name: "Try again" }));
+    expect(onRetry).toHaveBeenCalledTimes(1);
+  });
+});
