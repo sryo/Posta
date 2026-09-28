@@ -424,6 +424,7 @@ mod tests {
         let challenge = base64_url_encode(&Sha256::digest(verifier.as_bytes()));
         assert!(url.contains(&format!("code_challenge={}&", challenge)));
     }
+
     /// Serve one canned HTTP response per connection on an ephemeral port;
     /// `None` accepts and never answers
     fn token_stub(response: Option<&'static str>) -> String {

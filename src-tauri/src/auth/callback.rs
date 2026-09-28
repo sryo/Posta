@@ -276,6 +276,7 @@ mod tests {
             "&lt;img src=x onerror=&#39;a&amp;b&#39;&gt;"
         );
     }
+
     fn send(addr: std::net::SocketAddr, request_line: &str) -> String {
         use std::io::Read;
         let mut stream = TcpStream::connect(addr).unwrap();
