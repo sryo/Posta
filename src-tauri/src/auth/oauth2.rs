@@ -234,19 +234,29 @@ trait SecretStore {
 
 struct Keychain;
 
+/// A secret that isn't UTF-8 is as good as missing, and signing in again
+/// overwrites it; any other failure (locked, access denied) is an error
+fn keychain_read(key: &str, read: keyring::Result<String>) -> Result<Option<String>, String> {
+    match read {
+        Ok(secret) => Ok(Some(secret)),
+        Err(keyring::Error::NoEntry) => Ok(None),
+        Err(keyring::Error::BadEncoding(_)) => {
+            tracing::warn!("Keychain entry {} is not valid UTF-8; ignoring it", key);
+            Ok(None)
+        }
+        Err(e) => {
+            tracing::warn!("Keychain get_password failed for {}: {:?}", key, e);
+            Err(e.to_string())
+        }
+    }
+}
+
 impl SecretStore for Keychain {
     fn get(&self, key: &str) -> Result<Option<String>, String> {
         let Some(entry) = keychain_entry(key) else {
             return Ok(None);
         };
-        match entry.get_password() {
-            Ok(secret) => Ok(Some(secret)),
-            Err(keyring::Error::NoEntry) => Ok(None),
-            Err(e) => {
-                tracing::warn!("Keychain get_password failed for {}: {:?}", key, e);
-                Err(e.to_string())
-            }
-        }
+        keychain_read(key, entry.get_password())
     }
 
     fn set(&self, key: &str, secret: &str) -> bool {
@@ -518,6 +528,17 @@ mod tests {
                 self.entries.lock().unwrap().remove(key);
             }
         }
+    }
+
+    #[test]
+    fn only_an_unreadable_keychain_is_an_error() {
+        assert_eq!(keychain_read("k", Ok("s".into())), Ok(Some("s".into())));
+        assert_eq!(keychain_read("k", Err(keyring::Error::NoEntry)), Ok(None));
+        assert_eq!(keychain_read("k", Err(keyring::Error::BadEncoding(vec![0xff]))), Ok(None));
+        let locked = keyring::Error::PlatformFailure("User interaction is not allowed.".into());
+        assert!(keychain_read("k", Err(locked)).is_err());
+        let unavailable = keyring::Error::NoStorageAccess("no keychain".into());
+        assert!(keychain_read("k", Err(unavailable)).is_err());
     }
 
     #[test]
