@@ -63,6 +63,8 @@ export const ThreadView = (props: {
   // Toolbar action props
   onAction: (action: string) => void,
   onOpenLabels: () => void,
+  labelDrawerOpen?: boolean,
+  onCloseLabelDrawer?: () => void,
   accountId: string,
   // Signed-in account's email; used to exclude self from reply-all recipients
   currentUserEmail?: string,
@@ -227,10 +229,17 @@ export const ThreadView = (props: {
     if (e.key === 'Escape') {
       if (isTyping) return; // input-level handlers (e.g. ComposeForm) own Escape
       if (props.inlineCompose) { props.inlineCompose.onClose(); return; }
+      if (props.labelDrawerOpen) { props.onCloseLabelDrawer?.(); return; }
       handleClose();
       return;
     }
     if (isTyping || hasCommandModifier(e) || !props.thread) return;
+
+    // The drawer covers the thread, so only its own toggle stays live
+    if (props.labelDrawerOpen) {
+      if (e.key === 'l') { e.preventDefault(); props.onCloseLabelDrawer?.(); }
+      return;
+    }
 
     if (e.key === 'a') { e.preventDefault(); props.onAction(props.isInInbox ? 'archive' : 'inbox'); return; }
     if (e.key === 's') { e.preventDefault(); props.onAction(props.isStarred ? 'unstar' : 'star'); return; }

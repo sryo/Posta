@@ -191,6 +191,30 @@ describe("ThreadView keyboard shortcuts", () => {
     expect(container.querySelector(".thread-overlay.closing")).toBeNull();
   });
 
+  it("with the label drawer open, Escape closes only the drawer and other shortcuts are ignored", () => {
+    const onCloseLabelDrawer = vi.fn();
+    const { props, container } = renderThread({ labelDrawerOpen: true, onCloseLabelDrawer });
+    for (const key of ["a", "d", "#", "s", "u", "i", "!", "r", "f", "j", "k"]) {
+      fireEvent.keyDown(document, { key });
+    }
+    expect(props.onAction).not.toHaveBeenCalled();
+    expect(props.onReply).not.toHaveBeenCalled();
+    expect(props.onForward).not.toHaveBeenCalled();
+    expect(props.onFocusChange).not.toHaveBeenCalled();
+
+    fireEvent.keyDown(document, { key: "Escape" });
+    expect(onCloseLabelDrawer).toHaveBeenCalledTimes(1);
+    expect(container.querySelector(".thread-overlay.closing")).toBeNull();
+  });
+
+  it("toggles the label drawer shut on a second 'l'", () => {
+    const onCloseLabelDrawer = vi.fn();
+    const { props } = renderThread({ labelDrawerOpen: true, onCloseLabelDrawer });
+    fireEvent.keyDown(document, { key: "l" });
+    expect(onCloseLabelDrawer).toHaveBeenCalledTimes(1);
+    expect(props.onOpenLabels).not.toHaveBeenCalled();
+  });
+
   it("forwards the focused message on 'f'", () => {
     const { props } = renderThread({ focusedMessageIndex: 0 });
     fireEvent.keyDown(document, { key: "f" });
