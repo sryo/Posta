@@ -157,6 +157,7 @@ function App() {
   const [labelSearchQuery, setLabelSearchQuery] = createSignal("");
 
   const [error, setError] = createSignal<string | null>(null);
+  const [expiredAccountId, setExpiredAccountId] = createSignal<string | null>(null);
   const [accounts, setAccounts] = createSignal<Account[]>([]);
   const [selectedAccount, setSelectedAccount] = createSignal<Account | null>(null);
   const [cards, setCards] = createSignal<Card[]>([]);
@@ -2890,13 +2891,39 @@ function App() {
       setSyncErrors(cardId, errorMsg);
       return;
     }
-    // Several cards fail at once; sign out only once
-    if (error()?.includes("Session expired")) return;
-    setError("Session expired - please sign in again");
-    setTimeout(async () => {
-      await handleSignOut();
-      setError(null);
-    }, 1500);
+    // The account and its cards stay: signing in again with the same email
+    // reuses the account id, so the layout comes back as it was
+    setCardErrors(cardId, "Session expired");
+    setExpiredAccountId(selectedAccount()?.id ?? null);
+    setError("Session expired - sign in again");
+  }
+
+  async function handleReauth() {
+    const storedCreds = await getStoredCredentials();
+    if (!storedCreds) {
+      setSettingsOpen(true);
+      setError("Connect your Google account in Settings");
+      return;
+    }
+
+    setAuthLoading(true);
+    setError(null);
+    try {
+      await configureAuth({
+        client_id: storedCreds.client_id,
+        client_secret: storedCreds.client_secret,
+      });
+      const account = await runOAuthFlow();
+      setExpiredAccountId(null);
+      upsertAccount(account);
+      closeAccountViews();
+      setSelectedAccount(account);
+      if (await loadAccountCards(account)) startBackgroundSync(account.id);
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setAuthLoading(false);
+    }
   }
 
   async function fetchAndCacheCalendarEvents(accountId: string, cardId: string, query: string) {
@@ -3759,6 +3786,9 @@ function App() {
       <Show when={error()}>
         <div class="auth-error" style="position: fixed; top: 12px; left: 50%; transform: translateX(-50%); z-index: 100;">
           {error()}
+          <Show when={expiredAccountId() && expiredAccountId() === selectedAccount()?.id}>
+            <button class="btn btn-primary" style="margin-left: 8px;" onClick={handleReauth}>Sign in again</button>
+          </Show>
           <button class="btn" style="margin-left: 8px;" onClick={() => setError(null)} aria-label="Dismiss error">×</button>
         </div>
       </Show>
