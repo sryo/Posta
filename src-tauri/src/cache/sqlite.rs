@@ -39,8 +39,7 @@ impl CacheDb {
             CREATE TABLE IF NOT EXISTS accounts (
                 id TEXT PRIMARY KEY,
                 email TEXT NOT NULL UNIQUE,
-                picture TEXT,
-                refresh_token_ref TEXT
+                picture TEXT
             );
 
             CREATE TABLE IF NOT EXISTS cards (
@@ -52,24 +51,11 @@ impl CacheDb {
                 collapsed INTEGER NOT NULL DEFAULT 0
             );
 
-            CREATE TABLE IF NOT EXISTS threads (
-                gmail_thread_id TEXT PRIMARY KEY,
-                account_id TEXT NOT NULL,
-                subject TEXT,
-                snippet TEXT,
-                last_message_date INTEGER NOT NULL,
-                unread_count INTEGER NOT NULL DEFAULT 0,
-                labels TEXT,
-                participants TEXT,
-                cached_at INTEGER NOT NULL
-            );
-
-            -- Never populated by any release
+            -- Never read by any release
             DROP TABLE IF EXISTS messages;
+            DROP TABLE IF EXISTS threads;
 
             CREATE INDEX IF NOT EXISTS idx_cards_account ON cards(account_id);
-            CREATE INDEX IF NOT EXISTS idx_threads_account ON threads(account_id);
-            CREATE INDEX IF NOT EXISTS idx_threads_date ON threads(last_message_date DESC);
 
             -- Card thread cache: stores thread data per card
             CREATE TABLE IF NOT EXISTS card_thread_cache (
@@ -120,14 +106,13 @@ impl CacheDb {
 
     pub fn get_accounts(&self) -> Result<Vec<Account>, CacheError> {
         let conn = self.conn.lock().map_err(|_| CacheError::Lock)?;
-        let mut stmt = conn.prepare("SELECT id, email, picture, signature, refresh_token_ref FROM accounts ORDER BY email")?;
+        let mut stmt = conn.prepare("SELECT id, email, picture, signature FROM accounts ORDER BY email")?;
         let rows = stmt.query_map([], |row| {
             Ok(Account {
                 id: row.get(0)?,
                 email: row.get(1)?,
                 picture: row.get(2)?,
                 signature: row.get(3)?,
-                refresh_token_ref: row.get(4)?,
             })
         })?;
         rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
@@ -136,7 +121,7 @@ impl CacheDb {
     pub fn get_account_by_email(&self, email: &str) -> Result<Option<Account>, CacheError> {
         let conn = self.conn.lock().map_err(|_| CacheError::Lock)?;
         let mut stmt = conn.prepare(
-            "SELECT id, email, picture, signature, refresh_token_ref FROM accounts WHERE email = ?1",
+            "SELECT id, email, picture, signature FROM accounts WHERE email = ?1",
         )?;
         let result = stmt.query_row(params![email], |row| {
             Ok(Account {
@@ -144,7 +129,6 @@ impl CacheDb {
                 email: row.get(1)?,
                 picture: row.get(2)?,
                 signature: row.get(3)?,
-                refresh_token_ref: row.get(4)?,
             })
         });
         match result {
@@ -157,8 +141,8 @@ impl CacheDb {
     pub fn insert_account(&self, account: &Account) -> Result<(), CacheError> {
         let conn = self.conn.lock().map_err(|_| CacheError::Lock)?;
         conn.execute(
-            "INSERT OR REPLACE INTO accounts (id, email, picture, signature, refresh_token_ref) VALUES (?1, ?2, ?3, ?4, ?5)",
-            params![account.id, account.email, account.picture, account.signature, account.refresh_token_ref],
+            "INSERT OR REPLACE INTO accounts (id, email, picture, signature) VALUES (?1, ?2, ?3, ?4)",
+            params![account.id, account.email, account.picture, account.signature],
         )?;
         Ok(())
     }
@@ -185,7 +169,6 @@ impl CacheDb {
             params![id],
         )?;
         tx.execute("DELETE FROM cards WHERE account_id = ?1", params![id])?;
-        tx.execute("DELETE FROM threads WHERE account_id = ?1", params![id])?;
         tx.execute("DELETE FROM sync_state WHERE account_id = ?1", params![id])?;
         tx.execute("DELETE FROM accounts WHERE id = ?1", params![id])?;
         tx.commit()?;
@@ -256,19 +239,6 @@ impl CacheDb {
         }
         tx.commit()?;
         Ok(())
-    }
-
-    // Thread cache operations
-
-    pub fn clear_old_cache(&self, max_age_hours: i64) -> Result<usize, CacheError> {
-        let conn = self.conn.lock().map_err(|_| CacheError::Lock)?;
-        let cutoff = chrono::Utc::now().timestamp() - (max_age_hours * 3600);
-        // Keep starred and important threads even if old
-        let count = conn.execute(
-            "DELETE FROM threads WHERE cached_at < ?1 AND labels NOT LIKE '%STARRED%' AND labels NOT LIKE '%IMPORTANT%'",
-            params![cutoff],
-        )?;
-        Ok(count)
     }
 
     /// Clear stale card caches (older than max_age_hours)
@@ -445,6 +415,8 @@ mod tests {
                  CREATE TABLE cards (id TEXT PRIMARY KEY, account_id TEXT NOT NULL, name TEXT NOT NULL,
                      query TEXT NOT NULL, position INTEGER NOT NULL DEFAULT 0, collapsed INTEGER NOT NULL DEFAULT 0);
                  CREATE TABLE messages (gmail_msg_id TEXT PRIMARY KEY);
+                 CREATE TABLE threads (gmail_thread_id TEXT PRIMARY KEY, account_id TEXT NOT NULL);
+                 CREATE INDEX idx_threads_account ON threads(account_id);
                  INSERT INTO accounts (id, email) VALUES ('a1', 'me@x.com');
                  INSERT INTO cards (id, account_id, name, query) VALUES ('c1', 'a1', 'Inbox', 'in:inbox');",
             )
@@ -458,13 +430,19 @@ mod tests {
         let cards = db.get_cards("a1").unwrap();
         assert_eq!(cards[0].group_by, "date");
         assert_eq!(cards[0].card_type, "email");
-        let messages_tables: i64 = db
+        let unused_tables: i64 = db
             .conn
             .lock()
             .unwrap()
-            .query_row("SELECT COUNT(*) FROM sqlite_master WHERE name = 'messages'", [], |r| r.get(0))
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE name IN ('messages', 'threads', 'idx_threads_account')",
+                [],
+                |r| r.get(0),
+            )
             .unwrap();
-        assert_eq!(messages_tables, 0);
+        assert_eq!(unused_tables, 0);
+        db.insert_account(&account("new@x.com")).unwrap();
+        assert!(db.get_account_by_email("new@x.com").unwrap().is_some());
 
         // Reopening an already-migrated database must also succeed
         drop(db);

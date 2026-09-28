@@ -13,8 +13,6 @@ pub struct Account {
     pub picture: Option<String>,
     #[serde(default)]
     pub signature: Option<String>,
-    #[serde(skip_serializing)]
-    pub refresh_token_ref: Option<String>,
 }
 
 impl Account {
@@ -24,7 +22,6 @@ impl Account {
             email,
             picture,
             signature: None,
-            refresh_token_ref: None,
         }
     }
 }

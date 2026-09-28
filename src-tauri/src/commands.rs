@@ -151,15 +151,6 @@ pub fn init_app(app_handle: tauri::AppHandle, state: State<'_, AppState>) -> Res
 
     let db = CacheDb::new(&db_path).map_err(|e| format!("Failed to open database: {}", e))?;
 
-    // Clean up stale cache on startup (24 hour expiry for non-priority items)
-    match db.clear_old_cache(24) {
-        Ok(count) => {
-            if count > 0 {
-                tracing::info!("Cleaned up {} stale thread cache entries", count);
-            }
-        }
-        Err(e) => tracing::warn!("Failed to clean thread cache: {}", e),
-    }
     match db.clear_stale_card_cache(24) {
         Ok(count) => {
             if count > 0 {
