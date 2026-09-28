@@ -67,7 +67,11 @@ beforeEach(() => {
   threadsByCard["card-b"] = [thread("t-b", "Mail for B")];
 });
 
-afterEach(() => vi.useRealTimers());
+afterEach(() => {
+  vi.useRealTimers();
+  // jsdom has no layout, so no scrollIntoView
+  Element.prototype.scrollIntoView = () => {};
+});
 Element.prototype.scrollIntoView = () => {};
 
 describe("App background sync", () => {
@@ -256,6 +260,9 @@ describe("App accounts", () => {
     render(() => <App />);
     fireEvent.click(await screen.findByText("Mail for A"));
     await screen.findByText("body m1");
+    // Let ThreadView's scroll-to-last-message frame run; it reads the thread
+    // without a null check
+    await new Promise(r => requestAnimationFrame(r));
 
     fireEvent.click(screen.getByTitle("a@x.com"));
     fireEvent.click(await screen.findByText("b@x.com"));
@@ -305,13 +312,12 @@ describe("App thread list shortcuts", () => {
 
   it("scrolls the focused card and thread into view", async () => {
     const scrolled: Element[] = [];
-    const spy = vi.spyOn(Element.prototype, "scrollIntoView").mockImplementation(function (this: Element) { scrolled.push(this); });
+    Element.prototype.scrollIntoView = function (this: Element) { scrolled.push(this); };
     render(() => <App />);
     const row = (await screen.findByText("Mail for A")).closest(".thread")!;
     fireEvent.keyDown(document, { key: "l" });
     await waitFor(() => expect(scrolled).toContain(row));
     expect(scrolled).toContain(screen.getByRole("region", { name: "Alpha email card" }).closest(".card-wrapper"));
-    spy.mockRestore();
   });
 
   it("clears the selection on Escape before dropping card focus", async () => {
