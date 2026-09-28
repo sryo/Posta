@@ -2365,7 +2365,9 @@ function App() {
   // Label drawer functions
   let labelsAccountId: string | null = null;
   let labelsFetchingFor: string | null = null;
-  async function fetchAccountLabels() {
+  // refresh: reload the list even when it is loaded (labels made in Gmail
+  // since), showing the loaded one meanwhile
+  async function fetchAccountLabels({ refresh = false } = {}) {
     const account = selectedAccount();
     if (!account) return;
 
@@ -2375,11 +2377,12 @@ function App() {
       labelsAccountId = account.id;
     }
 
-    if (accountLabels().length > 0) return; // Already cached
+    const loaded = accountLabels().length > 0;
+    if (loaded && !refresh) return;
     if (labelsFetchingFor === account.id) return;
 
     labelsFetchingFor = account.id;
-    setLabelsLoading(true);
+    setLabelsLoading(!loaded);
     setLabelsFailed(false);
     try {
       const labels = await listLabels(account.id);
@@ -2393,7 +2396,7 @@ function App() {
       setAccountLabels(sorted);
     } catch (e) {
       console.error("Failed to fetch labels:", e);
-      if (selectedAccount()?.id === account.id) setLabelsFailed(true);
+      if (selectedAccount()?.id === account.id && !loaded) setLabelsFailed(true);
     } finally {
       if (labelsFetchingFor === account.id) labelsFetchingFor = null;
       setLabelsLoading(false);
@@ -4840,7 +4843,7 @@ function App() {
           onReply={handleReplyFromThread}
           onForward={handleForwardFromThread}
           onAction={handleThreadViewAction}
-          onOpenLabels={() => { fetchAccountLabels(); setLabelDrawerOpen(true); }}
+          onOpenLabels={() => { fetchAccountLabels({ refresh: true }); setLabelDrawerOpen(true); }}
           isStarred={isThreadStarred()}
           isRead={isThreadRead()}
           isImportant={isThreadImportant()}

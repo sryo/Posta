@@ -2439,6 +2439,25 @@ describe("App label drawer", () => {
     fireEvent.click(screen.getByRole("button", { name: "Try again" }));
     expect(await screen.findByText("Receipts")).toBeInTheDocument();
   });
+
+  it("shows a label made in Gmail since the drawer was last open, keeping the list meanwhile", async () => {
+    handlers.get_thread_details = () => ({ id: "t-a", messages: [fullMessage("m1", "Ana <ana@x.com>")] });
+    const label = (id: string, name: string) => ({ id, name, messageListVisibility: null, labelListVisibility: null, label_type: "user" });
+    let labels = [label("L1", "Receipts")];
+    handlers.list_labels = () => labels;
+    render(() => <App />);
+    fireEvent.click(await screen.findByText("Mail for A"));
+    await screen.findByText("body m1");
+    fireEvent.keyDown(document, { key: "l" });
+    await screen.findByText("Receipts");
+    fireEvent.keyDown(screen.getByPlaceholderText("Search labels..."), { key: "Escape" });
+    await waitFor(() => expect(screen.queryByText("Receipts")).not.toBeInTheDocument());
+
+    labels = [label("L1", "Receipts"), label("L2", "Travel")];
+    fireEvent.keyDown(document, { key: "l" });
+    expect(screen.getByText("Receipts")).toBeInTheDocument();
+    expect(await screen.findByText("Travel")).toBeInTheDocument();
+  });
 });
 
 describe("App quick reply feedback", () => {
