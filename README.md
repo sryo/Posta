@@ -23,6 +23,8 @@ npm install
 npm run tauri dev
 ```
 
+`npm test` runs the frontend tests. `npm run check` runs the full gate: typecheck, frontend tests, production build, Rust tests and clippy.
+
 ## Tech
 
 SolidJS · Rust · Tauri · SQLite · Gmail API · Google Calendar API

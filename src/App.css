@@ -18,12 +18,6 @@
     --shadow: rgba(0, 0, 0, 0.1);
     --danger: #e53935;
     --danger-bg: rgba(229, 57, 53, 0.1);
-    --success: #43a047;
-    --success-bg: rgba(67, 160, 71, 0.12);
-    --warning: #fb8c00;
-    --warning-bg: rgba(251, 140, 0, 0.12);
-    --info: #00acc1;
-    --info-bg: rgba(0, 172, 193, 0.12);
     --toast-bg: #323232;
 
     /* Z-index scale - hierarchical layers
@@ -78,7 +72,6 @@
     --space-lg: 12px;
     --space-xl: 16px;
     --space-2xl: 24px;
-    --space-3xl: 32px;
 }
 
 @media (prefers-color-scheme: dark) {
@@ -95,12 +88,6 @@
         --shadow: rgba(0, 0, 0, 0.3);
         --danger: #ff6b6b;
         --danger-bg: rgba(255, 107, 107, 0.15);
-        --success: #66bb6a;
-        --success-bg: rgba(102, 187, 106, 0.15);
-        --warning: #ffa726;
-        --warning-bg: rgba(255, 167, 38, 0.15);
-        --info: #26c6da;
-        --info-bg: rgba(38, 198, 218, 0.15);
         --toast-bg: #424242;
     }
 }
@@ -299,27 +286,6 @@ select:focus:not(:focus-visible) {
     z-index: -1;
 }
 
-.toolbar-btn {
-    width: var(--toolbar-btn-size);
-    height: var(--toolbar-btn-size);
-    border-radius: var(--radius-xl);
-    border: none;
-    background: var(--bg-primary);
-    color: var(--text-secondary);
-    cursor: pointer;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    transition: all 0.2s ease;
-    box-shadow: 0 2px 5px rgba(0, 0, 0, 0.05);
-}
-
-.toolbar-btn:hover {
-    background: var(--bg-hover);
-    color: var(--text-primary);
-    box-shadow: 0 4px 8px rgba(0, 0, 0, 0.1);
-}
-
 .toolbar-avatar {
     width: var(--toolbar-btn-size);
     height: var(--toolbar-btn-size);
@@ -456,7 +422,7 @@ select:focus:not(:focus-visible) {
 }
 
 .account-chooser-check {
-    color: var(--accent-color, #1e88e5);
+    color: var(--accent);
     font-size: var(--font-size-lg);
     font-weight: 600;
 }
@@ -686,7 +652,6 @@ select:focus:not(:focus-visible) {
         transform 0.2s ease,
         filter 0.2s ease;
 }
-
 
 /* Card colors with CSS variable for cohesive theming */
 .card[data-color="red"] {
@@ -1029,7 +994,6 @@ select:focus:not(:focus-visible) {
     margin-left: 4px;
 }
 
-
 .thread-attachments {
     display: flex;
     gap: var(--space-md);
@@ -1162,21 +1126,6 @@ select:focus:not(:focus-visible) {
     color: var(--text-primary);
 }
 
-/* Reusable Calendar Event Card */
-.calendar-event-card {
-    display: flex;
-    flex-direction: column;
-    gap: var(--space-sm);
-    padding: var(--space-md) var(--space-lg);
-    background: var(--bg-hover);
-    border-radius: var(--radius-md);
-}
-
-.calendar-event-card.compact {
-    padding: var(--space-md) var(--space-md);
-    gap: 3px;
-}
-
 .calendar-event-title {
     font-size: var(--font-size-md);
     font-weight: 500;
@@ -1184,39 +1133,6 @@ select:focus:not(:focus-visible) {
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
-}
-
-.calendar-event-attendees {
-    font-size: var(--font-size-sm);
-    color: var(--text-muted);
-    display: flex;
-    align-items: flex-start;
-    gap: var(--space-md);
-}
-
-.calendar-event-attendees .attendee-list {
-    display: flex;
-    flex-wrap: wrap;
-    gap: var(--space-sm);
-}
-
-.calendar-event-attendees .attendee {
-    background: var(--bg-tertiary);
-    padding: var(--space-xs) var(--space-md);
-    border-radius: var(--radius-sm);
-}
-
-.calendar-event-status {
-    font-size: var(--font-size-sm);
-    font-weight: 500;
-    padding: var(--space-xs) var(--space-md);
-    border-radius: var(--radius-xs);
-    width: fit-content;
-}
-
-.calendar-event-status.cancelled {
-    background: rgba(239, 68, 68, 0.15);
-    color: #ef4444;
 }
 
 .calendar-event-response {
@@ -1240,13 +1156,6 @@ select:focus:not(:focus-visible) {
 .calendar-event-response.declined {
     background: rgba(239, 68, 68, 0.15);
     color: #ef4444;
-}
-
-.calendar-rsvp .rsvp-prompt {
-    padding: var(--space-sm) var(--space-md);
-    font-size: var(--font-size-sm);
-    color: var(--text-muted);
-    border-right: 1px solid var(--border-color);
 }
 
 /* Calendar card event items */
@@ -1645,7 +1554,6 @@ select:focus:not(:focus-visible) {
     z-index: var(--z-dropdown);
 }
 
-
 .action-config-item {
     display: flex;
     align-items: center;
@@ -1679,10 +1587,8 @@ select:focus:not(:focus-visible) {
     user-select: none;
     -webkit-user-select: none;
     letter-spacing: -2px;
-    margin-right: 2px;
     padding: var(--space-sm);
-    margin: -4px;
-    margin-right: -2px;
+    margin: -4px -2px -4px -4px;
 }
 
 .action-config-item .drag-handle:active {
@@ -1743,6 +1649,16 @@ select:focus:not(:focus-visible) {
 
 .btn-danger:hover {
     background: var(--danger-bg);
+}
+
+.btn-ghost {
+    background: transparent;
+    border-color: transparent;
+    color: var(--text-secondary);
+}
+
+.btn-ghost:hover {
+    color: var(--text-primary);
 }
 
 .btn:disabled,
@@ -1812,8 +1728,8 @@ button:disabled:hover {
     text-align: center;
 }
 
-/* Shared spinner component */
-.spinner {
+.auth-spinner,
+.spinner-sm {
     width: 32px;
     height: 32px;
     border: 3px solid var(--border-light);
@@ -1826,16 +1742,6 @@ button:disabled:hover {
     width: 16px;
     height: 16px;
     border-width: 2px;
-}
-
-/* Alias for backwards compatibility */
-.auth-spinner {
-    width: 32px;
-    height: 32px;
-    border: 3px solid var(--border-light);
-    border-top-color: var(--accent);
-    border-radius: var(--radius-full);
-    animation: spin 0.8s linear infinite;
 }
 
 /* Card Resize Handle (in gap between cards, full height) */
@@ -2045,8 +1951,9 @@ button:disabled:hover {
 
 /* Compose Panel */
 .compose-panel {
+    --panel-top: 40px;
     position: fixed;
-    top: 40px;
+    top: var(--panel-top);
     left: 24px;
     width: 480px;
     max-width: calc(100vw - 48px);
@@ -2057,7 +1964,7 @@ button:disabled:hover {
     z-index: 110;
     display: flex;
     flex-direction: column;
-    max-height: calc(100vh - var(--toolbar-top) - var(--app-edge-margin));
+    max-height: calc(100vh - var(--panel-top) - var(--app-edge-margin));
     animation: composePanelExpand 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
     transform-origin: top left;
 }
@@ -2090,7 +1997,7 @@ button:disabled:hover {
 @keyframes composePanelCollapse {
     from {
         width: 480px;
-        max-height: calc(100vh - var(--toolbar-top) - var(--app-edge-margin));
+        max-height: calc(100vh - var(--panel-top) - var(--app-edge-margin));
         border-radius: var(--radius-lg);
         opacity: 1;
         transform: scale(1);
@@ -2109,7 +2016,7 @@ button:disabled:hover {
 
 /* Event Compose Panel - positioned at new-event button */
 .compose-panel.event-compose {
-    top: 84px;
+    --panel-top: 84px;
     animation: eventPanelExpand 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
 }
 
@@ -2141,7 +2048,7 @@ button:disabled:hover {
 @keyframes eventPanelCollapse {
     from {
         width: 480px;
-        max-height: calc(100vh - var(--toolbar-top) - var(--app-edge-margin));
+        max-height: calc(100vh - var(--panel-top) - var(--app-edge-margin));
         border-radius: var(--radius-lg);
         opacity: 1;
         transform: scale(1);
@@ -2233,7 +2140,7 @@ button:disabled:hover {
 .cc-bcc-toggle:hover {
     background: var(--bg-hover);
     color: var(--text-primary);
-    border-color: var(--border-hover);
+    border-color: var(--text-muted);
 }
 
 .compose-content {
@@ -2356,8 +2263,7 @@ button:disabled:hover {
     transition: opacity 100ms;
 }
 
-.thread:hover .thread-checkbox-wrap,
-.thread.selected {
+.thread:hover .thread-checkbox-wrap {
     background: var(--bg-hover);
 }
 
@@ -2620,6 +2526,12 @@ button:disabled:hover {
     font-size: var(--font-size-md);
 }
 
+.restore-actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: var(--space-md);
+}
+
 .preset-options {
     display: flex;
     flex-wrap: wrap;
@@ -2726,31 +2638,6 @@ button:disabled:hover {
 .preset-desc {
     font-size: var(--font-size-sm);
     color: var(--text-muted);
-}
-
-/* Settings Sidebar */
-.settings-btn {
-    position: fixed;
-    bottom: 16px;
-    left: 16px;
-    width: 32px;
-    height: 32px;
-    background: var(--bg-primary);
-    border: none;
-    box-shadow: 0 0 0 1px var(--border-color);
-    border-radius: var(--radius-lg);
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    cursor: pointer;
-    color: var(--text-muted);
-    z-index: 50;
-}
-
-.settings-btn:hover {
-    background: var(--bg-hover);
-    color: var(--text-secondary);
-    box-shadow: 0 0 0 1px var(--text-muted);
 }
 
 /* Query help button and sheet */
@@ -2975,7 +2862,6 @@ button:disabled:hover {
     background: var(--bg-hover);
     color: var(--text-primary);
 }
-
 
 /* Keyboard shortcut hints */
 .shortcut-hint {
@@ -3209,7 +3095,6 @@ button:disabled:hover {
     width: 0;
     height: 0;
 }
-
 
 .bulk-actions-wheel .bulk-btn {
     width: 28px;
@@ -3795,7 +3680,8 @@ button:disabled:hover {
     background: var(--bg-hover);
 }
 
-.label-item input[type="checkbox"] {
+.label-item input[type="checkbox"],
+.label-item input[type="radio"] {
     width: 16px;
     height: 16px;
     accent-color: var(--accent);
@@ -3939,7 +3825,7 @@ button:disabled:hover {
     border: none;
     border-radius: var(--radius-xl);
     padding: var(--space-2xl);
-    box-shadow: 0 0 0 2px var(--message-border-color, var(--border-color));
+    box-shadow: 0 0 0 2px var(--border-color);
     transition: box-shadow 0.15s;
     width: 100%;
     overflow: visible;
@@ -3994,7 +3880,6 @@ button:disabled:hover {
     pointer-events: auto;
     z-index: 100;
 }
-
 
 .message-actions-wheel .message-action-btn {
     width: 26px;
@@ -4472,10 +4357,6 @@ button:disabled:hover {
     :root {
         --sidebar-width: 60px;
     }
-
-    .toolbar-btn span {
-        display: none;
-    }
 }
 
 /* Small tablet: Compact sidebar */
@@ -4486,11 +4367,6 @@ button:disabled:hover {
 
     .sidebar {
         width: var(--sidebar-width);
-    }
-
-    .toolbar-btn {
-        width: 36px;
-        height: 36px;
     }
 
     .toolbar-avatar {
@@ -4508,11 +4384,6 @@ button:disabled:hover {
     :root {
         --drag-region-height: 24px;
         --sidebar-width: 44px;
-    }
-
-    .toolbar-btn {
-        width: 32px;
-        height: 32px;
     }
 
     .toolbar-avatar {
