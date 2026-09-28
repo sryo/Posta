@@ -150,7 +150,7 @@ impl GmailAuth {
         tracing::info!("Token response status: {}", status);
 
         if !status.is_success() {
-            return Err(AuthError::OAuth2(format!("Token exchange failed ({}): {}", status, body)));
+            return Err(AuthError::OAuth2(format!("Token exchange failed ({}): {}", status, token_error_text(&body))));
         }
 
         // A successful body carries the tokens, so keep it out of the error
@@ -180,11 +180,23 @@ impl GmailAuth {
 
         if !resp.status().is_success() {
             let error_text = resp.text().await.unwrap_or_default();
-            return Err(AuthError::TokenRefresh(error_text));
+            return Err(AuthError::TokenRefresh(token_error_text(&error_text)));
         }
 
         let token_resp: TokenResponse = resp.json().await?;
         Ok((token_resp.access_token, token_resp.expires_in))
+    }
+}
+
+/// Google's token endpoint errors are JSON with an `error` code and usually
+/// an `error_description`; anything else is passed through trimmed
+fn token_error_text(body: &str) -> String {
+    let parsed = serde_json::from_str::<serde_json::Value>(body).ok();
+    let field = |name: &str| parsed.as_ref().and_then(|v| v[name].as_str().map(str::to_string));
+    match (field("error"), field("error_description")) {
+        (Some(code), Some(description)) => format!("{}: {}", code, description),
+        (Some(code), None) => code,
+        _ => body.trim().to_string(),
     }
 }
 
@@ -728,6 +740,7 @@ mod tests {
         let err = auth.refresh_access_token("rt").await.unwrap_err().to_string();
         assert!(err.contains("invalid_grant"), "{}", err);
         assert_eq!(err.matches("Token refresh failed").count(), 1, "{}", err);
+        assert_eq!(err, "Token refresh failed: invalid_grant: Token has been expired or revoked.");
     }
 
     #[tokio::test]
@@ -749,6 +762,26 @@ mod tests {
         let tokens = auth.exchange_code("code".into(), Some(&state)).await.unwrap();
         assert_eq!(tokens, ("at".to_string(), "rt".to_string(), Some(3599)));
         assert!(auth.pending_auth.lock().await.is_none());
+    }
+
+    #[tokio::test]
+    async fn rejected_exchange_reports_googles_reason_not_raw_json() {
+        let auth = auth_at(
+            token_stub(Some("{\n  \"error\": \"invalid_client\",\n  \"error_description\": \"The OAuth client was not found.\"\n}")),
+            Duration::from_secs(5),
+        );
+        let (_, state) = auth.start_auth_flow().await.unwrap();
+        let err = auth.exchange_code("code".into(), Some(&state)).await.unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            "OAuth2 error: Token exchange failed (400 Bad Request): invalid_client: The OAuth client was not found."
+        );
+    }
+
+    #[test]
+    fn token_error_without_json_keeps_the_body() {
+        assert_eq!(token_error_text(" bad gateway \n"), "bad gateway");
+        assert_eq!(token_error_text(r#"{"error": "invalid_grant"}"#), "invalid_grant");
     }
 
     #[tokio::test]
