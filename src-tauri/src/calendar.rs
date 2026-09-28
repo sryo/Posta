@@ -32,9 +32,9 @@ fn build_http_client(timeout: std::time::Duration) -> reqwest::Client {
 /// pay for a fresh TLS handshake
 static HTTP_CLIENT: LazyLock<reqwest::Client> = LazyLock::new(|| build_http_client(REQUEST_TIMEOUT));
 
-type CalendarListSlot = Arc<tokio::sync::Mutex<Option<(std::time::Instant, Arc<Vec<CalendarInfo>>)>>>;
+type CalendarListSlot = Arc<tokio::sync::Mutex<Option<(std::time::Instant, Result<Arc<Vec<CalendarInfo>>, String>)>>>;
 
-/// Calendar lists for iCalUID lookups, keyed by (API base, access token)
+/// Calendar lists, keyed by (API base, access token)
 static CALENDAR_LISTS: LazyLock<Mutex<HashMap<(String, String), CalendarListSlot>>> = LazyLock::new(Default::default);
 
 /// Calendar info returned to frontend
@@ -514,7 +514,7 @@ impl CalendarClient {
         query: &CalendarQuery,
         max_results: i32,
     ) -> Result<Vec<CalendarEvent>, String> {
-        let calendars = self.list_calendars().await?;
+        let calendars = self.cached_calendar_list().await?;
         let mut all_events = Vec::new();
 
         // Use primary calendar's timezone, or first calendar's, for time range calculation
@@ -773,10 +773,12 @@ impl CalendarClient {
         Ok(None)
     }
 
-    /// The account's calendar list, cached briefly: every invite row looks
-    /// up its event, and without the cache each would list the calendars
-    /// again. Concurrent lookups for one account wait for a single fetch.
-    async fn calendars_for_invite_lookup(&self) -> Arc<Vec<CalendarInfo>> {
+    /// The account's calendar list, cached briefly: every invite row and
+    /// calendar card needs it, and without the cache each would list the
+    /// calendars again. Concurrent callers for one account wait for a single
+    /// fetch and share its outcome; a failure is not kept for later callers.
+    async fn cached_calendar_list(&self) -> Result<Arc<Vec<CalendarInfo>>, String> {
+        let asked_at = std::time::Instant::now();
         let slot = {
             let mut lists = CALENDAR_LISTS.lock().unwrap_or_else(|e| e.into_inner());
             lists.retain(|_, slot| slot.try_lock().map_or(true, |s| s.as_ref().is_some_and(|(at, _)| at.elapsed() < CALENDAR_LIST_TTL)));
@@ -786,22 +788,23 @@ impl CalendarClient {
                 .clone()
         };
         let mut cached = slot.lock().await;
-        if let Some((at, list)) = cached.as_ref() {
-            if at.elapsed() < CALENDAR_LIST_TTL {
-                return list.clone();
-            }
+        match cached.as_ref() {
+            Some((at, Ok(list))) if at.elapsed() < CALENDAR_LIST_TTL => return Ok(list.clone()),
+            Some((at, Err(e))) if *at >= asked_at => return Err(e.clone()),
+            _ => {}
         }
-        match self.list_calendars().await {
-            Ok(list) => {
-                let list = Arc::new(list);
-                *cached = Some((std::time::Instant::now(), list.clone()));
-                list
-            }
-            Err(e) => {
-                tracing::warn!("Failed to list calendars for iCalUID lookup: {}", e);
-                Default::default()
-            }
-        }
+        let result = self.list_calendars().await.map(Arc::new);
+        *cached = Some((std::time::Instant::now(), result.clone()));
+        result
+    }
+
+    /// Invite lookups fall back to the primary calendar alone when the
+    /// calendar list can't be fetched
+    async fn calendars_for_invite_lookup(&self) -> Arc<Vec<CalendarInfo>> {
+        self.cached_calendar_list().await.unwrap_or_else(|e| {
+            tracing::warn!("Failed to list calendars for iCalUID lookup: {}", e);
+            Default::default()
+        })
     }
 
     /// Get the user's RSVP status for a calendar event from Calendar API
@@ -2078,6 +2081,57 @@ mod tests {
         other.get_calendar_event_status("me@x.com", "f").await.unwrap();
         let list_requests = server.requests().iter().filter(|(_, t, _)| t.starts_with("/users/me/calendarList")).count();
         assert_eq!(list_requests, 2);
+    }
+
+    fn calendar_list_requests(server: &StubServer) -> usize {
+        server.requests().iter().filter(|(_, t, _)| t.starts_with("/users/me/calendarList")).count()
+    }
+
+    #[tokio::test]
+    async fn calendar_cards_share_one_calendar_list_request() {
+        // Every calendar card searches at startup and on each refresh
+        let server = StubServer::start(|_, target| {
+            let items = if target.starts_with("/users/me/calendarList") {
+                serde_json::json!([calendar_entry("me"), calendar_entry("work")])
+            } else {
+                serde_json::json!([])
+            };
+            (200, serde_json::json!({ "items": items }).to_string())
+        })
+        .await;
+        let client = server.client();
+        let query = CalendarQuery::parse("calendar:week");
+        let searches: Vec<_> = (0..3).map(|_| client.search_events(&query, 10)).collect();
+        for result in futures::future::join_all(searches).await {
+            result.unwrap();
+        }
+        client.search_events(&CalendarQuery::parse("calendar:today"), 10).await.unwrap();
+        assert_eq!(calendar_list_requests(&server), 1);
+        // Both calendars were still searched each time
+        let event_requests = server.requests().iter().filter(|(_, t, _)| t.starts_with("/calendars/")).count();
+        assert_eq!(event_requests, 8);
+    }
+
+    #[tokio::test]
+    async fn a_failed_calendar_list_answers_everyone_waiting_for_it_but_is_not_kept() {
+        let server = StubServer::start(|_, target| {
+            if target.starts_with("/users/me/calendarList") {
+                return (503, "{}".to_string());
+            }
+            (200, serde_json::json!({ "items": [] }).to_string())
+        })
+        .await;
+        let client = server.client();
+        let query = CalendarQuery::parse("calendar:week");
+        let searches: Vec<_> = (0..3).map(|_| client.search_events(&query, 10)).collect();
+        for result in futures::future::join_all(searches).await {
+            assert_eq!(result.unwrap_err(), "Calendar error (503 Service Unavailable)");
+        }
+        assert_eq!(calendar_list_requests(&server), 1);
+
+        // The next search tries again
+        assert!(client.search_events(&query, 10).await.is_err());
+        assert_eq!(calendar_list_requests(&server), 2);
     }
 
     #[tokio::test]
