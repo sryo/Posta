@@ -69,6 +69,22 @@ describe("CreateEventForm saving", () => {
   });
 });
 
+describe("CreateEventForm closing", () => {
+  it("doesn't touch the page after it closes", () => {
+    vi.useFakeTimers();
+    try {
+      const { unmount } = renderForm({ startDate: "2025-03-10" });
+      unmount();
+      const query = vi.spyOn(document, "querySelector");
+      vi.runAllTimers();
+      expect(query).not.toHaveBeenCalled();
+      query.mockRestore();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
 describe("CreateEventForm focus", () => {
   it("focuses the title when opened", async () => {
     const { container } = renderForm({ startDate: "2031-03-03" });

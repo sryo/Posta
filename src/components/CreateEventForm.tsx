@@ -1,4 +1,4 @@
-import { createSignal, onMount, Show, For } from "solid-js";
+import { createSignal, onCleanup, onMount, Show, For } from "solid-js";
 import { ChevronLeftIcon, ChevronRightIcon } from "./Icons";
 import { CloseButton } from "./ComposeAtoms";
 import { onActivateKey } from "../shared/keyboard";
@@ -102,7 +102,7 @@ export const CreateEventForm = (props: {
   // Auto-scroll to selected times when form opens
   onMount(() => {
     // Wait for DOM to be ready
-    setTimeout(() => {
+    const scrollTimer = setTimeout(() => {
       const startContainer = document.querySelector('.time-picker-start') as HTMLDivElement;
       const endContainer = document.querySelector('.time-picker-end') as HTMLDivElement;
 
@@ -120,6 +120,7 @@ export const CreateEventForm = (props: {
         }
       }
     }, 150);
+    onCleanup(() => clearTimeout(scrollTimer));
   });
 
   // The save button advertises ⌘Enter; handle it on the form so it also
