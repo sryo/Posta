@@ -116,6 +116,7 @@ import { safeGetItem, safeSetItem, safeRemoveItem, safeGetJSON, safeSetJSON } fr
 import { BG_COLORS, GMAIL_OPERATORS, type ActionSettings, type CardColor, type GroupBy } from "./shared/constants";
 import { createUndoableSend } from "./app/undoableSend";
 import { findHeader, lastMessageFromOthers } from "./app/messages";
+import { eventReplyRecipients } from "./app/eventReply";
 import { actionRemovesFromCard, applyThreadAction, labelChangeFor } from "./app/threadActions";
 import { parseStoredWidth } from "./app/storedWidth";
 import { isSessionExpiredError } from "./app/authErrors";
@@ -2188,13 +2189,18 @@ function App() {
   async function handleEventQuickReply(event: GoogleCalendarEvent) {
     const account = selectedAccount();
     const text = quickReply().text;
-    if (!account || !event.organizer || !text.trim()) return;
+    if (!account || !text.trim()) return;
+    const { to } = eventReplyRecipients(event, account.email);
+    if (!to) {
+      showToast("No one else to reply to");
+      return;
+    }
 
     const subject = addReplyPrefix(event.title);
 
     setQuickReply(qr => ({ ...qr, sending: true }));
     try {
-      await sendEmail(account.id, event.organizer, "", "", subject, text);
+      await sendEmail(account.id, to, "", "", subject, text);
       setQuickReplyEventId(null);
       setQuickReply(qr => ({ ...qr, text: "", sending: false }));
       showToast("Reply sent");
@@ -4226,7 +4232,7 @@ function App() {
                                         <div class="quick-reply-box" onClick={(e) => e.stopPropagation()}>
                                           <ComposeTextarea
                                             class="quick-reply-input"
-                                            placeholder={`Reply to ${event.organizer || 'organizer'}...`}
+                                            placeholder={`Reply to ${eventReplyRecipients(event, selectedAccount()?.email ?? '').to || 'organizer'}...`}
                                             value={quickReply().text}
                                             onChange={(val: string) => setQuickReply(qr => ({ ...qr, text: val }))}
                                             onSend={() => handleEventQuickReply(event)}
@@ -4948,7 +4954,7 @@ function App() {
             const event = activeEvent();
             if (!event) return;
             const subject = addReplyPrefix(event.title);
-            const to = event.organizer || '';
+            const { to } = eventReplyRecipients(event, selectedAccount()?.email ?? '');
             setComposeTo(to);
             setComposeSubject(subject);
             setComposeBody('');
@@ -4961,15 +4967,10 @@ function App() {
             const event = activeEvent();
             if (!event) return;
             const subject = addReplyPrefix(event.title);
-            const allEmails = event.attendees
-              .filter(a => !a.is_self)
-              .map(a => a.email)
-              .join(', ');
-            const to = event.organizer || '';
-            const cc = allEmails;
+            const { to, cc } = eventReplyRecipients(event, selectedAccount()?.email ?? '', true);
             setComposeTo(to);
             setComposeCc(cc);
-            setShowCcBcc(true);
+            setShowCcBcc(!!cc);
             setComposeSubject(subject);
             setComposeBody('');
             setReplyingToEvent({ eventId: event.id });

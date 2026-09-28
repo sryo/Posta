@@ -387,6 +387,29 @@ describe("App calendar", () => {
       [calendarEvent(`ev-${accountId}`, `Event of ${accountId}`)];
   }
 
+  it("quick-replies to the guests of the user's own event, not the user", async () => {
+    calendarCards();
+    handlers.fetch_calendar_events = () => [{
+      ...calendarEvent("ev-a", "Planning"),
+      organizer: "a@x.com",
+      attendees: [
+        { email: "a@x.com", display_name: null, response_status: null, is_self: true, is_organizer: true },
+        { email: "bo@y.com", display_name: null, response_status: null, is_self: false, is_organizer: false },
+      ],
+    }];
+    handlers.send_email = () => null;
+    render(() => <App />);
+    await screen.findByText("Planning");
+
+    fireEvent.keyDown(document, { key: "l" });
+    fireEvent.keyDown(document, { key: "r" });
+    const input = document.querySelector(".quick-reply-input") as HTMLTextAreaElement;
+    fireEvent.input(input, { target: { value: "See you there" } });
+    fireEvent.keyDown(input, { key: "Enter", metaKey: true });
+
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith("send_email", expect.objectContaining({ to: "bo@y.com" })));
+  });
+
   it("does not show an account's calendars once another account is selected", async () => {
     calendarCards();
     let releaseA!: () => void;
