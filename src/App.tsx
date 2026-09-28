@@ -4,7 +4,6 @@ import DOMPurify from 'dompurify';
 import { DOMPURIFY_CONFIG } from './components/MessageBody';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import { listen } from '@tauri-apps/api/event';
-import { invoke } from "@tauri-apps/api/core";
 import { openUrl } from '@tauri-apps/plugin-opener';
 
 import {
@@ -128,6 +127,7 @@ import { eventTimesFromForm, smartEventDefaults } from "./app/eventForm";
 import { composePlacement } from "./app/composePlacement";
 import { cidImagesToFetch, fetchCidImages } from "./app/cidImages";
 import { sendPending, type PendingSend } from "./app/pendingSend";
+import { createDraftSync, draftKey, hasDraftContent, type DraftFields } from "./app/drafts";
 import { getSmartEventTime, groupCalendarEvents, isUserLabel, mergeThreadGroups, regroupThreads, type CalendarEventGroup } from "./app/grouping";
 
 function App() {
@@ -703,138 +703,34 @@ function App() {
   }));
   const [focusComposeBody, setFocusComposeBody] = createSignal(false);
   const [composeEmailError, setComposeEmailError] = createSignal<string | null>(null);
-  const [draftSaved, setDraftSaved] = createSignal(false);
-  const [draftSaving, setDraftSaving] = createSignal(false);
   const [composeAttachments, setComposeAttachments] = createSignal<SendAttachment[]>([]);
-  const [gmailDraftId, setGmailDraftId] = createSignal<string | null>(null);
   let fabHoverTimeout: number | undefined;
   let draftSaveTimeout: number | undefined;
-  // Bumped whenever the draft is cleared (send/close); an in-flight saveDraft
-  // compares against it so a stale resolve can't resurrect the draft
-  let draftEpoch = 0;
-
-  // Draft management
-  interface Draft {
-    to: string;
-    cc: string;
-    bcc: string;
-    subject: string;
-    body: string;
-    threadId?: string;
-    gmailDraftId?: string;
-    savedAt: number;
-  }
+  const drafts = createDraftSync();
 
   function getDraftKey(): string {
-    const account = composeAccount();
-    const reply = replyingToThread();
-    const forward = forwardingThread();
-    if (reply) return `draft_reply_${account?.id}_${reply.threadId}`;
-    if (forward) return `draft_forward_${account?.id}`;
-    return `draft_new_${account?.id}`;
+    return draftKey(composeAccount()?.id, { replyThreadId: replyingToThread()?.threadId, forwarding: !!forwardingThread() });
   }
 
-  async function saveDraft() {
-    if (!composing()) return;
-    const account = composeAccount();
-    if (!account) return;
-
-    const key = getDraftKey();
-    const draft: Draft = {
+  function composeDraftFields(): DraftFields {
+    return {
       to: composeTo(),
       cc: composeCc(),
       bcc: composeBcc(),
       subject: composeSubject(),
       body: composeBody(),
       threadId: replyingToThread()?.threadId,
-      gmailDraftId: gmailDraftId() || undefined,
-      savedAt: Date.now(),
     };
-
-    // Only save if there's content
-    if (!draft.to && !draft.subject && !draft.body) return;
-
-    // Save locally first (for offline support)
-    safeSetJSON(key, draft);
-
-    // Try to sync to Gmail
-    setDraftSaving(true);
-    const epoch = draftEpoch;
-    try {
-      const result = await invoke<{ id: string }>("save_draft", {
-        accountId: account.id,
-        draftId: gmailDraftId(),
-        to: draft.to,
-        cc: draft.cc,
-        bcc: draft.bcc,
-        subject: draft.subject,
-        body: draft.body,
-        threadId: draft.threadId || null,
-      });
-      if (epoch !== draftEpoch) {
-        // Draft was cleared (send/close) while the save was in flight;
-        // don't resurrect it — and if this save just created a Gmail draft
-        // that clearDraft couldn't know about, delete the orphan
-        if (result.id && result.id !== gmailDraftId()) {
-          invoke("delete_draft", { accountId: account.id, draftId: result.id })
-            .catch(e => console.warn("Failed to delete orphaned draft:", e));
-        }
-        return;
-      }
-      setGmailDraftId(result.id);
-      // Update local storage with Gmail draft ID
-      draft.gmailDraftId = result.id;
-      safeSetJSON(key, draft);
-      setDraftSaved(true);
-      setTimeout(() => setDraftSaved(false), 2000);
-    } catch (e) {
-      console.warn("Failed to sync draft to Gmail (offline?):", e);
-      // Still show saved for local save
-      setDraftSaved(true);
-      setTimeout(() => setDraftSaved(false), 2000);
-    } finally {
-      setDraftSaving(false);
-    }
   }
 
-  function loadDraft(): Draft | null {
-    const key = getDraftKey();
-    const saved = safeGetItem(key);
-    if (saved) {
-      try {
-        const draft = JSON.parse(saved) as Draft;
-        if (draft.gmailDraftId) {
-          setGmailDraftId(draft.gmailDraftId);
-        }
-        return draft;
-      } catch {
-        return null;
-      }
-    }
-    return null;
-  }
-
-  async function clearDraft() {
-    draftEpoch++;
-    const key = getDraftKey();
+  function saveDraft() {
     const account = composeAccount();
-    const draftId = gmailDraftId();
+    if (!composing() || closingCompose() || !account) return;
+    drafts.save(getDraftKey(), account.id, composeDraftFields());
+  }
 
-    // Clear local storage
-    safeRemoveItem(key);
-    setGmailDraftId(null);
-
-    // Try to delete from Gmail
-    if (account && draftId) {
-      try {
-        await invoke("delete_draft", {
-          accountId: account.id,
-          draftId: draftId,
-        });
-      } catch (e) {
-        console.warn("Failed to delete draft from Gmail:", e);
-      }
-    }
+  function clearDraft() {
+    return drafts.clear(getDraftKey(), composeAccount()?.id);
   }
 
   function debouncedSaveDraft() {
@@ -851,7 +747,7 @@ function App() {
         const body = composeBody();
         const prefilled = composeTo() || composeSubject() || (body && body !== signatureBlock(composeAccount()?.signature));
         if (prefilled) return;
-        const draft = loadDraft();
+        const draft = drafts.load(getDraftKey());
         if (draft) {
           setComposeTo(draft.to);
           setComposeCc(draft.cc);
@@ -1863,10 +1759,7 @@ function App() {
     // False when putting back an email that already has its signature
     signature?: boolean;
   }) {
-    if (composing() || closingCompose()) {
-      if (draftSaveTimeout) clearTimeout(draftSaveTimeout);
-      resetCompose();
-    }
+    if (composing() || closingCompose()) resetCompose();
     batch(() => {
       setReplyingToEvent(init.replyEvent ?? null);
       setForwardingEvent(init.forwardEvent ?? null);
@@ -1890,6 +1783,8 @@ function App() {
   function resetCompose() {
     clearTimeout(closeComposeTimeout);
     closeComposeTimeout = undefined;
+    if (draftSaveTimeout) clearTimeout(draftSaveTimeout);
+    drafts.detach();
     batch(() => {
       setComposeTo("");
       setComposeCc("");
@@ -1903,7 +1798,6 @@ function App() {
       setComposeEmailError(null);
       setComposeAttachments([]);
       setComposeIsHtml(false);
-      setGmailDraftId(null);
       setComposing(false);
       setClosingCompose(false);
     });
@@ -2056,18 +1950,9 @@ function App() {
   // in-progress text gets a best-effort local stash first.
   function restoreSend(pending: PendingSend) {
     if (composing() && !closingCompose()) {
-      const current: Draft = {
-        to: composeTo(),
-        cc: composeCc(),
-        bcc: composeBcc(),
-        subject: composeSubject(),
-        body: composeBody(),
-        threadId: replyingToThread()?.threadId,
-        gmailDraftId: gmailDraftId() || undefined,
-        savedAt: Date.now(),
-      };
-      if (current.to || current.subject || current.body) {
-        safeSetJSON(getDraftKey(), current);
+      const current = composeDraftFields();
+      if (hasDraftContent(current)) {
+        safeSetJSON(getDraftKey(), { ...current, gmailDraftId: drafts.gmailDraftId() || undefined, savedAt: Date.now() });
       }
     }
     startCompose({
@@ -4471,8 +4356,8 @@ function App() {
             onFileSelect={handleFileSelect}
             fileInputId="compose-file-input"
             error={composeEmailError()}
-            draftSaving={draftSaving()}
-            draftSaved={draftSaved()}
+            draftSaving={drafts.saving()}
+            draftSaved={drafts.saved()}
             onSend={handleSendEmail}
             onClose={closeCompose}
             onInput={debouncedSaveDraft}
@@ -4618,8 +4503,8 @@ function App() {
             onRemoveAttachment: removeAttachment,
             onFileSelect: handleFileSelect,
             error: composeEmailError(),
-            draftSaving: draftSaving(),
-            draftSaved: draftSaved(),
+            draftSaving: drafts.saving(),
+            draftSaved: drafts.saved(),
             onSend: handleSendEmail,
             onClose: closeCompose,
             onInput: debouncedSaveDraft,
@@ -4819,8 +4704,8 @@ function App() {
             onRemoveAttachment: removeAttachment,
             onFileSelect: handleFileSelect,
             error: composeEmailError(),
-            draftSaving: draftSaving(),
-            draftSaved: draftSaved(),
+            draftSaving: drafts.saving(),
+            draftSaved: drafts.saved(),
             onSend: handleSendEmail,
             onClose: () => { closeCompose(); setReplyingToEvent(null); setForwardingEvent(null); },
             onInput: debouncedSaveDraft,
