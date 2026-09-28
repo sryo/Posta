@@ -534,26 +534,25 @@ impl GmailClient {
         Ok(())
     }
 
-    /// Resolve RFC 5322 threading headers (In-Reply-To, References) for a reply.
-    ///
-    /// `message_id` may be a real Message-ID header value or a Gmail API hex id;
-    /// for the latter (or when absent) the parent's headers are fetched from the
-    /// thread. Returns None when no usable Message-ID can be found - Gmail-side
+    /// Resolve RFC 5322 threading headers (In-Reply-To, References) for a reply
+    /// from the parent's headers in the thread (see reply_headers_from_thread).
+    /// Returns None when no usable Message-ID can be found - Gmail-side
     /// threading still works via the threadId field.
     async fn resolve_reply_headers(
         &self,
         thread_id: &str,
         message_id: Option<&str>,
     ) -> Option<(String, String)> {
-        if let Some(id) = message_id {
-            if id.contains('@') {
-                let bracketed = ensure_angle_brackets(id);
-                return Some((bracketed.clone(), bracketed));
+        match self.get_thread_metadata(&thread_reply_metadata_url(thread_id)).await {
+            Ok(thread) => reply_headers_from_thread(&thread, message_id),
+            Err(e) => {
+                tracing::warn!("Failed to fetch reply headers for thread {}: {}", thread_id, e);
+                message_id.filter(|id| is_message_id_header(id)).map(|id| {
+                    let bracketed = ensure_angle_brackets(id);
+                    (bracketed.clone(), bracketed)
+                })
             }
         }
-
-        let thread = self.get_thread_metadata(&thread_reply_metadata_url(thread_id)).await.ok()?;
-        reply_headers_from_thread(&thread, message_id)
     }
 
     /// A thread fetched with a thread_metadata_url
@@ -1123,9 +1122,28 @@ fn reaction_metadata_url(thread_id: &str) -> String {
     )
 }
 
+/// Whether `id` is a Message-ID header value rather than a Gmail message id
+fn is_message_id_header(id: &str) -> bool {
+    id.contains('@')
+}
+
+/// The message of `thread` whose Gmail id or Message-ID header is `id`
+fn find_message<'a>(thread: &'a FullThread, id: &str) -> Option<&'a FullMessage> {
+    let wanted_header = ensure_angle_brackets(id);
+    thread.messages.iter().find(|m| {
+        m.id == id
+            || m.payload
+                .as_ref()
+                .and_then(|p| find_header(p.headers.as_deref(), "Message-ID"))
+                .is_some_and(|h| ensure_angle_brackets(h) == wanted_header)
+    })
+}
+
 /// Threading headers (In-Reply-To, References) for a reply to `thread`.
-/// The parent is the message with Gmail id `message_id`, or else the latest
-/// message that is not a draft (the reply's own saved draft is in the thread).
+/// The parent is the message `message_id` names (a Gmail id or a Message-ID
+/// header value), or else the latest message that is not a draft (the reply's
+/// own saved draft is in the thread). A Message-ID the thread lacks is used
+/// as is, with no earlier references.
 fn reply_headers_from_thread(
     thread: &FullThread,
     message_id: Option<&str>,
@@ -1135,9 +1153,18 @@ fn reply_headers_from_thread(
             .as_ref()
             .is_some_and(|labels| labels.iter().any(|l| l == "DRAFT"))
     };
-    let parent = message_id
-        .and_then(|id| thread.messages.iter().find(|m| m.id == id))
-        .or_else(|| thread.messages.iter().rev().find(|m| !is_draft(m)))?;
+    let parent = match message_id {
+        Some(id) => match find_message(thread, id) {
+            Some(parent) => Some(parent),
+            None if is_message_id_header(id) => {
+                let bracketed = ensure_angle_brackets(id);
+                return Some((bracketed.clone(), bracketed));
+            }
+            None => None,
+        },
+        None => None,
+    };
+    let parent = parent.or_else(|| thread.messages.iter().rev().find(|m| !is_draft(m)))?;
     let headers = parent.payload.as_ref()?.headers.as_deref();
 
     let parent_message_id = ensure_angle_brackets(find_header(headers, "Message-ID")?);
@@ -2363,18 +2390,7 @@ impl GmailClient {
         to_email: &str,
     ) -> Result<(), String> {
         let thread = self.get_thread_metadata(&reaction_metadata_url(thread_id)).await?;
-        let wanted_header = ensure_angle_brackets(message_id);
-        let target = thread
-            .messages
-            .iter()
-            .find(|m| {
-                m.id == message_id
-                    || m.payload
-                        .as_ref()
-                        .and_then(|p| find_header(p.headers.as_deref(), "Message-ID"))
-                        .is_some_and(|h| ensure_angle_brackets(h) == wanted_header)
-            })
-            .ok_or("Message to react to was not found in the thread")?;
+        let target = find_message(&thread, message_id).ok_or("Message to react to was not found in the thread")?;
 
         check_can_react(target, from_email)?;
 
@@ -2983,6 +2999,34 @@ mod tests {
         assert_eq!(
             reply_headers_from_thread(&thread, Some("m1")),
             Some(("<one@example.com>".to_string(), "<one@example.com>".to_string()))
+        );
+    }
+
+    #[test]
+    fn reply_to_a_message_id_header_keeps_its_references_chain() {
+        let thread = thread_of(vec![
+            full_message("m1", &["INBOX"], vec![header("Message-ID", "<one@example.com>")]),
+            full_message("m2", &["INBOX"], vec![
+                header("Message-ID", "<two@example.com>"),
+                header("References", "<one@example.com>"),
+            ]),
+            full_message("m3", &["INBOX"], vec![
+                header("Message-ID", "<three@example.com>"),
+                header("References", "<one@example.com> <two@example.com>"),
+            ]),
+        ]);
+        // Replying to the middle message, named by its Message-ID header
+        assert_eq!(
+            reply_headers_from_thread(&thread, Some("two@example.com")),
+            Some((
+                "<two@example.com>".to_string(),
+                "<one@example.com> <two@example.com>".to_string()
+            ))
+        );
+        // A Message-ID the thread does not have is still replied to, not the latest message
+        assert_eq!(
+            reply_headers_from_thread(&thread, Some("<gone@example.com>")),
+            Some(("<gone@example.com>".to_string(), "<gone@example.com>".to_string()))
         );
     }
 
