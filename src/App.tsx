@@ -2526,6 +2526,7 @@ function App() {
       setEditingCardId(null);
       // Its threads would otherwise still count toward the dock badge
       setCardThreads(produce(s => { delete s[cardId]; }));
+      setCardPageTokens(produce(s => { delete s[cardId]; }));
       setCardCalendarEvents(produce(s => { delete s[cardId]; }));
       if (focusedCardId() === cardId) {
         setFocusedCardId(null);
