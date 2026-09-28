@@ -855,6 +855,35 @@ describe("App thread view", () => {
   });
 });
 
+describe("App inline images", () => {
+  it("downloads a thread's inline images once, not again on reopening it", async () => {
+    handlers.get_thread_details = () => ({
+      id: "t-a",
+      messages: [fullMessage("m1", "Ana <ana@x.com>", {
+        payload: {
+          mimeType: "multipart/related",
+          headers: [{ name: "From", value: "Ana <ana@x.com>" }],
+          parts: [
+            { mimeType: "text/html", body: { size: 9, data: "PGltZyBzcmM9ImNpZDpsb2dvQHgiPg" } },
+            { mimeType: "image/png", headers: [{ name: "Content-ID", value: "<logo@x>" }], body: { size: 9, attachmentId: "att1" } },
+          ],
+        },
+      })],
+    });
+    handlers.download_attachment = () => "iVBORw0KGgo";
+    render(() => <App />);
+    fireEvent.click(await screen.findByText("Mail for A"));
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith("download_attachment", expect.objectContaining({ attachmentId: "att1" })));
+    fireEvent.keyDown(document, { key: "Escape" });
+    await waitFor(() => expect(document.querySelector(".thread-overlay")).toBeNull());
+
+    fireEvent.click(await screen.findByText("Mail for A"));
+    await waitFor(() => expect(invoke.mock.calls.filter(([cmd]) => cmd === "get_thread_details")).toHaveLength(2));
+    await new Promise(r => setTimeout(r, 30));
+    expect(invoke.mock.calls.filter(([cmd]) => cmd === "download_attachment")).toHaveLength(1);
+  });
+});
+
 describe("App thread view refresh after an action", () => {
   it("does not replace the thread the user moved on to", async () => {
     threadsByCard["card-a"] = [thread("t-a", "Mail for A"), thread("t-b", "Other mail")];

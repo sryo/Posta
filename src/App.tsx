@@ -132,7 +132,7 @@ import { signatureBlock, withSignature } from "./app/signature";
 import { readFilesAsAttachments } from "./app/attachments";
 import { eventAttendees, eventTimesFromForm, smartEventDefaults } from "./app/eventForm";
 import { composePlacement } from "./app/composePlacement";
-import { cidImagesToFetch, fetchCidImages } from "./app/cidImages";
+import { cidImagesToFetch, createLruCache, fetchCidImages } from "./app/cidImages";
 import { sendPending, type PendingSend } from "./app/pendingSend";
 import { parseMailto } from "./app/mailto";
 import { coalesceByKey } from "./app/coalesce";
@@ -3526,11 +3526,14 @@ function App() {
     }
   }
 
-  // Fetch CID image attachments for inline display
+  // Fetch CID image attachments for inline display; reopening a thread
+  // reuses what was downloaded
+  const cidImageCache = createLruCache<string>(60);
   async function fetchCidAttachments(accountId: string, thread: FullThread) {
     const refs = cidImagesToFetch(thread);
     if (refs.length === 0) return;
-    const data = await fetchCidImages(refs, (messageId, attachmentId) => downloadAttachmentApi(accountId, messageId, attachmentId));
+    const data = await fetchCidImages(refs, (messageId, attachmentId) =>
+      cidImageCache.getOrLoad(`${accountId}:${messageId}:${attachmentId}`, () => downloadAttachmentApi(accountId, messageId, attachmentId)));
     if (Object.keys(data).length > 0 && activeThreadId() === thread.id) {
       setCidAttachmentData(prev => ({ ...prev, ...data }));
     }
