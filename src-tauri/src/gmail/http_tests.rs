@@ -153,6 +153,23 @@ async fn a_request_the_server_never_answers_fails_instead_of_hanging() {
 }
 
 #[tokio::test]
+async fn an_unreachable_server_is_reported_without_the_request_url() {
+    let port = {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.local_addr().unwrap().port()
+    };
+    let gmail = GmailClient {
+        client: build_http_client(StdDuration::from_secs(5)),
+        api_base: format!("http://127.0.0.1:{}/gmail/v1", port),
+        ..GmailClient::new("token".into())
+    };
+
+    let err = within(gmail.search_threads_limited("from:boss secret project", 5)).await.unwrap_err();
+    assert!(err.contains("could not reach Gmail"), "{}", err);
+    assert!(!err.contains("secret") && !err.contains("127.0.0.1"), "{}", err);
+}
+
+#[tokio::test]
 async fn clients_share_one_connection_pool() {
     let server = StubServer::start(|_| Reply::Json(200, r#"{"historyId":"42"}"#.into())).await;
     let pointed_at_stub = || GmailClient {

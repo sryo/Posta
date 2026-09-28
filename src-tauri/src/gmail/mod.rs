@@ -269,14 +269,15 @@ fn shared_http_client() -> reqwest::Client {
     CLIENT.get_or_init(|| build_http_client(READ_TIMEOUT)).clone()
 }
 
-/// A transport failure in words the user can act on
+/// A transport failure in words the user can act on, without the request
+/// URL (it can hold the user's search query)
 fn request_error(e: reqwest::Error) -> String {
     if e.is_timeout() {
         "Request timed out: Gmail did not respond. Check your connection and try again.".to_string()
     } else if e.is_connect() {
-        format!("Request failed: could not reach Gmail. Check your connection. ({})", e)
+        "Request failed: could not reach Gmail. Check your connection.".to_string()
     } else {
-        format!("Request failed: {}", e)
+        format!("Request failed: {}", e.without_url())
     }
 }
 
