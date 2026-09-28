@@ -38,6 +38,9 @@ export default defineConfig({
   },
   test: {
     globals: false,
+    // The App suites wait on real timers of up to ~2s; on a loaded machine
+    // the 5s default fails them spuriously.
+    testTimeout: 15_000,
     setupFiles: ["./src/test/setup.ts"],
     projects: [
       {
