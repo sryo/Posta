@@ -22,19 +22,23 @@ use tokio::sync::Mutex;
 pub struct AppState {
     pub db: Arc<std::sync::Mutex<Option<CacheDb>>>,
     pub auth: Arc<Mutex<Option<GmailAuth>>>,
-    pub icloud: Arc<std::sync::Mutex<ICloudKVStore>>,
+    /// Serializes each iCloud read-merge-write so concurrent syncs can't
+    /// overwrite each other's changes
+    pub icloud: Arc<std::sync::Mutex<ICloudSync>>,
     /// Cancel flag for the in-flight OAuth flow, so a retry can release port 8420
     pub oauth_cancel: Arc<std::sync::Mutex<Option<Arc<AtomicBool>>>>,
     /// Cached access tokens per account_id; never hold this lock across an await
-    pub token_cache: Arc<std::sync::Mutex<HashMap<String, (String, Instant)>>>,
+    pub token_cache: Arc<TokenCache>,
 }
+
+type TokenCache = std::sync::Mutex<HashMap<String, (String, Instant)>>;
 
 impl AppState {
     pub fn new() -> Self {
         Self {
             db: Arc::new(std::sync::Mutex::new(None)),
             auth: Arc::new(Mutex::new(None)),
-            icloud: Arc::new(std::sync::Mutex::new(ICloudKVStore::new())),
+            icloud: Arc::new(std::sync::Mutex::new(ICloudSync::new())),
             oauth_cancel: Arc::new(std::sync::Mutex::new(None)),
             token_cache: Arc::new(std::sync::Mutex::new(HashMap::new())),
         }
@@ -91,16 +95,61 @@ fn get_account_email(state: &AppState, account_id: &str) -> Result<String, Strin
     })
 }
 
+/// The iCloud card backup plus this device's record of which cards it last
+/// saw on both sides. Card sync is a three-way merge against that record: a
+/// card missing on one side that both sides had was deleted there, while one
+/// the record lacks was added there.
+pub struct ICloudSync {
+    store: ICloudKVStore,
+    /// JSON map of card id -> owning account id; set once the app data dir is known
+    base_path: Option<std::path::PathBuf>,
+}
+
+impl ICloudSync {
+    fn new() -> Self {
+        Self { store: ICloudKVStore::new(), base_path: None }
+    }
+
+    /// A missing or unreadable record only means deletions can't be told
+    /// apart from additions, so everything on either side is kept
+    fn load_base(&self) -> HashMap<String, String> {
+        self.base_path
+            .as_ref()
+            .and_then(|p| std::fs::read(p).ok())
+            .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+            .unwrap_or_default()
+    }
+
+    fn save_base(&self, base: &HashMap<String, String>) {
+        let Some(path) = &self.base_path else { return };
+        let result = serde_json::to_vec(base)
+            .map_err(|e| e.to_string())
+            .and_then(|json| std::fs::write(path, json).map_err(|e| e.to_string()));
+        if let Err(e) = result {
+            tracing::warn!("Failed to save iCloud card sync state: {}", e);
+        }
+    }
+}
+
+/// Whether the card was synced under an account this device still has. Such
+/// a card missing locally was deleted here; under a since-removed account it
+/// went away with the account and comes back when the account is re-added.
+fn synced_here(card_id: &str, base: &HashMap<String, String>, accounts: &[Account]) -> bool {
+    base.get(card_id).is_some_and(|owner| accounts.iter().any(|a| &a.id == owner))
+}
+
 /// The cards and id -> email mappings to write back to iCloud after a local
-/// card change: every local card, plus iCloud cards owned by accounts this
-/// device doesn't have (another device's, or one signed out here). Mappings
-/// are kept only for owners of those cards. None without local accounts,
-/// since nothing on this device can then speak for the backup.
+/// card change: every local card, plus iCloud cards this device did not
+/// delete (another device's additions, and cards of accounts this device
+/// doesn't have). Mappings are kept only for owners of those cards. None
+/// without local accounts, since nothing on this device can then speak for
+/// the backup.
 fn icloud_snapshot(
     accounts: &[Account],
     local_cards: Vec<Card>,
     icloud_cards: Vec<Card>,
     icloud_mappings: HashMap<String, String>,
+    base: &HashMap<String, String>,
 ) -> Option<(Vec<Card>, HashMap<String, String>)> {
     if accounts.is_empty() {
         return None;
@@ -108,8 +157,11 @@ fn icloud_snapshot(
 
     let mut cards = local_cards;
     for card in icloud_cards {
+        if cards.iter().any(|c| c.id == card.id) {
+            continue;
+        }
         let foreign = icloud_card_account(&card.account_id, &icloud_mappings, accounts).is_none();
-        if foreign && !cards.iter().any(|c| c.id == card.id) {
+        if foreign || !synced_here(&card.id, base, accounts) {
             cards.push(card);
         }
     }
@@ -124,6 +176,10 @@ fn icloud_snapshot(
 
 // Sync all cards to iCloud after any card operation
 fn sync_cards_to_icloud(state: &AppState) {
+    // Held across the local read too, so a concurrent pull can't change the
+    // cards between reading them and pushing them
+    let Ok(icloud) = state.icloud.lock() else { return };
+
     let (accounts, local_cards) = {
         let Ok(db_guard) = state.db.lock() else { return };
         let Some(db) = db_guard.as_ref() else { return };
@@ -139,20 +195,24 @@ fn sync_cards_to_icloud(state: &AppState) {
         (accounts, cards)
     };
 
-    let Ok(icloud) = state.icloud.lock() else { return };
+    let new_base: HashMap<String, String> =
+        local_cards.iter().map(|c| (c.id.clone(), c.account_id.clone())).collect();
+
     // Unreadable (corrupt) iCloud values are replaced by the local state
     let Some((cards, mappings)) = icloud_snapshot(
         &accounts,
         local_cards,
-        icloud.load_cards().ok().flatten().unwrap_or_default(),
-        icloud.load_account_mappings().ok().flatten().unwrap_or_default(),
+        icloud.store.load_cards().ok().flatten().unwrap_or_default(),
+        icloud.store.load_account_mappings().ok().flatten().unwrap_or_default(),
+        &icloud.load_base(),
     ) else {
         return;
     };
-    if let Err(e) = icloud.sync_cards(&cards) {
-        tracing::warn!("iCloud card sync failed: {}", e);
+    match icloud.store.sync_cards(&cards) {
+        Ok(()) => icloud.save_base(&new_base),
+        Err(e) => tracing::warn!("iCloud card sync failed: {}", e),
     }
-    if let Err(e) = icloud.sync_account_mappings(&mappings) {
+    if let Err(e) = icloud.store.sync_account_mappings(&mappings) {
         tracing::warn!("iCloud account mapping sync failed: {}", e);
     }
 }
@@ -184,6 +244,8 @@ pub fn init_app(app_handle: tauri::AppHandle, state: State<'_, AppState>) -> Res
         }
         Err(e) => tracing::warn!("Failed to clean card cache: {}", e),
     }
+
+    state.icloud.lock().map_err(|_| "Lock error")?.base_path = Some(app_dir.join("icloud-card-sync.json"));
 
     let mut db_guard = state.db.lock().map_err(|_| "Lock error".to_string())?;
     *db_guard = Some(db);
@@ -496,28 +558,35 @@ fn get_account_and_card(
     })
 }
 
+/// The cached token, if it is good for at least another minute
+fn cached_access_token(token_cache: &TokenCache, account_id: &str) -> Result<Option<String>, String> {
+    let cache = token_cache.lock().map_err(|_| "Lock error")?;
+    Ok(cache
+        .get(account_id)
+        .filter(|(_, expiry)| expiry.saturating_duration_since(Instant::now()) > Duration::from_secs(60))
+        .map(|(token, _)| token.clone()))
+}
+
 /// Helper to get a valid access token for an account (refreshing if needed)
 async fn get_access_token(
     state: &AppState,
     app_handle: &tauri::AppHandle,
     account_id: &str,
 ) -> Result<String, String> {
-    // Serve from cache if the token is good for at least another 60s
-    {
-        let cache = state.token_cache.lock().map_err(|_| "Lock error")?;
-        if let Some((token, expiry)) = cache.get(account_id) {
-            if expiry.saturating_duration_since(Instant::now()) > Duration::from_secs(60) {
-                return Ok(token.clone());
-            }
-        }
+    if let Some(token) = cached_access_token(&state.token_cache, account_id)? {
+        return Ok(token);
     }
 
     let app_data_dir = get_app_data_dir(app_handle)?;
     let refresh_token = auth::get_refresh_token(account_id, &app_data_dir).map_err(|e| e.to_string())?;
 
-    // Refresh the access token
     let (access_token, expires_in) = {
         let auth_guard = state.auth.lock().await;
+        // Parallel calls queue on the auth lock; the first one refreshes and
+        // the rest reuse its token instead of each refreshing again
+        if let Some(token) = cached_access_token(&state.token_cache, account_id)? {
+            return Ok(token);
+        }
         let auth = auth_guard
             .as_ref()
             .ok_or("Auth not configured. Please configure auth first.")?;
@@ -1059,9 +1128,7 @@ async fn resolve_attachment_file(
         data
     } else {
         let attachment_id = attachment_id.ok_or("No attachment ID or inline data")?;
-        verify_account_exists(state, account_id)?;
-
-        let access_token = get_access_token(state, app_handle, account_id).await?;
+        let access_token = account_access_token(state, app_handle, account_id).await?;
         let gmail = GmailClient::new(access_token);
         evict_token_on_auth_error(
             state,
@@ -1352,41 +1419,86 @@ fn icloud_card_account(
     }
 }
 
+/// Local card writes that bring this device in line with the iCloud backup
+#[derive(Debug, Default)]
+struct CardMerge {
+    insert: Vec<Card>,
+    update: Vec<Card>,
+    delete: Vec<String>,
+    /// Sync record after the writes: local cards that are also in iCloud
+    base: HashMap<String, String>,
+}
+
+/// Three-way merge of the iCloud cards into the local ones, against `base`
+/// (see `ICloudSync`). Cards of accounts this device doesn't have are left
+/// alone, and cards only this device has, never synced, are kept.
+fn merge_icloud_cards(
+    accounts: &[Account],
+    local_cards: &[Card],
+    icloud_cards: Vec<Card>,
+    mappings: &HashMap<String, String>,
+    base: &HashMap<String, String>,
+) -> CardMerge {
+    let mut merge = CardMerge::default();
+    let icloud_ids: std::collections::HashSet<String> = icloud_cards.iter().map(|c| c.id.clone()).collect();
+
+    for mut card in icloud_cards {
+        let Some(account_id) = icloud_card_account(&card.account_id, mappings, accounts) else {
+            tracing::warn!("Skipping card {} - no matching local account", card.name);
+            continue;
+        };
+        card.account_id = account_id;
+
+        match local_cards.iter().find(|c| c.id == card.id) {
+            None if synced_here(&card.id, base, accounts) => continue,
+            None => {
+                merge.base.insert(card.id.clone(), card.account_id.clone());
+                merge.insert.push(card);
+            }
+            Some(local) => {
+                merge.base.insert(card.id.clone(), local.account_id.clone());
+                // An identical local copy is not rewritten, so a lagging
+                // iCloud snapshot doesn't trigger no-op frontend refreshes
+                if *local != card {
+                    merge.update.push(card);
+                }
+            }
+        }
+    }
+
+    for card in local_cards {
+        if !icloud_ids.contains(&card.id) && base.contains_key(&card.id) {
+            merge.delete.push(card.id.clone());
+        }
+    }
+
+    merge
+}
+
 /// Pull cards from iCloud and merge with local. Returns true if changes were made.
 #[tauri::command]
 pub fn pull_from_icloud(state: State<'_, AppState>) -> Result<bool, String> {
-    let (icloud_cards, account_mappings) = {
-        let icloud = state.icloud.lock().map_err(|_| "Lock error")?;
-        let cards = icloud.load_cards().map_err(|e| e.to_string())?;
-        let mappings = icloud.load_account_mappings().map_err(|e| e.to_string())?;
-        (cards, mappings)
-    };
+    // Held for the whole merge so a local card change can't push in between
+    let icloud = state.icloud.lock().map_err(|_| "Lock error")?;
 
-    let Some(icloud_cards) = icloud_cards else {
+    let Some(icloud_cards) = icloud.store.load_cards().map_err(|e| e.to_string())? else {
         return Ok(false);
     };
-
-    if icloud_cards.is_empty() {
-        return Ok(false);
-    }
-
     // Account mappings: old_account_id -> email (from iCloud)
-    let account_mappings = account_mappings.unwrap_or_default();
+    let account_mappings = icloud
+        .store
+        .load_account_mappings()
+        .map_err(|e| e.to_string())?
+        .unwrap_or_default();
 
     let db_guard = state.db.lock().map_err(|_| "Lock error")?;
     let db = db_guard.as_ref().ok_or("Database not initialized")?;
 
-    // Get existing local accounts and cards
     let accounts = db.get_accounts().map_err(|e| e.to_string())?;
-    let mut local_cards: HashMap<String, Card> = HashMap::new();
+    let mut local_cards = Vec::new();
     for account in &accounts {
-        let cards = db.get_cards(&account.id).map_err(|e| e.to_string())?;
-        for card in cards {
-            local_cards.insert(card.id.clone(), card);
-        }
+        local_cards.extend(db.get_cards(&account.id).map_err(|e| e.to_string())?);
     }
-
-    let mut changes_made = false;
 
     tracing::info!(
         "pull_from_icloud: {} iCloud cards, {} local accounts, {} account mappings",
@@ -1395,43 +1507,20 @@ pub fn pull_from_icloud(state: State<'_, AppState>) -> Result<bool, String> {
         account_mappings.len()
     );
 
-    // Merge: iCloud cards that don't exist locally get inserted
-    for mut card in icloud_cards {
-        match icloud_card_account(&card.account_id, &account_mappings, &accounts) {
-            Some(account_id) => {
-                if account_id != card.account_id {
-                    tracing::info!(
-                        "Remapping card {} from {} to {}",
-                        card.name,
-                        card.account_id,
-                        account_id
-                    );
-                    card.account_id = account_id;
-                }
-            }
-            None => {
-                tracing::warn!("Skipping card {} - no matching local account", card.name);
-                continue;
-            }
-        }
-
-        match local_cards.get(&card.id) {
-            None => {
-                db.insert_card(&card).map_err(|e| e.to_string())?;
-                changes_made = true;
-            }
-            // Identical local copy: skip the write so a lagging iCloud
-            // snapshot doesn't trigger no-op frontend refreshes
-            Some(local) if *local == card => {}
-            Some(_) => {
-                // Update existing card with iCloud version
-                db.update_card(&card).map_err(|e| e.to_string())?;
-                changes_made = true;
-            }
-        }
+    let merge = merge_icloud_cards(&accounts, &local_cards, icloud_cards, &account_mappings, &icloud.load_base());
+    for card in &merge.insert {
+        db.insert_card(card).map_err(|e| e.to_string())?;
     }
+    for card in &merge.update {
+        db.update_card(card).map_err(|e| e.to_string())?;
+    }
+    for id in &merge.delete {
+        tracing::info!("Deleting card {} - deleted on another device", id);
+        db.delete_card(id).map_err(|e| e.to_string())?;
+    }
+    icloud.save_base(&merge.base);
 
-    Ok(changes_made)
+    Ok(!(merge.insert.is_empty() && merge.update.is_empty() && merge.delete.is_empty()))
 }
 
 // People API commands (contacts)
@@ -1667,8 +1756,8 @@ pub async fn suggest_replies(
 #[cfg(test)]
 mod tests {
     use super::{
-        attachment_filename, attachment_temp_dir, icloud_card_account, icloud_snapshot, is_auth_error,
-        is_executable_attachment, mark_quarantined, next_card_position, reply_context,
+        attachment_filename, attachment_temp_dir, cached_access_token, icloud_card_account, icloud_snapshot, is_auth_error,
+        is_executable_attachment, mark_quarantined, merge_icloud_cards, next_card_position, reply_context,
         sanitize_attachment_filename, vanished_thread_ids, write_unique_file,
     };
     use crate::models::{Account, Card, Thread};
@@ -1710,10 +1799,19 @@ mod tests {
         Card { id: id.into(), ..Card::new(account_id.into(), id.into(), "q".into(), 0) }
     }
 
+    fn base(pairs: &[(&str, &str)]) -> HashMap<String, String> {
+        mappings(pairs)
+    }
+
+    fn ids(cards: &[Card]) -> Vec<&str> {
+        cards.iter().map(|c| c.id.as_str()).collect()
+    }
+
     #[test]
     fn icloud_snapshot_is_skipped_without_local_accounts() {
         let backup = vec![owned_card("c1", "gone")];
-        assert!(icloud_snapshot(&[], Vec::new(), backup, mappings(&[("gone", "me@x.com")])).is_none());
+        let m = mappings(&[("gone", "me@x.com")]);
+        assert!(icloud_snapshot(&[], Vec::new(), backup, m, &base(&[])).is_none());
     }
 
     #[test]
@@ -1726,10 +1824,22 @@ mod tests {
             owned_card("work", "w9"),
         ];
         let m = mappings(&[("w9", "work@x.com")]);
-        let (cards, new_mappings) = icloud_snapshot(&accounts, local, backup, m).unwrap();
-        let ids: Vec<&str> = cards.iter().map(|c| c.id.as_str()).collect();
-        assert_eq!(ids, vec!["mine", "work"]);
+        let synced = base(&[("mine", "a1"), ("deleted-here", "a1")]);
+        let (cards, new_mappings) = icloud_snapshot(&accounts, local, backup, m, &synced).unwrap();
+        assert_eq!(ids(&cards), vec!["mine", "work"]);
         assert_eq!(new_mappings, mappings(&[("a1", "me@x.com"), ("w9", "work@x.com")]));
+    }
+
+    #[test]
+    fn icloud_snapshot_keeps_cards_added_elsewhere_that_were_not_pulled_yet() {
+        // Another device added "theirs" to a shared account; a local change
+        // made before pulling it must not wipe it from the backup
+        let accounts = [account("a1", "me@x.com")];
+        let local = vec![owned_card("mine", "a1")];
+        let backup = vec![owned_card("mine", "a1"), owned_card("theirs", "a1")];
+        let synced = base(&[("mine", "a1")]);
+        let (cards, _) = icloud_snapshot(&accounts, local, backup, mappings(&[]), &synced).unwrap();
+        assert_eq!(ids(&cards), vec!["mine", "theirs"]);
     }
 
     #[test]
@@ -1737,8 +1847,69 @@ mod tests {
         let accounts = [account("a1", "me@x.com"), account("a2", "other@x.com")];
         let local = vec![owned_card("mine", "a1")];
         let m = mappings(&[("stale", "old@x.com"), ("a1-old", "me@x.com")]);
-        let (_, new_mappings) = icloud_snapshot(&accounts, local, Vec::new(), m).unwrap();
+        let (_, new_mappings) = icloud_snapshot(&accounts, local, Vec::new(), m, &base(&[])).unwrap();
         assert_eq!(new_mappings, mappings(&[("a1", "me@x.com")]));
+    }
+
+    #[test]
+    fn pull_deletes_local_cards_that_another_device_deleted() {
+        let accounts = [account("a1", "me@x.com")];
+        let local = vec![owned_card("keep", "a1"), owned_card("gone", "a1"), owned_card("new-here", "a1")];
+        let icloud = vec![owned_card("keep", "a1")];
+        let synced = base(&[("keep", "a1"), ("gone", "a1")]);
+        let merge = merge_icloud_cards(&accounts, &local, icloud, &mappings(&[]), &synced);
+        assert_eq!(merge.delete, vec!["gone".to_string()]);
+        assert!(merge.insert.is_empty() && merge.update.is_empty());
+        // "new-here" was never synced, so it stays and is not in the new base
+        assert_eq!(merge.base, base(&[("keep", "a1")]));
+    }
+
+    #[test]
+    fn pull_does_not_resurrect_a_card_deleted_here() {
+        let accounts = [account("a1", "me@x.com")];
+        let icloud = vec![owned_card("deleted-here", "a1"), owned_card("added-there", "a1")];
+        let synced = base(&[("deleted-here", "a1")]);
+        let merge = merge_icloud_cards(&accounts, &[], icloud, &mappings(&[]), &synced);
+        assert_eq!(ids(&merge.insert), vec!["added-there"]);
+        assert!(merge.delete.is_empty());
+        assert_eq!(merge.base, base(&[("added-there", "a1")]));
+    }
+
+    #[test]
+    fn pull_restores_cards_of_a_signed_out_account_on_sign_in() {
+        // c1 was synced under a1-old; the account was then removed and signed
+        // in again under a new id, and its layout must come back
+        let accounts = [account("a1-new", "me@x.com")];
+        let icloud = vec![owned_card("c1", "a1-old")];
+        let m = mappings(&[("a1-old", "me@x.com")]);
+        let synced = base(&[("c1", "a1-old")]);
+        let merge = merge_icloud_cards(&accounts, &[], icloud, &m, &synced);
+        assert_eq!(ids(&merge.insert), vec!["c1"]);
+        assert_eq!(merge.insert[0].account_id, "a1-new");
+        assert_eq!(merge.base, base(&[("c1", "a1-new")]));
+    }
+
+    #[test]
+    fn pull_updates_only_cards_that_changed() {
+        let accounts = [account("a1", "me@x.com")];
+        let local = vec![owned_card("same", "a1"), owned_card("renamed", "a1")];
+        let mut renamed = owned_card("renamed", "a1");
+        renamed.name = "New name".into();
+        let icloud = vec![owned_card("same", "a1"), renamed.clone()];
+        let merge = merge_icloud_cards(&accounts, &local, icloud, &mappings(&[]), &base(&[]));
+        assert_eq!(merge.update, vec![renamed]);
+        assert!(merge.insert.is_empty() && merge.delete.is_empty());
+        assert_eq!(merge.base, base(&[("same", "a1"), ("renamed", "a1")]));
+    }
+
+    #[test]
+    fn pull_leaves_cards_of_accounts_this_device_lacks_alone() {
+        let accounts = [account("a1", "me@x.com"), account("a2", "b@x.com")];
+        let icloud = vec![owned_card("work", "w9")];
+        let m = mappings(&[("w9", "work@x.com")]);
+        let merge = merge_icloud_cards(&accounts, &[], icloud, &m, &base(&[]));
+        assert!(merge.insert.is_empty() && merge.update.is_empty() && merge.delete.is_empty());
+        assert!(merge.base.is_empty());
     }
 
     #[test]
@@ -1944,6 +2115,19 @@ mod tests {
         let kept = context.matches('é').count();
         assert_eq!(kept, 1000);
         assert!(context.contains("é..."));
+    }
+
+    #[test]
+    fn cached_tokens_are_reused_only_with_a_minute_to_spare() {
+        use std::time::{Duration, Instant};
+        let now = Instant::now();
+        let cache = super::TokenCache::new(HashMap::from([
+            ("fresh".to_string(), ("t1".to_string(), now + Duration::from_secs(600))),
+            ("expiring".to_string(), ("t2".to_string(), now + Duration::from_secs(30))),
+        ]));
+        assert_eq!(cached_access_token(&cache, "fresh"), Ok(Some("t1".to_string())));
+        assert_eq!(cached_access_token(&cache, "expiring"), Ok(None));
+        assert_eq!(cached_access_token(&cache, "unknown"), Ok(None));
     }
 
     fn card_at(position: i32) -> Card {

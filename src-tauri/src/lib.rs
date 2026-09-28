@@ -16,8 +16,6 @@ use tauri::{Emitter, Manager};
 #[cfg(target_os = "macos")]
 use tauri::{RunEvent, WindowEvent};
 #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
-use tauri::Listener;
-#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
 use tauri_plugin_deep_link::DeepLinkExt;
 
 /// Parsed mailto: URL data
@@ -89,63 +87,63 @@ fn parse_mailto(url: &str) -> MailtoData {
     data
 }
 
-/// Mailto URLs received before the webview registered its "mailto-received"
-/// listener (cold start). `ready` flips once the frontend has loaded.
+/// Mailto URLs received while the webview has no "mailto-received" listener
+/// yet (cold start, or a reload). The frontend drains them with
+/// `take_pending_mailtos` right after it starts listening.
 #[derive(Default)]
 struct PendingMailto(Mutex<PendingMailtoInner>);
 
 #[derive(Default)]
 struct PendingMailtoInner {
-    ready: bool,
+    listening: bool,
     urls: Vec<String>,
 }
 
-/// Emit a mailto URL to the frontend, or buffer it until the webview is ready
-fn deliver_mailto(handle: &tauri::AppHandle, url: &str) {
-    let buffered = {
-        let pending = handle.state::<PendingMailto>();
-        let mut inner = pending.0.lock().unwrap();
-        if inner.ready {
-            false
-        } else {
-            if !inner.urls.iter().any(|u| u == url) {
-                inner.urls.push(url.to_string());
-            }
-            true
+impl PendingMailtoInner {
+    /// Buffer the URL unless the frontend is listening; true if buffered
+    fn offer(&mut self, url: &str) -> bool {
+        if self.listening {
+            return false;
         }
-    };
+        if !self.urls.iter().any(|u| u == url) {
+            self.urls.push(url.to_string());
+        }
+        true
+    }
 
-    if !buffered {
+    fn drain(&mut self) -> Vec<MailtoData> {
+        self.listening = true;
+        std::mem::take(&mut self.urls).iter().map(|u| parse_mailto(u)).collect()
+    }
+
+    fn reset(&mut self) {
+        self.listening = false;
+    }
+}
+
+fn pending_mailtos(handle: &tauri::AppHandle) -> std::sync::MutexGuard<'_, PendingMailtoInner> {
+    handle.state::<PendingMailto>().inner().0.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+/// Emit a mailto URL to the frontend, or buffer it until the frontend listens
+fn deliver_mailto(handle: &tauri::AppHandle, url: &str) {
+    if !pending_mailtos(handle).offer(url) {
         let mailto_data = parse_mailto(url);
         tracing::info!("Received mailto: to={}", mailto_data.to);
         let _ = handle.emit("mailto-received", mailto_data);
     }
 
-    // Show and focus the window
     if let Some(window) = handle.get_webview_window("main") {
         let _ = window.show();
         let _ = window.set_focus();
     }
 }
 
-/// Mark the frontend ready and replay any mailto links buffered during startup
-fn flush_pending_mailtos(handle: &tauri::AppHandle) {
-    let urls = {
-        let pending = handle.state::<PendingMailto>();
-        let mut inner = pending.0.lock().unwrap();
-        inner.ready = true;
-        std::mem::take(&mut inner.urls)
-    };
-
-    for url in urls {
-        let mailto_data = parse_mailto(&url);
-        tracing::info!("Delivering buffered mailto: to={}", mailto_data.to);
-        let _ = handle.emit("mailto-received", mailto_data);
-        if let Some(window) = handle.get_webview_window("main") {
-            let _ = window.show();
-            let _ = window.set_focus();
-        }
-    }
+/// Called by the frontend once its "mailto-received" listener is registered:
+/// returns the links that arrived before, and sends later ones as events
+#[tauri::command]
+fn take_pending_mailtos(app_handle: tauri::AppHandle) -> Vec<MailtoData> {
+    pending_mailtos(&app_handle).drain()
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -164,14 +162,10 @@ pub fn run() {
             #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
             {
                 let handle = app.handle().clone();
-                app.listen("deep-link://new-url", move |event: tauri::Event| {
-                    let urls = event.payload();
-                    // The payload is a JSON array of URLs
-                    if let Ok(url_list) = serde_json::from_str::<Vec<String>>(urls) {
-                        for url in url_list {
-                            if is_mailto(&url) {
-                                deliver_mailto(&handle, &url);
-                            }
+                app.deep_link().on_open_url(move |event| {
+                    for url in event.urls() {
+                        if is_mailto(url.as_str()) {
+                            deliver_mailto(&handle, url.as_str());
                         }
                     }
                 });
@@ -193,14 +187,9 @@ pub fn run() {
             Ok(())
         })
         .on_page_load(|webview, payload| {
-            // The frontend registers its "mailto-received" listener right after
-            // mount; wait a beat past load-finished before replaying buffered links
-            if matches!(payload.event(), tauri::webview::PageLoadEvent::Finished) {
-                let handle = webview.app_handle().clone();
-                tauri::async_runtime::spawn(async move {
-                    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-                    flush_pending_mailtos(&handle);
-                });
+            // A reloaded page has lost its listener until it drains again
+            if matches!(payload.event(), tauri::webview::PageLoadEvent::Started) {
+                pending_mailtos(webview.app_handle()).reset();
             }
         })
         .invoke_handler(tauri::generate_handler![
@@ -246,6 +235,7 @@ pub fn run() {
             commands::delete_calendar_event,
             commands::update_calendar_event,
             commands::suggest_replies,
+            take_pending_mailtos,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application");
@@ -280,7 +270,29 @@ pub fn run() {
 
 #[cfg(test)]
 mod tests {
-    use super::{is_mailto, parse_mailto};
+    use super::{is_mailto, parse_mailto, PendingMailtoInner};
+
+    #[test]
+    fn mailtos_are_buffered_until_the_frontend_drains_them() {
+        let mut pending = PendingMailtoInner::default();
+        assert!(pending.offer("mailto:a@x.com"));
+        assert!(pending.offer("mailto:b@x.com"));
+        // macOS can hand over the launch URL both as the current link and as an event
+        assert!(pending.offer("mailto:a@x.com"));
+        let drained: Vec<String> = pending.drain().into_iter().map(|d| d.to).collect();
+        assert_eq!(drained, vec!["a@x.com", "b@x.com"]);
+        assert!(!pending.offer("mailto:c@x.com"), "links after the drain go straight to the listener");
+        assert!(pending.drain().is_empty());
+    }
+
+    #[test]
+    fn a_reloaded_frontend_gets_links_that_arrive_before_it_listens() {
+        let mut pending = PendingMailtoInner::default();
+        pending.drain();
+        pending.reset();
+        assert!(pending.offer("mailto:a@x.com"));
+        assert_eq!(pending.drain().len(), 1);
+    }
 
     #[test]
     fn mailto_parses_address_and_fields() {

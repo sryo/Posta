@@ -383,6 +383,21 @@ export async function getCalendarRsvpStatus(
   return invoke("get_calendar_rsvp_status", { accountId, eventUid });
 }
 
+// Mailto links
+
+export interface MailtoData {
+  to: string;
+  cc: string;
+  bcc: string;
+  subject: string;
+  body: string;
+}
+
+/** Links that arrived before the "mailto-received" listener; later ones come as events */
+export async function takePendingMailtos(): Promise<MailtoData[]> {
+  return invoke("take_pending_mailtos");
+}
+
 // iCloud sync
 
 export async function pullFromICloud(): Promise<boolean> {

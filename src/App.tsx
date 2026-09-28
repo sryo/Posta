@@ -17,6 +17,7 @@ import {
 } from "@thisbeyond/solid-dnd";
 import {
   initApp,
+  takePendingMailtos,
   configureAuth,
   getStoredCredentials,
   runOAuthFlow,
@@ -32,6 +33,7 @@ import {
   searchThreadsPreview,
   modifyThreads,
   type Account,
+  type MailtoData,
   type Card,
   type ThreadGroup,
   type Thread,
@@ -1158,17 +1160,6 @@ function App() {
         await loadAccountCards(accts[0]);
         startBackgroundSync(accts[0].id);
       }
-
-      // Listen for mailto: deep-link events
-      unlistenMailto = await listen<{
-        to: string;
-        cc: string;
-        bcc: string;
-        subject: string;
-        body: string;
-      }>("mailto-received", (event) => {
-        startCompose(event.payload);
-      });
     } catch (e) {
       setError(String(e));
     } finally {
@@ -1178,6 +1169,17 @@ function App() {
       if (savedBgColorIndex !== null) {
         setTimeout(() => applyBgColor(savedBgColorIndex), 0);
       }
+    }
+
+    // Outside the startup try so a failed load still opens mailto links; the
+    // backend holds links until they are taken, including the launch link
+    try {
+      unlistenMailto = await listen<MailtoData>("mailto-received", (event) => {
+        startCompose(event.payload);
+      });
+      for (const mailto of await takePendingMailtos()) startCompose(mailto);
+    } catch (e) {
+      console.warn("mailto links unavailable:", e);
     }
   });
 
