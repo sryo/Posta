@@ -17,9 +17,11 @@ const MAX_INLINE_IMAGES: usize = 3;
 const THREAD_LOAD_CONCURRENCY: usize = 5;
 
 /// Partial-response fields for thread list entries: message headers and the
-/// part tree (with part headers, for Content-ID) three levels deep, without bodies
+/// part tree (with part headers, for Content-ID) three levels deep, without
+/// body data (only sizes and attachment ids)
 const THREAD_SUMMARY_FIELDS: &str = concat!(
-    "id,messages(id,labelIds,snippet,internalDate,payload(headers,mimeType,",
+    "id,messages(id,labelIds,snippet,internalDate,",
+    "payload(headers,mimeType,filename,body(size,attachmentId),",
     "parts(mimeType,filename,headers,body(size,attachmentId),",
     "parts(mimeType,filename,headers,body(size,attachmentId),",
     "parts(mimeType,filename,headers,body(size,attachmentId))))))"
@@ -97,6 +99,9 @@ pub struct MessagePart {
 #[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct MessagePayload {
     pub headers: Option<Vec<Header>>,
+    /// Set when the whole message is a single attached file
+    #[serde(default)]
+    pub filename: Option<String>,
     pub body: Option<MessageBody>,
     pub parts: Option<Vec<MessagePart>>,
     #[serde(rename = "mimeType")]
@@ -950,8 +955,8 @@ fn thread_summary(detail: ThreadDetail) -> Thread {
     let attachments: Vec<Attachment> = messages
         .iter()
         .flat_map(|msg| {
-            let parts = msg.payload.as_ref().map(|p| &p.parts).unwrap_or(&None);
-            extract_attachments_from_parts(parts).into_iter().map(|info| Attachment {
+            let infos = msg.payload.as_ref().map(payload_attachments).unwrap_or_default();
+            infos.into_iter().map(|info| Attachment {
                 message_id: msg.id.clone(),
                 attachment_id: info.attachment_id,
                 filename: info.filename,
@@ -1607,6 +1612,28 @@ struct AttachmentInfo {
     mime_type: String,
     size: i32,
     content_id: Option<String>,
+}
+
+/// Attachments of a message: those among its parts, or, for a single-part
+/// message, the payload itself when it is a file rather than the text body
+fn payload_attachments(payload: &MessagePayload) -> Vec<AttachmentInfo> {
+    if payload.parts.is_some() {
+        return extract_attachments_from_parts(&payload.parts);
+    }
+    let has_filename = payload.filename.as_deref().is_some_and(|f| !f.is_empty());
+    let is_text_body = matches!(payload.mime_type.as_deref(), Some("text/plain" | "text/html"));
+    if is_text_body && !has_filename {
+        return Vec::new();
+    }
+    let as_part = MessagePart {
+        part_id: None,
+        mime_type: payload.mime_type.clone().unwrap_or_default(),
+        filename: payload.filename.clone(),
+        headers: None,
+        body: payload.body.clone(),
+        parts: None,
+    };
+    extract_attachments_from_parts(&Some(vec![as_part]))
 }
 
 fn extract_attachments_from_parts(parts: &Option<Vec<MessagePart>>) -> Vec<AttachmentInfo> {
@@ -2694,6 +2721,7 @@ mod tests {
             internal_date: None,
             payload: Some(MessagePayload {
                 headers: Some(vec![header("From", from)]),
+                filename: None,
                 body: None,
                 parts: None,
                 mime_type: None,
@@ -2736,6 +2764,7 @@ mod tests {
             internal_date: None,
             payload: Some(MessagePayload {
                 headers: Some(headers),
+                filename: None,
                 body: None,
                 parts: None,
                 mime_type: Some("text/plain".to_string()),
@@ -2852,6 +2881,7 @@ mod tests {
         let mut msg = full_message("m1", &[], vec![]);
         msg.payload = Some(MessagePayload {
             headers: Some(vec![]),
+            filename: None,
             body: None,
             parts: Some(parts),
             mime_type: Some("multipart/mixed".to_string()),
@@ -3139,6 +3169,42 @@ mod tests {
         assert_eq!(thread.participants, vec!["ann@example.com", "bob@example.com"]);
         assert!(!thread.has_attachment);
         assert!(thread.calendar_event.is_none());
+    }
+
+    #[test]
+    fn thread_summary_finds_a_single_part_message_that_is_the_attachment() {
+        // A bare PDF and a bare invite: no parts, the payload body is the file
+        let response = r#"{
+            "id": "t1",
+            "messages": [
+                {"id": "m1", "internalDate": "1705330800000",
+                 "payload": {"mimeType": "application/pdf", "filename": "scan.pdf",
+                             "headers": [{"name": "From", "value": "scanner@example.com"}],
+                             "body": {"size": 51234, "attachmentId": "att-pdf"}}},
+                {"id": "m2", "internalDate": "1705334400000",
+                 "payload": {"mimeType": "text/calendar", "filename": "",
+                             "headers": [{"name": "From", "value": "cal@example.com"}],
+                             "body": {"size": 900, "attachmentId": "att-ics"}}},
+                {"id": "m3", "internalDate": "1705338000000",
+                 "payload": {"mimeType": "text/plain", "filename": "",
+                             "headers": [{"name": "From", "value": "long@example.com"}],
+                             "body": {"size": 900000, "attachmentId": "att-long-body"}}}
+            ]
+        }"#;
+        let thread = thread_summary(serde_json::from_str(response).unwrap());
+        let found: Vec<(&str, &str, &str)> = thread
+            .attachments
+            .iter()
+            .map(|a| (a.message_id.as_str(), a.attachment_id.as_str(), a.filename.as_str()))
+            .collect();
+        assert_eq!(found, vec![("m1", "att-pdf", "scan.pdf"), ("m2", "att-ics", "attachment.calendar")]);
+        assert!(thread.has_attachment);
+        assert!(thread.attachments[1].is_calendar());
+    }
+
+    #[test]
+    fn thread_summary_fields_request_the_payload_body_and_filename() {
+        assert!(THREAD_SUMMARY_FIELDS.contains("payload(headers,mimeType,filename,body(size,attachmentId),parts("));
     }
 
     #[test]
