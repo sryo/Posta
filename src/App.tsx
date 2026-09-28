@@ -664,7 +664,10 @@ function App() {
   // before any account was signed in adopts the first one.
   const [composeAccount, setComposeAccount] = createSignal<Account | null>(null);
   createComputed(on([composing, selectedAccount], ([open, account], prev) => {
-    if (open && (!prev?.[0] || !untrack(composeAccount))) setComposeAccount(account);
+    if (!open || (prev?.[0] && untrack(composeAccount))) return;
+    const adopting = !!prev?.[0] && !!account;
+    setComposeAccount(account);
+    if (adopting) untrack(() => moveComposeDraftTo(account.id));
   }));
   // Event creation state
   const [creatingEvent, setCreatingEvent] = createSignal(false);
@@ -754,6 +757,22 @@ function App() {
       body: composeBody(),
       threadId: replyingToThread()?.threadId,
     };
+  }
+
+  // A compose opened before any account saved its draft under no account;
+  // file it under the account it adopted, where that account's composes and
+  // sign-out look for it
+  function moveComposeDraftTo(accountId: string) {
+    const key = sessionDraftKey(draftKey(accountId, {
+      replyThreadId: replyingToThread()?.threadId,
+      forwardThreadId: forwardingThread()?.threadId,
+      replyEventId: replyingToEvent()?.eventId,
+      forwardEventId: forwardingEvent()?.eventId,
+    }));
+    const stored = safeGetItem(composeDraftKey);
+    if (stored !== null && !safeSetItem(key, stored)) return;
+    safeRemoveItem(composeDraftKey);
+    composeDraftKey = key;
   }
 
   function saveDraft() {

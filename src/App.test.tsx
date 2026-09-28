@@ -1360,6 +1360,23 @@ describe("App drafts", () => {
     expect(draftKeys("draft_new_a")).toEqual(["draft_new_a#mine"]);
   });
 
+  it("files a draft started before sign-in under the account it is sent from", async () => {
+    handlers.get_accounts = () => [];
+    handlers.take_pending_mailtos = () => [{ to: "bo@y.com", cc: "", bcc: "", subject: "Hi", body: "" }];
+    handlers.run_oauth_flow = () => account("a", "a@x.com");
+    render(() => <App />);
+    const subject = await screen.findByPlaceholderText("Subject");
+    fireEvent.input(subject, { target: { value: "Hi there" } });
+    expect(draftKeys("draft_new_undefined")).toHaveLength(1);
+
+    fireEvent.click(await screen.findByText("Sign in with Google"));
+    await screen.findByText("Mail for A");
+    fireEvent.input(screen.getByPlaceholderText("Subject"), { target: { value: "Hi there!" } });
+
+    expect(draftKeys("draft_new_undefined")).toEqual([]);
+    expect(storedDrafts("draft_new_a")).toEqual([expect.objectContaining({ subject: "Hi there!" })]);
+  });
+
   it("keeps typed text locally before the draft is synced", async () => {
     render(() => <App />);
     await screen.findByText("Mail for A");
