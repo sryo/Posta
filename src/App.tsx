@@ -85,6 +85,7 @@ import {
   getResponseStatusLabel,
   normalizeBase64Url,
   addReplyPrefix,
+  addForwardPrefix,
   toDateInputString,
 } from "./utils";
 import "./App.css";
@@ -2222,7 +2223,7 @@ function App() {
     const accountEmail = account.email.toLowerCase();
     const replyTo = thread.participants.find(p => extractEmail(p).toLowerCase() !== accountEmail)
       || thread.participants[0] || "";
-    const subject = thread.subject.startsWith("Re:") ? thread.subject : `Re: ${thread.subject}`;
+    const subject = addReplyPrefix(thread.subject);
 
     setQuickReply(qr => ({ ...qr, sending: true }));
     try {
@@ -2242,7 +2243,7 @@ function App() {
     const text = quickReply().text;
     if (!account || !event.organizer || !text.trim()) return;
 
-    const subject = `Re: ${event.title}`;
+    const subject = addReplyPrefix(event.title);
 
     setQuickReply(qr => ({ ...qr, sending: true }));
     try {
@@ -2292,7 +2293,7 @@ function App() {
     if (!thread) return;
 
     // Build forwarded subject and body
-    const fwdSubject = thread.subject.startsWith("Fwd:") ? thread.subject : `Fwd: ${thread.subject}`;
+    const fwdSubject = addForwardPrefix(thread.subject);
 
     // Quote the full last message like the ThreadView forward path; fall
     // back to the snippet if the fetch fails
@@ -5051,7 +5052,7 @@ function App() {
           onReplyOrganizer={() => {
             const event = activeEvent();
             if (!event) return;
-            const subject = `Re: ${event.title}`;
+            const subject = addReplyPrefix(event.title);
             const to = event.organizer || '';
             setComposeTo(to);
             setComposeSubject(subject);
@@ -5064,7 +5065,7 @@ function App() {
           onReplyAll={() => {
             const event = activeEvent();
             if (!event) return;
-            const subject = `Re: ${event.title}`;
+            const subject = addReplyPrefix(event.title);
             const allEmails = event.attendees
               .filter(a => !a.is_self)
               .map(a => a.email)
@@ -5084,7 +5085,7 @@ function App() {
           onForward={() => {
             const event = activeEvent();
             if (!event) return;
-            const subject = `Fwd: ${event.title}`;
+            const subject = addForwardPrefix(event.title);
             const body = `---------- Forwarded event ----------\n` +
               `Title: ${event.title}\n` +
               `When: ${new Date(event.start_time).toLocaleString()}\n` +
