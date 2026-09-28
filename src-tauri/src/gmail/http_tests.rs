@@ -510,9 +510,15 @@ fn api_errors_read_as_sentences_and_keep_their_status_prefix() {
     }
 
     // Unrecognized bodies are cut short rather than dumped whole
-    let long = friendly_gmail_error(StatusCode::BAD_GATEWAY, &"x".repeat(5000));
-    assert!(long.starts_with("API error 502 Bad Gateway: "));
+    let long = friendly_gmail_error(StatusCode::BAD_REQUEST, &"x".repeat(5000));
+    assert!(long.starts_with("API error 400 Bad Request: "));
     assert!(long.len() < 400, "{}", long.len());
+
+    // Server errors without Google's JSON (an HTML error page, or nothing)
+    for body in ["<!DOCTYPE html><html><body>502. That's an error.</body></html>", "", "{}"] {
+        let message = friendly_gmail_error(StatusCode::BAD_GATEWAY, body);
+        assert_eq!(message, "API error 502 Bad Gateway: Gmail is having trouble right now. Try again shortly.");
+    }
 }
 
 #[tokio::test]

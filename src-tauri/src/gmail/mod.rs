@@ -226,6 +226,8 @@ fn friendly_gmail_error(status: reqwest::StatusCode, body: &str) -> String {
         "This message is too large to send. Gmail allows up to 25MB of attachments.".to_string()
     } else if let Some(message) = api_error.and_then(|e| e.message).filter(|m| !m.trim().is_empty()) {
         message
+    } else if status.is_server_error() {
+        "Gmail is having trouble right now. Try again shortly.".to_string()
     } else {
         let trimmed = body.trim();
         match trimmed.char_indices().nth(MAX_DETAIL_CHARS) {
