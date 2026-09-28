@@ -77,8 +77,7 @@ import {
   truncateMiddle,
   getInitial,
   extractEmail,
-  extractMessageBody,
-  stripHtml,
+  extractMessageText,
   parseContact,
   getAvatarColor,
   validateEmailList,
@@ -2416,7 +2415,7 @@ function App() {
           const headers = lastMsg.payload?.headers || [];
           from = headers.find(h => h.name === 'From')?.value || from;
           date = headers.find(h => h.name === 'Date')?.value || '';
-          body = stripHtml(extractMessageBody(lastMsg.payload, lastMsg.snippet));
+          body = extractMessageText(lastMsg.payload, lastMsg.snippet);
         }
       } catch (e) {
         console.error("Failed to fetch thread for forward:", e);

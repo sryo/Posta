@@ -88,16 +88,6 @@ export function findContent(parts: any[] | undefined, mimeType: string): string 
   return null;
 }
 
-// Extract message body from Gmail payload, preferring HTML over plain text
-export function extractMessageBody(payload: any, snippet?: string): string {
-  if (payload?.body?.data) return decodeBase64Utf8(payload.body.data);
-  const htmlContent = findContent(payload?.parts, 'text/html');
-  if (htmlContent) return htmlContent;
-  const textContent = findContent(payload?.parts, 'text/plain');
-  if (textContent) return textContent;
-  return snippet || '(No content)';
-}
-
 function escapeHtml(text: string): string {
   return text
     .replace(/&/g, '&amp;')
