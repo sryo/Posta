@@ -713,14 +713,25 @@ fn save_signed_in_account(
     Ok(account)
 }
 
+const USERINFO_URL: &str = "https://www.googleapis.com/oauth2/v2/userinfo";
+
+/// A sign-in waits on this request; without a timeout a connection that
+/// never answers leaves it spinning forever
+fn userinfo_http_client(timeout: Duration) -> reqwest::Client {
+    reqwest::Client::builder().timeout(timeout).build().unwrap_or_else(|_| reqwest::Client::new())
+}
+
 async fn get_user_info(access_token: &str) -> Result<UserInfo, String> {
-    let client = reqwest::Client::new();
+    fetch_user_info(&userinfo_http_client(Duration::from_secs(30)), USERINFO_URL, access_token).await
+}
+
+async fn fetch_user_info(client: &reqwest::Client, url: &str, access_token: &str) -> Result<UserInfo, String> {
     let resp = client
-        .get("https://www.googleapis.com/oauth2/v2/userinfo")
+        .get(url)
         .bearer_auth(access_token)
         .send()
         .await
-        .map_err(|e| format!("Failed to send request: {}", e))?;
+        .map_err(|e| format!("Failed to read your Google account: {}", e.without_url()))?;
 
     if !resp.status().is_success() {
         let status = resp.status();
@@ -2909,6 +2920,55 @@ mod tests {
         assert_eq!(ids(&cards), vec!["inbox"]);
         assert_eq!(crate::auth::get_refresh_token(&first.id, &dir).unwrap(), "rt-2");
         std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// A local HTTP server that answers every request with `reply`, or
+    /// never answers when it is None
+    async fn one_reply_server(reply: Option<&'static str>) -> String {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}/userinfo", listener.local_addr().unwrap());
+        tokio::spawn(async move {
+            while let Ok((mut socket, _)) = listener.accept().await {
+                tokio::spawn(async move {
+                    let mut buf = [0u8; 4096];
+                    let _ = socket.read(&mut buf).await;
+                    match reply {
+                        Some(body) => {
+                            let response = format!(
+                                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                                body.len(),
+                                body
+                            );
+                            let _ = socket.write_all(response.as_bytes()).await;
+                        }
+                        None => tokio::time::sleep(std::time::Duration::from_secs(60)).await,
+                    }
+                });
+            }
+        });
+        url
+    }
+
+    #[tokio::test]
+    async fn a_sign_in_whose_account_lookup_never_answers_fails() {
+        let url = one_reply_server(None).await;
+        let client = super::userinfo_http_client(std::time::Duration::from_millis(300));
+        let result = tokio::time::timeout(std::time::Duration::from_secs(10), super::fetch_user_info(&client, &url, "t"))
+            .await
+            .expect("the lookup must time out on its own");
+        let err = result.err().expect("a hung lookup is an error");
+        assert!(err.starts_with("Failed to read your Google account"), "{}", err);
+        assert!(!err.contains("127.0.0.1"), "{}", err);
+    }
+
+    #[tokio::test]
+    async fn the_account_lookup_reads_email_and_picture() {
+        let url = one_reply_server(Some(r#"{"email": "me@x.com", "picture": "https://p/me.png", "id": "1"}"#)).await;
+        let client = super::userinfo_http_client(std::time::Duration::from_secs(5));
+        let info = super::fetch_user_info(&client, &url, "t").await.unwrap();
+        assert_eq!(info.email, "me@x.com");
+        assert_eq!(info.picture.as_deref(), Some("https://p/me.png"));
     }
 
     fn card_at(position: i32) -> Card {
