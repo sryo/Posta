@@ -1866,13 +1866,22 @@ fn decode_base64_lenient(data: &str) -> Option<Vec<u8>> {
         .ok()
 }
 
-/// Strip HTML tags to create plain text fallback
+/// Plain text for an HTML body, as a mail client would render it: source line
+/// breaks and runs of whitespace are single spaces, <br> and blocks end lines
 fn strip_html_tags(html: &str) -> String {
     let mut result = String::new();
     let mut tag = String::new();
     let mut in_tag = false;
+    let mut in_pre = false;
     // Element whose content is not text (style, script, head) until it closes
     let mut hidden_element: Option<String> = None;
+
+    fn end_line(result: &mut String, always: bool) {
+        result.truncate(result.trim_end_matches(' ').len());
+        if always || !(result.is_empty() || result.ends_with('\n')) {
+            result.push('\n');
+        }
+    }
 
     for c in html.chars() {
         match c {
@@ -1895,28 +1904,93 @@ fn strip_html_tags(html: &str) -> String {
                     if (is_closing && *hidden == name) || (hidden == "head" && name == "body") {
                         hidden_element = None;
                     }
-                } else if !is_closing && matches!(name.as_str(), "style" | "script" | "head") {
-                    hidden_element = Some(name);
-                } else if name == "br" || name == "p" {
-                    // Line-breaking tags become newlines instead of vanishing
-                    result.push('\n');
+                    continue;
+                }
+                match name.as_str() {
+                    "style" | "script" | "head" if !is_closing => hidden_element = Some(name),
+                    "br" | "p" => end_line(&mut result, true),
+                    "pre" => in_pre = !is_closing,
+                    "div" | "li" | "tr" | "blockquote" | "table" | "ul" | "ol" | "h1" | "h2" | "h3"
+                    | "h4" | "h5" | "h6"
+                        if is_closing =>
+                    {
+                        end_line(&mut result, false)
+                    }
+                    _ => {}
                 }
             }
             _ if in_tag => tag.push(c),
             _ if hidden_element.is_some() => {}
+            _ if in_pre => result.push(c),
+            c if c.is_ascii_whitespace() => {
+                if !(result.is_empty() || result.ends_with([' ', '\n'])) {
+                    result.push(' ');
+                }
+            }
             _ => result.push(c),
         }
     }
 
-    // Decode common HTML entities; &amp; last so "&amp;lt;" decodes to "&lt;"
-    // rather than being double-decoded
-    result
-        .replace("&nbsp;", " ")
-        .replace("&lt;", "<")
-        .replace("&gt;", ">")
-        .replace("&quot;", "\"")
-        .replace("&#39;", "'")
-        .replace("&amp;", "&")
+    decode_html_entities(&result)
+}
+
+/// Decode character references in one pass, so "&amp;lt;" becomes "&lt;"
+/// rather than "<"; unknown or malformed ones stay as written
+fn decode_html_entities(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(amp) = rest.find('&') {
+        out.push_str(&rest[..amp]);
+        rest = &rest[amp..];
+        let decoded = rest[1..]
+            .find(';')
+            .filter(|&end| end <= 10)
+            .and_then(|end| decode_html_entity(&rest[1..1 + end]).map(|c| (c, end + 2)));
+        match decoded {
+            Some((c, len)) => {
+                out.push(c);
+                rest = &rest[len..];
+            }
+            None => {
+                out.push('&');
+                rest = &rest[1..];
+            }
+        }
+    }
+    out.push_str(rest);
+    out
+}
+
+/// The character an entity name ("amp", "#8217", "#x2014") stands for
+fn decode_html_entity(entity: &str) -> Option<char> {
+    if let Some(number) = entity.strip_prefix('#') {
+        let code = match number.strip_prefix(['x', 'X']) {
+            Some(hex) => u32::from_str_radix(hex, 16).ok()?,
+            None => number.parse().ok()?,
+        };
+        return char::from_u32(code);
+    }
+    Some(match entity {
+        "amp" => '&',
+        "lt" => '<',
+        "gt" => '>',
+        "quot" => '"',
+        "apos" => '\'',
+        "nbsp" => ' ',
+        "lsquo" => '\u{2018}',
+        "rsquo" => '\u{2019}',
+        "ldquo" => '\u{201C}',
+        "rdquo" => '\u{201D}',
+        "ndash" => '\u{2013}',
+        "mdash" => '\u{2014}',
+        "hellip" => '\u{2026}',
+        "bull" => '\u{2022}',
+        "copy" => '\u{00A9}',
+        "reg" => '\u{00AE}',
+        "trade" => '\u{2122}',
+        "euro" => '\u{20AC}',
+        _ => return None,
+    })
 }
 
 /// The user-written fields of an outgoing message or draft
@@ -2434,6 +2508,28 @@ mod tests {
         // "&amp;lt;" is the escaped text "&lt;" - it must NOT become "<"
         assert_eq!(strip_html_tags("&amp;lt;"), "&lt;");
         assert_eq!(strip_html_tags("&quot;hi&quot; &#39;there&#39;&nbsp;!"), "\"hi\" 'there' !");
+    }
+
+    #[test]
+    fn strip_html_treats_source_line_breaks_as_spaces() {
+        // What compose sends for "Hi\nthere": the <br> is the only line break
+        assert_eq!(strip_html_tags("<div>Hi<br>\nthere</div>"), "Hi\nthere\n");
+        assert_eq!(strip_html_tags("<div>\n  Hello\n  world\n</div>"), "Hello world\n");
+        assert_eq!(strip_html_tags("<pre>x  = 1\ny</pre>"), "x  = 1\ny");
+    }
+
+    #[test]
+    fn strip_html_ends_a_line_after_each_block() {
+        assert_eq!(strip_html_tags("<div>one</div><div>two</div>"), "one\ntwo\n");
+        assert_eq!(strip_html_tags("<ul><li>a</li><li>b</li></ul>"), "a\nb\n");
+        assert_eq!(strip_html_tags("<div>a<br></div><div>b</div>"), "a\nb\n");
+    }
+
+    #[test]
+    fn strip_html_decodes_numeric_and_typographic_entities() {
+        assert_eq!(strip_html_tags("It&#8217;s &#x2014; &rsquo;ok&lsquo; &hellip;"), "It\u{2019}s \u{2014} \u{2019}ok\u{2018} \u{2026}");
+        assert_eq!(strip_html_tags("AT&T &bogus; &#xZZ; &#1114112;"), "AT&T &bogus; &#xZZ; &#1114112;");
+        assert_eq!(strip_html_tags("&amp;#8217;"), "&#8217;");
     }
 
     #[test]
