@@ -2,6 +2,7 @@
 
 use serde::Deserialize;
 use std::sync::Arc;
+use std::time::Duration;
 use thiserror::Error;
 use tokio::sync::Mutex;
 
@@ -34,6 +35,8 @@ struct TokenResponse {
 pub struct GmailAuth {
     client_id: String,
     client_secret: String,
+    http: reqwest::Client,
+    token_url: String,
     pending_auth: Arc<Mutex<Option<PendingAuth>>>,
 }
 
@@ -44,9 +47,21 @@ struct PendingAuth {
 
 impl GmailAuth {
     pub fn new(client_id: String, client_secret: String) -> Self {
+        // Callers hold the shared auth lock across token requests, so a hung
+        // request would stall every account's refresh
+        Self::with_endpoint(client_id, client_secret, GOOGLE_TOKEN_URL.to_string(), Duration::from_secs(30))
+    }
+
+    fn with_endpoint(client_id: String, client_secret: String, token_url: String, timeout: Duration) -> Self {
+        let http = reqwest::Client::builder()
+            .timeout(timeout)
+            .build()
+            .unwrap_or_else(|_| reqwest::Client::new());
         Self {
             client_id,
             client_secret,
+            http,
+            token_url,
             pending_auth: Arc::new(Mutex::new(None)),
         }
     }
@@ -112,9 +127,9 @@ impl GmailAuth {
 
         tracing::info!("Exchanging code for tokens...");
 
-        let client = reqwest::Client::new();
-        let resp = client
-            .post(GOOGLE_TOKEN_URL)
+        let resp = self
+            .http
+            .post(&self.token_url)
             .form(&[
                 ("client_id", self.client_id.as_str()),
                 ("client_secret", self.client_secret.as_str()),
@@ -148,9 +163,9 @@ impl GmailAuth {
 
     /// Refresh the access token. Returns (access_token, expires_in_secs).
     pub async fn refresh_access_token(&self, refresh_token: &str) -> Result<(String, Option<u64>), AuthError> {
-        let client = reqwest::Client::new();
-        let resp = client
-            .post(GOOGLE_TOKEN_URL)
+        let resp = self
+            .http
+            .post(&self.token_url)
             .form(&[
                 ("client_id", self.client_id.as_str()),
                 ("client_secret", self.client_secret.as_str()),
@@ -162,7 +177,7 @@ impl GmailAuth {
 
         if !resp.status().is_success() {
             let error_text = resp.text().await.unwrap_or_default();
-            return Err(AuthError::TokenRefresh(format!("Token refresh failed: {}", error_text)));
+            return Err(AuthError::TokenRefresh(error_text));
         }
 
         let token_resp: TokenResponse = resp.json().await?;
@@ -408,5 +423,89 @@ mod tests {
         use sha2::{Digest, Sha256};
         let challenge = base64_url_encode(&Sha256::digest(verifier.as_bytes()));
         assert!(url.contains(&format!("code_challenge={}&", challenge)));
+    }
+    /// Serve one canned HTTP response per connection on an ephemeral port;
+    /// `None` accepts and never answers
+    fn token_stub(response: Option<&'static str>) -> String {
+        use std::io::{Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}/token", listener.local_addr().unwrap());
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                let Ok(mut stream) = stream else { return };
+                let mut buf = [0u8; 8192];
+                let _ = stream.read(&mut buf);
+                match response {
+                    Some(body) => {
+                        let status = if body.contains("\"error\"") { "400 Bad Request" } else { "200 OK" };
+                        let _ = write!(
+                            stream,
+                            "HTTP/1.1 {}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                            status,
+                            body.len(),
+                            body
+                        );
+                    }
+                    None => std::thread::sleep(Duration::from_secs(30)),
+                }
+            }
+        });
+        url
+    }
+
+    fn auth_at(token_url: String, timeout: Duration) -> GmailAuth {
+        GmailAuth::with_endpoint("client".into(), "secret".into(), token_url, timeout)
+    }
+
+    #[tokio::test]
+    async fn hung_token_endpoint_times_out() {
+        let auth = auth_at(token_stub(None), Duration::from_millis(300));
+        let started = std::time::Instant::now();
+        let result = tokio::time::timeout(Duration::from_secs(5), auth.refresh_access_token("rt")).await;
+        let err = result.expect("refresh must not hang").unwrap_err();
+        assert!(started.elapsed() < Duration::from_secs(5), "{}", err);
+    }
+
+    #[tokio::test]
+    async fn refresh_failure_keeps_google_error_and_single_prefix() {
+        let auth = auth_at(
+            token_stub(Some(r#"{"error": "invalid_grant", "error_description": "Token has been expired or revoked."}"#)),
+            Duration::from_secs(5),
+        );
+        let err = auth.refresh_access_token("rt").await.unwrap_err().to_string();
+        assert!(err.contains("invalid_grant"), "{}", err);
+        assert_eq!(err.matches("Token refresh failed").count(), 1, "{}", err);
+    }
+
+    #[tokio::test]
+    async fn refresh_returns_token_and_expiry() {
+        let auth = auth_at(
+            token_stub(Some(r#"{"access_token": "at", "expires_in": 3599, "token_type": "Bearer"}"#)),
+            Duration::from_secs(5),
+        );
+        assert_eq!(auth.refresh_access_token("rt").await.unwrap(), ("at".to_string(), Some(3599)));
+    }
+
+    #[tokio::test]
+    async fn exchange_consumes_flow_and_returns_tokens() {
+        let auth = auth_at(
+            token_stub(Some(r#"{"access_token": "at", "refresh_token": "rt", "expires_in": 3599}"#)),
+            Duration::from_secs(5),
+        );
+        let (_, state) = auth.start_auth_flow().await.unwrap();
+        let tokens = auth.exchange_code("code".into(), Some(&state)).await.unwrap();
+        assert_eq!(tokens, ("at".to_string(), "rt".to_string(), Some(3599)));
+        assert!(auth.pending_auth.lock().await.is_none());
+    }
+
+    #[tokio::test]
+    async fn exchange_without_refresh_token_fails() {
+        let auth = auth_at(
+            token_stub(Some(r#"{"access_token": "at", "expires_in": 3599}"#)),
+            Duration::from_secs(5),
+        );
+        let (_, state) = auth.start_auth_flow().await.unwrap();
+        let err = auth.exchange_code("code".into(), Some(&state)).await.unwrap_err();
+        assert!(err.to_string().contains("No refresh token"), "{}", err);
     }
 }
