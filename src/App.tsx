@@ -2894,16 +2894,22 @@ function App() {
     }
   }
 
+  // The card was edited or deleted since a fetch for `query` started
+  function cardQueryChanged(cardId: string, query: string | undefined): boolean {
+    return cards().find(c => c.id === cardId)?.query !== query;
+  }
+
   async function loadCardThreads(cardId: string, append = false, forceRefresh = false) {
     const account = selectedAccount();
     if (!account) return;
 
-    // A response landing after the user switched accounts must not write
-    // the old account's threads into the store (dock badge, autocomplete)
-    const stale = () => selectedAccount()?.id !== account.id;
-
     // Check if this is a calendar card
     const card = cards().find(c => c.id === cardId);
+
+    // A response landing after the user switched accounts must not write
+    // the old account's threads into the store (dock badge, autocomplete),
+    // nor one for a query the card no longer has
+    const stale = () => selectedAccount()?.id !== account.id || cardQueryChanged(cardId, card?.query);
     if (card?.card_type === "calendar") {
       await loadCalendarEvents(cardId, forceRefresh);
       return;
@@ -3060,7 +3066,7 @@ function App() {
   async function fetchAndCacheCalendarEvents(accountId: string, cardId: string, query: string) {
     try {
       const events = await fetchCalendarEvents(accountId, query);
-      if (selectedAccount()?.id !== accountId) return;
+      if (selectedAccount()?.id !== accountId || cardQueryChanged(cardId, query)) return;
       setCardCalendarEvents(cardId, events);
       await saveCachedCardEvents(cardId, events);
       setLastSyncTimes(cardId, Date.now());
@@ -3093,9 +3099,10 @@ function App() {
     // Capture pagination state so a page-1 fetch that resolves after the
     // user paginated doesn't wipe appended pages or rewind the page token
     const tokenBeforeFetch = cardPageTokens[cardId] ?? null;
+    const query = cards().find(c => c.id === cardId)?.query;
     try {
       const result = await fetchThreadsPaginated(accountId, cardId, null);
-      if (selectedAccount()?.id !== accountId) return;
+      if (selectedAccount()?.id !== accountId || cardQueryChanged(cardId, query)) return;
       // Skip update if a recent action happened (prevents overwriting optimistic updates)
       const recent = lastAction();
       if (recent && Date.now() - recent.timestamp < 3000) {

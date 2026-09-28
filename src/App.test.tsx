@@ -1949,6 +1949,40 @@ describe("App links", () => {
   });
 });
 
+describe("App card query edits", () => {
+  it("does not let a refresh started before the edit show or cache the old query's threads", async () => {
+    let calls = 0;
+    let releaseOld!: () => void;
+    const slowOld = new Promise<void>(r => { releaseOld = r; });
+    handlers.fetch_threads_paginated = async () => {
+      const call = ++calls;
+      if (call === 2) await slowOld;
+      const subject = call === 1 ? "Mail for A" : call === 2 ? "Old query result" : "New query result";
+      return { groups: [{ label: "Today", threads: [thread(`t${call}`, subject)] }], next_page_token: null, has_more: false };
+    };
+    handlers.update_card = () => null;
+    handlers.clear_card_cache = () => null;
+    render(() => <App />);
+    await screen.findByText("Mail for A");
+    await waitFor(() => expect(screen.getByTitle("Refresh")).not.toBeDisabled());
+
+    fireEvent.click(screen.getByTitle("Refresh"));
+    await waitFor(() => expect(calls).toBe(2));
+    fireEvent.click(screen.getByTitle("Edit query"));
+    fireEvent.input(screen.getByPlaceholderText("is:inbox, from:boss, newer_than:7d"), { target: { value: "is:starred" } });
+    fireEvent.click(screen.getByTitle("Save (⌘Enter)"));
+    await screen.findByText("New query result");
+
+    releaseOld();
+    await new Promise(r => setTimeout(r, 30));
+    expect(screen.getByText("New query result")).toBeInTheDocument();
+    expect(screen.queryByText("Old query result")).not.toBeInTheDocument();
+    expect(invoke).not.toHaveBeenCalledWith("save_cached_card_threads", expect.objectContaining({
+      groups: [expect.objectContaining({ threads: [expect.objectContaining({ subject: "Old query result" })] })],
+    }));
+  });
+});
+
 describe("App card refreshes", () => {
   it("does not fetch a card again while its refresh is in flight", async () => {
     handlers.get_cached_card_threads = () => ({ groups: [{ label: "Today", threads: [thread("t-a", "Mail for A")] }], next_page_token: null, cached_at: 1 });
