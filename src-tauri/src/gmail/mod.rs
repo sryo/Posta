@@ -302,6 +302,20 @@ fn request_error(e: reqwest::Error) -> String {
     }
 }
 
+/// A failure to read or parse a response body `what`. Only a body that
+/// arrived whole and is not what Gmail sends is a parse error; one cut off
+/// or stalled by the network reads like a failed request.
+fn body_error(what: &str, e: reqwest::Error) -> String {
+    let unparsable = std::error::Error::source(&e).is_some_and(|source| source.is::<serde_json::Error>());
+    if unparsable {
+        format!("Failed to parse {}: {}", what, e)
+    } else if e.is_timeout() {
+        request_error(e)
+    } else {
+        "Request failed: the network connection to Gmail dropped. Check your connection and try again.".to_string()
+    }
+}
+
 impl GmailClient {
     pub fn new(access_token: String) -> Self {
         Self {
@@ -351,7 +365,7 @@ impl GmailClient {
             .await?
             .json()
             .await
-            .map_err(|e| format!("Failed to parse response: {}", e))?;
+            .map_err(|e| body_error("response", e))?;
 
         let thread_ids: Vec<String> = list.threads.unwrap_or_default().into_iter().map(|t| t.id).collect();
         if thread_ids.is_empty() {
@@ -386,7 +400,7 @@ impl GmailClient {
         let mut thread: FullThread = resp
             .json()
             .await
-            .map_err(|e| format!("Failed to parse thread: {}", e))?;
+            .map_err(|e| body_error("thread", e))?;
 
         for message in &mut thread.messages {
             message.reaction = parse_reaction_from_message(message);
@@ -450,7 +464,7 @@ impl GmailClient {
         let attachment: AttachmentResponse = resp
             .json()
             .await
-            .map_err(|e| format!("Failed to parse attachment: {}", e))?;
+            .map_err(|e| body_error("attachment", e))?;
 
         Ok(attachment.data)
     }
@@ -474,7 +488,7 @@ impl GmailClient {
         let detail: ThreadDetail = resp
             .json()
             .await
-            .map_err(|e| format!("Failed to parse thread: {}", e))?;
+            .map_err(|e| body_error("thread", e))?;
 
         Ok(thread_summary(detail))
     }
@@ -620,7 +634,7 @@ impl GmailClient {
             .and_then(batch_boundary)
             .ok_or("Missing boundary in response")?;
 
-        let resp_body = resp.text().await.map_err(|e| format!("Failed to read response: {}", e))?;
+        let resp_body = resp.text().await.map_err(|e| body_error("batch response", e))?;
 
         let mut items = vec![None; paths.len()];
         for response in parse_batch_responses(&resp_body, &resp_boundary) {
@@ -720,7 +734,7 @@ impl GmailClient {
             .await?
             .json()
             .await
-            .map_err(|e| format!("Failed to parse thread: {}", e))
+            .map_err(|e| body_error("thread", e))
     }
 
     /// List all labels for the authenticated user
@@ -740,7 +754,7 @@ impl GmailClient {
         let response: ListLabelsResponse = resp
             .json()
             .await
-            .map_err(|e| format!("Failed to parse labels: {}", e))?;
+            .map_err(|e| body_error("labels", e))?;
 
         Ok(response.labels.unwrap_or_default())
     }
@@ -806,7 +820,7 @@ impl GmailClient {
 
         resp.json()
             .await
-            .map_err(|e| format!("Failed to parse draft: {}", e))
+            .map_err(|e| body_error("draft", e))
     }
 
     /// Delete a draft
@@ -855,7 +869,7 @@ impl GmailClient {
         let profile: Profile = resp
             .json()
             .await
-            .map_err(|e| format!("Failed to parse profile: {}", e))?;
+            .map_err(|e| body_error("profile", e))?;
 
         Ok(profile.history_id)
     }
@@ -899,7 +913,7 @@ impl GmailClient {
             let history_resp: HistoryListResponse = resp
                 .json()
                 .await
-                .map_err(|e| format!("Failed to parse history: {}", e))?;
+                .map_err(|e| body_error("history", e))?;
 
             new_history_id = history_resp.history_id;
 

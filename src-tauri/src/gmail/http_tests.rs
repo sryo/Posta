@@ -24,6 +24,10 @@ pub(super) enum Reply {
     Raw { status: u16, content_type: String, body: String },
     /// Keep the connection open without ever answering
     Hang,
+    /// Send the headers and `sent` of a longer JSON body, then stall
+    StallBody { sent: String },
+    /// Send the headers and `sent` of a longer JSON body, then close
+    CutBody { sent: String },
 }
 
 type Handler = dyn Fn(&StubRequest) -> Reply + Send + Sync;
@@ -87,6 +91,22 @@ impl StubServer {
                         buf.drain(..header_end + content_length);
                         let reply = handler(&request);
                         log.lock().unwrap().push(request);
+                        let partial = match &reply {
+                            Reply::StallBody { sent } | Reply::CutBody { sent } => Some(format!(
+                                "HTTP/1.1 200 Stub\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+                                sent.len() + 1000,
+                                sent
+                            )),
+                            _ => None,
+                        };
+                        if let Some(partial) = partial {
+                            let _ = socket.write_all(partial.as_bytes()).await;
+                            let _ = socket.flush().await;
+                            if matches!(reply, Reply::StallBody { .. }) {
+                                tokio::time::sleep(StdDuration::from_secs(3600)).await;
+                            }
+                            return;
+                        }
                         let (status, content_type, body) = match reply {
                             Reply::Json(status, body) => (status, "application/json".to_string(), body),
                             Reply::Raw { status, content_type, body } => (status, content_type, body),
@@ -94,6 +114,7 @@ impl StubServer {
                                 tokio::time::sleep(StdDuration::from_secs(3600)).await;
                                 return;
                             }
+                            Reply::StallBody { .. } | Reply::CutBody { .. } => return,
                         };
                         let response = format!(
                             "HTTP/1.1 {} Stub\r\nContent-Type: {}\r\nContent-Length: {}\r\n\r\n{}",
@@ -150,6 +171,30 @@ async fn a_request_the_server_never_answers_fails_instead_of_hanging() {
 
     let err = within(gmail.get_current_history_id()).await.unwrap_err();
     assert!(err.contains("timed out"), "{}", err);
+}
+
+#[tokio::test]
+async fn a_response_body_that_stops_arriving_reads_as_a_connection_problem() {
+    let sent = r#"{"id":"t1","messages":[{"id":"m1","#.to_string();
+    let stalled = StubServer::start({
+        let sent = sent.clone();
+        move |_| Reply::StallBody { sent: sent.clone() }
+    })
+    .await;
+    let gmail = stalled.client_with(build_http_client(StdDuration::from_millis(300)));
+    let err = within(gmail.get_thread("t1")).await.unwrap_err();
+    assert!(err.contains("timed out"), "{}", err);
+
+    // A connection dropped mid-body, as when the Mac changes networks
+    let cut = StubServer::start(move |_| Reply::CutBody { sent: sent.clone() }).await;
+    let err = within(cut.client().get_thread("t1")).await.unwrap_err();
+    assert!(err.contains("network"), "{}", err);
+    assert!(!err.contains("parse"), "{}", err);
+
+    // A complete body that is not what Gmail sends is still a parse error
+    let garbled = StubServer::start(|_| Reply::Json(200, "[1,2]".into())).await;
+    let err = within(garbled.client().get_thread("t1")).await.unwrap_err();
+    assert!(err.starts_with("Failed to parse thread"), "{}", err);
 }
 
 #[tokio::test]
