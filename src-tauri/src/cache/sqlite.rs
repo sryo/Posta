@@ -186,30 +186,35 @@ impl CacheDb {
 
     pub fn insert_card(&self, card: &Card) -> Result<(), CacheError> {
         let conn = self.conn.lock().map_err(|_| CacheError::Lock)?;
-        let collapsed: i32 = if card.collapsed { 1 } else { 0 };
-        conn.execute(
-            "INSERT INTO cards (id, account_id, name, query, position, collapsed, color, group_by, card_type) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
-            params![card.id, card.account_id, card.name, card.query, card.position, collapsed, card.color, card.group_by, card.card_type],
-        )?;
-        Ok(())
+        insert_card_row(&conn, card)
     }
 
     pub fn update_card(&self, card: &Card) -> Result<(), CacheError> {
         let conn = self.conn.lock().map_err(|_| CacheError::Lock)?;
-        let collapsed: i32 = if card.collapsed { 1 } else { 0 };
-        conn.execute(
-            "UPDATE cards SET name = ?1, query = ?2, position = ?3, collapsed = ?4, color = ?5, group_by = ?6, card_type = ?7 WHERE id = ?8",
-            params![card.name, card.query, card.position, collapsed, card.color, card.group_by, card.card_type, card.id],
-        )?;
-        Ok(())
+        update_card_row(&conn, card)
     }
 
     pub fn delete_card(&self, id: &str) -> Result<(), CacheError> {
         let mut conn = self.conn.lock().map_err(|_| CacheError::Lock)?;
         let tx = conn.transaction()?;
-        tx.execute("DELETE FROM cards WHERE id = ?1", params![id])?;
-        tx.execute("DELETE FROM card_thread_cache WHERE card_id = ?1", params![id])?;
-        tx.execute("DELETE FROM card_calendar_cache WHERE card_id = ?1", params![id])?;
+        delete_card_rows(&tx, id)?;
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// All of the writes land, or none do
+    pub fn apply_card_changes(&self, insert: &[Card], update: &[Card], delete: &[String]) -> Result<(), CacheError> {
+        let mut conn = self.conn.lock().map_err(|_| CacheError::Lock)?;
+        let tx = conn.transaction()?;
+        for card in insert {
+            insert_card_row(&tx, card)?;
+        }
+        for card in update {
+            update_card_row(&tx, card)?;
+        }
+        for id in delete {
+            delete_card_rows(&tx, id)?;
+        }
         tx.commit()?;
         Ok(())
     }
@@ -225,6 +230,22 @@ impl CacheDb {
         }
         tx.commit()?;
         Ok(())
+    }
+
+    /// Remove cached threads and events of cards that no longer exist. Caches
+    /// of existing cards are kept however old: they are shown until the
+    /// refresh replaces them.
+    pub fn clear_orphaned_card_cache(&self) -> Result<usize, CacheError> {
+        let conn = self.conn.lock().map_err(|_| CacheError::Lock)?;
+        let thread_count = conn.execute(
+            "DELETE FROM card_thread_cache WHERE card_id NOT IN (SELECT id FROM cards)",
+            [],
+        )?;
+        let calendar_count = conn.execute(
+            "DELETE FROM card_calendar_cache WHERE card_id NOT IN (SELECT id FROM cards)",
+            [],
+        )?;
+        Ok(thread_count + calendar_count)
     }
 
     /// Clear stale card caches (older than max_age_hours)
@@ -358,6 +379,30 @@ impl CacheDb {
         conn.execute("DELETE FROM sync_state WHERE account_id = ?1", params![account_id])?;
         Ok(())
     }
+}
+
+fn insert_card_row(conn: &Connection, card: &Card) -> Result<(), CacheError> {
+    conn.execute(
+        "INSERT INTO cards (id, account_id, name, query, position, collapsed, color, group_by, card_type) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+        params![card.id, card.account_id, card.name, card.query, card.position, card.collapsed as i32, card.color, card.group_by, card.card_type],
+    )?;
+    Ok(())
+}
+
+fn update_card_row(conn: &Connection, card: &Card) -> Result<(), CacheError> {
+    conn.execute(
+        "UPDATE cards SET name = ?1, query = ?2, position = ?3, collapsed = ?4, color = ?5, group_by = ?6, card_type = ?7 WHERE id = ?8",
+        params![card.name, card.query, card.position, card.collapsed as i32, card.color, card.group_by, card.card_type, card.id],
+    )?;
+    Ok(())
+}
+
+/// The card and the caches keyed by it
+fn delete_card_rows(conn: &Connection, id: &str) -> Result<(), CacheError> {
+    conn.execute("DELETE FROM cards WHERE id = ?1", params![id])?;
+    conn.execute("DELETE FROM card_thread_cache WHERE card_id = ?1", params![id])?;
+    conn.execute("DELETE FROM card_calendar_cache WHERE card_id = ?1", params![id])?;
+    Ok(())
 }
 
 fn account_from_row(row: &rusqlite::Row) -> rusqlite::Result<Account> {
@@ -612,6 +657,80 @@ mod tests {
         assert_eq!(db.clear_stale_card_cache(24).unwrap(), 1);
         assert!(db.get_card_threads("old").unwrap().is_none());
         assert!(db.get_card_threads("fresh").unwrap().is_some());
+    }
+
+    #[test]
+    fn card_changes_apply_together() {
+        let db = db();
+        let keep = Card::new("a".into(), "Keep".into(), "q".into(), 0);
+        let gone = Card::new("a".into(), "Gone".into(), "q".into(), 1);
+        db.insert_card(&keep).unwrap();
+        db.insert_card(&gone).unwrap();
+        db.save_card_threads(&gone.id, &[], None).unwrap();
+        db.save_card_events(&gone.id, &[]).unwrap();
+        let added = Card::new("a".into(), "Added".into(), "q".into(), 2);
+        let mut renamed = keep.clone();
+        renamed.name = "Renamed".into();
+
+        db.apply_card_changes(&[added], &[renamed], std::slice::from_ref(&gone.id)).unwrap();
+
+        let names: Vec<_> = db.get_cards("a").unwrap().into_iter().map(|c| c.name).collect();
+        assert_eq!(names, ["Renamed", "Added"]);
+        assert!(db.get_card_threads(&gone.id).unwrap().is_none());
+        assert!(db.get_card_events(&gone.id).unwrap().is_none());
+    }
+
+    #[test]
+    fn failed_card_change_leaves_every_card_untouched() {
+        let db = db();
+        let keep = Card::new("a".into(), "Keep".into(), "q".into(), 0);
+        let gone = Card::new("a".into(), "Gone".into(), "q".into(), 1);
+        db.insert_card(&keep).unwrap();
+        db.insert_card(&gone).unwrap();
+        db.save_card_threads(&gone.id, &[], None).unwrap();
+        let mut renamed = keep.clone();
+        renamed.name = "Renamed".into();
+        let fresh = Card::new("a".into(), "Fresh".into(), "q".into(), 2);
+        // Same id as an existing card: the insert violates the primary key
+        let duplicate = Card::new("a".into(), "Dup".into(), "q".into(), 3);
+        let duplicate = Card { id: keep.id.clone(), ..duplicate };
+
+        let result = db.apply_card_changes(&[fresh, duplicate], &[renamed], std::slice::from_ref(&gone.id));
+
+        assert!(result.is_err());
+        let names: Vec<_> = db.get_cards("a").unwrap().into_iter().map(|c| c.name).collect();
+        assert_eq!(names, ["Keep", "Gone"]);
+        assert!(db.get_card_threads(&gone.id).unwrap().is_some());
+    }
+
+    #[test]
+    fn old_cache_of_an_existing_card_survives_and_orphans_go() {
+        let db = db();
+        let card = Card::new("a".into(), "A".into(), "q".into(), 0);
+        db.insert_card(&card).unwrap();
+        let two_days_ago = chrono::Utc::now().timestamp() - 2 * 24 * 3600;
+        {
+            let conn = db.conn.lock().unwrap();
+            for id in [card.id.as_str(), "deleted-card"] {
+                conn.execute(
+                    "INSERT INTO card_thread_cache (card_id, thread_data, cached_at) VALUES (?1, '[]', ?2)",
+                    params![id, two_days_ago],
+                )
+                .unwrap();
+                conn.execute(
+                    "INSERT INTO card_calendar_cache (card_id, events_data, cached_at) VALUES (?1, '[]', ?2)",
+                    params![id, two_days_ago],
+                )
+                .unwrap();
+            }
+        }
+
+        assert_eq!(db.clear_orphaned_card_cache().unwrap(), 2);
+
+        assert_eq!(db.get_card_threads(&card.id).unwrap().unwrap().2, two_days_ago);
+        assert!(db.get_card_events(&card.id).unwrap().is_some());
+        assert!(db.get_card_threads("deleted-card").unwrap().is_none());
+        assert!(db.get_card_events("deleted-card").unwrap().is_none());
     }
 
     #[test]
