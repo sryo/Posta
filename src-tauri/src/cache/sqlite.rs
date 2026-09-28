@@ -14,6 +14,9 @@ pub enum CacheError {
     Lock,
 }
 
+/// Cached thread groups, next page token, and cache time in Unix seconds
+pub type CachedThreads = (Vec<crate::models::ThreadGroup>, Option<String>, i64);
+
 pub struct CacheDb {
     conn: Mutex<Connection>,
 }
@@ -305,7 +308,7 @@ impl CacheDb {
     pub fn get_card_threads(
         &self,
         card_id: &str,
-    ) -> Result<Option<(Vec<crate::models::ThreadGroup>, Option<String>, i64)>, CacheError> {
+    ) -> Result<Option<CachedThreads>, CacheError> {
         let conn = self.conn.lock().map_err(|_| CacheError::Lock)?;
         let mut stmt = conn.prepare(
             "SELECT thread_data, next_page_token, cached_at FROM card_thread_cache WHERE card_id = ?1",
