@@ -817,6 +817,10 @@ impl GmailClient {
             .await
             .map_err(request_error)?;
 
+        // Already sent or discarded elsewhere
+        if resp.status() == reqwest::StatusCode::NOT_FOUND {
+            return Ok(());
+        }
         ensure_success(resp).await?;
 
         Ok(())

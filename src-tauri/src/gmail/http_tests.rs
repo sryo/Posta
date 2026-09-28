@@ -402,6 +402,19 @@ async fn other_draft_save_failures_are_not_retried_as_new_drafts() {
     assert!(server.requests().iter().all(|r| r.method == "PUT"));
 }
 
+#[tokio::test]
+async fn deleting_a_draft_that_is_already_gone_succeeds() {
+    let server = StubServer::start(|request| match request.target.as_str() {
+        "/gmail/v1/users/me/drafts/gone" => Reply::Json(404, google_error(404, "NOT_FOUND", "notFound", "Not Found")),
+        _ => Reply::Json(500, "{}".into()),
+    })
+    .await;
+    let gmail = server.client();
+
+    assert_eq!(within(gmail.delete_draft("gone")).await, Ok(()));
+    assert!(within(gmail.delete_draft("other")).await.is_err());
+}
+
 fn google_error(code: u16, status: &str, reason: &str, message: &str) -> String {
     serde_json::json!({
         "error": {
