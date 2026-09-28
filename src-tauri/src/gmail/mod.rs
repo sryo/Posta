@@ -2779,6 +2779,12 @@ mod tests {
             "DTSTART;TZID=/mozilla.org/20050126_1/America/New_York:20240115T100000",
         );
         assert_eq!(invite_start_utc(&ics), "2024-01-15T15:00:00+00:00");
+        // A second zone, so no machine-local fallback can pass both
+        let kolkata = invite_with_zone(
+            &[],
+            "DTSTART;TZID=/citadel.org/20190914_1/Asia/Kolkata:20240115T100000",
+        );
+        assert_eq!(invite_start_utc(&kolkata), "2024-01-15T04:30:00+00:00");
     }
 
     const CUSTOM_EUROPE_ZONE: &[&str] = &[
@@ -2847,6 +2853,51 @@ mod tests {
         assert_eq!(at("20240310T120000"), "2024-03-10T19:00:00+00:00");
         assert_eq!(at("20241102T120000"), "2024-11-02T19:00:00+00:00");
         assert_eq!(at("20241103T120000"), "2024-11-03T20:00:00+00:00");
+    }
+
+    #[test]
+    fn parse_ics_vtimezone_rules_stop_at_their_until() {
+        // US Eastern before and after 2007: the old rules end with UNTIL
+        let zone = [
+            "BEGIN:VTIMEZONE",
+            "TZID:Old and New Eastern",
+            "BEGIN:DAYLIGHT",
+            "DTSTART:19670430T020000",
+            "TZOFFSETFROM:-0500",
+            "TZOFFSETTO:-0400",
+            "RRULE:FREQ=YEARLY;BYMONTH=4;BYDAY=1SU;UNTIL=20060402T070000Z",
+            "END:DAYLIGHT",
+            "BEGIN:STANDARD",
+            "DTSTART:19671029T020000",
+            "TZOFFSETFROM:-0400",
+            "TZOFFSETTO:-0500",
+            "RRULE:FREQ=YEARLY;BYMONTH=10;BYDAY=-1SU;UNTIL=20061029T060000Z",
+            "END:STANDARD",
+            "BEGIN:DAYLIGHT",
+            "DTSTART:20070311T020000",
+            "TZOFFSETFROM:-0500",
+            "TZOFFSETTO:-0400",
+            "RRULE:FREQ=YEARLY;BYMONTH=3;BYDAY=2SU",
+            "END:DAYLIGHT",
+            "BEGIN:STANDARD",
+            "DTSTART:20071104T020000",
+            "TZOFFSETFROM:-0400",
+            "TZOFFSETTO:-0500",
+            "RRULE:FREQ=YEARLY;BYMONTH=11;BYDAY=1SU",
+            "END:STANDARD",
+            "END:VTIMEZONE",
+        ];
+        let at = |dtstart: &str| {
+            invite_start_utc(&invite_with_zone(
+                &zone,
+                &format!("DTSTART;TZID=Old and New Eastern:{}", dtstart),
+            ))
+        };
+        // Still daylight time: the expired rule's last Sunday of October no longer applies
+        assert_eq!(at("20241030T120000"), "2024-10-30T16:00:00+00:00");
+        assert_eq!(at("20241104T120000"), "2024-11-04T17:00:00+00:00");
+        // In 2005 the old rules were in force
+        assert_eq!(at("20051030T120000"), "2005-10-30T17:00:00+00:00");
     }
 
     #[test]
