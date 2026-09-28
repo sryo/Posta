@@ -69,6 +69,14 @@ describe("App.css cascade", () => {
     }
   });
 
+  it("draws a message's dividers in a border token so they show in dark mode too", () => {
+    document.body.innerHTML =
+      '<div class="message-card"><div class="message-header" id="header"></div><div class="message-attachments" id="attachments"></div></div>';
+    const decl = (id: string) => cascadedDeclarations(rules, document.getElementById(id)!);
+    expect(decl("header").get("border-bottom")).toMatch(/var\(--border-(light|color)\)/);
+    expect(decl("attachments").get("border-top")).toMatch(/var\(--border-(light|color)\)/);
+  });
+
   it("floats the app's error banner below the window drag strip, on its own surface", () => {
     document.body.innerHTML =
       '<div class="app"><div class="drag-region"></div><div class="auth-error" id="banner">Oops<button class="btn">×</button></div></div>';
