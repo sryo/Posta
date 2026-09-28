@@ -87,7 +87,7 @@ Example format: ["Reply 1", "Reply 2", "Reply 3"]"#,
         if !resp.status().is_success() {
             let status = resp.status();
             let text = resp.text().await.unwrap_or_default();
-            return Err(format!("Gemini API error {}: {}", status, text));
+            return Err(api_error(status, &text));
         }
 
         let response: GenerationResponse = resp
@@ -97,6 +97,16 @@ Example format: ["Reply 1", "Reply 2", "Reply 3"]"#,
 
         parse_json_list(&response_text(response)?)
     }
+}
+
+/// Google's error body is JSON with a readable `error.message`; anything
+/// else is passed through as is
+fn api_error(status: reqwest::StatusCode, body: &str) -> String {
+    let message = serde_json::from_str::<serde_json::Value>(body)
+        .ok()
+        .and_then(|v| v["error"]["message"].as_str().map(str::to_string))
+        .unwrap_or_else(|| body.trim().to_string());
+    format!("Gemini API error {}: {}", status, message)
 }
 
 fn request_body(prompt: &str) -> serde_json::Value {
@@ -179,6 +189,26 @@ mod tests {
             .unwrap_err();
         assert!(err.starts_with("Request failed"), "{}", err);
         assert!(!err.contains("SECRET-KEY-123"), "{}", err);
+    }
+
+    #[test]
+    fn api_error_reports_googles_message_not_the_raw_body() {
+        let body = r#"{
+  "error": {
+    "code": 400,
+    "message": "API key not valid. Please pass a valid API key.",
+    "status": "INVALID_ARGUMENT",
+    "details": [{"@type": "type.googleapis.com/google.rpc.ErrorInfo", "reason": "API_KEY_INVALID"}]
+  }
+}"#;
+        let err = api_error(reqwest::StatusCode::BAD_REQUEST, body);
+        assert_eq!(err, "Gemini API error 400 Bad Request: API key not valid. Please pass a valid API key.");
+    }
+
+    #[test]
+    fn api_error_without_json_keeps_the_body() {
+        let err = api_error(reqwest::StatusCode::BAD_GATEWAY, "upstream down");
+        assert_eq!(err, "Gemini API error 502 Bad Gateway: upstream down");
     }
 
     #[test]
