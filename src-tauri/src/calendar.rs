@@ -1684,6 +1684,32 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn search_pages_through_events_and_skips_calendars_that_fail() {
+        let event = |id: &str, time: &str| serde_json::json!({ "id": id, "summary": id, "start": { "dateTime": time } });
+        let server = StubServer::start(move |_, target| {
+            if target.starts_with("/users/me/calendarList") {
+                let items = serde_json::json!([calendar_entry("mine"), calendar_entry("busy")]);
+                return (200, serde_json::json!({ "items": items }).to_string());
+            }
+            if target.starts_with("/calendars/busy/") {
+                return (403, google_error(403, "requiredAccessLevel", "No access"));
+            }
+            let body = if target.contains("&pageToken=2") {
+                serde_json::json!({ "items": [event("second", "2024-12-23T09:00:00Z")] })
+            } else {
+                serde_json::json!({ "items": [event("first", "2024-12-23T10:00:00Z")], "nextPageToken": "2" })
+            };
+            (200, body.to_string())
+        })
+        .await;
+
+        let found = server.client().search_events(&CalendarQuery::parse("calendar:week"), 10).await.unwrap();
+        let titles: Vec<&str> = found.iter().map(|e| e.title.as_str()).collect();
+        assert_eq!(titles, vec!["second", "first"]);
+        assert!(found.iter().all(|e| e.calendar_id == "mine"));
+    }
+
+    #[tokio::test]
     async fn all_day_events_sort_at_the_calendars_midnight() {
         // All-day timestamps are UTC midnight; the day actually starts at the
         // calendar's midnight, before (east of UTC) or after (west) that
