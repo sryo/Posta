@@ -134,6 +134,7 @@ import { sendPending, type PendingSend } from "./app/pendingSend";
 import { parseMailto } from "./app/mailto";
 import { coalesceByKey } from "./app/coalesce";
 import { threadLoadErrorMessage } from "./app/loadErrors";
+import { cardTypeForQuery } from "./app/cardType";
 import { createDraftSync, draftKey, findLatestDraft, hasDraftContent, markDraftClosed, removeAccountDrafts, sessionDraftKey, type DraftFields } from "./app/drafts";
 import { nextCardFocus, nextItemFocus } from "./app/keyboardNav";
 import { getSmartEventTime, groupCalendarEvents, isUserLabel, mergeThreadGroups, regroupThreads, type CalendarEventGroup } from "./app/grouping";
@@ -391,7 +392,7 @@ function App() {
 
   function effectiveCardType(card: Card): Card["card_type"] {
     if (editingCardId() === card.id) {
-      return editCardQuery().toLowerCase().includes("calendar:") ? "calendar" : "email";
+      return cardTypeForQuery(editCardQuery());
     }
     return card.card_type;
   }
@@ -505,7 +506,7 @@ function App() {
     setQueryPreviewLoading(true);
 
     // Fetch calendar events for calendar queries
-    if (query.toLowerCase().includes("calendar:")) {
+    if (cardTypeForQuery(query) === "calendar") {
       setQueryPreviewThreads([]);
       try {
         const events = await fetchCalendarEvents(account.id, query);
@@ -1594,7 +1595,7 @@ function App() {
     const newCards: Card[] = [];
     try {
       for (const cardPreset of preset.cards) {
-        const cardType = cardPreset.query.toLowerCase().includes("calendar:") ? "calendar" : "email";
+        const cardType = cardTypeForQuery(cardPreset.query);
         newCards.push(await createCard(account.id, cardPreset.name, cardPreset.query, cardPreset.color || null, "date", cardType));
       }
     } catch (e) {
@@ -1705,9 +1706,8 @@ function App() {
     if (!account || !newCardName() || !newCardQuery()) return;
 
     try {
-      // Auto-detect card type from query: if contains "calendar:", it's a calendar card
       const query = newCardQuery();
-      const cardType = query.toLowerCase().includes("calendar:") ? "calendar" : "email";
+      const cardType = cardTypeForQuery(query);
 
       const card = await createCard(account.id, newCardName(), query, newCardColor() || null, newCardGroupBy(), cardType);
       setCards([...cards(), card]);
@@ -2609,7 +2609,7 @@ function App() {
     try {
       // Detect card type from query
       const newQuery = editCardQuery();
-      const cardType = newQuery.toLowerCase().includes("calendar:") ? "calendar" : "email";
+      const cardType = cardTypeForQuery(newQuery);
       const updatedCard: Card = {
         ...card,
         name: editCardName(),
@@ -4394,7 +4394,7 @@ function App() {
                       <div class="loading">Searching...</div>
                     </Show>
                     {/* Calendar events preview */}
-                    <Show when={!queryPreviewLoading() && newCardQuery().toLowerCase().includes("calendar:")}>
+                    <Show when={!queryPreviewLoading() && cardTypeForQuery(newCardQuery()) === "calendar"}>
                       <Show when={queryPreviewCalendarEvents().length === 0}>
                         <div class="empty">No events</div>
                       </Show>
@@ -4433,7 +4433,7 @@ function App() {
                       </For>
                     </Show>
                     {/* Email threads preview */}
-                    <Show when={!queryPreviewLoading() && queryPreviewThreads().length === 0 && newCardQuery().trim() && !newCardQuery().toLowerCase().includes("calendar:")}>
+                    <Show when={!queryPreviewLoading() && queryPreviewThreads().length === 0 && newCardQuery().trim() && cardTypeForQuery(newCardQuery()) !== "calendar"}>
                       <div class="empty">No matches</div>
                     </Show>
                     <Show when={!queryPreviewLoading() && queryPreviewThreads().length > 0}>
