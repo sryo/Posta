@@ -115,6 +115,7 @@ import { ActionsWheel } from "./components/ActionsWheel";
 import { CardForm } from "./components/CardForm";
 import { safeGetItem, safeSetItem, safeRemoveItem, safeGetJSON, safeSetJSON } from "./shared/storage";
 import { BG_COLORS, GMAIL_OPERATORS, type ActionSettings, type CardColor, type GroupBy } from "./shared/constants";
+import { createUndoableSend } from "./app/undoableSend";
 
 function App() {
   const [loading, setLoading] = createSignal(true);
@@ -243,14 +244,16 @@ function App() {
     attachments: SendAttachment[];
     reply?: { threadId: string; messageId?: string };
     isHtml?: boolean;
-    timeoutId: number;
-    progressIntervalId: number;
   }
-  const [pendingSend, setPendingSend] = createSignal<PendingSend | null>(null);
-  const [sendToastVisible, setSendToastVisible] = createSignal(false);
-  const [sendToastClosing, setSendToastClosing] = createSignal(false);
-  const [sendProgress, setSendProgress] = createSignal(0);
-  const SEND_DELAY_MS = 5000;
+  const undoableSend = createUndoableSend<PendingSend>({
+    delayMs: 5000,
+    send: executeActualSend,
+    onFailed: (pending, e) => {
+      console.error("Failed to send email:", e);
+      restoreFailedSend(pending);
+      setError(`Failed to send email: ${e}`);
+    },
+  });
 
   // Settings
   const [settingsOpen, setSettingsOpen] = createSignal(false);
@@ -2158,76 +2161,41 @@ function App() {
       attachments: [...composeAttachments()],
       reply: replyingToThread() ? { ...replyingToThread()! } : undefined,
       isHtml: composeIsHtml(),
-      timeoutId: 0,
-      progressIntervalId: 0,
     };
 
-    // Clear draft and close compose immediately
-    if (draftSaveTimeout) clearTimeout(draftSaveTimeout);
-    clearDraft();
+    // closeCompose clears the draft and cancels any pending draft save
     closeCompose();
-
-    // Start the countdown
-    setSendProgress(0);
-    setSendToastClosing(false);
-    setSendToastVisible(true);
-
-    // Progress animation
-    const progressInterval = window.setInterval(() => {
-      setSendProgress(p => Math.min(p + 2, 100));
-    }, SEND_DELAY_MS / 50);
-
-    // Schedule actual send
-    const timeoutId = window.setTimeout(async () => {
-      clearInterval(progressInterval);
-      // Past the undo window: make undoSend a no-op (and hide the Undo
-      // button) before the network call starts, so a late click can't
-      // reopen compose while the mail still goes out
-      setPendingSend(null);
-      await executeActualSend(pending);
-    }, SEND_DELAY_MS);
-
-    pending.timeoutId = timeoutId;
-    pending.progressIntervalId = progressInterval;
-    setPendingSend(pending);
+    undoableSend.queue(pending);
   }
 
   async function executeActualSend(pending: PendingSend) {
-    try {
-      // Convert plain text to HTML if sending as HTML
-      let body = pending.body;
-      if (pending.isHtml) {
-        // Escape HTML entities and convert newlines to <br>
-        body = body
-          .replace(/&/g, '&amp;')
-          .replace(/</g, '&lt;')
-          .replace(/>/g, '&gt;')
-          .replace(/\n/g, '<br>\n');
-        body = `<div>${body}</div>`;
-      }
+    // Convert plain text to HTML if sending as HTML
+    let body = pending.body;
+    if (pending.isHtml) {
+      // Escape HTML entities and convert newlines to <br>
+      body = body
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/\n/g, '<br>\n');
+      body = `<div>${body}</div>`;
+    }
 
-      if (pending.reply) {
-        await replyToThread(
-          pending.accountId,
-          pending.reply.threadId,
-          pending.to,
-          pending.cc,
-          pending.bcc,
-          pending.subject,
-          body,
-          pending.reply.messageId,
-          pending.attachments,
-          pending.isHtml
-        );
-      } else {
-        await sendEmail(pending.accountId, pending.to, pending.cc, pending.bcc, pending.subject, body, pending.attachments, pending.isHtml);
-      }
-      hideSendToast();
-    } catch (e) {
-      console.error("Failed to send email:", e);
-      restoreFailedSend(pending);
-      setError(`Failed to send email: ${e}`);
-      hideSendToast();
+    if (pending.reply) {
+      await replyToThread(
+        pending.accountId,
+        pending.reply.threadId,
+        pending.to,
+        pending.cc,
+        pending.bcc,
+        pending.subject,
+        body,
+        pending.reply.messageId,
+        pending.attachments,
+        pending.isHtml
+      );
+    } else {
+      await sendEmail(pending.accountId, pending.to, pending.cc, pending.bcc, pending.subject, body, pending.attachments, pending.isHtml);
     }
   }
 
@@ -2267,12 +2235,8 @@ function App() {
   }
 
   function undoSend() {
-    const pending = pendingSend();
+    const pending = undoableSend.undo();
     if (!pending) return;
-
-    // Cancel the scheduled send and the progress animation
-    clearTimeout(pending.timeoutId);
-    clearInterval(pending.progressIntervalId);
 
     // If closeCompose's 200ms wipe hasn't fired yet, it must not erase the
     // fields restored below
@@ -2297,20 +2261,6 @@ function App() {
       setShowCcBcc(true);
     }
     setComposing(true);
-
-    // Clear pending state and hide toast
-    setPendingSend(null);
-    hideSendToast();
-  }
-
-  function hideSendToast() {
-    setSendToastClosing(true);
-    setTimeout(() => {
-      setSendToastVisible(false);
-      setSendToastClosing(false);
-      setPendingSend(null);
-      setSendProgress(0);
-    }, 200);
   }
 
   async function handleQuickReply() {
@@ -6018,12 +5968,12 @@ function App() {
       </For>
 
       {/* Send Toast with Undo */}
-      <Show when={sendToastVisible()}>
-        <div class={`undo-toast send-toast ${sendToastClosing() ? 'closing' : ''}`}>
-          <div class="toast-progress send-progress" style={{ width: `${sendProgress()}%` }}></div>
+      <Show when={undoableSend.toastVisible()}>
+        <div class={`undo-toast send-toast ${undoableSend.toastClosing() ? 'closing' : ''}`}>
+          <div class="toast-progress send-progress" style={{ width: `${undoableSend.progress()}%` }}></div>
           <div class="toast-content">
             <span class="toast-message">Sending message...</span>
-            <Show when={pendingSend()}>
+            <Show when={undoableSend.pending()}>
               <button class="toast-undo-btn" onClick={undoSend}>Undo</button>
             </Show>
           </div>
