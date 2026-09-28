@@ -16,8 +16,6 @@ use tauri::{Emitter, Manager};
 #[cfg(target_os = "macos")]
 use tauri::{RunEvent, WindowEvent};
 #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
-use tauri::Listener;
-#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
 use tauri_plugin_deep_link::DeepLinkExt;
 
 /// Parsed mailto: URL data
@@ -164,14 +162,10 @@ pub fn run() {
             #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
             {
                 let handle = app.handle().clone();
-                app.listen("deep-link://new-url", move |event: tauri::Event| {
-                    let urls = event.payload();
-                    // The payload is a JSON array of URLs
-                    if let Ok(url_list) = serde_json::from_str::<Vec<String>>(urls) {
-                        for url in url_list {
-                            if is_mailto(&url) {
-                                deliver_mailto(&handle, &url);
-                            }
+                app.deep_link().on_open_url(move |event| {
+                    for url in event.urls() {
+                        if is_mailto(url.as_str()) {
+                            deliver_mailto(&handle, url.as_str());
                         }
                     }
                 });
