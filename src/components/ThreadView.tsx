@@ -124,7 +124,9 @@ export const ThreadView = (props: {
   createEffect(() => {
     if (props.thread && contentRef) {
       requestAnimationFrame(() => {
-        const lastIndex = props.thread!.messages.length - 1;
+        const thread = props.thread;
+        if (!thread) return;
+        const lastIndex = thread.messages.length - 1;
         const lastMessage = messageRefs[lastIndex];
         if (lastMessage) {
           lastMessage.scrollIntoView({ block: 'start' });

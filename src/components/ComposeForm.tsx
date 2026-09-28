@@ -1,4 +1,4 @@
-import { Show, For } from "solid-js";
+import { Show, For, onCleanup } from "solid-js";
 import type { SendAttachment } from "../api/tauri";
 import { getAvatarColor, truncateMiddle } from "../utils";
 import { CloseIcon, AttachmentIcon } from "./Icons";
@@ -104,7 +104,10 @@ export const ComposeForm = (props: ComposeFormProps) => {
       <label>To</label>
       <div class="compose-to-row">
         <input
-          ref={(el) => setTimeout(() => { if (props.focusTo !== false && !props.focusBody) el?.focus(); }, 50)}
+          ref={(el) => {
+            const focusTimer = setTimeout(() => { if (props.focusTo !== false && !props.focusBody) el.focus(); }, 50);
+            onCleanup(() => clearTimeout(focusTimer));
+          }}
           type="text"
           value={props.to || ''}
           onInput={(e) => { props.setTo?.(e.currentTarget.value); props.onInput?.(); }}

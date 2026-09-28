@@ -356,9 +356,6 @@ describe("App accounts", () => {
     render(() => <App />);
     fireEvent.click(await screen.findByText("Mail for A"));
     await screen.findByText("body m1");
-    // Let ThreadView's scroll-to-last-message frame run; it reads the thread
-    // without a null check
-    await new Promise(r => requestAnimationFrame(r));
 
     fireEvent.click(screen.getByTitle("a@x.com"));
     fireEvent.click(await screen.findByText("b@x.com"));
