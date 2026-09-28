@@ -897,14 +897,14 @@ function App() {
   }
 
   // Schedule next poll
-  let pollDisposed = false;
+  let disposed = false;
   function schedulePoll() {
     if (pollTimeoutId) {
       clearTimeout(pollTimeoutId);
     }
     pollTimeoutId = window.setTimeout(async () => {
       await performIncrementalSync();
-      if (pollDisposed) return; // Unmounted while syncing; don't re-arm
+      if (disposed) return; // Unmounted while syncing; don't re-arm
       schedulePoll(); // Schedule next poll after this one completes
     }, pollInterval());
   }
@@ -1031,6 +1031,15 @@ function App() {
     // Set snippet lines CSS variable
     document.documentElement.style.setProperty("--snippet-lines", String(snippetLines));
 
+    // Listen for mailto: deep-link events whether or not startup succeeds
+    listen<{ to: string; cc: string; bcc: string; subject: string; body: string }>(
+      "mailto-received",
+      (event) => startCompose(event.payload),
+    ).then(unlisten => {
+      if (disposed) unlisten();
+      else unlistenMailto = unlisten;
+    }).catch(e => console.warn("Failed to listen for mailto links:", e));
+
     try {
       await initApp();
 
@@ -1057,17 +1066,6 @@ function App() {
         await loadAccountCards(accts[0]);
         startBackgroundSync(accts[0].id);
       }
-
-      // Listen for mailto: deep-link events
-      unlistenMailto = await listen<{
-        to: string;
-        cc: string;
-        bcc: string;
-        subject: string;
-        body: string;
-      }>("mailto-received", (event) => {
-        startCompose(event.payload);
-      });
     } catch (e) {
       setError(String(e));
     } finally {
@@ -1083,7 +1081,7 @@ function App() {
   const timeUpdateInterval = setInterval(() => setCurrentTime(Date.now()), 15000);
 
   onCleanup(() => {
-    pollDisposed = true;
+    disposed = true;
     if (pollTimeoutId) {
       clearTimeout(pollTimeoutId);
     }

@@ -283,6 +283,19 @@ describe("App attachments", () => {
   });
 });
 
+describe("App mailto links", () => {
+  it("opens a mailto link even when startup failed", async () => {
+    delete eventListeners["mailto-received"];
+    handlers.init_app = () => { throw new Error("database is locked"); };
+    render(() => <App />);
+    await screen.findAllByText(/database is locked/);
+
+    await waitFor(() => expect(eventListeners["mailto-received"]).toBeDefined());
+    eventListeners["mailto-received"]({ payload: { to: "bo@y.com", cc: "", bcc: "", subject: "Hi", body: "" } });
+    await waitFor(() => expect(screen.getByPlaceholderText("Recipients")).toHaveValue("bo@y.com"));
+  });
+});
+
 describe("App presets", () => {
   function signInToEmptyLayout() {
     handlers.get_accounts = () => [];
