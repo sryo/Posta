@@ -352,6 +352,37 @@ describe("App thread view", () => {
   });
 });
 
+describe("App quick reaction", () => {
+  it("reacts to the latest real message from someone else, not to a reaction", async () => {
+    const headers = (from: string, id: string) => [{ name: "From", value: from }, { name: "Message-Id", value: id }];
+    handlers.get_thread_details = () => ({
+      id: "t-a",
+      messages: [
+        { ...fullMessage("m1", "Ana <ana@x.com>"), payload: { mimeType: "text/plain", headers: headers("Ana <ana@x.com>", "<m1@x>"), body: { size: 0 } } },
+        {
+          ...fullMessage("m2", "Bo <bo@x.com>"),
+          payload: { mimeType: "text/plain", headers: headers("Bo <bo@x.com>", "<m2@x>"), body: { size: 0 } },
+          reaction: { emoji: "👍", from_addr: "bo@x.com", in_reply_to: "<m1@x>", message_id: "<m2@x>" },
+        },
+        { ...fullMessage("m3", "Me <a@x.com>"), payload: { mimeType: "text/plain", headers: headers("Me <a@x.com>", "<m3@x>"), body: { size: 0 } } },
+      ],
+    });
+    handlers.send_reaction = () => null;
+    render(() => <App />);
+    await screen.findByText("Mail for A");
+
+    fireEvent.keyDown(document, { key: "l" });
+    fireEvent.keyDown(document, { key: "r" });
+    fireEvent.click(await screen.findByTitle("Add reaction"));
+    const emoji = document.querySelector<HTMLButtonElement>(".emoji-picker .emoji-btn")!;
+    fireEvent.click(emoji);
+
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith("send_reaction", {
+      accountId: "a", threadId: "t-a", messageId: "<m1@x>", emoji: emoji.textContent, toEmail: "ana@x.com",
+    }));
+  });
+});
+
 describe("App compose", () => {
   it("sends from the account compose was opened in after switching accounts", async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
