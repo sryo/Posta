@@ -229,9 +229,9 @@ export const EventView = (props: {
                   <Show when={props.event!.hangout_link}>
                     <div class="event-info-row">
                       <VideoIcon />
-                      <a href="#" onClick={(e) => { e.preventDefault(); props.event!.hangout_link && openUrl(props.event!.hangout_link); }}>
+                      <button type="button" class="link-btn" onClick={() => props.event!.hangout_link && openUrl(props.event!.hangout_link)}>
                         Join video call
-                      </a>
+                      </button>
                     </div>
                   </Show>
 
