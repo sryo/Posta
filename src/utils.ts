@@ -88,7 +88,7 @@ export function findContent(parts: any[] | undefined, mimeType: string): string 
   return null;
 }
 
-function escapeHtml(text: string): string {
+export function escapeHtml(text: string): string {
   return text
     .replace(/&/g, '&amp;')
     .replace(/</g, '&lt;')

@@ -85,6 +85,7 @@ import {
   addReplyPrefix,
   addForwardPrefix,
   toDateInputString,
+  escapeHtml,
 } from "./utils";
 import "./App.css";
 import {
@@ -2035,13 +2036,7 @@ function App() {
     // Convert plain text to HTML if sending as HTML
     let body = pending.body;
     if (pending.isHtml) {
-      // Escape HTML entities and convert newlines to <br>
-      body = body
-        .replace(/&/g, '&amp;')
-        .replace(/</g, '&lt;')
-        .replace(/>/g, '&gt;')
-        .replace(/\n/g, '<br>\n');
-      body = `<div>${body}</div>`;
+      body = `<div>${escapeHtml(body).replace(/\n/g, '<br>\n')}</div>`;
     }
 
     if (pending.reply) {
