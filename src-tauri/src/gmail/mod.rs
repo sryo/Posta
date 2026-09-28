@@ -492,59 +492,21 @@ impl GmailClient {
         None
     }
 
-    /// Send an email (with optional attachments)
-    #[allow(clippy::too_many_arguments)]
-    pub async fn send_email(
-        &self,
-        to: &str,
-        cc: &str,
-        bcc: &str,
-        subject: &str,
-        body: &str,
-        attachments: &[SendAttachment],
-        is_html: bool,
-    ) -> Result<(), String> {
-        let message = build_mime_message(&MimeMessage {
-            to,
-            cc,
-            bcc,
-            subject,
-            body,
-            attachments,
-            reply_headers: None,
-            is_html,
-        });
-        self.send_raw(&message, None).await
+    pub async fn send_email(&self, message: &OutgoingMessage<'_>) -> Result<(), String> {
+        self.send_raw(&build_mime_message(message, None), None).await
     }
 
-    /// Reply to a thread (with optional attachments)
-    #[allow(clippy::too_many_arguments)]
+    /// Reply in `thread_id`; `message_id` is the message replied to, as its
+    /// Message-ID header value or Gmail id (the latest message when absent)
     pub async fn reply_to_thread(
         &self,
         thread_id: &str,
-        to: &str,
-        cc: &str,
-        bcc: &str,
-        subject: &str,
-        body: &str,
         message_id: Option<&str>,
-        attachments: &[SendAttachment],
-        is_html: bool,
+        message: &OutgoingMessage<'_>,
     ) -> Result<(), String> {
         let reply_headers = self.resolve_reply_headers(thread_id, message_id).await;
-        let message = build_mime_message(&MimeMessage {
-            to,
-            cc,
-            bcc,
-            subject,
-            body,
-            attachments,
-            reply_headers: reply_headers
-                .as_ref()
-                .map(|(in_reply_to, references)| (in_reply_to.as_str(), references.as_str())),
-            is_html,
-        });
-        self.send_raw(&message, Some(thread_id)).await
+        let raw = build_mime_message(message, reply_headers.as_ref());
+        self.send_raw(&raw, Some(thread_id)).await
     }
 
     async fn send_raw(&self, message: &str, thread_id: Option<&str>) -> Result<(), String> {
@@ -620,45 +582,29 @@ impl GmailClient {
         Ok(response.labels.unwrap_or_default())
     }
 
-    /// Create a new draft
-    #[allow(clippy::too_many_arguments)]
     pub async fn create_draft(
         &self,
-        to: &str,
-        cc: &str,
-        bcc: &str,
-        subject: &str,
-        body: &str,
+        message: &OutgoingMessage<'_>,
         thread_id: Option<&str>,
-        is_html: bool,
     ) -> Result<GmailDraft, String> {
         let url = format!("{}/users/me/drafts", GMAIL_API_BASE);
-        let draft = MimeMessage { to, cc, bcc, subject, body, is_html, ..Default::default() };
-        self.upsert_draft(self.client.post(&url), draft, thread_id).await
+        self.upsert_draft(self.client.post(&url), message, thread_id).await
     }
 
-    /// Update an existing draft
-    #[allow(clippy::too_many_arguments)]
     pub async fn update_draft(
         &self,
         draft_id: &str,
-        to: &str,
-        cc: &str,
-        bcc: &str,
-        subject: &str,
-        body: &str,
+        message: &OutgoingMessage<'_>,
         thread_id: Option<&str>,
-        is_html: bool,
     ) -> Result<GmailDraft, String> {
         let url = format!("{}/users/me/drafts/{}", GMAIL_API_BASE, draft_id);
-        let draft = MimeMessage { to, cc, bcc, subject, body, is_html, ..Default::default() };
-        self.upsert_draft(self.client.put(&url), draft, thread_id).await
+        self.upsert_draft(self.client.put(&url), message, thread_id).await
     }
 
     async fn upsert_draft(
         &self,
         request: reqwest::RequestBuilder,
-        mut draft: MimeMessage<'_>,
+        message: &OutgoingMessage<'_>,
         thread_id: Option<&str>,
     ) -> Result<GmailDraft, String> {
         // Gmail only files a draft into a thread when it carries the RFC 2822
@@ -667,13 +613,10 @@ impl GmailClient {
             Some(tid) => self.resolve_reply_headers(tid, None).await,
             None => None,
         };
-        draft.reply_headers = reply_headers
-            .as_ref()
-            .map(|(in_reply_to, references)| (in_reply_to.as_str(), references.as_str()));
 
         let mut request_body = serde_json::json!({
             "message": {
-                "raw": encode_raw_message(&build_mime_message(&draft))
+                "raw": encode_raw_message(&build_mime_message(message, reply_headers.as_ref()))
             }
         });
 
@@ -1528,17 +1471,16 @@ fn strip_html_tags(html: &str) -> String {
         .replace("&amp;", "&")
 }
 
+/// The user-written fields of an outgoing message or draft
 #[derive(Default)]
-struct MimeMessage<'a> {
-    to: &'a str,
-    cc: &'a str,
-    bcc: &'a str,
-    subject: &'a str,
-    body: &'a str,
-    attachments: &'a [SendAttachment],
-    /// (In-Reply-To, References)
-    reply_headers: Option<(&'a str, &'a str)>,
-    is_html: bool,
+pub struct OutgoingMessage<'a> {
+    pub to: &'a str,
+    pub cc: &'a str,
+    pub bcc: &'a str,
+    pub subject: &'a str,
+    pub body: &'a str,
+    pub attachments: &'a [SendAttachment],
+    pub is_html: bool,
 }
 
 /// Base64url encoding the Gmail API expects in a message's `raw` field
@@ -1619,8 +1561,9 @@ fn push_html_alternative(message: &mut String, html: &str) {
 }
 
 /// Build a raw RFC 5322 message: plain text, HTML with a plain text
-/// alternative, or multipart/mixed when there are attachments
-fn build_mime_message(msg: &MimeMessage) -> String {
+/// alternative, or multipart/mixed when there are attachments.
+/// `reply_headers` are (In-Reply-To, References).
+fn build_mime_message(msg: &OutgoingMessage, reply_headers: Option<&(String, String)>) -> String {
     let mut message = format!("To: {}\r\n", encode_address_header(msg.to));
 
     if !msg.cc.trim().is_empty() {
@@ -1633,7 +1576,7 @@ fn build_mime_message(msg: &MimeMessage) -> String {
     message.push_str(&format!("Subject: {}\r\n", encode_header_value(msg.subject)));
     message.push_str("MIME-Version: 1.0\r\n");
 
-    if let Some((in_reply_to, references)) = msg.reply_headers {
+    if let Some((in_reply_to, references)) = reply_headers {
         message.push_str(&format!(
             "In-Reply-To: {}\r\nReferences: {}\r\n",
             sanitize_header_value(in_reply_to),
@@ -2061,17 +2004,24 @@ mod tests {
 
     #[test]
     fn build_mime_message_rejects_header_injection() {
-        let message = build_mime_message(&MimeMessage {
+        let message = build_mime_message(&OutgoingMessage {
             to: "victim@example.com\r\nBcc: evil@example.com",
             subject: "Hi\r\nX-Injected: 1",
             body: "body",
             ..Default::default()
-        });
+        }, None);
 
         assert!(!message.contains("\r\nBcc: evil@example.com"));
         assert!(!message.contains("\r\nX-Injected: 1"));
         assert!(message.starts_with("To: victim@example.com Bcc: evil@example.com\r\n"));
         assert!(message.contains("Subject: Hi X-Injected: 1\r\n"));
+
+        let reply_headers = ("<a@x>\r\nBcc: evil@example.com".to_string(), "<r@x> <a@x>".to_string());
+        let reply = build_mime_message(
+            &OutgoingMessage { to: "a@example.com", body: "body", ..Default::default() },
+            Some(&reply_headers),
+        );
+        assert!(reply.contains("\r\nIn-Reply-To: <a@x> Bcc: evil@example.com\r\nReferences: <r@x> <a@x>\r\n"));
     }
 
     #[test]
@@ -2108,7 +2058,7 @@ mod tests {
         assert!(encoded.contains("\r\n "));
         assert_eq!(decode_encoded_words(&encoded), subject);
 
-        let message = build_mime_message(&MimeMessage { to: "x@example.com", subject, body: "b", ..Default::default() });
+        let message = build_mime_message(&OutgoingMessage { to: "x@example.com", subject, body: "b", ..Default::default() }, None);
         assert!(message.contains("\r\nSubject: =?UTF-8?B?"));
         assert!(message.lines().all(|l| l.len() <= 78));
     }
@@ -2437,12 +2387,12 @@ mod tests {
             mime_type: "application/pdf".to_string(),
             data: "QUJD".to_string(),
         };
-        let message = build_mime_message(&MimeMessage {
+        let message = build_mime_message(&OutgoingMessage {
             to: "x@example.com",
             body: "hi",
             attachments: std::slice::from_ref(&attachment),
             ..Default::default()
-        });
+        }, None);
         assert!(message.is_ascii(), "raw non-ASCII in headers");
         assert!(message.contains("filename*=UTF-8''a%C3%B1o%20%22final%22%20.pdf\r\n"));
         assert!(message.contains("Content-Disposition: attachment; filename=\"=?UTF-8?B?"));
@@ -2454,12 +2404,12 @@ mod tests {
             mime_type: "text/plain".to_string(),
             data: "QUJD".to_string(),
         };
-        let message = build_mime_message(&MimeMessage {
+        let message = build_mime_message(&OutgoingMessage {
             to: "x@example.com",
             body: "hi",
             attachments: std::slice::from_ref(&ascii),
             ..Default::default()
-        });
+        }, None);
         assert!(message.contains("Content-Type: text/plain; name=\"say \\\"hi\\\".txt\"\r\n"));
         assert!(message.contains("Content-Disposition: attachment; filename=\"say \\\"hi\\\".txt\"\r\n"));
     }
@@ -2503,7 +2453,7 @@ mod tests {
         let long_line = "word ".repeat(400);
         let body = format!("Hola, ¿qué tal? ☕\n{}\nend = 1 \n", long_line.trim_end());
 
-        let plain = build_mime_message(&MimeMessage { to: "x@example.com", body: &body, ..Default::default() });
+        let plain = build_mime_message(&OutgoingMessage { to: "x@example.com", body: &body, ..Default::default() }, None);
         assert!(plain.is_ascii(), "raw 8-bit text in the message");
         assert_lines_within_limit(&plain, 998);
         assert!(plain.contains("Content-Type: text/plain; charset=utf-8\r\nContent-Transfer-Encoding: quoted-printable\r\n\r\n"));
@@ -2518,13 +2468,13 @@ mod tests {
             data: "QUJD".to_string(),
         };
         for attachments in [&[][..], std::slice::from_ref(&attachment)] {
-            let message = build_mime_message(&MimeMessage {
+            let message = build_mime_message(&OutgoingMessage {
                 to: "x@example.com",
                 body: &html,
                 is_html: true,
                 attachments,
                 ..Default::default()
-            });
+            }, None);
             assert!(message.is_ascii());
             assert_lines_within_limit(&message, 998);
             let html_part = part_body(&message, "Content-Type: text/html; charset=utf-8\r\n");
