@@ -1169,8 +1169,11 @@ impl CalendarQuery {
 
         // Check response filter
         if let Some(response) = &self.response {
-            let event_response = event.response_status.as_deref().unwrap_or("needsAction");
-            if event_response.to_lowercase() != response.to_lowercase() {
+            let answered = event
+                .response_status
+                .as_deref()
+                .is_some_and(|r| r.eq_ignore_ascii_case(response));
+            if !answered {
                 return false;
             }
         }
@@ -1335,9 +1338,18 @@ mod tests {
         // Free text is sent to the API, not filtered locally
         assert!(m("unrelated words"));
 
+        // Without a self attendee (a solo event, or one on someone else's
+        // calendar) there is no invitation to answer, so no response: filter
+        // matches; otherwise a needsAction card fills with the user's own blocks
         let mut no_response = ev.clone();
         no_response.response_status = None;
-        assert!(CalendarQuery::parse("response:needsAction").matches(&no_response));
+        for status in ["needsAction", "accepted", "declined", "tentative"] {
+            assert!(!CalendarQuery::parse(&format!("response:{status}")).matches(&no_response), "{status}");
+        }
+        assert!(CalendarQuery::parse("calendar:week").matches(&no_response));
+        let mut pending = ev.clone();
+        pending.response_status = Some("needsAction".into());
+        assert!(CalendarQuery::parse("response:NEEDSACTION").matches(&pending));
         let mut no_location = ev;
         no_location.location = None;
         assert!(!CalendarQuery::parse("location:york").matches(&no_location));
