@@ -1720,6 +1720,14 @@ mod tests {
         assert_eq!(searched_titles("Asia/Tokyo", tokyo.clone(), 10).await, vec!["Holiday", "Early meeting"]);
         assert_eq!(searched_titles("Asia/Tokyo", tokyo, 1).await, vec!["Holiday"]);
 
+        // A meeting at the calendar's midnight ties with the all-day event,
+        // which goes first
+        let midnight = serde_json::json!([
+            { "id": "a", "summary": "Midnight call", "start": { "dateTime": "2024-12-23T00:00:00+09:00" } },
+            { "id": "b", "summary": "Holiday", "start": { "date": "2024-12-23" }, "end": { "date": "2024-12-24" } },
+        ]);
+        assert_eq!(searched_titles("Asia/Tokyo", midnight, 10).await, vec!["Holiday", "Midnight call"]);
+
         let buenos_aires = serde_json::json!([
             { "id": "b", "summary": "Holiday", "start": { "date": "2024-12-23" }, "end": { "date": "2024-12-24" } },
             { "id": "a", "summary": "Late dinner", "start": { "dateTime": "2024-12-22T22:00:00-03:00" } },
