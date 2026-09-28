@@ -123,7 +123,7 @@ import { findHeader, lastMessageFromOthers } from "./app/messages";
 import { batchReplyEntry, type BatchReplyThread } from "./app/batchReply";
 import { completeRecipient, currentRecipient, matchContacts, rankContacts } from "./app/contacts";
 import { eventReplyRecipients } from "./app/eventReply";
-import { actionLabel, actionRemovesFromCard, applyThreadAction, labelChangeFor, threadMayJoinCard, undoLabelChanges, type LabelReversal } from "./app/threadActions";
+import { actionFailureLabel, actionLabel, actionRemovesFromCard, applyThreadAction, labelChangeFor, threadMayJoinCard, undoLabelChanges, type LabelReversal } from "./app/threadActions";
 import { PRESETS } from "./app/presets";
 import { normalizeActionOrder } from "./app/actionOrder";
 import { parseStoredWidth } from "./app/storedWidth";
@@ -142,6 +142,8 @@ import { createDraftSync, draftKey, findLatestDraft, findUnsentDrafts, hasDraftC
 import { nextCardFocus, nextItemFocus } from "./app/keyboardNav";
 import { getSmartEventTime, groupCalendarEvents, isUserLabel, mergeThreadGroups, regroupThreads, type CalendarEventGroup } from "./app/grouping";
 import { pullLayoutWithRetry } from "./app/icloudRestore";
+
+const SESSION_EXPIRED_MESSAGE = "Session expired - sign in again";
 
 function App() {
   const [loading, setLoading] = createSignal(true);
@@ -1658,7 +1660,7 @@ function App() {
         newCards.push(await createCard(account.id, cardPreset.name, cardPreset.query, cardPreset.color || null, "date", cardType));
       }
     } catch (e) {
-      setError(String(e));
+      setError(`Couldn't create the cards: ${e}`);
       // Nothing was created: stay on the picker so the user can retry
       if (newCards.length === 0) return;
     } finally {
@@ -1746,7 +1748,7 @@ function App() {
         await switchAccount(remaining[0]);
       }
     } catch (e) {
-      setError(String(e));
+      setError(`Couldn't sign out: ${e}`);
     }
   }
 
@@ -1769,7 +1771,7 @@ function App() {
       // Fetch threads/events for the new card
       loadCardThreads(card.id);
     } catch (e) {
-      setError(String(e));
+      setError(`Couldn't add the card: ${e}`);
     }
   }
 
@@ -2452,7 +2454,7 @@ function App() {
       if (activeEvent()?.id === event.id) closeEvent();
     } catch (e) {
       console.error('Failed to delete event:', e);
-      showToast(String(e));
+      showToast(`Couldn't delete the event: ${e}`);
     }
   }
 
@@ -2786,7 +2788,7 @@ function App() {
         loadCardThreads(cardId, false, true);
       }
     } catch (e) {
-      setError(String(e));
+      setError(`Couldn't save the card: ${e}`);
     }
   }
 
@@ -2897,11 +2899,14 @@ function App() {
     if (batchReplyOpen() && !confirmDiscardBatchReplies()) return;
 
     closeAccountViews();
+    // The banner speaks for the account being left; an expired session
+    // stays with its own account
+    setError(expiredAccountId() === account.id ? SESSION_EXPIRED_MESSAGE : null);
     setSelectedAccount(account);
     try {
       if (await loadAccountCards(account)) startBackgroundSync(account.id);
     } catch (e) {
-      setError(String(e));
+      setError(`Couldn't load ${account.email}: ${e}`);
     }
   }
 
@@ -3055,7 +3060,7 @@ function App() {
   function markSessionExpired(accountId: string) {
     if (expiredAccountId() === accountId) return;
     setExpiredAccountId(accountId);
-    setError("Session expired - sign in again");
+    setError(SESSION_EXPIRED_MESSAGE);
   }
 
   // Background syncs keep showing cached mail; an expired session must still
@@ -3576,7 +3581,7 @@ function App() {
       }
     } catch (e) {
       console.error("Failed to undo action", e);
-      setError(String(e));
+      setError(`Couldn't undo: ${e}`);
     }
     setLastAction(null);
   }
@@ -3655,7 +3660,7 @@ function App() {
           }
         }));
       }
-      setError(String(e));
+      setError(`${actionFailureLabel(action, threadIds.length)}: ${e}`);
     }
   }
 
@@ -3961,7 +3966,7 @@ function App() {
 
       {/* Error banner */}
       <Show when={error()}>
-        <div class="auth-error">
+        <div class="auth-error" role="alert">
           {error()}
           <Show when={expiredAccountId() && expiredAccountId() === selectedAccount()?.id}>
             <button class="btn btn-primary" onClick={handleReauth}>Sign in again</button>
@@ -5471,7 +5476,7 @@ function App() {
       {/* Undo Toast - For with key forces remount to restart progress bar animation */}
       <For each={toast()?.visible ? [toast()!.key] : []}>
         {() => (
-          <div class={`undo-toast ${toast()?.closing ? 'closing' : ''}`}>
+          <div class={`undo-toast ${toast()?.closing ? 'closing' : ''}`} role="status">
             <div class="toast-progress"></div>
             <div class="toast-content">
               <span class="toast-message">{toast()?.message || (lastAction() ? actionLabel(lastAction()!.action, lastAction()!.threadIds.length) : '')}</span>
@@ -5493,7 +5498,7 @@ function App() {
 
       {/* Send Toast with Undo */}
       <Show when={undoableSend.toastVisible()}>
-        <div class={`undo-toast send-toast ${undoableSend.toastClosing() ? 'closing' : ''}`}>
+        <div class={`undo-toast send-toast ${undoableSend.toastClosing() ? 'closing' : ''}`} role="status">
           <div class="toast-progress send-progress" style={{ width: `${undoableSend.progress()}%` }}></div>
           <div class="toast-content">
             <span class="toast-message">Sending message...</span>

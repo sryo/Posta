@@ -600,6 +600,57 @@ describe("App error banner", () => {
     expect(banner.getAttribute("style")).toBeNull();
     banner.querySelectorAll("button").forEach(b => expect(b.getAttribute("style")).toBeNull());
   });
+
+  it("is announced as an alert, and toasts as status messages", async () => {
+    handlers.modify_threads = () => { throw new Error("offline"); };
+    render(() => <App />);
+    await screen.findByText("Mail for A");
+    fireEvent.keyDown(document, { key: "l" });
+    fireEvent.keyDown(document, { key: "s" });
+
+    expect(await screen.findByRole("alert")).toHaveTextContent("Couldn't star 1 thread: Error: offline");
+    fireEvent.keyDown(document, { key: "c" });
+    fireEvent.input(await screen.findByPlaceholderText("Subject"), { target: { value: "Draft" } });
+    handlers.save_draft = () => ({ id: "d1" });
+    fireEvent.keyDown(document, { key: "Escape" });
+    expect(await screen.findByRole("status")).toHaveTextContent("Draft saved");
+  });
+
+  it("says which card change failed", async () => {
+    handlers.update_card = () => { throw new Error("db locked"); };
+    handlers.create_card = () => { throw new Error("disk full"); };
+    render(() => <App />);
+    await screen.findByText("Mail for A");
+    fireEvent.click(screen.getByTitle("Edit query"));
+    fireEvent.click(screen.getByTitle("Save (⌘Enter)"));
+    expect(await screen.findByRole("alert")).toHaveTextContent("Couldn't save the card: Error: db locked");
+
+    fireEvent.click(screen.getByTitle("New card"));
+    fireEvent.input(screen.getAllByPlaceholderText("Inbox, Starred...").slice(-1)[0], { target: { value: "News" } });
+    fireEvent.input(screen.getAllByPlaceholderText("is:inbox, from:boss, newer_than:7d").slice(-1)[0], { target: { value: "label:news" } });
+    fireEvent.click(screen.getByTitle("Add (⌘Enter)"));
+    await waitFor(() => expect(screen.getByRole("alert")).toHaveTextContent("Couldn't add the card: Error: disk full"));
+  });
+
+  it("leaves an expired session's banner with its account when switching accounts", async () => {
+    handlers.get_accounts = () => [account("a", "a@x.com"), account("b", "b@x.com")];
+    render(() => <App />);
+    await screen.findByText("Mail for A");
+    handlers.sync_threads_incremental = () => { throw 'Token refresh failed: {"error": "invalid_grant"}'; };
+    window.dispatchEvent(new Event("focus"));
+    await screen.findByText("Session expired - sign in again");
+
+    handlers.sync_threads_incremental = () => ({ modified_threads: [], deleted_thread_ids: [], is_full_sync: false });
+    fireEvent.click(screen.getByTitle("a@x.com"));
+    fireEvent.click(await screen.findByText("b@x.com"));
+    await screen.findByText("Mail for B");
+    expect(screen.queryByText("Session expired - sign in again")).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByTitle("b@x.com"));
+    fireEvent.click(await screen.findByText("a@x.com"));
+    const banner = await screen.findByRole("alert");
+    expect(within(banner).getByRole("button", { name: "Sign in again" })).toBeInTheDocument();
+  });
 });
 
 describe("App expired session after dismissing the banner", () => {
