@@ -98,90 +98,251 @@ fn get_account_email(state: &AppState, account_id: &str) -> Result<String, Strin
     })
 }
 
-/// The iCloud card backup plus this device's record of which cards it last
-/// saw on both sides. Card sync is a three-way merge against that record: a
-/// card missing on one side that both sides had was deleted there, while one
-/// the record lacks was added there.
+/// Deleted cards travel in the iCloud account-mapping map, next to the
+/// account id -> email entries, as `deleted:<card id>` -> deletion time in
+/// Unix ms. A card is only ever deleted on another device by such an entry:
+/// the backup is one last-writer-wins value, so a card can be missing from it
+/// merely because a device that had not received it yet wrote last.
+const TOMBSTONE_PREFIX: &str = "deleted:";
+
+/// A device offline for longer than this can bring a deleted card back
+const TOMBSTONE_TTL_MS: i64 = 180 * 24 * 60 * 60 * 1000;
+
+/// The iCloud card backup
+#[derive(Debug, Default, Clone, PartialEq)]
+struct Backup {
+    cards: Vec<Card>,
+    /// Account id -> email on the device that pushed each card
+    emails: HashMap<String, String>,
+    /// Card id -> deletion time (Unix ms)
+    tombstones: HashMap<String, i64>,
+}
+
+impl Backup {
+    /// None when the store holds nothing at all
+    fn from_store(cards: Option<Vec<Card>>, mappings: Option<HashMap<String, String>>) -> Option<Self> {
+        if cards.is_none() && mappings.is_none() {
+            return None;
+        }
+        let mut emails = HashMap::new();
+        let mut tombstones = HashMap::new();
+        for (key, value) in mappings.unwrap_or_default() {
+            match key.strip_prefix(TOMBSTONE_PREFIX) {
+                Some(card_id) => {
+                    if let Ok(deleted_at) = value.parse() {
+                        tombstones.insert(card_id.to_string(), deleted_at);
+                    }
+                }
+                None => {
+                    emails.insert(key, value);
+                }
+            }
+        }
+        Some(Self { cards: cards.unwrap_or_default(), emails, tombstones })
+    }
+
+    fn mappings(&self) -> HashMap<String, String> {
+        let mut mappings = self.emails.clone();
+        for (card_id, deleted_at) in &self.tombstones {
+            mappings.insert(format!("{}{}", TOMBSTONE_PREFIX, card_id), deleted_at.to_string());
+        }
+        mappings
+    }
+}
+
+/// This device's side of card sync, kept next to the database
+#[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]
+struct SyncRecord {
+    /// Each card as it last was on both this device and iCloud, under the
+    /// local account id. A side that differs from it changed the card.
+    #[serde(default)]
+    base: HashMap<String, Card>,
+    /// Card id -> deletion time (Unix ms) for cards deleted on any device,
+    /// including deletions made here that have not reached iCloud yet
+    #[serde(default)]
+    tombstones: HashMap<String, i64>,
+    /// Whether this device has ever read a backup. After that, an empty
+    /// store means iCloud is not available (not downloaded yet, or signed
+    /// out), not that there is nothing to keep.
+    #[serde(default)]
+    seen_backup: bool,
+}
+
+/// The iCloud card backup plus this device's `SyncRecord`
 pub struct ICloudSync {
     store: ICloudKVStore,
-    /// JSON map of card id -> owning account id; set once the app data dir is known
-    base_path: Option<std::path::PathBuf>,
+    /// Where the `SyncRecord` lives; set once the app data dir is known
+    record_path: Option<std::path::PathBuf>,
 }
 
 impl ICloudSync {
     fn new() -> Self {
-        Self { store: ICloudKVStore::new(), base_path: None }
+        Self { store: ICloudKVStore::new(), record_path: None }
     }
 
-    /// A missing or unreadable record only means deletions can't be told
-    /// apart from additions, so everything on either side is kept
-    fn load_base(&self) -> HashMap<String, String> {
-        self.base_path
+    /// A missing or unreadable record only loses the change tracking, so
+    /// conflicts go to iCloud on a pull and to this device on a push
+    fn load_record(&self) -> SyncRecord {
+        self.record_path
             .as_ref()
             .and_then(|p| std::fs::read(p).ok())
             .and_then(|bytes| serde_json::from_slice(&bytes).ok())
             .unwrap_or_default()
     }
 
-    fn save_base(&self, base: &HashMap<String, String>) {
-        let Some(path) = &self.base_path else { return };
-        let result = serde_json::to_vec(base)
+    fn save_record(&self, record: &SyncRecord) {
+        let Some(path) = &self.record_path else { return };
+        let result = serde_json::to_vec(record)
             .map_err(|e| e.to_string())
             .and_then(|json| std::fs::write(path, json).map_err(|e| e.to_string()));
         if let Err(e) = result {
             tracing::warn!("Failed to save iCloud card sync state: {}", e);
         }
     }
+
+    fn load_backup(&self) -> Result<Option<Backup>, String> {
+        let cards = self.store.load_cards()?;
+        let mappings = self.store.load_account_mappings()?;
+        Ok(Backup::from_store(cards, mappings))
+    }
 }
 
-/// Whether the card was synced under an account this device still has. Such
-/// a card missing locally was deleted here; under a since-removed account it
-/// went away with the account and comes back when the account is re-added.
-fn synced_here(card_id: &str, base: &HashMap<String, String>, accounts: &[Account]) -> bool {
-    base.get(card_id).is_some_and(|owner| accounts.iter().any(|a| &a.id == owner))
+fn now_ms() -> i64 {
+    chrono::Utc::now().timestamp_millis()
 }
 
-/// The cards and id -> email mappings to write back to iCloud after a local
-/// card change: every local card, plus iCloud cards this device did not
-/// delete (another device's additions, and cards of accounts this device
-/// doesn't have). Mappings are kept only for owners of those cards. None
-/// without local accounts, since nothing on this device can then speak for
-/// the backup.
-fn icloud_snapshot(
+/// Tombstones from both sides, without those old enough to forget
+fn merged_tombstones(
+    a: &HashMap<String, i64>,
+    b: &HashMap<String, i64>,
+    now_ms: i64,
+) -> HashMap<String, i64> {
+    let mut merged = a.clone();
+    for (id, &deleted_at) in b {
+        let entry = merged.entry(id.clone()).or_insert(deleted_at);
+        *entry = (*entry).max(deleted_at);
+    }
+    merged.retain(|_, deleted_at| now_ms - *deleted_at <= TOMBSTONE_TTL_MS);
+    merged
+}
+
+/// Which side changed a card that both sides have, judged against the base
+#[derive(Debug, PartialEq)]
+enum Changed {
+    Neither,
+    Local,
+    Remote,
+    /// Both sides, or no base to tell
+    Both,
+}
+
+fn changed_side(local: &Card, remote: &Card, base: Option<&Card>) -> Changed {
+    if local == remote {
+        Changed::Neither
+    } else if base == Some(local) {
+        Changed::Remote
+    } else if base == Some(remote) {
+        Changed::Local
+    } else {
+        Changed::Both
+    }
+}
+
+/// Backup cards not tombstoned, split into those owned by a local account
+/// (re-keyed to its local id) and those of accounts this device lacks
+fn split_backup_cards(
+    backup_cards: Vec<Card>,
+    emails: &HashMap<String, String>,
+    tombstones: &HashMap<String, i64>,
+    accounts: &[Account],
+) -> (Vec<Card>, Vec<Card>) {
+    let mut own = Vec::new();
+    let mut foreign = Vec::new();
+    for mut card in backup_cards {
+        if tombstones.contains_key(&card.id) {
+            continue;
+        }
+        match icloud_card_account(&card.account_id, emails, accounts) {
+            Some(account_id) => {
+                card.account_id = account_id;
+                own.push(card);
+            }
+            None => foreign.push(card),
+        }
+    }
+    (own, foreign)
+}
+
+fn take_card(cards: &mut Vec<Card>, id: &str) -> Option<Card> {
+    let index = cards.iter().position(|c| c.id == id)?;
+    Some(cards.remove(index))
+}
+
+/// The backup to write after a local card change, and the record to keep once
+/// it is written. Every local card is kept unless another device deleted it;
+/// a card only the other side changed keeps that change; backup cards this
+/// device has not pulled yet, and cards of accounts it doesn't have, are
+/// carried over. None without local accounts, since nothing on this device
+/// can then speak for the backup.
+fn plan_push(
     accounts: &[Account],
     local_cards: Vec<Card>,
-    icloud_cards: Vec<Card>,
-    icloud_mappings: HashMap<String, String>,
-    base: &HashMap<String, String>,
-) -> Option<(Vec<Card>, HashMap<String, String>)> {
+    backup: Backup,
+    record: &SyncRecord,
+    now_ms: i64,
+) -> Option<(Backup, SyncRecord)> {
     if accounts.is_empty() {
         return None;
     }
 
-    let mut cards = local_cards;
-    for card in icloud_cards {
-        if cards.iter().any(|c| c.id == card.id) {
+    let tombstones = merged_tombstones(&record.tombstones, &backup.tombstones, now_ms);
+    let (mut remote, foreign) = split_backup_cards(backup.cards, &backup.emails, &tombstones, accounts);
+    let mut new_record = SyncRecord { base: HashMap::new(), tombstones: tombstones.clone(), seen_backup: record.seen_backup };
+
+    let mut cards = Vec::new();
+    for local in local_cards {
+        // Deleted on another device; the next pull removes it here
+        if tombstones.contains_key(&local.id) {
             continue;
         }
-        let foreign = icloud_card_account(&card.account_id, &icloud_mappings, accounts).is_none();
-        if foreign || !synced_here(&card.id, base, accounts) {
-            cards.push(card);
-        }
+        let base = record.base.get(&local.id);
+        let card = match take_card(&mut remote, &local.id) {
+            // The base stays at the local copy, so the next pull still sees
+            // the change as made elsewhere and applies it here
+            Some(remote) if changed_side(&local, &remote, base) == Changed::Remote => {
+                new_record.base.insert(local.id.clone(), local);
+                remote
+            }
+            _ => {
+                new_record.base.insert(local.id.clone(), local.clone());
+                local
+            }
+        };
+        cards.push(card);
     }
+    cards.extend(remote);
+    cards.extend(foreign);
 
-    let mut mappings = icloud_mappings;
-    mappings.extend(accounts.iter().map(|a| (a.id.clone(), a.email.clone())));
+    let mut emails = backup.emails;
+    emails.extend(accounts.iter().map(|a| (a.id.clone(), a.email.clone())));
     let owners: std::collections::HashSet<&str> = cards.iter().map(|c| c.account_id.as_str()).collect();
-    mappings.retain(|id, _| owners.contains(id.as_str()));
+    emails.retain(|id, _| owners.contains(id.as_str()));
 
-    Some((cards, mappings))
+    Some((Backup { cards, emails, tombstones }, new_record))
 }
 
-// Sync all cards to iCloud after any card operation
-fn sync_cards_to_icloud(state: &AppState) {
-    // Held across the local read too, so a concurrent pull can't change the
-    // cards between reading them and pushing them
-    let Ok(icloud) = state.icloud.lock() else { return };
+/// Push every card to iCloud after a local card change. The caller holds the
+/// iCloud lock from before its database write, so a pull can't merge in
+/// between.
+fn push_cards_to_icloud(icloud: &ICloudSync, state: &AppState, deleted_card: Option<&str>) {
+    let mut record = icloud.load_record();
+    if let Some(id) = deleted_card {
+        record.tombstones.insert(id.to_string(), now_ms());
+        record.base.remove(id);
+        // Saved even if nothing is pushed below, so the deletion goes out
+        // with a later push and a pull can't bring the card back meanwhile
+        icloud.save_record(&record);
+    }
 
     let (accounts, local_cards) = {
         let Ok(db_guard) = state.db.lock() else { return };
@@ -191,33 +352,53 @@ fn sync_cards_to_icloud(state: &AppState) {
         for account in &accounts {
             match db.get_cards(&account.id) {
                 Ok(c) => cards.extend(c),
-                // A partial list would delete the missing cards from iCloud
+                // A partial list would drop the missing cards from iCloud
                 Err(_) => return,
             }
         }
         (accounts, cards)
     };
 
-    let new_base: HashMap<String, String> =
-        local_cards.iter().map(|c| (c.id.clone(), c.account_id.clone())).collect();
+    let backup = match icloud.load_backup() {
+        Ok(Some(backup)) => {
+            record.seen_backup = true;
+            backup
+        }
+        // No device has pushed yet, as far as this one knows
+        Ok(None) if !record.seen_backup => Backup::default(),
+        Ok(None) => {
+            tracing::warn!("iCloud card backup is unavailable; card changes stay on this device for now");
+            return;
+        }
+        Err(e) => {
+            tracing::warn!("iCloud card backup is unreadable, not overwriting it: {}", e);
+            return;
+        }
+    };
 
-    // Unreadable (corrupt) iCloud values are replaced by the local state
-    let Some((cards, mappings)) = icloud_snapshot(
-        &accounts,
-        local_cards,
-        icloud.store.load_cards().ok().flatten().unwrap_or_default(),
-        icloud.store.load_account_mappings().ok().flatten().unwrap_or_default(),
-        &icloud.load_base(),
-    ) else {
+    let Some((backup, new_record)) = plan_push(&accounts, local_cards, backup, &record, now_ms()) else {
         return;
     };
-    match icloud.store.sync_cards(&cards) {
-        Ok(()) => icloud.save_base(&new_base),
+    if let Err(e) = icloud.store.sync_account_mappings(&backup.mappings()) {
+        tracing::warn!("iCloud account mapping sync failed: {}", e);
+        return;
+    }
+    match icloud.store.sync_cards(&backup.cards) {
+        Ok(()) => icloud.save_record(&new_record),
         Err(e) => tracing::warn!("iCloud card sync failed: {}", e),
     }
-    if let Err(e) = icloud.store.sync_account_mappings(&mappings) {
-        tracing::warn!("iCloud account mapping sync failed: {}", e);
-    }
+}
+
+/// Run a card database write, then push the cards to iCloud
+fn change_cards<T>(
+    state: &AppState,
+    deleted_card: Option<&str>,
+    write: impl FnOnce(&CacheDb) -> Result<T, String>,
+) -> Result<T, String> {
+    let icloud = state.icloud.lock().map_err(|_| "Lock error")?;
+    let result = with_db(state, write)?;
+    push_cards_to_icloud(&icloud, state, deleted_card);
+    Ok(result)
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -248,7 +429,7 @@ pub fn init_app(app_handle: tauri::AppHandle, state: State<'_, AppState>) -> Res
         Err(e) => tracing::warn!("Failed to clean card cache: {}", e),
     }
 
-    state.icloud.lock().map_err(|_| "Lock error")?.base_path = Some(app_dir.join("icloud-card-sync.json"));
+    state.icloud.lock().map_err(|_| "Lock error")?.record_path = Some(app_dir.join("icloud-card-sync.json"));
 
     let mut db_guard = state.db.lock().map_err(|_| "Lock error".to_string())?;
     *db_guard = Some(db);
@@ -489,7 +670,7 @@ pub fn create_card(
     card_type: Option<String>,
     state: State<'_, AppState>,
 ) -> Result<Card, String> {
-    let card = with_db(&state, |db| {
+    change_cards(&state, None, |db| {
         let cards = db.get_cards(&account_id).map_err(|e| e.to_string())?;
         let position = next_card_position(&cards);
 
@@ -503,34 +684,22 @@ pub fn create_card(
         card.group_by = group_by.unwrap_or_else(|| "date".to_string());
         db.insert_card(&card).map_err(|e| e.to_string())?;
         Ok(card)
-    })?;
-
-    sync_cards_to_icloud(&state);
-    Ok(card)
+    })
 }
 
 #[tauri::command]
 pub fn update_card(card: Card, state: State<'_, AppState>) -> Result<(), String> {
-    with_db(&state, |db| db.update_card(&card).map_err(|e| e.to_string()))?;
-
-    sync_cards_to_icloud(&state);
-    Ok(())
+    change_cards(&state, None, |db| db.update_card(&card).map_err(|e| e.to_string()))
 }
 
 #[tauri::command]
 pub fn delete_card(id: String, state: State<'_, AppState>) -> Result<(), String> {
-    with_db(&state, |db| db.delete_card(&id).map_err(|e| e.to_string()))?;
-
-    sync_cards_to_icloud(&state);
-    Ok(())
+    change_cards(&state, Some(id.as_str()), |db| db.delete_card(&id).map_err(|e| e.to_string()))
 }
 
 #[tauri::command]
 pub fn reorder_cards(orders: Vec<(String, i32)>, state: State<'_, AppState>) -> Result<(), String> {
-    with_db(&state, |db| db.reorder_cards(&orders).map_err(|e| e.to_string()))?;
-
-    sync_cards_to_icloud(&state);
-    Ok(())
+    change_cards(&state, None, |db| db.reorder_cards(&orders).map_err(|e| e.to_string()))
 }
 
 /// Positions keep gaps after a delete, so count-based numbering can collide
@@ -1437,51 +1606,70 @@ struct CardMerge {
     insert: Vec<Card>,
     update: Vec<Card>,
     delete: Vec<String>,
-    /// Sync record after the writes: local cards that are also in iCloud
-    base: HashMap<String, String>,
+    /// Record to keep once the writes are done
+    record: SyncRecord,
+    /// This device has changes iCloud lacks: cards added or changed here, or
+    /// deletions whose push didn't happen
+    needs_push: bool,
 }
 
-/// Three-way merge of the iCloud cards into the local ones, against `base`
-/// (see `ICloudSync`). Cards of accounts this device doesn't have are left
-/// alone, and cards only this device has, never synced, are kept.
-fn merge_icloud_cards(
+/// Three-way merge of the iCloud backup into the local cards, against the
+/// record (see `SyncRecord`). Only a tombstone deletes a local card; a card
+/// changed on one side only takes that side's change, and one changed on both
+/// takes iCloud's. Cards of accounts this device doesn't have are left alone.
+fn plan_pull(
     accounts: &[Account],
     local_cards: &[Card],
-    icloud_cards: Vec<Card>,
-    mappings: &HashMap<String, String>,
-    base: &HashMap<String, String>,
+    backup: Backup,
+    record: &SyncRecord,
+    now_ms: i64,
 ) -> CardMerge {
-    let mut merge = CardMerge::default();
-    let icloud_ids: std::collections::HashSet<String> = icloud_cards.iter().map(|c| c.id.clone()).collect();
+    let tombstones = merged_tombstones(&record.tombstones, &backup.tombstones, now_ms);
+    let needs_push = tombstones.keys().any(|id| !backup.tombstones.contains_key(id));
+    let (mut remote, foreign) = split_backup_cards(backup.cards, &backup.emails, &tombstones, accounts);
+    for card in &foreign {
+        tracing::info!("Leaving card {} in iCloud - its account is not on this device", card.name);
+    }
 
-    for mut card in icloud_cards {
-        let Some(account_id) = icloud_card_account(&card.account_id, mappings, accounts) else {
-            tracing::warn!("Skipping card {} - no matching local account", card.name);
+    let mut merge = CardMerge {
+        record: SyncRecord { base: HashMap::new(), tombstones, seen_backup: true },
+        needs_push,
+        ..Default::default()
+    };
+
+    for local in local_cards {
+        if merge.record.tombstones.contains_key(&local.id) {
+            merge.delete.push(local.id.clone());
+            continue;
+        }
+        let base = record.base.get(&local.id);
+        let Some(remote) = take_card(&mut remote, &local.id) else {
+            // Added here, or left out by another device's write before this
+            // one's reached it
+            merge.needs_push = true;
+            if let Some(base) = base {
+                merge.record.base.insert(local.id.clone(), base.clone());
+            }
             continue;
         };
-        card.account_id = account_id;
-
-        match local_cards.iter().find(|c| c.id == card.id) {
-            None if synced_here(&card.id, base, accounts) => continue,
-            None => {
-                merge.base.insert(card.id.clone(), card.account_id.clone());
-                merge.insert.push(card);
+        match changed_side(local, &remote, base) {
+            Changed::Neither => {
+                merge.record.base.insert(local.id.clone(), remote);
             }
-            Some(local) => {
-                merge.base.insert(card.id.clone(), local.account_id.clone());
-                // An identical local copy is not rewritten, so a lagging
-                // iCloud snapshot doesn't trigger no-op frontend refreshes
-                if *local != card {
-                    merge.update.push(card);
-                }
+            Changed::Local => {
+                merge.needs_push = true;
+                merge.record.base.insert(local.id.clone(), remote);
+            }
+            Changed::Remote | Changed::Both => {
+                merge.record.base.insert(local.id.clone(), remote.clone());
+                merge.update.push(remote);
             }
         }
     }
 
-    for card in local_cards {
-        if !icloud_ids.contains(&card.id) && base.contains_key(&card.id) {
-            merge.delete.push(card.id.clone());
-        }
+    for card in remote {
+        merge.record.base.insert(card.id.clone(), card.clone());
+        merge.insert.push(card);
     }
 
     merge
@@ -1493,44 +1681,44 @@ pub fn pull_from_icloud(state: State<'_, AppState>) -> Result<bool, String> {
     // Held for the whole merge so a local card change can't push in between
     let icloud = state.icloud.lock().map_err(|_| "Lock error")?;
 
-    let Some(icloud_cards) = icloud.store.load_cards().map_err(|e| e.to_string())? else {
+    let Some(backup) = icloud.load_backup()? else {
         return Ok(false);
     };
-    // Account mappings: old_account_id -> email (from iCloud)
-    let account_mappings = icloud
-        .store
-        .load_account_mappings()
-        .map_err(|e| e.to_string())?
-        .unwrap_or_default();
 
-    let db_guard = state.db.lock().map_err(|_| "Lock error")?;
-    let db = db_guard.as_ref().ok_or("Database not initialized")?;
+    let merge = {
+        let db_guard = state.db.lock().map_err(|_| "Lock error")?;
+        let db = db_guard.as_ref().ok_or("Database not initialized")?;
 
-    let accounts = db.get_accounts().map_err(|e| e.to_string())?;
-    let mut local_cards = Vec::new();
-    for account in &accounts {
-        local_cards.extend(db.get_cards(&account.id).map_err(|e| e.to_string())?);
-    }
+        let accounts = db.get_accounts().map_err(|e| e.to_string())?;
+        let mut local_cards = Vec::new();
+        for account in &accounts {
+            local_cards.extend(db.get_cards(&account.id).map_err(|e| e.to_string())?);
+        }
 
-    tracing::info!(
-        "pull_from_icloud: {} iCloud cards, {} local accounts, {} account mappings",
-        icloud_cards.len(),
-        accounts.len(),
-        account_mappings.len()
-    );
+        tracing::info!(
+            "pull_from_icloud: {} iCloud cards, {} tombstones, {} local accounts",
+            backup.cards.len(),
+            backup.tombstones.len(),
+            accounts.len()
+        );
 
-    let merge = merge_icloud_cards(&accounts, &local_cards, icloud_cards, &account_mappings, &icloud.load_base());
-    for card in &merge.insert {
-        db.insert_card(card).map_err(|e| e.to_string())?;
+        let merge = plan_pull(&accounts, &local_cards, backup, &icloud.load_record(), now_ms());
+        for card in &merge.insert {
+            db.insert_card(card).map_err(|e| e.to_string())?;
+        }
+        for card in &merge.update {
+            db.update_card(card).map_err(|e| e.to_string())?;
+        }
+        for id in &merge.delete {
+            tracing::info!("Deleting card {} - deleted on another device", id);
+            db.delete_card(id).map_err(|e| e.to_string())?;
+        }
+        merge
+    };
+    icloud.save_record(&merge.record);
+    if merge.needs_push {
+        push_cards_to_icloud(&icloud, &state, None);
     }
-    for card in &merge.update {
-        db.update_card(card).map_err(|e| e.to_string())?;
-    }
-    for id in &merge.delete {
-        tracing::info!("Deleting card {} - deleted on another device", id);
-        db.delete_card(id).map_err(|e| e.to_string())?;
-    }
-    icloud.save_base(&merge.base);
 
     Ok(!(merge.insert.is_empty() && merge.update.is_empty() && merge.delete.is_empty()))
 }
@@ -1779,8 +1967,9 @@ pub async fn suggest_replies(
 #[cfg(test)]
 mod tests {
     use super::{
-        attachment_filename, attachment_temp_dir, cached_access_token, icloud_card_account, icloud_snapshot, is_auth_error,
-        is_executable_attachment, mark_quarantined, merge_icloud_cards, next_card_position, refuse_executable_attachment,
+        attachment_filename, attachment_temp_dir, cached_access_token, icloud_card_account, is_auth_error,
+        is_executable_attachment, mark_quarantined, merged_tombstones, next_card_position, plan_pull, plan_push,
+        refuse_executable_attachment, Backup, SyncRecord,
         reply_context, sanitize_attachment_filename, vanished_thread_ids, write_unique_file,
     };
     use crate::models::{Account, Card, Thread};
@@ -1822,80 +2011,212 @@ mod tests {
         Card { id: id.into(), ..Card::new(account_id.into(), id.into(), "q".into(), 0) }
     }
 
-    fn base(pairs: &[(&str, &str)]) -> HashMap<String, String> {
-        mappings(pairs)
+    fn renamed(card: &Card, name: &str) -> Card {
+        Card { name: name.into(), ..card.clone() }
     }
 
     fn ids(cards: &[Card]) -> Vec<&str> {
         cards.iter().map(|c| c.id.as_str()).collect()
     }
 
-    #[test]
-    fn icloud_snapshot_is_skipped_without_local_accounts() {
-        let backup = vec![owned_card("c1", "gone")];
-        let m = mappings(&[("gone", "me@x.com")]);
-        assert!(icloud_snapshot(&[], Vec::new(), backup, m, &base(&[])).is_none());
+    const NOW: i64 = 1_800_000_000_000;
+
+    fn backup(cards: Vec<Card>, emails: &[(&str, &str)], tombstones: &[&str]) -> Backup {
+        Backup {
+            cards,
+            emails: mappings(emails),
+            tombstones: tombstones.iter().map(|id| (id.to_string(), NOW - 1000)).collect(),
+        }
+    }
+
+    /// Record of a device that last synced exactly these cards
+    fn synced(cards: &[Card]) -> SyncRecord {
+        SyncRecord {
+            base: cards.iter().map(|c| (c.id.clone(), c.clone())).collect(),
+            tombstones: HashMap::new(),
+            seen_backup: true,
+        }
+    }
+
+    fn tombstoned(mut record: SyncRecord, ids: &[&str]) -> SyncRecord {
+        for id in ids {
+            record.base.remove(*id);
+            record.tombstones.insert(id.to_string(), NOW - 1000);
+        }
+        record
     }
 
     #[test]
-    fn icloud_snapshot_keeps_cards_of_accounts_this_device_lacks() {
+    fn tombstones_round_trip_through_the_mapping_map_next_to_emails() {
+        let b = backup(vec![owned_card("c", "a1")], &[("a1", "me@x.com")], &["gone"]);
+        let read = Backup::from_store(Some(b.cards.clone()), Some(b.mappings())).unwrap();
+        assert_eq!(read, b);
+        assert_eq!(Backup::from_store(None, None), None);
+        assert_eq!(Backup::from_store(Some(Vec::new()), None), Some(Backup::default()));
+    }
+
+    #[test]
+    fn a_sync_record_in_the_old_format_reads_as_empty() {
+        let old = br#"{"c1": "a1", "c2": "a1"}"#;
+        let record: SyncRecord = serde_json::from_slice(old).unwrap();
+        assert_eq!(record, SyncRecord::default());
+    }
+
+    #[test]
+    fn old_tombstones_are_forgotten() {
+        let a = HashMap::from([("old".to_string(), NOW - super::TOMBSTONE_TTL_MS - 1), ("new".to_string(), NOW - 5)]);
+        let b = HashMap::from([("new".to_string(), NOW - 1), ("other".to_string(), NOW)]);
+        let merged = merged_tombstones(&a, &b, NOW);
+        assert_eq!(merged, HashMap::from([("new".to_string(), NOW - 1), ("other".to_string(), NOW)]));
+    }
+
+    #[test]
+    fn push_is_skipped_without_local_accounts() {
+        let b = backup(vec![owned_card("c1", "gone")], &[("gone", "me@x.com")], &[]);
+        assert!(plan_push(&[], Vec::new(), b, &SyncRecord::default(), NOW).is_none());
+    }
+
+    #[test]
+    fn push_keeps_cards_of_accounts_this_device_lacks() {
         let accounts = [account("a1", "me@x.com")];
-        let local = vec![owned_card("mine", "a1")];
-        let backup = vec![
-            owned_card("mine", "a1"),
-            owned_card("deleted-here", "a1"),
-            owned_card("work", "w9"),
-        ];
-        let m = mappings(&[("w9", "work@x.com")]);
-        let synced = base(&[("mine", "a1"), ("deleted-here", "a1")]);
-        let (cards, new_mappings) = icloud_snapshot(&accounts, local, backup, m, &synced).unwrap();
-        assert_eq!(ids(&cards), vec!["mine", "work"]);
-        assert_eq!(new_mappings, mappings(&[("a1", "me@x.com"), ("w9", "work@x.com")]));
+        let mine = owned_card("mine", "a1");
+        let b = backup(
+            vec![mine.clone(), owned_card("work", "w9")],
+            &[("a1", "me@x.com"), ("w9", "work@x.com")],
+            &[],
+        );
+        let (pushed, _) = plan_push(&accounts, vec![mine.clone()], b, &synced(&[mine]), NOW).unwrap();
+        assert_eq!(ids(&pushed.cards), vec!["mine", "work"]);
+        assert_eq!(pushed.emails, mappings(&[("a1", "me@x.com"), ("w9", "work@x.com")]));
     }
 
     #[test]
-    fn icloud_snapshot_keeps_cards_added_elsewhere_that_were_not_pulled_yet() {
-        // Another device added "theirs" to a shared account; a local change
-        // made before pulling it must not wipe it from the backup
+    fn push_keeps_cards_added_elsewhere_that_were_not_pulled_yet() {
         let accounts = [account("a1", "me@x.com")];
-        let local = vec![owned_card("mine", "a1")];
-        let backup = vec![owned_card("mine", "a1"), owned_card("theirs", "a1")];
-        let synced = base(&[("mine", "a1")]);
-        let (cards, _) = icloud_snapshot(&accounts, local, backup, mappings(&[]), &synced).unwrap();
-        assert_eq!(ids(&cards), vec!["mine", "theirs"]);
+        let mine = owned_card("mine", "a1");
+        let b = backup(vec![mine.clone(), owned_card("theirs", "a1")], &[], &[]);
+        let (pushed, record) = plan_push(&accounts, vec![mine.clone()], b, &synced(&[mine]), NOW).unwrap();
+        assert_eq!(ids(&pushed.cards), vec!["mine", "theirs"]);
+        // Not in the base: the next pull adds it here
+        assert!(!record.base.contains_key("theirs"));
     }
 
     #[test]
-    fn icloud_snapshot_drops_mappings_no_card_uses() {
+    fn push_carries_a_deletion_made_here_and_does_not_bring_the_card_back() {
+        let accounts = [account("a1", "me@x.com")];
+        let keep = owned_card("keep", "a1");
+        let gone = owned_card("gone", "a1");
+        let b = backup(vec![keep.clone(), gone.clone()], &[], &[]);
+        let record = tombstoned(synced(&[keep.clone(), gone]), &["gone"]);
+        let (pushed, new_record) = plan_push(&accounts, vec![keep], b, &record, NOW).unwrap();
+        assert_eq!(ids(&pushed.cards), vec!["keep"]);
+        assert!(pushed.tombstones.contains_key("gone"));
+        assert!(new_record.tombstones.contains_key("gone"));
+    }
+
+    #[test]
+    fn push_does_not_resurrect_a_card_another_device_deleted() {
+        // This device still has "x" because it has not pulled since the
+        // other device deleted it
+        let accounts = [account("a1", "me@x.com")];
+        let keep = owned_card("keep", "a1");
+        let x = owned_card("x", "a1");
+        let b = backup(vec![keep.clone()], &[], &["x"]);
+        let (pushed, record) =
+            plan_push(&accounts, vec![keep.clone(), x.clone()], b, &synced(&[keep, x]), NOW).unwrap();
+        assert_eq!(ids(&pushed.cards), vec!["keep"]);
+        assert!(pushed.tombstones.contains_key("x"));
+        assert!(record.tombstones.contains_key("x"));
+    }
+
+    #[test]
+    fn push_does_not_revert_a_rename_made_on_another_device() {
+        let accounts = [account("a1", "me@x.com")];
+        let card = owned_card("c", "a1");
+        let theirs = renamed(&card, "Renamed there");
+        let b = backup(vec![theirs.clone()], &[], &[]);
+        let (pushed, record) = plan_push(&accounts, vec![card.clone()], b, &synced(std::slice::from_ref(&card)), NOW).unwrap();
+        assert_eq!(pushed.cards, vec![theirs]);
+        // The base still matches the local copy, so the next pull applies the rename here
+        assert_eq!(record.base["c"], card);
+    }
+
+    #[test]
+    fn push_publishes_a_change_made_here() {
+        let accounts = [account("a1", "me@x.com")];
+        let card = owned_card("c", "a1");
+        let mine = renamed(&card, "Renamed here");
+        let b = backup(vec![card.clone()], &[], &[]);
+        let (pushed, record) = plan_push(&accounts, vec![mine.clone()], b, &synced(&[card]), NOW).unwrap();
+        assert_eq!(pushed.cards, vec![mine.clone()]);
+        assert_eq!(record.base["c"], mine);
+    }
+
+    #[test]
+    fn push_restores_a_synced_card_that_a_stale_write_left_out() {
+        let accounts = [account("a1", "me@x.com")];
+        let keep = owned_card("keep", "a1");
+        let x = owned_card("x", "a1");
+        let b = backup(vec![keep.clone()], &[], &[]);
+        let (pushed, _) = plan_push(&accounts, vec![keep.clone(), x.clone()], b, &synced(&[keep, x]), NOW).unwrap();
+        assert_eq!(ids(&pushed.cards), vec!["keep", "x"]);
+    }
+
+    #[test]
+    fn push_drops_mappings_no_card_uses() {
         let accounts = [account("a1", "me@x.com"), account("a2", "other@x.com")];
         let local = vec![owned_card("mine", "a1")];
-        let m = mappings(&[("stale", "old@x.com"), ("a1-old", "me@x.com")]);
-        let (_, new_mappings) = icloud_snapshot(&accounts, local, Vec::new(), m, &base(&[])).unwrap();
-        assert_eq!(new_mappings, mappings(&[("a1", "me@x.com")]));
+        let b = backup(Vec::new(), &[("stale", "old@x.com"), ("a1-old", "me@x.com")], &[]);
+        let (pushed, _) = plan_push(&accounts, local, b, &SyncRecord::default(), NOW).unwrap();
+        assert_eq!(pushed.emails, mappings(&[("a1", "me@x.com")]));
     }
 
     #[test]
-    fn pull_deletes_local_cards_that_another_device_deleted() {
+    fn pull_deletes_local_cards_only_on_a_tombstone() {
         let accounts = [account("a1", "me@x.com")];
-        let local = vec![owned_card("keep", "a1"), owned_card("gone", "a1"), owned_card("new-here", "a1")];
-        let icloud = vec![owned_card("keep", "a1")];
-        let synced = base(&[("keep", "a1"), ("gone", "a1")]);
-        let merge = merge_icloud_cards(&accounts, &local, icloud, &mappings(&[]), &synced);
+        let keep = owned_card("keep", "a1");
+        let gone = owned_card("gone", "a1");
+        let local = vec![keep.clone(), gone.clone()];
+        let b = backup(vec![keep.clone()], &[], &["gone"]);
+        let merge = plan_pull(&accounts, &local, b, &synced(&[keep.clone(), gone]), NOW);
         assert_eq!(merge.delete, vec!["gone".to_string()]);
         assert!(merge.insert.is_empty() && merge.update.is_empty());
-        // "new-here" was never synced, so it stays and is not in the new base
-        assert_eq!(merge.base, base(&[("keep", "a1")]));
+        assert_eq!(merge.record.base, synced(&[keep]).base);
+        assert!(merge.record.tombstones.contains_key("gone"));
+    }
+
+    #[test]
+    fn pull_keeps_a_synced_card_that_a_stale_icloud_write_left_out() {
+        // Another device pushed before this device's "x" reached it; nothing
+        // was deleted, so "x" must survive here and go back up
+        let accounts = [account("a1", "me@x.com")];
+        let keep = owned_card("keep", "a1");
+        let x = owned_card("x", "a1");
+        let b = backup(vec![keep.clone()], &[], &[]);
+        let merge = plan_pull(&accounts, &[keep.clone(), x.clone()], b, &synced(&[keep, x]), NOW);
+        assert!(merge.delete.is_empty(), "{:?}", merge.delete);
+        assert!(merge.needs_push);
+    }
+
+    #[test]
+    fn pull_keeps_every_card_when_icloud_is_empty() {
+        let accounts = [account("a1", "me@x.com")];
+        let local = vec![owned_card("a", "a1"), owned_card("b", "a1")];
+        let merge = plan_pull(&accounts, &local, Backup::default(), &synced(&local), NOW);
+        assert!(merge.delete.is_empty() && merge.update.is_empty() && merge.insert.is_empty());
+        assert!(merge.needs_push);
     }
 
     #[test]
     fn pull_does_not_resurrect_a_card_deleted_here() {
+        // The deletion was recorded here but has not reached iCloud yet
         let accounts = [account("a1", "me@x.com")];
-        let icloud = vec![owned_card("deleted-here", "a1"), owned_card("added-there", "a1")];
-        let synced = base(&[("deleted-here", "a1")]);
-        let merge = merge_icloud_cards(&accounts, &[], icloud, &mappings(&[]), &synced);
+        let b = backup(vec![owned_card("deleted-here", "a1"), owned_card("added-there", "a1")], &[], &[]);
+        let record = tombstoned(SyncRecord::default(), &["deleted-here"]);
+        let merge = plan_pull(&accounts, &[], b, &record, NOW);
         assert_eq!(ids(&merge.insert), vec!["added-there"]);
         assert!(merge.delete.is_empty());
-        assert_eq!(merge.base, base(&[("added-there", "a1")]));
+        assert!(merge.needs_push, "the deletion still has to reach iCloud");
     }
 
     #[test]
@@ -1903,36 +2224,65 @@ mod tests {
         // c1 was synced under a1-old; the account was then removed and signed
         // in again under a new id, and its layout must come back
         let accounts = [account("a1-new", "me@x.com")];
-        let icloud = vec![owned_card("c1", "a1-old")];
-        let m = mappings(&[("a1-old", "me@x.com")]);
-        let synced = base(&[("c1", "a1-old")]);
-        let merge = merge_icloud_cards(&accounts, &[], icloud, &m, &synced);
+        let b = backup(vec![owned_card("c1", "a1-old")], &[("a1-old", "me@x.com")], &[]);
+        let merge = plan_pull(&accounts, &[], b, &synced(&[owned_card("c1", "a1-old")]), NOW);
         assert_eq!(ids(&merge.insert), vec!["c1"]);
         assert_eq!(merge.insert[0].account_id, "a1-new");
-        assert_eq!(merge.base, base(&[("c1", "a1-new")]));
+        assert_eq!(merge.record.base["c1"].account_id, "a1-new");
     }
 
     #[test]
-    fn pull_updates_only_cards_that_changed() {
+    fn pull_takes_changes_made_elsewhere_and_keeps_those_made_here() {
         let accounts = [account("a1", "me@x.com")];
-        let local = vec![owned_card("same", "a1"), owned_card("renamed", "a1")];
-        let mut renamed = owned_card("renamed", "a1");
-        renamed.name = "New name".into();
-        let icloud = vec![owned_card("same", "a1"), renamed.clone()];
-        let merge = merge_icloud_cards(&accounts, &local, icloud, &mappings(&[]), &base(&[]));
-        assert_eq!(merge.update, vec![renamed]);
+        let same = owned_card("same", "a1");
+        let there = owned_card("there", "a1");
+        let here = owned_card("here", "a1");
+        let record = synced(&[same.clone(), there.clone(), here.clone()]);
+        let local = vec![same.clone(), there.clone(), renamed(&here, "Mine")];
+        let b = backup(vec![same.clone(), renamed(&there, "Theirs"), here.clone()], &[], &[]);
+        let merge = plan_pull(&accounts, &local, b, &record, NOW);
+        assert_eq!(merge.update, vec![renamed(&there, "Theirs")]);
         assert!(merge.insert.is_empty() && merge.delete.is_empty());
-        assert_eq!(merge.base, base(&[("same", "a1"), ("renamed", "a1")]));
+        assert!(merge.needs_push);
+        // "here" keeps its old base, so the next push still sees it as changed here
+        assert_eq!(merge.record.base["here"], here);
+        assert_eq!(merge.record.base["there"], renamed(&there, "Theirs"));
+    }
+
+    #[test]
+    fn pull_lets_icloud_win_when_both_sides_changed_a_card() {
+        let accounts = [account("a1", "me@x.com")];
+        let card = owned_card("c", "a1");
+        let b = backup(vec![renamed(&card, "Theirs")], &[], &[]);
+        let merge = plan_pull(&accounts, &[renamed(&card, "Mine")], b, &synced(std::slice::from_ref(&card)), NOW);
+        assert_eq!(merge.update, vec![renamed(&card, "Theirs")]);
+        // A fresh device has no base, and adopts the backup's copies
+        let b = backup(vec![renamed(&card, "Theirs")], &[], &[]);
+        let merge = plan_pull(&accounts, std::slice::from_ref(&card), b, &SyncRecord::default(), NOW);
+        assert_eq!(merge.update, vec![renamed(&card, "Theirs")]);
+        assert!(!merge.needs_push);
     }
 
     #[test]
     fn pull_leaves_cards_of_accounts_this_device_lacks_alone() {
         let accounts = [account("a1", "me@x.com"), account("a2", "b@x.com")];
-        let icloud = vec![owned_card("work", "w9")];
-        let m = mappings(&[("w9", "work@x.com")]);
-        let merge = merge_icloud_cards(&accounts, &[], icloud, &m, &base(&[]));
+        let b = backup(vec![owned_card("work", "w9")], &[("w9", "work@x.com")], &[]);
+        let merge = plan_pull(&accounts, &[], b, &SyncRecord::default(), NOW);
         assert!(merge.insert.is_empty() && merge.update.is_empty() && merge.delete.is_empty());
-        assert!(merge.base.is_empty());
+        assert!(merge.record.base.is_empty());
+        assert!(merge.record.seen_backup);
+    }
+
+    #[test]
+    fn a_push_after_a_pull_round_trips_without_changes() {
+        let accounts = [account("a1", "me@x.com")];
+        let local = vec![owned_card("a", "a1"), owned_card("b", "a1")];
+        let b = backup(local.clone(), &[("a1", "me@x.com")], &["old"]);
+        let merge = plan_pull(&accounts, &local, b.clone(), &SyncRecord::default(), NOW);
+        assert!(!merge.needs_push);
+        let (pushed, record) = plan_push(&accounts, local, b.clone(), &merge.record, NOW).unwrap();
+        assert_eq!(pushed, b);
+        assert_eq!(record, merge.record);
     }
 
     #[test]
