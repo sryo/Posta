@@ -510,7 +510,21 @@ impl CalendarClient {
 
     /// Look up one calendar (accepts "primary"). Best-effort: used to label
     /// events returned by write calls and to pick a recurrence time zone.
+    /// Read from the cached calendar list, and asked for only when the list
+    /// doesn't have it.
     async fn calendar_info(&self, calendar_id: &str) -> Option<CalendarInfo> {
+        if let Ok(calendars) = self.cached_calendar_list().await {
+            let listed = calendars
+                .iter()
+                .find(|c| c.id == calendar_id || (calendar_id == "primary" && c.is_primary));
+            if let Some(calendar) = listed {
+                return Some(calendar.clone());
+            }
+        }
+        self.fetch_calendar_info(calendar_id).await
+    }
+
+    async fn fetch_calendar_info(&self, calendar_id: &str) -> Option<CalendarInfo> {
         let url = format!(
             "{}/users/me/calendarList/{}",
             self.api_base,
@@ -2237,6 +2251,43 @@ mod tests {
             assert_eq!(targets.len(), 3, "{targets:?}");
             assert!(targets.iter().all(|t| t.contains(updates)), "mine={mine}: {targets:?}");
         }
+    }
+
+    #[tokio::test]
+    async fn event_writes_label_the_event_from_the_cached_calendar_list() {
+        // Cards have already listed the calendars; each save shouldn't look
+        // its calendar up again
+        let server = StubServer::start(|method, target| match method {
+            "GET" if target.starts_with("/users/me/calendarList?") => (
+                200,
+                serde_json::json!({ "items": [
+                    { "id": "me@x.com", "summary": "Personal", "primary": true, "accessRole": "owner", "timeZone": "UTC" },
+                    { "id": "work", "summary": "Work", "accessRole": "writer", "timeZone": "UTC" },
+                ] })
+                .to_string(),
+            ),
+            "GET" if target.starts_with("/users/me/calendarList/") => (200, calendar_with_role("new", "owner").to_string()),
+            "GET" if target.contains("/events/e1?fields=") => (200, serde_json::json!({ "id": "e1" }).to_string()),
+            "GET" => (200, serde_json::json!({ "items": [] }).to_string()),
+            _ => (200, serde_json::json!({ "id": "e1", "start": { "date": "2024-12-23" } }).to_string()),
+        })
+        .await;
+        let client = server.client();
+        client.search_events(&CalendarQuery::parse("calendar:week"), 10).await.unwrap();
+
+        let recurring = EventFields { recurrence: Some(vec!["FREQ=DAILY".into()]), ..fields(0, 3_600_000, false) };
+        let created = client.create_event("primary", recurring).await.unwrap();
+        assert_eq!((created.calendar_id.as_str(), created.calendar_name.as_str()), ("me@x.com", "Personal"));
+        assert_eq!(client.update_event("work", "e1", fields(0, 3_600_000, false)).await.unwrap().calendar_name, "Work");
+        assert_eq!(client.move_event("work", "e1", "me@x.com").await.unwrap().calendar_name, "Personal");
+        let lookups = || server.requests().iter().filter(|(_, t, _)| t.starts_with("/users/me/calendarList/")).count();
+        assert_eq!(lookups(), 0);
+        let post = server.requests().into_iter().find(|(m, _, _)| m == "POST").unwrap();
+        assert!(post.2.contains(r#""timeZone":"UTC""#), "{}", post.2);
+
+        // A calendar the cached list doesn't know yet is still looked up
+        assert_eq!(client.create_event("new", fields(0, 3_600_000, false)).await.unwrap().calendar_name, "new");
+        assert_eq!(lookups(), 1);
     }
 
     #[tokio::test]
