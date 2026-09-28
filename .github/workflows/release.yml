@@ -48,7 +48,6 @@ jobs:
         run: npm ci
 
       - name: Typecheck and test frontend
-        if: matrix.platform == 'macos-latest'
         run: npm run typecheck && npm test
 
       - name: Build and release

@@ -1741,6 +1741,25 @@ button:disabled:hover {
     text-align: center;
 }
 
+/* The app-wide error banner, as opposed to the sign-in screen's inline error */
+.app > .auth-error {
+    position: fixed;
+    top: calc(var(--drag-region-height) + var(--space-sm));
+    left: 50%;
+    transform: translateX(-50%);
+    z-index: var(--z-toast);
+    display: flex;
+    align-items: center;
+    gap: var(--space-md);
+    max-width: calc(100vw - 2 * var(--space-2xl));
+    padding: var(--space-md) var(--space-md) var(--space-md) var(--space-lg);
+    background: var(--bg-primary);
+    border: 1px solid var(--danger-bg);
+    border-radius: var(--radius-lg);
+    box-shadow: 0 4px 16px var(--shadow);
+    text-align: left;
+}
+
 .auth-spinner,
 .spinner-sm {
     width: 32px;
@@ -3044,6 +3063,15 @@ button:disabled:hover {
     font-size: var(--font-size-sm);
     color: var(--text-muted);
     margin: 8px 0;
+}
+
+.settings-section-title + .settings-hint {
+    margin-bottom: var(--space-lg);
+}
+
+.settings-section > .btn-primary {
+    margin-top: var(--space-lg);
+    width: 100%;
 }
 
 .settings-hint code {

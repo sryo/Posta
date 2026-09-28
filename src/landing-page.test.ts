@@ -1,12 +1,8 @@
-import { describe, it, expect, vi } from "vitest";
+import { describe, it, expect } from "vitest";
 import { parseRules, selectorClasses, unusedKeyframes } from "./test/css";
+import { readRepoFile } from "./test/files";
 
-const { readFileSync } = await vi.importActual<{
-  readFileSync(path: string, encoding: "utf8"): string;
-}>("node:fs");
-
-const srcDir = decodeURIComponent(import.meta.url.replace(/^file:\/\//, "").replace(/[^/]+$/, ""));
-const page = readFileSync(srcDir + "../docs/index.html", "utf8");
+const page = readRepoFile("docs/index.html");
 
 const between = (open: string, close: string) =>
   page.slice(page.indexOf(open) + open.length, page.indexOf(close));
@@ -65,6 +61,28 @@ describe("landing page (docs/index.html)", () => {
       seen.add(key);
     }
     expect(repeated).toEqual([]);
+  });
+
+  it("uses the app's palette for every theme token it shares with App.css", () => {
+    const appRules = parseRules(readRepoFile("src/App.css").replace(/\/\*[\s\S]*?\*\//g, ""));
+    const tokens = (from: typeof rules, context: string) =>
+      new Map(
+        from
+          .filter((r) => r.context === context && r.selectors.join(",") === ":root")
+          .flatMap((r) => r.declarations.filter(([prop]) => prop.startsWith("--"))),
+      );
+    const drift: string[] = [];
+    let shared = 0;
+    for (const context of ["", "@media (prefers-color-scheme: dark)"]) {
+      const app = tokens(appRules, context);
+      for (const [prop, value] of tokens(rules, context)) {
+        if (!app.has(prop)) continue;
+        shared++;
+        if (app.get(prop) !== value) drift.push(`${context || "light"} ${prop}: ${value} vs app ${app.get(prop)}`);
+      }
+    }
+    expect(shared).toBeGreaterThan(20);
+    expect(drift).toEqual([]);
   });
 
   it("runs the demo script against its markup without throwing", () => {
