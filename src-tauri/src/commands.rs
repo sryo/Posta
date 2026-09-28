@@ -19,6 +19,7 @@ use tauri::{Manager, State};
 
 use tokio::sync::Mutex;
 
+#[derive(Clone)]
 pub struct AppState {
     pub db: Arc<std::sync::Mutex<Option<CacheDb>>>,
     pub auth: Arc<Mutex<Option<GmailAuth>>>,
@@ -66,6 +67,17 @@ fn get_app_data_dir(app_handle: &tauri::AppHandle) -> Result<std::path::PathBuf,
         .app_data_dir()
         .map_err(|e| format!("Failed to get app data dir: {}", e))?;
     Ok(if cfg!(debug_assertions) { dir.join("dev") } else { dir })
+}
+
+/// Run database, keychain, iCloud or file work on the blocking thread pool
+async fn blocking<T: Send + 'static>(
+    state: &AppState,
+    f: impl FnOnce(&AppState) -> Result<T, String> + Send + 'static,
+) -> Result<T, String> {
+    let state = state.clone();
+    tokio::task::spawn_blocking(move || f(&state))
+        .await
+        .map_err(|e| format!("Task error: {}", e))?
 }
 
 /// Execute a closure with database access
@@ -412,12 +424,15 @@ pub struct AuthConfig {
 }
 
 #[tauri::command]
-pub fn init_app(app_handle: tauri::AppHandle, state: State<'_, AppState>) -> Result<(), String> {
+pub async fn init_app(app_handle: tauri::AppHandle, state: State<'_, AppState>) -> Result<(), String> {
     let app_dir = get_app_data_dir(&app_handle)?;
+    blocking(&state, move |state| init_app_blocking(&app_dir, state)).await
+}
 
+fn init_app_blocking(app_dir: &std::path::Path, state: &AppState) -> Result<(), String> {
     tracing::info!("App data dir: {:?}", app_dir);
 
-    std::fs::create_dir_all(&app_dir).map_err(|e| format!("Failed to create app dir: {}", e))?;
+    std::fs::create_dir_all(app_dir).map_err(|e| format!("Failed to create app dir: {}", e))?;
 
     let db_path = app_dir.join("posta.db");
     tracing::info!("DB path: {:?}", db_path);
@@ -444,9 +459,13 @@ fn open_database(db_path: &std::path::Path) -> Result<CacheDb, String> {
 pub async fn configure_auth(config: AuthConfig, app_handle: tauri::AppHandle, state: State<'_, AppState>) -> Result<(), String> {
     let app_data_dir = get_app_data_dir(&app_handle)?;
 
-    remember_credentials(&state.stored_credentials, &config, |c| {
-        auth::store_oauth_credentials(&c.client_id, &c.client_secret, &app_data_dir).map_err(|e| e.to_string())
-    })?;
+    let stored = config.clone();
+    blocking(&state, move |state| {
+        remember_credentials(&state.stored_credentials, &stored, |c| {
+            auth::store_oauth_credentials(&c.client_id, &c.client_secret, &app_data_dir).map_err(|e| e.to_string())
+        })
+    })
+    .await?;
 
     let auth = GmailAuth::new(config.client_id, config.client_secret);
     *state.auth.lock().await = Some(auth);
@@ -469,10 +488,13 @@ fn remember_credentials(
 }
 
 #[tauri::command]
-pub fn get_stored_credentials(app_handle: tauri::AppHandle, state: State<'_, AppState>) -> Result<Option<AuthConfig>, String> {
+pub async fn get_stored_credentials(
+    app_handle: tauri::AppHandle,
+    state: State<'_, AppState>,
+) -> Result<Option<AuthConfig>, String> {
     let app_data_dir = get_app_data_dir(&app_handle)?;
 
-    match auth::get_oauth_credentials(&app_data_dir) {
+    blocking(&state, move |state| match auth::get_oauth_credentials(&app_data_dir) {
         Ok(creds) => {
             let config = AuthConfig { client_id: creds.client_id, client_secret: creds.client_secret };
             *state.stored_credentials.lock().map_err(|_| "Lock error")? = Some(config.clone());
@@ -480,7 +502,8 @@ pub fn get_stored_credentials(app_handle: tauri::AppHandle, state: State<'_, App
         }
         Err(auth::AuthError::NoCredentials) => Ok(None),
         Err(e) => Err(e.to_string()),
-    }
+    })
+    .await
 }
 
 /// Full OAuth flow: opens browser, waits for callback, exchanges code
@@ -646,40 +669,46 @@ async fn get_user_info(access_token: &str) -> Result<UserInfo, String> {
 }
 
 #[tauri::command]
-pub fn get_accounts(state: State<'_, AppState>) -> Result<Vec<Account>, String> {
-    with_db(&state, |db| db.get_accounts().map_err(|e| e.to_string()))
+pub async fn get_accounts(state: State<'_, AppState>) -> Result<Vec<Account>, String> {
+    blocking(&state, |state| with_db(state, |db| db.get_accounts().map_err(|e| e.to_string()))).await
 }
 
 #[tauri::command]
-pub fn delete_account(account_id: String, app_handle: tauri::AppHandle, state: State<'_, AppState>) -> Result<(), String> {
+pub async fn delete_account(account_id: String, app_handle: tauri::AppHandle, state: State<'_, AppState>) -> Result<(), String> {
     let app_data_dir = get_app_data_dir(&app_handle)?;
+    blocking(&state, move |state| delete_account_blocking(&account_id, &app_data_dir, state)).await
+}
 
+fn delete_account_blocking(account_id: &str, app_data_dir: &std::path::Path, state: &AppState) -> Result<(), String> {
     // Delete from database
-    with_db(&state, |db| db.delete_account(&account_id).map_err(|e| e.to_string()))?;
+    with_db(state, |db| db.delete_account(account_id).map_err(|e| e.to_string()))?;
 
     // Delete stored refresh token
-    auth::delete_refresh_token(&account_id, &app_data_dir).map_err(|e| e.to_string())?;
+    auth::delete_refresh_token(account_id, app_data_dir).map_err(|e| e.to_string())?;
 
     // Drop any cached access token for this account
     if let Ok(mut cache) = state.token_cache.lock() {
-        cache.remove(&account_id);
+        cache.remove(account_id);
     }
 
     Ok(())
 }
 
 #[tauri::command]
-pub fn update_account_signature(account_id: String, signature: Option<String>, state: State<'_, AppState>) -> Result<(), String> {
-    with_db(&state, |db| db.update_account_signature(&account_id, signature.as_deref()).map_err(|e| e.to_string()))
+pub async fn update_account_signature(account_id: String, signature: Option<String>, state: State<'_, AppState>) -> Result<(), String> {
+    blocking(&state, move |state| {
+        with_db(state, |db| db.update_account_signature(&account_id, signature.as_deref()).map_err(|e| e.to_string()))
+    })
+    .await
 }
 
 #[tauri::command]
-pub fn get_cards(account_id: String, state: State<'_, AppState>) -> Result<Vec<Card>, String> {
-    with_db(&state, |db| db.get_cards(&account_id).map_err(|e| e.to_string()))
+pub async fn get_cards(account_id: String, state: State<'_, AppState>) -> Result<Vec<Card>, String> {
+    blocking(&state, move |state| with_db(state, |db| db.get_cards(&account_id).map_err(|e| e.to_string()))).await
 }
 
 #[tauri::command]
-pub fn create_card(
+pub async fn create_card(
     account_id: String,
     name: String,
     query: String,
@@ -688,7 +717,7 @@ pub fn create_card(
     card_type: Option<String>,
     state: State<'_, AppState>,
 ) -> Result<Card, String> {
-    change_cards(&state, None, |db| {
+    blocking(&state, move |state| change_cards(state, None, |db| {
         let cards = db.get_cards(&account_id).map_err(|e| e.to_string())?;
         let position = next_card_position(&cards);
 
@@ -702,22 +731,26 @@ pub fn create_card(
         card.group_by = group_by.unwrap_or_else(|| "date".to_string());
         db.insert_card(&card).map_err(|e| e.to_string())?;
         Ok(card)
+    }))
+    .await
+}
+
+#[tauri::command]
+pub async fn update_card(card: Card, state: State<'_, AppState>) -> Result<(), String> {
+    blocking(&state, move |state| change_cards(state, None, |db| db.update_card(&card).map_err(|e| e.to_string()))).await
+}
+
+#[tauri::command]
+pub async fn delete_card(id: String, state: State<'_, AppState>) -> Result<(), String> {
+    blocking(&state, move |state| {
+        change_cards(state, Some(id.as_str()), |db| db.delete_card(&id).map_err(|e| e.to_string()))
     })
+    .await
 }
 
 #[tauri::command]
-pub fn update_card(card: Card, state: State<'_, AppState>) -> Result<(), String> {
-    change_cards(&state, None, |db| db.update_card(&card).map_err(|e| e.to_string()))
-}
-
-#[tauri::command]
-pub fn delete_card(id: String, state: State<'_, AppState>) -> Result<(), String> {
-    change_cards(&state, Some(id.as_str()), |db| db.delete_card(&id).map_err(|e| e.to_string()))
-}
-
-#[tauri::command]
-pub fn reorder_cards(orders: Vec<(String, i32)>, state: State<'_, AppState>) -> Result<(), String> {
-    change_cards(&state, None, |db| db.reorder_cards(&orders).map_err(|e| e.to_string()))
+pub async fn reorder_cards(orders: Vec<(String, i32)>, state: State<'_, AppState>) -> Result<(), String> {
+    blocking(&state, move |state| change_cards(state, None, |db| db.reorder_cards(&orders).map_err(|e| e.to_string()))).await
 }
 
 /// Positions keep gaps after a delete, so count-based numbering can collide
@@ -1176,12 +1209,12 @@ pub struct CachedCardThreads {
 }
 
 #[tauri::command]
-pub fn get_cached_card_threads(
+pub async fn get_cached_card_threads(
     card_id: String,
     state: State<'_, AppState>,
 ) -> Result<Option<CachedCardThreads>, String> {
-    with_db(&state, |db| {
-        match db.get_card_threads(&card_id) {
+    blocking(&state, move |state| {
+        with_db(state, |db| match db.get_card_threads(&card_id) {
             Ok(Some((groups, next_page_token, cached_at))) => Ok(Some(CachedCardThreads {
                 groups,
                 next_page_token,
@@ -1189,26 +1222,30 @@ pub fn get_cached_card_threads(
             })),
             Ok(None) => Ok(None),
             Err(e) => Err(e.to_string()),
-        }
+        })
     })
+    .await
 }
 
 #[tauri::command]
-pub fn save_cached_card_threads(
+pub async fn save_cached_card_threads(
     card_id: String,
     groups: Vec<ThreadGroup>,
     next_page_token: Option<String>,
     state: State<'_, AppState>,
 ) -> Result<(), String> {
-    with_db(&state, |db| {
-        db.save_card_threads(&card_id, &groups, next_page_token.as_deref())
-            .map_err(|e| e.to_string())
+    blocking(&state, move |state| {
+        with_db(state, |db| {
+            db.save_card_threads(&card_id, &groups, next_page_token.as_deref())
+                .map_err(|e| e.to_string())
+        })
     })
+    .await
 }
 
 #[tauri::command]
-pub fn clear_card_cache(card_id: String, state: State<'_, AppState>) -> Result<(), String> {
-    with_db(&state, |db| db.clear_card_cache(&card_id).map_err(|e| e.to_string()))
+pub async fn clear_card_cache(card_id: String, state: State<'_, AppState>) -> Result<(), String> {
+    blocking(&state, move |state| with_db(state, |db| db.clear_card_cache(&card_id).map_err(|e| e.to_string()))).await
 }
 
 #[derive(Debug, Serialize)]
@@ -1218,32 +1255,36 @@ pub struct CachedCardEvents {
 }
 
 #[tauri::command]
-pub fn get_cached_card_events(
+pub async fn get_cached_card_events(
     card_id: String,
     state: State<'_, AppState>,
 ) -> Result<Option<CachedCardEvents>, String> {
-    with_db(&state, |db| {
-        match db.get_card_events(&card_id) {
+    blocking(&state, move |state| {
+        with_db(state, |db| match db.get_card_events(&card_id) {
             Ok(Some((events, cached_at))) => Ok(Some(CachedCardEvents {
                 events,
                 cached_at,
             })),
             Ok(None) => Ok(None),
             Err(e) => Err(e.to_string()),
-        }
+        })
     })
+    .await
 }
 
 #[tauri::command]
-pub fn save_cached_card_events(
+pub async fn save_cached_card_events(
     card_id: String,
     events: Vec<crate::models::GoogleCalendarEvent>,
     state: State<'_, AppState>,
 ) -> Result<(), String> {
-    with_db(&state, |db| {
-        db.save_card_events(&card_id, &events)
-            .map_err(|e| e.to_string())
+    blocking(&state, move |state| {
+        with_db(state, |db| {
+            db.save_card_events(&card_id, &events)
+                .map_err(|e| e.to_string())
+        })
     })
+    .await
 }
 
 #[tauri::command]
@@ -1695,7 +1736,11 @@ fn plan_pull(
 
 /// Pull cards from iCloud and merge with local. Returns true if changes were made.
 #[tauri::command]
-pub fn pull_from_icloud(state: State<'_, AppState>) -> Result<bool, String> {
+pub async fn pull_from_icloud(state: State<'_, AppState>) -> Result<bool, String> {
+    blocking(&state, pull_cards_from_icloud).await
+}
+
+fn pull_cards_from_icloud(state: &AppState) -> Result<bool, String> {
     // Held for the whole merge so a local card change can't push in between
     let icloud = state.icloud.lock().map_err(|_| "Lock error")?;
 
@@ -1735,7 +1780,7 @@ pub fn pull_from_icloud(state: State<'_, AppState>) -> Result<bool, String> {
     };
     icloud.save_record(&merge.record);
     if merge.needs_push {
-        push_cards_to_icloud(&icloud, &state, None);
+        push_cards_to_icloud(&icloud, state, None);
     }
 
     Ok(!(merge.insert.is_empty() && merge.update.is_empty() && merge.delete.is_empty()))
@@ -1947,15 +1992,15 @@ fn reply_context(thread: &crate::gmail::FullThread) -> String {
 }
 
 #[tauri::command]
-pub fn set_gemini_api_key(api_key: String, app_handle: tauri::AppHandle) -> Result<(), String> {
+pub async fn set_gemini_api_key(api_key: String, app_handle: tauri::AppHandle, state: State<'_, AppState>) -> Result<(), String> {
     let app_data_dir = get_app_data_dir(&app_handle)?;
-    auth::store_gemini_api_key(&api_key, &app_data_dir).map_err(|e| e.to_string())
+    blocking(&state, move |_| auth::store_gemini_api_key(&api_key, &app_data_dir).map_err(|e| e.to_string())).await
 }
 
 #[tauri::command]
-pub fn has_gemini_api_key(app_handle: tauri::AppHandle) -> Result<bool, String> {
+pub async fn has_gemini_api_key(app_handle: tauri::AppHandle, state: State<'_, AppState>) -> Result<bool, String> {
     let app_data_dir = get_app_data_dir(&app_handle)?;
-    Ok(auth::get_gemini_api_key(&app_data_dir).is_some())
+    blocking(&state, move |_| Ok(auth::get_gemini_api_key(&app_data_dir).is_some())).await
 }
 
 #[tauri::command]
@@ -2574,6 +2619,26 @@ mod tests {
         assert!(failed.is_err());
         super::remember_credentials(&known, &changed, |_| { writes += 1; Ok(()) }).unwrap();
         assert_eq!(writes, 2, "a failed write is retried");
+    }
+
+    #[test]
+    fn no_command_runs_on_the_main_thread() {
+        // Tauri runs a command declared without `async` on the main thread,
+        // where database, keychain and iCloud calls stall the UI
+        let mut lines = include_str!("commands.rs").lines();
+        while let Some(line) = lines.next() {
+            if line.trim() == "#[tauri::command]" {
+                let signature = lines.next().unwrap_or_default();
+                assert!(signature.trim_start().starts_with("pub async fn"), "{}", signature);
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn blocking_work_runs_off_the_calling_thread() {
+        let caller = std::thread::current().id();
+        let ran_on = super::blocking(&super::AppState::new(), |_| Ok(std::thread::current().id())).await;
+        assert_ne!(ran_on.unwrap(), caller);
     }
 
     #[test]
