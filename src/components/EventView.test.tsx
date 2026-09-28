@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { fireEvent, render, screen } from "@solidjs/testing-library";
 import { EventView } from "./EventView";
 import type { GoogleCalendarEvent } from "../api/tauri";
@@ -80,6 +80,29 @@ describe("EventView keyboard shortcuts", () => {
     expect(props.onReplyOrganizer).not.toHaveBeenCalled();
     expect(screen.getByTitle("Reply All")).toHaveTextContent("⇧R");
     expect(screen.getByTitle("Forward")).toHaveTextContent("F");
+  });
+});
+
+describe("EventView delete", () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  it("asks before deleting from the toolbar or the # and d keys", () => {
+    const confirm = vi.spyOn(window, "confirm").mockReturnValue(false);
+    const props = renderEvent();
+    fireEvent.click(screen.getByTitle("Delete event"));
+    fireEvent.keyDown(document, { key: "#" });
+    fireEvent.keyDown(document, { key: "d" });
+    expect(confirm).toHaveBeenCalledTimes(3);
+    expect(confirm).toHaveBeenCalledWith(expect.stringContaining("Standup"));
+    expect(props.onDelete).not.toHaveBeenCalled();
+  });
+
+  it("deletes once confirmed", () => {
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+    const props = renderEvent();
+    fireEvent.click(screen.getByTitle("Delete event"));
+    fireEvent.keyDown(document, { key: "d" });
+    expect(props.onDelete).toHaveBeenCalledTimes(2);
   });
 });
 

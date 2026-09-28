@@ -7,7 +7,7 @@ import type { FullThread } from "../api/tauri";
 const b64 = (s: string) =>
   btoa(String.fromCharCode(...new TextEncoder().encode(s))).replace(/\+/g, "-").replace(/\//g, "_");
 
-const makeThread = (messages: { from: string; to?: string; cc?: string; body: string; mimeType?: string }[]): FullThread => ({
+const makeThread = (messages: { from: string; to?: string; cc?: string; replyTo?: string; body: string; mimeType?: string }[]): FullThread => ({
   id: "t1",
   messages: messages.map((m, i) => ({
     id: `m${i}`,
@@ -18,6 +18,7 @@ const makeThread = (messages: { from: string; to?: string; cc?: string; body: st
         { name: "From", value: m.from },
         { name: "To", value: m.to ?? "me@example.com" },
         ...(m.cc ? [{ name: "Cc", value: m.cc }] : []),
+        ...(m.replyTo ? [{ name: "Reply-To", value: m.replyTo }] : []),
         { name: "Subject", value: "Lunch" },
         { name: "Date", value: "Mon, 1 Jan 2024 10:00:00 +0000" },
         { name: "Message-ID", value: `<msg${i}@example.com>` },
@@ -111,6 +112,32 @@ describe("ThreadView keyboard shortcuts", () => {
     const [to, cc] = (props.onReply as any).mock.calls[0];
     expect(to).toBe("bob@example.com");
     expect(cc).toBe("carol@example.com");
+  });
+
+  it("replies to every Reply-To address and keeps them out of Cc on reply-all", () => {
+    const { props } = renderThread({
+      thread: makeThread([{
+        from: "Bot <bot@example.com>",
+        replyTo: '"Team, Support" <support@example.com>, Ops <ops@example.com>',
+        to: "me@example.com, ops@example.com",
+        cc: "carol@example.com",
+        body: "ticket",
+      }]),
+      focusedMessageIndex: 0,
+    });
+    fireEvent.keyDown(document, { key: "R", shiftKey: true });
+    const [to, cc] = (props.onReply as any).mock.calls[0];
+    expect(to).toBe("support@example.com, ops@example.com");
+    expect(cc).toBe("carol@example.com");
+  });
+
+  it("replies to the sender's address even when an unquoted display name has a comma", () => {
+    const { props } = renderThread({
+      thread: makeThread([{ from: "Doe, John <jd@example.com>", body: "hi" }]),
+      focusedMessageIndex: 0,
+    });
+    fireEvent.keyDown(document, { key: "r" });
+    expect((props.onReply as any).mock.calls[0][0]).toBe("jd@example.com");
   });
 
   it("replies to the original recipients when the message was sent by the current user", () => {

@@ -3,7 +3,7 @@ import DOMPurify from 'dompurify';
 import { DOMPURIFY_CONFIG } from './MessageBody';
 import { openUrl } from '@tauri-apps/plugin-opener';
 import type { GoogleCalendarEvent } from "../api/tauri";
-import { formatCalendarEventDate, getResponseStatusLabel, textOrHtmlToHtml } from "../utils";
+import { confirmEventDelete, formatCalendarEventDate, getResponseStatusLabel, textOrHtmlToHtml } from "../utils";
 import {
   ReplyIcon,
   TrashIcon,
@@ -49,6 +49,10 @@ export const EventView = (props: {
     setTimeout(() => props.onClose(), 200);
   };
 
+  const handleDelete = () => {
+    if (confirmEventDelete(props.event?.title)) props.onDelete();
+  };
+
   // Shortcuts advertised by the toolbar badges (R/J/O/C/E/#) and the actions wheel (R/⇧R/F)
   const handleKeyDown = (e: KeyboardEvent) => {
     const isTyping = isTypingTarget(e.target);
@@ -78,7 +82,7 @@ export const EventView = (props: {
       return;
     }
     if (e.key === 'e' && event.can_edit) { e.preventDefault(); props.onEdit(); return; }
-    if ((e.key === 'd' || e.key === '#') && event.can_edit) { e.preventDefault(); props.onDelete(); return; }
+    if ((e.key === 'd' || e.key === '#') && event.can_edit) { e.preventDefault(); handleDelete(); return; }
   };
 
   onMount(() => document.addEventListener('keydown', handleKeyDown));
@@ -173,7 +177,7 @@ export const EventView = (props: {
 
               <button
                 class="thread-toolbar-btn thread-toolbar-btn-danger"
-                onClick={props.onDelete}
+                onClick={handleDelete}
                 title="Delete event"
               >
                 <TrashIcon />

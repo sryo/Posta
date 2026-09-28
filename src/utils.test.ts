@@ -9,6 +9,7 @@ import {
   formatCalendarEventDate,
   splitEmailList,
   stripHtml,
+  textOrHtmlToHtml,
   truncateMiddle,
   validateEmailList,
 } from "./utils";
@@ -31,6 +32,13 @@ describe("address parsing", () => {
     expect(extractEmail('"Doe, John" <jd@example.com>')).toBe("jd@example.com");
     expect(extractName('"Doe, John" <jd@example.com>')).toBe("Doe, John");
     expect(extractName("plain@example.com")).toBeUndefined();
+  });
+
+  it("takes the address from the final angle brackets when the name has its own", () => {
+    const from = '"Jira <jira@tracker.test>" <noreply@tracker.test>';
+    expect(extractEmail(from)).toBe("noreply@tracker.test");
+    expect(extractName(from)).toBe("Jira <jira@tracker.test>");
+    expect(validateEmailList(from)).toEqual({ valid: true, invalidEmails: [] });
   });
 
   it("does not split on commas inside quoted names", () => {
@@ -204,5 +212,30 @@ describe("formatCalendarEventDate durations", () => {
     expect(formatCalendarEventDate(start, hours(24), false)).toMatch(/2pm \(1d\)$/);
     expect(formatCalendarEventDate(start, hours(72), false)).toMatch(/2pm \(3d\)$/);
     expect(formatCalendarEventDate(start, hours(26), false)).toMatch(/2pm \(1d2h\)$/);
+  });
+});
+
+describe("textOrHtmlToHtml", () => {
+  const renderHtml = (html: string) => {
+    const el = document.createElement("div");
+    el.innerHTML = html;
+    return el;
+  };
+
+  it("keeps the line breaks of plain text that only carries inline links", () => {
+    const el = renderHtml(textOrHtmlToHtml('Join: <a href="https://meet.test/x">call</a>\nAgenda\n- intro'));
+    expect(el.querySelector("a")?.getAttribute("href")).toBe("https://meet.test/x");
+    expect(el.querySelector("[style*='pre-wrap']")).not.toBeNull();
+    expect(el.textContent).toBe("Join: call\nAgenda\n- intro");
+  });
+
+  it("leaves markup that lays out its own lines as is", () => {
+    const html = "<p>One</p>\n<p>Two<br>Three</p>";
+    expect(textOrHtmlToHtml(html)).toBe(html);
+  });
+
+  it("escapes plain text", () => {
+    const el = renderHtml(textOrHtmlToHtml("a <5 min> b\nc"));
+    expect(el.textContent).toBe("a <5 min> b\nc");
   });
 });

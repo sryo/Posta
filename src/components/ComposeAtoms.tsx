@@ -1,3 +1,4 @@
+import { onCleanup } from "solid-js";
 import { CloseIcon } from "./Icons";
 
 // Shared compose components
@@ -18,7 +19,11 @@ export const ComposeTextarea = (props: {
       value={props.value}
       onInput={(e) => props.onChange(e.currentTarget.value)}
       disabled={props.disabled}
-      ref={(el) => props.autofocus && setTimeout(() => el?.focus(), 50)}
+      ref={(el) => {
+        if (!props.autofocus) return;
+        const focusTimer = setTimeout(() => el.focus(), 50);
+        onCleanup(() => clearTimeout(focusTimer));
+      }}
       onKeyDown={(e) => {
         if (e.key === 'Escape') {
           props.onCancel();

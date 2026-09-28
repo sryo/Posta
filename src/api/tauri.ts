@@ -21,7 +21,7 @@ export interface Card {
   card_type: "email" | "calendar";
 }
 
-export interface AuthConfig {
+interface AuthConfig {
   client_id: string;
   client_secret: string;
 }
@@ -47,7 +47,7 @@ export interface Attachment {
   content_id: string | null; // Content-ID for inline images (cid: references)
 }
 
-export interface CalendarEvent {
+interface CalendarEvent {
   uid: string | null;
   title: string;
   start_time: number; // Unix timestamp in milliseconds
@@ -81,7 +81,7 @@ export interface ThreadGroup {
   threads: Thread[];
 }
 
-export interface SearchResult {
+interface SearchResult {
   groups: ThreadGroup[];
   next_page_token: string | null;
   has_more: boolean;
@@ -95,7 +95,7 @@ export async function configureAuth(config: AuthConfig): Promise<void> {
   return invoke("configure_auth", { config });
 }
 
-export interface StoredCredentials {
+interface StoredCredentials {
   client_id: string;
   client_secret: string;
 }
@@ -155,7 +155,7 @@ export async function fetchThreadsPaginated(
   return invoke("fetch_threads_paginated", { accountId, cardId, pageToken });
 }
 
-export interface IncrementalSyncResult {
+interface IncrementalSyncResult {
   modified_threads: Thread[];
   deleted_thread_ids: string[];
   new_history_id: string;
@@ -208,7 +208,7 @@ export interface MessagePart {
   parts?: MessagePart[];
 }
 
-export interface MessagePayload {
+interface MessagePayload {
   headers?: Header[];
   body?: MessageBody;
   parts?: MessagePart[];
@@ -226,7 +226,7 @@ export interface FullMessage {
   reaction?: MessageReaction | null;
 }
 
-export interface MessageReaction {
+interface MessageReaction {
   emoji: string;
   from_addr: string;
   // Message-ID header of the message reacted to
@@ -283,7 +283,7 @@ export async function replyToThread(
 
 // Cache operations
 
-export interface CachedCardThreads {
+interface CachedCardThreads {
   groups: ThreadGroup[];
   next_page_token: string | null;
   cached_at: number;
@@ -305,7 +305,7 @@ export async function clearCardCache(cardId: string): Promise<void> {
   return invoke("clear_card_cache", { cardId });
 }
 
-export interface CachedCardEvents {
+interface CachedCardEvents {
   events: GoogleCalendarEvent[];
   cached_at: number;
 }
@@ -419,7 +419,7 @@ export async function fetchContacts(accountId: string): Promise<Contact[]> {
 
 // Google Calendar API
 
-export interface GoogleCalendarEventAttendee {
+interface GoogleCalendarEventAttendee {
   email: string;
   display_name: string | null;
   response_status: string | null;
@@ -446,7 +446,7 @@ export interface GoogleCalendarEvent {
   can_edit: boolean; // whether the current user can edit this event
 }
 
-export interface CalendarInfo {
+interface CalendarInfo {
   id: string;
   name: string;
   is_primary: boolean;

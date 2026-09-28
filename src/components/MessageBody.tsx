@@ -8,10 +8,13 @@ const DOMPURIFY_CONFIG = {
   ALLOWED_TAGS: [
     'p', 'br', 'div', 'span', 'a', 'b', 'i', 'u', 'strong', 'em',
     'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'ul', 'ol', 'li', 'blockquote',
-    'table', 'thead', 'tbody', 'tr', 'td', 'th', 'img', 'pre', 'code',
-    'hr', 'sub', 'sup', 'font', 'center'
+    'table', 'thead', 'tbody', 'tfoot', 'caption', 'colgroup', 'col', 'tr', 'td', 'th',
+    'img', 'pre', 'code', 'hr', 'sub', 'sup', 'font', 'center', 'small', 's', 'strike'
   ],
-  ALLOWED_ATTR: ['href', 'src', 'alt', 'title', 'style', 'class', 'target', 'width', 'height', 'color', 'size', 'face'],
+  ALLOWED_ATTR: [
+    'href', 'src', 'alt', 'title', 'style', 'class', 'target', 'width', 'height', 'color', 'size', 'face',
+    'colspan', 'rowspan', 'align', 'valign', 'bgcolor', 'border', 'cellpadding', 'cellspacing'
+  ],
   ALLOW_DATA_ATTR: false,
   FORBID_TAGS: ['script', 'iframe', 'object', 'embed', 'form', 'input', 'button'],
   FORBID_ATTR: ['onerror', 'onload', 'onclick', 'onmouseover']

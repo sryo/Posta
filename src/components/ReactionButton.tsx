@@ -5,7 +5,6 @@ import { EmojiPicker } from "./EmojiPicker";
 
 interface ReactionButtonProps {
   onSelect: (emoji: string) => void;
-  disabled?: boolean;
   sending?: boolean;
 }
 
@@ -18,11 +17,9 @@ export const ReactionButton = (props: ReactionButtonProps) => {
         class="add-reaction-btn"
         onClick={(e) => {
           e.stopPropagation();
-          if (!props.disabled && !props.sending) {
-            setOpen(!open());
-          }
+          if (!props.sending) setOpen(!open());
         }}
-        disabled={props.disabled || props.sending}
+        disabled={props.sending}
         title="Add reaction"
       >
         <svg width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round">

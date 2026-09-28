@@ -54,6 +54,11 @@ export function getResponseStatusLabel(status: string | null | undefined): strin
   }
 }
 
+// Deleting a calendar event has no undo in Posta, unlike trashing a thread
+export function confirmEventDelete(title: string | null | undefined): boolean {
+  return confirm(`Delete "${title || '(No title)'}"? This can't be undone.`);
+}
+
 /**
  * Decode HTML entities like &amp; &#39; etc.
  */
@@ -101,11 +106,14 @@ function plainTextToHtml(text: string): string {
 }
 
 // Free-form text that may be either HTML or plain text (e.g. calendar event
-// descriptions) as HTML: markup is kept as is, plain text is escaped with its
-// line breaks kept
+// descriptions) as HTML: plain text is escaped with its line breaks kept;
+// markup is kept as is, and when it has only inline tags (a link pasted into
+// otherwise plain text) its source line breaks are kept too
 const HTML_TAG = /<\/?(a|b|br|div|em|font|h[1-6]|hr|i|img|li|ol|p|span|strong|table|u|ul)\b[^>]*>/i;
+const LINE_LAYOUT_TAG = /<\/?(br|div|h[1-6]|hr|li|ol|p|table|ul)\b[^>]*>/i;
 export function textOrHtmlToHtml(text: string): string {
-  return HTML_TAG.test(text) ? text : plainTextToHtml(text);
+  if (!HTML_TAG.test(text)) return plainTextToHtml(text);
+  return LINE_LAYOUT_TAG.test(text) ? text : `<div style="white-space: pre-wrap">${text}</div>`;
 }
 
 // Message body as HTML for display: the HTML alternative when present,
@@ -273,7 +281,7 @@ export function getInitial(email: string): string {
  * Extract email address from "Name <email@example.com>" format
  */
 export function extractEmail(fromStr: string): string {
-  const match = fromStr.match(/<([^>]+)>/);
+  const match = fromStr.match(/<([^<>]+)>\s*$/) ?? fromStr.match(/<([^<>]+)>/);
   return match ? match[1] : fromStr;
 }
 
