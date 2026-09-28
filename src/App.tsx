@@ -116,6 +116,7 @@ import { safeGetItem, safeSetItem, safeRemoveItem, safeGetJSON, safeSetJSON } fr
 import { BG_COLORS, GMAIL_OPERATORS, type ActionSettings, type CardColor, type GroupBy } from "./shared/constants";
 import { createUndoableSend } from "./app/undoableSend";
 import { messageBodyHtml } from "./app/messageHtml";
+import { parseStoredWidth } from "./app/storedWidth";
 import { isSessionExpiredError } from "./app/authErrors";
 import { readFilesAsAttachments } from "./app/attachments";
 import { eventTimesFromForm, smartEventDefaults } from "./app/eventForm";
@@ -168,7 +169,7 @@ function App() {
   // Sync status tracking
   const [lastSyncTimes, setLastSyncTimes] = createStore<Record<string, number>>({});
   const [syncErrors, setSyncErrors] = createStore<Record<string, string | null>>({});
-  // Current time signal for reactive relative time displays (updates every 30s)
+  // Ticking clock for relative time displays
   const [currentTime, setCurrentTime] = createSignal(Date.now());
 
   // Google Contacts from People API
@@ -267,7 +268,7 @@ function App() {
   const MIN_CARD_WIDTH = 250;
   const MAX_CARD_WIDTH = 600;
   const [cardWidth, setCardWidth] = createSignal<number>(
-    Math.max(MIN_CARD_WIDTH, Math.min(MAX_CARD_WIDTH, parseInt(safeGetItem("cardWidth") || "320", 10)))
+    parseStoredWidth(safeGetItem("cardWidth"), 320, MIN_CARD_WIDTH, MAX_CARD_WIDTH)
   );
   const snippetLines = 5; // Fixed at 5 lines
 
@@ -277,7 +278,7 @@ function App() {
   const MAX_MESSAGE_WIDTH = 1200;
   const getMaxMessageWidth = () => Math.min(MAX_MESSAGE_WIDTH, window.innerWidth - 96 - 220);
   const [inlineMessageWidth, setInlineMessageWidth] = createSignal<number>(
-    Math.max(MIN_MESSAGE_WIDTH, Math.min(getMaxMessageWidth(), parseInt(safeGetItem("inlineMessageWidth") || "400", 10)))
+    parseStoredWidth(safeGetItem("inlineMessageWidth"), 400, MIN_MESSAGE_WIDTH, getMaxMessageWidth())
   );
 
   function updateInlineMessageWidth(width: number) {
@@ -1115,11 +1116,7 @@ function App() {
   let handleColorSchemeChange: ((e: MediaQueryListEvent) => void) | undefined;
 
   onMount(async () => {
-    // Apply saved card width
-    const savedWidth = safeGetItem("cardWidth");
-    if (savedWidth) {
-      document.documentElement.style.setProperty("--card-width", `${savedWidth}px`);
-    }
+    document.documentElement.style.setProperty("--card-width", `${cardWidth()}px`);
 
     // Apply saved inline message width
     document.documentElement.style.setProperty("--inline-message-width", `${inlineMessageWidth()}px`);
@@ -1225,7 +1222,6 @@ function App() {
     }
   });
 
-  // Update currentTime every second to keep relative timestamps fresh
   const timeUpdateInterval = setInterval(() => setCurrentTime(Date.now()), 15000);
 
   onCleanup(() => {
