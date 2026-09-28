@@ -454,10 +454,14 @@ describe("ThreadView scrolling", () => {
     expect(scroll).toHaveBeenCalledWith({ block: "start" });
 
     // Starring or relabelling reloads the same thread
+    const cardsBefore = Array.from(document.querySelectorAll(".message-card"));
     scroll.mockClear();
     setThread(makeThread(messages));
     await nextFrame();
     expect(scroll).not.toHaveBeenCalled();
+    // ...whose messages are unchanged, so their rows (and any text selection) stay
+    expect(Array.from(document.querySelectorAll(".message-card"))).toEqual(cardsBefore);
+    expect(cardsBefore.every(card => card.isConnected)).toBe(true);
 
     // A reply arriving does bring the newest message into view
     setThread(makeThread([...messages, { from: "Carol <carol@example.com>", body: "third" }]));

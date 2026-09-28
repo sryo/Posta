@@ -125,6 +125,21 @@ export const ThreadView = (props: {
     setTimeout(() => props.onClose(), 200); // Match animation duration
   };
 
+  // Gmail messages never change content under the same id (a draft edit gets
+  // a new id), so a reloaded thread reuses the loaded message objects and
+  // <For> keeps their rendered rows instead of rebuilding every body
+  let loadedById = new Map<string, FullMessage>();
+  const messages = createMemo(() => {
+    const next = new Map<string, FullMessage>();
+    const list = (props.thread?.messages ?? []).map(m => {
+      const kept = loadedById.get(m.id) ?? m;
+      next.set(m.id, kept);
+      return kept;
+    });
+    loadedById = next;
+    return list;
+  });
+
   // Scroll to the newest message when the thread loads or gains a message.
   // Actions such as star or a label change reload the same thread, and must
   // not pull the reader away from an earlier message.
@@ -397,7 +412,7 @@ export const ThreadView = (props: {
 
         <Show when={props.thread}>
           <div class="messages-list">
-            <For each={props.thread!.messages}>
+            <For each={messages()}>
               {(msg, index) => {
                 const headers = msg.payload?.headers || [];
                 const from = findHeader(headers, 'From') || 'Unknown';
