@@ -174,6 +174,15 @@ async fn a_request_the_server_never_answers_fails_instead_of_hanging() {
     assert!(err.contains("timed out"), "{}", err);
 }
 
+#[test]
+fn the_client_every_command_uses_has_the_timeouts() {
+    // The timeout tests above use their own short-timeout client; this pins
+    // that the shared one is built the same way
+    let config = format!("{:?}", GmailClient::new("token".into()).client);
+    assert!(config.contains(&format!("read_timeout: {:?}", READ_TIMEOUT)), "{}", config);
+    assert!(config.contains(&format!("{:?}", REQUEST_TIMEOUT)), "{}", config);
+}
+
 #[tokio::test]
 async fn a_response_body_that_stops_arriving_reads_as_a_connection_problem() {
     let sent = r#"{"id":"t1","messages":[{"id":"m1","#.to_string();
