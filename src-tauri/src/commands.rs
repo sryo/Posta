@@ -184,16 +184,47 @@ struct SyncRecord {
     seen_backup: bool,
 }
 
+/// Where the card backup is kept
+trait CardBackupStore: Send {
+    fn load_cards(&self) -> Result<Option<Vec<Card>>, String>;
+    fn load_account_mappings(&self) -> Result<Option<HashMap<String, String>>, String>;
+    fn sync_cards(&self, cards: &[Card]) -> Result<(), String>;
+    fn sync_account_mappings(&self, mappings: &HashMap<String, String>) -> Result<(), String>;
+}
+
+impl CardBackupStore for ICloudKVStore {
+    fn load_cards(&self) -> Result<Option<Vec<Card>>, String> {
+        ICloudKVStore::load_cards(self)
+    }
+
+    fn load_account_mappings(&self) -> Result<Option<HashMap<String, String>>, String> {
+        ICloudKVStore::load_account_mappings(self)
+    }
+
+    fn sync_cards(&self, cards: &[Card]) -> Result<(), String> {
+        ICloudKVStore::sync_cards(self, cards)
+    }
+
+    fn sync_account_mappings(&self, mappings: &HashMap<String, String>) -> Result<(), String> {
+        ICloudKVStore::sync_account_mappings(self, mappings)
+    }
+}
+
 /// The iCloud card backup plus this device's `SyncRecord`
 pub struct ICloudSync {
-    store: ICloudKVStore,
+    /// None in debug builds: a signed debug bundle would otherwise read the
+    /// installed app's backup, whose card ids it shares, and its deletions
+    /// would reach the user's real layout on every Mac
+    store: Option<Box<dyn CardBackupStore>>,
     /// Where the `SyncRecord` lives; set once the app data dir is known
     record_path: Option<std::path::PathBuf>,
 }
 
 impl ICloudSync {
     fn new() -> Self {
-        Self { store: ICloudKVStore::new(), record_path: None }
+        let store: Option<Box<dyn CardBackupStore>> =
+            if cfg!(debug_assertions) { None } else { Some(Box::new(ICloudKVStore::new())) };
+        Self { store, record_path: None }
     }
 
     /// A missing or unreadable record only loses the change tracking, so
@@ -216,9 +247,11 @@ impl ICloudSync {
         }
     }
 
+    /// Ok(None) when the store holds nothing, or there is no store
     fn load_backup(&self) -> Result<Option<Backup>, String> {
-        let cards = self.store.load_cards()?;
-        let mappings = self.store.load_account_mappings()?;
+        let Some(store) = &self.store else { return Ok(None) };
+        let cards = store.load_cards()?;
+        let mappings = store.load_account_mappings()?;
         Ok(Backup::from_store(cards, mappings))
     }
 }
@@ -375,17 +408,18 @@ fn push_cards_to_icloud(icloud: &ICloudSync, state: &AppState, deleted_card: Opt
         (accounts, cards)
     };
 
+    let Some(store) = &icloud.store else { return };
     let Some(backup) = backup_to_push_onto(icloud.load_backup(), &mut record) else {
         return;
     };
     let Some((backup, new_record)) = plan_push(&accounts, local_cards, backup, &record, now_ms()) else {
         return;
     };
-    if let Err(e) = icloud.store.sync_account_mappings(&backup.mappings()) {
+    if let Err(e) = store.sync_account_mappings(&backup.mappings()) {
         tracing::warn!("iCloud account mapping sync failed: {}", e);
         return;
     }
-    match icloud.store.sync_cards(&backup.cards) {
+    match store.sync_cards(&backup.cards) {
         Ok(()) => icloud.save_record(&new_record),
         Err(e) => tracing::warn!("iCloud card sync failed: {}", e),
     }
@@ -2762,6 +2796,126 @@ mod tests {
         assert!(db.get_card_threads("deleted").unwrap().is_none());
         assert!(db.get_card_events("deleted").unwrap().is_none());
         drop(guard);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// In-memory card backup; `readable` false models an iCloud store that
+    /// errors on every read
+    #[derive(Default)]
+    struct FakeBackup {
+        cards: Option<Vec<Card>>,
+        mappings: Option<HashMap<String, String>>,
+        unreadable: bool,
+    }
+
+    #[derive(Clone, Default)]
+    struct FakeStore(Arc<std::sync::Mutex<FakeBackup>>);
+
+    impl super::CardBackupStore for FakeStore {
+        fn load_cards(&self) -> Result<Option<Vec<Card>>, String> {
+            let b = self.0.lock().unwrap();
+            if b.unreadable { Err("unreadable".into()) } else { Ok(b.cards.clone()) }
+        }
+
+        fn load_account_mappings(&self) -> Result<Option<HashMap<String, String>>, String> {
+            let b = self.0.lock().unwrap();
+            if b.unreadable { Err("unreadable".into()) } else { Ok(b.mappings.clone()) }
+        }
+
+        fn sync_cards(&self, cards: &[Card]) -> Result<(), String> {
+            self.0.lock().unwrap().cards = Some(cards.to_vec());
+            Ok(())
+        }
+
+        fn sync_account_mappings(&self, mappings: &HashMap<String, String>) -> Result<(), String> {
+            self.0.lock().unwrap().mappings = Some(mappings.clone());
+            Ok(())
+        }
+    }
+
+    impl FakeStore {
+        fn backup(&self) -> Backup {
+            let b = self.0.lock().unwrap();
+            Backup::from_store(b.cards.clone(), b.mappings.clone()).unwrap_or_default()
+        }
+    }
+
+    /// App state over a scratch database holding `cards` of account a1, with
+    /// an iCloud backup holding the same cards and a record of having synced them
+    fn synced_state(dir: &std::path::Path, cards: &[Card]) -> (super::AppState, FakeStore) {
+        let state = super::AppState::new();
+        let db = super::open_database(&dir.join("posta.db")).unwrap();
+        db.insert_account(&account("a1", "me@x.com")).unwrap();
+        for card in cards {
+            db.insert_card(card).unwrap();
+        }
+        *state.db.lock().unwrap() = Some(db);
+
+        let store = FakeStore::default();
+        store.0.lock().unwrap().cards = Some(cards.to_vec());
+        store.0.lock().unwrap().mappings = Some(mappings(&[("a1", "me@x.com")]));
+        {
+            let mut icloud = state.icloud.lock().unwrap();
+            icloud.store = Some(Box::new(store.clone()));
+            icloud.record_path = Some(dir.join("icloud-card-sync.json"));
+            icloud.save_record(&synced(cards));
+        }
+        (state, store)
+    }
+
+    fn sorted_ids(cards: &[Card]) -> Vec<&str> {
+        let mut ids = ids(cards);
+        ids.sort();
+        ids
+    }
+
+    fn local_card_ids(state: &super::AppState) -> Vec<String> {
+        let guard = state.db.lock().unwrap();
+        let mut ids: Vec<String> = guard.as_ref().unwrap().get_cards("a1").unwrap().into_iter().map(|c| c.id).collect();
+        ids.sort();
+        ids
+    }
+
+    #[cfg(debug_assertions)]
+    #[test]
+    fn debug_builds_leave_the_installed_apps_icloud_backup_alone() {
+        let icloud = super::ICloudSync::new();
+        assert!(icloud.store.is_none());
+        assert_eq!(icloud.load_backup(), Ok(None));
+    }
+
+    #[test]
+    fn deleting_a_card_tombstones_it_in_icloud() {
+        let dir = scratch_dir();
+        let (keep, gone) = (owned_card("keep", "a1"), owned_card("gone", "a1"));
+        let (state, store) = synced_state(&dir, &[keep, gone]);
+
+        super::change_cards(&state, Some("gone"), |db| db.delete_card("gone").map_err(|e| e.to_string())).unwrap();
+
+        assert_eq!(local_card_ids(&state), vec!["keep"]);
+        let pushed = store.backup();
+        assert_eq!(sorted_ids(&pushed.cards), vec!["keep"]);
+        assert!(pushed.tombstones.contains_key("gone"));
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn a_deletion_made_while_icloud_is_unreadable_survives_the_next_pull() {
+        let dir = scratch_dir();
+        let (keep, gone) = (owned_card("keep", "a1"), owned_card("gone", "a1"));
+        let (state, store) = synced_state(&dir, &[keep, gone]);
+
+        store.0.lock().unwrap().unreadable = true;
+        super::change_cards(&state, Some("gone"), |db| db.delete_card("gone").map_err(|e| e.to_string())).unwrap();
+        assert_eq!(sorted_ids(&store.backup().cards), vec!["gone", "keep"], "nothing written while unreadable");
+
+        store.0.lock().unwrap().unreadable = false;
+        super::pull_cards_from_icloud(&state).unwrap();
+
+        assert_eq!(local_card_ids(&state), vec!["keep"]);
+        let pushed = store.backup();
+        assert_eq!(sorted_ids(&pushed.cards), vec!["keep"]);
+        assert!(pushed.tombstones.contains_key("gone"));
         std::fs::remove_dir_all(dir).unwrap();
     }
 
