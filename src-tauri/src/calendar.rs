@@ -803,7 +803,7 @@ impl CalendarClient {
         Ok(index.and_then(|i| attendees[i].response_status.clone()))
     }
 
-    /// Send RSVP response to a calendar event via Google Calendar API
+    /// Answer an invite found by iCalUID (an email invite)
     /// status should be "accepted", "tentative", or "declined"
     pub async fn rsvp_calendar_event(
         &self,
@@ -811,27 +811,44 @@ impl CalendarClient {
         event_uid: &str,
         status: &str,
     ) -> Result<(), String> {
-        // First, find the event by iCalUID
         let (calendar_id, event) = self
             .find_event_by_ical_uid(event_uid, true)
             .await?
             .ok_or_else(|| "Calendar event not found".to_string())?;
+        let on_primary = calendar_id == "primary";
+        self.patch_rsvp(&calendar_id, event, user_email, status, on_primary).await
+    }
 
-        let event_id = &event.id;
+    /// Answer an event already listed from one of the user's calendars. Its
+    /// id may be one occurrence of a series or come from another calendar
+    /// system, so it is addressed directly rather than by iCalUID.
+    pub async fn rsvp_event(
+        &self,
+        user_email: &str,
+        calendar_id: &str,
+        event_id: &str,
+        status: &str,
+    ) -> Result<(), String> {
+        let event = self.event_people(calendar_id, event_id).await?;
+        // A primary calendar's id is the account's address
+        let on_primary = calendar_id == "primary" || calendar_id.eq_ignore_ascii_case(user_email);
+        self.patch_rsvp(calendar_id, event, user_email, status, on_primary).await
+    }
 
-        let attendees = with_rsvp(
-            event.attendees.clone().unwrap_or_default(),
-            user_email,
-            status,
-            calendar_id == "primary",
-        );
-
-        // Patch the event with updated attendees
+    async fn patch_rsvp(
+        &self,
+        calendar_id: &str,
+        event: CalEventSearchItem,
+        user_email: &str,
+        status: &str,
+        on_primary: bool,
+    ) -> Result<(), String> {
+        let attendees = with_rsvp(event.attendees.unwrap_or_default(), user_email, status, on_primary);
         let patch_url = format!(
             "{}/calendars/{}/events/{}?sendUpdates=all",
             self.api_base,
-            urlencoding::encode(&calendar_id),
-            urlencoding::encode(event_id)
+            urlencoding::encode(calendar_id),
+            urlencoding::encode(&event.id)
         );
 
         #[derive(Serialize)]
@@ -1726,6 +1743,43 @@ mod tests {
                 { "id": "guest-7", "displayName": "No address", "responseStatus": "accepted" },
             ])
         );
+    }
+
+    #[tokio::test]
+    async fn rsvp_to_a_listed_event_patches_that_event_without_an_ical_uid_lookup() {
+        // Cards list single occurrences ("abc_20260928T150000Z") and invites
+        // from other systems, whose ids aren't iCalUIDs; the card already
+        // knows which calendar and event it shows
+        let server = StubServer::start(|method, target| match method {
+            "GET" if target.starts_with("/calendars/me%40x.com/events/abc_20260928T150000Z?") => (
+                200,
+                serde_json::json!({ "id": "abc_20260928T150000Z", "attendees": [
+                    { "email": "boss@x.com", "organizer": true, "responseStatus": "accepted" },
+                    { "email": "me.alias@x.com", "self": true, "responseStatus": "needsAction" },
+                ] })
+                .to_string(),
+            ),
+            "PATCH" => (200, "{}".to_string()),
+            _ => (404, "{}".to_string()),
+        })
+        .await;
+        server
+            .client()
+            .rsvp_event("me@x.com", "me@x.com", "abc_20260928T150000Z", "tentative")
+            .await
+            .unwrap();
+        let requests = server.requests();
+        assert!(requests.iter().all(|(_, t, _)| !t.contains("iCalUID")), "{requests:?}");
+        let patch = requests.iter().find(|(m, _, _)| m == "PATCH").expect("no PATCH sent");
+        assert_eq!(patch.1, "/calendars/me%40x.com/events/abc_20260928T150000Z?sendUpdates=all");
+        let body: serde_json::Value = serde_json::from_str(&patch.2).unwrap();
+        assert_eq!(body["attendees"][0]["responseStatus"], "accepted");
+        assert_eq!(body["attendees"][1]["responseStatus"], "tentative");
+        assert_eq!(body["attendees"].as_array().unwrap().len(), 2);
+
+        // A missing event is reported, not answered
+        let err = server.client().rsvp_event("me@x.com", "me@x.com", "gone", "accepted").await.unwrap_err();
+        assert!(err.contains("not found"), "{err}");
     }
 
     type Handler = dyn Fn(&str, &str) -> (u16, String) + Send + Sync;
