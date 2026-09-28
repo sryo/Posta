@@ -1938,3 +1938,33 @@ describe("App sign-in flows", () => {
     expect(screen.queryByText("Complete sign-in in your browser...")).not.toBeInTheDocument();
   });
 });
+
+describe("App batch reply closing", () => {
+  async function openBatchReplyWithText() {
+    handlers.get_thread_details = () => ({ id: "t-a", messages: [fullMessage("m1", "Ana <ana@x.com>")] });
+    render(() => <App />);
+    await screen.findByText("Mail for A");
+    fireEvent.keyDown(document, { key: "l" });
+    fireEvent.keyDown(document, { key: "x" });
+    fireEvent.click(await screen.findByTitle("Batch Reply"));
+    const field = await screen.findByPlaceholderText(/^Reply to/);
+    fireEvent.input(field, { target: { value: "A long answer" } });
+    field.blur();
+  }
+
+  it("asks before discarding typed replies and keeps them when cancelled", async () => {
+    await openBatchReplyWithText();
+    confirmSpy.mockReturnValue(false);
+    fireEvent.keyDown(document, { key: "Escape" });
+
+    expect(confirmSpy).toHaveBeenCalledWith(expect.stringContaining("1 unsent reply"));
+    expect(screen.getByPlaceholderText(/^Reply to/)).toHaveValue("A long answer");
+  });
+
+  it("closes once the user agrees to discard", async () => {
+    await openBatchReplyWithText();
+    fireEvent.keyDown(document, { key: "Escape" });
+
+    await waitFor(() => expect(screen.queryByPlaceholderText(/^Reply to/)).not.toBeInTheDocument());
+  });
+});

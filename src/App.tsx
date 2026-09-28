@@ -1285,7 +1285,7 @@ function App() {
       } else if (shortcutsHelpOpen()) {
         setShortcutsHelpOpen(false);
       } else if (batchReplyOpen()) {
-        closeBatchReply();
+        dismissBatchReply();
       } else if (composing() && !closingCompose()) {
         closeCompose();
       } else if (queryHelpOpen()) {
@@ -2436,6 +2436,13 @@ function App() {
     setBatchReplyMessages({});
     setBatchReplySending({});
     setBatchReplyAttachments({});
+  }
+
+  // Closing by hand throws away typed replies, so ask first
+  function dismissBatchReply() {
+    const unsent = Object.values(batchReplyMessages()).filter(m => m.trim()).length;
+    if (unsent > 0 && !confirm(`Discard ${unsent} unsent repl${unsent === 1 ? "y" : "ies"}?`)) return;
+    closeBatchReply();
   }
 
   function updateBatchReplyMessage(threadId: string, message: string) {
@@ -4831,7 +4838,7 @@ function App() {
           <div class="thread-floating-bar">
             {/* Row 1: Close + Title */}
             <div class="thread-floating-bar-row">
-              <CloseButton onClick={closeBatchReply} />
+              <CloseButton onClick={dismissBatchReply} />
               <div class="thread-bar-subject">
                 <h2>Batch Reply</h2>
               </div>
@@ -4890,7 +4897,7 @@ function App() {
                         fileInputId={`batch-reply-file-input-${thread.threadId}`}
                         sending={batchReplySending()[thread.threadId]}
                         onSend={() => sendBatchReply(thread.threadId)}
-                        onClose={closeBatchReply}
+                        onClose={dismissBatchReply}
                         onSkip={() => discardBatchReplyThread(thread.threadId)}
                         canSend={!!batchReplyMessages()[thread.threadId]?.trim()}
                         focusBody={batchReplyThreads()[0]?.threadId === thread.threadId}
