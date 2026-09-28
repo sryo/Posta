@@ -1,9 +1,9 @@
 // SQLite cache for offline access
 
-use crate::models::{Account, Card, Thread};
+use crate::models::{Account, Card};
 use rusqlite::{params, Connection, OptionalExtension};
 use std::path::Path;
-use std::sync::{Arc, Mutex};
+use std::sync::Mutex;
 use thiserror::Error;
 
 #[derive(Error, Debug)]
@@ -15,14 +15,14 @@ pub enum CacheError {
 }
 
 pub struct CacheDb {
-    conn: Arc<Mutex<Connection>>,
+    conn: Mutex<Connection>,
 }
 
 impl CacheDb {
     pub fn new(db_path: &Path) -> Result<Self, CacheError> {
         let conn = Connection::open(db_path)?;
         let db = Self {
-            conn: Arc::new(Mutex::new(conn)),
+            conn: Mutex::new(conn),
         };
         db.run_migrations()?;
         db.run_column_migrations()?;
@@ -61,21 +61,12 @@ impl CacheDb {
                 cached_at INTEGER NOT NULL
             );
 
-            CREATE TABLE IF NOT EXISTS messages (
-                gmail_msg_id TEXT PRIMARY KEY,
-                thread_id TEXT NOT NULL,
-                from_addr TEXT,
-                to_addrs TEXT,
-                date INTEGER NOT NULL,
-                body_text TEXT,
-                body_html TEXT,
-                cached_at INTEGER NOT NULL
-            );
+            -- Never populated by any release
+            DROP TABLE IF EXISTS messages;
 
             CREATE INDEX IF NOT EXISTS idx_cards_account ON cards(account_id);
             CREATE INDEX IF NOT EXISTS idx_threads_account ON threads(account_id);
             CREATE INDEX IF NOT EXISTS idx_threads_date ON threads(last_message_date DESC);
-            CREATE INDEX IF NOT EXISTS idx_messages_thread ON messages(thread_id);
 
             -- Card thread cache: stores thread data per card
             CREATE TABLE IF NOT EXISTS card_thread_cache (
@@ -107,15 +98,18 @@ impl CacheDb {
 
     fn run_column_migrations(&self) -> Result<(), CacheError> {
         let conn = self.conn.lock().map_err(|_| CacheError::Lock)?;
-        // Add picture column if it doesn't exist (for existing databases)
-        let _ = conn.execute("ALTER TABLE accounts ADD COLUMN picture TEXT", []);
-        // Add color and group_by columns to cards
-        let _ = conn.execute("ALTER TABLE cards ADD COLUMN color TEXT", []);
-        let _ = conn.execute("ALTER TABLE cards ADD COLUMN group_by TEXT NOT NULL DEFAULT 'date'", []);
-        // Add card_type column to cards
-        let _ = conn.execute("ALTER TABLE cards ADD COLUMN card_type TEXT NOT NULL DEFAULT 'email'", []);
-        // Add signature column to accounts
-        let _ = conn.execute("ALTER TABLE accounts ADD COLUMN signature TEXT", []);
+        const COLUMNS: &[(&str, &str, &str)] = &[
+            ("accounts", "picture", "TEXT"),
+            ("accounts", "signature", "TEXT"),
+            ("cards", "color", "TEXT"),
+            ("cards", "group_by", "TEXT NOT NULL DEFAULT 'date'"),
+            ("cards", "card_type", "TEXT NOT NULL DEFAULT 'email'"),
+        ];
+        for (table, column, decl) in COLUMNS {
+            if !has_column(&conn, table, column)? {
+                conn.execute(&format!("ALTER TABLE {} ADD COLUMN {} {}", table, column, decl), [])?;
+            }
+        }
         Ok(())
     }
 
@@ -263,38 +257,6 @@ impl CacheDb {
 
     // Thread cache operations
 
-    pub fn cache_threads(&self, threads: &[Thread]) -> Result<(), CacheError> {
-        let mut conn = self.conn.lock().map_err(|_| CacheError::Lock)?;
-        let now = chrono::Utc::now().timestamp();
-
-        let tx = conn.transaction()?;
-        for thread in threads {
-            let date = thread.last_message_date.timestamp();
-            let labels = serde_json::to_string(&thread.labels).unwrap_or_default();
-            let participants = serde_json::to_string(&thread.participants).unwrap_or_default();
-
-            tx.execute(
-                r#"INSERT OR REPLACE INTO threads
-                   (gmail_thread_id, account_id, subject, snippet, last_message_date, unread_count, labels, participants, cached_at)
-                   VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)"#,
-                params![
-                    thread.gmail_thread_id,
-                    thread.account_id,
-                    thread.subject,
-                    thread.snippet,
-                    date,
-                    thread.unread_count,
-                    labels,
-                    participants,
-                    now
-                ],
-            )?;
-        }
-        tx.commit()?;
-
-        Ok(())
-    }
-
     pub fn clear_old_cache(&self, max_age_hours: i64) -> Result<usize, CacheError> {
         let conn = self.conn.lock().map_err(|_| CacheError::Lock)?;
         let cutoff = chrono::Utc::now().timestamp() - (max_age_hours * 3600);
@@ -319,20 +281,6 @@ impl CacheDb {
             params![cutoff],
         )?;
         Ok(thread_count + calendar_count)
-    }
-
-    /// Get threads that should be prioritized for caching (starred, important, recent)
-    pub fn get_priority_thread_ids(&self, account_id: &str, limit: i64) -> Result<Vec<String>, CacheError> {
-        let conn = self.conn.lock().map_err(|_| CacheError::Lock)?;
-        let mut stmt = conn.prepare(
-            "SELECT gmail_thread_id FROM threads
-             WHERE account_id = ?1
-             AND (labels LIKE '%STARRED%' OR labels LIKE '%IMPORTANT%')
-             ORDER BY last_message_date DESC
-             LIMIT ?2"
-        )?;
-        let rows = stmt.query_map(params![account_id, limit], |row| row.get(0))?;
-        rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
     }
 
     // Card thread cache operations
@@ -386,13 +334,6 @@ impl CacheDb {
         conn.execute("DELETE FROM card_thread_cache WHERE card_id = ?1", params![card_id])?;
         conn.execute("DELETE FROM card_calendar_cache WHERE card_id = ?1", params![card_id])?;
         Ok(())
-    }
-
-    pub fn clear_all_card_caches(&self) -> Result<usize, CacheError> {
-        let conn = self.conn.lock().map_err(|_| CacheError::Lock)?;
-        let count_threads = conn.execute("DELETE FROM card_thread_cache", [])?;
-        let count_calendar = conn.execute("DELETE FROM card_calendar_cache", [])?;
-        Ok(count_threads + count_calendar)
     }
 
     // Card calendar cache operations
@@ -465,6 +406,17 @@ impl CacheDb {
     }
 }
 
+fn has_column(conn: &Connection, table: &str, column: &str) -> Result<bool, CacheError> {
+    let mut stmt = conn.prepare(&format!("PRAGMA table_info({})", table))?;
+    let names = stmt.query_map([], |row| row.get::<_, String>(1))?;
+    for name in names {
+        if name? == column {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -489,6 +441,7 @@ mod tests {
                 "CREATE TABLE accounts (id TEXT PRIMARY KEY, email TEXT NOT NULL UNIQUE, refresh_token_ref TEXT);
                  CREATE TABLE cards (id TEXT PRIMARY KEY, account_id TEXT NOT NULL, name TEXT NOT NULL,
                      query TEXT NOT NULL, position INTEGER NOT NULL DEFAULT 0, collapsed INTEGER NOT NULL DEFAULT 0);
+                 CREATE TABLE messages (gmail_msg_id TEXT PRIMARY KEY);
                  INSERT INTO accounts (id, email) VALUES ('a1', 'me@x.com');
                  INSERT INTO cards (id, account_id, name, query) VALUES ('c1', 'a1', 'Inbox', 'in:inbox');",
             )
@@ -502,6 +455,13 @@ mod tests {
         let cards = db.get_cards("a1").unwrap();
         assert_eq!(cards[0].group_by, "date");
         assert_eq!(cards[0].card_type, "email");
+        let messages_tables: i64 = db
+            .conn
+            .lock()
+            .unwrap()
+            .query_row("SELECT COUNT(*) FROM sqlite_master WHERE name = 'messages'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(messages_tables, 0);
 
         // Reopening an already-migrated database must also succeed
         drop(db);

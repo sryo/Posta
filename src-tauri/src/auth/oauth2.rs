@@ -363,19 +363,6 @@ pub fn get_oauth_credentials(app_data_dir: &Path) -> Result<OAuthCredentials, Au
     Err(AuthError::NoCredentials)
 }
 
-pub fn delete_oauth_credentials(app_data_dir: &Path) -> Result<(), AuthError> {
-    // Delete from keychain if present
-    if let Ok(entry) = keyring::Entry::new(KEYRING_SERVICE, "oauth:credentials") {
-        let _ = entry.delete_credential();
-    }
-
-    // Delete from file storage if present
-    let path = get_credentials_file_path(app_data_dir);
-    let _ = std::fs::remove_file(path);
-
-    Ok(())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
