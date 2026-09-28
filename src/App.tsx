@@ -2643,9 +2643,11 @@ function App() {
   }
 
   function saveCollapsedState(collapsed: Record<string, boolean>) {
-    setCollapsedCards(reconcile(collapsed));
     // The store only holds this account's cards; keep other accounts' entries
-    safeSetJSON("collapsedCards", { ...safeGetJSON<Record<string, boolean>>("collapsedCards", {}), ...collapsed });
+    const stored = safeGetJSON<Record<string, boolean>>("collapsedCards", {});
+    for (const id of Object.keys(collapsedCards)) delete stored[id];
+    setCollapsedCards(reconcile(collapsed));
+    safeSetJSON("collapsedCards", { ...stored, ...collapsed });
   }
 
   function startEditCard(card: Card, e: MouseEvent) {

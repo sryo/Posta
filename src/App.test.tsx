@@ -158,6 +158,31 @@ describe("App presets", () => {
     expect(await screen.findByRole("region", { name: "Inbox email card" })).toBeInTheDocument();
     expect(screen.getByRole("region", { name: "Starred email card" })).toBeInTheDocument();
   });
+
+  it("stays on the preset picker when no card could be created", async () => {
+    signInToEmptyLayout();
+    handlers.create_card = () => { throw new Error("db locked"); };
+    fireEvent.click(await screen.findByText("Sign in with Google"));
+    fireEvent.click((await screen.findByText("Traditional", {}, { timeout: 3000 })).closest(".preset-option")!);
+
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith("create_card", expect.anything()));
+    await new Promise(r => setTimeout(r, 50));
+    expect(screen.getByText("How do you email?")).toBeInTheDocument();
+  });
+});
+
+describe("App grouping", () => {
+  it("groups a card by label names once the label list loads", async () => {
+    cardsByAccount.a = [{ ...card("card-a", "a", "Alpha"), group_by: "label" }];
+    threadsByCard["card-a"] = [{ ...thread("t-a", "Mail for A"), labels: ["INBOX", "IMPORTANT", "Label_7"] }];
+    handlers.list_labels = () => [
+      { id: "Label_7", name: "Receipts", messageListVisibility: null, labelListVisibility: null, label_type: "user" },
+    ];
+    render(() => <App />);
+
+    expect(await screen.findByText("Receipts")).toBeInTheDocument();
+    expect(screen.queryByText("Label_7")).not.toBeInTheDocument();
+  });
 });
 
 describe("App accounts", () => {
@@ -176,6 +201,16 @@ describe("App accounts", () => {
 
     expect(await screen.findByText("Mail for B")).toBeInTheDocument();
     await waitFor(() => expect(screen.queryByText("Mail for A")).not.toBeInTheDocument());
+  });
+
+  it("collapsing a card keeps other accounts' collapsed cards", async () => {
+    localStorage.setItem("collapsedCards", JSON.stringify({ "card-b": true }));
+    render(() => <App />);
+    await screen.findByText("Mail for A");
+
+    fireEvent.click(screen.getByText("Alpha"));
+
+    await waitFor(() => expect(JSON.parse(localStorage.getItem("collapsedCards")!)).toEqual({ "card-a": true, "card-b": true }));
   });
 
   it("signing out keeps the remaining account's collapsed cards collapsed", async () => {
