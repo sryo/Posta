@@ -933,7 +933,9 @@ describe("App calendar", () => {
     render(() => <App />);
     fireEvent.click(await screen.findByText("Planning"));
     invoke.mockClear();
+    const confirm = vi.spyOn(window, "confirm").mockReturnValue(true);
     fireEvent.keyDown(document, { key: "d" });
+    confirm.mockRestore();
 
     await waitFor(() => expect(invoke).toHaveBeenCalledWith("save_cached_card_events", {
       cardId: "cal-1", events: [expect.objectContaining({ id: "ev-2" })],
