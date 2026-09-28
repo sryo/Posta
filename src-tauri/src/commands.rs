@@ -6,7 +6,7 @@
 use crate::auth::{self, CallbackServer, GmailAuth};
 use crate::ai::GeminiClient;
 use crate::cache::CacheDb;
-use crate::gmail::{GmailClient, GmailDraft, GmailLabel, SearchResult};
+use crate::gmail::{GmailClient, GmailDraft, GmailLabel, OutgoingMessage, SearchResult};
 use crate::icloud::ICloudKVStore;
 use crate::models::{Account, Card, SendAttachment, ThreadGroup};
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
@@ -829,7 +829,16 @@ pub async fn send_email(
     let access_token = get_access_token(&state, &account_id, &app_data_dir).await?;
     let gmail = GmailClient::new(access_token);
 
-    let result = gmail.send_email(&to, &cc, &bcc, &subject, &body, &attachments, is_html.unwrap_or(false)).await;
+    let message = OutgoingMessage {
+        to: &to,
+        cc: &cc,
+        bcc: &bcc,
+        subject: &subject,
+        body: &body,
+        attachments: &attachments,
+        is_html: is_html.unwrap_or(false),
+    };
+    let result = gmail.send_email(&message).await;
     evict_token_on_auth_error(&state, &account_id, result)
 }
 
@@ -854,7 +863,16 @@ pub async fn reply_to_thread(
     let access_token = get_access_token(&state, &account_id, &app_data_dir).await?;
     let gmail = GmailClient::new(access_token);
 
-    let result = gmail.reply_to_thread(&thread_id, &to, &cc, &bcc, &subject, &body, message_id.as_deref(), &attachments, is_html.unwrap_or(false)).await;
+    let message = OutgoingMessage {
+        to: &to,
+        cc: &cc,
+        bcc: &bcc,
+        subject: &subject,
+        body: &body,
+        attachments: &attachments,
+        is_html: is_html.unwrap_or(false),
+    };
+    let result = gmail.reply_to_thread(&thread_id, message_id.as_deref(), &message).await;
     evict_token_on_auth_error(&state, &account_id, result)
 }
 
@@ -1165,17 +1183,10 @@ pub async fn save_draft(
     let access_token = get_access_token(&state, &account_id, &app_data_dir).await?;
     let gmail = GmailClient::new(access_token);
 
+    let message = OutgoingMessage { to: &to, cc: &cc, bcc: &bcc, subject: &subject, body: &body, ..Default::default() };
     let result = match draft_id {
-        Some(id) => {
-            gmail
-                .update_draft(&id, &to, &cc, &bcc, &subject, &body, thread_id.as_deref(), false)
-                .await
-        }
-        None => {
-            gmail
-                .create_draft(&to, &cc, &bcc, &subject, &body, thread_id.as_deref(), false)
-                .await
-        }
+        Some(id) => gmail.update_draft(&id, &message, thread_id.as_deref()).await,
+        None => gmail.create_draft(&message, thread_id.as_deref()).await,
     };
     evict_token_on_auth_error(&state, &account_id, result)
 }
