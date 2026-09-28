@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { fireEvent, render, screen, waitFor } from "@solidjs/testing-library";
+import { fireEvent, render, screen, waitFor, within } from "@solidjs/testing-library";
 
 type Handler = (args: Record<string, unknown>) => unknown;
 const handlers: Record<string, Handler> = {};
@@ -442,7 +442,12 @@ describe("App expired session", () => {
     handlers.run_oauth_flow = () => { expired = false; return account("a", "a@x.com"); };
     render(() => <App />);
 
-    const signIn = await screen.findByRole("button", { name: "Sign in again" });
+    const banner = await waitFor(() => {
+      const el = document.querySelector(".auth-error");
+      expect(el).not.toBeNull();
+      return el as HTMLElement;
+    });
+    const signIn = within(banner).getByRole("button", { name: "Sign in again" });
     await new Promise(r => setTimeout(r, 1700));
     expect(invoke).not.toHaveBeenCalledWith("delete_account", expect.anything());
 
@@ -450,7 +455,31 @@ describe("App expired session", () => {
 
     await screen.findByText("Mail for A");
     expect(invoke).not.toHaveBeenCalledWith("delete_account", expect.anything());
-    expect(screen.queryByRole("button", { name: "Sign in again" })).not.toBeInTheDocument();
+    expect(screen.queryAllByRole("button", { name: "Sign in again" })).toHaveLength(0);
+  });
+});
+
+describe("App expired session after dismissing the banner", () => {
+  it("still offers to sign in again from the card", async () => {
+    let expired = true;
+    const fetchPage = handlers.fetch_threads_paginated;
+    handlers.fetch_threads_paginated = (args) => {
+      if (expired) throw new Error('Token refresh failed: {"error": "invalid_grant"}');
+      return fetchPage(args);
+    };
+    handlers.run_oauth_flow = () => { expired = false; return account("a", "a@x.com"); };
+    render(() => <App />);
+
+    await screen.findByRole("button", { name: "Dismiss error" });
+    fireEvent.click(screen.getByRole("button", { name: "Dismiss error" }));
+    const cardError = await waitFor(() => {
+      const el = document.querySelector(".card-error");
+      expect(el).not.toBeNull();
+      return el as HTMLElement;
+    });
+    fireEvent.click(within(cardError).getByRole("button", { name: "Sign in again" }));
+
+    await screen.findByText("Mail for A");
   });
 });
 

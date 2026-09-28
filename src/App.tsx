@@ -3996,7 +3996,12 @@ function App() {
                             <div class="card-error">
                               <span class="error-icon">⚠</span>
                               <span class="error-text">{cardErrors[card.id]}</span>
-                              <button class="retry-btn" onClick={(e) => refreshCard(card.id, e)}>Try again</button>
+                              <Show
+                                when={expiredAccountId() && expiredAccountId() === selectedAccount()?.id}
+                                fallback={<button class="retry-btn" onClick={(e) => refreshCard(card.id, e)}>Try again</button>}
+                              >
+                                <button class="retry-btn" onClick={handleReauth}>Sign in again</button>
+                              </Show>
                             </div>
                           </Show>
 
