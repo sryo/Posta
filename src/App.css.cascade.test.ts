@@ -29,4 +29,38 @@ describe("App.css cascade", () => {
     expect(decl("block").get("padding")).toBe("0");
     expect(decl("block").get("background")).toBe("none");
   });
+
+  it("floats the app's error banner below the window drag strip, on its own surface", () => {
+    document.body.innerHTML =
+      '<div class="app"><div class="drag-region"></div><div class="auth-error" id="banner">Oops<button class="btn">×</button></div></div>';
+    const decl = cascadedDeclarations(rules, document.getElementById("banner")!);
+    expect(decl.get("position")).toBe("fixed");
+    // The drag strip sits above everything and swallows clicks in its band.
+    expect(decl.get("top")).toMatch(/var\(--drag-region-height\)/);
+    expect(decl.get("background")).toMatch(/^var\(--bg-/);
+    expect(decl.get("display")).toMatch(/flex/);
+    expect(decl.get("gap")).toBeDefined();
+  });
+
+  it("keeps the sign-in screen's error in the page flow", () => {
+    document.body.innerHTML = '<div class="auth-screen"><p class="auth-error" id="err">Oops</p></div>';
+    const decl = cascadedDeclarations(rules, document.getElementById("err")!);
+    expect(decl.get("position")).toBeUndefined();
+    expect(decl.get("background")).toBeUndefined();
+  });
+
+  it("spaces a settings section's intro hint from its fields, and widens its submit button", () => {
+    document.body.innerHTML = `<div class="settings-section">
+        <div class="settings-section-title">Google API</div>
+        <p class="settings-hint" id="intro">Intro</p>
+        <div class="settings-form-group"></div>
+        <p class="settings-hint" id="note">Note</p>
+        <button class="btn btn-primary" id="submit">Connect</button>
+      </div>`;
+    const decl = (id: string) => cascadedDeclarations(rules, document.getElementById(id)!);
+    expect(decl("intro").get("margin-bottom")).toBe("var(--space-lg)");
+    expect(decl("note").get("margin-bottom")).toBeUndefined();
+    expect(decl("submit").get("width")).toBe("100%");
+    expect(decl("submit").get("margin-top")).toBe("var(--space-lg)");
+  });
 });
