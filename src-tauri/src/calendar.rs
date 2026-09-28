@@ -2,6 +2,7 @@
 
 use chrono::{DateTime, Duration, Local, NaiveDate, TimeZone, Utc};
 use chrono_tz::Tz;
+use futures::{FutureExt, StreamExt};
 use reqwest::StatusCode;
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use std::collections::HashMap;
@@ -14,6 +15,9 @@ const EVENTS_PAGE_SIZE: i32 = 250;
 const PER_CALENDAR_EVENT_CAP: usize = 500;
 const CALENDAR_LIST_PAGE_SIZE: i32 = 250;
 const CALENDAR_LIST_CAP: usize = 1000;
+/// Secondary calendars searched at once per invite lookup; several invite
+/// rows look up at the same time, and Google rate-limits per user
+const INVITE_SEARCH_CONCURRENCY: usize = 4;
 const CALENDAR_LIST_TTL: std::time::Duration = std::time::Duration::from_secs(120);
 const REQUEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 
@@ -712,20 +716,21 @@ impl CalendarClient {
                     && (!writable_only || c.access_role == "owner" || c.access_role == "writer")
             })
             .collect();
-        let results = futures::future::join_all(
-            candidates.iter().map(|cal| self.search_calendar_for_ical_uid(&cal.id, event_uid)),
-        )
-        .await;
-
-        let mut found = None;
-        for (cal, result) in candidates.into_iter().zip(results) {
+        // Results arrive in calendar order; stopping at the first hit drops
+        // the searches still in flight and never starts the rest
+        let searches: Vec<_> = candidates
+            .into_iter()
+            .map(|cal| async move { (cal, self.search_calendar_for_ical_uid(&cal.id, event_uid).await) }.boxed())
+            .collect();
+        let mut results = futures::stream::iter(searches).buffered(INVITE_SEARCH_CONCURRENCY);
+        while let Some((cal, result)) = results.next().await {
             match result {
-                Ok(Some(item)) if found.is_none() => found = Some((cal.id.clone(), item)),
-                Ok(_) => {}
+                Ok(Some(item)) => return Ok(Some((cal.id.clone(), item))),
+                Ok(None) => {}
                 Err(e) => tracing::warn!("iCalUID lookup failed for calendar {}: {}", cal.id, e),
             }
         }
-        Ok(found)
+        Ok(None)
     }
 
     /// The account's calendar list, cached briefly: every invite row looks
@@ -1813,6 +1818,18 @@ mod tests {
         .await
         .expect("secondary calendars were searched one at a time");
         assert_eq!(status.as_deref(), Some("accepted"));
+    }
+
+    #[tokio::test]
+    async fn invite_lookup_stops_at_the_first_calendar_holding_the_invite() {
+        // Accounts can subscribe to dozens of calendars; searching all of
+        // them at once for every invite row runs into Google's rate limits
+        let calendars: Vec<_> = (0..20).map(|i| calendar_with_role(&format!("cal{i:02}"), "reader")).collect();
+        let server = StubServer::start(invite_lookup_stub(serde_json::json!(calendars), "cal00")).await;
+        assert_eq!(server.client().get_calendar_event_status("me@x.com", "uid-1").await.as_deref(), Some("accepted"));
+        let searched = searched_calendars(&server);
+        assert_eq!(searched[0], "primary");
+        assert!(searched.len() <= 1 + INVITE_SEARCH_CONCURRENCY, "{searched:?}");
     }
 
     #[tokio::test]
