@@ -3,7 +3,7 @@
 use std::io::{BufRead, BufReader, Write};
 use std::net::{Ipv4Addr, Ipv6Addr, TcpListener, TcpStream};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::sync::{mpsc, Arc};
 use std::thread;
 use std::time::Duration;
 
@@ -72,6 +72,9 @@ impl CallbackServer {
     ) -> Result<CallbackResult, String> {
         let start = std::time::Instant::now();
         let timeout = Duration::from_secs(timeout_secs);
+        // Each connection is read on its own thread so an idle browser
+        // preconnect can't hold up a redirect arriving on another socket
+        let (outcomes, results) = mpsc::channel();
 
         loop {
             if cancel.load(Ordering::SeqCst) {
@@ -81,24 +84,25 @@ impl CallbackServer {
                 return Err("Timeout waiting for OAuth callback".to_string());
             }
 
-            let mut accepted = false;
             for listener in &self.listeners {
                 match listener.accept() {
                     Ok((stream, _)) => {
-                        accepted = true;
-                        match handle_connection(stream, expected_state) {
-                            ConnectionOutcome::Success(result) => return Ok(result),
-                            ConnectionOutcome::OAuthError(error) => return Err(error),
-                            // Preconnects, unrelated requests, foreign state: keep listening
-                            ConnectionOutcome::Ignored => {}
-                        }
+                        let outcomes = outcomes.clone();
+                        let expected_state = expected_state.to_string();
+                        thread::spawn(move || {
+                            let _ = outcomes.send(handle_connection(stream, &expected_state));
+                        });
                     }
                     Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {}
                     Err(e) => return Err(format!("Accept error: {}", e)),
                 }
             }
-            if !accepted {
-                thread::sleep(Duration::from_millis(100));
+
+            match results.recv_timeout(Duration::from_millis(50)) {
+                Ok(ConnectionOutcome::Success(result)) => return Ok(result),
+                Ok(ConnectionOutcome::OAuthError(error)) => return Err(error),
+                // Preconnects, unrelated requests, foreign state: keep listening
+                Ok(ConnectionOutcome::Ignored) | Err(_) => {}
             }
         }
     }
@@ -286,6 +290,19 @@ mod tests {
         response
     }
 
+    /// The ephemeral port picked on 127.0.0.1 may already be taken on [::1]
+    /// by an unrelated socket; pick another rather than fail the test
+    fn bind_ephemeral() -> CallbackServer {
+        let mut last_err = String::new();
+        for _ in 0..20 {
+            match CallbackServer::bind_on(0) {
+                Ok(server) => return server,
+                Err(e) => last_err = e,
+            }
+        }
+        panic!("{}", last_err);
+    }
+
     fn spawn_wait(
         server: CallbackServer,
         expected_state: &str,
@@ -299,7 +316,7 @@ mod tests {
 
     #[test]
     fn callback_with_foreign_state_is_rejected_and_flow_keeps_waiting() {
-        let server = CallbackServer::bind_on(0).unwrap();
+        let server = bind_ephemeral();
         let addr = std::net::SocketAddr::from(([127, 0, 0, 1], server.port()));
         let (_cancel, handle) = spawn_wait(server, "expected");
 
@@ -316,7 +333,7 @@ mod tests {
 
     #[test]
     fn oauth_error_only_ends_the_flow_with_matching_state() {
-        let server = CallbackServer::bind_on(0).unwrap();
+        let server = bind_ephemeral();
         let addr = std::net::SocketAddr::from(([127, 0, 0, 1], server.port()));
         let (_cancel, handle) = spawn_wait(server, "expected");
 
@@ -328,8 +345,25 @@ mod tests {
     }
 
     #[test]
+    fn idle_preconnect_does_not_delay_the_redirect() {
+        let server = bind_ephemeral();
+        let addr = std::net::SocketAddr::from(([127, 0, 0, 1], server.port()));
+        let (_cancel, handle) = spawn_wait(server, "s");
+
+        // Browsers open speculative sockets that may never send a byte
+        let _idle = TcpStream::connect(addr).unwrap();
+        thread::sleep(Duration::from_millis(200));
+
+        let started = std::time::Instant::now();
+        let ok = send(addr, "GET /callback?code=c&state=s HTTP/1.1");
+        assert!(ok.starts_with("HTTP/1.1 200"), "{}", ok);
+        assert_eq!(handle.join().unwrap().unwrap().code, "c");
+        assert!(started.elapsed() < Duration::from_secs(2), "{:?}", started.elapsed());
+    }
+
+    #[test]
     fn cancel_flag_ends_the_wait() {
-        let server = CallbackServer::bind_on(0).unwrap();
+        let server = bind_ephemeral();
         let (cancel, handle) = spawn_wait(server, "expected");
         cancel.store(true, Ordering::SeqCst);
         assert!(handle.join().unwrap().is_err());
@@ -340,7 +374,7 @@ mod tests {
         if TcpListener::bind("[::1]:0").is_err() {
             return; // host without IPv6 loopback
         }
-        let server = CallbackServer::bind_on(0).unwrap();
+        let server = bind_ephemeral();
         let port = server.port();
         let (_cancel, handle) = spawn_wait(server, "s");
         let addr = std::net::SocketAddr::from((std::net::Ipv6Addr::LOCALHOST, port));

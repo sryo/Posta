@@ -13,8 +13,7 @@ const CARDS_KEY: &str = "posta_cards";
 const ACCOUNT_MAPPINGS_KEY: &str = "posta_account_mappings";
 
 pub struct ICloudKVStore {
-    // Owned +1 reference to the shared NSUbiquitousKeyValueStore, released in Drop
-    store_ptr: *mut AnyObject,
+    store: Retained<AnyObject>,
 }
 
 // SAFETY: NSUbiquitousKeyValueStore is thread-safe according to Apple's documentation
@@ -27,14 +26,12 @@ impl ICloudKVStore {
         unsafe {
             let cls = class!(NSUbiquitousKeyValueStore);
             let store: Retained<AnyObject> = msg_send![cls, defaultStore];
-            Self {
-                store_ptr: Retained::into_raw(store),
-            }
+            Self { store }
         }
     }
 
     fn synchronize(&self) -> bool {
-        unsafe { msg_send![self.store_ptr, synchronize] }
+        unsafe { msg_send![&*self.store, synchronize] }
     }
 
     fn set_json<T: Serialize + ?Sized>(&self, key: &str, value: &T) -> Result<(), String> {
@@ -42,7 +39,7 @@ impl ICloudKVStore {
         let key = NSString::from_str(key);
         let value = NSString::from_str(&json);
         unsafe {
-            let _: () = msg_send![self.store_ptr, setString: &*value, forKey: &*key];
+            let _: () = msg_send![&*self.store, setString: &*value, forKey: &*key];
         }
         self.synchronize();
         Ok(())
@@ -51,7 +48,7 @@ impl ICloudKVStore {
     fn get_json<T: DeserializeOwned>(&self, key: &str) -> Result<Option<T>, String> {
         let key = NSString::from_str(key);
         let value: Option<Retained<NSString>> =
-            unsafe { msg_send![self.store_ptr, stringForKey: &*key] };
+            unsafe { msg_send![&*self.store, stringForKey: &*key] };
         let Some(json) = value.map(|s| s.to_string()) else {
             return Ok(None);
         };
@@ -92,13 +89,5 @@ impl ICloudKVStore {
 impl Default for ICloudKVStore {
     fn default() -> Self {
         Self::new()
-    }
-}
-
-impl Drop for ICloudKVStore {
-    fn drop(&mut self) {
-        unsafe {
-            let _ = Retained::from_raw(self.store_ptr);
-        }
     }
 }

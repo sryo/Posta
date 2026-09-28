@@ -69,8 +69,7 @@ impl CacheDb {
             -- Sync state: stores history ID for incremental sync
             CREATE TABLE IF NOT EXISTS sync_state (
                 account_id TEXT PRIMARY KEY,
-                history_id TEXT NOT NULL,
-                last_sync_at INTEGER NOT NULL
+                history_id TEXT NOT NULL
             );
 
             -- Card calendar cache: stores calendar event data per card
@@ -98,6 +97,10 @@ impl CacheDb {
             if !has_column(&conn, table, column)? {
                 conn.execute(&format!("ALTER TABLE {} ADD COLUMN {} {}", table, column, decl), [])?;
             }
+        }
+        // Written by older builds but never read
+        if has_column(&conn, "sync_state", "last_sync_at")? {
+            conn.execute("ALTER TABLE sync_state DROP COLUMN last_sync_at", [])?;
         }
         Ok(())
     }
@@ -343,10 +346,9 @@ impl CacheDb {
 
     pub fn set_history_id(&self, account_id: &str, history_id: &str) -> Result<(), CacheError> {
         let conn = self.conn.lock().map_err(|_| CacheError::Lock)?;
-        let now = chrono::Utc::now().timestamp();
         conn.execute(
-            "INSERT OR REPLACE INTO sync_state (account_id, history_id, last_sync_at) VALUES (?1, ?2, ?3)",
-            params![account_id, history_id, now],
+            "INSERT OR REPLACE INTO sync_state (account_id, history_id) VALUES (?1, ?2)",
+            params![account_id, history_id],
         )?;
         Ok(())
     }
@@ -435,6 +437,30 @@ mod tests {
         // Reopening an already-migrated database must also succeed
         drop(db);
         CacheDb::new(&path).unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn drops_unread_sync_timestamp_and_keeps_history_ids() {
+        let dir = std::env::temp_dir().join(format!("posta-test-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("sync.db");
+        {
+            let conn = Connection::open(&path).unwrap();
+            conn.execute_batch(
+                "CREATE TABLE sync_state (account_id TEXT PRIMARY KEY, history_id TEXT NOT NULL,
+                     last_sync_at INTEGER NOT NULL);
+                 INSERT INTO sync_state VALUES ('a1', '42', 1700000000);",
+            )
+            .unwrap();
+        }
+
+        let db = CacheDb::new(&path).unwrap();
+        assert_eq!(db.get_history_id("a1").unwrap().as_deref(), Some("42"));
+        assert!(!has_column(&db.conn.lock().unwrap(), "sync_state", "last_sync_at").unwrap());
+        db.set_history_id("a2", "7").unwrap();
+        assert_eq!(db.get_history_id("a2").unwrap().as_deref(), Some("7"));
+        assert!(!has_column(&self::db().conn.lock().unwrap(), "sync_state", "last_sync_at").unwrap());
         let _ = std::fs::remove_dir_all(&dir);
     }
 
