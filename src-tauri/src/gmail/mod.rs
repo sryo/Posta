@@ -1624,7 +1624,16 @@ fn build_mime_message(msg: &OutgoingMessage, reply_headers: Option<&(String, Str
         message.push_str("\r\n\r\n");
         // The frontend may send URL-safe base64; MIME needs the standard
         // alphabet in lines of at most 76 characters
-        let normalized_data = attachment.data.replace('-', "+").replace('_', "/");
+        let normalized_data: String = attachment
+            .data
+            .chars()
+            .filter(|c| !c.is_ascii_whitespace())
+            .map(|c| match c {
+                '-' => '+',
+                '_' => '/',
+                c => c,
+            })
+            .collect();
         for chunk in normalized_data.as_bytes().chunks(76) {
             message.push_str(std::str::from_utf8(chunk).unwrap_or(""));
             message.push_str("\r\n");
@@ -2414,6 +2423,40 @@ mod tests {
         }, None);
         assert!(message.contains("Content-Type: text/plain; name=\"say \\\"hi\\\".txt\"\r\n"));
         assert!(message.contains("Content-Disposition: attachment; filename=\"say \\\"hi\\\".txt\"\r\n"));
+    }
+
+    #[test]
+    fn attachment_data_with_whitespace_is_rewrapped_cleanly() {
+        use base64::Engine;
+        let bytes: Vec<u8> = (0..200u8).collect();
+        let encoded = base64::engine::general_purpose::STANDARD.encode(&bytes);
+        // Data URLs copied from elsewhere may carry line breaks every 60 chars
+        let wrapped: String = encoded
+            .as_bytes()
+            .chunks(60)
+            .map(|c| std::str::from_utf8(c).unwrap())
+            .collect::<Vec<_>>()
+            .join("\r\n ");
+        let attachment = SendAttachment {
+            filename: "bytes.bin".to_string(),
+            mime_type: "application/octet-stream".to_string(),
+            data: wrapped,
+        };
+        let message = build_mime_message(&OutgoingMessage {
+            to: "x@example.com",
+            body: "hi",
+            attachments: std::slice::from_ref(&attachment),
+            ..Default::default()
+        }, None);
+        let data = part_body(&message, "Content-Type: application/octet-stream;");
+        let lines: Vec<&str> = data.split("\r\n").filter(|l| !l.is_empty()).collect();
+        for line in &lines {
+            assert!(line.len() <= 76 && !line.contains(' '), "bad base64 line {:?}", line);
+        }
+        let lines_before_last = &lines[..lines.len() - 1];
+        assert!(lines_before_last.iter().all(|l| l.len() == 76), "short line mid-body");
+        let decoded = base64::engine::general_purpose::STANDARD.decode(lines.concat()).unwrap();
+        assert_eq!(decoded, bytes);
     }
 
     /// Independent RFC 2045 quoted-printable decoder for checking encoded bodies
