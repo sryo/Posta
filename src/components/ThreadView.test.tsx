@@ -195,6 +195,16 @@ describe("ThreadView keyboard shortcuts", () => {
     expect(body).toContain("first");
   });
 
+  it("names the forwarded message's recipients", () => {
+    const { props } = renderThread({
+      thread: makeThread([{ from: "Alice <alice@example.com>", to: "Bob <bob@example.com>", cc: "carol@example.com", body: "hi" }]),
+      focusedMessageIndex: 0,
+    });
+    fireEvent.keyDown(document, { key: "f" });
+    const body = (props.onForward as any).mock.calls[0][1];
+    expect(body).toContain("Subject: Lunch\nTo: Bob <bob@example.com>\nCc: carol@example.com\n\nhi");
+  });
+
   it("shows and quotes a plain-text body verbatim, line breaks and angle brackets included", () => {
     const { props, container } = renderThread({
       thread: makeThread([{ from: "Alice <alice@example.com>", body: "Ask Bob <bob@example.com>\nThanks" }]),

@@ -13,6 +13,7 @@ import {
   extractMessageHtml,
   extractMessageText,
   buildQuotedBody,
+  buildForwardBody,
   addReplyPrefix,
   addForwardPrefix,
   splitEmailList,
@@ -206,8 +207,12 @@ export const ThreadView = (props: {
       reply: (prefix = '') => reply(false, prefix),
       replyAll: () => reply(true),
       forward: () => {
-        const plainBody = extractMessageText(msg.payload, msg.snippet);
-        const fwdBody = `\n\n---------- Forwarded message ----------\nFrom: ${from}\nDate: ${date}\nSubject: ${subject}\n\n${plainBody}`;
+        const fwdBody = buildForwardBody({
+          from, date, subject,
+          to: findHeader(headers, 'To'),
+          cc: findHeader(headers, 'Cc'),
+          body: extractMessageText(msg.payload, msg.snippet),
+        });
         setForwardSourceId(msg.id);
         props.onForward(addForwardPrefix(subject), fwdBody);
       },
