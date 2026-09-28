@@ -949,7 +949,7 @@ function App() {
       if (!collapsedCards[card.id] && (mayGainThread || cardsWithModified.has(card.id))) {
         fetchAndCacheThreads(account.id, card.id);
       } else if (cardsWithDeleted.has(card.id)) {
-        saveCachedCardThreads(card.id, updatedCardThreads[card.id], cardPageTokens[card.id] || null)
+        saveCardCache(card.id, updatedCardThreads[card.id], cardPageTokens[card.id] || null)
           .catch(e => console.warn("Failed to update thread cache:", e));
       }
     }
@@ -2788,6 +2788,7 @@ function App() {
 
       // If query changed, clear cache and refresh
       if (queryChanged) {
+        delete knownCardCache[cardId];
         await clearCardCache(cardId);
         setCardThreads(produce(s => { delete s[cardId]; }));
         setCardPageTokens(produce(s => { delete s[cardId]; }));
@@ -2811,6 +2812,7 @@ function App() {
   // cache by thread actions.
   function forgetCardState(cardIds: string[]) {
     if (cardIds.length === 0) return;
+    for (const id of cardIds) delete knownCardCache[id];
     batch(() => {
       setCardThreads(produce(s => { for (const id of cardIds) delete s[id]; }));
       setCardPageTokens(produce(s => { for (const id of cardIds) delete s[id]; }));
@@ -2918,6 +2920,22 @@ function App() {
     }
   }
 
+  // What each card's thread cache was last read or written as. A refresh
+  // that brings back the same groups (inline images and all) skips sending
+  // them across again.
+  const knownCardCache: Record<string, string> = {};
+  const cacheSnapshot = (groups: ThreadGroup[], pageToken: string | null) => JSON.stringify([groups, pageToken]);
+
+  function saveCardCache(cardId: string, groups: ThreadGroup[], pageToken: string | null): Promise<void> {
+    const snapshot = cacheSnapshot(groups, pageToken);
+    if (knownCardCache[cardId] === snapshot) return Promise.resolve();
+    knownCardCache[cardId] = snapshot;
+    return saveCachedCardThreads(cardId, groups, pageToken).catch(e => {
+      delete knownCardCache[cardId];
+      throw e;
+    });
+  }
+
   // The card was edited or deleted since a fetch for `query` started
   function cardQueryChanged(cardId: string, query: string | undefined): boolean {
     return cards().find(c => c.id === cardId)?.query !== query;
@@ -2958,6 +2976,7 @@ function App() {
         const cached = await getCachedCardThreads(cardId);
         if (stale()) return;
         if (cached && cached.groups.length > 0) {
+          knownCardCache[cardId] = cacheSnapshot(cached.groups, cached.next_page_token);
           // Show cached data immediately
           setCardThreads(cardId, reconcile(cached.groups, { key: "gmail_thread_id" }));
           setCardPageTokens(cardId, cached.next_page_token);
@@ -2982,11 +3001,11 @@ function App() {
         const mergedGroups = mergeThreadGroups(existingGroups, result.groups);
         setCardThreads(cardId, mergedGroups);
         // Save merged groups to cache
-        await saveCachedCardThreads(cardId, mergedGroups, result.next_page_token);
+        await saveCardCache(cardId, mergedGroups, result.next_page_token);
       } else {
         setCardThreads(cardId, reconcile(result.groups, { key: "gmail_thread_id" }));
         // Save to cache
-        await saveCachedCardThreads(cardId, result.groups, result.next_page_token);
+        await saveCardCache(cardId, result.groups, result.next_page_token);
       }
 
       setCardPageTokens(cardId, result.next_page_token);
@@ -3134,19 +3153,19 @@ function App() {
         // touched this card — this fetch may predate the server-side modify,
         // and caching its groups would resurrect the pre-action state
         if (recent.cardIds.includes(cardId) || recent.cardId === cardId) return;
-        await saveCachedCardThreads(cardId, result.groups, result.next_page_token);
+        await saveCardCache(cardId, result.groups, result.next_page_token);
         return;
       }
       if ((cardPageTokens[cardId] ?? null) !== tokenBeforeFetch || loadingMore[cardId]) {
         // Card paginated while this fetch was in flight; refresh the
         // page-1 cache but leave UI state alone
-        await saveCachedCardThreads(cardId, result.groups, result.next_page_token);
+        await saveCardCache(cardId, result.groups, result.next_page_token);
         return;
       }
       setCardThreads(cardId, reconcile(result.groups, { key: "gmail_thread_id" }));
       setCardPageTokens(cardId, result.next_page_token);
       setCardHasMore(cardId, result.has_more);
-      await saveCachedCardThreads(cardId, result.groups, result.next_page_token);
+      await saveCardCache(cardId, result.groups, result.next_page_token);
       setLastSyncTimes(cardId, Date.now());
       setSyncErrors(cardId, null);
     } catch (e) {
@@ -3661,7 +3680,8 @@ function App() {
       await modifyThreads(account.id, threadIds, addLabels, removeLabels);
       // Persist the optimistic changes only after the server accepted them
       for (const cId of affectedCardIds) {
-        saveCachedCardThreads(cId, updatedCardThreads[cId], cardPageTokens[cId] || null);
+        saveCardCache(cId, updatedCardThreads[cId], cardPageTokens[cId] || null)
+          .catch(e => console.warn("Failed to update thread cache:", e));
       }
       if (silent) return;
       // Store undo state and show toast

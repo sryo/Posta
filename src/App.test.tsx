@@ -2196,6 +2196,27 @@ describe("App thread rows", () => {
     expect(rowOf("Other mail")).toBe(row);
   });
 
+  it("sends a refreshed card back to the cache only when it changed", async () => {
+    handlers.sync_threads_incremental = () => ({ modified_threads: [], deleted_thread_ids: [], is_full_sync: true });
+    render(() => <App />);
+    await screen.findByText("Mail for A");
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith("save_cached_card_threads", expect.anything()));
+    const saves = () => invoke.mock.calls.filter(([cmd]) => cmd === "save_cached_card_threads").length;
+    const fetches = () => invoke.mock.calls.filter(([cmd]) => cmd === "fetch_threads_paginated").length;
+    const savesBefore = saves();
+    const fetchesBefore = fetches();
+
+    window.dispatchEvent(new Event("focus"));
+    await waitFor(() => expect(fetches()).toBe(fetchesBefore + 1));
+    await new Promise(r => setTimeout(r, 30));
+    expect(saves()).toBe(savesBefore);
+
+    threadsByCard["card-a"] = [thread("t-new", "Brand new"), thread("t-a", "Mail for A")];
+    window.dispatchEvent(new Event("focus"));
+    await screen.findByText("Brand new");
+    await waitFor(() => expect(saves()).toBe(savesBefore + 1));
+  });
+
   it("does not regroup a card to move focus, hover a row or type a quick reply", async () => {
     threadsByCard["card-a"] = Array.from({ length: 30 }, (_, i) => thread(`t${i}`, `Mail ${i}`));
     render(() => <App />);
