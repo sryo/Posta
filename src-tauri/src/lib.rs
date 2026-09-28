@@ -350,4 +350,37 @@ mod tests {
         assert!(perms.contains(&"core:window:allow-start-dragging"));
         assert!(perms.contains(&"core:window:allow-set-badge-count"));
     }
+
+    /// The `<string>` value that follows `<key>{key}</key>` in a plist
+    fn plist_string<'a>(plist: &'a str, key: &str) -> Option<&'a str> {
+        let after_key = plist.split_once(&format!("<key>{}</key>", key))?.1;
+        let value = after_key.trim_start().strip_prefix("<string>")?;
+        value.split_once("</string>").map(|(v, _)| v.trim())
+    }
+
+    #[test]
+    fn macos_signing_config_grants_the_icloud_store_to_this_app() {
+        let conf: serde_json::Value = serde_json::from_str(include_str!("../tauri.conf.json")).unwrap();
+        let entitlements = include_str!("../Entitlements.plist");
+        let macos = &conf["bundle"]["macOS"];
+
+        assert_eq!(macos["entitlements"], "Entitlements.plist");
+        assert_eq!(macos["files"]["embedded.provisionprofile"], "Posta.provisionprofile");
+
+        let identity = macos["signingIdentity"].as_str().unwrap();
+        let team = identity
+            .rsplit_once('(')
+            .and_then(|(_, rest)| rest.strip_suffix(')'))
+            .expect("signing identity ends with (TEAMID)");
+        let app_id = format!("{}.{}", team, conf["identifier"].as_str().unwrap());
+
+        assert_eq!(plist_string(entitlements, "com.apple.developer.team-identifier"), Some(team));
+        assert_eq!(plist_string(entitlements, "com.apple.application-identifier"), Some(app_id.as_str()));
+        // Without this entitlement NSUbiquitousKeyValueStore silently keeps
+        // everything local, and card sync never reaches other Macs
+        assert_eq!(
+            plist_string(entitlements, "com.apple.developer.ubiquity-kvstore-identifier"),
+            Some(app_id.as_str())
+        );
+    }
 }
