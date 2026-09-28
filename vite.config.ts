@@ -14,6 +14,11 @@ export default defineConfig({
   //
   // 1. prevent Vite from obscuring rust errors
   clearScreen: false,
+  // Vite's default targets Safari 16.4; macOS 10.15, the oldest the bundle
+  // supports, runs at most Safari 15.6, which cannot parse some of that output.
+  build: {
+    target: "safari15",
+  },
   // 2. tauri expects a fixed port, fail if that port is not available
   server: {
     port: 1420,

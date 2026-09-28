@@ -26,6 +26,7 @@ const NO_DOM = [
   "src/app/signature.test.ts",
   "src/app/storedWidth.test.ts",
   "src/app/threadActions.test.ts",
+  "src/test/buildTarget.test.ts",
   "src/test/css.test.ts",
   "src/test/environment.test.ts",
   "src/test/release.test.ts",
