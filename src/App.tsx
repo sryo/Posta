@@ -1518,11 +1518,12 @@ function App() {
     }
   }
 
-  async function handleSignIn() {
-    const storedCreds = await getStoredCredentials();
-
-    if (!storedCreds) {
-      // No credentials stored - open settings to configure OAuth
+  // Sign in with Google through the browser, then hand the account to
+  // afterAuth. Uses the stored OAuth client unless Settings just configured
+  // one; without either, sends the user to Settings.
+  async function signInWithGoogle(afterAuth: (account: Account) => Promise<unknown>, { configured = false } = {}) {
+    const storedCreds = configured ? null : await getStoredCredentials();
+    if (!configured && !storedCreds) {
       setSettingsOpen(true);
       setError("Connect your Google account in Settings");
       return;
@@ -1531,14 +1532,13 @@ function App() {
     setAuthLoading(true);
     setError(null);
     try {
-      await configureAuth({
-        client_id: storedCreds.client_id,
-        client_secret: storedCreds.client_secret,
-      });
-
-      const account = await runOAuthFlow();
-      console.log("Sign in complete, account:", account.id, account.email);
-      await restoreLayoutAfterAuth(account);
+      if (storedCreds) {
+        await configureAuth({
+          client_id: storedCreds.client_id,
+          client_secret: storedCreds.client_secret,
+        });
+      }
+      await afterAuth(await runOAuthFlow());
     } catch (e) {
       setError(String(e));
     } finally {
@@ -1546,25 +1546,12 @@ function App() {
     }
   }
 
-  async function handleAddAccount() {
-    const storedCreds = await getStoredCredentials();
+  function handleSignIn() {
+    return signInWithGoogle(restoreLayoutAfterAuth);
+  }
 
-    if (!storedCreds) {
-      setSettingsOpen(true);
-      setError("Connect your Google account in Settings");
-      return;
-    }
-
-    setAuthLoading(true);
-    setError(null);
-    try {
-      await configureAuth({
-        client_id: storedCreds.client_id,
-        client_secret: storedCreds.client_secret,
-      });
-
-      const account = await runOAuthFlow();
-
+  function handleAddAccount() {
+    return signInWithGoogle(async account => {
       upsertAccount(account);
       setSelectedAccount(account);
 
@@ -1578,11 +1565,7 @@ function App() {
       startBackgroundSync(account.id);
 
       setSettingsOpen(false);
-    } catch (e) {
-      setError(String(e));
-    } finally {
-      setAuthLoading(false);
-    }
+    });
   }
 
   let applyingPreset = false;
@@ -1643,22 +1626,12 @@ function App() {
         client_id: clientId(),
         client_secret: clientSecret(),
       });
-      setSettingsOpen(false);
-
-      // Directly run OAuth flow since we just configured auth
-      setAuthLoading(true);
-      setError(null);
-      try {
-        const account = await runOAuthFlow();
-        await restoreLayoutAfterAuth(account);
-      } catch (e) {
-        setError(String(e));
-      } finally {
-        setAuthLoading(false);
-      }
     } catch (e) {
       setError(`Failed to save credentials: ${e}`);
+      return;
     }
+    setSettingsOpen(false);
+    await signInWithGoogle(restoreLayoutAfterAuth, { configured: true });
   }
 
   async function saveSignature(account: Account, text: string) {
@@ -2891,32 +2864,14 @@ function App() {
     if (isSessionExpiredError(String(e)) && selectedAccount()?.id === accountId) markSessionExpired(accountId);
   }
 
-  async function handleReauth() {
-    const storedCreds = await getStoredCredentials();
-    if (!storedCreds) {
-      setSettingsOpen(true);
-      setError("Connect your Google account in Settings");
-      return;
-    }
-
-    setAuthLoading(true);
-    setError(null);
-    try {
-      await configureAuth({
-        client_id: storedCreds.client_id,
-        client_secret: storedCreds.client_secret,
-      });
-      const account = await runOAuthFlow();
+  function handleReauth() {
+    return signInWithGoogle(async account => {
       setExpiredAccountId(null);
       upsertAccount(account);
       closeAccountViews();
       setSelectedAccount(account);
       if (await loadAccountCards(account)) startBackgroundSync(account.id);
-    } catch (e) {
-      setError(String(e));
-    } finally {
-      setAuthLoading(false);
-    }
+    });
   }
 
   async function fetchAndCacheCalendarEvents(accountId: string, cardId: string, query: string) {

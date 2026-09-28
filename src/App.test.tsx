@@ -1885,3 +1885,56 @@ describe("App quick reply feedback", () => {
     expect(invoke).not.toHaveBeenCalledWith("send_reaction", expect.anything());
   });
 });
+
+describe("App sign-in flows", () => {
+  it("connects with credentials entered in Settings", async () => {
+    handlers.get_accounts = () => [];
+    handlers.get_stored_credentials = () => null;
+    handlers.run_oauth_flow = () => account("a", "a@x.com");
+    render(() => <App />);
+    fireEvent.click(await screen.findByText("Settings"));
+    fireEvent.input(screen.getByLabelText("Client ID"), { target: { value: "cid" } });
+    fireEvent.input(screen.getByLabelText("Client Secret"), { target: { value: "csecret" } });
+    fireEvent.click(screen.getByRole("button", { name: /Connect/ }));
+
+    expect(await screen.findByText("Start from scratch", {}, { timeout: 3000 })).toBeInTheDocument();
+    expect(invoke).toHaveBeenCalledWith("configure_auth", { config: { client_id: "cid", client_secret: "csecret" } });
+    expect(invoke).not.toHaveBeenCalledWith("get_stored_credentials", expect.anything());
+  });
+
+  it("says why saving credentials failed and runs no sign-in", async () => {
+    handlers.get_accounts = () => [];
+    handlers.get_stored_credentials = () => null;
+    handlers.configure_auth = () => { throw "keychain locked"; };
+    handlers.run_oauth_flow = () => account("a", "a@x.com");
+    render(() => <App />);
+    fireEvent.click(await screen.findByText("Settings"));
+    fireEvent.input(screen.getByLabelText("Client ID"), { target: { value: "cid" } });
+    fireEvent.input(screen.getByLabelText("Client Secret"), { target: { value: "csecret" } });
+    fireEvent.click(screen.getByRole("button", { name: /Connect/ }));
+
+    expect(await screen.findByText("Failed to save credentials: keychain locked")).toBeInTheDocument();
+    expect(invoke).not.toHaveBeenCalledWith("run_oauth_flow", expect.anything());
+  });
+
+  it("sends the user to Settings when signing in without credentials", async () => {
+    handlers.get_accounts = () => [];
+    handlers.get_stored_credentials = () => null;
+    render(() => <App />);
+    fireEvent.click(await screen.findByText("Sign in with Google"));
+
+    expect(await screen.findByText("Connect your Google account in Settings")).toBeInTheDocument();
+    expect(document.querySelector(".settings-sidebar.open")).not.toBeNull();
+    expect(invoke).not.toHaveBeenCalledWith("run_oauth_flow", expect.anything());
+  });
+
+  it("shows a failed sign-in and stops waiting", async () => {
+    handlers.get_accounts = () => [];
+    handlers.run_oauth_flow = () => { throw "OAuth callback error: Timeout waiting for OAuth callback"; };
+    render(() => <App />);
+    fireEvent.click(await screen.findByText("Sign in with Google"));
+
+    expect(await screen.findByText(/Timeout waiting for OAuth callback/)).toBeInTheDocument();
+    expect(screen.queryByText("Complete sign-in in your browser...")).not.toBeInTheDocument();
+  });
+});
