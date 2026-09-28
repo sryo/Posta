@@ -37,4 +37,22 @@ describe("EmojiPicker", () => {
     expect(container.querySelectorAll(".emoji-btn").length).toBeGreaterThan(0);
     expect(container.querySelector(".emoji-categories-tabs")).not.toBeNull();
   });
+
+  it("sends letters typed after clicking a category to the search box, not to page shortcuts", () => {
+    const pageShortcut = vi.fn();
+    document.addEventListener("keydown", pageShortcut);
+    const { container } = render(() => <EmojiPicker onSelect={vi.fn()} onClose={vi.fn()} />);
+    const tab = container.querySelectorAll<HTMLButtonElement>(".emoji-category-tab")[2];
+    tab.focus();
+    fireEvent.keyDown(tab, { key: "a" });
+    expect(pageShortcut).not.toHaveBeenCalled();
+    expect(document.activeElement).toBe(container.querySelector(".emoji-search"));
+
+    // Space still activates the focused button, and shortcuts with modifiers pass
+    tab.focus();
+    fireEvent.keyDown(tab, { key: " " });
+    fireEvent.keyDown(tab, { key: "c", metaKey: true });
+    expect(pageShortcut).toHaveBeenCalledTimes(2);
+    document.removeEventListener("keydown", pageShortcut);
+  });
 });

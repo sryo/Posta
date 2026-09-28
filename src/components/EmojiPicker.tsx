@@ -1,6 +1,7 @@
 // Emoji picker component with categories and search
 
 import { createSignal, For, Show, onCleanup, onMount } from "solid-js";
+import { hasCommandModifier } from "../shared/keyboard";
 
 // Emoji data organized by category
 const EMOJI_CATEGORIES: { name: string; icon: string; emojis: string[] }[] = [
@@ -128,11 +129,18 @@ export const EmojiPicker = (props: EmojiPickerProps) => {
   };
 
   // Close on Escape. Captured and stopped so the thread view's own Escape
-  // handler, also on document, doesn't close the whole thread too
+  // handler, also on document, doesn't close the whole thread too. Letters
+  // typed while a category tab or emoji has focus go to the search box
+  // instead of reaching the thread's single-letter shortcuts (a archives).
   const handleKeyDown = (e: KeyboardEvent) => {
     if (e.key === "Escape") {
       e.stopImmediatePropagation();
       props.onClose();
+      return;
+    }
+    if (e.key.length === 1 && e.key !== " " && !hasCommandModifier(e) && document.activeElement !== searchRef) {
+      e.stopImmediatePropagation();
+      searchRef?.focus();
     }
   };
 
