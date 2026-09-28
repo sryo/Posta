@@ -383,6 +383,21 @@ describe("App quick reaction", () => {
   });
 });
 
+describe("App thread view reactions", () => {
+  it("shows a toast when a reaction from the thread view fails", async () => {
+    handlers.get_thread_details = () => ({ id: "t-a", messages: [fullMessage("m1", "Ana <ana@x.com>")] });
+    handlers.send_reaction = () => { throw new Error("quota exceeded"); };
+    render(() => <App />);
+    fireEvent.click(await screen.findByText("Mail for A"));
+    await screen.findByText("body m1");
+
+    fireEvent.click(screen.getAllByTitle("Add reaction")[0]);
+    fireEvent.click(document.querySelector<HTMLButtonElement>(".emoji-picker .emoji-btn")!);
+
+    expect(await screen.findByText(/Failed to send reaction: .*quota exceeded/)).toBeInTheDocument();
+  });
+});
+
 describe("App compose", () => {
   it("sends from the account compose was opened in after switching accounts", async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
