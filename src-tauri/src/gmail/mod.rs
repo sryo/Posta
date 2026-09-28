@@ -230,7 +230,7 @@ impl GmailClient {
 
         let threads = self.batch_get_thread_details(&thread_ids).await?;
         Ok(SearchResult {
-            groups: group_threads_by_date(threads),
+            groups: group_threads_by_date(threads, &Local::now()),
             has_more: list.next_page_token.is_some(),
             next_page_token: list.next_page_token,
         })
@@ -1353,62 +1353,57 @@ fn extract_attachments_from_parts(parts: &Option<Vec<MessagePart>>) -> Vec<Attac
     attachments
 }
 
-fn classify_date(date: DateTime<Utc>) -> DateBucket {
-    let now = Local::now();
-    let local_date = date.with_timezone(&Local);
-
+/// Date bucket of `date` relative to `now`, compared as calendar days in
+/// `now`'s time zone
+fn classify_date<Tz: TimeZone>(date: DateTime<Utc>, now: &DateTime<Tz>) -> DateBucket {
     let today = now.date_naive();
-    let msg_date = local_date.date_naive();
+    let msg_date = date.with_timezone(&now.timezone()).date_naive();
 
     if msg_date == today {
         return DateBucket::Today;
     }
-
-    let yesterday = today - Duration::days(1);
-    if msg_date == yesterday {
+    if msg_date == today - Duration::days(1) {
         return DateBucket::Yesterday;
     }
 
-    // Start of current week (Monday)
     let days_since_monday = now.weekday().num_days_from_monday() as i64;
-    let week_start = today - Duration::days(days_since_monday);
-
-    if msg_date >= week_start {
+    if msg_date >= today - Duration::days(days_since_monday) {
         return DateBucket::ThisWeek;
     }
 
-    let thirty_days_ago = today - Duration::days(30);
-    if msg_date >= thirty_days_ago {
+    if msg_date >= today - Duration::days(30) {
         return DateBucket::Last30Days;
     }
 
     DateBucket::Older
 }
 
-fn group_threads_by_date(threads: Vec<Thread>) -> Vec<ThreadGroup> {
-    let mut groups: HashMap<String, Vec<Thread>> = HashMap::new();
-
+fn group_threads_by_date<Tz: TimeZone>(threads: Vec<Thread>, now: &DateTime<Tz>) -> Vec<ThreadGroup> {
+    let mut groups: HashMap<&'static str, Vec<Thread>> = HashMap::new();
     for thread in threads {
-        let bucket = classify_date(thread.last_message_date);
-        let label = bucket.as_str().to_string();
+        let label = classify_date(thread.last_message_date, now).as_str();
         groups.entry(label).or_default().push(thread);
     }
 
-    // Order: Today, Yesterday, This week, Last 30 days, Older
-    let order = ["Today", "Yesterday", "This week", "Last 30 days", "Older"];
-
-    order
-        .iter()
-        .filter_map(|&label| {
-            groups.remove(label).map(|mut threads| {
-                threads.sort_by(|a, b| b.last_message_date.cmp(&a.last_message_date));
-                ThreadGroup {
-                    label: label.to_string(),
-                    threads,
-                }
-            })
+    [
+        DateBucket::Today,
+        DateBucket::Yesterday,
+        DateBucket::ThisWeek,
+        DateBucket::Last30Days,
+        DateBucket::Older,
+    ]
+    .iter()
+    .map(DateBucket::as_str)
+    .filter_map(|label| {
+        groups.remove(label).map(|mut threads| {
+            threads.sort_by(|a, b| b.last_message_date.cmp(&a.last_message_date));
+            ThreadGroup {
+                label: label.to_string(),
+                threads,
+            }
         })
-        .collect()
+    })
+    .collect()
 }
 
 /// Extract the first text/plain body from a FullMessage, searching nested
@@ -2307,6 +2302,76 @@ mod tests {
         );
         assert_eq!(batch_boundary("multipart/mixed; boundary=\"batch_q\"").as_deref(), Some("batch_q"));
         assert_eq!(batch_boundary("application/json"), None);
+    }
+
+    fn at(rfc3339: &str) -> DateTime<Utc> {
+        DateTime::parse_from_rfc3339(rfc3339).unwrap().with_timezone(&Utc)
+    }
+
+    fn bucket(date: &str, now: &str) -> &'static str {
+        classify_date(at(date), &DateTime::parse_from_rfc3339(now).unwrap()).as_str()
+    }
+
+    #[test]
+    fn classify_date_buckets_by_local_calendar_day() {
+        // Wednesday 2024-01-17, 10:00 in Buenos Aires (UTC-3)
+        let now = "2024-01-17T10:00:00-03:00";
+        assert_eq!(bucket("2024-01-17T04:00:00Z", now), "Today"); // 01:00 local
+        assert_eq!(bucket("2024-01-17T02:00:00Z", now), "Yesterday"); // 23:00 local on the 16th
+        assert_eq!(bucket("2024-01-15T12:00:00-03:00", now), "This week"); // Monday
+        assert_eq!(bucket("2024-01-14T23:59:00-03:00", now), "Last 30 days"); // Sunday before
+        assert_eq!(bucket("2023-12-18T00:00:00-03:00", now), "Last 30 days");
+        assert_eq!(bucket("2023-12-17T23:59:00-03:00", now), "Older");
+    }
+
+    #[test]
+    fn classify_date_on_monday_keeps_sunday_as_yesterday() {
+        let now = "2024-01-15T09:00:00+09:00";
+        assert_eq!(bucket("2024-01-14T12:00:00+09:00", now), "Yesterday");
+        assert_eq!(bucket("2024-01-13T12:00:00+09:00", now), "Last 30 days");
+    }
+
+    fn thread_at(id: &str, date: &str) -> Thread {
+        Thread {
+            gmail_thread_id: id.to_string(),
+            account_id: String::new(),
+            subject: String::new(),
+            snippet: String::new(),
+            last_message_date: at(date),
+            unread_count: 0,
+            labels: Vec::new(),
+            participants: Vec::new(),
+            has_attachment: false,
+            attachments: Vec::new(),
+            calendar_event: None,
+        }
+    }
+
+    #[test]
+    fn group_threads_orders_buckets_and_sorts_newest_first() {
+        let now = DateTime::parse_from_rfc3339("2024-01-17T10:00:00Z").unwrap();
+        let groups = group_threads_by_date(
+            vec![
+                thread_at("old", "2023-01-01T00:00:00Z"),
+                thread_at("today-early", "2024-01-17T01:00:00Z"),
+                thread_at("yesterday", "2024-01-16T12:00:00Z"),
+                thread_at("today-late", "2024-01-17T09:00:00Z"),
+            ],
+            &now,
+        );
+        let shape: Vec<(String, Vec<String>)> = groups
+            .into_iter()
+            .map(|g| (g.label, g.threads.into_iter().map(|t| t.gmail_thread_id).collect()))
+            .collect();
+        let expected: Vec<(String, Vec<String>)> = [
+            ("Today", vec!["today-late", "today-early"]),
+            ("Yesterday", vec!["yesterday"]),
+            ("Older", vec!["old"]),
+        ]
+        .into_iter()
+        .map(|(l, ids)| (l.to_string(), ids.into_iter().map(String::from).collect()))
+        .collect();
+        assert_eq!(shape, expected);
     }
 
     fn reaction_part(json: &str) -> MessagePart {
