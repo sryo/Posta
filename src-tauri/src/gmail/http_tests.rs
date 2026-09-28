@@ -415,6 +415,40 @@ async fn deleting_a_draft_that_is_already_gone_succeeds() {
     assert!(within(gmail.delete_draft("other")).await.is_err());
 }
 
+#[tokio::test]
+async fn history_is_read_in_full_pages() {
+    let server = StubServer::start(|request| {
+        let page = if request.target.contains("pageToken=p2") {
+            serde_json::json!({
+                "historyId": "200",
+                "history": [{ "messagesDeleted": [{ "message": { "id": "m3", "threadId": "t3" } }] }]
+            })
+        } else {
+            serde_json::json!({
+                "historyId": "150",
+                "nextPageToken": "p2",
+                "history": [
+                    { "messagesAdded": [{ "message": { "id": "m1", "threadId": "t1" } }] },
+                    { "labelsRemoved": [{ "message": { "id": "m2", "threadId": "t2" } }] }
+                ]
+            })
+        };
+        Reply::Json(200, page.to_string())
+    })
+    .await;
+
+    let changes = within(server.client().get_history_changes("100")).await.unwrap();
+
+    let mut modified = changes.modified_thread_ids.clone();
+    modified.sort();
+    assert_eq!(modified, ["t1", "t2"]);
+    assert_eq!(changes.deleted_thread_ids, ["t3"]);
+    assert_eq!(changes.new_history_id, "200");
+    let requests = server.requests();
+    assert_eq!(requests.len(), 2);
+    assert!(requests.iter().all(|r| r.target.contains("startHistoryId=100") && r.target.contains("maxResults=500")));
+}
+
 fn google_error(code: u16, status: &str, reason: &str, message: &str) -> String {
     serde_json::json!({
         "error": {

@@ -13,6 +13,8 @@ const GMAIL_UPLOAD_BASE: &str = "https://gmail.googleapis.com/upload/gmail/v1";
 /// The most messages.send accepts through the upload endpoint (35MB)
 const MAX_UPLOAD_BYTES: usize = 35 * 1024 * 1024;
 const PAGE_SIZE: usize = 20;
+/// The API's maximum; its default of 100 takes five times the requests
+const HISTORY_PAGE_SIZE: usize = 500;
 const MAX_BATCH_SIZE: usize = 50; // Gmail allows up to 100, but 50 is safer
 const MAX_INLINE_IMAGE_SIZE: i32 = 100_000; // 100KB max for inline images
 const MAX_INLINE_IMAGES: usize = 3;
@@ -867,9 +869,10 @@ impl GmailClient {
 
         loop {
             let mut url = format!(
-                "{}/users/me/history?startHistoryId={}&historyTypes=messageAdded&historyTypes=messageDeleted&historyTypes=labelAdded&historyTypes=labelRemoved",
+                "{}/users/me/history?startHistoryId={}&maxResults={}&historyTypes=messageAdded&historyTypes=messageDeleted&historyTypes=labelAdded&historyTypes=labelRemoved",
                 self.api_base,
-                start_history_id
+                start_history_id,
+                HISTORY_PAGE_SIZE
             );
 
             if let Some(token) = &page_token {
