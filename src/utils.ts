@@ -100,6 +100,14 @@ function plainTextToHtml(text: string): string {
   return `<div style="white-space: pre-wrap">${escapeHtml(text)}</div>`;
 }
 
+// Free-form text that may be either HTML or plain text (e.g. calendar event
+// descriptions) as HTML: markup is kept as is, plain text is escaped with its
+// line breaks kept
+const HTML_TAG = /<\/?(a|b|br|div|em|font|h[1-6]|hr|i|img|li|ol|p|span|strong|table|u|ul)\b[^>]*>/i;
+export function textOrHtmlToHtml(text: string): string {
+  return HTML_TAG.test(text) ? text : plainTextToHtml(text);
+}
+
 // Message body as HTML for display: the HTML alternative when present,
 // otherwise the plain-text body escaped with its line breaks kept
 export function extractMessageHtml(payload: any, snippet?: string): string {

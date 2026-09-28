@@ -24,9 +24,9 @@ const event: GoogleCalendarEvent = {
   can_edit: true,
 };
 
-function renderEvent() {
+function renderEvent(overrides: Partial<GoogleCalendarEvent> = {}) {
   const props = {
-    event,
+    event: { ...event, ...overrides },
     card: null,
     focusColor: null,
     onClose: vi.fn(),
@@ -46,8 +46,8 @@ function renderEvent() {
     inlineCompose: null,
     inlineEdit: null,
   };
-  render(() => <EventView {...props} />);
-  return props;
+  const { container } = render(() => <EventView {...props} />);
+  return Object.assign(props, { container });
 }
 
 describe("EventView keyboard shortcuts", () => {
@@ -80,5 +80,24 @@ describe("EventView keyboard shortcuts", () => {
     expect(props.onReplyOrganizer).not.toHaveBeenCalled();
     expect(screen.getByTitle("Reply All")).toHaveTextContent("⇧R");
     expect(screen.getByTitle("Forward")).toHaveTextContent("F");
+  });
+});
+
+describe("EventView description", () => {
+  const description = (container: HTMLElement) => container.querySelector(".message-body > div")!;
+
+  it("keeps line breaks of a plain-text description and shows angle brackets literally", () => {
+    const { container } = renderEvent({ description: "Agenda:\n1. Intro <5 min>\n2. Demo" });
+    const el = description(container);
+    expect(el.textContent).toContain("Agenda:\n1. Intro <5 min>\n2. Demo");
+    expect(el.querySelector("[style*='pre-wrap']")).not.toBeNull();
+  });
+
+  it("renders an HTML description without turning source newlines into extra breaks", () => {
+    const { container } = renderEvent({ description: "<p>Hello</p>\n<p>See <a href=\"https://x.test\">doc</a></p>" });
+    const el = description(container);
+    expect(el.querySelectorAll("br")).toHaveLength(0);
+    expect(el.querySelectorAll("p")).toHaveLength(2);
+    expect(el.querySelector("a")?.getAttribute("href")).toBe("https://x.test");
   });
 });
