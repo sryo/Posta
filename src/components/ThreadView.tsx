@@ -38,7 +38,7 @@ import { ComposeForm } from "./ComposeForm";
 import { MessageActionsWheel } from "./MessageActionsWheel";
 import { COLOR_HEX } from "../shared/constants";
 import type { InlineComposeProps } from "./types";
-import { findHeader } from "../app/messages";
+import { findHeader, lastMessageFromOthers } from "../app/messages";
 
 const normalizeMessageId = (id: string) => id.trim().replace(/^<|>$/g, '').toLowerCase();
 
@@ -593,8 +593,8 @@ export const ThreadView = (props: {
             accountId={props.accountId}
             threadId={props.thread!.id}
             onSelect={(suggestion) => {
-              const lastMsg = props.thread!.messages[props.thread!.messages.length - 1];
-              if (lastMsg) messageActions(lastMsg).reply(suggestion);
+              const target = lastMessageFromOthers(props.thread!.messages, props.currentUserEmail ?? '');
+              if (target) messageActions(target).reply(suggestion);
             }}
           />
         </Show>

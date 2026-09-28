@@ -4,6 +4,12 @@ import { fireEvent, render } from "@solidjs/testing-library";
 import { ThreadView } from "./ThreadView";
 import type { FullThread } from "../api/tauri";
 
+vi.mock("./SmartReplies", () => ({
+  SmartReplies: (props: { onSelect: (text: string) => void }) => (
+    <button class="reply-chip" onClick={() => props.onSelect("Sounds good")}>Sounds good</button>
+  ),
+}));
+
 const b64 = (s: string) =>
   btoa(String.fromCharCode(...new TextEncoder().encode(s))).replace(/\+/g, "-").replace(/\//g, "_");
 
@@ -280,6 +286,24 @@ describe("ThreadView reactions", () => {
     const cards = container.querySelectorAll(".message-card");
     expect(cards[0].querySelector(".add-reaction-btn")).not.toBeNull();
     expect(cards[1].querySelector(".add-reaction-btn")).toBeNull();
+  });
+});
+
+describe("ThreadView smart replies", () => {
+  it("replies to the latest message from someone else, skipping reactions", () => {
+    const thread = makeThread([
+      { from: "Alice <alice@example.com>", body: "Lunch at noon?" },
+      { from: "Bob <bob@example.com>", body: "reaction fallback" },
+    ]);
+    thread.messages[1].reaction = { emoji: "👍", from_addr: "bob@example.com", in_reply_to: "<msg0@example.com>", message_id: "m1" };
+    const { props, container } = renderThread({ thread });
+    fireEvent.click(container.querySelector(".reply-chip")!);
+    const [to, , subject, body, messageId] = (props.onReply as any).mock.calls[0];
+    expect(to).toBe("alice@example.com");
+    expect(subject).toBe("Re: Lunch");
+    expect(body.startsWith("Sounds good")).toBe(true);
+    expect(body).toContain("> Lunch at noon?");
+    expect(messageId).toBe("<msg0@example.com>");
   });
 });
 
