@@ -4,6 +4,7 @@ use chrono::{DateTime, Duration, Local, NaiveDate, TimeZone, Utc};
 use chrono_tz::Tz;
 use reqwest::StatusCode;
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
+use std::sync::LazyLock;
 
 const CALENDAR_API_BASE: &str = "https://www.googleapis.com/calendar/v3";
 // Events-list page size (the API default) and a per-calendar safety cap so a
@@ -12,6 +13,18 @@ const EVENTS_PAGE_SIZE: i32 = 250;
 const PER_CALENDAR_EVENT_CAP: usize = 500;
 const CALENDAR_LIST_PAGE_SIZE: i32 = 250;
 const CALENDAR_LIST_CAP: usize = 1000;
+const REQUEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
+fn build_http_client(timeout: std::time::Duration) -> reqwest::Client {
+    reqwest::Client::builder()
+        .timeout(timeout)
+        .build()
+        .unwrap_or_else(|_| reqwest::Client::new())
+}
+
+/// One connection pool for every Google API client, so each command doesn't
+/// pay for a fresh TLS handshake
+static HTTP_CLIENT: LazyLock<reqwest::Client> = LazyLock::new(|| build_http_client(REQUEST_TIMEOUT));
 
 /// Calendar info returned to frontend
 #[derive(Debug, Clone, Serialize)]
@@ -384,7 +397,7 @@ fn build_event_request(
 impl CalendarClient {
     pub fn new(access_token: String) -> Self {
         Self {
-            http_client: reqwest::Client::new(),
+            http_client: HTTP_CLIENT.clone(),
             access_token,
             api_base: CALENDAR_API_BASE.to_string(),
         }
@@ -1564,73 +1577,102 @@ mod tests {
 
     type Handler = dyn Fn(&str, &str) -> (u16, String) + Send + Sync;
     type Requests = std::sync::Arc<std::sync::Mutex<Vec<(String, String, String)>>>;
+    type Gate = std::sync::Arc<(Box<dyn Fn(&str) -> bool + Send + Sync>, tokio::sync::Barrier)>;
 
-    /// A local HTTP server answering each request with `handler(method,
-    /// path_and_query)`; records every request as (method, target, body)
+    /// A local keep-alive HTTP server answering each request with
+    /// `handler(method, path_and_query)`; records every request as (method,
+    /// target, body) and counts the connections it accepted
     struct StubServer {
         base: String,
         requests: Requests,
+        connections: std::sync::Arc<std::sync::atomic::AtomicUsize>,
     }
 
     impl StubServer {
         async fn start(handler: impl Fn(&str, &str) -> (u16, String) + Send + Sync + 'static) -> Self {
+            Self::start_inner(std::sync::Arc::new(handler), None).await
+        }
+
+        /// Requests whose target satisfies `gated` are held until `n` of them
+        /// are in flight at once, so a caller sending them one at a time
+        /// never gets an answer
+        async fn start_gated(
+            handler: impl Fn(&str, &str) -> (u16, String) + Send + Sync + 'static,
+            gated: impl Fn(&str) -> bool + Send + Sync + 'static,
+            n: usize,
+        ) -> Self {
+            let gate: Gate = std::sync::Arc::new((Box::new(gated), tokio::sync::Barrier::new(n)));
+            Self::start_inner(std::sync::Arc::new(handler), Some(gate)).await
+        }
+
+        async fn start_inner(handler: std::sync::Arc<Handler>, gate: Option<Gate>) -> Self {
             use tokio::io::{AsyncReadExt, AsyncWriteExt};
             let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
             let base = format!("http://{}", listener.local_addr().unwrap());
             let requests: Requests = Default::default();
-            let handler: std::sync::Arc<Handler> = std::sync::Arc::new(handler);
+            let connections = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
             let log = requests.clone();
+            let accepted = connections.clone();
             tokio::spawn(async move {
                 loop {
                     let Ok((mut socket, _)) = listener.accept().await else { return };
+                    accepted.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
                     let handler = handler.clone();
                     let log = log.clone();
+                    let gate = gate.clone();
                     tokio::spawn(async move {
                         let mut buf = Vec::new();
                         let mut chunk = [0u8; 4096];
-                        let header_end = loop {
-                            let n = socket.read(&mut chunk).await.unwrap();
-                            if n == 0 {
+                        loop {
+                            let header_end = loop {
+                                if let Some(i) = buf.windows(4).position(|w| w == b"\r\n\r\n") {
+                                    break i + 4;
+                                }
+                                match socket.read(&mut chunk).await {
+                                    Ok(0) | Err(_) => return,
+                                    Ok(n) => buf.extend_from_slice(&chunk[..n]),
+                                }
+                            };
+                            let head = String::from_utf8_lossy(&buf[..header_end]).to_string();
+                            let content_length = head
+                                .lines()
+                                .find_map(|l| {
+                                    let (k, v) = l.split_once(':')?;
+                                    k.eq_ignore_ascii_case("content-length").then(|| v.trim().parse::<usize>().ok())?
+                                })
+                                .unwrap_or(0);
+                            while buf.len() < header_end + content_length {
+                                match socket.read(&mut chunk).await {
+                                    Ok(0) | Err(_) => return,
+                                    Ok(n) => buf.extend_from_slice(&chunk[..n]),
+                                }
+                            }
+                            let mut request_line = head.lines().next().unwrap_or_default().split(' ');
+                            let method = request_line.next().unwrap_or_default().to_string();
+                            let target = request_line.next().unwrap_or_default().to_string();
+                            let body = String::from_utf8_lossy(&buf[header_end..header_end + content_length]).to_string();
+                            buf.drain(..header_end + content_length);
+                            if let Some(gate) = &gate {
+                                if (gate.0)(&target) {
+                                    gate.1.wait().await;
+                                }
+                            }
+                            let (status, response) = handler(&method, &target);
+                            log.lock().unwrap().push((method, target, body));
+                            let reply = format!(
+                                "HTTP/1.1 {} Stub\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+                                status,
+                                response.len(),
+                                response
+                            );
+                            if socket.write_all(reply.as_bytes()).await.is_err() {
                                 return;
                             }
-                            buf.extend_from_slice(&chunk[..n]);
-                            if let Some(i) = buf.windows(4).position(|w| w == b"\r\n\r\n") {
-                                break i + 4;
-                            }
-                        };
-                        let head = String::from_utf8_lossy(&buf[..header_end]).to_string();
-                        let content_length = head
-                            .lines()
-                            .find_map(|l| {
-                                let (k, v) = l.split_once(':')?;
-                                k.eq_ignore_ascii_case("content-length").then(|| v.trim().parse::<usize>().ok())?
-                            })
-                            .unwrap_or(0);
-                        while buf.len() < header_end + content_length {
-                            let n = socket.read(&mut chunk).await.unwrap();
-                            if n == 0 {
-                                break;
-                            }
-                            buf.extend_from_slice(&chunk[..n]);
                         }
-                        let mut request_line = head.lines().next().unwrap_or_default().split(' ');
-                        let method = request_line.next().unwrap_or_default().to_string();
-                        let target = request_line.next().unwrap_or_default().to_string();
-                        let body = String::from_utf8_lossy(&buf[header_end..]).to_string();
-                        let (status, response) = handler(&method, &target);
-                        log.lock().unwrap().push((method, target, body));
-                        let reply = format!(
-                            "HTTP/1.1 {} Stub\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
-                            status,
-                            response.len(),
-                            response
-                        );
-                        let _ = socket.write_all(reply.as_bytes()).await;
-                        let _ = socket.shutdown().await;
                     });
                 }
             });
-            StubServer { base, requests }
+            StubServer { base, requests, connections }
         }
 
         fn client(&self) -> CalendarClient {
@@ -1639,6 +1681,10 @@ mod tests {
 
         fn requests(&self) -> Vec<(String, String, String)> {
             self.requests.lock().unwrap().clone()
+        }
+
+        fn connections(&self) -> usize {
+            self.connections.load(std::sync::atomic::Ordering::SeqCst)
         }
     }
 
@@ -1662,6 +1708,32 @@ mod tests {
         let ids: Vec<&str> = calendars.iter().map(|c| c.id.as_str()).collect();
         assert_eq!(ids, vec!["first", "second"]);
         assert_eq!(server.requests().len(), 2);
+    }
+
+    #[tokio::test]
+    async fn clients_reuse_connections() {
+        // Every command builds its own client; sharing one connection pool
+        // saves a TLS handshake per request against Google
+        let server = StubServer::start(|_, _| (200, serde_json::json!({ "items": [] }).to_string())).await;
+        for _ in 0..3 {
+            server.client().list_calendars().await.unwrap();
+        }
+        assert_eq!(server.requests().len(), 3);
+        assert_eq!(server.connections(), 1);
+    }
+
+    #[tokio::test]
+    async fn a_request_google_never_answers_fails_instead_of_hanging() {
+        // The gate needs two requests, so the only one sent is never answered
+        let server = StubServer::start_gated(|_, _| (200, "{}".to_string()), |_| true, 2).await;
+        let client = CalendarClient {
+            http_client: build_http_client(std::time::Duration::from_millis(200)),
+            ..server.client()
+        };
+        let result = tokio::time::timeout(std::time::Duration::from_secs(10), client.list_calendars())
+            .await
+            .expect("request hung");
+        assert!(result.is_err());
     }
 
     fn update_stub(method: &str, target: &str) -> (u16, String) {
