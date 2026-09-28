@@ -289,26 +289,27 @@ fn merged_tombstones(
     merged
 }
 
-/// Which side changed a card that both sides have, judged against the base
-#[derive(Debug, PartialEq)]
-enum Changed {
-    Neither,
-    Local,
-    Remote,
-    /// Both sides, or no base to tell
-    Both,
-}
-
-fn changed_side(local: &Card, remote: &Card, base: Option<&Card>) -> Changed {
-    if local == remote {
-        Changed::Neither
-    } else if base == Some(local) {
-        Changed::Remote
-    } else if base == Some(remote) {
-        Changed::Local
-    } else {
-        Changed::Both
+/// A card both sides have, merged field by field against the base: each side
+/// keeps the fields only it changed, so a reorder on one device and a rename
+/// on another both survive. A field changed on both sides, or any field when
+/// there is no base, goes to iCloud when `remote_wins`, else to this device.
+fn merged_card(local: &Card, remote: &Card, base: Option<&Card>, remote_wins: bool) -> Card {
+    let Some(base) = base else {
+        return if remote_wins { remote.clone() } else { local.clone() };
+    };
+    // Destructured so a new Card field can't be left out of the merge
+    let Card { id: _, account_id: _, name: _, query: _, position: _, collapsed: _, color: _, group_by: _, card_type: _ } =
+        local;
+    let mut merged = local.clone();
+    macro_rules! take_remote_changes {
+        ($($field:ident),*) => {$(
+            if remote.$field != base.$field && (local.$field == base.$field || remote_wins) {
+                merged.$field = remote.$field.clone();
+            }
+        )*};
     }
+    take_remote_changes!(account_id, name, query, position, collapsed, color, group_by, card_type);
+    merged
 }
 
 /// Backup cards not tombstoned, split into those owned by a local account
@@ -368,19 +369,13 @@ fn plan_push(
         if tombstones.contains_key(&local.id) {
             continue;
         }
-        let base = record.base.get(&local.id);
         let card = match take_card(&mut remote, &local.id) {
-            // The base stays at the local copy, so the next pull still sees
-            // the change as made elsewhere and applies it here
-            Some(remote) if changed_side(&local, &remote, base) == Changed::Remote => {
-                new_record.base.insert(local.id.clone(), local);
-                remote
-            }
-            _ => {
-                new_record.base.insert(local.id.clone(), local.clone());
-                local
-            }
+            Some(remote) => merged_card(&local, &remote, record.base.get(&local.id), false),
+            None => local.clone(),
         };
+        // The base stays at the local copy, so the next pull still sees
+        // fields taken from iCloud as changed elsewhere and applies them here
+        new_record.base.insert(local.id.clone(), local);
         cards.push(card);
     }
     cards.extend(remote);
@@ -1897,19 +1892,14 @@ fn plan_pull(
             }
             continue;
         };
-        match changed_side(local, &remote, base) {
-            Changed::Neither => {
-                merge.record.base.insert(local.id.clone(), remote);
-            }
-            Changed::Local => {
-                merge.needs_push = true;
-                merge.record.base.insert(local.id.clone(), remote);
-            }
-            Changed::Remote | Changed::Both => {
-                merge.record.base.insert(local.id.clone(), remote.clone());
-                merge.update.push(remote);
-            }
+        let merged = merged_card(local, &remote, base, true);
+        // Against iCloud's copy, the next push sees the fields kept from
+        // this device as changed here
+        merge.needs_push |= merged != remote;
+        if merged != *local {
+            merge.update.push(merged);
         }
+        merge.record.base.insert(local.id.clone(), remote);
     }
 
     for card in remote {
@@ -2690,6 +2680,48 @@ mod tests {
         let merge = plan_pull(&accounts, std::slice::from_ref(&card), b, &SyncRecord::default(), NOW);
         assert_eq!(merge.update, vec![renamed(&card, "Theirs")]);
         assert!(!merge.needs_push);
+    }
+
+    fn moved(card: &Card, position: i32) -> Card {
+        Card { position, ..card.clone() }
+    }
+
+    #[test]
+    fn pull_keeps_a_rename_made_here_when_another_device_reordered() {
+        let accounts = [account("a1", "me@x.com")];
+        let card = owned_card("c", "a1");
+        let b = backup(vec![moved(&card, 5)], &[], &[]);
+        let merge = plan_pull(&accounts, &[renamed(&card, "Mine")], b, &synced(std::slice::from_ref(&card)), NOW);
+        let both = moved(&renamed(&card, "Mine"), 5);
+        assert_eq!(merge.update, vec![both]);
+        assert!(merge.needs_push, "the rename still has to reach iCloud");
+        // Against iCloud's copy, the next push sees the rename as made here
+        assert_eq!(merge.record.base["c"], moved(&card, 5));
+    }
+
+    #[test]
+    fn push_keeps_a_reorder_made_elsewhere_when_this_device_renamed() {
+        let accounts = [account("a1", "me@x.com")];
+        let card = owned_card("c", "a1");
+        let mine = Card { collapsed: true, ..renamed(&card, "Mine") };
+        let b = backup(vec![moved(&card, 5)], &[], &[]);
+        let (pushed, record) = plan_push(&accounts, vec![mine.clone()], b, &synced(std::slice::from_ref(&card)), NOW).unwrap();
+        assert_eq!(pushed.cards, vec![moved(&mine, 5)]);
+        // The next pull still sees the reorder as made elsewhere and applies it here
+        assert_eq!(record.base["c"], mine);
+    }
+
+    #[test]
+    fn a_field_changed_on_both_sides_goes_to_the_side_that_merges() {
+        let accounts = [account("a1", "me@x.com")];
+        let card = owned_card("c", "a1");
+        let mine = moved(&renamed(&card, "Mine"), 1);
+        let theirs = renamed(&card, "Theirs");
+        let merge = plan_pull(&accounts, std::slice::from_ref(&mine), backup(vec![theirs.clone()], &[], &[]), &synced(std::slice::from_ref(&card)), NOW);
+        assert_eq!(merge.update, vec![moved(&theirs, 1)]);
+        let (pushed, _) =
+            plan_push(&accounts, vec![mine.clone()], backup(vec![theirs], &[], &[]), &synced(&[card]), NOW).unwrap();
+        assert_eq!(pushed.cards, vec![mine]);
     }
 
     #[test]
