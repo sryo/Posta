@@ -1119,9 +1119,7 @@ async fn resolve_attachment_file(
         data
     } else {
         let attachment_id = attachment_id.ok_or("No attachment ID or inline data")?;
-        verify_account_exists(state, account_id)?;
-
-        let access_token = get_access_token(state, app_handle, account_id).await?;
+        let access_token = account_access_token(state, app_handle, account_id).await?;
         let gmail = GmailClient::new(access_token);
         evict_token_on_auth_error(
             state,
