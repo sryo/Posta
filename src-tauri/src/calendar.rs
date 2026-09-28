@@ -172,7 +172,7 @@ struct CreateEventRequest {
     location: Option<String>,
     start: EventDateTimeInput,
     end: EventDateTimeInput,
-    attendees: Option<Vec<AttendeeInput>>,
+    attendees: Option<Vec<CalEventAttendee>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     recurrence: Option<Vec<String>>,
 }
@@ -185,11 +185,6 @@ struct EventDateTimeInput {
     // Required by the API for recurring events: the zone the rule expands in
     #[serde(rename = "timeZone", skip_serializing_if = "Option::is_none")]
     time_zone: Option<String>,
-}
-
-#[derive(Debug, Serialize)]
-struct AttendeeInput {
-    email: String,
 }
 
 #[derive(Deserialize)]
@@ -206,7 +201,7 @@ struct CalEventSearchItem {
 
 // Round-trips every attendee field: the RSVP PATCH replaces the whole
 // attendees array, so fields not echoed back would be wiped for everyone
-#[derive(Deserialize, Serialize, Clone, Default)]
+#[derive(Debug, Deserialize, Serialize, Clone, Default)]
 struct CalEventAttendee {
     email: String,
     #[serde(rename = "displayName", skip_serializing_if = "Option::is_none")]
@@ -255,22 +250,48 @@ fn events_list_url(
     url
 }
 
-/// Build a CreateEventRequest from raw parameters (shared by create and update)
-fn build_event_request(
-    summary: String,
-    description: Option<String>,
-    start_time: i64,
-    end_time: i64,
-    all_day: bool,
-    location: Option<String>,
-    attendees: Option<Vec<String>>,
-    recurrence: Option<Vec<String>>,
-    time_zone: Option<&str>,
-) -> Result<CreateEventRequest, String> {
-    let start_dt = DateTime::<Utc>::from_timestamp_millis(start_time).ok_or("Invalid start time")?;
-    let end_dt = DateTime::<Utc>::from_timestamp_millis(end_time).ok_or("Invalid end time")?;
+/// What the event form edits, as sent by create and update
+pub struct EventFields {
+    pub summary: String,
+    pub description: Option<String>,
+    pub location: Option<String>,
+    pub start_time: i64,
+    pub end_time: i64,
+    pub all_day: bool,
+    pub attendees: Option<Vec<String>>,
+    pub recurrence: Option<Vec<String>>,
+}
 
-    let (start, end) = if all_day {
+/// The form only knows addresses. Guests already on the event keep their
+/// whole entry, since the attendees array is replaced wholesale and a bare
+/// address would drop their response, optional flag and comment.
+fn attendees_for_write(emails: Vec<String>, existing: &[CalEventAttendee]) -> Vec<CalEventAttendee> {
+    let mut attendees: Vec<CalEventAttendee> = Vec::with_capacity(emails.len());
+    for email in emails {
+        if attendees.iter().any(|a| a.email.eq_ignore_ascii_case(&email)) {
+            continue;
+        }
+        let attendee = existing
+            .iter()
+            .find(|a| a.email.eq_ignore_ascii_case(&email))
+            .cloned()
+            .unwrap_or(CalEventAttendee { email, ..Default::default() });
+        attendees.push(attendee);
+    }
+    attendees
+}
+
+/// Build the create/update body. `existing_attendees` is the event's current
+/// guest list (empty for a new event).
+fn build_event_request(
+    fields: EventFields,
+    time_zone: Option<&str>,
+    existing_attendees: &[CalEventAttendee],
+) -> Result<CreateEventRequest, String> {
+    let start_dt = DateTime::<Utc>::from_timestamp_millis(fields.start_time).ok_or("Invalid start time")?;
+    let end_dt = DateTime::<Utc>::from_timestamp_millis(fields.end_time).ok_or("Invalid end time")?;
+
+    let (start, end) = if fields.all_day {
         // The form's end date is inclusive; Google's all-day end date is exclusive
         let exclusive_end = end_dt.checked_add_signed(Duration::days(1)).ok_or("Invalid end time")?;
         let date = |dt: DateTime<Utc>| EventDateTimeInput {
@@ -289,20 +310,15 @@ fn build_event_request(
     };
 
     Ok(CreateEventRequest {
-        summary,
-        description,
-        location,
+        summary: fields.summary,
+        description: fields.description,
+        location: fields.location,
         start,
         end,
-        attendees: attendees.map(|emails| {
-            emails
-                .into_iter()
-                .map(|email| AttendeeInput { email })
-                .collect()
-        }),
+        attendees: fields.attendees.map(|emails| attendees_for_write(emails, existing_attendees)),
         // Google requires RFC 5545 property names ("RRULE:FREQ=DAILY"); the
         // form emits bare rule strings ("FREQ=DAILY")
-        recurrence: recurrence.map(|rules| {
+        recurrence: fields.recurrence.map(|rules| {
             rules
                 .into_iter()
                 .map(|rule| {
@@ -508,14 +524,7 @@ impl CalendarClient {
     pub async fn create_event(
         &self,
         calendar_id: &str,
-        summary: String,
-        description: Option<String>,
-        start_time: i64,
-        end_time: i64,
-        all_day: bool,
-        location: Option<String>,
-        attendees: Option<Vec<String>>,
-        recurrence: Option<Vec<String>>,
+        fields: EventFields,
     ) -> Result<CalendarEvent, String> {
         let url = format!(
             "{}/calendars/{}/events",
@@ -524,14 +533,8 @@ impl CalendarClient {
         );
 
         let calendar = self.calendar_info(calendar_id).await;
-        let time_zone = recurrence
-            .as_ref()
-            .and(calendar.as_ref())
-            .and_then(|c| c.timezone.as_deref());
-        let body = build_event_request(
-            summary, description, start_time, end_time, all_day, location, attendees, recurrence,
-            time_zone,
-        )?;
+        let time_zone = recurrence_time_zone(&fields, calendar.as_ref());
+        let body = build_event_request(fields, time_zone, &[])?;
 
         let resp = self
             .http_client
@@ -572,13 +575,11 @@ impl CalendarClient {
             urlencoding::encode(destination_calendar_id)
         );
 
-        let resp = self
-            .http_client
-            .post(&url)
-            .bearer_auth(&self.access_token)
-            .send()
-            .await
-            .map_err(|e| format!("Move event request failed: {}", e))?;
+        let (resp, calendar) = futures::join!(
+            self.http_client.post(&url).bearer_auth(&self.access_token).send(),
+            self.calendar_info(destination_calendar_id)
+        );
+        let resp = resp.map_err(|e| format!("Move event request failed: {}", e))?;
 
         if !resp.status().is_success() {
             let status = resp.status();
@@ -591,7 +592,6 @@ impl CalendarClient {
             .await
             .map_err(|e| format!("Failed to parse moved event: {}", e))?;
 
-        let calendar = self.calendar_info(destination_calendar_id).await;
         written_event(api_event, destination_calendar_id, calendar.as_ref())
             .ok_or_else(|| "Failed to convert moved event".to_string())
     }
@@ -633,14 +633,7 @@ impl CalendarClient {
         &self,
         calendar_id: &str,
         event_id: &str,
-        summary: String,
-        description: Option<String>,
-        start_time: i64,
-        end_time: i64,
-        all_day: bool,
-        location: Option<String>,
-        attendees: Option<Vec<String>>,
-        recurrence: Option<Vec<String>>,
+        fields: EventFields,
     ) -> Result<CalendarEvent, String> {
         let url = format!(
             "{}/calendars/{}/events/{}",
@@ -649,15 +642,19 @@ impl CalendarClient {
             urlencoding::encode(event_id)
         );
 
-        let calendar = self.calendar_info(calendar_id).await;
-        let time_zone = recurrence
-            .as_ref()
-            .and(calendar.as_ref())
-            .and_then(|c| c.timezone.as_deref());
-        let body = build_event_request(
-            summary, description, start_time, end_time, all_day, location, attendees, recurrence,
-            time_zone,
-        )?;
+        let existing_attendees = async {
+            if fields.attendees.is_none() {
+                return Vec::new();
+            }
+            self.event_attendees(calendar_id, event_id).await.unwrap_or_else(|e| {
+                tracing::warn!("Failed to read attendees of event {}: {}", event_id, e);
+                Vec::new()
+            })
+        };
+        let (calendar, existing_attendees) =
+            futures::join!(self.calendar_info(calendar_id), existing_attendees);
+        let time_zone = recurrence_time_zone(&fields, calendar.as_ref());
+        let body = build_event_request(fields, time_zone, &existing_attendees)?;
 
         let resp = self
             .http_client
@@ -681,6 +678,29 @@ impl CalendarClient {
 
         written_event(api_event, calendar_id, calendar.as_ref())
             .ok_or_else(|| "Failed to convert updated event".to_string())
+    }
+
+    async fn event_attendees(&self, calendar_id: &str, event_id: &str) -> Result<Vec<CalEventAttendee>, String> {
+        let url = format!(
+            "{}/calendars/{}/events/{}?fields=id,attendees",
+            CALENDAR_API_BASE,
+            urlencoding::encode(calendar_id),
+            urlencoding::encode(event_id)
+        );
+        let resp = self
+            .http_client
+            .get(&url)
+            .bearer_auth(&self.access_token)
+            .send()
+            .await
+            .map_err(|e| e.to_string())?;
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let body = resp.text().await.unwrap_or_default();
+            return Err(friendly_calendar_error(status, &body));
+        }
+        let event: CalEventSearchItem = resp.json().await.map_err(|e| e.to_string())?;
+        Ok(event.attendees.unwrap_or_default())
     }
 
     /// Query a single calendar for an event by iCalUID
@@ -920,6 +940,11 @@ fn with_rsvp(
         }),
     }
     attendees
+}
+
+/// Recurring events need the zone their rule expands in; single events don't
+fn recurrence_time_zone<'a>(fields: &EventFields, calendar: Option<&'a CalendarInfo>) -> Option<&'a str> {
+    fields.recurrence.as_ref().and(calendar)?.timezone.as_deref()
 }
 
 /// Convert an event returned by a write call. Without the calendar's list
@@ -1372,14 +1397,24 @@ mod tests {
         assert!(url("calendar:week team sync").contains("&q=team%20sync"));
     }
 
+    fn fields(start_time: i64, end_time: i64, all_day: bool) -> EventFields {
+        EventFields {
+            summary: "Title".into(),
+            description: None,
+            location: None,
+            start_time,
+            end_time,
+            all_day,
+            attendees: None,
+            recurrence: None,
+        }
+    }
+
     fn request_json(all_day: bool, recurrence: Option<Vec<String>>, time_zone: Option<&str>) -> serde_json::Value {
         // 2024-12-23 12:00 UTC to 2024-12-24 12:00 UTC, as the form sends all-day dates
         let start = 1_734_955_200_000;
         let end = start + 24 * 3600 * 1000;
-        let req = build_event_request(
-            "Title".into(), None, start, end, all_day, None, None, recurrence, time_zone,
-        )
-        .unwrap();
+        let req = build_event_request(EventFields { recurrence, ..fields(start, end, all_day) }, time_zone, &[]).unwrap();
         serde_json::to_value(req).unwrap()
     }
 
@@ -1406,10 +1441,7 @@ mod tests {
     #[test]
     fn request_accepts_pre_epoch_timestamps() {
         // 1969-12-31T23:59:58.500Z
-        let req = build_event_request(
-            "Title".into(), None, -1_500, 0, false, None, None, None, None,
-        )
-        .unwrap();
+        let req = build_event_request(fields(-1_500, 0, false), None, &[]).unwrap();
         let json = serde_json::to_value(req).unwrap();
         assert_eq!(json["start"]["dateTime"], "1969-12-31T23:59:58.500+00:00");
         assert_eq!(json["end"]["dateTime"], "1970-01-01T00:00:00+00:00");
@@ -1475,6 +1507,57 @@ mod tests {
         assert_eq!(updated[1].email, "me@x.com");
         assert_eq!(updated[1].response_status.as_deref(), Some("tentative"));
         assert_eq!(updated[1].is_self, Some(true));
+    }
+
+    #[test]
+    fn editing_attendees_keeps_existing_guests_entries() {
+        let mut optional = attendee("carol@x.com", false, "tentative");
+        optional.optional = Some(true);
+        optional.comment = Some("maybe".into());
+        let existing = vec![
+            attendee("me@x.com", true, "accepted"),
+            attendee("Bob@X.com", false, "declined"),
+            optional,
+        ];
+        let edited = EventFields {
+            attendees: Some(vec!["me@x.com".into(), "bob@x.com".into(), "dan@x.com".into(), "carol@x.com".into(), "BOB@x.com".into()]),
+            ..fields(0, 3_600_000, false)
+        };
+        let json = serde_json::to_value(build_event_request(edited, None, &existing).unwrap()).unwrap();
+        assert_eq!(
+            json["attendees"],
+            serde_json::json!([
+                { "email": "me@x.com", "responseStatus": "accepted", "self": true },
+                { "email": "Bob@X.com", "responseStatus": "declined" },
+                { "email": "dan@x.com" },
+                { "email": "carol@x.com", "responseStatus": "tentative", "optional": true, "comment": "maybe" },
+            ])
+        );
+
+        // Guests left out of the form are removed; clearing the field clears the list
+        let json = serde_json::to_value(
+            build_event_request(EventFields { attendees: Some(vec!["dan@x.com".into()]), ..fields(0, 0, false) }, None, &existing).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(json["attendees"], serde_json::json!([{ "email": "dan@x.com" }]));
+        let json = serde_json::to_value(build_event_request(fields(0, 0, false), None, &existing).unwrap()).unwrap();
+        assert!(json["attendees"].is_null());
+    }
+
+    #[test]
+    fn recurrence_time_zone_only_for_recurring_events() {
+        let calendar = CalendarInfo {
+            id: "c".into(),
+            name: "C".into(),
+            is_primary: true,
+            access_role: "owner".into(),
+            timezone: Some("Asia/Tokyo".into()),
+        };
+        let single = fields(0, 0, false);
+        let recurring = EventFields { recurrence: Some(vec!["FREQ=DAILY".into()]), ..fields(0, 0, false) };
+        assert_eq!(recurrence_time_zone(&single, Some(&calendar)), None);
+        assert_eq!(recurrence_time_zone(&recurring, Some(&calendar)), Some("Asia/Tokyo"));
+        assert_eq!(recurrence_time_zone(&recurring, None), None);
     }
 
     #[test]
