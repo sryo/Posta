@@ -11,6 +11,15 @@ const PAGE_SIZE: usize = 20;
 const MAX_BATCH_SIZE: usize = 50; // Gmail allows up to 100, but 50 is safer
 const MAX_INLINE_IMAGE_SIZE: i32 = 100_000; // 100KB max for inline images
 
+/// Partial-response fields for thread list entries: message headers and the
+/// part tree (with part headers, for Content-ID) three levels deep, without bodies
+const THREAD_SUMMARY_FIELDS: &str = concat!(
+    "id,messages(id,labelIds,snippet,internalDate,payload(headers,mimeType,",
+    "parts(mimeType,filename,headers,body(size,attachmentId),",
+    "parts(mimeType,filename,headers,body(size,attachmentId),",
+    "parts(mimeType,filename,headers,body(size,attachmentId))))))"
+);
+
 #[derive(Debug, Serialize)]
 pub struct SearchResult {
     pub groups: Vec<ThreadGroup>,
@@ -106,6 +115,9 @@ pub struct FullMessage {
     #[serde(rename = "internalDate")]
     pub internal_date: Option<String>,
     pub payload: Option<MessagePayload>,
+    /// Set when this message is an emoji reaction to another message
+    #[serde(default)]
+    pub reaction: Option<ParsedReaction>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -146,6 +158,17 @@ pub struct DraftMessage {
     pub thread_id: Option<String>,
 }
 
+/// Turn a non-2xx response into an "API error <status>: <body>" error.
+/// Callers match on that text (e.g. "API error 404", "401").
+async fn ensure_success(resp: reqwest::Response) -> Result<reqwest::Response, String> {
+    if resp.status().is_success() {
+        return Ok(resp);
+    }
+    let status = resp.status();
+    let body = resp.text().await.unwrap_or_default();
+    Err(format!("API error {}: {}", status, body))
+}
+
 impl GmailClient {
     pub fn new(access_token: String) -> Self {
         Self {
@@ -156,52 +179,24 @@ impl GmailClient {
 
     /// Search threads with a custom limit (for preview)
     pub async fn search_threads_limited(&self, query: &str, max_results: usize) -> Result<Vec<ThreadGroup>, String> {
-        let url = format!(
-            "{}/users/me/threads?q={}&maxResults={}",
-            GMAIL_API_BASE,
-            urlencoding::encode(query),
-            max_results
-        );
-
-        let resp = self
-            .client
-            .get(&url)
-            .bearer_auth(&self.access_token)
-            .send()
-            .await
-            .map_err(|e| format!("Request failed: {}", e))?;
-
-        if !resp.status().is_success() {
-            let status = resp.status();
-            let body = resp.text().await.unwrap_or_default();
-            return Err(format!("API error {}: {}", status, body));
-        }
-
-        let list: ThreadListResponse = resp
-            .json()
-            .await
-            .map_err(|e| format!("Failed to parse response: {}", e))?;
-
-        let thread_refs = list.threads.unwrap_or_default();
-
-        if thread_refs.is_empty() {
-            return Ok(Vec::new());
-        }
-
-        // Batch fetch thread details (much faster than sequential)
-        let thread_ids: Vec<String> = thread_refs.iter().map(|t| t.id.clone()).collect();
-        let threads = self.batch_get_thread_details(&thread_ids).await?;
-
-        Ok(group_threads_by_date(threads))
+        Ok(self.search_threads(query, max_results, None).await?.groups)
     }
 
     pub async fn search_threads_paginated(&self, query: &str, page_token: Option<&str>) -> Result<SearchResult, String> {
-        // Search for threads
+        self.search_threads(query, PAGE_SIZE, page_token).await
+    }
+
+    async fn search_threads(
+        &self,
+        query: &str,
+        max_results: usize,
+        page_token: Option<&str>,
+    ) -> Result<SearchResult, String> {
         let mut url = format!(
             "{}/users/me/threads?q={}&maxResults={}",
             GMAIL_API_BASE,
             urlencoding::encode(query),
-            PAGE_SIZE
+            max_results
         );
 
         if let Some(token) = page_token {
@@ -216,22 +211,14 @@ impl GmailClient {
             .await
             .map_err(|e| format!("Request failed: {}", e))?;
 
-        if !resp.status().is_success() {
-            let status = resp.status();
-            let body = resp.text().await.unwrap_or_default();
-            return Err(format!("API error {}: {}", status, body));
-        }
-
-        let list: ThreadListResponse = resp
+        let list: ThreadListResponse = ensure_success(resp)
+            .await?
             .json()
             .await
             .map_err(|e| format!("Failed to parse response: {}", e))?;
 
-        let thread_refs = list.threads.unwrap_or_default();
-        let next_page_token = list.next_page_token.clone();
-        let has_more = next_page_token.is_some();
-
-        if thread_refs.is_empty() {
+        let thread_ids: Vec<String> = list.threads.unwrap_or_default().into_iter().map(|t| t.id).collect();
+        if thread_ids.is_empty() {
             return Ok(SearchResult {
                 groups: Vec::new(),
                 next_page_token: None,
@@ -239,15 +226,11 @@ impl GmailClient {
             });
         }
 
-        // Batch fetch thread details (much faster than sequential)
-        let thread_ids: Vec<String> = thread_refs.iter().map(|t| t.id.clone()).collect();
         let threads = self.batch_get_thread_details(&thread_ids).await?;
-
-        // Group by date
         Ok(SearchResult {
             groups: group_threads_by_date(threads),
-            next_page_token,
-            has_more,
+            has_more: list.next_page_token.is_some(),
+            next_page_token: list.next_page_token,
         })
     }
 
@@ -262,16 +245,16 @@ impl GmailClient {
             .await
             .map_err(|e| format!("Request failed: {}", e))?;
 
-        if !resp.status().is_success() {
-            let status = resp.status();
-            let body = resp.text().await.unwrap_or_default();
-            return Err(format!("API error {}: {}", status, body));
-        }
+        let resp = ensure_success(resp).await?;
 
-        let thread: FullThread = resp
+        let mut thread: FullThread = resp
             .json()
             .await
             .map_err(|e| format!("Failed to parse thread: {}", e))?;
+
+        for message in &mut thread.messages {
+            message.reaction = parse_reaction_from_message(message);
+        }
 
         Ok(thread)
     }
@@ -298,11 +281,7 @@ impl GmailClient {
             .await
             .map_err(|e| format!("Request failed: {}", e))?;
 
-        if !resp.status().is_success() {
-            let status = resp.status();
-            let body = resp.text().await.unwrap_or_default();
-            return Err(format!("API error {}: {}", status, body));
-        }
+        ensure_success(resp).await?;
 
         Ok(())
     }
@@ -325,11 +304,7 @@ impl GmailClient {
             .await
             .map_err(|e| format!("Request failed: {}", e))?;
 
-        if !resp.status().is_success() {
-            let status = resp.status();
-            let body = resp.text().await.unwrap_or_default();
-            return Err(format!("API error {}: {}", status, body));
-        }
+        let resp = ensure_success(resp).await?;
 
         #[derive(Deserialize)]
         struct AttachmentResponse {
@@ -345,10 +320,9 @@ impl GmailClient {
     }
 
     async fn get_thread_detail(&self, thread_id: &str) -> Result<Thread, String> {
-        // Use format=full to get attachment info, but limit fields to avoid downloading bodies
         let url = format!(
-            "{}/users/me/threads/{}?format=full&fields=id,messages(id,threadId,labelIds,snippet,internalDate,payload(headers,mimeType,parts(mimeType,filename,body(size,attachmentId),parts(mimeType,filename,body(size,attachmentId)))))",
-            GMAIL_API_BASE, thread_id
+            "{}/users/me/threads/{}?format=full&fields={}",
+            GMAIL_API_BASE, thread_id, THREAD_SUMMARY_FIELDS
         );
 
         let resp = self
@@ -359,18 +333,14 @@ impl GmailClient {
             .await
             .map_err(|e| format!("Request failed: {}", e))?;
 
-        if !resp.status().is_success() {
-            let status = resp.status();
-            let body = resp.text().await.unwrap_or_default();
-            return Err(format!("API error {}: {}", status, body));
-        }
+        let resp = ensure_success(resp).await?;
 
         let detail: ThreadDetail = resp
             .json()
             .await
             .map_err(|e| format!("Failed to parse thread: {}", e))?;
 
-        self.thread_detail_to_thread(detail).await
+        Ok(self.thread_detail_to_thread(detail).await)
     }
 
     /// Batch fetch thread details for multiple thread IDs
@@ -428,7 +398,6 @@ impl GmailClient {
 
         // Build multipart request body
         let mut body = String::new();
-        let fields = "id,historyId,messages(id,threadId,labelIds,snippet,internalDate,payload(headers,mimeType,parts(mimeType,filename,body(size,attachmentId),parts(mimeType,filename,body(size,attachmentId)))))";
 
         for (i, thread_id) in thread_ids.iter().enumerate() {
             body.push_str(&format!("--{}\r\n", boundary));
@@ -436,7 +405,7 @@ impl GmailClient {
             body.push_str(&format!("Content-ID: <item{}>\r\n\r\n", i));
             body.push_str(&format!(
                 "GET /gmail/v1/users/me/threads/{}?format=full&fields={} HTTP/1.1\r\n\r\n",
-                thread_id, fields
+                thread_id, THREAD_SUMMARY_FIELDS
             ));
         }
         body.push_str(&format!("--{}--\r\n", boundary));
@@ -458,78 +427,23 @@ impl GmailClient {
         }
 
         // Get the response boundary from Content-Type header (must extract before consuming body)
-        let resp_boundary: String = resp
+        let resp_boundary = resp
             .headers()
             .get("content-type")
             .and_then(|v| v.to_str().ok())
-            .unwrap_or("")
-            .split("boundary=")
-            .nth(1)
-            .map(|b| b.trim_matches('"').to_string())
+            .and_then(batch_boundary)
             .ok_or("Missing boundary in response")?;
 
         let resp_body = resp.text().await.map_err(|e| format!("Failed to read response: {}", e))?;
 
-        self.parse_batch_response(&resp_body, &resp_boundary).await
-    }
-
-    /// Parse a batch response and extract thread details
-    async fn parse_batch_response(&self, body: &str, boundary: &str) -> Result<Vec<Thread>, String> {
         let mut threads = Vec::new();
-        let delimiter = format!("--{}", boundary);
-
-        // Split by boundary, skip first empty part and last closing boundary
-        let parts: Vec<&str> = body.split(&delimiter).collect();
-
-        for part in parts.iter().skip(1) {
-            // Skip the closing boundary marker
-            if part.trim() == "--" || part.trim().is_empty() {
-                continue;
-            }
-
-            // Find the JSON body (after double newline in HTTP response)
-            // Format: headers\r\n\r\nHTTP/1.1 200 OK\r\n...headers...\r\n\r\n{json}
-            if let Some(json_start) = part.find("\r\n\r\n{") {
-                let json_part = &part[json_start + 4..]; // Skip \r\n\r\n
-                if let Some(json_end) = json_part.rfind('}') {
-                    let json_str = &json_part[..=json_end];
-
-                    match serde_json::from_str::<ThreadDetail>(json_str) {
-                        Ok(detail) => {
-                            if let Ok(thread) = self.thread_detail_to_thread(detail).await {
-                                threads.push(thread);
-                            }
-                        }
-                        Err(e) => {
-                            tracing::warn!("Failed to parse thread from batch: {}", e);
-                        }
-                    }
-                }
-            } else if let Some(json_start) = part.find("\n\n{") {
-                // Try Unix-style line endings
-                let json_part = &part[json_start + 3..];
-                if let Some(json_end) = json_part.rfind('}') {
-                    let json_str = &json_part[..=json_end];
-
-                    match serde_json::from_str::<ThreadDetail>(json_str) {
-                        Ok(detail) => {
-                            if let Ok(thread) = self.thread_detail_to_thread(detail).await {
-                                threads.push(thread);
-                            }
-                        }
-                        Err(e) => {
-                            tracing::warn!("Failed to parse thread from batch: {}", e);
-                        }
-                    }
-                }
-            }
+        for detail in parse_batch_body(&resp_body, &resp_boundary) {
+            threads.push(self.thread_detail_to_thread(detail).await);
         }
-
         Ok(threads)
     }
 
-    /// Convert ThreadDetail to Thread (extracted from get_thread_detail for reuse)
-    async fn thread_detail_to_thread(&self, detail: ThreadDetail) -> Result<Thread, String> {
+    async fn thread_detail_to_thread(&self, detail: ThreadDetail) -> Thread {
         let messages = detail.messages.unwrap_or_default();
         let latest_msg = messages.last();
 
@@ -559,29 +473,12 @@ impl GmailClient {
             .filter(|m| {
                 m.label_ids
                     .as_ref()
-                    .map(|labels| labels.contains(&"UNREAD".to_string()))
-                    .unwrap_or(false)
+                    .is_some_and(|labels| labels.iter().any(|l| l == "UNREAD"))
             })
             .count() as i32;
 
-        let mut participants: Vec<String> = messages
-            .iter()
-            .filter_map(|m| {
-                m.payload.as_ref().and_then(|p| {
-                    p.headers.as_ref().and_then(|headers| {
-                        headers
-                            .iter()
-                            .find(|h| h.name.eq_ignore_ascii_case("From"))
-                            .map(|h| extract_email_address(&h.value))
-                    })
-                })
-            })
-            .collect();
-        participants.dedup();
-
-        let labels: Vec<String> = latest_msg
-            .and_then(|m| m.label_ids.clone())
-            .unwrap_or_default();
+        let participants = thread_participants(&messages);
+        let labels = thread_labels(&messages);
 
         // Extract attachments from all messages
         let mut attachments: Vec<Attachment> = Vec::new();
@@ -636,15 +533,11 @@ impl GmailClient {
             if attachment.is_calendar() {
                 match self.get_attachment(&attachment.message_id, &attachment.attachment_id).await {
                     Ok(data) => {
-                        use base64::Engine;
-                        let normalized = data.replace('-', "+").replace('_', "/");
-                        if let Ok(decoded_bytes) = base64::engine::general_purpose::STANDARD.decode(&normalized) {
-                            if let Ok(ics_content) = String::from_utf8(decoded_bytes) {
-                                if let Some(event) = parse_ics_content(&ics_content) {
-                                    calendar_event = Some(event);
-                                    break;
-                                }
-                            }
+                        if let Some(event) =
+                            decode_base64_body(&data).and_then(|ics| parse_ics_content(&ics))
+                        {
+                            calendar_event = Some(event);
+                            break;
                         }
                     }
                     Err(e) => {
@@ -656,7 +549,7 @@ impl GmailClient {
 
         let has_attachment = !attachments.is_empty();
 
-        Ok(Thread {
+        Thread {
             gmail_thread_id: detail.id,
             account_id: String::new(),
             subject,
@@ -668,10 +561,11 @@ impl GmailClient {
             has_attachment,
             attachments,
             calendar_event,
-        })
+        }
     }
 
     /// Send an email (with optional attachments)
+    #[allow(clippy::too_many_arguments)]
     pub async fn send_email(
         &self,
         to: &str,
@@ -682,160 +576,21 @@ impl GmailClient {
         attachments: &[SendAttachment],
         is_html: bool,
     ) -> Result<(), String> {
-        let url = format!("{}/users/me/messages/send", GMAIL_API_BASE);
-
-        let message = self.build_mime_message(to, cc, bcc, subject, body, attachments, None, is_html)?;
-
-        // Base64url encode
-        use base64::Engine;
-        let encoded = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(message.as_bytes());
-
-        let request_body = serde_json::json!({
-            "raw": encoded
+        let message = build_mime_message(&MimeMessage {
+            to,
+            cc,
+            bcc,
+            subject,
+            body,
+            attachments,
+            reply_headers: None,
+            is_html,
         });
-
-        let resp = self
-            .client
-            .post(&url)
-            .bearer_auth(&self.access_token)
-            .json(&request_body)
-            .send()
-            .await
-            .map_err(|e| format!("Request failed: {}", e))?;
-
-        if !resp.status().is_success() {
-            let status = resp.status();
-            let body = resp.text().await.unwrap_or_default();
-            return Err(format!("API error {}: {}", status, body));
-        }
-
-        Ok(())
-    }
-
-    /// Build a MIME message with multipart/alternative for HTML emails
-    fn build_mime_message(
-        &self,
-        to: &str,
-        cc: &str,
-        bcc: &str,
-        subject: &str,
-        body: &str,
-        attachments: &[SendAttachment],
-        reply_headers: Option<(&str, &str)>, // (In-Reply-To, References)
-        is_html: bool,
-    ) -> Result<String, String> {
-        let mut message = format!("To: {}\r\n", encode_address_header(to));
-
-        // Add CC if not empty
-        if !cc.trim().is_empty() {
-            message.push_str(&format!("Cc: {}\r\n", encode_address_header(cc)));
-        }
-
-        // Add BCC if not empty
-        if !bcc.trim().is_empty() {
-            message.push_str(&format!("Bcc: {}\r\n", encode_address_header(bcc)));
-        }
-
-        message.push_str(&format!("Subject: {}\r\n", encode_header_value(subject)));
-        message.push_str("MIME-Version: 1.0\r\n");
-
-        // Add threading headers if this is a reply
-        if let Some((in_reply_to, references)) = reply_headers {
-            message.push_str(&format!(
-                "In-Reply-To: {}\r\nReferences: {}\r\n",
-                sanitize_header_value(in_reply_to),
-                sanitize_header_value(references)
-            ));
-        }
-
-        if !is_html && attachments.is_empty() {
-            // Simple plain text message
-            message.push_str("Content-Type: text/plain; charset=utf-8\r\n\r\n");
-            message.push_str(body);
-        } else if is_html && attachments.is_empty() {
-            // HTML message with plain text fallback (multipart/alternative)
-            let alt_boundary = format!("----=_Alt_{}", uuid::Uuid::new_v4().to_string().replace("-", ""));
-            message.push_str(&format!("Content-Type: multipart/alternative; boundary=\"{}\"\r\n\r\n", alt_boundary));
-
-            // Plain text part (strip HTML for fallback)
-            let plain_body = strip_html_tags(body);
-            message.push_str(&format!("--{}\r\n", alt_boundary));
-            message.push_str("Content-Type: text/plain; charset=utf-8\r\n\r\n");
-            message.push_str(&plain_body);
-            message.push_str("\r\n");
-
-            // HTML part
-            message.push_str(&format!("--{}\r\n", alt_boundary));
-            message.push_str("Content-Type: text/html; charset=utf-8\r\n\r\n");
-            message.push_str(body);
-            message.push_str("\r\n");
-
-            message.push_str(&format!("--{}--\r\n", alt_boundary));
-        } else {
-            // Multipart message with attachments
-            let boundary = format!("----=_Part_{}", uuid::Uuid::new_v4().to_string().replace("-", ""));
-            message.push_str(&format!("Content-Type: multipart/mixed; boundary=\"{}\"\r\n\r\n", boundary));
-
-            if is_html {
-                // Include multipart/alternative for HTML with plain text fallback
-                let alt_boundary = format!("----=_Alt_{}", uuid::Uuid::new_v4().to_string().replace("-", ""));
-                message.push_str(&format!("--{}\r\n", boundary));
-                message.push_str(&format!("Content-Type: multipart/alternative; boundary=\"{}\"\r\n\r\n", alt_boundary));
-
-                // Plain text part
-                let plain_body = strip_html_tags(body);
-                message.push_str(&format!("--{}\r\n", alt_boundary));
-                message.push_str("Content-Type: text/plain; charset=utf-8\r\n\r\n");
-                message.push_str(&plain_body);
-                message.push_str("\r\n");
-
-                // HTML part
-                message.push_str(&format!("--{}\r\n", alt_boundary));
-                message.push_str("Content-Type: text/html; charset=utf-8\r\n\r\n");
-                message.push_str(body);
-                message.push_str("\r\n");
-
-                message.push_str(&format!("--{}--\r\n", alt_boundary));
-            } else {
-                // Plain text part only
-                message.push_str(&format!("--{}\r\n", boundary));
-                message.push_str("Content-Type: text/plain; charset=utf-8\r\n\r\n");
-                message.push_str(body);
-                message.push_str("\r\n");
-            }
-
-            // Attachment parts
-            for attachment in attachments {
-                message.push_str(&format!("--{}\r\n", boundary));
-                message.push_str(&format!(
-                    "Content-Type: {}; name=\"{}\"\r\n",
-                    attachment.mime_type, attachment.filename
-                ));
-                message.push_str("Content-Transfer-Encoding: base64\r\n");
-                message.push_str(&format!(
-                    "Content-Disposition: attachment; filename=\"{}\"\r\n\r\n",
-                    attachment.filename
-                ));
-                // The data is already base64-encoded from frontend, but Gmail expects standard base64
-                // We need to normalize it (remove URL-safe chars if any)
-                let normalized_data = attachment.data
-                    .replace('-', "+")
-                    .replace('_', "/");
-                // Add line breaks every 76 chars for RFC compliance
-                for chunk in normalized_data.as_bytes().chunks(76) {
-                    message.push_str(std::str::from_utf8(chunk).unwrap_or(""));
-                    message.push_str("\r\n");
-                }
-            }
-
-            // Final boundary
-            message.push_str(&format!("--{}--\r\n", boundary));
-        }
-
-        Ok(message)
+        self.send_raw(&message, None).await
     }
 
     /// Reply to a thread (with optional attachments)
+    #[allow(clippy::too_many_arguments)]
     pub async fn reply_to_thread(
         &self,
         thread_id: &str,
@@ -848,23 +603,29 @@ impl GmailClient {
         attachments: &[SendAttachment],
         is_html: bool,
     ) -> Result<(), String> {
+        let reply_headers = self.resolve_reply_headers(thread_id, message_id).await;
+        let message = build_mime_message(&MimeMessage {
+            to,
+            cc,
+            bcc,
+            subject,
+            body,
+            attachments,
+            reply_headers: reply_headers
+                .as_ref()
+                .map(|(in_reply_to, references)| (in_reply_to.as_str(), references.as_str())),
+            is_html,
+        });
+        self.send_raw(&message, Some(thread_id)).await
+    }
+
+    async fn send_raw(&self, message: &str, thread_id: Option<&str>) -> Result<(), String> {
         let url = format!("{}/users/me/messages/send", GMAIL_API_BASE);
 
-        let reply_headers = self.resolve_reply_headers(thread_id, message_id).await;
-        let reply_headers_ref = reply_headers
-            .as_ref()
-            .map(|(in_reply_to, references)| (in_reply_to.as_str(), references.as_str()));
-
-        let message = self.build_mime_message(to, cc, bcc, subject, body, attachments, reply_headers_ref, is_html)?;
-
-        // Base64url encode
-        use base64::Engine;
-        let encoded = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(message.as_bytes());
-
-        let request_body = serde_json::json!({
-            "raw": encoded,
-            "threadId": thread_id
-        });
+        let mut request_body = serde_json::json!({ "raw": encode_raw_message(message) });
+        if let Some(tid) = thread_id {
+            request_body["threadId"] = serde_json::json!(tid);
+        }
 
         let resp = self
             .client
@@ -875,11 +636,7 @@ impl GmailClient {
             .await
             .map_err(|e| format!("Request failed: {}", e))?;
 
-        if !resp.status().is_success() {
-            let status = resp.status();
-            let body = resp.text().await.unwrap_or_default();
-            return Err(format!("API error {}: {}", status, body));
-        }
+        ensure_success(resp).await?;
 
         Ok(())
     }
@@ -903,30 +660,7 @@ impl GmailClient {
         }
 
         let thread = self.get_thread(thread_id).await.ok()?;
-        // Prefer the message matching the provided Gmail hex id; fall back to
-        // the last message in the thread
-        let parent = message_id
-            .and_then(|id| thread.messages.iter().find(|m| m.id == id))
-            .or_else(|| thread.messages.last())?;
-        let headers = parent.payload.as_ref()?.headers.as_ref()?;
-
-        let parent_message_id = headers
-            .iter()
-            .find(|h| h.name.eq_ignore_ascii_case("Message-ID"))
-            .map(|h| ensure_angle_brackets(&h.value))?;
-        let parent_references = headers
-            .iter()
-            .find(|h| h.name.eq_ignore_ascii_case("References"))
-            .map(|h| h.value.trim().to_string())
-            .unwrap_or_default();
-
-        let references = if parent_references.is_empty() {
-            parent_message_id.clone()
-        } else {
-            format!("{} {}", parent_references, parent_message_id)
-        };
-
-        Some((parent_message_id, references))
+        reply_headers_from_thread(&thread, message_id)
     }
 
     /// List all labels for the authenticated user
@@ -941,11 +675,7 @@ impl GmailClient {
             .await
             .map_err(|e| format!("Request failed: {}", e))?;
 
-        if !resp.status().is_success() {
-            let status = resp.status();
-            let body = resp.text().await.unwrap_or_default();
-            return Err(format!("API error {}: {}", status, body));
-        }
+        let resp = ensure_success(resp).await?;
 
         let response: ListLabelsResponse = resp
             .json()
@@ -956,6 +686,7 @@ impl GmailClient {
     }
 
     /// Create a new draft
+    #[allow(clippy::too_many_arguments)]
     pub async fn create_draft(
         &self,
         to: &str,
@@ -967,46 +698,12 @@ impl GmailClient {
         is_html: bool,
     ) -> Result<GmailDraft, String> {
         let url = format!("{}/users/me/drafts", GMAIL_API_BASE);
-
-        let message = self.build_mime_message(to, cc, bcc, subject, body, &[], None, is_html)?;
-
-        use base64::Engine;
-        let encoded = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(message.as_bytes());
-
-        let mut request_body = serde_json::json!({
-            "message": {
-                "raw": encoded
-            }
-        });
-
-        if let Some(tid) = thread_id {
-            request_body["message"]["threadId"] = serde_json::json!(tid);
-        }
-
-        let resp = self
-            .client
-            .post(&url)
-            .bearer_auth(&self.access_token)
-            .json(&request_body)
-            .send()
-            .await
-            .map_err(|e| format!("Request failed: {}", e))?;
-
-        if !resp.status().is_success() {
-            let status = resp.status();
-            let body = resp.text().await.unwrap_or_default();
-            return Err(format!("API error {}: {}", status, body));
-        }
-
-        let draft: GmailDraft = resp
-            .json()
-            .await
-            .map_err(|e| format!("Failed to parse draft: {}", e))?;
-
-        Ok(draft)
+        let draft = MimeMessage { to, cc, bcc, subject, body, is_html, ..Default::default() };
+        self.upsert_draft(self.client.post(&url), draft, thread_id).await
     }
 
     /// Update an existing draft
+    #[allow(clippy::too_many_arguments)]
     pub async fn update_draft(
         &self,
         draft_id: &str,
@@ -1019,15 +716,29 @@ impl GmailClient {
         is_html: bool,
     ) -> Result<GmailDraft, String> {
         let url = format!("{}/users/me/drafts/{}", GMAIL_API_BASE, draft_id);
+        let draft = MimeMessage { to, cc, bcc, subject, body, is_html, ..Default::default() };
+        self.upsert_draft(self.client.put(&url), draft, thread_id).await
+    }
 
-        let message = self.build_mime_message(to, cc, bcc, subject, body, &[], None, is_html)?;
-
-        use base64::Engine;
-        let encoded = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(message.as_bytes());
+    async fn upsert_draft(
+        &self,
+        request: reqwest::RequestBuilder,
+        mut draft: MimeMessage<'_>,
+        thread_id: Option<&str>,
+    ) -> Result<GmailDraft, String> {
+        // Gmail only files a draft into a thread when it carries the RFC 2822
+        // threading headers, not just the threadId
+        let reply_headers = match thread_id {
+            Some(tid) => self.resolve_reply_headers(tid, None).await,
+            None => None,
+        };
+        draft.reply_headers = reply_headers
+            .as_ref()
+            .map(|(in_reply_to, references)| (in_reply_to.as_str(), references.as_str()));
 
         let mut request_body = serde_json::json!({
             "message": {
-                "raw": encoded
+                "raw": encode_raw_message(&build_mime_message(&draft))
             }
         });
 
@@ -1035,27 +746,18 @@ impl GmailClient {
             request_body["message"]["threadId"] = serde_json::json!(tid);
         }
 
-        let resp = self
-            .client
-            .put(&url)
+        let resp = request
             .bearer_auth(&self.access_token)
             .json(&request_body)
             .send()
             .await
             .map_err(|e| format!("Request failed: {}", e))?;
 
-        if !resp.status().is_success() {
-            let status = resp.status();
-            let body = resp.text().await.unwrap_or_default();
-            return Err(format!("API error {}: {}", status, body));
-        }
+        let resp = ensure_success(resp).await?;
 
-        let draft: GmailDraft = resp
-            .json()
+        resp.json()
             .await
-            .map_err(|e| format!("Failed to parse draft: {}", e))?;
-
-        Ok(draft)
+            .map_err(|e| format!("Failed to parse draft: {}", e))
     }
 
     /// Delete a draft
@@ -1070,11 +772,7 @@ impl GmailClient {
             .await
             .map_err(|e| format!("Request failed: {}", e))?;
 
-        if !resp.status().is_success() {
-            let status = resp.status();
-            let body = resp.text().await.unwrap_or_default();
-            return Err(format!("API error {}: {}", status, body));
-        }
+        ensure_success(resp).await?;
 
         Ok(())
     }
@@ -1093,11 +791,7 @@ impl GmailClient {
             .await
             .map_err(|e| format!("Request failed: {}", e))?;
 
-        if !resp.status().is_success() {
-            let status = resp.status();
-            let body = resp.text().await.unwrap_or_default();
-            return Err(format!("API error {}: {}", status, body));
-        }
+        let resp = ensure_success(resp).await?;
 
         #[derive(Deserialize)]
         struct Profile {
@@ -1116,11 +810,10 @@ impl GmailClient {
     /// Get changes since a given history ID
     /// Returns thread IDs that were modified or deleted
     pub async fn get_history_changes(&self, start_history_id: &str) -> Result<HistoryChanges, String> {
-        let mut all_modified_thread_ids = std::collections::HashSet::new();
-        let mut deleted_candidate_thread_ids = std::collections::HashSet::new();
-        let mut all_deleted_message_ids = std::collections::HashSet::new();
-        #[allow(unused_assignments)]
-        let mut new_history_id = start_history_id.to_string();
+        let mut all_modified_thread_ids = HashSet::new();
+        let mut deleted_candidate_thread_ids = HashSet::new();
+        let mut all_deleted_message_ids = HashSet::new();
+        let mut new_history_id;
         let mut page_token: Option<String> = None;
 
         loop {
@@ -1147,11 +840,7 @@ impl GmailClient {
                 return Err("History ID expired".to_string());
             }
 
-            if !resp.status().is_success() {
-                let status = resp.status();
-                let body = resp.text().await.unwrap_or_default();
-                return Err(format!("API error {}: {}", status, body));
-            }
+            let resp = ensure_success(resp).await?;
 
             let history_resp: HistoryListResponse = resp
                 .json()
@@ -1241,11 +930,7 @@ impl GmailClient {
             return Ok(false);
         }
 
-        if !resp.status().is_success() {
-            let status = resp.status();
-            let body = resp.text().await.unwrap_or_default();
-            return Err(format!("API error {}: {}", status, body));
-        }
+        ensure_success(resp).await?;
 
         Ok(true)
     }
@@ -1306,15 +991,111 @@ pub struct HistoryChanges {
     pub new_history_id: String,
 }
 
+/// The `boundary` parameter of a multipart Content-Type header value
+fn batch_boundary(content_type: &str) -> Option<String> {
+    content_type.split(';').find_map(|param| {
+        let (key, value) = param.split_once('=')?;
+        key.trim()
+            .eq_ignore_ascii_case("boundary")
+            .then(|| value.trim().trim_matches('"').to_string())
+    })
+}
+
+/// Thread details from a Gmail batch response. Each part wraps an HTTP
+/// response whose JSON body follows the first blank line after the status
+/// line; sub-requests that failed (e.g. 429) carry an error body and are
+/// skipped so the caller can retry them.
+fn parse_batch_body(body: &str, boundary: &str) -> Vec<ThreadDetail> {
+    let delimiter = format!("--{}", boundary);
+    body.split(&delimiter)
+        .skip(1)
+        .filter_map(|part| {
+            let json_start = part.find("\r\n\r\n{").map(|i| i + 4)
+                .or_else(|| part.find("\n\n{").map(|i| i + 2))?;
+            let json_part = &part[json_start..];
+            let json_str = &json_part[..=json_part.rfind('}')?];
+            serde_json::from_str::<ThreadDetail>(json_str)
+                .map_err(|e| tracing::warn!("Failed to parse thread from batch: {}", e))
+                .ok()
+        })
+        .collect()
+}
+
 fn extract_email_address(from: &str) -> String {
-    // Parse "Name <email@example.com>" format - extract the email part
-    if let Some(start) = from.find('<') {
-        if let Some(end) = from.find('>') {
-            return from[start + 1..end].trim().to_string();
+    // Parse "Name <email@example.com>" format - extract the email part. The
+    // address is the last bracketed group; the display name may contain '<' or '>'
+    if let Some(start) = from.rfind('<') {
+        if let Some(len) = from[start..].find('>') {
+            return from[start + 1..start + len].trim().to_string();
         }
     }
     // Already just an email address
     from.trim().to_string()
+}
+
+/// Thread-level labels as Gmail defines them: a thread carries a label when any
+/// of its messages does (the latest message alone may be a reply with only SENT)
+fn thread_labels(messages: &[MessageDetail]) -> Vec<String> {
+    let mut labels: Vec<String> = Vec::new();
+    for label in messages.iter().filter_map(|m| m.label_ids.as_ref()).flatten() {
+        if !labels.contains(label) {
+            labels.push(label.clone());
+        }
+    }
+    labels
+}
+
+/// Sender addresses in first-seen order, without duplicates
+fn thread_participants(messages: &[MessageDetail]) -> Vec<String> {
+    let mut participants: Vec<String> = Vec::new();
+    for message in messages {
+        let from = message
+            .payload
+            .as_ref()
+            .and_then(|p| find_header(p.headers.as_deref(), "From"));
+        if let Some(from) = from {
+            let email = extract_email_address(from);
+            if !participants.iter().any(|p| p.eq_ignore_ascii_case(&email)) {
+                participants.push(email);
+            }
+        }
+    }
+    participants
+}
+
+/// Threading headers (In-Reply-To, References) for a reply to `thread`.
+/// The parent is the message with Gmail id `message_id`, or else the latest
+/// message that is not a draft (the reply's own saved draft is in the thread).
+fn reply_headers_from_thread(
+    thread: &FullThread,
+    message_id: Option<&str>,
+) -> Option<(String, String)> {
+    let is_draft = |m: &FullMessage| {
+        m.label_ids
+            .as_ref()
+            .is_some_and(|labels| labels.iter().any(|l| l == "DRAFT"))
+    };
+    let parent = message_id
+        .and_then(|id| thread.messages.iter().find(|m| m.id == id))
+        .or_else(|| thread.messages.iter().rev().find(|m| !is_draft(m)))?;
+    let headers = parent.payload.as_ref()?.headers.as_deref();
+
+    let parent_message_id = ensure_angle_brackets(find_header(headers, "Message-ID")?);
+    let references = match find_header(headers, "References").map(str::trim) {
+        Some(parent_references) if !parent_references.is_empty() => {
+            format!("{} {}", parent_references, parent_message_id)
+        }
+        _ => parent_message_id.clone(),
+    };
+
+    Some((parent_message_id, references))
+}
+
+fn find_header<'a>(headers: Option<&'a [Header]>, name: &str) -> Option<&'a str> {
+    headers?
+        .iter()
+        .find(|h| h.name.eq_ignore_ascii_case(name))
+        .map(|h| h.value.as_str())
 }
 
 /// Check that `line` is property `name`, i.e. the name is followed by ':' or ';'
@@ -1324,74 +1105,116 @@ fn ics_property_matches(line: &str, name: &str) -> bool {
         && matches!(line.as_bytes().get(name.len()), Some(b':') | Some(b';'))
 }
 
-/// Extract a property value from an ICS block by name
-fn get_ics_property(block: &str, name: &str) -> Option<String> {
-    get_ics_property_with_params(block, name).map(|(_, value)| value)
-}
-
-/// Extract a property's parameters and value from an ICS block by name.
-/// For "DTSTART;TZID=America/New_York:20240115T100000" returns
-/// ("TZID=America/New_York", "20240115T100000"); params are empty when absent.
-fn get_ics_property_with_params(block: &str, name: &str) -> Option<(String, String)> {
-    for line in block.lines() {
-        let line = line.trim();
-        if ics_property_matches(line, name) {
-            if let Some(colon_pos) = line.find(':') {
-                let params = line[name.len()..colon_pos]
-                    .trim_start_matches(';')
-                    .to_string();
-                return Some((params, line[colon_pos + 1..].to_string()));
-            }
+/// Join RFC 5545 folded lines (a CRLF followed by a space or tab continues the
+/// previous line) and return the logical content lines
+fn unfold_ics_lines(ics_data: &str) -> Vec<String> {
+    let mut lines: Vec<String> = Vec::new();
+    for raw in ics_data.split('\n') {
+        let raw = raw.strip_suffix('\r').unwrap_or(raw);
+        match (raw.strip_prefix([' ', '\t']), lines.last_mut()) {
+            (Some(continuation), Some(last)) => last.push_str(continuation),
+            _ => lines.push(raw.to_string()),
         }
     }
-    None
+    lines
+}
+
+/// Find property `name` among `lines` and return its (parameters, value).
+/// For "DTSTART;TZID=America/New_York:20240115T100000" that is
+/// ("TZID=America/New_York", "20240115T100000"); parameters are empty when absent.
+fn find_ics_property(lines: &[&str], name: &str) -> Option<(String, String)> {
+    lines.iter().find_map(|line| {
+        if !ics_property_matches(line, name) {
+            return None;
+        }
+        // Parameter values may be quoted and contain ':' (e.g. CN="Doe: Jane")
+        let mut in_quotes = false;
+        let colon_pos = line.char_indices().find_map(|(i, c)| match c {
+            '"' => {
+                in_quotes = !in_quotes;
+                None
+            }
+            ':' if !in_quotes => Some(i),
+            _ => None,
+        })?;
+        let params = line[name.len()..colon_pos].trim_start_matches(';').to_string();
+        Some((params, line[colon_pos + 1..].to_string()))
+    })
+}
+
+fn find_ics_value(lines: &[&str], name: &str) -> Option<String> {
+    find_ics_property(lines, name).map(|(_, value)| value)
+}
+
+/// Decode RFC 5545 TEXT escapes (\n, \, \; \\)
+fn unescape_ics_text(value: &str) -> String {
+    let mut out = String::with_capacity(value.len());
+    let mut chars = value.chars();
+    while let Some(c) = chars.next() {
+        if c != '\\' {
+            out.push(c);
+            continue;
+        }
+        match chars.next() {
+            Some('n') | Some('N') => out.push('\n'),
+            Some(other) => out.push(other),
+            None => out.push('\\'),
+        }
+    }
+    out
+}
+
+fn strip_mailto(value: &str) -> String {
+    match value.get(..7) {
+        Some(prefix) if prefix.eq_ignore_ascii_case("mailto:") => value[7..].to_string(),
+        _ => value.to_string(),
+    }
 }
 
 /// Parse ICS calendar data and extract the first event
-/// Uses simple text parsing since the icalendar crate has a complex API
 fn parse_ics_content(ics_data: &str) -> Option<CalendarEvent> {
-    // Check if this is a valid calendar
-    if !ics_data.contains("BEGIN:VCALENDAR") || !ics_data.contains("BEGIN:VEVENT") {
-        return None;
+    let unfolded = unfold_ics_lines(ics_data);
+    let lines: Vec<&str> = unfolded.iter().map(|l| l.trim()).collect();
+
+    let event_start = lines.iter().position(|l| *l == "BEGIN:VEVENT")?;
+    let event_len = lines[event_start..].iter().position(|l| *l == "END:VEVENT")?;
+
+    // Properties of the event itself, excluding nested components such as
+    // VALARM whose DESCRIPTION would otherwise be taken for the event's
+    let mut event_lines = Vec::new();
+    let mut depth = 0usize;
+    for line in &lines[event_start + 1..event_start + event_len] {
+        if line.starts_with("BEGIN:") {
+            depth += 1;
+        } else if line.starts_with("END:") {
+            depth = depth.saturating_sub(1);
+        } else if depth == 0 {
+            event_lines.push(*line);
+        }
     }
 
-    // Get METHOD from calendar level
-    let method = get_ics_property(ics_data, "METHOD");
+    let method = find_ics_value(&lines[..event_start], "METHOD");
+    let text = |name: &str| find_ics_value(&event_lines, name).map(|v| unescape_ics_text(&v));
 
-    // Extract VEVENT block
-    let event_start = ics_data.find("BEGIN:VEVENT")?;
-    let event_end = ics_data.find("END:VEVENT")?;
-    let event_block = &ics_data[event_start..event_end];
+    let title = text("SUMMARY").unwrap_or_else(|| "(No title)".to_string());
+    let uid = find_ics_value(&event_lines, "UID");
+    let location = text("LOCATION");
+    let description = text("DESCRIPTION");
+    let status = find_ics_value(&event_lines, "STATUS");
 
-    let title = get_ics_property(event_block, "SUMMARY").unwrap_or_else(|| "(No title)".to_string());
-    let uid = get_ics_property(event_block, "UID");
-    let location = get_ics_property(event_block, "LOCATION");
-    let description = get_ics_property(event_block, "DESCRIPTION");
-    let status = get_ics_property(event_block, "STATUS");
-
-    // Parse DTSTART
-    let (dtstart_params, dtstart) = get_ics_property_with_params(event_block, "DTSTART")?;
+    let (dtstart_params, dtstart) = find_ics_property(&event_lines, "DTSTART")?;
     let (start_time, all_day) = parse_ics_datetime(&dtstart, &dtstart_params)?;
 
-    // Parse DTEND (optional)
-    let end_time = get_ics_property_with_params(event_block, "DTEND")
+    let end_time = find_ics_property(&event_lines, "DTEND")
         .and_then(|(params, s)| parse_ics_datetime(&s, &params))
         .map(|(ts, _)| ts);
 
-    // Parse ORGANIZER (remove mailto: prefix)
-    let organizer = get_ics_property(event_block, "ORGANIZER").map(|s| {
-        s.strip_prefix("mailto:").unwrap_or(&s).to_string()
-    });
+    let organizer = find_ics_value(&event_lines, "ORGANIZER").map(|s| strip_mailto(&s));
 
-    // Parse ATTENDEE lines
-    let attendees: Vec<String> = event_block
-        .lines()
-        .filter(|line| line.trim().starts_with("ATTENDEE"))
-        .filter_map(|line| {
-            line.find(':').map(|pos| {
-                line[pos + 1..].strip_prefix("mailto:").unwrap_or(&line[pos + 1..]).to_string()
-            })
-        })
+    let attendees: Vec<String> = event_lines
+        .iter()
+        .filter_map(|line| find_ics_value(&[*line], "ATTENDEE"))
+        .map(|value| strip_mailto(&value))
         .collect();
 
     Some(CalendarEvent {
@@ -1416,6 +1239,10 @@ fn parse_ics_content(ics_data: &str) -> Option<CalendarEvent> {
 /// Returns (timestamp_millis, is_all_day)
 fn parse_ics_datetime(s: &str, params: &str) -> Option<(i64, bool)> {
     let s = s.trim();
+    // Byte-offset slicing below is only safe on ASCII
+    if !s.is_ascii() {
+        return None;
+    }
 
     // All-day event (just date, no time)
     if s.len() == 8 && !s.contains('T') {
@@ -1503,11 +1330,9 @@ fn extract_attachments_from_parts(parts: &Option<Vec<MessagePart>>) -> Vec<Attac
                         let filename = part.filename.clone()
                             .filter(|f| !f.is_empty())
                             .unwrap_or_else(|| {
-                                if let Some(ref cid) = content_id {
-                                    format!("{}.{}", cid, part.mime_type.split('/').last().unwrap_or("bin"))
-                                } else {
-                                    format!("attachment.{}", part.mime_type.split('/').last().unwrap_or("bin"))
-                                }
+                                let stem = content_id.as_deref().unwrap_or("attachment");
+                                let extension = part.mime_type.rsplit('/').next().unwrap_or("bin");
+                                format!("{}.{}", stem, extension)
                             });
                         attachments.push(AttachmentInfo {
                             attachment_id: attachment_id.clone(),
@@ -1584,77 +1409,56 @@ fn group_threads_by_date(threads: Vec<Thread>) -> Vec<ThreadGroup> {
         .collect()
 }
 
-/// Extract plain text body from a FullMessage
-/// Recursively searches through message parts to find text/plain content
+/// Extract the first text/plain body from a FullMessage, searching nested
+/// multipart parts depth-first
 pub fn extract_body_text_from_message(message: &FullMessage) -> Option<String> {
     let payload = message.payload.as_ref()?;
-
-    // Try to get body directly from payload
-    if let Some(body_text) = extract_text_from_payload(payload) {
-        return Some(body_text);
+    if payload.mime_type.as_deref() == Some("text/plain") {
+        if let Some(text) = payload.body.as_ref().and_then(decode_part_text) {
+            return Some(text);
+        }
     }
-
-    None
+    payload.parts.as_deref().and_then(find_text_in_parts)
 }
 
-fn extract_text_from_payload(payload: &MessagePayload) -> Option<String> {
-    // Check if this payload itself is text/plain
-    if let Some(mime_type) = &payload.mime_type {
-        if mime_type == "text/plain" {
-            if let Some(body) = &payload.body {
-                if let Some(data) = &body.data {
-                    return decode_base64_body(data);
-                }
+fn find_text_in_parts(parts: &[MessagePart]) -> Option<String> {
+    parts.iter().find_map(|part| {
+        if part.mime_type == "text/plain" {
+            let is_attached_file = part.filename.as_deref().is_some_and(|f| !f.is_empty());
+            if is_attached_file {
+                return None;
             }
+            part.body.as_ref().and_then(decode_part_text)
+        } else {
+            part.parts.as_deref().and_then(find_text_in_parts)
         }
-    }
-
-    // Check parts recursively
-    if let Some(parts) = &payload.parts {
-        // First, look for text/plain
-        for part in parts {
-            if part.mime_type == "text/plain" {
-                if let Some(body) = &part.body {
-                    if let Some(data) = &body.data {
-                        if let Some(text) = decode_base64_body(data) {
-                            return Some(text);
-                        }
-                    }
-                }
-            }
-        }
-
-        // If no text/plain, recurse into multipart alternatives
-        for part in parts {
-            if part.mime_type.starts_with("multipart/") {
-                if let Some(nested_parts) = &part.parts {
-                    for nested in nested_parts {
-                        if nested.mime_type == "text/plain" {
-                            if let Some(body) = &nested.body {
-                                if let Some(data) = &body.data {
-                                    if let Some(text) = decode_base64_body(data) {
-                                        return Some(text);
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    None
+    })
 }
 
+fn decode_part_text(body: &MessageBody) -> Option<String> {
+    decode_base64_body(body.data.as_deref()?)
+}
+
+/// Decode Gmail's base64url data, with or without padding. Bodies in a legacy
+/// charset are decoded lossily rather than dropped.
 fn decode_base64_body(data: &str) -> Option<String> {
+    decode_base64_lenient(data).map(|bytes| String::from_utf8_lossy(&bytes).into_owned())
+}
+
+fn decode_base64_lenient(data: &str) -> Option<Vec<u8>> {
     use base64::Engine;
-    // Gmail uses URL-safe base64 encoding
-    let normalized = data.replace('-', "+").replace('_', "/");
-    base64::engine::general_purpose::STANDARD
-        .decode(&normalized)
+    let normalized: String = data
+        .chars()
+        .filter(|c| !c.is_ascii_whitespace() && *c != '=')
+        .map(|c| match c {
+            '+' => '-',
+            '/' => '_',
+            c => c,
+        })
+        .collect();
+    base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .decode(normalized)
         .ok()
-        .and_then(|bytes| String::from_utf8(bytes).ok())
 }
 
 /// Strip HTML tags to create plain text fallback
@@ -1697,6 +1501,143 @@ fn strip_html_tags(html: &str) -> String {
         .replace("&quot;", "\"")
         .replace("&#39;", "'")
         .replace("&amp;", "&")
+}
+
+#[derive(Default)]
+struct MimeMessage<'a> {
+    to: &'a str,
+    cc: &'a str,
+    bcc: &'a str,
+    subject: &'a str,
+    body: &'a str,
+    attachments: &'a [SendAttachment],
+    /// (In-Reply-To, References)
+    reply_headers: Option<(&'a str, &'a str)>,
+    is_html: bool,
+}
+
+/// Base64url encoding the Gmail API expects in a message's `raw` field
+fn encode_raw_message(message: &str) -> String {
+    use base64::Engine;
+    base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(message.as_bytes())
+}
+
+fn new_boundary(kind: &str) -> String {
+    format!("----=_{}_{}", kind, uuid::Uuid::new_v4().simple())
+}
+
+fn push_part(message: &mut String, boundary: &str, content_type: &str, content: &str) {
+    message.push_str(&format!("--{}\r\n", boundary));
+    message.push_str(&format!("Content-Type: {}\r\n\r\n", content_type));
+    message.push_str(content);
+    message.push_str("\r\n");
+}
+
+/// multipart/alternative body with a plain text fallback for an HTML body
+fn push_html_alternative(message: &mut String, html: &str) {
+    let alt_boundary = new_boundary("Alt");
+    message.push_str(&format!(
+        "Content-Type: multipart/alternative; boundary=\"{}\"\r\n\r\n",
+        alt_boundary
+    ));
+    push_part(message, &alt_boundary, "text/plain; charset=utf-8", &strip_html_tags(html));
+    push_part(message, &alt_boundary, "text/html; charset=utf-8", html);
+    message.push_str(&format!("--{}--\r\n", alt_boundary));
+}
+
+/// Build a raw RFC 5322 message: plain text, HTML with a plain text
+/// alternative, or multipart/mixed when there are attachments
+fn build_mime_message(msg: &MimeMessage) -> String {
+    let mut message = format!("To: {}\r\n", encode_address_header(msg.to));
+
+    if !msg.cc.trim().is_empty() {
+        message.push_str(&format!("Cc: {}\r\n", encode_address_header(msg.cc)));
+    }
+    if !msg.bcc.trim().is_empty() {
+        message.push_str(&format!("Bcc: {}\r\n", encode_address_header(msg.bcc)));
+    }
+
+    message.push_str(&format!("Subject: {}\r\n", encode_header_value(msg.subject)));
+    message.push_str("MIME-Version: 1.0\r\n");
+
+    if let Some((in_reply_to, references)) = msg.reply_headers {
+        message.push_str(&format!(
+            "In-Reply-To: {}\r\nReferences: {}\r\n",
+            sanitize_header_value(in_reply_to),
+            sanitize_header_value(references)
+        ));
+    }
+
+    if msg.attachments.is_empty() {
+        if msg.is_html {
+            push_html_alternative(&mut message, msg.body);
+        } else {
+            message.push_str("Content-Type: text/plain; charset=utf-8\r\n\r\n");
+            message.push_str(msg.body);
+        }
+        return message;
+    }
+
+    let boundary = new_boundary("Part");
+    message.push_str(&format!(
+        "Content-Type: multipart/mixed; boundary=\"{}\"\r\n\r\n",
+        boundary
+    ));
+
+    if msg.is_html {
+        message.push_str(&format!("--{}\r\n", boundary));
+        push_html_alternative(&mut message, msg.body);
+    } else {
+        push_part(&mut message, &boundary, "text/plain; charset=utf-8", msg.body);
+    }
+
+    for attachment in msg.attachments {
+        let quoted_name = quoted_filename_param(&attachment.filename);
+        message.push_str(&format!("--{}\r\n", boundary));
+        message.push_str(&format!(
+            "Content-Type: {}; name={}\r\n",
+            sanitize_header_value(&attachment.mime_type),
+            quoted_name
+        ));
+        message.push_str("Content-Transfer-Encoding: base64\r\n");
+        message.push_str(&format!("Content-Disposition: attachment; filename={}", quoted_name));
+        let filename = sanitize_header_value(&attachment.filename);
+        if !filename.is_ascii() {
+            message.push_str(&format!("; filename*=UTF-8''{}", rfc2231_encode(&filename)));
+        }
+        message.push_str("\r\n\r\n");
+        // The frontend may send URL-safe base64; MIME needs the standard
+        // alphabet in lines of at most 76 characters
+        let normalized_data = attachment.data.replace('-', "+").replace('_', "/");
+        for chunk in normalized_data.as_bytes().chunks(76) {
+            message.push_str(std::str::from_utf8(chunk).unwrap_or(""));
+            message.push_str("\r\n");
+        }
+    }
+
+    message.push_str(&format!("--{}--\r\n", boundary));
+    message
+}
+
+/// Quoted-string for a `name`/`filename` parameter: RFC 2047 encoded when
+/// non-ASCII (widely understood even though not strictly allowed in parameters)
+fn quoted_filename_param(filename: &str) -> String {
+    let value = encode_header_value(filename);
+    format!("\"{}\"", value.replace('\\', "\\\\").replace('"', "\\\""))
+}
+
+/// RFC 2231 percent-encoding for an extended parameter value
+fn rfc2231_encode(value: &str) -> String {
+    value
+        .bytes()
+        .map(|b| {
+            if b.is_ascii_alphanumeric() || b"!#$&+-.^_`|~".contains(&b) {
+                (b as char).to_string()
+            } else {
+                format!("%{:02X}", b)
+            }
+        })
+        .collect()
 }
 
 /// Normalize an RFC Message-ID so it is wrapped in exactly one pair of angle brackets
@@ -1775,30 +1716,34 @@ fn split_address_list(input: &str) -> Vec<String> {
 
 // ============ Email Reactions ============
 
+const REACTION_MIME_TYPE: &str = "text/vnd.google.email-reaction+json";
+
+/// Google's limit on To + Cc recipients for a message to accept reactions
+const MAX_REACTION_RECIPIENTS: usize = 20;
+
 /// Reaction data parsed from email
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ParsedReaction {
     pub emoji: String,
     pub from_addr: String,
+    /// Message-ID of the message reacted to
     pub in_reply_to: String,
+    /// Gmail id of the reaction message itself
     pub message_id: String,
 }
 
 /// Parse reaction from a message if it contains a valid reaction part
-pub fn parse_reaction_from_message(message: &FullMessage) -> Option<ParsedReaction> {
+fn parse_reaction_from_message(message: &FullMessage) -> Option<ParsedReaction> {
     let payload = message.payload.as_ref()?;
+    let headers = payload.headers.as_deref();
+    let from = extract_email_address(find_header(headers, "From")?);
+    let in_reply_to = find_header(headers, "In-Reply-To")?.trim().to_string();
 
-    // Get headers
-    let headers = payload.headers.as_ref()?;
-    let from = headers.iter()
-        .find(|h| h.name.eq_ignore_ascii_case("From"))
-        .map(|h| extract_email_address(&h.value))?;
-    let in_reply_to = headers.iter()
-        .find(|h| h.name.eq_ignore_ascii_case("In-Reply-To"))
-        .map(|h| h.value.trim().to_string())?;
-
-    // Look for reaction JSON part
-    let emoji = find_reaction_in_payload(payload)?;
+    let emoji = if payload.mime_type.as_deref() == Some(REACTION_MIME_TYPE) {
+        parse_reaction_json(payload.body.as_ref()?.data.as_deref()?)
+    } else {
+        payload.parts.as_deref().and_then(find_reaction_in_parts)
+    }?;
 
     Some(ParsedReaction {
         emoji,
@@ -1808,55 +1753,18 @@ pub fn parse_reaction_from_message(message: &FullMessage) -> Option<ParsedReacti
     })
 }
 
-/// Recursively search for reaction part in payload
-fn find_reaction_in_payload(payload: &MessagePayload) -> Option<String> {
-    // Check if top-level is reaction
-    if let Some(mime_type) = &payload.mime_type {
-        if mime_type == "text/vnd.google.email-reaction+json" {
-            if let Some(body) = &payload.body {
-                if let Some(data) = &body.data {
-                    return parse_reaction_json(data);
-                }
-            }
+fn find_reaction_in_parts(parts: &[MessagePart]) -> Option<String> {
+    parts.iter().find_map(|part| {
+        if part.mime_type != REACTION_MIME_TYPE {
+            return part.parts.as_deref().and_then(find_reaction_in_parts);
         }
-    }
-
-    // Check parts
-    if let Some(parts) = &payload.parts {
-        for part in parts {
-            if part.mime_type == "text/vnd.google.email-reaction+json" {
-                // Skip if it's an attachment
-                if let Some(headers) = &part.headers {
-                    let is_attachment = headers.iter().any(|h| {
-                        h.name.eq_ignore_ascii_case("Content-Disposition")
-                            && h.value.to_lowercase().contains("attachment")
-                    });
-                    if is_attachment {
-                        continue;
-                    }
-                }
-                if let Some(body) = &part.body {
-                    if let Some(data) = &body.data {
-                        return parse_reaction_json(data);
-                    }
-                }
-            }
-            // Recurse into nested parts
-            if let Some(nested) = &part.parts {
-                for nested_part in nested {
-                    if nested_part.mime_type == "text/vnd.google.email-reaction+json" {
-                        if let Some(body) = &nested_part.body {
-                            if let Some(data) = &body.data {
-                                return parse_reaction_json(data);
-                            }
-                        }
-                    }
-                }
-            }
+        let is_attachment = find_header(part.headers.as_deref(), "Content-Disposition")
+            .is_some_and(|v| v.to_ascii_lowercase().contains("attachment"));
+        if is_attachment {
+            return None;
         }
-    }
-
-    None
+        parse_reaction_json(part.body.as_ref()?.data.as_deref()?)
+    })
 }
 
 /// Parse the reaction JSON and validate it
@@ -1870,22 +1778,15 @@ fn parse_reaction_json(base64_data: &str) -> Option<String> {
     }
 
     let reaction: ReactionJson = serde_json::from_str(&decoded).ok()?;
-
-    // Version must be 1
-    if reaction.version != 1 {
+    if reaction.version != 1 || reaction.emoji.is_empty() {
         return None;
     }
-
-    // Validate emoji (basic check - must be non-empty)
-    if reaction.emoji.is_empty() {
-        return None;
-    }
-
     Some(reaction.emoji)
 }
 
 impl GmailClient {
-    /// Send an emoji reaction to a message
+    /// Send an emoji reaction to a message. `message_id` is the target's
+    /// Message-ID header value or its Gmail id.
     pub async fn send_reaction(
         &self,
         thread_id: &str,
@@ -1894,138 +1795,114 @@ impl GmailClient {
         from_email: &str,
         to_email: &str,
     ) -> Result<(), String> {
-        let url = format!("{}/users/me/messages/send", GMAIL_API_BASE);
+        let thread = self.get_thread(thread_id).await?;
+        let wanted_header = ensure_angle_brackets(message_id);
+        let target = thread
+            .messages
+            .iter()
+            .find(|m| {
+                m.id == message_id
+                    || m.payload
+                        .as_ref()
+                        .and_then(|p| find_header(p.headers.as_deref(), "Message-ID"))
+                        .is_some_and(|h| ensure_angle_brackets(h) == wanted_header)
+            })
+            .ok_or("Message to react to was not found in the thread")?;
 
-        let message = self.build_reaction_message(emoji, from_email, to_email, message_id)?;
+        check_can_react(target, from_email)?;
 
-        use base64::Engine;
-        let encoded = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(message.as_bytes());
-
-        let request_body = serde_json::json!({
-            "raw": encoded,
-            "threadId": thread_id
-        });
-
-        let resp = self
-            .client
-            .post(&url)
-            .bearer_auth(&self.access_token)
-            .json(&request_body)
-            .send()
-            .await
-            .map_err(|e| format!("Request failed: {}", e))?;
-
-        if !resp.status().is_success() {
-            let status = resp.status();
-            let body = resp.text().await.unwrap_or_default();
-            return Err(format!("API error {}: {}", status, body));
-        }
-
-        Ok(())
-    }
-
-    /// Build a reaction MIME message per Google's spec
-    fn build_reaction_message(
-        &self,
-        emoji: &str,
-        from_email: &str,
-        to_email: &str,
-        reply_to_message_id: &str,
-    ) -> Result<String, String> {
-        let boundary = format!("----=_React_{}", uuid::Uuid::new_v4().to_string().replace("-", ""));
-
-        // Build the reaction JSON
-        let reaction_json = serde_json::json!({
-            "version": 1,
-            "emoji": emoji
-        });
-        let reaction_json_str = serde_json::to_string(&reaction_json)
-            .map_err(|e| format!("Failed to serialize reaction: {}", e))?;
-
-        // Fallback text for clients that don't support reactions
-        let plain_text = format!("Reacted with {}", emoji);
-        let html_text = format!(
-            "<html><body><p>Reacted with <span style=\"font-size: 24px\">{}</span></p></body></html>",
-            emoji
-        );
-
-        let mut message = String::new();
-
-        // Headers
-        message.push_str(&format!("From: {}\r\n", sanitize_header_value(from_email)));
-        message.push_str(&format!("To: {}\r\n", sanitize_header_value(to_email)));
-        message.push_str(&format!(
-            "Subject: {}\r\n",
-            encode_header_value(&format!("Re: {}", emoji))
-        ));
-        message.push_str("MIME-Version: 1.0\r\n");
-        message.push_str(&format!("In-Reply-To: {}\r\n", sanitize_header_value(reply_to_message_id)));
-        message.push_str(&format!("References: {}\r\n", sanitize_header_value(reply_to_message_id)));
-        message.push_str(&format!(
-            "Content-Type: multipart/alternative; boundary=\"{}\"\r\n\r\n",
-            boundary
-        ));
-
-        // Plain text part (first, for clients that show first part)
-        message.push_str(&format!("--{}\r\n", boundary));
-        message.push_str("Content-Type: text/plain; charset=utf-8\r\n\r\n");
-        message.push_str(&plain_text);
-        message.push_str("\r\n");
-
-        // Reaction JSON part (between plain and HTML per Google recommendation)
-        message.push_str(&format!("--{}\r\n", boundary));
-        message.push_str("Content-Type: text/vnd.google.email-reaction+json; charset=utf-8\r\n\r\n");
-        message.push_str(&reaction_json_str);
-        message.push_str("\r\n");
-
-        // HTML part (last, for clients that show last part)
-        message.push_str(&format!("--{}\r\n", boundary));
-        message.push_str("Content-Type: text/html; charset=utf-8\r\n\r\n");
-        message.push_str(&html_text);
-        message.push_str("\r\n");
-
-        // Close boundary
-        message.push_str(&format!("--{}--\r\n", boundary));
-
-        Ok(message)
+        let (in_reply_to, references) = reply_headers_from_thread(&thread, Some(&target.id))
+            .ok_or("Message to react to has no Message-ID")?;
+        let message = build_reaction_message(emoji, from_email, to_email, &in_reply_to, &references)?;
+        self.send_raw(&message, Some(thread_id)).await
     }
 }
 
-/// Check if a message should allow reactions based on Google's recommended limits
-pub fn can_react_to_message(
-    to_addrs: &[String],
-    cc_addrs: &[String],
-    user_email: &str,
-    is_mailing_list: bool,
-) -> Result<(), String> {
-    // No reactions on mailing list messages
-    if is_mailing_list {
+/// Build a reaction MIME message per Google's spec
+fn build_reaction_message(
+    emoji: &str,
+    from_email: &str,
+    to_email: &str,
+    in_reply_to: &str,
+    references: &str,
+) -> Result<String, String> {
+    let boundary = new_boundary("React");
+
+    let reaction_json = serde_json::to_string(&serde_json::json!({
+        "version": 1,
+        "emoji": emoji
+    }))
+    .map_err(|e| format!("Failed to serialize reaction: {}", e))?;
+
+    // Fallback text for clients that don't support reactions
+    let plain_text = format!("Reacted with {}", emoji);
+    let html_text = format!(
+        "<html><body><p>Reacted with <span style=\"font-size: 24px\">{}</span></p></body></html>",
+        emoji
+    );
+
+    let mut message = String::new();
+    message.push_str(&format!("From: {}\r\n", encode_address_header(from_email)));
+    message.push_str(&format!("To: {}\r\n", encode_address_header(to_email)));
+    message.push_str(&format!(
+        "Subject: {}\r\n",
+        encode_header_value(&format!("Re: {}", emoji))
+    ));
+    message.push_str("MIME-Version: 1.0\r\n");
+    message.push_str(&format!("In-Reply-To: {}\r\n", sanitize_header_value(in_reply_to)));
+    message.push_str(&format!("References: {}\r\n", sanitize_header_value(references)));
+    message.push_str(&format!(
+        "Content-Type: multipart/alternative; boundary=\"{}\"\r\n\r\n",
+        boundary
+    ));
+
+    // Google's recommended order: plain text, reaction JSON, then HTML (last,
+    // for clients that show the last alternative)
+    push_part(&mut message, &boundary, "text/plain; charset=utf-8", &plain_text);
+    push_part(
+        &mut message,
+        &boundary,
+        &format!("{}; charset=utf-8", REACTION_MIME_TYPE),
+        &reaction_json,
+    );
+    push_part(&mut message, &boundary, "text/html; charset=utf-8", &html_text);
+    message.push_str(&format!("--{}--\r\n", boundary));
+
+    Ok(message)
+}
+
+/// Google's eligibility rules for reacting to a message: not from a mailing
+/// list, at most 20 To + Cc recipients, and the user is one of them
+fn check_can_react(message: &FullMessage, user_email: &str) -> Result<(), String> {
+    let headers = message.payload.as_ref().and_then(|p| p.headers.as_deref());
+
+    if is_mailing_list_message(headers.unwrap_or_default()) {
         return Err("Cannot react to mailing list messages".to_string());
     }
 
-    // Max 20 recipients in To + CC
-    let total_recipients = to_addrs.len() + cc_addrs.len();
-    if total_recipients > 20 {
-        return Err("Too many recipients (max 20)".to_string());
+    let recipients: Vec<String> = ["To", "Cc"]
+        .iter()
+        .filter_map(|name| find_header(headers, name))
+        .flat_map(split_address_list)
+        .map(|addr| extract_email_address(&addr))
+        .collect();
+
+    if recipients.len() > MAX_REACTION_RECIPIENTS {
+        return Err(format!("Too many recipients (max {})", MAX_REACTION_RECIPIENTS));
     }
 
-    // User must be in To or CC
-    let user_lower = user_email.to_lowercase();
-    let in_to = to_addrs.iter().any(|a| a.to_lowercase() == user_lower);
-    let in_cc = cc_addrs.iter().any(|a| a.to_lowercase() == user_lower);
-    if !in_to && !in_cc {
+    if !recipients.iter().any(|a| a.eq_ignore_ascii_case(user_email.trim())) {
         return Err("You must be a recipient to react".to_string());
     }
 
     Ok(())
 }
 
-/// Check if message has mailing list headers
-pub fn is_mailing_list_message(headers: &[Header]) -> bool {
+fn is_mailing_list_message(headers: &[Header]) -> bool {
     headers.iter().any(|h| {
         h.name.eq_ignore_ascii_case("List-Unsubscribe")
             || h.name.eq_ignore_ascii_case("List-Id")
-            || h.name.eq_ignore_ascii_case("Precedence") && h.value.to_lowercase() == "list"
+            || (h.name.eq_ignore_ascii_case("Precedence") && h.value.trim().eq_ignore_ascii_case("list"))
     })
 }
 
@@ -2083,19 +1960,12 @@ mod tests {
 
     #[test]
     fn build_mime_message_rejects_header_injection() {
-        let client = GmailClient::new("test-token".to_string());
-        let message = client
-            .build_mime_message(
-                "victim@example.com\r\nBcc: evil@example.com",
-                "",
-                "",
-                "Hi\r\nX-Injected: 1",
-                "body",
-                &[],
-                None,
-                false,
-            )
-            .unwrap();
+        let message = build_mime_message(&MimeMessage {
+            to: "victim@example.com\r\nBcc: evil@example.com",
+            subject: "Hi\r\nX-Injected: 1",
+            body: "body",
+            ..Default::default()
+        });
 
         assert!(!message.contains("\r\nBcc: evil@example.com"));
         assert!(!message.contains("\r\nX-Injected: 1"));
@@ -2146,5 +2016,358 @@ mod tests {
         let mixed = encode_address_header("Müller <m@example.com>, plain@example.com");
         assert!(mixed.contains("=?UTF-8?B?"));
         assert!(mixed.ends_with(", plain@example.com"));
+    }
+
+    #[test]
+    fn extract_email_address_handles_angle_bracket_in_display_name() {
+        assert_eq!(extract_email_address("\"a>b\" <x@example.com>"), "x@example.com");
+        assert_eq!(extract_email_address("Jane <jane@example.com>"), "jane@example.com");
+        assert_eq!(extract_email_address("  bare@example.com "), "bare@example.com");
+        assert_eq!(extract_email_address("Broken <x@example.com"), "Broken <x@example.com");
+    }
+
+    #[test]
+    fn parse_ics_datetime_rejects_non_ascii_without_panicking() {
+        assert_eq!(parse_ics_datetime("202é115", ""), None);
+        assert_eq!(parse_ics_datetime("20240115T1é0000", ""), None);
+        assert_eq!(parse_ics_datetime("é0240115T100000Z", ""), None);
+    }
+
+    const FOLDED_INVITE: &str = concat!(
+        "BEGIN:VCALENDAR\r\n",
+        "METHOD:REQUEST\r\n",
+        "BEGIN:VEVENT\r\n",
+        "DTSTART:20240115T150000Z\r\n",
+        "DTEND:20240115T160000Z\r\n",
+        "DTSTAMP:20240110T120000Z\r\n",
+        "ORGANIZER;CN=\"Doe: Jane\":MAILTO:jane@example.com\r\n",
+        "UID:abc123@google.com\r\n",
+        "ATTENDEE;CUTYPE=INDIVIDUAL;ROLE=REQ-PARTICIPANT;PARTSTAT=NEEDS-ACTION;RSVP=\r\n",
+        " TRUE;CN=bob@example.com;X-NUM-GUESTS=0:mailto:bob@example.com\r\n",
+        "ATTENDEE;CN=carol@example.com:mailto:carol@example.com\r\n",
+        "SUMMARY:Quarterly planning\\, budget and a very long title that the server fo\r\n",
+        " lded\r\n",
+        "LOCATION:Room 1\\; Floor 2\r\n",
+        "STATUS:CONFIRMED\r\n",
+        "BEGIN:VALARM\r\n",
+        "ACTION:DISPLAY\r\n",
+        "DESCRIPTION:This is an event reminder\r\n",
+        "TRIGGER:-P0DT0H30M0S\r\n",
+        "END:VALARM\r\n",
+        "END:VEVENT\r\n",
+        "END:VCALENDAR\r\n",
+    );
+
+    #[test]
+    fn parse_ics_unfolds_long_lines_and_unescapes_text() {
+        let event = parse_ics_content(FOLDED_INVITE).expect("invite parses");
+        assert_eq!(
+            event.title,
+            "Quarterly planning, budget and a very long title that the server folded"
+        );
+        assert_eq!(event.location.as_deref(), Some("Room 1; Floor 2"));
+        assert_eq!(event.method.as_deref(), Some("REQUEST"));
+        assert_eq!(event.uid.as_deref(), Some("abc123@google.com"));
+    }
+
+    #[test]
+    fn parse_ics_reads_folded_attendees_and_quoted_params() {
+        let event = parse_ics_content(FOLDED_INVITE).expect("invite parses");
+        assert_eq!(event.attendees, vec!["bob@example.com", "carol@example.com"]);
+        assert_eq!(event.organizer.as_deref(), Some("jane@example.com"));
+    }
+
+    #[test]
+    fn parse_ics_ignores_alarm_description() {
+        let event = parse_ics_content(FOLDED_INVITE).expect("invite parses");
+        assert_eq!(event.description, None);
+        assert_eq!(event.start_time, 1705330800000);
+        assert_eq!(event.end_time, Some(1705334400000));
+    }
+
+    fn header(name: &str, value: &str) -> Header {
+        Header { name: name.to_string(), value: value.to_string() }
+    }
+
+    fn detail(id: &str, labels: &[&str], from: &str) -> MessageDetail {
+        MessageDetail {
+            id: id.to_string(),
+            label_ids: Some(labels.iter().map(|l| l.to_string()).collect()),
+            snippet: None,
+            internal_date: None,
+            payload: Some(MessagePayload {
+                headers: Some(vec![header("From", from)]),
+                body: None,
+                parts: None,
+                mime_type: None,
+            }),
+        }
+    }
+
+    #[test]
+    fn thread_labels_are_the_union_of_all_message_labels() {
+        // Replying to an inbox thread leaves the latest message with only SENT;
+        // the thread is still in the inbox and still starred
+        let messages = vec![
+            detail("1", &["INBOX", "STARRED", "IMPORTANT"], "a@example.com"),
+            detail("2", &["INBOX", "UNREAD"], "b@example.com"),
+            detail("3", &["SENT"], "me@example.com"),
+        ];
+        assert_eq!(
+            thread_labels(&messages),
+            vec!["INBOX", "STARRED", "IMPORTANT", "UNREAD", "SENT"]
+        );
+    }
+
+    #[test]
+    fn thread_participants_are_unique_in_first_seen_order() {
+        let messages = vec![
+            detail("1", &[], "Alice <a@example.com>"),
+            detail("2", &[], "me@example.com"),
+            detail("3", &[], "Alice <A@example.com>"),
+            detail("4", &[], "me@example.com"),
+        ];
+        assert_eq!(thread_participants(&messages), vec!["a@example.com", "me@example.com"]);
+    }
+
+    fn full_message(id: &str, labels: &[&str], headers: Vec<Header>) -> FullMessage {
+        FullMessage {
+            id: id.to_string(),
+            thread_id: "t1".to_string(),
+            label_ids: Some(labels.iter().map(|l| l.to_string()).collect()),
+            snippet: None,
+            internal_date: None,
+            payload: Some(MessagePayload {
+                headers: Some(headers),
+                body: None,
+                parts: None,
+                mime_type: Some("text/plain".to_string()),
+            }),
+            reaction: None,
+        }
+    }
+
+    fn thread_of(messages: Vec<FullMessage>) -> FullThread {
+        FullThread { id: "t1".to_string(), history_id: None, messages }
+    }
+
+    #[test]
+    fn reply_headers_skip_drafts_when_falling_back_to_last_message() {
+        let thread = thread_of(vec![
+            full_message("m1", &["INBOX"], vec![
+                header("Message-Id", "<one@example.com>"),
+            ]),
+            full_message("m2", &["INBOX"], vec![
+                header("Message-ID", "<two@example.com>"),
+                header("References", "<one@example.com>"),
+            ]),
+            full_message("d1", &["DRAFT"], vec![
+                header("Message-ID", "<draft@example.com>"),
+                header("References", "<one@example.com> <two@example.com>"),
+            ]),
+        ]);
+        assert_eq!(
+            reply_headers_from_thread(&thread, None),
+            Some((
+                "<two@example.com>".to_string(),
+                "<one@example.com> <two@example.com>".to_string()
+            ))
+        );
+        // An explicit Gmail id still wins
+        assert_eq!(
+            reply_headers_from_thread(&thread, Some("m1")),
+            Some(("<one@example.com>".to_string(), "<one@example.com>".to_string()))
+        );
+    }
+
+    fn b64url(s: &[u8]) -> String {
+        use base64::Engine;
+        base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(s)
+    }
+
+    fn part(mime: &str, data: Option<String>, parts: Option<Vec<MessagePart>>) -> MessagePart {
+        MessagePart {
+            part_id: None,
+            mime_type: mime.to_string(),
+            filename: None,
+            headers: None,
+            body: Some(MessageBody { size: None, data, attachment_id: None }),
+            parts,
+        }
+    }
+
+    fn message_with_parts(parts: Vec<MessagePart>) -> FullMessage {
+        let mut msg = full_message("m1", &[], vec![]);
+        msg.payload = Some(MessagePayload {
+            headers: Some(vec![]),
+            body: None,
+            parts: Some(parts),
+            mime_type: Some("multipart/mixed".to_string()),
+        });
+        msg
+    }
+
+    #[test]
+    fn body_text_found_in_deeply_nested_multipart() {
+        // mixed > related > alternative > text/plain, as sent by Apple Mail
+        // with inline images and an attachment
+        let msg = message_with_parts(vec![part(
+            "multipart/related",
+            None,
+            Some(vec![part(
+                "multipart/alternative",
+                None,
+                Some(vec![
+                    part("text/plain", Some(b64url("hello there".as_bytes())), None),
+                    part("text/html", Some(b64url(b"<p>hello there</p>")), None),
+                ]),
+            )]),
+        )]);
+        assert_eq!(extract_body_text_from_message(&msg).as_deref(), Some("hello there"));
+    }
+
+    #[test]
+    fn body_text_decodes_unpadded_base64_and_non_utf8() {
+        let msg = message_with_parts(vec![part("text/plain", Some(b64url(b"ab")), None)]);
+        assert_eq!(extract_body_text_from_message(&msg).as_deref(), Some("ab"));
+        let msg = message_with_parts(vec![part("text/plain", Some("YWI=".to_string()), None)]);
+        assert_eq!(extract_body_text_from_message(&msg).as_deref(), Some("ab"));
+
+        // ISO-8859-1 "caf\xe9" must not make the whole body disappear
+        let msg = message_with_parts(vec![part("text/plain", Some(b64url(b"caf\xe9 ok")), None)]);
+        let text = extract_body_text_from_message(&msg).expect("body present");
+        assert!(text.starts_with("caf") && text.ends_with(" ok"));
+    }
+
+    #[test]
+    fn attachment_filenames_are_escaped_and_encoded() {
+        let attachment = SendAttachment {
+            filename: "año \"final\"\r\n.pdf".to_string(),
+            mime_type: "application/pdf".to_string(),
+            data: "QUJD".to_string(),
+        };
+        let message = build_mime_message(&MimeMessage {
+            to: "x@example.com",
+            body: "hi",
+            attachments: std::slice::from_ref(&attachment),
+            ..Default::default()
+        });
+        assert!(message.is_ascii(), "raw non-ASCII in headers");
+        assert!(message.contains("filename*=UTF-8''a%C3%B1o%20%22final%22%20.pdf\r\n"));
+        assert!(message.contains("Content-Disposition: attachment; filename=\"=?UTF-8?B?"));
+        assert!(message.contains("Content-Type: application/pdf; name=\"=?UTF-8?B?"));
+        assert!(!message.contains("\r\n.pdf"));
+
+        let ascii = SendAttachment {
+            filename: "say \"hi\".txt".to_string(),
+            mime_type: "text/plain".to_string(),
+            data: "QUJD".to_string(),
+        };
+        let message = build_mime_message(&MimeMessage {
+            to: "x@example.com",
+            body: "hi",
+            attachments: std::slice::from_ref(&ascii),
+            ..Default::default()
+        });
+        assert!(message.contains("Content-Type: text/plain; name=\"say \\\"hi\\\".txt\"\r\n"));
+        assert!(message.contains("Content-Disposition: attachment; filename=\"say \\\"hi\\\".txt\"\r\n"));
+    }
+
+    #[test]
+    fn batch_body_parses_crlf_and_lf_parts_and_skips_errors() {
+        let body = concat!(
+            "--batch_x\r\n",
+            "Content-Type: application/http\r\n",
+            "Content-ID: <response-item0>\r\n\r\n",
+            "HTTP/1.1 200 OK\r\n",
+            "Content-Type: application/json; charset=UTF-8\r\n\r\n",
+            "{\"id\": \"t1\", \"messages\": []}\r\n",
+            "--batch_x\n",
+            "Content-Type: application/http\n\n",
+            "HTTP/1.1 200 OK\n",
+            "Content-Type: application/json\n\n",
+            "{\"id\": \"t2\"}\n",
+            "--batch_x\r\n",
+            "Content-Type: application/http\r\n\r\n",
+            "HTTP/1.1 429 Too Many Requests\r\n\r\n",
+            "{\"error\": {\"code\": 429}}\r\n",
+            "--batch_x--\r\n",
+        );
+        let ids: Vec<String> = parse_batch_body(body, "batch_x").into_iter().map(|d| d.id).collect();
+        assert_eq!(ids, vec!["t1", "t2"]);
+    }
+
+    #[test]
+    fn batch_boundary_ignores_trailing_parameters() {
+        assert_eq!(
+            batch_boundary("multipart/mixed; boundary=batch_abc; charset=UTF-8").as_deref(),
+            Some("batch_abc")
+        );
+        assert_eq!(batch_boundary("multipart/mixed; boundary=\"batch_q\"").as_deref(), Some("batch_q"));
+        assert_eq!(batch_boundary("application/json"), None);
+    }
+
+    fn reaction_part(json: &str) -> MessagePart {
+        part("text/vnd.google.email-reaction+json", Some(b64url(json.as_bytes())), None)
+    }
+
+    #[test]
+    fn parse_reaction_finds_nested_reaction_part() {
+        // mixed > related > alternative > reaction
+        let mut msg = message_with_parts(vec![part(
+            "multipart/related",
+            None,
+            Some(vec![part(
+                "multipart/alternative",
+                None,
+                Some(vec![
+                    part("text/plain", Some(b64url(b"Reacted with x")), None),
+                    reaction_part("{\"version\":1,\"emoji\":\"\u{1F44D}\"}"),
+                ]),
+            )]),
+        )]);
+        msg.payload.as_mut().unwrap().headers = Some(vec![
+            header("From", "Bob <bob@example.com>"),
+            header("In-Reply-To", "<orig@example.com>"),
+        ]);
+        let reaction = parse_reaction_from_message(&msg).expect("reaction parsed");
+        assert_eq!(reaction.emoji, "\u{1F44D}");
+        assert_eq!(reaction.from_addr, "bob@example.com");
+        assert_eq!(reaction.in_reply_to, "<orig@example.com>");
+    }
+
+    #[test]
+    fn parse_reaction_rejects_wrong_version_and_plain_mail() {
+        let mut msg = message_with_parts(vec![reaction_part("{\"version\":2,\"emoji\":\"x\"}")]);
+        msg.payload.as_mut().unwrap().headers = Some(vec![
+            header("From", "bob@example.com"),
+            header("In-Reply-To", "<orig@example.com>"),
+        ]);
+        assert!(parse_reaction_from_message(&msg).is_none());
+
+        let mut plain = message_with_parts(vec![part("text/plain", Some(b64url(b"hi")), None)]);
+        plain.payload.as_mut().unwrap().headers = msg.payload.as_ref().unwrap().headers.clone();
+        assert!(parse_reaction_from_message(&plain).is_none());
+    }
+
+    #[test]
+    fn reaction_eligibility_follows_google_limits() {
+        let target = full_message("m1", &["INBOX"], vec![
+            header("From", "bob@example.com"),
+            header("To", "Me <ME@example.com>, \"Doe, J\" <j@example.com>"),
+        ]);
+        assert_eq!(check_can_react(&target, "me@example.com"), Ok(()));
+        assert!(check_can_react(&target, "other@example.com").is_err());
+
+        let mut list = target.clone();
+        list.payload.as_mut().unwrap().headers.as_mut().unwrap()
+            .push(header("List-Id", "<dev.lists.example.com>"));
+        assert!(check_can_react(&list, "me@example.com").is_err());
+
+        let many: Vec<String> = (0..21).map(|i| format!("u{}@example.com", i)).collect();
+        let crowded = full_message("m2", &["INBOX"], vec![
+            header("To", &format!("me@example.com, {}", many.join(", "))),
+        ]);
+        assert!(check_can_react(&crowded, "me@example.com").is_err());
     }
 }
