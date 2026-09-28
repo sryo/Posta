@@ -228,21 +228,35 @@ impl ICloudSync {
     }
 
     /// A missing or unreadable record only loses the change tracking, so
-    /// conflicts go to iCloud on a pull and to this device on a push
+    /// conflicts go to iCloud on a pull and to this device on a push. An
+    /// unreadable one may belong to a device that has pushed before, so an
+    /// empty store is still not taken as nobody having pushed yet.
     fn load_record(&self) -> SyncRecord {
-        self.record_path
-            .as_ref()
-            .and_then(|p| std::fs::read(p).ok())
-            .and_then(|bytes| serde_json::from_slice(&bytes).ok())
-            .unwrap_or_default()
+        let Some(path) = &self.record_path else { return SyncRecord::default() };
+        let unreadable = |e: String| {
+            tracing::warn!("iCloud card sync state is unreadable, starting over: {}", e);
+            SyncRecord { seen_backup: true, ..Default::default() }
+        };
+        match std::fs::read(path) {
+            Ok(bytes) => serde_json::from_slice(&bytes).unwrap_or_else(|e| unreadable(e.to_string())),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => SyncRecord::default(),
+            Err(e) => unreadable(e.to_string()),
+        }
     }
 
+    /// Written to a temporary file and renamed over the record, so a crash
+    /// mid-write can't leave a torn record that drops unpushed deletions
     fn save_record(&self, record: &SyncRecord) {
         let Some(path) = &self.record_path else { return };
-        let result = serde_json::to_vec(record)
-            .map_err(|e| e.to_string())
-            .and_then(|json| std::fs::write(path, json).map_err(|e| e.to_string()));
+        let temp = path.with_extension("json.tmp");
+        let result = serde_json::to_vec(record).map_err(|e| e.to_string()).and_then(|json| {
+            use std::io::Write;
+            let mut file = std::fs::File::create(&temp).map_err(|e| e.to_string())?;
+            file.write_all(&json).and_then(|_| file.sync_all()).map_err(|e| e.to_string())?;
+            std::fs::rename(&temp, path).map_err(|e| e.to_string())
+        });
         if let Err(e) = result {
+            let _ = std::fs::remove_file(&temp);
             tracing::warn!("Failed to save iCloud card sync state: {}", e);
         }
     }
@@ -2916,6 +2930,45 @@ mod tests {
         let pushed = store.backup();
         assert_eq!(sorted_ids(&pushed.cards), vec!["keep"]);
         assert!(pushed.tombstones.contains_key("gone"));
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    fn record_at(path: std::path::PathBuf) -> super::ICloudSync {
+        super::ICloudSync { store: None, record_path: Some(path) }
+    }
+
+    #[test]
+    fn an_unreadable_sync_record_does_not_make_an_empty_store_look_like_a_first_push() {
+        let dir = scratch_dir();
+        let path = dir.join("icloud-card-sync.json");
+        std::fs::write(&path, br#"{"base": {"c": {"id""#).unwrap();
+
+        let mut record = record_at(path).load_record();
+        assert!(record.seen_backup);
+        assert_eq!(super::backup_to_push_onto(Ok(None), &mut record), None);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn a_device_without_a_sync_record_has_never_seen_a_backup() {
+        let dir = scratch_dir();
+        assert_eq!(record_at(dir.join("icloud-card-sync.json")).load_record(), SyncRecord::default());
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn the_sync_record_is_replaced_whole() {
+        let dir = scratch_dir();
+        let icloud = record_at(dir.join("icloud-card-sync.json"));
+        let first = tombstoned(synced(&[owned_card("a", "a1")]), &["gone"]);
+        icloud.save_record(&first);
+        assert_eq!(icloud.load_record(), first);
+
+        let second = synced(&[owned_card("b", "a1")]);
+        icloud.save_record(&second);
+        assert_eq!(icloud.load_record(), second);
+        let files: Vec<_> = std::fs::read_dir(&dir).unwrap().map(|e| e.unwrap().file_name()).collect();
+        assert_eq!(files, vec![std::ffi::OsString::from("icloud-card-sync.json")], "no temp file left behind");
         std::fs::remove_dir_all(dir).unwrap();
     }
 
