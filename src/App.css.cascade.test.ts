@@ -33,6 +33,13 @@ describe("App.css cascade", () => {
     expect(decl.get("overflow-x")).toBe("auto");
   });
 
+  it("keeps the gap under the header the same for an email that opens with a paragraph", () => {
+    document.body.innerHTML = '<div class="message-body"><p id="first">a</p><p id="second">b</p></div>';
+    const marginTop = (id: string) => cascadedDeclarations(rules, document.getElementById(id)!).get("margin-top");
+    expect(marginTop("first")).toBe("0");
+    expect(marginTop("second")).toBeUndefined();
+  });
+
   it("rings every keyboard-reachable control on keyboard focus, inset on list rows", () => {
     document.body.innerHTML = `<button class="collapse-btn" id="collapse"></button>
       <a href="#" id="link">x</a>

@@ -4028,6 +4028,12 @@ button:disabled:hover {
     overflow-x: auto;
 }
 
+/* Containment stops the first block's top margin from collapsing into the
+   header's gap, so drop it to keep the spacing it had before. */
+.message-body > :first-child {
+    margin-top: 0;
+}
+
 .message-body a {
     color: var(--accent);
     text-decoration: none;
