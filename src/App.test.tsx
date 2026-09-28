@@ -1589,6 +1589,12 @@ describe("App drafts", () => {
       fireEvent.click(await screen.findByRole("button", { name: "Reopen" }));
       await waitFor(() => expect(screen.getByPlaceholderText("Subject")).toHaveValue("Only copy"));
       expect(invoke).not.toHaveBeenCalledWith("delete_draft", expect.anything());
+
+      // Closing the reopened email untouched still keeps it
+      await waitFor(() => expect(screen.queryByRole("button", { name: "Reopen" })).not.toBeInTheDocument());
+      fireEvent.keyDown(document, { key: "Escape" });
+      fireEvent.click(await screen.findByRole("button", { name: "Reopen" }));
+      await waitFor(() => expect(screen.getByPlaceholderText("Subject")).toHaveValue("Only copy"));
     });
   });
 

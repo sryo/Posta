@@ -745,6 +745,9 @@ function App() {
   const drafts = createDraftSync();
   // Where the open compose keeps its draft, chosen when it opens
   let composeDraftKey = "";
+  // Typed in since it opened; prefilled text alone (a signature, a quoted
+  // message) is no draft
+  let composeEdited = false;
   // Drafts of emails queued or going out; not offered to a new compose
   const sendingDraftKeys = new Set<string>();
 
@@ -786,6 +789,7 @@ function App() {
   // it once typing pauses
   function handleComposeInput() {
     if (!composing() || closingCompose()) return;
+    composeEdited = true;
     drafts.saveLocal(composeDraftKey, composeDraftFields());
     clearTimeout(draftSaveTimeout);
     draftSaveTimeout = window.setTimeout(saveDraft, 3000);
@@ -1828,8 +1832,8 @@ function App() {
     const key = composeDraftKey;
     const accountId = composeAccount()?.id;
     const fields = composeDraftFields();
-    const keep = hasDraftContent(fields);
     const storedHere = safeGetItem(key) !== null;
+    const keep = hasDraftContent(fields) && (storedHere || composeEdited);
     // Without a local copy Gmail must get the latest text, typed or not
     let synced: Promise<boolean> | null = null;
     if (keep && !storedHere) {
@@ -1931,6 +1935,8 @@ function App() {
     const prefilled = !!(init.to || init.subject || init.body);
     const saved = init.draftKey || (isNewEmail && prefilled) ? null : restorableDraft(group, isNewEmail);
     composeDraftKey = init.draftKey ?? saved?.key ?? sessionDraftKey(group);
+    // A draft being continued is the user's own text
+    composeEdited = !!(init.draftKey || saved);
     if (init.draftKey || saved) drafts.load(composeDraftKey);
     if (composeDraftKey === discardToastDraftKey && toast()?.visible) hideToast();
     const fields = saved?.draft ?? init;
