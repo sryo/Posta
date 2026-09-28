@@ -2572,10 +2572,13 @@ function App() {
   }
 
   // Closing by hand throws away typed replies, so ask first
-  function dismissBatchReply() {
+  function confirmDiscardBatchReplies(): boolean {
     const unsent = Object.values(batchReplyMessages()).filter(m => m.trim()).length;
-    if (unsent > 0 && !confirm(`Discard ${unsent} unsent repl${unsent === 1 ? "y" : "ies"}?`)) return;
-    closeBatchReply();
+    return unsent === 0 || confirm(`Discard ${unsent} unsent repl${unsent === 1 ? "y" : "ies"}?`);
+  }
+
+  function dismissBatchReply() {
+    if (confirmDiscardBatchReplies()) closeBatchReply();
   }
 
   function updateBatchReplyMessage(threadId: string, message: string) {
@@ -2841,6 +2844,7 @@ function App() {
 
   async function switchAccount(account: Account) {
     if (selectedAccount()?.id === account.id) return;
+    if (batchReplyOpen() && !confirmDiscardBatchReplies()) return;
 
     closeAccountViews();
     setSelectedAccount(account);

@@ -2209,4 +2209,17 @@ describe("App batch reply closing", () => {
 
     await waitFor(() => expect(screen.queryByPlaceholderText(/^Reply to/)).not.toBeInTheDocument());
   });
+
+  it("asks before an account switch discards typed replies, and stays when cancelled", async () => {
+    handlers.get_accounts = () => [account("a", "a@x.com"), account("b", "b@x.com")];
+    await openBatchReplyWithText();
+    confirmSpy.mockReturnValue(false);
+    fireEvent.click(screen.getByTitle("a@x.com"));
+    fireEvent.click(await screen.findByText("b@x.com"));
+    await new Promise(r => setTimeout(r, 20));
+
+    expect(confirmSpy).toHaveBeenCalledWith(expect.stringContaining("1 unsent reply"));
+    expect(screen.getByPlaceholderText(/^Reply to/)).toHaveValue("A long answer");
+    expect(invoke).not.toHaveBeenCalledWith("get_cards", { accountId: "b" });
+  });
 });
