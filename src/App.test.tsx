@@ -13,7 +13,13 @@ vi.mock("@tauri-apps/api/core", () => ({ invoke: (cmd: string, args?: Record<str
 vi.mock("@tauri-apps/api/window", () => ({
   getCurrentWindow: () => ({ setBadgeCount: async () => {}, startDragging: async () => {} }),
 }));
-vi.mock("@tauri-apps/api/event", () => ({ listen: async () => () => {} }));
+const eventListeners: Record<string, (event: { payload: unknown }) => void> = {};
+vi.mock("@tauri-apps/api/event", () => ({
+  listen: async (name: string, handler: (event: { payload: unknown }) => void) => {
+    eventListeners[name] = handler;
+    return () => {};
+  },
+}));
 vi.mock("@tauri-apps/plugin-opener", () => ({ openUrl: async () => {} }));
 type MenuItemOptions = { text?: string; enabled?: boolean; action?: () => void };
 let lastMenu: MenuItemOptions[] = [];
@@ -41,6 +47,7 @@ const threadsByCard: Record<string, Thread[]> = {};
 
 beforeEach(() => {
   localStorage.clear();
+  lastMenu = [];
   invoke.mockClear();
   for (const k of Object.keys(handlers)) delete handlers[k];
   Object.assign(handlers, {
@@ -66,7 +73,12 @@ beforeEach(() => {
   threadsByCard["card-b"] = [thread("t-b", "Mail for B")];
 });
 
-afterEach(() => vi.useRealTimers());
+afterEach(() => {
+  vi.useRealTimers();
+  // jsdom has no layout, so no scrollIntoView
+  Element.prototype.scrollIntoView = () => {};
+});
+Element.prototype.scrollIntoView = () => {};
 
 describe("App background sync", () => {
   it("drops a thread that no longer matches its card after a change elsewhere", async () => {
@@ -84,6 +96,62 @@ describe("App background sync", () => {
     window.dispatchEvent(new Event("focus"));
 
     await waitFor(() => expect(screen.queryByText("Mail for A")).not.toBeInTheDocument());
+  });
+});
+
+describe("App background sync while the first page is being cached", () => {
+  it("applies a refresh that lands before the first page's cache write finishes", async () => {
+    let releaseSave!: () => void;
+    const slowSave = new Promise<void>(r => { releaseSave = r; });
+    let saves = 0;
+    handlers.save_cached_card_threads = async () => { if (saves++ === 0) await slowSave; return null; };
+    render(() => <App />);
+    await screen.findByText("Mail for A");
+
+    handlers.sync_threads_incremental = () => ({
+      modified_threads: [{ ...thread("t-a", "Mail for A"), labels: [] }],
+      deleted_thread_ids: [],
+      is_full_sync: false,
+    });
+    let releaseFetch!: () => void;
+    const slowFetch = new Promise<void>(r => { releaseFetch = r; });
+    const fetchPage = handlers.fetch_threads_paginated;
+    handlers.fetch_threads_paginated = async (args) => { await slowFetch; return fetchPage({ ...args, cardId: "empty" }); };
+    window.dispatchEvent(new Event("focus"));
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith("sync_threads_incremental", expect.anything()));
+
+    releaseSave();
+    await new Promise(r => setTimeout(r, 10));
+    releaseFetch();
+
+    await waitFor(() => expect(screen.queryByText("Mail for A")).not.toBeInTheDocument());
+  });
+});
+
+describe("App background sync after an account switch", () => {
+  it("ignores a sync result for the account that is no longer selected", async () => {
+    handlers.get_accounts = () => [account("a", "a@x.com"), account("b", "b@x.com")];
+    render(() => <App />);
+    await screen.findByText("Mail for A");
+
+    let releaseSync!: () => void;
+    const slowSync = new Promise<void>(r => { releaseSync = r; });
+    handlers.sync_threads_incremental = async () => {
+      await slowSync;
+      return { modified_threads: [thread("t-new", "New for A")], deleted_thread_ids: [], is_full_sync: false };
+    };
+    window.dispatchEvent(new Event("focus"));
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith("sync_threads_incremental", { accountId: "a" }));
+
+    fireEvent.click(screen.getByTitle("a@x.com"));
+    fireEvent.click(await screen.findByText("b@x.com"));
+    await screen.findByText("Mail for B");
+    const fetchesForB = () => invoke.mock.calls.filter(([cmd, args]) => cmd === "fetch_threads_paginated" && args?.cardId === "card-b").length;
+    const before = fetchesForB();
+
+    releaseSync();
+    await new Promise(r => setTimeout(r, 30));
+    expect(fetchesForB()).toBe(before);
   });
 });
 
@@ -112,6 +180,65 @@ describe("App attachments", () => {
       return panel as HTMLElement;
     });
     await waitFor(() => expect(compose).toHaveTextContent("report.pdf"));
+  });
+
+  it("opens a mailto link as a new email without the previous compose's attachments", async () => {
+    threadsByCard["card-a"] = [{
+      ...thread("t-a", "Mail for A"),
+      has_attachment: true,
+      attachments: [{
+        message_id: "m1", attachment_id: "att1", filename: "report.pdf",
+        mime_type: "application/pdf", size: 10, inline_data: "cGRm", content_id: null,
+      }],
+    }];
+    render(() => <App />);
+    fireEvent.contextMenu(await screen.findByTitle("report.pdf (10 B)"));
+    await waitFor(() => expect(lastMenu.some(i => i.text === "Forward")).toBe(true));
+    lastMenu.find(i => i.text === "Forward")!.action!();
+    await waitFor(() => expect(document.querySelector(".compose-panel")).toHaveTextContent("report.pdf"));
+
+    eventListeners["mailto-received"]({ payload: { to: "bo@y.com", cc: "", bcc: "", subject: "Hi", body: "" } });
+
+    await waitFor(() => expect(screen.getByPlaceholderText("Recipients")).toHaveValue("bo@y.com"));
+    expect(document.querySelector(".compose-panel")).not.toHaveTextContent("report.pdf");
+  });
+
+  it("opens a new email on c while the previous one is still closing", async () => {
+    render(() => <App />);
+    await screen.findByText("Mail for A");
+    fireEvent.keyDown(document, { key: "c" });
+    fireEvent.input(await screen.findByPlaceholderText("Subject"), { target: { value: "Old subject" } });
+    fireEvent.keyDown(document, { key: "Escape" });
+    fireEvent.keyDown(document, { key: "c" });
+    await new Promise(r => setTimeout(r, 300));
+
+    expect(document.querySelector(".compose-panel")).not.toBeNull();
+    expect(screen.getByPlaceholderText("Subject")).toHaveValue("");
+  });
+
+  it("forwards into a fresh email when compose is still closing", async () => {
+    threadsByCard["card-a"] = [{
+      ...thread("t-a", "Mail for A"),
+      has_attachment: true,
+      attachments: [{
+        message_id: "m1", attachment_id: "att1", filename: "report.pdf",
+        mime_type: "application/pdf", size: 10, inline_data: "cGRm", content_id: null,
+      }],
+    }];
+    render(() => <App />);
+    fireEvent.contextMenu(await screen.findByTitle("report.pdf (10 B)"));
+    await waitFor(() => expect(lastMenu.some(i => i.text === "Forward")).toBe(true));
+
+    fireEvent.click(screen.getByTitle("Compose"));
+    fireEvent.input(await screen.findByPlaceholderText("Subject"), { target: { value: "Old subject" } });
+    fireEvent.keyDown(document, { key: "Escape" });
+    lastMenu.find(i => i.text === "Forward")!.action!();
+    await new Promise(r => setTimeout(r, 300));
+
+    const compose = document.querySelector(".compose-panel") as HTMLElement;
+    expect(compose).not.toBeNull();
+    expect(compose).toHaveTextContent("report.pdf");
+    expect(screen.getByPlaceholderText("Subject")).toHaveValue("");
   });
 });
 
@@ -159,6 +286,26 @@ describe("App presets", () => {
     expect(screen.getByRole("region", { name: "Starred email card" })).toBeInTheDocument();
   });
 
+  it("keeps a restored layout whose cards could not be deleted when starting from scratch", async () => {
+    handlers.get_accounts = () => [];
+    handlers.run_oauth_flow = () => account("a", "a@x.com");
+    handlers.pull_from_icloud = () => true;
+    handlers.delete_card = ({ id }) => {
+      if (id === "card-a") throw new Error("db locked");
+      return null;
+    };
+    cardsByAccount.a = [card("card-a", "a", "Alpha"), { ...card("card-z", "a", "Zeta"), position: 1 }];
+    render(() => <App />);
+
+    fireEvent.click(await screen.findByText("Sign in with Google"));
+    fireEvent.click(await screen.findByText("Start from scratch", {}, { timeout: 3000 }));
+
+    expect(await screen.findByText(/db locked/)).toBeInTheDocument();
+    expect(screen.queryByText("How do you email?")).not.toBeInTheDocument();
+    expect(screen.getByRole("region", { name: "Alpha email card" })).toBeInTheDocument();
+    expect(screen.queryByRole("region", { name: "Zeta email card" })).not.toBeInTheDocument();
+  });
+
   it("stays on the preset picker when no card could be created", async () => {
     signInToEmptyLayout();
     handlers.create_card = () => { throw new Error("db locked"); };
@@ -203,6 +350,23 @@ describe("App accounts", () => {
     await waitFor(() => expect(screen.queryByText("Mail for A")).not.toBeInTheDocument());
   });
 
+  it("closes the previous account's open thread when switching accounts", async () => {
+    handlers.get_accounts = () => [account("a", "a@x.com"), account("b", "b@x.com")];
+    handlers.get_thread_details = () => ({ id: "t-a", messages: [fullMessage("m1", "Ana <ana@x.com>")] });
+    render(() => <App />);
+    fireEvent.click(await screen.findByText("Mail for A"));
+    await screen.findByText("body m1");
+    // Let ThreadView's scroll-to-last-message frame run; it reads the thread
+    // without a null check
+    await new Promise(r => requestAnimationFrame(r));
+
+    fireEvent.click(screen.getByTitle("a@x.com"));
+    fireEvent.click(await screen.findByText("b@x.com"));
+
+    await screen.findByText("Mail for B");
+    expect(screen.queryByText("body m1")).not.toBeInTheDocument();
+  });
+
   it("collapsing a card keeps other accounts' collapsed cards", async () => {
     localStorage.setItem("collapsedCards", JSON.stringify({ "card-b": true }));
     render(() => <App />);
@@ -242,6 +406,48 @@ describe("App thread list shortcuts", () => {
     );
   });
 
+  it("shows an enabled action missing from an older saved action order", async () => {
+    localStorage.setItem("actionOrder", JSON.stringify(["markImportant", "markRead", "star", "quickReply", "quickForward", "archive", "trash"]));
+    localStorage.setItem("actionSettings", JSON.stringify({ spam: true }));
+    render(() => <App />);
+    await screen.findByText("Mail for A");
+    fireEvent.keyDown(document, { key: "l" });
+    fireEvent.keyDown(document, { key: "x" });
+    expect(await screen.findByTitle("Report spam")).toBeInTheDocument();
+  });
+
+  it("scrolls the focused card and thread into view", async () => {
+    const scrolled: Element[] = [];
+    Element.prototype.scrollIntoView = function (this: Element) { scrolled.push(this); };
+    render(() => <App />);
+    const row = (await screen.findByText("Mail for A")).closest(".thread")!;
+    fireEvent.keyDown(document, { key: "l" });
+    await waitFor(() => expect(scrolled).toContain(row));
+    expect(scrolled).toContain(screen.getByRole("region", { name: "Alpha email card" }).closest(".card-wrapper"));
+  });
+
+  it("undoes an action on the account it was taken in after switching accounts", async () => {
+    handlers.get_accounts = () => [account("a", "a@x.com"), account("b", "b@x.com")];
+    handlers.modify_threads = () => null;
+    threadsByCard["card-a"] = [{ ...thread("t-a", "Mail for A"), labels: ["INBOX"] }];
+    render(() => <App />);
+    await screen.findByText("Mail for A");
+    fireEvent.keyDown(document, { key: "l" });
+    fireEvent.keyDown(document, { key: "a" });
+    await screen.findByText("Archived 1 thread");
+
+    fireEvent.click(screen.getByTitle("a@x.com"));
+    fireEvent.click(await screen.findByText("b@x.com"));
+    await screen.findByText("Mail for B");
+    invoke.mockClear();
+    fireEvent.click(screen.getByText("Undo"));
+
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith("modify_threads", {
+      accountId: "a", threadIds: ["t-a"], addLabels: ["INBOX"], removeLabels: [],
+    }));
+    expect(invoke).not.toHaveBeenCalledWith("fetch_threads_paginated", expect.objectContaining({ accountId: "b", cardId: "card-a" }));
+  });
+
   it("clears the selection on Escape before dropping card focus", async () => {
     render(() => <App />);
     const row = (await screen.findByText("Mail for A")).closest(".thread")!;
@@ -251,5 +457,371 @@ describe("App thread list shortcuts", () => {
     fireEvent.keyDown(document, { key: "Escape" });
     await waitFor(() => expect(row).not.toHaveClass("selected"));
     expect(row).toHaveClass("focused");
+  });
+});
+
+const fullMessage = (id: string, from: string, extra: Record<string, unknown> = {}) => ({
+  id, threadId: "t-a", labelIds: ["INBOX"], snippet: `body ${id}`, internalDate: "0",
+  payload: { mimeType: "text/plain", headers: [{ name: "From", value: from }, { name: "Subject", value: "Hi" }, { name: "Message-ID", value: `<${id}@x>` }], body: { size: 0 } },
+  ...extra,
+});
+
+describe("App thread view", () => {
+  it("marks an unread thread read on open without an undo toast", async () => {
+    threadsByCard["card-a"] = [{ ...thread("t-a", "Mail for A"), unread_count: 1, labels: ["INBOX", "UNREAD"] }];
+    handlers.modify_threads = () => null;
+    handlers.get_thread_details = () => ({ id: "t-a", messages: [fullMessage("m1", "Ana <ana@x.com>")] });
+    render(() => <App />);
+
+    fireEvent.click(await screen.findByText("Mail for A"));
+
+    await waitFor(() =>
+      expect(invoke).toHaveBeenCalledWith("modify_threads", expect.objectContaining({
+        threadIds: ["t-a"], removeLabels: ["UNREAD"],
+      })),
+    );
+    await new Promise(r => setTimeout(r, 20));
+    expect(document.querySelector(".toast-undo-btn")).toBeNull();
+    expect(screen.queryByText(/Marked 1 thread as read/)).not.toBeInTheDocument();
+  });
+});
+
+describe("App quick reaction", () => {
+  it("reacts to the latest real message from someone else, not to a reaction", async () => {
+    const headers = (from: string, id: string) => [{ name: "From", value: from }, { name: "Message-Id", value: id }];
+    handlers.get_thread_details = () => ({
+      id: "t-a",
+      messages: [
+        { ...fullMessage("m1", "Ana <ana@x.com>"), payload: { mimeType: "text/plain", headers: headers("Ana <ana@x.com>", "<m1@x>"), body: { size: 0 } } },
+        {
+          ...fullMessage("m2", "Bo <bo@x.com>"),
+          payload: { mimeType: "text/plain", headers: headers("Bo <bo@x.com>", "<m2@x>"), body: { size: 0 } },
+          reaction: { emoji: "👍", from_addr: "bo@x.com", in_reply_to: "<m1@x>", message_id: "<m2@x>" },
+        },
+        { ...fullMessage("m3", "Me <a@x.com>"), payload: { mimeType: "text/plain", headers: headers("Me <a@x.com>", "<m3@x>"), body: { size: 0 } } },
+      ],
+    });
+    handlers.send_reaction = () => null;
+    render(() => <App />);
+    await screen.findByText("Mail for A");
+
+    fireEvent.keyDown(document, { key: "l" });
+    fireEvent.keyDown(document, { key: "r" });
+    fireEvent.click(await screen.findByTitle("Add reaction"));
+    const emoji = document.querySelector<HTMLButtonElement>(".emoji-picker .emoji-btn")!;
+    fireEvent.click(emoji);
+
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith("send_reaction", {
+      accountId: "a", threadId: "t-a", messageId: "<m1@x>", emoji: emoji.textContent, toEmail: "ana@x.com",
+    }));
+  });
+});
+
+describe("App thread view reactions", () => {
+  it("shows a toast when a reaction from the thread view fails", async () => {
+    handlers.get_thread_details = () => ({ id: "t-a", messages: [fullMessage("m1", "Ana <ana@x.com>")] });
+    handlers.send_reaction = () => { throw new Error("quota exceeded"); };
+    render(() => <App />);
+    fireEvent.click(await screen.findByText("Mail for A"));
+    await screen.findByText("body m1");
+
+    fireEvent.click(screen.getAllByTitle("Add reaction")[0]);
+    fireEvent.click(document.querySelector<HTMLButtonElement>(".emoji-picker .emoji-btn")!);
+
+    expect(await screen.findByText(/Failed to send reaction: .*quota exceeded/)).toBeInTheDocument();
+  });
+});
+
+describe("App compose autocomplete", () => {
+  it("completes a later recipient from any contact without dropping earlier ones", async () => {
+    handlers.fetch_contacts = () => Array.from({ length: 12 }, (_, i) => ({
+      resource_name: `people/${i}`, display_name: i === 11 ? "Zed Last" : null,
+      email_addresses: [`c${i}@y.com`], photo_url: null,
+    }));
+    render(() => <App />);
+    await screen.findByText("Mail for A");
+    fireEvent.keyDown(document, { key: "c" });
+    const to = await screen.findByPlaceholderText("Recipients");
+
+    fireEvent.focus(to);
+    fireEvent.input(to, { target: { value: "ana@x.com, zed" } });
+    fireEvent.mouseDown(await screen.findByText("c11@y.com"));
+
+    expect(to).toHaveValue("ana@x.com, c11@y.com");
+  });
+});
+
+describe("App compose", () => {
+  it("restores an email whose send was undone while compose was still closing", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    handlers.send_email = () => null;
+    render(() => <App />);
+    await screen.findByText("Mail for A");
+    fireEvent.keyDown(document, { key: "c" });
+    fireEvent.input(await screen.findByPlaceholderText("Recipients"), { target: { value: "bo@y.com" } });
+    fireEvent.input(screen.getByPlaceholderText("Subject"), { target: { value: "Hello" } });
+    fireEvent.click(screen.getByRole("button", { name: /^Send/ }));
+
+    fireEvent.click(document.querySelector(".toast-undo-btn")!);
+    await vi.advanceTimersByTimeAsync(6000);
+
+    expect(screen.getByPlaceholderText("Recipients")).toHaveValue("bo@y.com");
+    expect(screen.getByPlaceholderText("Subject")).toHaveValue("Hello");
+    expect(invoke).not.toHaveBeenCalledWith("send_email", expect.anything());
+  });
+
+  it("sends an undone new email as a new email while a reply is open", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    handlers.get_thread_details = () => ({ id: "t-a", messages: [fullMessage("m1", "Ana <ana@x.com>")] });
+    handlers.send_email = () => null;
+    handlers.reply_to_thread = () => null;
+    render(() => <App />);
+    await screen.findByText("Mail for A");
+    fireEvent.keyDown(document, { key: "c" });
+    fireEvent.input(await screen.findByPlaceholderText("Recipients"), { target: { value: "bo@y.com" } });
+    fireEvent.input(screen.getByPlaceholderText("Subject"), { target: { value: "Hello" } });
+    fireEvent.click(screen.getByRole("button", { name: /^Send/ }));
+    await vi.advanceTimersByTimeAsync(300);
+
+    fireEvent.click(screen.getByText("Mail for A"));
+    await screen.findByText("body m1");
+    fireEvent.keyDown(document, { key: "r" });
+    await screen.findByPlaceholderText("Write your reply...");
+    fireEvent.click(document.querySelector(".toast-undo-btn")!);
+    await vi.advanceTimersByTimeAsync(100);
+
+    expect(screen.getByPlaceholderText("Subject")).toHaveValue("Hello");
+    fireEvent.click(screen.getByRole("button", { name: /^Send/ }));
+    await vi.advanceTimersByTimeAsync(6000);
+
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith("send_email", expect.objectContaining({ to: "bo@y.com", subject: "Hello" })));
+    expect(invoke).not.toHaveBeenCalledWith("reply_to_thread", expect.anything());
+  });
+
+  it("sends from the account compose was opened in after switching accounts", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    handlers.get_accounts = () => [account("a", "a@x.com"), account("b", "b@x.com")];
+    handlers.send_email = () => null;
+    handlers.save_draft = () => ({ id: "d1" });
+    handlers.delete_draft = () => null;
+    render(() => <App />);
+    await screen.findByText("Mail for A");
+
+    fireEvent.click(screen.getByTitle("Compose"));
+    fireEvent.input(await screen.findByPlaceholderText("Recipients"), { target: { value: "bo@y.com" } });
+    fireEvent.input(screen.getByPlaceholderText("Subject"), { target: { value: "Hello" } });
+
+    fireEvent.click(screen.getByTitle("a@x.com"));
+    fireEvent.click(await screen.findByText("b@x.com"));
+    await screen.findByText("Mail for B");
+
+    fireEvent.click(screen.getByRole("button", { name: /^Send/ }));
+    await vi.advanceTimersByTimeAsync(6000);
+
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith("send_email", expect.anything()));
+    expect(invoke).toHaveBeenCalledWith("send_email", expect.objectContaining({ accountId: "a", to: "bo@y.com" }));
+  });
+});
+
+const calendarEvent = (id: string, title: string) => ({
+  id, calendar_id: "primary", calendar_name: "Main", title, description: null, location: null,
+  start_time: Date.now() + 3600_000, end_time: Date.now() + 7200_000, all_day: false, status: "confirmed",
+  organizer: "org@x.com", attendees: [], html_link: null, hangout_link: null, response_status: null, can_edit: true,
+});
+
+describe("App calendar", () => {
+  function calendarCards() {
+    const calCard = (id: string, accountId: string, name: string): Card => ({
+      ...card(id, accountId, name), query: "calendar:7d", card_type: "calendar",
+    });
+    handlers.get_accounts = () => [account("a", "a@x.com"), account("b", "b@x.com")];
+    cardsByAccount.a = [calCard("cal-a", "a", "Agenda A")];
+    cardsByAccount.b = [calCard("cal-b", "b", "Agenda B")];
+    handlers.get_cached_card_events = () => null;
+    handlers.save_cached_card_events = () => null;
+    handlers.fetch_calendar_events = ({ accountId }) =>
+      [calendarEvent(`ev-${accountId}`, `Event of ${accountId}`)];
+  }
+
+  it("quick-replies to the guests of the user's own event, not the user", async () => {
+    calendarCards();
+    handlers.fetch_calendar_events = () => [{
+      ...calendarEvent("ev-a", "Planning"),
+      organizer: "a@x.com",
+      attendees: [
+        { email: "a@x.com", display_name: null, response_status: null, is_self: true, is_organizer: true },
+        { email: "bo@y.com", display_name: null, response_status: null, is_self: false, is_organizer: false },
+      ],
+    }];
+    handlers.send_email = () => null;
+    render(() => <App />);
+    await screen.findByText("Planning");
+
+    fireEvent.keyDown(document, { key: "l" });
+    fireEvent.keyDown(document, { key: "r" });
+    const input = document.querySelector(".quick-reply-input") as HTMLTextAreaElement;
+    fireEvent.input(input, { target: { value: "See you there" } });
+    fireEvent.keyDown(input, { key: "Enter", metaKey: true });
+
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith("send_email", expect.objectContaining({ to: "bo@y.com" })));
+  });
+
+  it("labels calendar cards as calendar cards", async () => {
+    calendarCards();
+    render(() => <App />);
+    expect(await screen.findByRole("region", { name: "Agenda A calendar card" })).toBeInTheDocument();
+  });
+
+  it("removes a deleted event from every calendar card showing it", async () => {
+    calendarCards();
+    cardsByAccount.a = [
+      { ...card("cal-1", "a", "Week"), query: "calendar:7d", card_type: "calendar" },
+      { ...card("cal-2", "a", "Month"), query: "calendar:30d", card_type: "calendar", position: 1 },
+    ];
+    handlers.fetch_calendar_events = () => [calendarEvent("ev-1", "Planning")];
+    handlers.delete_calendar_event = () => null;
+    render(() => <App />);
+    await waitFor(() => expect(screen.getAllByText("Planning")).toHaveLength(2));
+
+    fireEvent.click(screen.getAllByText("Planning")[0]);
+    fireEvent.keyDown(document, { key: "d" });
+
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith("delete_calendar_event", expect.anything()));
+    await waitFor(() => expect(screen.queryAllByText("Planning")).toHaveLength(0));
+  });
+
+  it("does not show an account's calendars once another account is selected", async () => {
+    calendarCards();
+    let releaseA!: () => void;
+    const slowA = new Promise<void>(r => { releaseA = r; });
+    handlers.list_calendars = async ({ accountId }) => {
+      if (accountId === "a") await slowA;
+      return [{ id: `cal-${accountId}`, name: `Calendar of ${accountId}`, is_primary: false, access_role: "owner", timezone: null }];
+    };
+    render(() => <App />);
+
+    fireEvent.click(await screen.findByText("Event of a"));
+    fireEvent.click(await screen.findByTitle("Move to calendar"));
+
+    fireEvent.click(screen.getByTitle("a@x.com"));
+    fireEvent.click(await screen.findByText("b@x.com"));
+    fireEvent.click(await screen.findByText("Event of b"));
+    fireEvent.click(await screen.findByTitle("Move to calendar"));
+    expect(await screen.findByText("Calendar of b")).toBeInTheDocument();
+
+    releaseA();
+    await new Promise(r => setTimeout(r, 20));
+    expect(screen.queryByText("Calendar of a")).not.toBeInTheDocument();
+  });
+});
+
+describe("App thread view compose", () => {
+  it("sends a forward started after a reply as a new email, not as the reply", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    handlers.get_thread_details = () => ({
+      id: "t-a",
+      messages: [fullMessage("m1", "Ana <ana@x.com>"), fullMessage("m2", "Bo <bo@x.com>")],
+    });
+    handlers.send_email = () => null;
+    handlers.reply_to_thread = () => null;
+    handlers.save_draft = () => ({ id: "d1" });
+    handlers.delete_draft = () => null;
+    render(() => <App />);
+    fireEvent.click(await screen.findByText("Mail for A"));
+    await screen.findByText("body m2");
+
+    fireEvent.keyDown(document, { key: "r" });
+    await screen.findByPlaceholderText("Write your reply...");
+    fireEvent.mouseEnter(document.querySelectorAll(".message-row")[0]);
+    fireEvent.click(await screen.findByTitle("Forward"));
+    await vi.advanceTimersByTimeAsync(100);
+    fireEvent.input(await screen.findByPlaceholderText("Recipients"), { target: { value: "cy@z.com" } });
+    fireEvent.click(screen.getByRole("button", { name: /^Send/ }));
+    await vi.advanceTimersByTimeAsync(6000);
+
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith("send_email", expect.objectContaining({ to: "cy@z.com" })));
+    expect(invoke).not.toHaveBeenCalledWith("reply_to_thread", expect.anything());
+  });
+});
+
+describe("App quick reply", () => {
+  it("replies at the Reply-To address", async () => {
+    threadsByCard["card-a"] = [{ ...thread("t-a", "Mail for A"), participants: ["List <noreply@x.com>"] }];
+    handlers.get_thread_details = () => ({
+      id: "t-a",
+      messages: [{
+        ...fullMessage("m1", "List <noreply@x.com>"),
+        payload: { mimeType: "text/plain", headers: [{ name: "From", value: "List <noreply@x.com>" }, { name: "Reply-To", value: "team@x.com" }], body: { size: 0 } },
+      }],
+    });
+    handlers.reply_to_thread = () => null;
+    render(() => <App />);
+    await screen.findByText("Mail for A");
+    fireEvent.keyDown(document, { key: "l" });
+    fireEvent.keyDown(document, { key: "r" });
+    const input = document.querySelector(".quick-reply-input") as HTMLTextAreaElement;
+    fireEvent.input(input, { target: { value: "Thanks" } });
+    fireEvent.keyDown(input, { key: "Enter", metaKey: true });
+
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith("reply_to_thread", expect.objectContaining({ to: "team@x.com", subject: "Re: Mail for A" })));
+  });
+});
+
+describe("App batch reply", () => {
+  it("replies at the Reply-To address", async () => {
+    handlers.get_thread_details = () => ({
+      id: "t-a",
+      messages: [{
+        ...fullMessage("m1", "List <noreply@x.com>"),
+        payload: { mimeType: "text/plain", headers: [{ name: "From", value: "List <noreply@x.com>" }, { name: "Reply-To", value: "team@x.com" }, { name: "Subject", value: "News" }], body: { size: 0 } },
+      }],
+    });
+    handlers.reply_to_thread = () => null;
+    render(() => <App />);
+    await screen.findByText("Mail for A");
+    fireEvent.keyDown(document, { key: "l" });
+    fireEvent.keyDown(document, { key: "x" });
+    fireEvent.click(await screen.findByTitle("Batch Reply"));
+    fireEvent.input(await screen.findByPlaceholderText(/^Reply to/), { target: { value: "Thanks" } });
+    fireEvent.click(screen.getByRole("button", { name: /^Send ⌘/ }));
+
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith("reply_to_thread", expect.objectContaining({ to: "team@x.com" })));
+  });
+
+  it("ignores a slow batch that finishes after another batch opened", async () => {
+    cardsByAccount.a = [card("card-a", "a", "Alpha"), { ...card("card-b", "a", "Beta"), position: 1 }];
+    threadsByCard["card-b"] = [thread("t-b", "Mail for B")];
+    let releaseA!: () => void;
+    const slowA = new Promise<void>(r => { releaseA = r; });
+    handlers.get_thread_details = async ({ threadId }) => {
+      if (threadId === "t-a") await slowA;
+      const subject = threadId === "t-a" ? "Batch subject A" : "Batch subject B";
+      return {
+        id: threadId,
+        messages: [{
+          ...fullMessage(`m-${threadId}`, "Ana <ana@x.com>"),
+          payload: { mimeType: "text/plain", headers: [{ name: "From", value: "Ana <ana@x.com>" }, { name: "Subject", value: subject }], body: { size: 0 } },
+        }],
+      };
+    };
+    render(() => <App />);
+    await screen.findByText("Mail for B");
+
+    fireEvent.keyDown(document, { key: "l" });
+    fireEvent.keyDown(document, { key: "x" });
+    fireEvent.click(await screen.findByTitle("Batch Reply"));
+    await screen.findByText("Loading threads...");
+    fireEvent.keyDown(document, { key: "Escape" });
+    await waitFor(() => expect(screen.queryByText("Loading threads...")).not.toBeInTheDocument());
+
+    fireEvent.keyDown(document, { key: "l" });
+    fireEvent.keyDown(document, { key: "x" });
+    fireEvent.click(await screen.findByTitle("Batch Reply"));
+    expect(await screen.findByText("Batch subject B")).toBeInTheDocument();
+
+    releaseA();
+    await new Promise(r => setTimeout(r, 20));
+    expect(screen.queryByText("Batch subject A")).not.toBeInTheDocument();
+    expect(screen.getByText("Batch subject B")).toBeInTheDocument();
   });
 });
