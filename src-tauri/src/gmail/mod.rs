@@ -1614,6 +1614,19 @@ struct AttachmentInfo {
     content_id: Option<String>,
 }
 
+/// File extension for an unnamed part, so the saved file opens in the right app
+fn extension_for_mime(mime_type: &str) -> String {
+    let subtype = mime_type.split_once('/').map_or("", |(_, sub)| sub).to_ascii_lowercase();
+    match subtype.as_str() {
+        "jpeg" | "pjpeg" => "jpg".to_string(),
+        "calendar" => "ics".to_string(),
+        "plain" => "txt".to_string(),
+        "svg+xml" => "svg".to_string(),
+        s if !s.is_empty() && s.bytes().all(|b| b.is_ascii_alphanumeric()) => subtype,
+        _ => "bin".to_string(),
+    }
+}
+
 /// Attachments of a message: those among its parts, or, for a single-part
 /// message, the payload itself when it is a file rather than the text body
 fn payload_attachments(payload: &MessagePayload) -> Vec<AttachmentInfo> {
@@ -1657,8 +1670,7 @@ fn extract_attachments_from_parts(parts: &Option<Vec<MessagePart>>) -> Vec<Attac
                             .filter(|f| !f.is_empty())
                             .unwrap_or_else(|| {
                                 let stem = content_id.as_deref().unwrap_or("attachment");
-                                let extension = part.mime_type.rsplit('/').next().unwrap_or("bin");
-                                format!("{}.{}", stem, extension)
+                                format!("{}.{}", stem, extension_for_mime(&part.mime_type))
                             });
                         attachments.push(AttachmentInfo {
                             attachment_id: attachment_id.clone(),
@@ -3197,9 +3209,30 @@ mod tests {
             .iter()
             .map(|a| (a.message_id.as_str(), a.attachment_id.as_str(), a.filename.as_str()))
             .collect();
-        assert_eq!(found, vec![("m1", "att-pdf", "scan.pdf"), ("m2", "att-ics", "attachment.calendar")]);
+        assert_eq!(found, vec![("m1", "att-pdf", "scan.pdf"), ("m2", "att-ics", "attachment.ics")]);
         assert!(thread.has_attachment);
         assert!(thread.attachments[1].is_calendar());
+    }
+
+    #[test]
+    fn unnamed_attachments_get_an_extension_the_os_can_open() {
+        let unnamed = |mime: &str, content_id: Option<&str>| {
+            let part = MessagePart {
+                part_id: None,
+                mime_type: mime.to_string(),
+                filename: Some(String::new()),
+                headers: content_id.map(|id| vec![header("Content-ID", &format!("<{}>", id))]),
+                body: Some(MessageBody { size: Some(10), data: None, attachment_id: Some("a".to_string()) }),
+                parts: None,
+            };
+            extract_attachments_from_parts(&Some(vec![part])).remove(0).filename
+        };
+        assert_eq!(unnamed("text/calendar", None), "attachment.ics");
+        assert_eq!(unnamed("image/jpeg", Some("logo")), "logo.jpg");
+        assert_eq!(unnamed("image/svg+xml", Some("icon")), "icon.svg");
+        assert_eq!(unnamed("text/plain", None), "attachment.txt");
+        assert_eq!(unnamed("image/png", Some("x@y")), "x@y.png");
+        assert_eq!(unnamed("application/vnd.ms-excel", None), "attachment.bin");
     }
 
     #[test]
