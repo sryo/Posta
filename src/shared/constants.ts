@@ -41,7 +41,7 @@ export const CALENDAR_GROUP_BY_OPTIONS: { value: GroupBy; label: string }[] = [
 export type ActionSettings = Record<string, boolean>;
 
 // Gmail search operators for autocomplete
-export const GMAIL_OPERATORS: { op: string; desc: string; values?: string[] }[] = [
+export const GMAIL_OPERATORS: { op: string; desc: string }[] = [
   { op: "from:", desc: "Sender address" },
   { op: "to:", desc: "Recipient address" },
   { op: "cc:", desc: "CC recipient" },

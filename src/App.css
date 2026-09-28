@@ -153,17 +153,10 @@ a:focus-visible,
     right: 0;
     height: var(--drag-region-height);
     min-height: var(--drag-region-height);
-    -webkit-app-region: drag;
     z-index: var(--z-drag-region);
     cursor: default;
     user-select: none;
     -webkit-user-select: none;
-}
-
-/* Prevent inputs and buttons from being draggable */
-.drag-region input,
-.drag-region button {
-    -webkit-app-region: no-drag;
 }
 
 /* Sidebar Container */
