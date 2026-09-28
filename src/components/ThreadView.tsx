@@ -143,7 +143,9 @@ export const ThreadView = (props: {
   let scrolledTo: { id: string; count: number } | null = null;
   createEffect(() => {
     const loaded = props.thread;
-    if (!loaded) return;
+    // Opening a thread clears it while it loads, so a reopened thread
+    // starts at its newest message again
+    if (!loaded) { scrolledTo = null; return; }
     const count = loaded.messages.length;
     if (scrolledTo?.id === loaded.id && count <= scrolledTo.count) return;
     scrolledTo = { id: loaded.id, count };

@@ -491,6 +491,31 @@ describe("ThreadView scrolling", () => {
     await nextFrame();
     expect(scroll).toHaveBeenCalledWith({ block: "start" });
   });
+
+  it("jumps to the newest message again when the open thread is opened anew", async () => {
+    const messages = [
+      { from: "Alice <alice@example.com>", body: "first" },
+      { from: "Bob <bob@example.com>", body: "second" },
+    ];
+    const [thread, setThread] = createSignal<FullThread | null>(makeThread(messages));
+    const scroll = vi.fn();
+    Element.prototype.scrollIntoView = scroll;
+    render(() => (
+      <ThreadView
+        thread={thread()} loading={false} error={null} card={null} focusColor={null} onClose={vi.fn()}
+        focusedMessageIndex={0} onFocusChange={vi.fn()} onOpenAttachment={vi.fn()} onDownloadAttachment={vi.fn()}
+        onShowAttachmentMenu={vi.fn()} onReply={vi.fn()} onForward={vi.fn()} onAction={vi.fn()} onOpenLabels={vi.fn()}
+        accountId="acc" isStarred={false} isRead={true} isImportant={false} isInInbox={true} labelCount={0} inlineCompose={null}
+      />
+    ));
+    await nextFrame();
+    scroll.mockClear();
+    // Opening a thread clears it while the new copy loads
+    setThread(null);
+    setThread(makeThread(messages));
+    await nextFrame();
+    expect(scroll).toHaveBeenCalledWith({ block: "start" });
+  });
 });
 
 describe("ThreadView closing", () => {
