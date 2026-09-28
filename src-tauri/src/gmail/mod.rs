@@ -168,15 +168,76 @@ pub struct DraftMessage {
     pub thread_id: Option<String>,
 }
 
-/// Turn a non-2xx response into an "API error <status>: <body>" error.
-/// Callers match on that text (e.g. "API error 404", "401").
+#[derive(Deserialize)]
+struct ApiErrorBody {
+    error: ApiError,
+}
+
+#[derive(Deserialize)]
+struct ApiError {
+    message: Option<String>,
+    #[serde(default)]
+    errors: Vec<ApiErrorReason>,
+    #[serde(default)]
+    details: Vec<ApiErrorReason>,
+}
+
+#[derive(Deserialize)]
+struct ApiErrorReason {
+    reason: Option<String>,
+}
+
+/// "API error <status>: <sentence>" for a failed Gmail call. Callers match
+/// on the prefix (e.g. "API error 404", "401 Unauthorized"); the rest is
+/// what the user reads in place of Google's JSON error body.
+fn friendly_gmail_error(status: reqwest::StatusCode, body: &str) -> String {
+    use reqwest::StatusCode;
+    const MAX_DETAIL_CHARS: usize = 200;
+
+    let api_error = serde_json::from_str::<ApiErrorBody>(body).ok().map(|b| b.error);
+    let has_reason = |wanted: &[&str]| {
+        api_error.as_ref().is_some_and(|e| {
+            e.errors
+                .iter()
+                .chain(&e.details)
+                .any(|r| r.reason.as_deref().is_some_and(|reason| wanted.contains(&reason)))
+        })
+    };
+
+    let detail = if has_reason(&["SERVICE_DISABLED", "accessNotConfigured"])
+        || body.contains("has not been used in project")
+    {
+        "Gmail API is not enabled for this app's Google Cloud project. Enable it in the Google Cloud Console, then sign in again.".to_string()
+    } else if status == StatusCode::TOO_MANY_REQUESTS
+        || has_reason(&["rateLimitExceeded", "userRateLimitExceeded", "quotaExceeded", "RATE_LIMIT_EXCEEDED"])
+    {
+        "Too many requests to Gmail. Wait a moment and try again.".to_string()
+    } else if has_reason(&["insufficientPermissions", "ACCESS_TOKEN_SCOPE_INSUFFICIENT"]) {
+        "Posta is missing permission to use Gmail. Sign in again and allow Gmail access.".to_string()
+    } else if status == StatusCode::UNAUTHORIZED {
+        "Gmail access expired. Try again; if this keeps happening, sign in again.".to_string()
+    } else if status == StatusCode::PAYLOAD_TOO_LARGE {
+        "This message is too large to send. Gmail allows up to 25MB of attachments.".to_string()
+    } else if let Some(message) = api_error.and_then(|e| e.message).filter(|m| !m.trim().is_empty()) {
+        message
+    } else {
+        let trimmed = body.trim();
+        match trimmed.char_indices().nth(MAX_DETAIL_CHARS) {
+            Some((cut, _)) => format!("{}…", &trimmed[..cut]),
+            None => trimmed.to_string(),
+        }
+    };
+    format!("API error {}: {}", status, detail)
+}
+
+/// Turn a non-2xx response into a friendly_gmail_error
 async fn ensure_success(resp: reqwest::Response) -> Result<reqwest::Response, String> {
     if resp.status().is_success() {
         return Ok(resp);
     }
     let status = resp.status();
     let body = resp.text().await.unwrap_or_default();
-    Err(format!("API error {}: {}", status, body))
+    Err(friendly_gmail_error(status, &body))
 }
 
 const CONNECT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
@@ -510,7 +571,7 @@ impl GmailClient {
         if !resp.status().is_success() {
             let status = resp.status();
             let body = resp.text().await.unwrap_or_default();
-            return Err(format!("Batch API error {}: {}", status, body));
+            return Err(format!("Batch {}", friendly_gmail_error(status, &body)));
         }
 
         // Get the response boundary from Content-Type header (must extract before consuming body)

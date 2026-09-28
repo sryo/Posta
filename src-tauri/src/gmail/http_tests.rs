@@ -170,3 +170,91 @@ async fn clients_share_one_connection_pool() {
     assert!(requests[0].head.to_ascii_lowercase().contains("authorization: bearer token"));
     assert_eq!(server.connections(), 1);
 }
+
+fn google_error(code: u16, status: &str, reason: &str, message: &str) -> String {
+    serde_json::json!({
+        "error": {
+            "code": code,
+            "message": message,
+            "errors": [{ "message": message, "domain": "global", "reason": reason }],
+            "status": status
+        }
+    })
+    .to_string()
+}
+
+#[test]
+fn api_errors_read_as_sentences_and_keep_their_status_prefix() {
+    use reqwest::StatusCode;
+    let disabled = serde_json::json!({
+        "error": {
+            "code": 403,
+            "message": "Gmail API has not been used in project 123 before or it is disabled.",
+            "status": "PERMISSION_DENIED",
+            "details": [{ "@type": "type.googleapis.com/google.rpc.ErrorInfo", "reason": "SERVICE_DISABLED" }]
+        }
+    })
+    .to_string();
+    let cases = [
+        (StatusCode::FORBIDDEN, disabled, "Gmail API is not enabled"),
+        (
+            StatusCode::TOO_MANY_REQUESTS,
+            google_error(429, "RESOURCE_EXHAUSTED", "rateLimitExceeded", "Too many concurrent requests for user"),
+            "Too many requests",
+        ),
+        (
+            StatusCode::FORBIDDEN,
+            google_error(403, "PERMISSION_DENIED", "userRateLimitExceeded", "User-rate limit exceeded"),
+            "Too many requests",
+        ),
+        (
+            StatusCode::FORBIDDEN,
+            google_error(403, "PERMISSION_DENIED", "insufficientPermissions", "Insufficient Permission"),
+            "Sign in again",
+        ),
+        (
+            StatusCode::UNAUTHORIZED,
+            google_error(401, "UNAUTHENTICATED", "authError", "Invalid Credentials"),
+            "Sign in again",
+        ),
+        (StatusCode::PAYLOAD_TOO_LARGE, "<html>Request Entity Too Large</html>".to_string(), "too large"),
+        (
+            StatusCode::NOT_FOUND,
+            google_error(404, "NOT_FOUND", "notFound", "Requested entity was not found."),
+            "Requested entity was not found.",
+        ),
+    ];
+    for (status, body, expected) in cases {
+        let message = friendly_gmail_error(status, &body);
+        assert!(message.starts_with(&format!("API error {}: ", status)), "{}", message);
+        assert!(message.to_lowercase().contains(&expected.to_lowercase()), "{} lacks {:?}", message, expected);
+        assert!(!message.contains('{'), "raw JSON leaked: {}", message);
+    }
+
+    // Unrecognized bodies are cut short rather than dumped whole
+    let long = friendly_gmail_error(StatusCode::BAD_GATEWAY, &"x".repeat(5000));
+    assert!(long.starts_with("API error 502 Bad Gateway: "));
+    assert!(long.len() < 400, "{}", long.len());
+}
+
+#[tokio::test]
+async fn failed_calls_report_the_friendly_error() {
+    let server = StubServer::start(|request| {
+        if request.target.starts_with("/batch/") {
+            Reply::Json(429, google_error(429, "RESOURCE_EXHAUSTED", "rateLimitExceeded", "slow down"))
+        } else {
+            Reply::Json(403, google_error(403, "PERMISSION_DENIED", "insufficientPermissions", "Insufficient Permission"))
+        }
+    })
+    .await;
+    let gmail = server.client();
+
+    let err = within(gmail.list_labels()).await.unwrap_err();
+    assert!(err.starts_with("API error 403 Forbidden: "), "{}", err);
+    assert!(err.contains("Sign in again"), "{}", err);
+
+    let err = within(gmail.execute_batch_get(&["/gmail/v1/users/me/threads/t1".to_string()]))
+        .await
+        .unwrap_err();
+    assert!(err.contains("API error 429 Too Many Requests: Too many requests"), "{}", err);
+}
