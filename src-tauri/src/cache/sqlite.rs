@@ -170,7 +170,7 @@ impl CacheDb {
 
     pub fn get_cards(&self, account_id: &str) -> Result<Vec<Card>, CacheError> {
         let conn = self.conn.lock().map_err(|_| CacheError::Lock)?;
-        let mut stmt = conn.prepare(&format!("SELECT {CARD_COLUMNS} FROM cards WHERE account_id = ?1 ORDER BY position"))?;
+        let mut stmt = conn.prepare(&format!("SELECT {CARD_COLUMNS} FROM cards WHERE account_id = ?1 ORDER BY position, id"))?;
         let rows = stmt.query_map(params![account_id], card_from_row)?;
         rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
     }
@@ -605,6 +605,17 @@ mod tests {
         let accounts = db.get_accounts().unwrap();
         assert_eq!(accounts.len(), 1);
         assert_eq!(accounts[0].id, first.id, "the cards' account must stay");
+    }
+
+    #[test]
+    fn cards_sharing_a_position_are_ordered_by_id_whatever_order_they_arrived_in() {
+        let db = db();
+        for id in ["c", "a", "b"] {
+            let card = Card::new("acct".into(), id.to_uppercase(), "q".into(), 0);
+            db.insert_card(&Card { id: id.into(), ..card }).unwrap();
+        }
+        let ids: Vec<_> = db.get_cards("acct").unwrap().into_iter().map(|c| c.id).collect();
+        assert_eq!(ids, ["a", "b", "c"]);
     }
 
     #[test]
