@@ -547,6 +547,17 @@ impl GmailClient {
     /// Run GET `paths` (at most MAX_BATCH_SIZE) as one batch request. Returns
     /// each path's JSON body in order, or None where its sub-request failed.
     async fn execute_batch_get(&self, paths: &[String]) -> Result<Vec<Option<String>>, String> {
+        Ok(self
+            .execute_batch(paths)
+            .await?
+            .into_iter()
+            .map(|item| item.filter(|(status, _)| (200..300).contains(status)).map(|(_, body)| body))
+            .collect())
+    }
+
+    /// Run GET `paths` (at most MAX_BATCH_SIZE) as one batch request. Returns
+    /// each path's (status, body) in order, or None where the response lacks it.
+    async fn execute_batch(&self, paths: &[String]) -> Result<Vec<Option<(u16, String)>>, String> {
         let boundary = format!("batch_{}", uuid::Uuid::new_v4().simple());
 
         let mut body = String::new();
@@ -584,16 +595,16 @@ impl GmailClient {
 
         let resp_body = resp.text().await.map_err(|e| format!("Failed to read response: {}", e))?;
 
-        let mut bodies = vec![None; paths.len()];
+        let mut items = vec![None; paths.len()];
         for response in parse_batch_responses(&resp_body, &resp_boundary) {
-            match response.index {
-                Some(i) if i < bodies.len() && (200..300).contains(&response.status) => {
-                    bodies[i] = Some(response.body.to_string());
-                }
-                _ => tracing::warn!("Batch sub-request failed with status {}", response.status),
+            if !(200..300).contains(&response.status) {
+                tracing::warn!("Batch sub-request failed with status {}", response.status);
+            }
+            if let Some(item) = response.index.and_then(|i| items.get_mut(i)) {
+                *item = Some((response.status, response.body.to_string()));
             }
         }
-        Ok(bodies)
+        Ok(items)
     }
 
     pub async fn send_email(&self, message: &OutgoingMessage<'_>) -> Result<(), String> {
@@ -899,6 +910,45 @@ impl GmailClient {
             deleted_message_ids: all_deleted_message_ids.into_iter().collect(),
             new_history_id,
         })
+    }
+
+    /// `thread_ids` split into those that still exist and those Gmail no
+    /// longer has (404). Checked with batch requests; a thread whose check
+    /// fails for another reason is checked again on its own, and the call
+    /// fails if that fails too, since a thread wrongly taken for deleted
+    /// would drop out of the user's list.
+    pub async fn split_deleted_threads(&self, thread_ids: &[String]) -> Result<(Vec<String>, Vec<String>), String> {
+        let mut existing = Vec::new();
+        let mut deleted = Vec::new();
+        for chunk in thread_ids.chunks(MAX_BATCH_SIZE) {
+            let paths: Vec<String> = chunk
+                .iter()
+                .map(|id| format!("/gmail/v1/users/me/threads/{}?format=minimal&fields=id", id))
+                .collect();
+            let statuses: Vec<Option<u16>> = match self.execute_batch(&paths).await {
+                Ok(items) => items.into_iter().map(|item| item.map(|(status, _)| status)).collect(),
+                Err(e) => {
+                    tracing::warn!("Batch existence check failed, checking one by one: {}", e);
+                    vec![None; chunk.len()]
+                }
+            };
+            for (thread_id, status) in chunk.iter().zip(statuses) {
+                let exists = match status {
+                    Some(200..=299) => true,
+                    Some(404) => false,
+                    _ => self
+                        .thread_exists(thread_id)
+                        .await
+                        .map_err(|e| format!("Failed to verify deleted thread {}: {}", thread_id, e))?,
+                };
+                if exists {
+                    existing.push(thread_id.clone());
+                } else {
+                    deleted.push(thread_id.clone());
+                }
+            }
+        }
+        Ok((existing, deleted))
     }
 
     /// Check whether a thread still exists (false when the API returns 404)

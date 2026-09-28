@@ -171,6 +171,101 @@ async fn clients_share_one_connection_pool() {
     assert_eq!(server.connections(), 1);
 }
 
+/// The paths of the GET sub-requests in a batch request body
+fn batch_paths(request: &StubRequest) -> Vec<String> {
+    request
+        .body_text()
+        .lines()
+        .filter_map(|l| l.strip_prefix("GET ")?.strip_suffix(" HTTP/1.1").map(str::to_string))
+        .collect()
+}
+
+/// A batch response answering each sub-request path with `answer(path)`
+fn batch_reply(request: &StubRequest, answer: impl Fn(&str) -> (u16, String)) -> Reply {
+    let boundary = "batch_stub";
+    let mut body = String::new();
+    for (i, path) in batch_paths(request).iter().enumerate() {
+        let (status, json) = answer(path);
+        body.push_str(&format!(
+            "--{b}\r\nContent-Type: application/http\r\nContent-ID: <response-item{i}>\r\n\r\n\
+             HTTP/1.1 {status} X\r\nContent-Type: application/json\r\n\r\n{json}\r\n",
+            b = boundary,
+            i = i,
+            status = status,
+            json = json
+        ));
+    }
+    body.push_str(&format!("--{}--\r\n", boundary));
+    Reply::Raw {
+        status: 200,
+        content_type: format!("multipart/mixed; boundary={}", boundary),
+        body,
+    }
+}
+
+/// The thread id in a "/gmail/v1/users/me/threads/<id>?..." path or target
+fn thread_id_of(path: &str) -> &str {
+    let rest = path.split("/threads/").nth(1).unwrap_or_default();
+    rest.split(['?', '/']).next().unwrap_or_default()
+}
+
+#[tokio::test]
+async fn deletion_candidates_are_checked_in_batches() {
+    let server = StubServer::start(|request| {
+        if request.target.starts_with("/batch/") {
+            return batch_reply(request, |path| match thread_id_of(path) {
+                id if id.starts_with("gone") => (404, google_error(404, "NOT_FOUND", "notFound", "Not Found")),
+                "flaky" => (500, google_error(500, "INTERNAL", "backendError", "Backend Error")),
+                id => (200, serde_json::json!({ "id": id }).to_string()),
+            });
+        }
+        // Sub-requests that failed for another reason are retried one by one
+        match thread_id_of(&request.target) {
+            "flaky" => Reply::Json(200, r#"{"id":"flaky"}"#.into()),
+            _ => Reply::Json(500, "{}".into()),
+        }
+    })
+    .await;
+    let gmail = server.client();
+
+    let mut ids: Vec<String> = (0..60).map(|i| format!("kept{}", i)).collect();
+    ids.extend((0..50).map(|i| format!("gone{}", i)));
+    ids.push("flaky".to_string());
+
+    let (existing, deleted) = within(gmail.split_deleted_threads(&ids)).await.unwrap();
+
+    let mut expected_existing: Vec<String> = (0..60).map(|i| format!("kept{}", i)).collect();
+    expected_existing.push("flaky".to_string());
+    assert_eq!(existing, expected_existing);
+    assert_eq!(deleted, (0..50).map(|i| format!("gone{}", i)).collect::<Vec<_>>());
+
+    let requests = server.requests();
+    let batches: Vec<&StubRequest> = requests.iter().filter(|r| r.target.starts_with("/batch/")).collect();
+    assert_eq!(batches.len(), 3, "111 ids fit in three batches of 50");
+    assert!(batch_paths(batches[0]).iter().all(|p| p.contains("format=minimal") && p.contains("fields=id")));
+    let singles: Vec<&str> = requests
+        .iter()
+        .filter(|r| !r.target.starts_with("/batch/"))
+        .map(|r| thread_id_of(&r.target))
+        .collect();
+    assert_eq!(singles, ["flaky"]);
+}
+
+#[tokio::test]
+async fn a_deletion_check_that_keeps_failing_fails_the_sync() {
+    let server = StubServer::start(|request| {
+        if request.target.starts_with("/batch/") {
+            return batch_reply(request, |_| (503, "{}".into()));
+        }
+        Reply::Json(503, "{}".into())
+    })
+    .await;
+
+    // Treating an unverified thread as deleted would drop it from the list
+    let err = within(server.client().split_deleted_threads(&["t1".to_string()])).await.unwrap_err();
+    assert!(err.contains("t1") && err.contains("503"), "{}", err);
+}
+
 fn google_error(code: u16, status: &str, reason: &str, message: &str) -> String {
     serde_json::json!({
         "error": {
