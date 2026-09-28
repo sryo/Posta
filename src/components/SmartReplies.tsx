@@ -12,13 +12,13 @@ interface SmartRepliesProps {
 export function describeSuggestionError(raw: string): { message: string; retryable: boolean } {
     const gemini = raw.match(/^Gemini API error (\d{3})/);
     const status = gemini ? Number(gemini[1]) : null;
-    if (/API_KEY_INVALID|API key not valid/i.test(raw) || status === 401 || status === 403) {
+    if (/API_KEY_INVALID|API key not valid|API key was rejected/i.test(raw) || status === 401 || status === 403) {
         return { message: "Gemini API key was rejected. Update it in Settings.", retryable: false };
     }
     if (/Gemini API key is required/i.test(raw)) {
         return { message: "Add a Gemini API key in Settings for suggestions.", retryable: false };
     }
-    if (status === 429 || /RESOURCE_EXHAUSTED/.test(raw)) {
+    if (status === 429 || /RESOURCE_EXHAUSTED|rate limit/i.test(raw)) {
         return { message: "Gemini rate limit reached. Try again in a minute.", retryable: true };
     }
     if (/^Request failed/.test(raw)) {

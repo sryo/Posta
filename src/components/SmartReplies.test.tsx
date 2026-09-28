@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { fireEvent, render, screen } from "@solidjs/testing-library";
-import { SmartReplies } from "./SmartReplies";
+import { SmartReplies, describeSuggestionError } from "./SmartReplies";
 
 const hasGeminiApiKey = vi.hoisted(() => vi.fn());
 const suggestReplies = vi.hoisted(() => vi.fn());
@@ -48,6 +48,12 @@ describe("SmartReplies", () => {
     fireEvent.click(screen.getByText("Retry suggestions"));
     expect(await screen.findByText("Sure")).toBeInTheDocument();
     expect(suggestReplies).toHaveBeenCalledTimes(2);
+  });
+
+  it("recognises errors the backend already worded for people", () => {
+    expect(describeSuggestionError("Gemini API key was rejected. Update it in Settings.").retryable).toBe(false);
+    expect(describeSuggestionError("Gemini rate limit reached").message).toMatch(/rate limit/);
+    expect(describeSuggestionError("Failed to fetch thread: 500").retryable).toBe(true);
   });
 
   it("shows a short reason for other failures, with a retry", async () => {
