@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from "vitest";
 
-type Rule = { selectors: string[]; declarations: [string, string][] };
+type Rule = { selectors: string[]; declarations: [string, string][]; context: string };
 
 const { readFileSync } = await vi.importActual<{
   readFileSync(path: string, encoding: "utf8"): string;
@@ -24,7 +24,7 @@ const sources = Object.entries(
 function parseRules(text: string): Rule[] {
   const rules: Rule[] = [];
   let i = 0;
-  function block(skip: boolean) {
+  function block(skip: boolean, context: string) {
     while (i < text.length) {
       const open = text.indexOf("{", i);
       const close = text.indexOf("}", i);
@@ -36,7 +36,7 @@ function parseRules(text: string): Rule[] {
       const prelude = text.slice(i, open).trim();
       i = open + 1;
       if (prelude.startsWith("@")) {
-        block(skip || prelude.startsWith("@keyframes"));
+        block(skip || prelude.startsWith("@keyframes"), `${context} ${prelude}`.trim());
         continue;
       }
       const end = text.indexOf("}", i);
@@ -51,10 +51,10 @@ function parseRules(text: string): Rule[] {
           const colon = d.indexOf(":");
           return [d.slice(0, colon).trim(), d.slice(colon + 1).trim()] as [string, string];
         });
-      rules.push({ selectors: prelude.split(",").map((s) => s.trim()), declarations });
+      rules.push({ selectors: prelude.split(",").map((s) => s.trim()), declarations, context });
     }
   }
-  block(false);
+  block(false, "");
   return rules;
 }
 
@@ -204,6 +204,17 @@ describe("App.css", () => {
       }
     }
     expect([...unstyled].sort()).toEqual([]);
+  });
+
+  it("declares each selector list in a single rule per context", () => {
+    const seen = new Set<string>();
+    const repeated: string[] = [];
+    for (const rule of rules) {
+      const key = `${rule.context} ${rule.selectors.join(", ")}`.trim();
+      if (seen.has(key)) repeated.push(key);
+      seen.add(key);
+    }
+    expect(repeated).toEqual([]);
   });
 
   it("never declares the same property twice in one rule", () => {

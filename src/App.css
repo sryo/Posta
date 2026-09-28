@@ -4019,6 +4019,12 @@ button:disabled:hover {
     padding: var(--space-xs) var(--space-md);
 }
 
+.message-body pre code {
+    padding: 0;
+    background: none;
+    font-size: inherit;
+}
+
 @media (prefers-color-scheme: dark) {
     .message-body blockquote {
         border-left-color: #444;
