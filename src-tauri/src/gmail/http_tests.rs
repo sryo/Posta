@@ -315,7 +315,8 @@ async fn deletion_candidates_are_checked_in_batches() {
 
     let requests = server.requests();
     let batches: Vec<&StubRequest> = requests.iter().filter(|r| r.target.starts_with("/batch/")).collect();
-    assert_eq!(batches.len(), 3, "111 ids fit in three batches of 50");
+    let batch_sizes: Vec<usize> = batches.iter().map(|b| batch_paths(b).len()).collect();
+    assert_eq!(batch_sizes, [50, 50, 11, 1], "111 ids in batches of 50, then the miss batched again");
     assert!(batch_paths(batches[0]).iter().all(|p| p.contains("format=minimal") && p.contains("fields=id")));
     let singles: Vec<&str> = requests
         .iter()
@@ -770,4 +771,39 @@ async fn attachment_data_is_downloaded_once_across_refreshes() {
         .map(|paths| paths.iter().filter(|p| p.contains("/attachments/")).count())
         .sum();
     assert_eq!(attachment_requests, 4, "each attachment downloaded once");
+}
+
+#[tokio::test]
+async fn deletion_checks_a_batch_misses_are_batched_again_before_one_by_one() {
+    let failed_once: Arc<Mutex<HashSet<String>>> = Default::default();
+    let server = StubServer::start({
+        let failed_once = failed_once.clone();
+        move |request| {
+            if !request.target.starts_with("/batch/") {
+                return Reply::Json(500, "{}".into());
+            }
+            batch_reply(request, |path| match thread_id_of(path) {
+                id if id.starts_with("gone") => (404, google_error(404, "NOT_FOUND", "notFound", "Not Found")),
+                id if id.starts_with("busy") && failed_once.lock().unwrap().insert(id.to_string()) => {
+                    (429, google_error(429, "RESOURCE_EXHAUSTED", "rateLimitExceeded", "slow down"))
+                }
+                id => (200, serde_json::json!({ "id": id }).to_string()),
+            })
+        }
+    })
+    .await;
+    let mut ids: Vec<String> = (0..10).map(|i| format!("busy{}", i)).collect();
+    ids.extend((0..3).map(|i| format!("gone{}", i)));
+    ids.push("kept".to_string());
+
+    let (existing, deleted) = within(server.client().split_deleted_threads(&ids)).await.unwrap();
+
+    let mut expected: Vec<String> = (0..10).map(|i| format!("busy{}", i)).collect();
+    expected.push("kept".to_string());
+    assert_eq!(existing, expected, "in the order asked");
+    assert_eq!(deleted, ["gone0", "gone1", "gone2"]);
+    let requests = server.requests();
+    assert!(requests.iter().all(|r| r.target.starts_with("/batch/")), "checked one by one");
+    let batch_sizes: Vec<usize> = requests.iter().map(batch_paths).map(|p| p.len()).collect();
+    assert_eq!(batch_sizes, [14, 10]);
 }

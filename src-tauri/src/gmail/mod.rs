@@ -1023,42 +1023,51 @@ impl GmailClient {
     }
 
     /// `thread_ids` split into those that still exist and those Gmail no
-    /// longer has (404). Checked with batch requests; a thread whose check
-    /// fails for another reason is checked again on its own, and the call
-    /// fails if that fails too, since a thread wrongly taken for deleted
-    /// would drop out of the user's list.
+    /// longer has (404), each in the order asked. Checked with batch
+    /// requests; threads a batch misses (429, 5xx) are batched again after a
+    /// pause, then checked one by one, and the call fails if that fails too,
+    /// since a thread wrongly taken for deleted would drop out of the user's list.
     pub async fn split_deleted_threads(&self, thread_ids: &[String]) -> Result<(Vec<String>, Vec<String>), String> {
-        let mut existing = Vec::new();
-        let mut deleted = Vec::new();
+        let mut exists: HashMap<&str, bool> = HashMap::new();
         for chunk in thread_ids.chunks(MAX_BATCH_SIZE) {
-            let paths: Vec<String> = chunk
-                .iter()
-                .map(|id| format!("/gmail/v1/users/me/threads/{}?format=minimal&fields=id", path_id(id)))
-                .collect();
-            let statuses: Vec<Option<u16>> = match self.execute_batch(&paths).await {
-                Ok(items) => items.into_iter().map(|item| item.map(|(status, _)| status)).collect(),
-                Err(e) => {
-                    tracing::warn!("Batch existence check failed, checking one by one: {}", e);
-                    vec![None; chunk.len()]
+            let mut pending: Vec<&str> = chunk.iter().map(String::as_str).collect();
+            for attempt in 0..BATCH_ATTEMPTS {
+                if pending.is_empty() {
+                    break;
                 }
-            };
-            for (thread_id, status) in chunk.iter().zip(statuses) {
-                let exists = match status {
-                    Some(200..=299) => true,
-                    Some(404) => false,
-                    _ => self
-                        .thread_exists(thread_id)
-                        .await
-                        .map_err(|e| format!("Failed to verify deleted thread {}: {}", thread_id, e))?,
+                if attempt > 0 {
+                    tokio::time::sleep(self.batch_retry_delay).await;
+                }
+                let paths: Vec<String> = pending
+                    .iter()
+                    .map(|id| format!("/gmail/v1/users/me/threads/{}?format=minimal&fields=id", path_id(id)))
+                    .collect();
+                let items = match self.execute_batch(&paths).await {
+                    Ok(items) => items,
+                    Err(e) => {
+                        tracing::warn!("Batch existence check failed: {}", e);
+                        continue;
+                    }
                 };
-                if exists {
-                    existing.push(thread_id.clone());
-                } else {
-                    deleted.push(thread_id.clone());
+                let mut missed = Vec::new();
+                for (thread_id, item) in pending.into_iter().zip(items) {
+                    match item.map(|(status, _)| status) {
+                        Some(200..=299) => _ = exists.insert(thread_id, true),
+                        Some(404) => _ = exists.insert(thread_id, false),
+                        _ => missed.push(thread_id),
+                    }
                 }
+                pending = missed;
+            }
+            for thread_id in pending {
+                let found = self
+                    .thread_exists(thread_id)
+                    .await
+                    .map_err(|e| format!("Failed to verify deleted thread {}: {}", thread_id, e))?;
+                exists.insert(thread_id, found);
             }
         }
-        Ok((existing, deleted))
+        Ok(thread_ids.iter().cloned().partition(|id| exists.get(id.as_str()).copied().unwrap_or(true)))
     }
 
     /// Check whether a thread still exists (false when the API returns 404)
