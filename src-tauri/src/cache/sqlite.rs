@@ -1,9 +1,9 @@
 // SQLite cache for offline access
 
-use crate::models::{Account, Card, Thread};
-use rusqlite::{params, Connection};
+use crate::models::{Account, Card};
+use rusqlite::{params, Connection, OptionalExtension};
 use std::path::Path;
-use std::sync::{Arc, Mutex};
+use std::sync::Mutex;
 use thiserror::Error;
 
 #[derive(Error, Debug)]
@@ -14,15 +14,18 @@ pub enum CacheError {
     Lock,
 }
 
+/// Cached thread groups, next page token, and cache time in Unix seconds
+pub type CachedThreads = (Vec<crate::models::ThreadGroup>, Option<String>, i64);
+
 pub struct CacheDb {
-    conn: Arc<Mutex<Connection>>,
+    conn: Mutex<Connection>,
 }
 
 impl CacheDb {
     pub fn new(db_path: &Path) -> Result<Self, CacheError> {
         let conn = Connection::open(db_path)?;
         let db = Self {
-            conn: Arc::new(Mutex::new(conn)),
+            conn: Mutex::new(conn),
         };
         db.run_migrations()?;
         db.run_column_migrations()?;
@@ -61,21 +64,12 @@ impl CacheDb {
                 cached_at INTEGER NOT NULL
             );
 
-            CREATE TABLE IF NOT EXISTS messages (
-                gmail_msg_id TEXT PRIMARY KEY,
-                thread_id TEXT NOT NULL,
-                from_addr TEXT,
-                to_addrs TEXT,
-                date INTEGER NOT NULL,
-                body_text TEXT,
-                body_html TEXT,
-                cached_at INTEGER NOT NULL
-            );
+            -- Never populated by any release
+            DROP TABLE IF EXISTS messages;
 
             CREATE INDEX IF NOT EXISTS idx_cards_account ON cards(account_id);
             CREATE INDEX IF NOT EXISTS idx_threads_account ON threads(account_id);
             CREATE INDEX IF NOT EXISTS idx_threads_date ON threads(last_message_date DESC);
-            CREATE INDEX IF NOT EXISTS idx_messages_thread ON messages(thread_id);
 
             -- Card thread cache: stores thread data per card
             CREATE TABLE IF NOT EXISTS card_thread_cache (
@@ -107,15 +101,18 @@ impl CacheDb {
 
     fn run_column_migrations(&self) -> Result<(), CacheError> {
         let conn = self.conn.lock().map_err(|_| CacheError::Lock)?;
-        // Add picture column if it doesn't exist (for existing databases)
-        let _ = conn.execute("ALTER TABLE accounts ADD COLUMN picture TEXT", []);
-        // Add color and group_by columns to cards
-        let _ = conn.execute("ALTER TABLE cards ADD COLUMN color TEXT", []);
-        let _ = conn.execute("ALTER TABLE cards ADD COLUMN group_by TEXT NOT NULL DEFAULT 'date'", []);
-        // Add card_type column to cards
-        let _ = conn.execute("ALTER TABLE cards ADD COLUMN card_type TEXT NOT NULL DEFAULT 'email'", []);
-        // Add signature column to accounts
-        let _ = conn.execute("ALTER TABLE accounts ADD COLUMN signature TEXT", []);
+        const COLUMNS: &[(&str, &str, &str)] = &[
+            ("accounts", "picture", "TEXT"),
+            ("accounts", "signature", "TEXT"),
+            ("cards", "color", "TEXT"),
+            ("cards", "group_by", "TEXT NOT NULL DEFAULT 'date'"),
+            ("cards", "card_type", "TEXT NOT NULL DEFAULT 'email'"),
+        ];
+        for (table, column, decl) in COLUMNS {
+            if !has_column(&conn, table, column)? {
+                conn.execute(&format!("ALTER TABLE {} ADD COLUMN {} {}", table, column, decl), [])?;
+            }
+        }
         Ok(())
     }
 
@@ -263,38 +260,6 @@ impl CacheDb {
 
     // Thread cache operations
 
-    pub fn cache_threads(&self, threads: &[Thread]) -> Result<(), CacheError> {
-        let mut conn = self.conn.lock().map_err(|_| CacheError::Lock)?;
-        let now = chrono::Utc::now().timestamp();
-
-        let tx = conn.transaction()?;
-        for thread in threads {
-            let date = thread.last_message_date.timestamp();
-            let labels = serde_json::to_string(&thread.labels).unwrap_or_default();
-            let participants = serde_json::to_string(&thread.participants).unwrap_or_default();
-
-            tx.execute(
-                r#"INSERT OR REPLACE INTO threads
-                   (gmail_thread_id, account_id, subject, snippet, last_message_date, unread_count, labels, participants, cached_at)
-                   VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)"#,
-                params![
-                    thread.gmail_thread_id,
-                    thread.account_id,
-                    thread.subject,
-                    thread.snippet,
-                    date,
-                    thread.unread_count,
-                    labels,
-                    participants,
-                    now
-                ],
-            )?;
-        }
-        tx.commit()?;
-
-        Ok(())
-    }
-
     pub fn clear_old_cache(&self, max_age_hours: i64) -> Result<usize, CacheError> {
         let conn = self.conn.lock().map_err(|_| CacheError::Lock)?;
         let cutoff = chrono::Utc::now().timestamp() - (max_age_hours * 3600);
@@ -321,20 +286,6 @@ impl CacheDb {
         Ok(thread_count + calendar_count)
     }
 
-    /// Get threads that should be prioritized for caching (starred, important, recent)
-    pub fn get_priority_thread_ids(&self, account_id: &str, limit: i64) -> Result<Vec<String>, CacheError> {
-        let conn = self.conn.lock().map_err(|_| CacheError::Lock)?;
-        let mut stmt = conn.prepare(
-            "SELECT gmail_thread_id FROM threads
-             WHERE account_id = ?1
-             AND (labels LIKE '%STARRED%' OR labels LIKE '%IMPORTANT%')
-             ORDER BY last_message_date DESC
-             LIMIT ?2"
-        )?;
-        let rows = stmt.query_map(params![account_id, limit], |row| row.get(0))?;
-        rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
-    }
-
     // Card thread cache operations
 
     pub fn save_card_threads(
@@ -357,28 +308,28 @@ impl CacheDb {
     pub fn get_card_threads(
         &self,
         card_id: &str,
-    ) -> Result<Option<(Vec<crate::models::ThreadGroup>, Option<String>, i64)>, CacheError> {
+    ) -> Result<Option<CachedThreads>, CacheError> {
         let conn = self.conn.lock().map_err(|_| CacheError::Lock)?;
         let mut stmt = conn.prepare(
             "SELECT thread_data, next_page_token, cached_at FROM card_thread_cache WHERE card_id = ?1",
         )?;
 
-        let result = stmt.query_row(params![card_id], |row| {
-            let thread_data: String = row.get(0)?;
-            let next_page_token: Option<String> = row.get(1)?;
-            let cached_at: i64 = row.get(2)?;
-            Ok((thread_data, next_page_token, cached_at))
-        });
+        let row = stmt
+            .query_row(params![card_id], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, Option<String>>(1)?,
+                    row.get::<_, i64>(2)?,
+                ))
+            })
+            .optional()?;
 
-        match result {
-            Ok((thread_data, next_page_token, cached_at)) => {
-                let threads: Vec<crate::models::ThreadGroup> =
-                    serde_json::from_str(&thread_data).unwrap_or_default();
-                Ok(Some((threads, next_page_token, cached_at)))
-            }
-            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
-            Err(e) => Err(e.into()),
-        }
+        // Data written by an older build may no longer deserialize; treat it
+        // as a miss so the caller refetches
+        Ok(row.and_then(|(thread_data, next_page_token, cached_at)| {
+            let threads = serde_json::from_str(&thread_data).ok()?;
+            Some((threads, next_page_token, cached_at))
+        }))
     }
 
     pub fn clear_card_cache(&self, card_id: &str) -> Result<(), CacheError> {
@@ -386,13 +337,6 @@ impl CacheDb {
         conn.execute("DELETE FROM card_thread_cache WHERE card_id = ?1", params![card_id])?;
         conn.execute("DELETE FROM card_calendar_cache WHERE card_id = ?1", params![card_id])?;
         Ok(())
-    }
-
-    pub fn clear_all_card_caches(&self) -> Result<usize, CacheError> {
-        let conn = self.conn.lock().map_err(|_| CacheError::Lock)?;
-        let count_threads = conn.execute("DELETE FROM card_thread_cache", [])?;
-        let count_calendar = conn.execute("DELETE FROM card_calendar_cache", [])?;
-        Ok(count_threads + count_calendar)
     }
 
     // Card calendar cache operations
@@ -422,21 +366,16 @@ impl CacheDb {
             "SELECT events_data, cached_at FROM card_calendar_cache WHERE card_id = ?1",
         )?;
 
-        let result = stmt.query_row(params![card_id], |row| {
-            let events_data: String = row.get(0)?;
-            let cached_at: i64 = row.get(1)?;
-            Ok((events_data, cached_at))
-        });
+        let row = stmt
+            .query_row(params![card_id], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
+            })
+            .optional()?;
 
-        match result {
-            Ok((events_data, cached_at)) => {
-                let events: Vec<crate::models::GoogleCalendarEvent> =
-                    serde_json::from_str(&events_data).unwrap_or_default();
-                Ok(Some((events, cached_at)))
-            }
-            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
-            Err(e) => Err(e.into()),
-        }
+        Ok(row.and_then(|(events_data, cached_at)| {
+            let events = serde_json::from_str(&events_data).ok()?;
+            Some((events, cached_at))
+        }))
     }
 
     // Sync state operations (for incremental sync via History API)
@@ -467,5 +406,230 @@ impl CacheDb {
         let conn = self.conn.lock().map_err(|_| CacheError::Lock)?;
         conn.execute("DELETE FROM sync_state WHERE account_id = ?1", params![account_id])?;
         Ok(())
+    }
+}
+
+fn has_column(conn: &Connection, table: &str, column: &str) -> Result<bool, CacheError> {
+    let mut stmt = conn.prepare(&format!("PRAGMA table_info({})", table))?;
+    let names = stmt.query_map([], |row| row.get::<_, String>(1))?;
+    for name in names {
+        if name? == column {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::models::ThreadGroup;
+
+    fn db() -> CacheDb {
+        CacheDb::new(Path::new(":memory:")).unwrap()
+    }
+
+    fn account(email: &str) -> Account {
+        Account::new(email.to_string(), None)
+    }
+
+    #[test]
+    fn migrates_legacy_schema_without_losing_rows() {
+        let dir = std::env::temp_dir().join(format!("posta-test-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("legacy.db");
+        {
+            let conn = Connection::open(&path).unwrap();
+            conn.execute_batch(
+                "CREATE TABLE accounts (id TEXT PRIMARY KEY, email TEXT NOT NULL UNIQUE, refresh_token_ref TEXT);
+                 CREATE TABLE cards (id TEXT PRIMARY KEY, account_id TEXT NOT NULL, name TEXT NOT NULL,
+                     query TEXT NOT NULL, position INTEGER NOT NULL DEFAULT 0, collapsed INTEGER NOT NULL DEFAULT 0);
+                 CREATE TABLE messages (gmail_msg_id TEXT PRIMARY KEY);
+                 INSERT INTO accounts (id, email) VALUES ('a1', 'me@x.com');
+                 INSERT INTO cards (id, account_id, name, query) VALUES ('c1', 'a1', 'Inbox', 'in:inbox');",
+            )
+            .unwrap();
+        }
+
+        let db = CacheDb::new(&path).unwrap();
+        let accounts = db.get_accounts().unwrap();
+        assert_eq!(accounts.len(), 1);
+        assert_eq!(accounts[0].picture, None);
+        let cards = db.get_cards("a1").unwrap();
+        assert_eq!(cards[0].group_by, "date");
+        assert_eq!(cards[0].card_type, "email");
+        let messages_tables: i64 = db
+            .conn
+            .lock()
+            .unwrap()
+            .query_row("SELECT COUNT(*) FROM sqlite_master WHERE name = 'messages'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(messages_tables, 0);
+
+        // Reopening an already-migrated database must also succeed
+        drop(db);
+        CacheDb::new(&path).unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn failed_column_migration_is_reported() {
+        let dir = std::env::temp_dir().join(format!("posta-test-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("broken.db");
+        {
+            let conn = Connection::open(&path).unwrap();
+            // ALTER TABLE cannot add a column to a view
+            conn.execute_batch("CREATE VIEW accounts AS SELECT 'a1' AS id, 'me@x.com' AS email;")
+                .unwrap();
+        }
+        let result = CacheDb::new(&path);
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn account_roundtrip_and_lookup_by_email() {
+        let db = db();
+        let mut a = account("me@x.com");
+        a.picture = Some("pic".into());
+        db.insert_account(&a).unwrap();
+
+        let found = db.get_account_by_email("me@x.com").unwrap().unwrap();
+        assert_eq!(found.id, a.id);
+        assert_eq!(found.picture.as_deref(), Some("pic"));
+        assert!(db.get_account_by_email("other@x.com").unwrap().is_none());
+
+        db.update_account_signature(&a.id, Some("-- me")).unwrap();
+        assert_eq!(db.get_accounts().unwrap()[0].signature.as_deref(), Some("-- me"));
+    }
+
+    #[test]
+    fn cards_are_ordered_updated_and_reordered() {
+        let db = db();
+        let a = account("me@x.com");
+        db.insert_account(&a).unwrap();
+        let c1 = Card::new(a.id.clone(), "One".into(), "q1".into(), 0);
+        let mut c2 = Card::new_calendar(a.id.clone(), "Two".into(), "calendar:7d".into(), 1);
+        db.insert_card(&c1).unwrap();
+        db.insert_card(&c2).unwrap();
+
+        c2.collapsed = true;
+        c2.color = Some("red".into());
+        c2.group_by = "sender".into();
+        db.update_card(&c2).unwrap();
+
+        db.reorder_cards(&[(c1.id.clone(), 5), (c2.id.clone(), 2)]).unwrap();
+        let cards = db.get_cards(&a.id).unwrap();
+        assert_eq!(cards.iter().map(|c| c.name.as_str()).collect::<Vec<_>>(), ["Two", "One"]);
+        assert!(cards[0].collapsed);
+        assert_eq!(cards[0].color.as_deref(), Some("red"));
+        assert_eq!(cards[0].group_by, "sender");
+        assert_eq!(cards[0].card_type, "calendar");
+    }
+
+    #[test]
+    fn deleting_account_removes_only_its_data() {
+        let db = db();
+        let a = account("a@x.com");
+        let b = account("b@x.com");
+        db.insert_account(&a).unwrap();
+        db.insert_account(&b).unwrap();
+        let ca = Card::new(a.id.clone(), "A".into(), "q".into(), 0);
+        let cb = Card::new(b.id.clone(), "B".into(), "q".into(), 0);
+        db.insert_card(&ca).unwrap();
+        db.insert_card(&cb).unwrap();
+        db.save_card_threads(&ca.id, &[], None).unwrap();
+        db.save_card_threads(&cb.id, &[], None).unwrap();
+        db.save_card_events(&ca.id, &[]).unwrap();
+        db.set_history_id(&a.id, "1").unwrap();
+        db.set_history_id(&b.id, "2").unwrap();
+
+        db.delete_account(&a.id).unwrap();
+
+        assert!(db.get_account_by_email("a@x.com").unwrap().is_none());
+        assert!(db.get_cards(&a.id).unwrap().is_empty());
+        assert!(db.get_card_threads(&ca.id).unwrap().is_none());
+        assert!(db.get_card_events(&ca.id).unwrap().is_none());
+        assert!(db.get_history_id(&a.id).unwrap().is_none());
+
+        assert_eq!(db.get_cards(&b.id).unwrap().len(), 1);
+        assert!(db.get_card_threads(&cb.id).unwrap().is_some());
+        assert_eq!(db.get_history_id(&b.id).unwrap().as_deref(), Some("2"));
+    }
+
+    #[test]
+    fn deleting_card_clears_its_caches() {
+        let db = db();
+        let card = Card::new("a".into(), "A".into(), "q".into(), 0);
+        db.insert_card(&card).unwrap();
+        db.save_card_threads(&card.id, &[], Some("tok")).unwrap();
+        db.save_card_events(&card.id, &[]).unwrap();
+        db.delete_card(&card.id).unwrap();
+        assert!(db.get_card_threads(&card.id).unwrap().is_none());
+        assert!(db.get_card_events(&card.id).unwrap().is_none());
+    }
+
+    #[test]
+    fn card_thread_cache_roundtrip() {
+        let db = db();
+        let groups = vec![ThreadGroup { label: "Today".into(), threads: vec![] }];
+        db.save_card_threads("c", &groups, Some("next")).unwrap();
+        let (got, token, cached_at) = db.get_card_threads("c").unwrap().unwrap();
+        assert_eq!(got.len(), 1);
+        assert_eq!(got[0].label, "Today");
+        assert_eq!(token.as_deref(), Some("next"));
+        assert!((chrono::Utc::now().timestamp() - cached_at).abs() < 60);
+
+        db.clear_card_cache("c").unwrap();
+        assert!(db.get_card_threads("c").unwrap().is_none());
+    }
+
+    #[test]
+    fn unreadable_card_cache_is_a_miss() {
+        let db = db();
+        {
+            let conn = db.conn.lock().unwrap();
+            conn.execute(
+                "INSERT INTO card_thread_cache (card_id, thread_data, cached_at) VALUES ('c', '[{\"old\":1}]', 0)",
+                [],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO card_calendar_cache (card_id, events_data, cached_at) VALUES ('c', 'not json', 0)",
+                [],
+            )
+            .unwrap();
+        }
+        assert!(db.get_card_threads("c").unwrap().is_none());
+        assert!(db.get_card_events("c").unwrap().is_none());
+    }
+
+    #[test]
+    fn stale_card_cache_is_pruned() {
+        let db = db();
+        db.save_card_threads("fresh", &[], None).unwrap();
+        {
+            let conn = db.conn.lock().unwrap();
+            conn.execute(
+                "INSERT INTO card_thread_cache (card_id, thread_data, cached_at) VALUES ('old', '[]', 0)",
+                [],
+            )
+            .unwrap();
+        }
+        assert_eq!(db.clear_stale_card_cache(24).unwrap(), 1);
+        assert!(db.get_card_threads("old").unwrap().is_none());
+        assert!(db.get_card_threads("fresh").unwrap().is_some());
+    }
+
+    #[test]
+    fn history_id_set_replace_clear() {
+        let db = db();
+        assert!(db.get_history_id("a").unwrap().is_none());
+        db.set_history_id("a", "10").unwrap();
+        db.set_history_id("a", "11").unwrap();
+        assert_eq!(db.get_history_id("a").unwrap().as_deref(), Some("11"));
+        db.clear_history_id("a").unwrap();
+        assert!(db.get_history_id("a").unwrap().is_none());
     }
 }

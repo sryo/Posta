@@ -175,15 +175,17 @@ fn extract_query_string(request: &str) -> Option<&str> {
     Some(&path[query_start + 1..])
 }
 
-/// Get a query parameter value by key
+/// Get a form-urlencoded query parameter value by key
 fn get_query_param(query: &str, key: &str) -> Option<String> {
-    for param in query.split('&') {
-        let kv: Vec<&str> = param.splitn(2, '=').collect();
-        if kv.len() == 2 && kv[0] == key {
-            return urlencoding::decode(kv[1]).ok().map(|s| s.to_string());
+    query.split('&').find_map(|param| {
+        let (k, v) = param.split_once('=')?;
+        if k != key {
+            return None;
         }
-    }
-    None
+        urlencoding::decode(&v.replace('+', " "))
+            .ok()
+            .map(|s| s.into_owned())
+    })
 }
 
 fn extract_code_and_state(request: &str) -> Option<(String, Option<String>)> {
@@ -197,4 +199,49 @@ fn extract_error_from_request(request: &str) -> Option<String> {
     let query = extract_query_string(request)?;
     get_query_param(query, "error_description")
         .or_else(|| get_query_param(query, "error"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn extracts_code_and_state_from_redirect() {
+        let line = "GET /callback?state=abc123&code=4%2F0AbCd&scope=email HTTP/1.1\r\n";
+        let (code, state) = extract_code_and_state(line).unwrap();
+        assert_eq!(code, "4/0AbCd");
+        assert_eq!(state.as_deref(), Some("abc123"));
+    }
+
+    #[test]
+    fn ignores_requests_without_code() {
+        assert!(extract_code_and_state("GET /favicon.ico HTTP/1.1\r\n").is_none());
+        assert!(extract_code_and_state("GET /callback?state=x HTTP/1.1\r\n").is_none());
+        assert!(extract_code_and_state("").is_none());
+    }
+
+    #[test]
+    fn param_names_match_exactly() {
+        let line = "GET /callback?xcode=bad&code=good HTTP/1.1";
+        assert_eq!(extract_code_and_state(line).unwrap().0, "good");
+    }
+
+    #[test]
+    fn error_description_is_form_decoded() {
+        let line = "GET /callback?error=access_denied&error_description=User+denied%20access HTTP/1.1";
+        assert_eq!(
+            extract_error_from_request(line).as_deref(),
+            Some("User denied access")
+        );
+        let line = "GET /callback?error=access_denied HTTP/1.1";
+        assert_eq!(extract_error_from_request(line).as_deref(), Some("access_denied"));
+    }
+
+    #[test]
+    fn html_escape_neutralizes_markup() {
+        assert_eq!(
+            html_escape(r#"<img src=x onerror='a&b'>"#),
+            "&lt;img src=x onerror=&#39;a&amp;b&#39;&gt;"
+        );
+    }
 }
