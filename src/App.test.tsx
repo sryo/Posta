@@ -66,6 +66,7 @@ beforeEach(() => {
     }),
     sync_threads_incremental: () => ({ modified_threads: [], deleted_thread_ids: [], is_full_sync: false }),
     fetch_contacts: () => [],
+    take_pending_mailtos: () => [],
   } satisfies Record<string, Handler>);
   cardsByAccount.a = [card("card-a", "a", "Alpha")];
   cardsByAccount.b = [card("card-b", "b", "Beta")];
@@ -201,6 +202,22 @@ describe("App attachments", () => {
 
     await waitFor(() => expect(screen.getByPlaceholderText("Recipients")).toHaveValue("bo@y.com"));
     expect(document.querySelector(".compose-panel")).not.toHaveTextContent("report.pdf");
+  });
+
+  it("opens a mailto link that launched the app once it listens for more", async () => {
+    handlers.take_pending_mailtos = () => [{ to: "bo@y.com", cc: "", bcc: "", subject: "Hi", body: "" }];
+    render(() => <App />);
+    await waitFor(() => expect(screen.getByPlaceholderText("Recipients")).toHaveValue("bo@y.com"));
+    expect(eventListeners["mailto-received"]).toBeDefined();
+    const order = invoke.mock.calls.map(([cmd]) => cmd);
+    expect(order.indexOf("take_pending_mailtos")).toBeGreaterThan(order.indexOf("get_accounts"));
+  });
+
+  it("opens a mailto link that launched the app even when startup fails", async () => {
+    handlers.get_accounts = () => { throw new Error("offline"); };
+    handlers.take_pending_mailtos = () => [{ to: "bo@y.com", cc: "", bcc: "", subject: "Hi", body: "" }];
+    render(() => <App />);
+    await waitFor(() => expect(screen.getByPlaceholderText("Recipients")).toHaveValue("bo@y.com"));
   });
 
   it("opens a new email on c while the previous one is still closing", async () => {
