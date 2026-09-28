@@ -34,13 +34,9 @@ chrono-tz = "0.10"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
-[target.'cfg(target_os = "macos")'.dependencies]
+[target.'cfg(any(target_os = "macos", target_os = "ios"))'.dependencies]
 objc2 = "0.6"
-objc2-foundation = { version = "0.3", features = ["NSString", "NSData"] }
-
-[target.'cfg(target_os = "ios")'.dependencies]
-objc2 = "0.6"
-objc2-foundation = { version = "0.3", features = ["NSString", "NSData"] }
+objc2-foundation = { version = "0.3", features = ["NSString"] }
 
 [profile.dev]
 incremental = true

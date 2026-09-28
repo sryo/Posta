@@ -3,8 +3,8 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-echo "==> tsc"
-npx tsc --noEmit
+echo "==> typecheck"
+npm run -s typecheck
 echo "==> vitest"
 npx vitest run
 echo "==> vite build"
@@ -12,6 +12,5 @@ npx vite build
 echo "==> cargo test"
 (cd src-tauri && cargo test --quiet)
 echo "==> cargo clippy"
-# Existing code does not yet pass `-D warnings`; tighten once the baseline is clean.
-(cd src-tauri && cargo clippy --all-targets --quiet)
+(cd src-tauri && cargo clippy --all-targets --quiet -- -D warnings)
 echo "==> all checks passed"
