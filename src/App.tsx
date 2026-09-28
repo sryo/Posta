@@ -1543,8 +1543,7 @@ function App() {
     const target = e.target as HTMLElement;
 
     // Web links open in the browser and mailto links in compose. Links in an
-    // email must never navigate the app's own page; the app's links (href="#")
-    // are left to their own handlers.
+    // email must never navigate the app's own page.
     const link = target.closest('a') as HTMLAnchorElement | null;
     if (link && link.href && !e.defaultPrevented) {
       const inEmail = !!link.closest('.message-body');
@@ -5273,7 +5272,7 @@ function App() {
           <div class="settings-section">
             <div class="settings-section-title">Google API</div>
             <p class="settings-hint">
-              <a href="#" onClick={(e) => { e.preventDefault(); openUrl('https://console.cloud.google.com/apis/credentials'); }} class="settings-link">
+              <a href="https://console.cloud.google.com/apis/credentials" class="settings-link">
                 Open Google Cloud Console
               </a>, create an OAuth client of type "Desktop app", and enable the Gmail API, Google Calendar API and People API for its project.
             </p>

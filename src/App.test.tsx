@@ -2396,6 +2396,19 @@ describe("App Google API settings", () => {
     expect(hints).not.toMatch(/Redirect URI/);
     expect(hints).toMatch(/port 8420/);
   });
+
+  it("links to the Cloud Console's credentials page as a real link", async () => {
+    handlers.get_accounts = () => [];
+    handlers.get_stored_credentials = () => null;
+    render(() => <App />);
+    fireEvent.click(await screen.findByText("Settings"));
+    const link = screen.getByRole("link", { name: "Open Google Cloud Console" });
+
+    expect(link).toHaveAttribute("href", "https://console.cloud.google.com/apis/credentials");
+    fireEvent.click(link);
+    expect(openUrl).toHaveBeenCalledTimes(1);
+    expect(openUrl).toHaveBeenCalledWith("https://console.cloud.google.com/apis/credentials");
+  });
 });
 
 describe("App accessibility", () => {
