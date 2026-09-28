@@ -1582,3 +1582,28 @@ describe("App links", () => {
     expect(openUrl).not.toHaveBeenCalled();
   });
 });
+
+describe("App card refreshes", () => {
+  it("does not fetch a card again while its refresh is in flight", async () => {
+    handlers.get_cached_card_threads = () => ({ groups: [{ label: "Today", threads: [thread("t-a", "Mail for A")] }], next_page_token: null, cached_at: 1 });
+    let release!: () => void;
+    const slow = new Promise<void>(r => { release = r; });
+    const fetchPage = handlers.fetch_threads_paginated;
+    handlers.fetch_threads_paginated = async (args) => { await slow; return fetchPage(args); };
+    handlers.sync_threads_incremental = () => ({ modified_threads: [], deleted_thread_ids: [], is_full_sync: true });
+    const fetches = () => invoke.mock.calls.filter(([cmd]) => cmd === "fetch_threads_paginated").length;
+    render(() => <App />);
+    await screen.findByText("Mail for A");
+    await waitFor(() => expect(fetches()).toBe(1));
+
+    window.dispatchEvent(new Event("focus"));
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith("sync_threads_incremental", { accountId: "a" }));
+    await new Promise(r => setTimeout(r, 20));
+    expect(fetches()).toBe(1);
+
+    release();
+    await waitFor(() => expect(fetches()).toBe(2));
+    await new Promise(r => setTimeout(r, 20));
+    expect(fetches()).toBe(2);
+  });
+});

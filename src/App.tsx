@@ -132,6 +132,7 @@ import { composePlacement } from "./app/composePlacement";
 import { cidImagesToFetch, fetchCidImages } from "./app/cidImages";
 import { sendPending, type PendingSend } from "./app/pendingSend";
 import { parseMailto } from "./app/mailto";
+import { coalesceByKey } from "./app/coalesce";
 import { createDraftSync, draftKey, findLatestDraft, hasDraftContent, markDraftClosed, removeAccountDrafts, sessionDraftKey, type DraftFields } from "./app/drafts";
 import { nextCardFocus, nextItemFocus } from "./app/keyboardNav";
 import { getSmartEventTime, groupCalendarEvents, isUserLabel, mergeThreadGroups, regroupThreads, type CalendarEventGroup } from "./app/grouping";
@@ -2910,9 +2911,19 @@ function App() {
   }
 
   // Background fetch and cache update (no loading state shown)
-  async function fetchAndCacheThreads(accountId: string, cardId: string) {
+  // Background refresh of a card's first page. Overlapping requests for a
+  // card share one follow-up fetch instead of downloading it concurrently.
+  const refreshCardThreads = coalesceByKey((key: string) => {
+    const [accountId, cardId] = JSON.parse(key) as [string, string];
+    return refreshCardThreadsNow(accountId, cardId);
+  });
+  function fetchAndCacheThreads(accountId: string, cardId: string) {
     // Skip for calendar cards (they don't use thread caching)
-    if (isCalendarCard(cardId)) return;
+    if (isCalendarCard(cardId)) return Promise.resolve();
+    return refreshCardThreads(JSON.stringify([accountId, cardId]));
+  }
+
+  async function refreshCardThreadsNow(accountId: string, cardId: string) {
 
     // Capture pagination state so a page-1 fetch that resolves after the
     // user paginated doesn't wipe appended pages or rewind the page token
