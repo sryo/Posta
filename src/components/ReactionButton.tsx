@@ -15,6 +15,9 @@ export const ReactionButton = (props: ReactionButtonProps) => {
     <div class="reaction-btn-container">
       <button
         class="add-reaction-btn"
+        // Native listener: keeps the picker's outside-mousedown handler from
+        // closing it just before this click would toggle it open again
+        on:mousedown={(e) => { if (open()) e.stopPropagation(); }}
         onClick={(e) => {
           e.stopPropagation();
           if (!props.sending) setOpen(!open());
