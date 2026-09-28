@@ -1636,7 +1636,7 @@ function App() {
   async function handleStartFresh() {
     const currentCards = cards();
     const count = `${currentCards.length} card${currentCards.length === 1 ? "" : "s"}`;
-    if (currentCards.length > 0 && !confirm(`Delete the restored layout's ${count}? This can't be undone.`)) return;
+    if (currentCards.length > 0 && !confirm(`Delete the restored layout's ${count}? They're also removed from your other Macs that sync through iCloud. This can't be undone.`)) return;
     const results = await Promise.allSettled(currentCards.map(card => deleteCard(card.id)));
     // Cards that failed to delete still exist; keep showing them rather than
     // letting a preset pile new cards on top

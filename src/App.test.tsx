@@ -1594,6 +1594,8 @@ describe("App layout removal", () => {
     fireEvent.click(await screen.findByText("Start from scratch"));
 
     expect(confirmSpy).toHaveBeenCalledWith(expect.stringContaining("1 card"));
+    // Deleting a card syncs through iCloud; the user must know it isn't local
+    expect(confirmSpy).toHaveBeenCalledWith(expect.stringContaining("other Macs"));
     expect(invoke).not.toHaveBeenCalledWith("delete_card", expect.anything());
     expect(screen.getByText("Start from scratch")).toBeInTheDocument();
   });
