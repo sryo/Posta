@@ -77,7 +77,6 @@ import {
   extractEmail,
   extractMessageHtml,
   extractMessageText,
-  parseContact,
   getAvatarColor,
   validateEmailList,
   formatCalendarEventDate,
@@ -116,6 +115,7 @@ import { safeGetItem, safeSetItem, safeRemoveItem, safeGetJSON, safeSetJSON } fr
 import { BG_COLORS, GMAIL_OPERATORS, type ActionSettings, type CardColor, type GroupBy } from "./shared/constants";
 import { createUndoableSend } from "./app/undoableSend";
 import { findHeader, lastMessageFromOthers } from "./app/messages";
+import { completeRecipient, currentRecipient, matchContacts, rankContacts } from "./app/contacts";
 import { eventReplyRecipients } from "./app/eventReply";
 import { actionRemovesFromCard, applyThreadAction, labelChangeFor } from "./app/threadActions";
 import { parseStoredWidth } from "./app/storedWidth";
@@ -3254,100 +3254,6 @@ function App() {
     }
   }
 
-  // Contact candidate for autocomplete
-  interface RecentContact {
-    email: string;
-    name?: string;
-    lastContacted: number;
-    frequency: number;
-    fromGoogle?: boolean;
-  }
-
-  // Get all unique participants from loaded threads and Google contacts
-  function getContactCandidates(): RecentContact[] {
-    const account = selectedAccount();
-    const myEmail = account?.email?.toLowerCase();
-    const contactMap = new Map<string, { email: string; name?: string; lastSeen: number; count: number; fromGoogle: boolean }>();
-
-    // First, add Google contacts (they have verified names)
-    for (const contact of googleContacts()) {
-      for (const email of contact.email_addresses) {
-        const emailLower = email.toLowerCase();
-        if (emailLower === myEmail) continue;
-
-        if (!contactMap.has(emailLower)) {
-          contactMap.set(emailLower, {
-            email,
-            name: contact.display_name || undefined,
-            lastSeen: 0, // No recency info from contacts
-            count: 0, // No frequency info from contacts
-            fromGoogle: true,
-          });
-        }
-      }
-    }
-
-    // Then add thread-derived contacts (with recency/frequency)
-    Object.values(cardThreads).forEach(groups => {
-      groups.forEach(group => {
-        group.threads.forEach(thread => {
-          thread.participants.forEach(participant => {
-            // Parse "Name <email>" format
-            const { email, name } = parseContact(participant);
-            const emailLower = email.toLowerCase();
-
-            // Skip own email
-            if (emailLower === myEmail) return;
-
-            const existing = contactMap.get(emailLower);
-            if (existing) {
-              existing.count++;
-              // Prefer Google contact name, but use thread name if Google doesn't have one
-              if (name && !existing.name) {
-                existing.name = name;
-              }
-              if (thread.last_message_date > existing.lastSeen) {
-                existing.lastSeen = thread.last_message_date;
-              }
-            } else {
-              contactMap.set(emailLower, {
-                email,
-                name,
-                lastSeen: thread.last_message_date,
-                count: 1,
-                fromGoogle: false,
-              });
-            }
-          });
-        });
-      });
-    });
-
-    // Convert to array and sort by combined score
-    const candidates = Array.from(contactMap.values())
-      .map(c => ({
-        email: c.email,
-        name: c.name,
-        lastContacted: c.lastSeen,
-        frequency: c.count,
-        fromGoogle: c.fromGoogle,
-      }))
-      .sort((a, b) => {
-        // Score: higher frequency = better, more recent = better
-        // Google contacts without thread history get a small boost
-        const now = Date.now();
-        const recencyScoreA = a.lastContacted ? 1 / (1 + (now - a.lastContacted) / (1000 * 60 * 60 * 24)) : 0;
-        const recencyScoreB = b.lastContacted ? 1 / (1 + (now - b.lastContacted) / (1000 * 60 * 60 * 24)) : 0;
-        const googleBoostA = a.fromGoogle && a.frequency === 0 ? 0.1 : 0;
-        const googleBoostB = b.fromGoogle && b.frequency === 0 ? 0.1 : 0;
-        const scoreA = a.frequency * 0.4 + recencyScoreA * 100 * 0.6 + googleBoostA;
-        const scoreB = b.frequency * 0.4 + recencyScoreB * 100 * 0.6 + googleBoostB;
-        return scoreB - scoreA;
-      });
-
-    return candidates.slice(0, 8); // Top 8 candidates
-  }
-
   // Gmail search autocomplete suggestions
   function getQuerySuggestions(query: string): { text: string; desc: string; replace: { start: number; end: number } }[] {
     if (!query) return [];
@@ -3367,19 +3273,12 @@ function App() {
       if (currentToken.startsWith(op)) {
         const searchPart = currentToken.slice(op.length).toLowerCase();
         if (searchPart) {
-          // Suggest contacts matching the email or name
-          const contacts = contactCandidates();
-          for (const contact of contacts) {
-            const matchesEmail = contact.email.toLowerCase().includes(searchPart);
-            const matchesName = contact.name?.toLowerCase().includes(searchPart);
-            if (matchesEmail || matchesName) {
-              suggestions.push({
-                text: op + contact.email,
-                desc: contact.name ? `${contact.name} (${contact.frequency} emails)` : `${contact.frequency} emails`,
-                replace: { start: tokenStart, end: query.length },
-              });
-              if (suggestions.length >= 6) break;
-            }
+          for (const contact of matchContacts(rankedContacts(), searchPart, 6)) {
+            suggestions.push({
+              text: op + contact.email,
+              desc: contact.name ? `${contact.name} (${contact.frequency} emails)` : `${contact.frequency} emails`,
+              replace: { start: tokenStart, end: query.length },
+            });
           }
         }
         return suggestions;
@@ -3754,24 +3653,16 @@ function App() {
     setSelectedEvents({ ...selectedEvents(), [cardId]: currentMap });
   }
 
-  const contactCandidates = createMemo(() => getContactCandidates());
-
-  function getFilteredCandidates(): RecentContact[] {
-    const query = composeTo().toLowerCase().trim();
-    const candidates = contactCandidates() || [];
-
-    if (!query) {
-      return candidates;
-    }
-
-    return candidates.filter(c =>
-      c.email.toLowerCase().includes(query) ||
-      (c.name && c.name.toLowerCase().includes(query))
-    );
-  }
+  const rankedContacts = createMemo(() => rankContacts(
+    googleContacts(),
+    Object.values(cardThreads).flatMap(groups => groups.flatMap(g => g.threads)),
+    selectedAccount()?.email,
+    Date.now(),
+  ));
+  const contactCandidates = () => rankedContacts().slice(0, 8);
 
   function selectContact(email: string) {
-    setComposeTo(email);
+    setComposeTo(completeRecipient(composeTo(), email));
     setShowAutocomplete(false);
   }
 
@@ -4687,7 +4578,7 @@ function App() {
             focusBody={focusComposeBody()}
             autocomplete={{
               show: showAutocomplete(),
-              candidates: getFilteredCandidates(),
+              candidates: matchContacts(rankedContacts(), currentRecipient(composeTo()), 8),
               selectedIndex: autocompleteIndex(),
               setSelectedIndex: setAutocompleteIndex,
               onSelect: selectContact,

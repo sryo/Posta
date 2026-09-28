@@ -471,6 +471,25 @@ describe("App thread view reactions", () => {
   });
 });
 
+describe("App compose autocomplete", () => {
+  it("completes a later recipient from any contact without dropping earlier ones", async () => {
+    handlers.fetch_contacts = () => Array.from({ length: 12 }, (_, i) => ({
+      resource_name: `people/${i}`, display_name: i === 11 ? "Zed Last" : null,
+      email_addresses: [`c${i}@y.com`], photo_url: null,
+    }));
+    render(() => <App />);
+    await screen.findByText("Mail for A");
+    fireEvent.keyDown(document, { key: "c" });
+    const to = await screen.findByPlaceholderText("Recipients");
+
+    fireEvent.focus(to);
+    fireEvent.input(to, { target: { value: "ana@x.com, zed" } });
+    fireEvent.mouseDown(await screen.findByText("c11@y.com"));
+
+    expect(to).toHaveValue("ana@x.com, c11@y.com");
+  });
+});
+
 describe("App compose", () => {
   it("sends from the account compose was opened in after switching accounts", async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
