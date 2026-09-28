@@ -1829,6 +1829,29 @@ describe("App iCloud cards", () => {
     await waitFor(() => expect(invoke).toHaveBeenCalledWith("fetch_threads_paginated", expect.objectContaining({ cardId: "card-new" })));
   });
 
+  it("forgets a card deleted on another Mac", async () => {
+    const shared = { ...thread("t-s", "In both cards"), labels: ["INBOX"] };
+    cardsByAccount.a = [card("card-a", "a", "Alpha"), { ...card("card-b", "a", "Beta"), position: 1 }];
+    threadsByCard["card-a"] = [shared];
+    threadsByCard["card-b"] = [shared, { ...thread("t-b", "Unread in B"), unread_count: 1 }];
+    handlers.modify_threads = () => null;
+    render(() => <App />);
+    await screen.findByText("Unread in B");
+    await waitFor(() => expect(setBadgeCount).toHaveBeenLastCalledWith(1));
+
+    handlers.pull_from_icloud = () => true;
+    cardsByAccount.a = [card("card-a", "a", "Alpha")];
+    fireEvent.focus(window);
+    await waitFor(() => expect(screen.queryByRole("region", { name: "Beta email card" })).not.toBeInTheDocument());
+    await waitFor(() => expect(setBadgeCount).toHaveBeenLastCalledWith(undefined));
+
+    invoke.mockClear();
+    fireEvent.keyDown(document, { key: "l" });
+    fireEvent.keyDown(document, { key: "a" });
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith("save_cached_card_threads", expect.objectContaining({ cardId: "card-a" })));
+    expect(invoke).not.toHaveBeenCalledWith("save_cached_card_threads", expect.objectContaining({ cardId: "card-b" }));
+  });
+
   it("keeps the cards as they are when iCloud can't be reached", async () => {
     render(() => <App />);
     await screen.findByRole("region", { name: "Alpha email card" });
