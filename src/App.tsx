@@ -1,4 +1,4 @@
-import { createSignal, onMount, onCleanup, Show, For, createMemo, createEffect, untrack } from "solid-js";
+import { createSignal, onMount, onCleanup, Show, For, createMemo, createEffect, createComputed, on, untrack } from "solid-js";
 import { createStore, produce, reconcile, unwrap } from "solid-js/store";
 import DOMPurify from 'dompurify';
 import { DOMPURIFY_CONFIG } from './components/MessageBody';
@@ -622,6 +622,13 @@ function App() {
 
   // Compose
   const [composing, setComposing] = createSignal(false);
+  // The account a compose was opened in: switching accounts mid-compose must
+  // not change the sender or where its draft is saved. A compose opened
+  // before any account was signed in adopts the first one.
+  const [composeAccount, setComposeAccount] = createSignal<Account | null>(null);
+  createComputed(on([composing, selectedAccount], ([open, account], prev) => {
+    if (open && (!prev?.[0] || !untrack(composeAccount))) setComposeAccount(account);
+  }));
   // Event creation state
   const [creatingEvent, setCreatingEvent] = createSignal(false);
 
@@ -706,7 +713,7 @@ function App() {
   }
 
   function getDraftKey(): string {
-    const account = selectedAccount();
+    const account = composeAccount();
     const reply = replyingToThread();
     const forward = forwardingThread();
     if (reply) return `draft_reply_${account?.id}_${reply.threadId}`;
@@ -716,7 +723,7 @@ function App() {
 
   async function saveDraft() {
     if (!composing()) return;
-    const account = selectedAccount();
+    const account = composeAccount();
     if (!account) return;
 
     const key = getDraftKey();
@@ -797,7 +804,7 @@ function App() {
   async function clearDraft() {
     draftEpoch++;
     const key = getDraftKey();
-    const account = selectedAccount();
+    const account = composeAccount();
     const draftId = gmailDraftId();
 
     // Clear local storage
@@ -1997,7 +2004,7 @@ function App() {
   }
 
   function handleSendEmail() {
-    const account = selectedAccount();
+    const account = composeAccount();
     if (!account || !composeTo().trim()) return;
     // A send was just queued and compose is animating out with its fields
     // still populated; a second click/Cmd+Enter must not queue a duplicate
@@ -2104,6 +2111,7 @@ function App() {
       setShowCcBcc(true);
     }
     setComposing(true);
+    setComposeAccount(accounts().find(a => a.id === pending.accountId) ?? null);
   }
 
   function undoSend() {
@@ -2133,6 +2141,7 @@ function App() {
       setShowCcBcc(true);
     }
     setComposing(true);
+    setComposeAccount(accounts().find(a => a.id === pending.accountId) ?? null);
   }
 
   async function handleQuickReply() {
