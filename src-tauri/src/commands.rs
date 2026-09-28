@@ -405,7 +405,7 @@ pub fn create_card(
 ) -> Result<Card, String> {
     let card = with_db(&state, |db| {
         let cards = db.get_cards(&account_id).map_err(|e| e.to_string())?;
-        let position = cards.len() as i32;
+        let position = next_card_position(&cards);
 
         let card_type_value = card_type.unwrap_or_else(|| "email".to_string());
         let mut card = if card_type_value == "calendar" {
@@ -445,6 +445,11 @@ pub fn reorder_cards(orders: Vec<(String, i32)>, state: State<'_, AppState>) -> 
 
     sync_cards_to_icloud(&state);
     Ok(())
+}
+
+/// Positions keep gaps after a delete, so count-based numbering can collide
+fn next_card_position(cards: &[Card]) -> i32 {
+    cards.iter().map(|c| c.position + 1).max().unwrap_or(0)
 }
 
 /// Helper to get account and card from database
@@ -986,7 +991,6 @@ fn sanitize_attachment_filename(name: &str) -> String {
     std::path::Path::new(name)
         .file_name()
         .map(|s| s.to_string_lossy().into_owned())
-        .filter(|s| !s.is_empty() && s.as_str() != "..")
         .unwrap_or_else(|| "attachment".to_string())
 }
 
@@ -1023,17 +1027,20 @@ async fn resolve_attachment_file(
         .decode(cleaned)
         .map_err(|e| format!("Failed to decode base64: {}", e))?;
 
-    // Ensure filename has extension based on mime type
-    let final_filename = if !filename.contains('.') {
-        mime_type
-            .and_then(get_extension_for_mime)
-            .map(|ext| format!("{}.{}", filename, ext))
-            .unwrap_or_else(|| filename.to_string())
-    } else {
-        filename.to_string()
-    };
+    Ok((attachment_filename(filename, mime_type), bytes))
+}
 
-    Ok((sanitize_attachment_filename(&final_filename), bytes))
+/// Safe on-disk name for an attachment, with an extension derived from the
+/// MIME type when the sender's name has none
+fn attachment_filename(filename: &str, mime_type: Option<&str>) -> String {
+    let name = sanitize_attachment_filename(filename);
+    if name.contains('.') {
+        return name;
+    }
+    match mime_type.and_then(get_extension_for_mime) {
+        Some(ext) => format!("{}.{}", name, ext),
+        None => name,
+    }
 }
 
 #[tauri::command]
@@ -1578,7 +1585,40 @@ pub async fn suggest_replies(
 
 #[cfg(test)]
 mod tests {
-    use super::sanitize_attachment_filename;
+    use super::{attachment_filename, next_card_position, sanitize_attachment_filename};
+    use crate::models::Card;
+
+    #[test]
+    fn attachment_filename_adds_extension_from_mime() {
+        assert_eq!(attachment_filename("scan", Some("application/pdf")), "scan.pdf");
+        assert_eq!(attachment_filename("scan.PDF", Some("application/pdf")), "scan.PDF");
+        assert_eq!(attachment_filename("notes", Some("application/x-unknown")), "notes");
+        assert_eq!(attachment_filename("notes", None), "notes");
+    }
+
+    #[test]
+    fn attachment_filename_never_yields_hidden_extension_only_name() {
+        assert_eq!(attachment_filename("", Some("application/pdf")), "attachment.pdf");
+        assert_eq!(attachment_filename("/", Some("image/png")), "attachment.png");
+    }
+
+    #[test]
+    fn attachment_filename_checks_extension_on_the_final_component() {
+        assert_eq!(attachment_filename("v1.2/invoice", Some("application/pdf")), "invoice.pdf");
+        assert_eq!(attachment_filename("../../evil.sh", Some("application/pdf")), "evil.sh");
+    }
+
+    fn card_at(position: i32) -> Card {
+        Card::new("acct".into(), "c".into(), "q".into(), position)
+    }
+
+    #[test]
+    fn next_card_position_goes_after_the_last_card_even_with_gaps() {
+        assert_eq!(next_card_position(&[]), 0);
+        assert_eq!(next_card_position(&[card_at(0), card_at(1)]), 2);
+        // After deleting the middle card of [0, 1, 2] the remaining positions are [0, 2]
+        assert_eq!(next_card_position(&[card_at(0), card_at(2)]), 3);
+    }
 
     #[test]
     fn sanitize_keeps_plain_filenames() {
