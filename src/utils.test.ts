@@ -6,6 +6,7 @@ import {
   extractMessageHtml,
   extractMessageText,
   extractName,
+  formatCalendarEventDate,
   splitEmailList,
   stripHtml,
   truncateMiddle,
@@ -182,5 +183,22 @@ describe("stripHtml tables", () => {
     expect(stripHtml("<table><tr><th>A</th><th>B</th></tr></table>")).toBe("A\tB");
     expect(stripHtml("<table>\n  <tr>\n    <td> Total </td>\n    <td>\n      <b>9</b> items</td>\n  </tr>\n</table>"))
       .toBe("Total\t9 items");
+  });
+});
+
+describe("formatCalendarEventDate durations", () => {
+  const start = new Date(2030, 5, 10, 14, 0).getTime();
+  const hours = (h: number) => start + h * 3600_000;
+
+  it("keeps hours and minutes for events under a day", () => {
+    expect(formatCalendarEventDate(start, start + 45 * 60_000, false)).toMatch(/2pm \(45m\)$/);
+    expect(formatCalendarEventDate(start, hours(1.5), false)).toMatch(/2pm \(1h30m\)$/);
+    expect(formatCalendarEventDate(start, hours(23), false)).toMatch(/2pm \(23h\)$/);
+  });
+
+  it("shows days for events of a day or longer", () => {
+    expect(formatCalendarEventDate(start, hours(24), false)).toMatch(/2pm \(1d\)$/);
+    expect(formatCalendarEventDate(start, hours(72), false)).toMatch(/2pm \(3d\)$/);
+    expect(formatCalendarEventDate(start, hours(26), false)).toMatch(/2pm \(1d2h\)$/);
   });
 });

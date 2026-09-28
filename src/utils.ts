@@ -456,6 +456,10 @@ export function formatCalendarEventDate(
     let durationStr: string;
     if (durationMins < 60) {
       durationStr = `${durationMins}m`;
+    } else if (durationMins >= 24 * 60) {
+      const days = Math.floor(durationMins / (24 * 60));
+      const hours = Math.floor((durationMins % (24 * 60)) / 60);
+      durationStr = hours > 0 ? `${days}d${hours}h` : `${days}d`;
     } else {
       const hours = Math.floor(durationMins / 60);
       const mins = durationMins % 60;
