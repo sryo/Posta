@@ -1,4 +1,4 @@
-import { toDateInputString } from "../utils";
+import { extractEmail, splitEmailList, toDateInputString } from "../utils";
 
 export interface EventFormTimes {
   startDate: string;
@@ -36,4 +36,9 @@ export function eventTimesFromForm(form: EventFormTimes): { start: number; end: 
   if (!Number.isFinite(start) || !Number.isFinite(end)) return { error: "Enter a valid start and end" };
   if (end < start) return { error: "End must be after start" };
   return { start, end };
+}
+
+// Guest addresses typed as a comma-separated list, with or without names
+export function eventAttendees(text: string): string[] {
+  return splitEmailList(text).map(extractEmail).filter(e => e.trim());
 }

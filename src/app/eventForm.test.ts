@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { eventTimesFromForm, smartEventDefaults } from "./eventForm";
+import { eventAttendees, eventTimesFromForm, smartEventDefaults } from "./eventForm";
 
 const form = (over: Partial<Parameters<typeof eventTimesFromForm>[0]> = {}) => ({
   startDate: "2026-03-11", startTime: "10:00",
@@ -50,5 +50,16 @@ describe("smartEventDefaults", () => {
 
   it("moves to the next day when rounding passes midnight", () => {
     expect(smartEventDefaults(new Date(2026, 2, 11, 23, 40))).toEqual({ date: "2026-03-12", startTime: "00:00", endTime: "00:30" });
+  });
+});
+
+describe("eventAttendees", () => {
+  it("keeps a display name with a comma as one guest", () => {
+    expect(eventAttendees('"Doe, John" <john@x.com>, ana@y.com')).toEqual(["john@x.com", "ana@y.com"]);
+  });
+
+  it("ignores empty entries", () => {
+    expect(eventAttendees(" , ana@y.com, ")).toEqual(["ana@y.com"]);
+    expect(eventAttendees("")).toEqual([]);
   });
 });

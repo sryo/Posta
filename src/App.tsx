@@ -127,7 +127,7 @@ import { parseStoredWidth } from "./app/storedWidth";
 import { isSessionExpiredError, needsSignInAgain } from "./app/authErrors";
 import { withSignature } from "./app/signature";
 import { readFilesAsAttachments } from "./app/attachments";
-import { eventTimesFromForm, smartEventDefaults } from "./app/eventForm";
+import { eventAttendees, eventTimesFromForm, smartEventDefaults } from "./app/eventForm";
 import { composePlacement } from "./app/composePlacement";
 import { cidImagesToFetch, fetchCidImages } from "./app/cidImages";
 import { sendPending, type PendingSend } from "./app/pendingSend";
@@ -1202,7 +1202,7 @@ function App() {
     }
 
     // Cmd/Ctrl+Enter to save event (works even when typing)
-    if (e.key === 'Enter' && (e.metaKey || e.ctrlKey) && creatingEvent() && eventForm().summary && !eventForm().saving) {
+    if (e.key === 'Enter' && (e.metaKey || e.ctrlKey) && creatingEvent() && eventForm().summary.trim() && !eventForm().saving) {
       e.preventDefault();
       handleCreateEvent();
       return;
@@ -1886,7 +1886,7 @@ function App() {
 
     const form = eventForm();
 
-    if (!form.summary) {
+    if (!form.summary.trim()) {
       setEventForm(f => ({ ...f, error: "Title is required" }));
       return;
     }
@@ -1902,10 +1902,7 @@ function App() {
     const editing = form.editing;
 
     try {
-      const attendeesList = form.attendees
-        .split(',')
-        .map(s => s.trim())
-        .filter(s => s.length > 0);
+      const attendeesList = eventAttendees(form.attendees);
 
       const eventInput: EventInput = {
         summary: form.summary,
