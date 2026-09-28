@@ -1057,6 +1057,7 @@ function App() {
         } catch (err) {
           console.error("Failed to persist card order:", err);
           setCards(previousCards);
+          showToast(`Couldn't save the card order: ${err}`);
         }
       }
     }
