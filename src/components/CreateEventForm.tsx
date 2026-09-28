@@ -232,7 +232,7 @@ export const CreateEventForm = (props: {
         </div>
 
         {/* Custom Scheduler UI */}
-        <div class="scheduler-ui" style={{ padding: "10px 0", "border-bottom": "1px solid var(--border)" }}>
+        <div class="scheduler-ui" style={{ padding: "10px 0", "border-bottom": "1px solid var(--border-color)" }}>
 
           {/* Month Header */}
           <div class="scheduler-header" style={{ display: "flex", "justify-content": "space-between", "align-items": "center", padding: "0 15px 10px" }}>
@@ -240,7 +240,7 @@ export const CreateEventForm = (props: {
               <select
                 value={viewDate().getMonth()}
                 onChange={(e) => handleMonthSelect(parseInt(e.currentTarget.value))}
-                style={{ "font-weight": "600", "font-size": "14px", background: "transparent", border: "none", color: "var(--text)", cursor: "pointer" }}
+                style={{ "font-weight": "600", "font-size": "14px", background: "transparent", border: "none", color: "var(--text-primary)", cursor: "pointer" }}
               >
                 <For each={months}>
                   {(m, i) => <option value={i()}>{m}</option>}
@@ -249,7 +249,7 @@ export const CreateEventForm = (props: {
               <select
                 value={viewDate().getFullYear()}
                 onChange={(e) => handleYearSelect(parseInt(e.currentTarget.value))}
-                style={{ "font-weight": "600", "font-size": "14px", background: "transparent", border: "none", color: "var(--text)", cursor: "pointer" }}
+                style={{ "font-weight": "600", "font-size": "14px", background: "transparent", border: "none", color: "var(--text-primary)", cursor: "pointer" }}
               >
                 <For each={years()}>
                   {(y) => <option value={y}>{y}</option>}
@@ -275,15 +275,15 @@ export const CreateEventForm = (props: {
                     style={{
                       display: "flex", "flex-direction": "column", "align-items": "center", "justify-content": "center",
                       width: "60px", height: "70px",
-                      border: selected() ? "2px solid var(--accent)" : "1px solid var(--border)",
+                      border: selected() ? "2px solid var(--accent)" : "1px solid var(--border-color)",
                       "border-radius": "8px",
-                      "background-color": selected() ? "var(--accent)" : "var(--card-bg)",
+                      "background-color": selected() ? "var(--accent)" : "var(--bg-primary)",
                       cursor: "pointer",
                       "flex-shrink": 0
                     }}
                   >
                     <span style={{ "font-size": "12px", color: selected() ? "#fff" : "var(--text-secondary)" }}>{info.day}</span>
-                    <span style={{ "font-size": "20px", "font-weight": "600", color: selected() ? "#fff" : "var(--text)" }}>{info.date}</span>
+                    <span style={{ "font-size": "20px", "font-weight": "600", color: selected() ? "#fff" : "var(--text-primary)" }}>{info.date}</span>
                   </div>
                 );
               }}
@@ -306,7 +306,7 @@ export const CreateEventForm = (props: {
                 <div style={{ display: "flex", "align-items": "center", height: "17px", "margin-bottom": "5px" }}>
                   <label style={{ "font-size": "12px", color: "var(--text-secondary)" }}>Start</label>
                 </div>
-                <div class="time-picker-start" style={{ flex: 1, "overflow-y": "auto", border: "1px solid var(--border)", "border-radius": "6px" }}>
+                <div class="time-picker-start" style={{ flex: 1, "overflow-y": "auto", border: "1px solid var(--border-color)", "border-radius": "6px" }}>
                   <For each={startSlots()}>
                     {(t) => (
                       <div
@@ -316,7 +316,7 @@ export const CreateEventForm = (props: {
                           "padding": "6px 10px",
                           "cursor": "pointer",
                           "background-color": props.startTime === t ? "var(--accent)" : "transparent",
-                          "color": props.startTime === t ? "#fff" : "var(--text)",
+                          "color": props.startTime === t ? "#fff" : "var(--text-primary)",
                           "border-radius": "6px",
                           "font-size": "13px",
                           "text-align": "center"
@@ -332,7 +332,7 @@ export const CreateEventForm = (props: {
                 <div style={{ display: "flex", "align-items": "center", height: "17px", "margin-bottom": "5px" }}>
                   <label style={{ "font-size": "12px", color: "var(--text-secondary)" }}>End</label>
                 </div>
-                <div class="time-picker-end" style={{ flex: 1, "overflow-y": "auto", border: "1px solid var(--border)", "border-radius": "6px" }}>
+                <div class="time-picker-end" style={{ flex: 1, "overflow-y": "auto", border: "1px solid var(--border-color)", "border-radius": "6px" }}>
                   <For each={endSlots()}>
                     {(t) => (
                       <div
@@ -342,7 +342,7 @@ export const CreateEventForm = (props: {
                           "padding": "6px 10px",
                           "cursor": "pointer",
                           "background-color": props.endTime === t ? "var(--accent)" : "transparent",
-                          "color": props.endTime === t ? "#fff" : "var(--text)",
+                          "color": props.endTime === t ? "#fff" : "var(--text-primary)",
                           "border-radius": "6px",
                           "font-size": "13px",
                           "text-align": "center"
@@ -358,7 +358,7 @@ export const CreateEventForm = (props: {
                 <div style={{ display: "flex", "align-items": "center", height: "17px", "margin-bottom": "5px" }}>
                   <label style={{ "font-size": "12px", color: "var(--text-secondary)" }}>Repeat</label>
                 </div>
-                <div style={{ flex: 1, "overflow-y": "auto", border: "1px solid var(--border)", "border-radius": "6px" }}>
+                <div style={{ flex: 1, "overflow-y": "auto", border: "1px solid var(--border-color)", "border-radius": "6px" }}>
                   <For each={recurrenceOptions}>
                     {(opt) => (
                       <div
@@ -367,7 +367,7 @@ export const CreateEventForm = (props: {
                           "padding": "6px 10px",
                           "cursor": "pointer",
                           "background-color": props.recurrence === opt.value ? "var(--accent)" : "transparent",
-                          "color": props.recurrence === opt.value ? "#fff" : "var(--text)",
+                          "color": props.recurrence === opt.value ? "#fff" : "var(--text-primary)",
                           "border-radius": "6px",
                           "font-size": "13px",
                           "text-align": "center"
@@ -430,7 +430,7 @@ export const CreateEventForm = (props: {
   }
 
   return (
-    <div class={`compose-panel event-compose ${props.closing ? 'closing' : ''}`} onKeyDown={handleKeyDown} style={{ height: "auto", "max-height": "90vh", display: "flex", "flex-direction": "column" }}>
+    <div class={`compose-panel event-compose ${props.closing ? 'closing' : ''}`} onKeyDown={handleKeyDown} style={{ height: "auto", display: "flex", "flex-direction": "column" }}>
       <div class="compose-header">
         <h3>{props.isEditing ? "Edit event" : "New event"}</h3>
         <CloseButton onClick={props.onClose} />

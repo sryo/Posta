@@ -86,8 +86,11 @@ describe("App.css", () => {
       for (const m of text.matchAll(/["'`](--[\w-]+)["'`]/g)) defined.add(m[1]);
     }
     const undefinedVars = new Set<string>();
-    for (const m of css.matchAll(/var\(\s*(--[\w-]+)\s*(,)?/g)) {
-      if (!m[2] && !defined.has(m[1])) undefinedVars.add(m[1]);
+    // Inline styles in components read the same tokens
+    for (const text of [css, ...sources.map(([, t]) => t)]) {
+      for (const m of text.matchAll(/var\(\s*(--[\w-]+)\s*(,)?/g)) {
+        if (!m[2] && !defined.has(m[1])) undefinedVars.add(m[1]);
+      }
     }
     expect([...undefinedVars]).toEqual([]);
   });
