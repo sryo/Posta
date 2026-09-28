@@ -3,7 +3,7 @@
 use std::io::{BufRead, BufReader, Write};
 use std::net::{Ipv4Addr, Ipv6Addr, TcpListener, TcpStream};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::sync::{mpsc, Arc};
 use std::thread;
 use std::time::Duration;
 
@@ -72,6 +72,9 @@ impl CallbackServer {
     ) -> Result<CallbackResult, String> {
         let start = std::time::Instant::now();
         let timeout = Duration::from_secs(timeout_secs);
+        // Each connection is read on its own thread so an idle browser
+        // preconnect can't hold up a redirect arriving on another socket
+        let (outcomes, results) = mpsc::channel();
 
         loop {
             if cancel.load(Ordering::SeqCst) {
@@ -81,24 +84,25 @@ impl CallbackServer {
                 return Err("Timeout waiting for OAuth callback".to_string());
             }
 
-            let mut accepted = false;
             for listener in &self.listeners {
                 match listener.accept() {
                     Ok((stream, _)) => {
-                        accepted = true;
-                        match handle_connection(stream, expected_state) {
-                            ConnectionOutcome::Success(result) => return Ok(result),
-                            ConnectionOutcome::OAuthError(error) => return Err(error),
-                            // Preconnects, unrelated requests, foreign state: keep listening
-                            ConnectionOutcome::Ignored => {}
-                        }
+                        let outcomes = outcomes.clone();
+                        let expected_state = expected_state.to_string();
+                        thread::spawn(move || {
+                            let _ = outcomes.send(handle_connection(stream, &expected_state));
+                        });
                     }
                     Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {}
                     Err(e) => return Err(format!("Accept error: {}", e)),
                 }
             }
-            if !accepted {
-                thread::sleep(Duration::from_millis(100));
+
+            match results.recv_timeout(Duration::from_millis(50)) {
+                Ok(ConnectionOutcome::Success(result)) => return Ok(result),
+                Ok(ConnectionOutcome::OAuthError(error)) => return Err(error),
+                // Preconnects, unrelated requests, foreign state: keep listening
+                Ok(ConnectionOutcome::Ignored) | Err(_) => {}
             }
         }
     }
@@ -325,6 +329,23 @@ mod tests {
         send(addr, "GET /callback?error=access_denied&state=expected HTTP/1.1");
         let err = handle.join().unwrap().err().unwrap();
         assert_eq!(err, "access_denied");
+    }
+
+    #[test]
+    fn idle_preconnect_does_not_delay_the_redirect() {
+        let server = CallbackServer::bind_on(0).unwrap();
+        let addr = std::net::SocketAddr::from(([127, 0, 0, 1], server.port()));
+        let (_cancel, handle) = spawn_wait(server, "s");
+
+        // Browsers open speculative sockets that may never send a byte
+        let _idle = TcpStream::connect(addr).unwrap();
+        thread::sleep(Duration::from_millis(200));
+
+        let started = std::time::Instant::now();
+        let ok = send(addr, "GET /callback?code=c&state=s HTTP/1.1");
+        assert!(ok.starts_with("HTTP/1.1 200"), "{}", ok);
+        assert_eq!(handle.join().unwrap().unwrap().code, "c");
+        assert!(started.elapsed() < Duration::from_secs(2), "{:?}", started.elapsed());
     }
 
     #[test]
