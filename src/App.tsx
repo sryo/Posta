@@ -138,7 +138,7 @@ import { parseMailto } from "./app/mailto";
 import { coalesceByKey } from "./app/coalesce";
 import { threadLoadErrorMessage } from "./app/loadErrors";
 import { cardTypeForQuery } from "./app/cardType";
-import { createDraftSync, draftKey, findLatestDraft, hasDraftContent, markDraftClosed, removeAccountDrafts, sessionDraftKey, type DraftFields } from "./app/drafts";
+import { createDraftSync, draftKey, findLatestDraft, hasDraftContent, markDraftClosed, pruneDrafts, removeAccountDrafts, sessionDraftKey, type DraftFields } from "./app/drafts";
 import { nextCardFocus, nextItemFocus } from "./app/keyboardNav";
 import { getSmartEventTime, groupCalendarEvents, isUserLabel, mergeThreadGroups, regroupThreads, type CalendarEventGroup } from "./app/grouping";
 import { pullLayoutWithRetry } from "./app/icloudRestore";
@@ -1068,6 +1068,7 @@ function App() {
     document.documentElement.style.setProperty("--snippet-lines", String(snippetLines));
 
     loadGeminiKeyState();
+    pruneDrafts(Date.now());
 
     // Listen for mailto: deep-link events whether or not startup succeeds
     listen<MailtoData>(

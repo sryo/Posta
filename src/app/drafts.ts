@@ -16,6 +16,8 @@ export interface Draft extends DraftFields {
   savedAt: number;
   // The user closed its compose and kept the draft
   closed?: boolean;
+  // Queued to send when last saved
+  sending?: boolean;
 }
 
 export interface DraftTarget {
@@ -66,6 +68,22 @@ export function findLatestDraft(group: string, accept: (draft: Draft, key: strin
 export function markDraftClosed(key: string) {
   const draft = safeGetJSON<Draft | null>(key, null);
   if (draft) safeSetJSON(key, { ...draft, closed: true });
+}
+
+const CLOSED_DRAFT_KEPT_MS = 30 * 24 * 60 * 60 * 1000;
+
+// Closed drafts that Gmail's Drafts already holds. A closed new email is
+// never offered again, so its local copy goes at once; a closed reply or
+// forward stays a month for replying to the same thread again. Anything that
+// may be the only copy stays.
+export function pruneDrafts(now: number) {
+  for (const key of storageKeys()) {
+    if (!DRAFT_KINDS.some(kind => key.startsWith(`draft_${kind}_`))) continue;
+    const draft = safeGetJSON<Draft | null>(key, null);
+    if (!draft || !draft.closed || !draft.gmailDraftId || draft.sending) continue;
+    const newEmail = key.startsWith("draft_new_");
+    if (newEmail || now - draft.savedAt > CLOSED_DRAFT_KEPT_MS) safeRemoveItem(key);
+  }
 }
 
 export function removeAccountDrafts(accountId: string) {

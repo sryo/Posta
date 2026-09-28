@@ -6,7 +6,7 @@ const handlers: Record<string, Handler> = {};
 const invoke = vi.fn(async (cmd: string, args: Record<string, unknown> = {}) => handlers[cmd](args));
 vi.mock("@tauri-apps/api/core", () => ({ invoke: (cmd: string, args?: Record<string, unknown>) => invoke(cmd, args) }));
 
-import { createDraftSync, draftKey, findLatestDraft, markDraftClosed, removeAccountDrafts, sessionDraftKey } from "./drafts";
+import { createDraftSync, draftKey, findLatestDraft, markDraftClosed, pruneDrafts, removeAccountDrafts, sessionDraftKey } from "./drafts";
 
 const fields = (body: string) => ({ to: "bo@x.com", cc: "", bcc: "", subject: "Hi", body });
 const sync = () => createRoot(() => createDraftSync());
@@ -73,6 +73,38 @@ describe("removeAccountDrafts", () => {
     localStorage.setItem("cardWidth", "300");
     removeAccountDrafts("a");
     expect(Object.keys(localStorage).sort()).toEqual(["cardWidth", "draft_new_ab#1", "draft_reply_b_t1"]);
+  });
+});
+
+describe("pruneDrafts", () => {
+  const DAY = 86400000;
+  const now = 100 * DAY;
+  const store = (key: string, draft: Record<string, unknown>) =>
+    localStorage.setItem(key, JSON.stringify({ ...fields("x"), savedAt: now, ...draft }));
+
+  it("removes closed new emails that Gmail's Drafts already holds", () => {
+    store("draft_new_a#1", { closed: true, gmailDraftId: "d1" });
+    pruneDrafts(now);
+    expect(localStorage.getItem("draft_new_a#1")).toBeNull();
+  });
+
+  it("keeps a closed reply in Gmail for a month so replying again picks it up", () => {
+    store("draft_reply_a_t1#1", { closed: true, gmailDraftId: "d1", savedAt: now - 29 * DAY });
+    store("draft_reply_a_t2#1", { closed: true, gmailDraftId: "d2", savedAt: now - 31 * DAY });
+    pruneDrafts(now);
+    expect(localStorage.getItem("draft_reply_a_t1#1")).not.toBeNull();
+    expect(localStorage.getItem("draft_reply_a_t2#1")).toBeNull();
+  });
+
+  it("keeps every draft that is the only copy, however old", () => {
+    store("draft_new_a#1", { closed: true, savedAt: 0 });
+    store("draft_new_a#2", { savedAt: 0, gmailDraftId: "d2" });
+    store("draft_reply_a_t1#1", { closed: true, savedAt: 0 });
+    store("draft_new_a#3", { closed: true, gmailDraftId: "d3", sending: true });
+    localStorage.setItem("draft_new_a#4", "{");
+    localStorage.setItem("cardWidth", "300");
+    pruneDrafts(now);
+    expect(Object.keys(localStorage).sort()).toEqual(["cardWidth", "draft_new_a#1", "draft_new_a#2", "draft_new_a#3", "draft_new_a#4", "draft_reply_a_t1#1"]);
   });
 });
 
