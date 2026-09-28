@@ -116,6 +116,7 @@ import { safeGetItem, safeSetItem, safeRemoveItem, safeGetJSON, safeSetJSON } fr
 import { BG_COLORS, GMAIL_OPERATORS, type ActionSettings, type CardColor, type GroupBy } from "./shared/constants";
 import { createUndoableSend } from "./app/undoableSend";
 import { messageBodyHtml } from "./app/messageHtml";
+import { findHeader, lastMessageFromOthers } from "./app/messages";
 import { parseStoredWidth } from "./app/storedWidth";
 import { isSessionExpiredError } from "./app/authErrors";
 import { readFilesAsAttachments } from "./app/attachments";
@@ -2187,14 +2188,12 @@ function App() {
     setQuickReactionSending(true);
 
     try {
-      // Fetch thread details to get the last message
       const fullThread = await getThreadDetails(account.id, threadId);
-      if (!fullThread.messages.length) return;
+      const target = lastMessageFromOthers(fullThread.messages, account.email);
+      if (!target) return;
 
-      const lastMsg = fullThread.messages[fullThread.messages.length - 1];
-      const headers = lastMsg.payload?.headers || [];
-      const fromHeader = headers.find(h => h.name === 'From')?.value;
-      const messageIdHeader = headers.find(h => h.name === 'Message-ID')?.value || lastMsg.id;
+      const fromHeader = findHeader(target.payload?.headers, 'From');
+      const messageIdHeader = findHeader(target.payload?.headers, 'Message-ID') || target.id;
 
       if (!fromHeader) return;
 
@@ -2202,6 +2201,7 @@ function App() {
       await sendReaction(account.id, threadId, messageIdHeader, emoji, toEmail);
     } catch (e) {
       console.error("Failed to send reaction:", e);
+      showToast(`Failed to send reaction: ${e}`);
     } finally {
       setQuickReactionSending(false);
     }
@@ -2227,9 +2227,8 @@ function App() {
         const details = await getThreadDetails(account.id, threadId);
         const lastMsg = details.messages[details.messages.length - 1];
         if (lastMsg) {
-          const headers = lastMsg.payload?.headers || [];
-          from = headers.find(h => h.name === 'From')?.value || from;
-          date = headers.find(h => h.name === 'Date')?.value || '';
+          from = findHeader(lastMsg.payload?.headers, 'From') || from;
+          date = findHeader(lastMsg.payload?.headers, 'Date') || '';
           body = stripHtml(extractMessageBody(lastMsg.payload, lastMsg.snippet));
         }
       } catch (e) {
@@ -2267,7 +2266,7 @@ function App() {
       // ThreadView may report either the Gmail API id or the RFC Message-ID
       const messageIndex = thread.messages.findIndex(m =>
         m.id === messageId ||
-        m.payload?.headers?.find(h => h.name === 'Message-ID')?.value === messageId
+        findHeader(m.payload?.headers, 'Message-ID') === messageId
       );
       if (messageIndex >= 0) setFocusedMessageIndex(messageIndex);
     }
@@ -2497,16 +2496,11 @@ function App() {
         threadIds.map(async (threadId) => {
           const details = await getThreadDetails(account.id, threadId);
           if (details.messages && details.messages.length > 0) {
-            // Reply to the last message NOT sent by the current account;
-            // if the user replied last, targeting that message would make
+            // If the user replied last, targeting that message would make
             // the batch reply address the user themselves
-            const replyMsg = [...details.messages].reverse().find(m => {
-              const msgFrom = m.payload?.headers?.find(h => h.name === 'From')?.value;
-              return !!msgFrom && extractEmail(msgFrom).toLowerCase() !== accountEmail;
-            }) || details.messages[details.messages.length - 1];
-            const headers = replyMsg.payload?.headers || [];
-            const from = headers.find(h => h.name === 'From')?.value || 'Unknown';
-            const subject = headers.find(h => h.name === 'Subject')?.value || '(No subject)';
+            const replyMsg = lastMessageFromOthers(details.messages, accountEmail)!;
+            const from = findHeader(replyMsg.payload?.headers, 'From') || 'Unknown';
+            const subject = findHeader(replyMsg.payload?.headers, 'Subject') || '(No subject)';
             const date = replyMsg.internalDate
               ? new Date(parseInt(replyMsg.internalDate)).toLocaleDateString()
               : '';
