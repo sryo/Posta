@@ -8,6 +8,7 @@ use tokio::sync::Mutex;
 
 const GOOGLE_AUTH_URL: &str = "https://accounts.google.com/o/oauth2/v2/auth";
 const GOOGLE_TOKEN_URL: &str = "https://oauth2.googleapis.com/token";
+const GMAIL_SCOPE: &str = "https://mail.google.com/";
 const SCOPES: &str = "https://mail.google.com/ https://www.googleapis.com/auth/calendar.readonly https://www.googleapis.com/auth/calendar.events https://www.googleapis.com/auth/contacts.readonly email profile";
 const REDIRECT_URI: &str = "http://localhost:8420/callback";
 
@@ -24,6 +25,8 @@ pub enum AuthError {
     KeychainUnavailable(String),
     #[error("No credentials configured")]
     NoCredentials,
+    #[error("Posta can't work without Gmail access. Sign in again and, on Google's consent screen, allow Posta to read, compose and send your email.")]
+    GmailAccessNotGranted,
     #[error("HTTP error: {0}")]
     Http(#[from] reqwest::Error),
 }
@@ -33,6 +36,9 @@ struct TokenResponse {
     access_token: String,
     refresh_token: Option<String>,
     expires_in: Option<u64>,
+    /// Space-separated scopes the user actually granted: Google's consent
+    /// screen lets each requested one be unticked
+    scope: Option<String>,
 }
 
 pub struct GmailAuth {
@@ -160,6 +166,18 @@ impl GmailAuth {
         let refresh_token = token_resp
             .refresh_token
             .ok_or_else(|| AuthError::OAuth2("No refresh token received. Make sure to use 'prompt=consent' and 'access_type=offline'.".to_string()))?;
+
+        if let Some(granted) = &token_resp.scope {
+            let granted: Vec<&str> = granted.split_whitespace().collect();
+            if !granted.contains(&GMAIL_SCOPE) {
+                return Err(AuthError::GmailAccessNotGranted);
+            }
+            for scope in SCOPES.split_whitespace().filter(|s| s.starts_with("https://")) {
+                if !granted.contains(&scope) {
+                    tracing::warn!("Sign-in did not grant {}; what needs it will fail", scope);
+                }
+            }
+        }
 
         Ok((token_resp.access_token, refresh_token, token_resp.expires_in))
     }
@@ -803,6 +821,28 @@ mod tests {
     fn token_error_without_json_keeps_the_body() {
         assert_eq!(token_error_text(" bad gateway \n"), "bad gateway");
         assert_eq!(token_error_text(r#"{"error": "invalid_grant"}"#), "invalid_grant");
+    }
+
+    #[tokio::test]
+    async fn sign_in_without_the_gmail_scope_is_refused() {
+        let auth = auth_at(
+            token_stub(Some(r#"{"access_token": "at", "refresh_token": "rt", "expires_in": 3599, "scope": "https://www.googleapis.com/auth/calendar.readonly https://www.googleapis.com/auth/userinfo.email openid"}"#)),
+            Duration::from_secs(5),
+        );
+        let (_, state) = auth.start_auth_flow().await.unwrap();
+        let err = auth.exchange_code("code".into(), Some(&state)).await.unwrap_err().to_string();
+        assert!(err.contains("Gmail"), "{}", err);
+        assert!(err.contains("Sign in again"), "{}", err);
+    }
+
+    #[tokio::test]
+    async fn sign_in_with_the_gmail_scope_but_not_calendar_or_contacts_succeeds() {
+        let auth = auth_at(
+            token_stub(Some(r#"{"access_token": "at", "refresh_token": "rt", "expires_in": 3599, "scope": "https://www.googleapis.com/auth/userinfo.email https://mail.google.com/ openid"}"#)),
+            Duration::from_secs(5),
+        );
+        let (_, state) = auth.start_auth_flow().await.unwrap();
+        assert_eq!(auth.exchange_code("code".into(), Some(&state)).await.unwrap().1, "rt");
     }
 
     #[tokio::test]
