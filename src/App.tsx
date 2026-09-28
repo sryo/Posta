@@ -835,6 +835,7 @@ function App() {
       }
     } catch (e) {
       console.error("Incremental sync failed:", e);
+      noteBackgroundError(account.id, e);
       // On error, backoff but don't stop polling
       setPollInterval(prev => Math.min(prev * 2, MAX_POLL_INTERVAL));
     } finally {
@@ -2858,11 +2859,23 @@ function App() {
       setSyncErrors(cardId, errorMsg);
       return;
     }
-    // The account and its cards stay: signing in again with the same email
-    // reuses the account id, so the layout comes back as it was
     setCardErrors(cardId, "Session expired");
-    setExpiredAccountId(selectedAccount()?.id ?? null);
+    const accountId = selectedAccount()?.id;
+    if (accountId) markSessionExpired(accountId);
+  }
+
+  // The account and its cards stay: signing in again with the same email
+  // reuses the account id, so the layout comes back as it was
+  function markSessionExpired(accountId: string) {
+    if (expiredAccountId() === accountId) return;
+    setExpiredAccountId(accountId);
     setError("Session expired - sign in again");
+  }
+
+  // Background syncs keep showing cached mail; an expired session must still
+  // surface, or the cards silently go stale
+  function noteBackgroundError(accountId: string, e: unknown) {
+    if (isSessionExpiredError(String(e)) && selectedAccount()?.id === accountId) markSessionExpired(accountId);
   }
 
   async function handleReauth() {
@@ -2957,6 +2970,7 @@ function App() {
     } catch (e) {
       // Background refresh failed - set sync error but keep cached data shown
       setSyncErrors(cardId, String(e));
+      noteBackgroundError(accountId, e);
     }
   }
 

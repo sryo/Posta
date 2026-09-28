@@ -522,6 +522,35 @@ describe("App accounts", () => {
 });
 
 describe("App expired session", () => {
+  it("offers to sign in again when a background sync finds the session expired", async () => {
+    render(() => <App />);
+    await screen.findByText("Mail for A");
+    handlers.sync_threads_incremental = () => { throw 'Token refresh failed: {"error": "invalid_grant"}'; };
+    window.dispatchEvent(new Event("focus"));
+
+    const banner = await waitFor(() => {
+      const el = document.querySelector(".auth-error");
+      expect(el).not.toBeNull();
+      return el as HTMLElement;
+    });
+    expect(within(banner).getByRole("button", { name: "Sign in again" })).toBeInTheDocument();
+    expect(screen.getByText("Mail for A")).toBeInTheDocument();
+  });
+
+  it("offers to sign in again when a card's background refresh finds the session expired", async () => {
+    handlers.get_cached_card_threads = () => ({ groups: [{ label: "Today", threads: [thread("t-a", "Mail for A")] }], next_page_token: null, cached_at: 1 });
+    handlers.fetch_threads_paginated = () => { throw "Keyring error: No refresh token found"; };
+    render(() => <App />);
+    await screen.findByText("Mail for A");
+
+    const banner = await waitFor(() => {
+      const el = document.querySelector(".auth-error");
+      expect(el).not.toBeNull();
+      return el as HTMLElement;
+    });
+    expect(within(banner).getByRole("button", { name: "Sign in again" })).toBeInTheDocument();
+  });
+
   it("keeps the account and its cards and offers to sign in again", async () => {
     handlers.delete_account = () => null;
     let expired = true;
