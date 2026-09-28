@@ -1508,3 +1508,28 @@ describe("App shortcuts behind overlays", () => {
     expect(document.querySelector(".compose-panel")).not.toBeNull();
   });
 });
+
+describe("App undo", () => {
+  it("unstars only the threads a bulk star starred", async () => {
+    handlers.modify_threads = () => null;
+    threadsByCard["card-a"] = [
+      { ...thread("t-1", "Already starred"), labels: ["INBOX", "STARRED"] },
+      { ...thread("t-2", "Not starred"), labels: ["INBOX"] },
+    ];
+    render(() => <App />);
+    await screen.findByText("Already starred");
+    fireEvent.keyDown(document, { key: "l" });
+    fireEvent.keyDown(document, { key: "x" });
+    fireEvent.keyDown(document, { key: "j" });
+    fireEvent.keyDown(document, { key: "x" });
+    fireEvent.click(await screen.findByTitle("Star"));
+    await screen.findByText("Starred 2 threads");
+    invoke.mockClear();
+    fireEvent.click(screen.getByText("Undo"));
+
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith("modify_threads", {
+      accountId: "a", threadIds: ["t-2"], addLabels: [], removeLabels: ["STARRED"],
+    }));
+    expect(invoke.mock.calls.filter(([cmd]) => cmd === "modify_threads")).toHaveLength(1);
+  });
+});

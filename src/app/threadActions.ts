@@ -1,4 +1,4 @@
-import type { ThreadGroup } from "../api/tauri";
+import type { Thread, ThreadGroup } from "../api/tauri";
 
 export interface LabelChange {
   add: string[];
@@ -19,6 +19,37 @@ export function labelChangeFor(action: string): LabelChange {
     case "spam": return { add: ["SPAM"], remove: ["INBOX"] };
     default: return { add: [], remove: [] };
   }
+}
+
+export interface LabelReversal {
+  threadIds: string[];
+  add: string[];
+  remove: string[];
+}
+
+// What undoing a label change must do to each thread: take back only the
+// labels the change actually added, and put back only the ones it removed.
+// A thread whose labels before the change aren't known gets the whole change
+// reversed.
+export function undoLabelChanges(
+  threadIds: string[],
+  change: LabelChange,
+  before: Map<string, Pick<Thread, "labels" | "unread_count">>,
+): LabelReversal[] {
+  const reversals = new Map<string, LabelReversal>();
+  for (const id of threadIds) {
+    const prior = before.get(id);
+    const had = (label: string) =>
+      !prior || prior.labels.includes(label) || (label === "UNREAD" && prior.unread_count > 0);
+    const remove = change.add.filter(label => !prior || !had(label));
+    const add = change.remove.filter(had);
+    if (add.length === 0 && remove.length === 0) continue;
+    const key = `${add.join(",")}|${remove.join(",")}`;
+    const reversal = reversals.get(key) ?? { threadIds: [], add, remove };
+    reversal.threadIds.push(id);
+    reversals.set(key, reversal);
+  }
+  return [...reversals.values()];
 }
 
 // The undo toast's description of an action

@@ -120,7 +120,7 @@ import { findHeader, lastMessageFromOthers } from "./app/messages";
 import { batchReplyEntry, type BatchReplyThread } from "./app/batchReply";
 import { completeRecipient, currentRecipient, matchContacts, rankContacts } from "./app/contacts";
 import { eventReplyRecipients } from "./app/eventReply";
-import { actionLabel, actionRemovesFromCard, applyThreadAction, labelChangeFor } from "./app/threadActions";
+import { actionLabel, actionRemovesFromCard, applyThreadAction, labelChangeFor, undoLabelChanges, type LabelReversal } from "./app/threadActions";
 import { PRESETS } from "./app/presets";
 import { normalizeActionOrder } from "./app/actionOrder";
 import { parseStoredWidth } from "./app/storedWidth";
@@ -239,8 +239,7 @@ function App() {
     threadIds: string[];
     cardId: string;
     cardIds: string[]; // every card the optimistic update touched
-    addedLabels: string[];
-    removedLabels: string[];
+    reversals: LabelReversal[];
     timestamp: number;
   }
   const [lastAction, setLastAction] = createSignal<UndoableAction | null>(null);
@@ -3357,9 +3356,8 @@ function App() {
 
     hideToast();
 
-    // Reverse the labels: add what was removed, remove what was added
     try {
-      await modifyThreads(action.accountId, action.threadIds, action.removedLabels, action.addedLabels);
+      await Promise.all(action.reversals.map(r => modifyThreads(action.accountId, r.threadIds, r.add, r.remove)));
       // Refresh every card the optimistic update touched, not just the
       // one the action originated from; they are gone after an account switch
       if (selectedAccount()?.id === action.accountId) {
@@ -3397,12 +3395,16 @@ function App() {
     const updatedCardThreads: Record<string, ThreadGroup[]> = {};
     const snapshot: Record<string, ThreadGroup[]> = {};
     const affectedCardIds: string[] = [];
+    const labelsBefore = new Map<string, Pick<Thread, "labels" | "unread_count">>();
 
     for (const [cId, groups] of Object.entries(cardThreads)) {
       if (!groups) continue;
       if (groups.some(g => g.threads.some(t => threadIds.includes(t.gmail_thread_id)))) {
         snapshot[cId] = structuredClone(unwrap(groups));
         affectedCardIds.push(cId);
+        for (const t of snapshot[cId].flatMap(g => g.threads)) {
+          if (threadIds.includes(t.gmail_thread_id)) labelsBefore.set(t.gmail_thread_id, t);
+        }
       }
       const query = cards().find(c => c.id === cId)?.query ?? "";
       updatedCardThreads[cId] = applyThreadAction(groups, threadIds, action, actionRemovesFromCard(action, query));
@@ -3430,8 +3432,7 @@ function App() {
         threadIds,
         cardId,
         cardIds: affectedCardIds,
-        addedLabels: addLabels,
-        removedLabels: removeLabels,
+        reversals: undoLabelChanges(threadIds, { add: addLabels, remove: removeLabels }, labelsBefore),
         timestamp: Date.now()
       });
       showToast();
