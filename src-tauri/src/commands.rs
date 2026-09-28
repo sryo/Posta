@@ -418,16 +418,7 @@ pub fn init_app(app_handle: tauri::AppHandle, state: State<'_, AppState>) -> Res
     let db_path = app_dir.join("posta.db");
     tracing::info!("DB path: {:?}", db_path);
 
-    let db = CacheDb::new(&db_path).map_err(|e| format!("Failed to open database: {}", e))?;
-
-    match db.clear_stale_card_cache(24) {
-        Ok(count) => {
-            if count > 0 {
-                tracing::info!("Cleaned up {} stale card cache entries", count);
-            }
-        }
-        Err(e) => tracing::warn!("Failed to clean card cache: {}", e),
-    }
+    let db = open_database(&db_path)?;
 
     state.icloud.lock().map_err(|_| "Lock error")?.record_path = Some(app_dir.join("icloud-card-sync.json"));
 
@@ -436,6 +427,13 @@ pub fn init_app(app_handle: tauri::AppHandle, state: State<'_, AppState>) -> Res
 
     tracing::info!("App initialized successfully");
     Ok(())
+}
+
+/// Card caches are not pruned by age: each is the only offline copy of its
+/// card, is overwritten on every refresh, and goes when the card or its
+/// account is deleted
+fn open_database(db_path: &std::path::Path) -> Result<CacheDb, String> {
+    CacheDb::new(db_path).map_err(|e| format!("Failed to open database: {}", e))
 }
 
 #[tauri::command]
@@ -2520,6 +2518,26 @@ mod tests {
         assert_eq!(next_card_position(&[card_at(0), card_at(1)]), 2);
         // After deleting the middle card of [0, 1, 2] the remaining positions are [0, 2]
         assert_eq!(next_card_position(&[card_at(0), card_at(2)]), 3);
+    }
+
+    #[test]
+    fn opening_the_database_keeps_an_old_offline_cache() {
+        // A user back after a few days, and offline, still sees their cards
+        let dir = scratch_dir();
+        let path = dir.join("posta.db");
+        let groups = vec![crate::models::ThreadGroup { label: "Today".into(), threads: Vec::new() }];
+        super::open_database(&path).unwrap().save_card_threads("c1", &groups, None).unwrap();
+        let three_days_ago = chrono::Utc::now().timestamp() - 3 * 24 * 3600;
+        rusqlite::Connection::open(&path)
+            .unwrap()
+            .execute("UPDATE card_thread_cache SET cached_at = ?1", [three_days_ago])
+            .unwrap();
+
+        let db = super::open_database(&path).unwrap();
+        let (cached, _, cached_at) = db.get_card_threads("c1").unwrap().expect("cache kept");
+        assert_eq!(cached.len(), 1);
+        assert_eq!(cached_at, three_days_ago);
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]
