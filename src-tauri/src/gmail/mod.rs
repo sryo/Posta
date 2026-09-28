@@ -1306,10 +1306,11 @@ pub struct HistoryChanges {
 }
 
 fn extract_email_address(from: &str) -> String {
-    // Parse "Name <email@example.com>" format - extract the email part
-    if let Some(start) = from.find('<') {
-        if let Some(end) = from.find('>') {
-            return from[start + 1..end].trim().to_string();
+    // Parse "Name <email@example.com>" format - extract the email part. The
+    // address is the last bracketed group; the display name may contain '<' or '>'
+    if let Some(start) = from.rfind('<') {
+        if let Some(len) = from[start..].find('>') {
+            return from[start + 1..start + len].trim().to_string();
         }
     }
     // Already just an email address
@@ -1415,6 +1416,10 @@ fn parse_ics_content(ics_data: &str) -> Option<CalendarEvent> {
 /// Returns (timestamp_millis, is_all_day)
 fn parse_ics_datetime(s: &str, params: &str) -> Option<(i64, bool)> {
     let s = s.trim();
+    // Byte-offset slicing below is only safe on ASCII
+    if !s.is_ascii() {
+        return None;
+    }
 
     // All-day event (just date, no time)
     if s.len() == 8 && !s.contains('T') {
@@ -2143,5 +2148,20 @@ mod tests {
         let mixed = encode_address_header("Müller <m@example.com>, plain@example.com");
         assert!(mixed.contains("=?UTF-8?B?"));
         assert!(mixed.ends_with(", plain@example.com"));
+    }
+
+    #[test]
+    fn extract_email_address_handles_angle_bracket_in_display_name() {
+        assert_eq!(extract_email_address("\"a>b\" <x@example.com>"), "x@example.com");
+        assert_eq!(extract_email_address("Jane <jane@example.com>"), "jane@example.com");
+        assert_eq!(extract_email_address("  bare@example.com "), "bare@example.com");
+        assert_eq!(extract_email_address("Broken <x@example.com"), "Broken <x@example.com");
+    }
+
+    #[test]
+    fn parse_ics_datetime_rejects_non_ascii_without_panicking() {
+        assert_eq!(parse_ics_datetime("202é115", ""), None);
+        assert_eq!(parse_ics_datetime("20240115T1é0000", ""), None);
+        assert_eq!(parse_ics_datetime("é0240115T100000Z", ""), None);
     }
 }
