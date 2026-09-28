@@ -1651,7 +1651,15 @@ pub async fn get_calendar_rsvp_status(
     let access_token = get_access_token(&state, &app_handle, &account_id).await?;
     let calendar = crate::calendar::CalendarClient::new(access_token);
 
-    Ok(calendar.get_calendar_event_status(&user_email, &event_uid).await)
+    match calendar.get_calendar_event_status(&user_email, &event_uid).await {
+        Err(e) if is_auth_error(&e) => evict_token_on_auth_error(&state, &account_id, Err(e)),
+        // The status is decoration on an invite; other failures show none
+        Err(e) => {
+            tracing::warn!("Failed to look up RSVP status: {}", e);
+            Ok(None)
+        }
+        status => status,
+    }
 }
 
 // iCloud sync commands

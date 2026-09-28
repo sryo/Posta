@@ -770,11 +770,15 @@ impl CalendarClient {
         &self,
         user_email: &str,
         event_uid: &str,
-    ) -> Option<String> {
-        let (calendar_id, event) = self.find_event_by_ical_uid(event_uid, false).await.ok()??;
-        let attendees = event.attendees.as_ref()?;
-        let index = self_attendee_index(attendees, user_email, calendar_id == "primary")?;
-        attendees[index].response_status.clone()
+    ) -> Result<Option<String>, String> {
+        let Some((calendar_id, event)) = self.find_event_by_ical_uid(event_uid, false).await? else {
+            return Ok(None);
+        };
+        let Some(attendees) = event.attendees.as_ref() else {
+            return Ok(None);
+        };
+        let index = self_attendee_index(attendees, user_email, calendar_id == "primary");
+        Ok(index.and_then(|i| attendees[i].response_status.clone()))
     }
 
     /// Send RSVP response to a calendar event via Google Calendar API
@@ -1816,7 +1820,8 @@ mod tests {
             server.client().get_calendar_event_status("me@x.com", "uid-1"),
         )
         .await
-        .expect("secondary calendars were searched one at a time");
+        .expect("secondary calendars were searched one at a time")
+        .unwrap();
         assert_eq!(status.as_deref(), Some("accepted"));
     }
 
@@ -1826,7 +1831,7 @@ mod tests {
         // them at once for every invite row runs into Google's rate limits
         let calendars: Vec<_> = (0..20).map(|i| calendar_with_role(&format!("cal{i:02}"), "reader")).collect();
         let server = StubServer::start(invite_lookup_stub(serde_json::json!(calendars), "cal00")).await;
-        assert_eq!(server.client().get_calendar_event_status("me@x.com", "uid-1").await.as_deref(), Some("accepted"));
+        assert_eq!(server.client().get_calendar_event_status("me@x.com", "uid-1").await.unwrap().as_deref(), Some("accepted"));
         let searched = searched_calendars(&server);
         assert_eq!(searched[0], "primary");
         assert!(searched.len() <= 1 + INVITE_SEARCH_CONCURRENCY, "{searched:?}");
@@ -1843,7 +1848,7 @@ mod tests {
             calendar_with_role("addressbook#contacts@group.v.calendar.google.com", "reader"),
         ]);
         let server = StubServer::start(invite_lookup_stub(calendars, "nowhere")).await;
-        assert_eq!(server.client().get_calendar_event_status("me@x.com", "uid-1").await, None);
+        assert_eq!(server.client().get_calendar_event_status("me@x.com", "uid-1").await.unwrap(), None);
         let mut searched = searched_calendars(&server);
         searched.sort();
         assert_eq!(searched, vec!["primary", "shared", "work"]);
@@ -1862,6 +1867,15 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn an_invite_status_lookup_reports_an_expired_session() {
+        // The caller evicts the cached token on this error; reading it as
+        // "no status" would keep reusing the dead token
+        let server = StubServer::start(|_, _| (401, r#"{"error":{"code":401,"status":"UNAUTHENTICATED"}}"#.to_string())).await;
+        let result = server.client().get_calendar_event_status("me@x.com", "uid-1").await;
+        assert!(result.is_err(), "{result:?}");
+    }
+
+    #[tokio::test]
     async fn invite_lookups_share_one_calendar_list_request() {
         // Each invite row looks up its own event; the account's calendar
         // list is fetched once for all of them, not once per row
@@ -1870,14 +1884,14 @@ mod tests {
         let client = server.client();
         let lookups: Vec<_> = (0..4).map(|i| client.get_calendar_event_status("me@x.com", ["a", "b", "c", "d"][i])).collect();
         let statuses = futures::future::join_all(lookups).await;
-        assert!(statuses.iter().all(|s| s.as_deref() == Some("accepted")), "{statuses:?}");
-        server.client().get_calendar_event_status("me@x.com", "e").await;
+        assert!(statuses.iter().all(|s| s.as_ref().unwrap().as_deref() == Some("accepted")), "{statuses:?}");
+        server.client().get_calendar_event_status("me@x.com", "e").await.unwrap();
         let list_requests = server.requests().iter().filter(|(_, t, _)| t.starts_with("/users/me/calendarList")).count();
         assert_eq!(list_requests, 1);
 
         // Another account (token) gets its own list
         let other = CalendarClient { access_token: "other-token".into(), ..server.client() };
-        other.get_calendar_event_status("me@x.com", "f").await;
+        other.get_calendar_event_status("me@x.com", "f").await.unwrap();
         let list_requests = server.requests().iter().filter(|(_, t, _)| t.starts_with("/users/me/calendarList")).count();
         assert_eq!(list_requests, 2);
     }
