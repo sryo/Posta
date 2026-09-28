@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { Thread, ThreadGroup } from "../api/tauri";
-import { actionRemovesFromCard, applyThreadAction, labelChangeFor } from "./threadActions";
+import { actionLabel, actionRemovesFromCard, applyThreadAction, labelChangeFor } from "./threadActions";
 
 const thread = (id: string, labels: string[], unread = 0): Thread => ({
   gmail_thread_id: id, account_id: "a", subject: id, snippet: "", last_message_date: 0,
@@ -15,6 +15,14 @@ describe("labelChangeFor", () => {
 
   it("changes nothing for an unknown action", () => {
     expect(labelChangeFor("bogus")).toEqual({ add: [], remove: [] });
+  });
+});
+
+describe("actionLabel", () => {
+  it("describes one or several threads", () => {
+    expect(actionLabel("archive", 1)).toBe("Archived 1 thread");
+    expect(actionLabel("spam", 3)).toBe("Moved 3 threads to spam");
+    expect(actionLabel("bogus", 2)).toBe("Modified 2 threads");
   });
 });
 

@@ -21,6 +21,24 @@ export function labelChangeFor(action: string): LabelChange {
   }
 }
 
+// The undo toast's description of an action
+export function actionLabel(action: string, count: number): string {
+  const threads = `${count} thread${count === 1 ? "" : "s"}`;
+  switch (action) {
+    case "archive": return `Archived ${threads}`;
+    case "inbox": return `Moved ${threads} to inbox`;
+    case "star": return `Starred ${threads}`;
+    case "unstar": return `Removed star from ${threads}`;
+    case "trash": return `Deleted ${threads}`;
+    case "read": return `Marked ${threads} as read`;
+    case "unread": return `Marked ${threads} as unread`;
+    case "important": return `Marked ${threads} as important`;
+    case "notImportant": return `Marked ${threads} as not important`;
+    case "spam": return `Moved ${threads} to spam`;
+    default: return `Modified ${threads}`;
+  }
+}
+
 // Archive only removes INBOX, so the thread should vanish only from cards
 // whose query is inbox-scoped: cards like has:attachment or is:starred still
 // match it on the server. Trash and spam remove it everywhere.

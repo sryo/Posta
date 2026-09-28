@@ -117,7 +117,8 @@ import { createUndoableSend } from "./app/undoableSend";
 import { findHeader, lastMessageFromOthers } from "./app/messages";
 import { completeRecipient, currentRecipient, matchContacts, rankContacts } from "./app/contacts";
 import { eventReplyRecipients } from "./app/eventReply";
-import { actionRemovesFromCard, applyThreadAction, labelChangeFor } from "./app/threadActions";
+import { actionLabel, actionRemovesFromCard, applyThreadAction, labelChangeFor } from "./app/threadActions";
+import { PRESETS } from "./app/presets";
 import { parseStoredWidth } from "./app/storedWidth";
 import { isSessionExpiredError } from "./app/authErrors";
 import { readFilesAsAttachments } from "./app/attachments";
@@ -882,50 +883,6 @@ function App() {
   // Preset selection for new accounts
   const [showPresetSelection, setShowPresetSelection] = createSignal(false);
   const [showRestorePrompt, setShowRestorePrompt] = createSignal(false);
-
-  interface CardPreset {
-    name: string;
-    query: string;
-    color?: CardColor;
-  }
-
-  const PRESETS: Record<string, { label: string; description: string; cards: CardPreset[] }> = {
-    posta: {
-      label: "Posta",
-      description: "Focus on what matters",
-      cards: [
-        { name: "Hot", query: "is:important newer_than:1d", color: "blue" },
-        { name: "Meh", query: "category:promotions OR category:updates OR category:social -is:important -is:starred", color: "red" },
-        { name: "Files", query: "has:attachment", color: "purple" },
-        { name: "Today", query: "calendar:today" },
-      ],
-    },
-    traditional: {
-      label: "Traditional",
-      description: "The familiar setup",
-      cards: [
-        { name: "Inbox", query: "is:inbox", color: "blue" },
-        { name: "Starred", query: "is:starred", color: "yellow" },
-        { name: "Drafts", query: "is:draft", color: "orange" },
-        { name: "Sent", query: "in:sent", color: "green" },
-      ],
-    },
-    power: {
-      label: "Power User",
-      description: "Track everything",
-      cards: [
-        { name: "Hot", query: "is:important newer_than:1d", color: "blue" },
-        { name: "Waiting", query: "in:sent newer_than:7d", color: "yellow" },
-        { name: "Drafts", query: "is:draft", color: "orange" },
-        { name: "Meh", query: "category:promotions OR category:updates OR category:social -is:important -is:starred", color: "red" },
-      ],
-    },
-    empty: {
-      label: "Blank",
-      description: "Build from scratch",
-      cards: [],
-    },
-  };
 
   // Enhanced polling with adaptive interval
   const BASE_POLL_INTERVAL = 30000; // 30 seconds
@@ -3482,23 +3439,6 @@ function App() {
     setLastAction(null);
   }
 
-  function getActionLabel(action: string, count: number): string {
-    const plural = count > 1 ? 's' : '';
-    switch (action) {
-      case 'archive': return `Archived ${count} thread${plural}`;
-      case 'inbox': return `Moved ${count} thread${plural} to inbox`;
-      case 'star': return `Starred ${count} thread${plural}`;
-      case 'unstar': return `Removed star from ${count} thread${plural}`;
-      case 'trash': return `Deleted ${count} thread${plural}`;
-      case 'read': return `Marked ${count} thread${plural} as read`;
-      case 'unread': return `Marked ${count} thread${plural} as unread`;
-      case 'important': return `Marked ${count} thread${plural} as important`;
-      case 'notImportant': return `Marked ${count} thread${plural} as not important`;
-      case 'spam': return `Moved ${count} thread${plural} to spam`;
-      default: return `Modified ${count} thread${plural}`;
-    }
-  }
-
   // silent: a change the user didn't ask for directly (marking a thread
   // read on open) gets no undo toast
   async function handleThreadAction(action: string, threadIds: string[], cardId: string, { silent = false } = {}) {
@@ -5400,7 +5340,7 @@ function App() {
           <div class={`undo-toast ${toast()?.closing ? 'closing' : ''}`}>
             <div class="toast-progress"></div>
             <div class="toast-content">
-              <span class="toast-message">{toast()?.message || (lastAction() ? getActionLabel(lastAction()!.action, lastAction()!.threadIds.length) : '')}</span>
+              <span class="toast-message">{toast()?.message || (lastAction() ? actionLabel(lastAction()!.action, lastAction()!.threadIds.length) : '')}</span>
               <Show when={!toast()?.message && lastAction()}>
                 <button class="toast-undo-btn" onClick={undoLastAction}>Undo <span class="shortcut-hint">z</span></button>
               </Show>
