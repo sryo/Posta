@@ -1,15 +1,61 @@
 import { defineConfig } from "vitest/config";
 import solid from "vite-plugin-solid";
 
+// Suites that touch no DOM API. Building a jsdom window per file dominates
+// their run time; a suite that later needs one fails with "document is not
+// defined" and belongs back in the jsdom project.
+const NO_DOM = [
+  "src/App.css.test.ts",
+  "src/api/commandContract.test.ts",
+  "src/app/actionOrder.test.ts",
+  "src/app/authErrors.test.ts",
+  "src/app/batchReply.test.ts",
+  "src/app/cardType.test.ts",
+  "src/app/cidImages.test.ts",
+  "src/app/coalesce.test.ts",
+  "src/app/composePlacement.test.ts",
+  "src/app/contacts.test.ts",
+  "src/app/eventForm.test.ts",
+  "src/app/eventReply.test.ts",
+  "src/app/grouping.test.ts",
+  "src/app/keyboardNav.test.ts",
+  "src/app/loadErrors.test.ts",
+  "src/app/mailto.test.ts",
+  "src/app/messages.test.ts",
+  "src/app/pendingSend.test.ts",
+  "src/app/signature.test.ts",
+  "src/app/storedWidth.test.ts",
+  "src/app/threadActions.test.ts",
+  "src/test/css.test.ts",
+  "src/test/environment.test.ts",
+  "src/test/release.test.ts",
+];
+
 export default defineConfig({
   plugins: [solid()],
   resolve: {
     conditions: ["development", "browser"],
   },
   test: {
-    environment: "jsdom",
     globals: false,
+    // The App suites wait on real timers of up to ~2s; on a loaded machine
+    // the 5s default fails them spuriously.
+    testTimeout: 15_000,
     setupFiles: ["./src/test/setup.ts"],
-    include: ["src/**/*.test.{ts,tsx}"],
+    projects: [
+      {
+        extends: true,
+        test: {
+          name: "dom",
+          environment: "jsdom",
+          include: ["src/**/*.test.{ts,tsx}"],
+          exclude: NO_DOM,
+        },
+      },
+      {
+        extends: true,
+        test: { name: "node", environment: "node", include: NO_DOM },
+      },
+    ],
   },
 });

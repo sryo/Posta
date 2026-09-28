@@ -1433,6 +1433,21 @@
         }
 
         /* --- END OF EXACT APP COMPONENTS CSS --- */
+
+        /* The undo countdown keeps moving: it carries state rather than decoration. */
+        @media (prefers-reduced-motion: reduce) {
+            html {
+                scroll-behavior: auto;
+            }
+
+            *:not(.toast-progress),
+            *::before,
+            *::after {
+                animation-duration: 0.01ms !important;
+                animation-iteration-count: 1 !important;
+                transition-duration: 0.01ms !important;
+            }
+        }
     </style>
 </head>
 
@@ -2689,7 +2704,7 @@
 
                 // Scroll to the new card
                 requestAnimationFrame(() => {
-                    wrapper.scrollIntoView({ behavior: 'smooth', inline: 'center', block: 'nearest' });
+                    wrapper.scrollIntoView({ behavior: matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth', inline: 'center', block: 'nearest' });
                 });
 
                 // Attach event listeners to new card

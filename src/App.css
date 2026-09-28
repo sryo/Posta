@@ -133,6 +133,18 @@ select:focus:not(:focus-visible) {
     outline: none;
 }
 
+button:focus-visible,
+a:focus-visible,
+[tabindex="0"]:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+}
+
+.thread:focus-visible,
+.calendar-event-item:focus-visible {
+    outline-offset: -2px;
+}
+
 /* Drag region for frameless window */
 .drag-region {
     position: absolute;
@@ -3894,7 +3906,7 @@ button:disabled:hover {
     align-items: flex-start;
     margin-bottom: 16px;
     padding-bottom: 16px;
-    border-bottom: 1px solid rgba(0, 0, 0, 0.06);
+    border-bottom: 1px solid var(--border-light);
     gap: var(--space-xl);
 }
 
@@ -4010,6 +4022,16 @@ button:disabled:hover {
     font-size: 0.95rem;
     overflow-wrap: break-word;
     word-break: break-word;
+    /* Email HTML may carry position:fixed and huge z-indexes; containment
+       keeps it from covering the app, and wide tables scroll in place. */
+    contain: layout;
+    overflow-x: auto;
+}
+
+/* Containment stops the first block's top margin from collapsing into the
+   header's gap, so drop it to keep the spacing it had before. */
+.message-body > :first-child {
+    margin-top: 0;
 }
 
 .message-body a {
@@ -4071,7 +4093,7 @@ button:disabled:hover {
     gap: var(--space-md);
     margin-top: 16px;
     padding-top: 16px;
-    border-top: 1px solid rgba(0, 0, 0, 0.06);
+    border-top: 1px solid var(--border-light);
 }
 
 .attachment-thumb {
