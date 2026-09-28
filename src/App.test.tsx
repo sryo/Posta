@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import { configure, fireEvent, render, screen, waitFor, within } from "@solidjs/testing-library";
 
 // Every test renders the whole app; on a loaded machine the defaults (5s per
@@ -2310,6 +2310,14 @@ describe("App thread rows", () => {
     window.dispatchEvent(new Event("focus"));
     await screen.findByText("Brand new");
     await waitFor(() => expect(saves()).toBe(savesBefore + 1));
+
+    // The cache's time is the card's "Last synced" at the next start, so an
+    // unchanged card is still written now and then
+    const later = Date.now() + 6 * 60 * 1000;
+    const clock = vi.spyOn(Date, "now").mockImplementation(() => later);
+    onTestFinished(() => clock.mockRestore());
+    window.dispatchEvent(new Event("focus"));
+    await waitFor(() => expect(saves()).toBe(savesBefore + 2));
   });
 
   it("does not regroup a card to move focus, hover a row or type a quick reply", async () => {

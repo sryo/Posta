@@ -2934,16 +2934,20 @@ function App() {
     }
   }
 
-  // What each card's thread cache was last read or written as. A refresh
-  // that brings back the same groups (inline images and all) skips sending
-  // them across again.
-  const knownCardCache: Record<string, string> = {};
+  // What each card's thread cache was last read or written as, and when. A
+  // refresh that brings back the same groups (inline images and all) skips
+  // sending them across again, but not for long: the cache's time is what
+  // "Last synced" shows at the next start.
+  const knownCardCache: Record<string, { snapshot: string; at: number }> = {};
+  const CACHE_REWRITE_MS = 5 * 60 * 1000;
   const cacheSnapshot = (groups: ThreadGroup[], pageToken: string | null) => JSON.stringify([groups, pageToken]);
 
   function saveCardCache(cardId: string, groups: ThreadGroup[], pageToken: string | null): Promise<void> {
     const snapshot = cacheSnapshot(groups, pageToken);
-    if (knownCardCache[cardId] === snapshot) return Promise.resolve();
-    knownCardCache[cardId] = snapshot;
+    const known = knownCardCache[cardId];
+    const now = Date.now();
+    if (known?.snapshot === snapshot && now - known.at < CACHE_REWRITE_MS) return Promise.resolve();
+    knownCardCache[cardId] = { snapshot, at: now };
     return saveCachedCardThreads(cardId, groups, pageToken).catch(e => {
       delete knownCardCache[cardId];
       throw e;
@@ -2990,7 +2994,7 @@ function App() {
         const cached = await getCachedCardThreads(cardId);
         if (stale()) return;
         if (cached && cached.groups.length > 0) {
-          knownCardCache[cardId] = cacheSnapshot(cached.groups, cached.next_page_token);
+          knownCardCache[cardId] = { snapshot: cacheSnapshot(cached.groups, cached.next_page_token), at: cached.cached_at * 1000 };
           // Show cached data immediately
           setCardThreads(cardId, reconcile(cached.groups, { key: "gmail_thread_id" }));
           setCardPageTokens(cardId, cached.next_page_token);
