@@ -379,10 +379,6 @@ export async function pullFromICloud(): Promise<boolean> {
   return invoke("pull_from_icloud");
 }
 
-export async function forceICloudSync(): Promise<void> {
-  return invoke("force_icloud_sync");
-}
-
 // People API (Contacts)
 
 export interface Contact {
@@ -394,10 +390,6 @@ export interface Contact {
 
 export async function fetchContacts(accountId: string): Promise<Contact[]> {
   return invoke("fetch_contacts", { accountId });
-}
-
-export async function searchContacts(accountId: string, query: string): Promise<Contact[]> {
-  return invoke("search_contacts", { accountId, query });
 }
 
 // Google Calendar API

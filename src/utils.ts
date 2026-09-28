@@ -12,7 +12,7 @@ export function normalizeBase64Url(base64: string): string {
 /**
  * Convert base64 (URL-safe or standard) to Uint8Array
  */
-export function base64ToBytes(base64: string): Uint8Array {
+function base64ToBytes(base64: string): Uint8Array {
   const normalized = normalizeBase64Url(base64);
   const binaryStr = atob(normalized);
   return Uint8Array.from(binaryStr, c => c.charCodeAt(0));
@@ -23,14 +23,14 @@ export function base64ToBytes(base64: string): Uint8Array {
 /**
  * Check if two dates are the same day
  */
-export function isSameDay(date1: Date, date2: Date): boolean {
+function isSameDay(date1: Date, date2: Date): boolean {
   return date1.toDateString() === date2.toDateString();
 }
 
 /**
  * Get date label: 'today' | 'yesterday' | 'thisYear' | 'otherYear'
  */
-export function getRelativeDateLabel(date: Date, now: Date = new Date()): 'today' | 'yesterday' | 'thisYear' | 'otherYear' {
+function getRelativeDateLabel(date: Date, now: Date = new Date()): 'today' | 'yesterday' | 'thisYear' | 'otherYear' {
   if (isSameDay(date, now)) return 'today';
   const yesterday = new Date(now);
   yesterday.setDate(yesterday.getDate() - 1);
@@ -217,8 +217,8 @@ export function formatTime(timestamp: number): string {
 }
 
 // Sync status thresholds (in milliseconds)
-export const SYNC_FRESH_MS = 3000;      // "just now" duration
-export const SYNC_STALE_MS = 15 * 60 * 1000;  // 15 minutes
+const SYNC_FRESH_MS = 3000;      // "just now" duration
+const SYNC_STALE_MS = 15 * 60 * 1000;  // 15 minutes
 
 /**
  * Get sync status state: 'fresh' | 'stale' | 'normal'
@@ -270,13 +270,6 @@ export function getInitial(email: string): string {
 }
 
 /**
- * Convert base64 to Blob
- */
-export function base64ToBlob(base64: string, mimeType: string): Blob {
-  return new Blob([base64ToBytes(base64).buffer as ArrayBuffer], { type: mimeType });
-}
-
-/**
  * Extract email address from "Name <email@example.com>" format
  */
 export function extractEmail(fromStr: string): string {
@@ -325,7 +318,7 @@ export function getAvatarColor(str: string): string {
 /**
  * Validate a single email address
  */
-export function isValidEmail(email: string): boolean {
+function isValidEmail(email: string): boolean {
   const trimmed = email.trim();
   if (!trimmed) return false;
   // Basic email regex - allows most valid emails

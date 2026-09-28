@@ -29,7 +29,7 @@ DOMPurify.addHook('afterSanitizeAttributes', (node) => {
   }
 });
 
-export interface MessageBodyProps {
+interface MessageBodyProps {
   body: string;
   cidAttachmentData?: Record<string, string>;
   msgPayloadParts?: any[];
