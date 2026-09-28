@@ -103,13 +103,23 @@ beforeEach(() => {
   threadsByCard["card-b"] = [thread("t-b", "Mail for B")];
 });
 
-let confirmSpy: { mockReturnValue: (v: boolean) => unknown; mockRestore: () => void };
+// WKWebView answers window.confirm with Cancel; the app must ask in its own
+// dialog, which these helpers answer
+let nativeConfirm: { mockRestore: () => void };
 beforeEach(() => {
-  confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(true);
+  nativeConfirm = vi.spyOn(window, "confirm").mockImplementation(() => { throw new Error("window.confirm always cancels in WKWebView"); });
 });
 
+async function answerConfirm(yes: boolean, message?: RegExp | string): Promise<HTMLElement> {
+  const dialog = await screen.findByRole("alertdialog");
+  if (message !== undefined) expect(dialog).toHaveTextContent(message);
+  const buttons = within(dialog).getAllByRole("button");
+  fireEvent.click(yes ? buttons[buttons.length - 1] : within(dialog).getByRole("button", { name: "Cancel" }));
+  return dialog;
+}
+
 afterEach(() => {
-  confirmSpy.mockRestore();
+  nativeConfirm.mockRestore();
   vi.useRealTimers();
   // jsdom has no layout, so no scrollIntoView
   Element.prototype.scrollIntoView = () => {};
@@ -368,6 +378,7 @@ describe("App card deletion", () => {
 
     fireEvent.click(screen.getAllByTitle("Edit query")[1]);
     fireEvent.click(await screen.findByRole("button", { name: /Delete/ }));
+    await answerConfirm(true);
 
     await waitFor(() => expect(screen.queryByText("Unread in B")).not.toBeInTheDocument());
     await waitFor(() => expect(setBadgeCount).toHaveBeenLastCalledWith(undefined));
@@ -453,6 +464,7 @@ describe("App presets", () => {
 
     fireEvent.click(await screen.findByText("Sign in with Google"));
     fireEvent.click(await screen.findByText("Start from scratch"));
+    await answerConfirm(true);
 
     expect(await screen.findByText(/db locked/)).toBeInTheDocument();
     expect(screen.queryByText("How do you email?")).not.toBeInTheDocument();
@@ -536,6 +548,7 @@ describe("App accounts", () => {
     await screen.findByText("Mail for A");
 
     fireEvent.click(screen.getByText("Sign out"));
+    await answerConfirm(true);
 
     const betaCard = await screen.findByRole("region", { name: "Beta email card" });
     expect(betaCard).toHaveClass("collapsed");
@@ -1827,10 +1840,10 @@ describe("App layout removal", () => {
     render(() => <App />);
     await screen.findByText("Mail for A");
     fireEvent.click(screen.getByTitle("Edit query"));
-    confirmSpy.mockReturnValue(false);
     fireEvent.click(await screen.findByRole("button", { name: /Delete/ }));
+    await answerConfirm(false, /Alpha/);
+    await new Promise(r => setTimeout(r, 20));
 
-    expect(confirmSpy).toHaveBeenCalledWith(expect.stringContaining("Alpha"));
     expect(invoke).not.toHaveBeenCalledWith("delete_card", expect.anything());
     expect(screen.getByRole("region", { name: "Alpha email card" })).toBeInTheDocument();
   });
@@ -1841,6 +1854,7 @@ describe("App layout removal", () => {
     await screen.findByText("Mail for A");
     fireEvent.click(screen.getByTitle("Edit query"));
     fireEvent.click(await screen.findByRole("button", { name: /Delete/ }));
+    await answerConfirm(true);
 
     await waitFor(() => expect(invoke).toHaveBeenCalledWith("delete_card", { id: "card-a" }));
   });
@@ -1852,12 +1866,11 @@ describe("App layout removal", () => {
     handlers.delete_card = () => null;
     render(() => <App />);
     fireEvent.click(await screen.findByText("Sign in with Google"));
-    confirmSpy.mockReturnValue(false);
     fireEvent.click(await screen.findByText("Start from scratch"));
-
-    expect(confirmSpy).toHaveBeenCalledWith(expect.stringContaining("1 card"));
     // Deleting a card syncs through iCloud; the user must know it isn't local
-    expect(confirmSpy).toHaveBeenCalledWith(expect.stringContaining("other Macs"));
+    await answerConfirm(false, /1 card.*other Macs/);
+    await new Promise(r => setTimeout(r, 20));
+
     expect(invoke).not.toHaveBeenCalledWith("delete_card", expect.anything());
     expect(screen.getByText("Start from scratch")).toBeInTheDocument();
   });
@@ -1866,12 +1879,43 @@ describe("App layout removal", () => {
     handlers.delete_account = () => null;
     render(() => <App />);
     await screen.findByText("Mail for A");
-    confirmSpy.mockReturnValue(false);
     fireEvent.click(screen.getByText("Sign out"));
+    await answerConfirm(false, /a@x\.com/);
+    await new Promise(r => setTimeout(r, 20));
 
-    expect(confirmSpy).toHaveBeenCalledWith(expect.stringContaining("a@x.com"));
     expect(invoke).not.toHaveBeenCalledWith("delete_account", expect.anything());
     expect(screen.getByText("Mail for A")).toBeInTheDocument();
+  });
+
+  it("archives several threads once confirmed, and none when cancelled", async () => {
+    localStorage.setItem("actionSettings", JSON.stringify({ archive: true }));
+    threadsByCard["card-a"] = [{ ...thread("t-1", "One"), labels: ["INBOX"] }, { ...thread("t-2", "Two"), labels: ["INBOX"] }];
+    handlers.modify_threads = () => null;
+    render(() => <App />);
+    await screen.findByText("One");
+    fireEvent.keyDown(document, { key: "l" });
+    fireEvent.keyDown(document, { key: "x" });
+    fireEvent.keyDown(document, { key: "j" });
+    fireEvent.keyDown(document, { key: "x" });
+
+    fireEvent.click(await screen.findByTitle("Archive"));
+    await answerConfirm(false, /Archive 2 threads/);
+    await new Promise(r => setTimeout(r, 20));
+    expect(invoke).not.toHaveBeenCalledWith("modify_threads", expect.anything());
+
+    fireEvent.click(await screen.findByTitle("Archive"));
+    await answerConfirm(true);
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith("modify_threads", expect.objectContaining({ threadIds: ["t-1", "t-2"] })));
+  });
+
+  it("signs out once confirmed in the app's own dialog", async () => {
+    handlers.delete_account = () => null;
+    render(() => <App />);
+    await screen.findByText("Mail for A");
+    fireEvent.click(screen.getByText("Sign out"));
+    await answerConfirm(true);
+
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith("delete_account", expect.objectContaining({ accountId: "a" })));
   });
 
   it("removes the signed-out account's local drafts", async () => {
@@ -1882,6 +1926,7 @@ describe("App layout removal", () => {
     render(() => <App />);
     await screen.findByText("Mail for A");
     fireEvent.click(screen.getByText("Sign out"));
+    await answerConfirm(true);
 
     await screen.findByText("Mail for B");
     expect(localStorage.getItem("draft_new_a#1")).toBeNull();
@@ -2754,16 +2799,17 @@ describe("App batch reply closing", () => {
 
   it("asks before discarding typed replies and keeps them when cancelled", async () => {
     await openBatchReplyWithText();
-    confirmSpy.mockReturnValue(false);
     fireEvent.keyDown(document, { key: "Escape" });
+    await answerConfirm(false, /1 unsent reply/);
+    await new Promise(r => setTimeout(r, 20));
 
-    expect(confirmSpy).toHaveBeenCalledWith(expect.stringContaining("1 unsent reply"));
     expect(screen.getByPlaceholderText(/^Reply to/)).toHaveValue("A long answer");
   });
 
   it("closes once the user agrees to discard", async () => {
     await openBatchReplyWithText();
     fireEvent.keyDown(document, { key: "Escape" });
+    await answerConfirm(true);
 
     await waitFor(() => expect(screen.queryByPlaceholderText(/^Reply to/)).not.toBeInTheDocument());
   });
@@ -2771,12 +2817,11 @@ describe("App batch reply closing", () => {
   it("asks before an account switch discards typed replies, and stays when cancelled", async () => {
     handlers.get_accounts = () => [account("a", "a@x.com"), account("b", "b@x.com")];
     await openBatchReplyWithText();
-    confirmSpy.mockReturnValue(false);
     fireEvent.click(screen.getByTitle("a@x.com"));
     fireEvent.click(await screen.findByText("b@x.com"));
+    await answerConfirm(false, /1 unsent reply/);
     await new Promise(r => setTimeout(r, 20));
 
-    expect(confirmSpy).toHaveBeenCalledWith(expect.stringContaining("1 unsent reply"));
     expect(screen.getByPlaceholderText(/^Reply to/)).toHaveValue("A long answer");
     expect(invoke).not.toHaveBeenCalledWith("get_cards", { accountId: "b" });
   });

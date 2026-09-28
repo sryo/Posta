@@ -146,6 +146,7 @@ import { pullLayoutWithRetry } from "./app/icloudRestore";
 import { querySuggestions, type QuerySuggestion } from "./app/querySuggestions";
 import { inviteNamesEvent, rsvpSentMessage, type RsvpStatus } from "./app/rsvp";
 import { hasCommandModifier, onActivateKey } from "./shared/keyboard";
+import { askConfirm, ConfirmDialog, confirmOpen, dismissConfirm } from "./app/confirm";
 
 const SESSION_EXPIRED_MESSAGE = "Session expired - sign in again";
 
@@ -1193,6 +1194,7 @@ function App() {
       clearTimeout(queryPreviewTimeout);
     }
     clearInterval(timeUpdateInterval);
+    dismissConfirm();
     window.removeEventListener("focus", handleWindowFocus);
     if (handleResize) window.removeEventListener("resize", handleResize);
     if (handleColorSchemeChange) colorSchemeQuery?.removeEventListener("change", handleColorSchemeChange);
@@ -1275,6 +1277,8 @@ function App() {
 
   // Global keyboard shortcuts
   const handleGlobalKeyDown = (e: KeyboardEvent) => {
+    // The dialog answers its own keys; nothing may act behind it
+    if (confirmOpen()) return;
     const target = e.target as HTMLElement;
     const isTyping = target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable;
 
@@ -1697,7 +1701,7 @@ function App() {
   async function handleStartFresh() {
     const currentCards = cards();
     const count = `${currentCards.length} card${currentCards.length === 1 ? "" : "s"}`;
-    if (currentCards.length > 0 && !confirm(`Delete the restored layout's ${count}? They're also removed from your other Macs that sync through iCloud. This can't be undone.`)) return;
+    if (currentCards.length > 0 && !(await askConfirm(`Delete the restored layout's ${count}? They're also removed from your other Macs that sync through iCloud. This can't be undone.`, "Delete"))) return;
     const results = await Promise.allSettled(currentCards.map(card => deleteCard(card.id)));
     // Cards that failed to delete still exist; keep showing them rather than
     // letting a preset pile new cards on top
@@ -1746,7 +1750,8 @@ function App() {
   async function handleSignOut() {
     const account = selectedAccount();
     if (!account) return;
-    if (!confirm(`Sign out of ${account.email}? Its cards and the drafts saved on this computer are removed.`)) return;
+    if (!(await askConfirm(`Sign out of ${account.email}? Its cards and the drafts saved on this computer are removed.`, "Sign out"))) return;
+    if (selectedAccount()?.id !== account.id) return;
 
     const signedOutCards = cards();
     try {
@@ -2634,13 +2639,14 @@ function App() {
   }
 
   // Closing by hand throws away typed replies, so ask first
-  function confirmDiscardBatchReplies(): boolean {
+  async function confirmDiscardBatchReplies(): Promise<boolean> {
     const unsent = Object.values(batchReplyMessages()).filter(m => m.trim()).length;
-    return unsent === 0 || confirm(`Discard ${unsent} unsent repl${unsent === 1 ? "y" : "ies"}?`);
+    return unsent === 0 || askConfirm(`Discard ${unsent} unsent repl${unsent === 1 ? "y" : "ies"}?`, "Discard");
   }
 
-  function dismissBatchReply() {
-    if (confirmDiscardBatchReplies()) closeBatchReply();
+  async function dismissBatchReply() {
+    const request = batchReplyRequest;
+    if (await confirmDiscardBatchReplies() && request === batchReplyRequest) closeBatchReply();
   }
 
   function updateBatchReplyMessage(threadId: string, message: string) {
@@ -2847,7 +2853,7 @@ function App() {
 
   async function handleDeleteCard(cardId: string) {
     const name = cards().find(c => c.id === cardId)?.name || "Untitled";
-    if (!confirm(`Delete the card "${name}"? This can't be undone.`)) return;
+    if (!(await askConfirm(`Delete the card "${name}"? This can't be undone.`, "Delete"))) return;
     try {
       await deleteCard(cardId);
       setCards(cards().filter(c => c.id !== cardId));
@@ -2925,7 +2931,8 @@ function App() {
 
   async function switchAccount(account: Account) {
     if (selectedAccount()?.id === account.id) return;
-    if (batchReplyOpen() && !confirmDiscardBatchReplies()) return;
+    if (batchReplyOpen() && !(await confirmDiscardBatchReplies())) return;
+    if (selectedAccount()?.id === account.id) return;
 
     closeAccountViews();
     // The banner speaks for the account being left; an expired session
@@ -3625,9 +3632,11 @@ function App() {
     // Confirm destructive bulk actions
     if (threadIds.length > 1 && (action === 'archive' || action === 'trash' || action === 'spam')) {
       const actionText = action === 'trash' ? 'delete' : action === 'spam' ? 'move to spam' : 'archive';
-      if (!confirm(`${actionText.charAt(0).toUpperCase() + actionText.slice(1)} ${threadIds.length} threads?`)) {
+      const verb = actionText.charAt(0).toUpperCase() + actionText.slice(1);
+      if (!(await askConfirm(`${verb} ${threadIds.length} threads?`, verb))) {
         return;
       }
+      if (selectedAccount()?.id !== account.id) return;
     }
 
     const { add: addLabels, remove: removeLabels } = labelChangeFor(action);
@@ -5554,6 +5563,8 @@ function App() {
           </div>
         </div>
       </Show>
+
+      <ConfirmDialog />
     </div >
   );
 }
