@@ -170,23 +170,25 @@ impl CacheDb {
 
     pub fn get_cards(&self, account_id: &str) -> Result<Vec<Card>, CacheError> {
         let conn = self.conn.lock().map_err(|_| CacheError::Lock)?;
-        let mut stmt = conn.prepare(
-            "SELECT id, account_id, name, query, position, collapsed, color, group_by, card_type FROM cards WHERE account_id = ?1 ORDER BY position",
-        )?;
-        let rows = stmt.query_map(params![account_id], |row| {
-            Ok(Card {
-                id: row.get(0)?,
-                account_id: row.get(1)?,
-                name: row.get(2)?,
-                query: row.get(3)?,
-                position: row.get(4)?,
-                collapsed: row.get::<_, i32>(5)? != 0,
-                color: row.get(6)?,
-                group_by: row.get::<_, Option<String>>(7)?.unwrap_or_else(|| "date".to_string()),
-                card_type: row.get::<_, Option<String>>(8)?.unwrap_or_else(|| "email".to_string()),
-            })
-        })?;
+        let mut stmt = conn.prepare(&format!("SELECT {CARD_COLUMNS} FROM cards WHERE account_id = ?1 ORDER BY position"))?;
+        let rows = stmt.query_map(params![account_id], card_from_row)?;
         rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+    }
+
+    pub fn get_card(&self, account_id: &str, card_id: &str) -> Result<Option<Card>, CacheError> {
+        let conn = self.conn.lock().map_err(|_| CacheError::Lock)?;
+        let mut stmt = conn.prepare(&format!("SELECT {CARD_COLUMNS} FROM cards WHERE account_id = ?1 AND id = ?2"))?;
+        stmt.query_row(params![account_id, card_id], card_from_row)
+            .optional()
+            .map_err(Into::into)
+    }
+
+    pub fn card_exists(&self, card_id: &str) -> Result<bool, CacheError> {
+        let conn = self.conn.lock().map_err(|_| CacheError::Lock)?;
+        conn.query_row("SELECT 1 FROM cards WHERE id = ?1", params![card_id], |_| Ok(()))
+            .optional()
+            .map(|row| row.is_some())
+            .map_err(Into::into)
     }
 
     pub fn insert_card(&self, card: &Card) -> Result<(), CacheError> {
@@ -373,11 +375,6 @@ impl CacheDb {
         Ok(())
     }
 
-    pub fn clear_history_id(&self, account_id: &str) -> Result<(), CacheError> {
-        let conn = self.conn.lock().map_err(|_| CacheError::Lock)?;
-        conn.execute("DELETE FROM sync_state WHERE account_id = ?1", params![account_id])?;
-        Ok(())
-    }
 }
 
 fn insert_card_row(conn: &Connection, card: &Card) -> Result<(), CacheError> {
@@ -402,6 +399,22 @@ fn delete_card_rows(conn: &Connection, id: &str) -> Result<(), CacheError> {
     conn.execute("DELETE FROM card_thread_cache WHERE card_id = ?1", params![id])?;
     conn.execute("DELETE FROM card_calendar_cache WHERE card_id = ?1", params![id])?;
     Ok(())
+}
+
+const CARD_COLUMNS: &str = "id, account_id, name, query, position, collapsed, color, group_by, card_type";
+
+fn card_from_row(row: &rusqlite::Row) -> rusqlite::Result<Card> {
+    Ok(Card {
+        id: row.get(0)?,
+        account_id: row.get(1)?,
+        name: row.get(2)?,
+        query: row.get(3)?,
+        position: row.get(4)?,
+        collapsed: row.get::<_, i32>(5)? != 0,
+        color: row.get(6)?,
+        group_by: row.get::<_, Option<String>>(7)?.unwrap_or_else(|| "date".to_string()),
+        card_type: row.get::<_, Option<String>>(8)?.unwrap_or_else(|| "email".to_string()),
+    })
 }
 
 fn account_from_row(row: &rusqlite::Row) -> rusqlite::Result<Account> {
@@ -620,6 +633,19 @@ mod tests {
     }
 
     #[test]
+    fn a_card_is_found_by_id_only_under_its_own_account() {
+        let db = db();
+        let card = Card::new("a".into(), "One".into(), "q1".into(), 0);
+        db.insert_card(&card).unwrap();
+        assert!(db.card_exists(&card.id).unwrap());
+        assert!(!db.card_exists("missing").unwrap());
+        let found = db.get_card("a", &card.id).unwrap().unwrap();
+        assert_eq!((found.id, found.name, found.query), (card.id.clone(), card.name.clone(), card.query.clone()));
+        assert!(db.get_card("b", &card.id).unwrap().is_none());
+        assert!(db.get_card("a", "missing").unwrap().is_none());
+    }
+
+    #[test]
     fn pulled_card_changes_carry_their_position() {
         let db = db();
         let card = Card::new("a".into(), "One".into(), "q1".into(), 0);
@@ -781,13 +807,11 @@ mod tests {
     }
 
     #[test]
-    fn history_id_set_replace_clear() {
+    fn history_id_set_and_replace() {
         let db = db();
         assert!(db.get_history_id("a").unwrap().is_none());
         db.set_history_id("a", "10").unwrap();
         db.set_history_id("a", "11").unwrap();
         assert_eq!(db.get_history_id("a").unwrap().as_deref(), Some("11"));
-        db.clear_history_id("a").unwrap();
-        assert!(db.get_history_id("a").unwrap().is_none());
     }
 }

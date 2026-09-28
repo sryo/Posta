@@ -852,10 +852,8 @@ async fn find_card(state: &AppState, account_id: &str, card_id: &str) -> Result<
             if !db.get_accounts().map_err(|e| e.to_string())?.iter().any(|a| a.id == account_id) {
                 return Err("Account not found".to_string());
             }
-            db.get_cards(&account_id)
+            db.get_card(&account_id, &card_id)
                 .map_err(|e| e.to_string())?
-                .into_iter()
-                .find(|c| c.id == card_id)
                 .ok_or_else(|| "Card not found".to_string())
         })
     })
@@ -1372,10 +1370,8 @@ fn save_card_cache(
     // The database lock is held from the check through the save, so a
     // deletion can't slip in between
     with_db(state, |db| {
-        for account in db.get_accounts().map_err(|e| e.to_string())? {
-            if db.get_cards(&account.id).map_err(|e| e.to_string())?.iter().any(|c| c.id == card_id) {
-                return save(db).map_err(|e| e.to_string());
-            }
+        if db.card_exists(card_id).map_err(|e| e.to_string())? {
+            save(db).map_err(|e| e.to_string())?;
         }
         Ok(())
     })
