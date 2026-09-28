@@ -9,7 +9,12 @@ use std::collections::{HashMap, HashSet};
 pub const HISTORY_EXPIRED: &str = "History ID expired";
 const GMAIL_API_BASE: &str = "https://gmail.googleapis.com/gmail/v1";
 const BATCH_API_ENDPOINT: &str = "https://www.googleapis.com/batch/gmail/v1";
+const GMAIL_UPLOAD_BASE: &str = "https://gmail.googleapis.com/upload/gmail/v1";
+/// The most messages.send accepts through the upload endpoint (35MB)
+const MAX_UPLOAD_BYTES: usize = 35 * 1024 * 1024;
 const PAGE_SIZE: usize = 20;
+/// The API's maximum; its default of 100 takes five times the requests
+const HISTORY_PAGE_SIZE: usize = 500;
 const MAX_BATCH_SIZE: usize = 50; // Gmail allows up to 100, but 50 is safer
 const MAX_INLINE_IMAGE_SIZE: i32 = 100_000; // 100KB max for inline images
 const MAX_INLINE_IMAGES: usize = 3;
@@ -35,6 +40,9 @@ pub struct SearchResult {
 pub struct GmailClient {
     client: reqwest::Client,
     access_token: String,
+    api_base: String,
+    batch_endpoint: String,
+    upload_base: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -166,22 +174,142 @@ pub struct DraftMessage {
     pub thread_id: Option<String>,
 }
 
-/// Turn a non-2xx response into an "API error <status>: <body>" error.
-/// Callers match on that text (e.g. "API error 404", "401").
+#[derive(Deserialize)]
+struct ApiErrorBody {
+    error: ApiError,
+}
+
+#[derive(Deserialize)]
+struct ApiError {
+    message: Option<String>,
+    #[serde(default)]
+    errors: Vec<ApiErrorReason>,
+    #[serde(default)]
+    details: Vec<ApiErrorReason>,
+}
+
+#[derive(Deserialize)]
+struct ApiErrorReason {
+    reason: Option<String>,
+}
+
+/// "API error <status>: <sentence>" for a failed Gmail call. Callers match
+/// on the prefix (e.g. "API error 404", "401 Unauthorized"); the rest is
+/// what the user reads in place of Google's JSON error body.
+fn friendly_gmail_error(status: reqwest::StatusCode, body: &str) -> String {
+    use reqwest::StatusCode;
+    const MAX_DETAIL_CHARS: usize = 200;
+
+    let api_error = serde_json::from_str::<ApiErrorBody>(body).ok().map(|b| b.error);
+    let has_reason = |wanted: &[&str]| {
+        api_error.as_ref().is_some_and(|e| {
+            e.errors
+                .iter()
+                .chain(&e.details)
+                .any(|r| r.reason.as_deref().is_some_and(|reason| wanted.contains(&reason)))
+        })
+    };
+
+    let detail = if has_reason(&["SERVICE_DISABLED", "accessNotConfigured"])
+        || body.contains("has not been used in project")
+    {
+        "Gmail API is not enabled for this app's Google Cloud project. Enable it in the Google Cloud Console, then sign in again.".to_string()
+    } else if status == StatusCode::TOO_MANY_REQUESTS
+        || has_reason(&["rateLimitExceeded", "userRateLimitExceeded", "quotaExceeded", "RATE_LIMIT_EXCEEDED"])
+    {
+        "Too many requests to Gmail. Wait a moment and try again.".to_string()
+    } else if has_reason(&["insufficientPermissions", "ACCESS_TOKEN_SCOPE_INSUFFICIENT"]) {
+        "Posta is missing permission to use Gmail. Sign in again and allow Gmail access.".to_string()
+    } else if status == StatusCode::UNAUTHORIZED {
+        "Gmail access expired. Try again; if this keeps happening, sign in again.".to_string()
+    } else if status == StatusCode::PAYLOAD_TOO_LARGE {
+        "This message is too large to send. Gmail allows up to 25MB of attachments.".to_string()
+    } else if let Some(message) = api_error.and_then(|e| e.message).filter(|m| !m.trim().is_empty()) {
+        message
+    } else if status.is_server_error() {
+        "Gmail is having trouble right now. Try again shortly.".to_string()
+    } else {
+        let trimmed = body.trim();
+        match trimmed.char_indices().nth(MAX_DETAIL_CHARS) {
+            Some((cut, _)) => format!("{}…", &trimmed[..cut]),
+            None => trimmed.to_string(),
+        }
+    };
+    format!("API error {}: {}", status, detail)
+}
+
+/// Refuse a message of `bytes` that messages.send would reject, before
+/// building or uploading it
+fn check_upload_size(bytes: usize) -> Result<(), String> {
+    if bytes <= MAX_UPLOAD_BYTES {
+        return Ok(());
+    }
+    Err(format!(
+        "This message is too large to send ({}MB). Gmail allows up to 25MB of attachments.",
+        bytes.div_ceil(1024 * 1024)
+    ))
+}
+
+/// Size of a message's attachments as sent (base64)
+fn attachment_bytes(message: &OutgoingMessage) -> usize {
+    message.attachments.iter().map(|a| a.data.len()).sum()
+}
+
+/// Turn a non-2xx response into a friendly_gmail_error
 async fn ensure_success(resp: reqwest::Response) -> Result<reqwest::Response, String> {
     if resp.status().is_success() {
         return Ok(resp);
     }
     let status = resp.status();
     let body = resp.text().await.unwrap_or_default();
-    Err(format!("API error {}: {}", status, body))
+    Err(friendly_gmail_error(status, &body))
+}
+
+const CONNECT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+/// How long a response may go without sending data. A connection left
+/// half-open by sleep or a network change otherwise never answers, and the
+/// caller (the mail poll) waits on it forever.
+const READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(45);
+/// Upper bound for a whole request, long enough to upload a 35MB message
+/// over a slow link
+const REQUEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(600);
+
+fn build_http_client(read_timeout: std::time::Duration) -> reqwest::Client {
+    reqwest::Client::builder()
+        .connect_timeout(CONNECT_TIMEOUT)
+        .read_timeout(read_timeout)
+        .timeout(REQUEST_TIMEOUT)
+        .build()
+        .unwrap_or_else(|_| reqwest::Client::new())
+}
+
+/// One client for every GmailClient, so commands reuse pooled connections
+/// instead of each opening (and TLS-handshaking) its own
+fn shared_http_client() -> reqwest::Client {
+    static CLIENT: std::sync::OnceLock<reqwest::Client> = std::sync::OnceLock::new();
+    CLIENT.get_or_init(|| build_http_client(READ_TIMEOUT)).clone()
+}
+
+/// A transport failure in words the user can act on, without the request
+/// URL (it can hold the user's search query)
+fn request_error(e: reqwest::Error) -> String {
+    if e.is_timeout() {
+        "Request timed out: Gmail did not respond. Check your connection and try again.".to_string()
+    } else if e.is_connect() {
+        "Request failed: could not reach Gmail. Check your connection.".to_string()
+    } else {
+        format!("Request failed: {}", e.without_url())
+    }
 }
 
 impl GmailClient {
     pub fn new(access_token: String) -> Self {
         Self {
-            client: reqwest::Client::new(),
+            client: shared_http_client(),
             access_token,
+            api_base: GMAIL_API_BASE.to_string(),
+            batch_endpoint: BATCH_API_ENDPOINT.to_string(),
+            upload_base: GMAIL_UPLOAD_BASE.to_string(),
         }
     }
 
@@ -202,7 +330,7 @@ impl GmailClient {
     ) -> Result<SearchResult, String> {
         let mut url = format!(
             "{}/users/me/threads?q={}&maxResults={}",
-            GMAIL_API_BASE,
+            self.api_base,
             urlencoding::encode(query),
             max_results
         );
@@ -217,7 +345,7 @@ impl GmailClient {
             .bearer_auth(&self.access_token)
             .send()
             .await
-            .map_err(|e| format!("Request failed: {}", e))?;
+            .map_err(request_error)?;
 
         let list: ThreadListResponse = ensure_success(resp)
             .await?
@@ -243,7 +371,7 @@ impl GmailClient {
     }
 
     pub async fn get_thread(&self, thread_id: &str) -> Result<FullThread, String> {
-        let url = format!("{}/users/me/threads/{}?format=full", GMAIL_API_BASE, thread_id);
+        let url = format!("{}/users/me/threads/{}?format=full", self.api_base, thread_id);
 
         let resp = self
             .client
@@ -251,7 +379,7 @@ impl GmailClient {
             .bearer_auth(&self.access_token)
             .send()
             .await
-            .map_err(|e| format!("Request failed: {}", e))?;
+            .map_err(request_error)?;
 
         let resp = ensure_success(resp).await?;
 
@@ -273,7 +401,7 @@ impl GmailClient {
         add_label_ids: Vec<String>,
         remove_label_ids: Vec<String>,
     ) -> Result<(), String> {
-        let url = format!("{}/users/me/threads/{}/modify", GMAIL_API_BASE, thread_id);
+        let url = format!("{}/users/me/threads/{}/modify", self.api_base, thread_id);
 
         let body = ModifyThreadRequest {
             add_label_ids,
@@ -287,7 +415,7 @@ impl GmailClient {
             .json(&body)
             .send()
             .await
-            .map_err(|e| format!("Request failed: {}", e))?;
+            .map_err(request_error)?;
 
         ensure_success(resp).await?;
 
@@ -301,7 +429,7 @@ impl GmailClient {
     ) -> Result<String, String> {
         let url = format!(
             "{}/users/me/messages/{}/attachments/{}",
-            GMAIL_API_BASE, message_id, attachment_id
+            self.api_base, message_id, attachment_id
         );
 
         let resp = self
@@ -310,7 +438,7 @@ impl GmailClient {
             .bearer_auth(&self.access_token)
             .send()
             .await
-            .map_err(|e| format!("Request failed: {}", e))?;
+            .map_err(request_error)?;
 
         let resp = ensure_success(resp).await?;
 
@@ -330,7 +458,7 @@ impl GmailClient {
     async fn get_thread_detail(&self, thread_id: &str) -> Result<Thread, String> {
         let url = format!(
             "{}/users/me/threads/{}?format=full&fields={}",
-            GMAIL_API_BASE, thread_id, THREAD_SUMMARY_FIELDS
+            self.api_base, thread_id, THREAD_SUMMARY_FIELDS
         );
 
         let resp = self
@@ -339,7 +467,7 @@ impl GmailClient {
             .bearer_auth(&self.access_token)
             .send()
             .await
-            .map_err(|e| format!("Request failed: {}", e))?;
+            .map_err(request_error)?;
 
         let resp = ensure_success(resp).await?;
 
@@ -446,6 +574,17 @@ impl GmailClient {
     /// Run GET `paths` (at most MAX_BATCH_SIZE) as one batch request. Returns
     /// each path's JSON body in order, or None where its sub-request failed.
     async fn execute_batch_get(&self, paths: &[String]) -> Result<Vec<Option<String>>, String> {
+        Ok(self
+            .execute_batch(paths)
+            .await?
+            .into_iter()
+            .map(|item| item.filter(|(status, _)| (200..300).contains(status)).map(|(_, body)| body))
+            .collect())
+    }
+
+    /// Run GET `paths` (at most MAX_BATCH_SIZE) as one batch request. Returns
+    /// each path's (status, body) in order, or None where the response lacks it.
+    async fn execute_batch(&self, paths: &[String]) -> Result<Vec<Option<(u16, String)>>, String> {
         let boundary = format!("batch_{}", uuid::Uuid::new_v4().simple());
 
         let mut body = String::new();
@@ -459,18 +598,18 @@ impl GmailClient {
 
         let resp = self
             .client
-            .post(BATCH_API_ENDPOINT)
+            .post(&self.batch_endpoint)
             .bearer_auth(&self.access_token)
             .header("Content-Type", format!("multipart/mixed; boundary={}", boundary))
             .body(body)
             .send()
             .await
-            .map_err(|e| format!("Batch request failed: {}", e))?;
+            .map_err(request_error)?;
 
         if !resp.status().is_success() {
             let status = resp.status();
             let body = resp.text().await.unwrap_or_default();
-            return Err(format!("Batch API error {}: {}", status, body));
+            return Err(format!("Batch {}", friendly_gmail_error(status, &body)));
         }
 
         // Get the response boundary from Content-Type header (must extract before consuming body)
@@ -483,19 +622,20 @@ impl GmailClient {
 
         let resp_body = resp.text().await.map_err(|e| format!("Failed to read response: {}", e))?;
 
-        let mut bodies = vec![None; paths.len()];
+        let mut items = vec![None; paths.len()];
         for response in parse_batch_responses(&resp_body, &resp_boundary) {
-            match response.index {
-                Some(i) if i < bodies.len() && (200..300).contains(&response.status) => {
-                    bodies[i] = Some(response.body.to_string());
-                }
-                _ => tracing::warn!("Batch sub-request failed with status {}", response.status),
+            if !(200..300).contains(&response.status) {
+                tracing::warn!("Batch sub-request failed with status {}", response.status);
+            }
+            if let Some(item) = response.index.and_then(|i| items.get_mut(i)) {
+                *item = Some((response.status, response.body.to_string()));
             }
         }
-        Ok(bodies)
+        Ok(items)
     }
 
     pub async fn send_email(&self, message: &OutgoingMessage<'_>) -> Result<(), String> {
+        check_upload_size(attachment_bytes(message))?;
         self.send_raw(&build_mime_message(message, None), None).await
     }
 
@@ -507,27 +647,39 @@ impl GmailClient {
         message_id: Option<&str>,
         message: &OutgoingMessage<'_>,
     ) -> Result<(), String> {
+        check_upload_size(attachment_bytes(message))?;
         let reply_headers = self.resolve_reply_headers(thread_id, message_id).await;
         let raw = build_mime_message(message, reply_headers.as_ref());
         self.send_raw(&raw, Some(thread_id)).await
     }
 
+    /// Send a raw RFC 5322 message through the upload endpoint, which takes
+    /// it as is (the JSON endpoint needs it base64url'd and accepts far less)
     async fn send_raw(&self, message: &str, thread_id: Option<&str>) -> Result<(), String> {
-        let url = format!("{}/users/me/messages/send", GMAIL_API_BASE);
+        check_upload_size(message.len())?;
+        let url = format!("{}/users/me/messages/send?uploadType=multipart", self.upload_base);
 
-        let mut request_body = serde_json::json!({ "raw": encode_raw_message(message) });
+        let mut metadata = serde_json::json!({});
         if let Some(tid) = thread_id {
-            request_body["threadId"] = serde_json::json!(tid);
+            metadata["threadId"] = serde_json::json!(tid);
         }
+        let boundary = new_boundary("Upload");
+        let mut body = String::with_capacity(message.len() + 512);
+        body.push_str(&format!("--{}\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n", boundary));
+        body.push_str(&metadata.to_string());
+        body.push_str(&format!("\r\n--{}\r\nContent-Type: message/rfc822\r\n\r\n", boundary));
+        body.push_str(message);
+        body.push_str(&format!("\r\n--{}--\r\n", boundary));
 
         let resp = self
             .client
             .post(&url)
             .bearer_auth(&self.access_token)
-            .json(&request_body)
+            .header("Content-Type", format!("multipart/related; boundary=\"{}\"", boundary))
+            .body(body)
             .send()
             .await
-            .map_err(|e| format!("Request failed: {}", e))?;
+            .map_err(request_error)?;
 
         ensure_success(resp).await?;
 
@@ -543,7 +695,7 @@ impl GmailClient {
         thread_id: &str,
         message_id: Option<&str>,
     ) -> Option<(String, String)> {
-        match self.get_thread_metadata(&thread_reply_metadata_url(thread_id)).await {
+        match self.get_thread_metadata(&thread_reply_metadata_url(&self.api_base, thread_id)).await {
             Ok(thread) => reply_headers_from_thread(&thread, message_id),
             Err(e) => {
                 tracing::warn!("Failed to fetch reply headers for thread {}: {}", thread_id, e);
@@ -563,7 +715,7 @@ impl GmailClient {
             .bearer_auth(&self.access_token)
             .send()
             .await
-            .map_err(|e| format!("Request failed: {}", e))?;
+            .map_err(request_error)?;
         ensure_success(resp)
             .await?
             .json()
@@ -573,7 +725,7 @@ impl GmailClient {
 
     /// List all labels for the authenticated user
     pub async fn list_labels(&self) -> Result<Vec<GmailLabel>, String> {
-        let url = format!("{}/users/me/labels", GMAIL_API_BASE);
+        let url = format!("{}/users/me/labels", self.api_base);
 
         let resp = self
             .client
@@ -581,7 +733,7 @@ impl GmailClient {
             .bearer_auth(&self.access_token)
             .send()
             .await
-            .map_err(|e| format!("Request failed: {}", e))?;
+            .map_err(request_error)?;
 
         let resp = ensure_success(resp).await?;
 
@@ -598,7 +750,7 @@ impl GmailClient {
         message: &OutgoingMessage<'_>,
         thread_id: Option<&str>,
     ) -> Result<GmailDraft, String> {
-        let url = format!("{}/users/me/drafts", GMAIL_API_BASE);
+        let url = format!("{}/users/me/drafts", self.api_base);
         self.upsert_draft(self.client.post(&url), message, thread_id).await
     }
 
@@ -608,8 +760,16 @@ impl GmailClient {
         message: &OutgoingMessage<'_>,
         thread_id: Option<&str>,
     ) -> Result<GmailDraft, String> {
-        let url = format!("{}/users/me/drafts/{}", GMAIL_API_BASE, draft_id);
-        self.upsert_draft(self.client.put(&url), message, thread_id).await
+        let url = format!("{}/users/me/drafts/{}", self.api_base, draft_id);
+        match self.upsert_draft(self.client.put(&url), message, thread_id).await {
+            // Sent or discarded from another device while this compose stayed
+            // open; without a new draft the text would never reach Gmail again
+            Err(e) if e.starts_with("API error 404") => {
+                tracing::info!("Draft {} no longer exists, saving as a new draft", draft_id);
+                self.create_draft(message, thread_id).await
+            }
+            result => result,
+        }
     }
 
     async fn upsert_draft(
@@ -640,7 +800,7 @@ impl GmailClient {
             .json(&request_body)
             .send()
             .await
-            .map_err(|e| format!("Request failed: {}", e))?;
+            .map_err(request_error)?;
 
         let resp = ensure_success(resp).await?;
 
@@ -651,7 +811,7 @@ impl GmailClient {
 
     /// Delete a draft
     pub async fn delete_draft(&self, draft_id: &str) -> Result<(), String> {
-        let url = format!("{}/users/me/drafts/{}", GMAIL_API_BASE, draft_id);
+        let url = format!("{}/users/me/drafts/{}", self.api_base, draft_id);
 
         let resp = self
             .client
@@ -659,8 +819,12 @@ impl GmailClient {
             .bearer_auth(&self.access_token)
             .send()
             .await
-            .map_err(|e| format!("Request failed: {}", e))?;
+            .map_err(request_error)?;
 
+        // Already sent or discarded elsewhere
+        if resp.status() == reqwest::StatusCode::NOT_FOUND {
+            return Ok(());
+        }
         ensure_success(resp).await?;
 
         Ok(())
@@ -670,7 +834,7 @@ impl GmailClient {
 
     /// Get the current history ID from the user's profile
     pub async fn get_current_history_id(&self) -> Result<String, String> {
-        let url = format!("{}/users/me/profile", GMAIL_API_BASE);
+        let url = format!("{}/users/me/profile", self.api_base);
 
         let resp = self
             .client
@@ -678,7 +842,7 @@ impl GmailClient {
             .bearer_auth(&self.access_token)
             .send()
             .await
-            .map_err(|e| format!("Request failed: {}", e))?;
+            .map_err(request_error)?;
 
         let resp = ensure_success(resp).await?;
 
@@ -707,9 +871,10 @@ impl GmailClient {
 
         loop {
             let mut url = format!(
-                "{}/users/me/history?startHistoryId={}&historyTypes=messageAdded&historyTypes=messageDeleted&historyTypes=labelAdded&historyTypes=labelRemoved",
-                GMAIL_API_BASE,
-                start_history_id
+                "{}/users/me/history?startHistoryId={}&maxResults={}&historyTypes=messageAdded&historyTypes=messageDeleted&historyTypes=labelAdded&historyTypes=labelRemoved",
+                self.api_base,
+                start_history_id,
+                HISTORY_PAGE_SIZE
             );
 
             if let Some(token) = &page_token {
@@ -722,7 +887,7 @@ impl GmailClient {
                 .bearer_auth(&self.access_token)
                 .send()
                 .await
-                .map_err(|e| format!("Request failed: {}", e))?;
+                .map_err(request_error)?;
 
             if resp.status().as_u16() == 404 {
                 // History ID is too old or invalid - caller should do full sync
@@ -800,11 +965,50 @@ impl GmailClient {
         })
     }
 
+    /// `thread_ids` split into those that still exist and those Gmail no
+    /// longer has (404). Checked with batch requests; a thread whose check
+    /// fails for another reason is checked again on its own, and the call
+    /// fails if that fails too, since a thread wrongly taken for deleted
+    /// would drop out of the user's list.
+    pub async fn split_deleted_threads(&self, thread_ids: &[String]) -> Result<(Vec<String>, Vec<String>), String> {
+        let mut existing = Vec::new();
+        let mut deleted = Vec::new();
+        for chunk in thread_ids.chunks(MAX_BATCH_SIZE) {
+            let paths: Vec<String> = chunk
+                .iter()
+                .map(|id| format!("/gmail/v1/users/me/threads/{}?format=minimal&fields=id", id))
+                .collect();
+            let statuses: Vec<Option<u16>> = match self.execute_batch(&paths).await {
+                Ok(items) => items.into_iter().map(|item| item.map(|(status, _)| status)).collect(),
+                Err(e) => {
+                    tracing::warn!("Batch existence check failed, checking one by one: {}", e);
+                    vec![None; chunk.len()]
+                }
+            };
+            for (thread_id, status) in chunk.iter().zip(statuses) {
+                let exists = match status {
+                    Some(200..=299) => true,
+                    Some(404) => false,
+                    _ => self
+                        .thread_exists(thread_id)
+                        .await
+                        .map_err(|e| format!("Failed to verify deleted thread {}: {}", thread_id, e))?,
+                };
+                if exists {
+                    existing.push(thread_id.clone());
+                } else {
+                    deleted.push(thread_id.clone());
+                }
+            }
+        }
+        Ok((existing, deleted))
+    }
+
     /// Check whether a thread still exists (false when the API returns 404)
-    pub async fn thread_exists(&self, thread_id: &str) -> Result<bool, String> {
+    async fn thread_exists(&self, thread_id: &str) -> Result<bool, String> {
         let url = format!(
             "{}/users/me/threads/{}?format=minimal&fields=id",
-            GMAIL_API_BASE, thread_id
+            self.api_base, thread_id
         );
 
         let resp = self
@@ -813,7 +1017,7 @@ impl GmailClient {
             .bearer_auth(&self.access_token)
             .send()
             .await
-            .map_err(|e| format!("Request failed: {}", e))?;
+            .map_err(request_error)?;
 
         if resp.status().as_u16() == 404 {
             return Ok(false);
@@ -1097,26 +1301,27 @@ fn thread_participants(messages: &[MessageDetail]) -> Vec<String> {
 }
 
 /// A thread's messages with only the headers `header_names`, without bodies
-fn thread_metadata_url(thread_id: &str, header_names: &[&str]) -> String {
+fn thread_metadata_url(api_base: &str, thread_id: &str, header_names: &[&str]) -> String {
     let headers: String = header_names
         .iter()
         .map(|name| format!("&metadataHeaders={}", name))
         .collect();
     format!(
         "{}/users/me/threads/{}?format=metadata{}&fields=id,messages(id,threadId,labelIds,payload/headers)",
-        GMAIL_API_BASE, thread_id, headers
+        api_base, thread_id, headers
     )
 }
 
 /// The headers reply_headers_from_thread needs, so resolving them (on every
 /// draft autosave) does not download bodies
-fn thread_reply_metadata_url(thread_id: &str) -> String {
-    thread_metadata_url(thread_id, &["Message-ID", "References"])
+fn thread_reply_metadata_url(api_base: &str, thread_id: &str) -> String {
+    thread_metadata_url(api_base, thread_id, &["Message-ID", "References"])
 }
 
 /// The headers that find, vet (check_can_react) and thread a reaction's target
-fn reaction_metadata_url(thread_id: &str) -> String {
+fn reaction_metadata_url(api_base: &str, thread_id: &str) -> String {
     thread_metadata_url(
+        api_base,
         thread_id,
         &["Message-ID", "References", "To", "Cc", "List-Id", "List-Unsubscribe", "Precedence"],
     )
@@ -2393,7 +2598,7 @@ impl GmailClient {
         from_email: &str,
         to_email: &str,
     ) -> Result<(), String> {
-        let thread = self.get_thread_metadata(&reaction_metadata_url(thread_id)).await?;
+        let thread = self.get_thread_metadata(&reaction_metadata_url(&self.api_base, thread_id)).await?;
         let target = find_message(&thread, message_id).ok_or("Message to react to was not found in the thread")?;
 
         check_can_react(target, from_email)?;
@@ -2492,6 +2697,9 @@ fn is_mailing_list_message(headers: &[Header]) -> bool {
             || (h.name.eq_ignore_ascii_case("Precedence") && h.value.trim().eq_ignore_ascii_case("list"))
     })
 }
+
+#[cfg(test)]
+mod http_tests;
 
 #[cfg(test)]
 mod tests {
@@ -3095,7 +3303,7 @@ mod tests {
 
     #[test]
     fn reply_headers_come_from_a_metadata_fetch() {
-        let url = thread_reply_metadata_url("t1");
+        let url = thread_reply_metadata_url(GMAIL_API_BASE, "t1");
         assert!(url.starts_with(&format!("{}/users/me/threads/t1?", GMAIL_API_BASE)));
         assert!(url.contains("format=metadata"));
         assert!(!url.contains("format=full"));
@@ -3122,7 +3330,7 @@ mod tests {
 
     #[test]
     fn reaction_target_comes_from_a_metadata_fetch_with_eligibility_headers() {
-        let url = reaction_metadata_url("t1");
+        let url = reaction_metadata_url(GMAIL_API_BASE, "t1");
         assert!(url.starts_with(&format!("{}/users/me/threads/t1?", GMAIL_API_BASE)));
         assert!(url.contains("format=metadata"));
         assert!(!url.contains("format=full"));

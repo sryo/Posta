@@ -742,18 +742,9 @@ async fn sync_threads_incremental_impl(
                     // Verify deletion candidates: a thread that still exists only
                     // lost some messages and must be treated as modified
                     let mut modified_thread_ids = changes.modified_thread_ids;
-                    let mut deleted_thread_ids = Vec::new();
-                    for thread_id in &changes.deleted_thread_ids {
-                        if gmail
-                            .thread_exists(thread_id)
-                            .await
-                            .map_err(|e| format!("Failed to verify deleted thread {}: {}", thread_id, e))?
-                        {
-                            modified_thread_ids.push(thread_id.clone());
-                        } else {
-                            deleted_thread_ids.push(thread_id.clone());
-                        }
-                    }
+                    let (still_existing, mut deleted_thread_ids) =
+                        gmail.split_deleted_threads(&changes.deleted_thread_ids).await?;
+                    modified_thread_ids.extend(still_existing);
 
                     // Batch fetch the modified threads; propagate errors so the
                     // frontend keeps its current data and retries (the history ID
