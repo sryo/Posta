@@ -1209,7 +1209,9 @@ function App() {
         body: string;
       }>("mailto-received", (event) => {
         const data = event.payload;
-        // Populate compose form with mailto data
+        // A mailto link starts its own email; nothing of an open compose
+        // (attachments, reply target) may carry over
+        if (composing()) resetCompose();
         setComposeTo(data.to);
         setComposeCc(data.cc);
         setComposeBcc(data.bcc);

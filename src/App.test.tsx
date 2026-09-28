@@ -13,7 +13,13 @@ vi.mock("@tauri-apps/api/core", () => ({ invoke: (cmd: string, args?: Record<str
 vi.mock("@tauri-apps/api/window", () => ({
   getCurrentWindow: () => ({ setBadgeCount: async () => {}, startDragging: async () => {} }),
 }));
-vi.mock("@tauri-apps/api/event", () => ({ listen: async () => () => {} }));
+const eventListeners: Record<string, (event: { payload: unknown }) => void> = {};
+vi.mock("@tauri-apps/api/event", () => ({
+  listen: async (name: string, handler: (event: { payload: unknown }) => void) => {
+    eventListeners[name] = handler;
+    return () => {};
+  },
+}));
 vi.mock("@tauri-apps/plugin-opener", () => ({ openUrl: async () => {} }));
 type MenuItemOptions = { text?: string; enabled?: boolean; action?: () => void };
 let lastMenu: MenuItemOptions[] = [];
@@ -118,6 +124,31 @@ describe("App attachments", () => {
       return panel as HTMLElement;
     });
     await waitFor(() => expect(compose).toHaveTextContent("report.pdf"));
+  });
+
+  it("opens a mailto link as a new email without the previous compose's attachments", async () => {
+    threadsByCard["card-a"] = [{
+      ...thread("t-a", "Mail for A"),
+      has_attachment: true,
+      attachments: [{
+        message_id: "m1", attachment_id: "att1", filename: "report.pdf",
+        mime_type: "application/pdf", size: 10, inline_data: "cGRm", content_id: null,
+      }],
+    }];
+    render(() => <App />);
+    fireEvent.contextMenu(await screen.findByTitle("report.pdf (10 B)"));
+    await waitFor(() => expect(lastMenu.some(i => i.text === "Forward")).toBe(true));
+    lastMenu.find(i => i.text === "Forward")!.action!();
+    const compose = await waitFor(() => {
+      const panel = document.querySelector(".compose-panel");
+      expect(panel).toHaveTextContent("report.pdf");
+      return panel as HTMLElement;
+    });
+
+    eventListeners["mailto-received"]({ payload: { to: "bo@y.com", cc: "", bcc: "", subject: "Hi", body: "" } });
+
+    await waitFor(() => expect(screen.getByPlaceholderText("Recipients")).toHaveValue("bo@y.com"));
+    expect(compose).not.toHaveTextContent("report.pdf");
   });
 
   it("forwards into a fresh email when compose is still closing", async () => {
