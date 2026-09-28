@@ -1557,6 +1557,54 @@ fn push_part(message: &mut String, boundary: &str, content_type: &str, content: 
     message.push_str("\r\n");
 }
 
+/// Content headers and quoted-printable body of a UTF-8 text part (the part's
+/// Content-Type is `mime_type`)
+fn text_part_content(mime_type: &str, text: &str) -> String {
+    format!(
+        "Content-Type: {}; charset=utf-8\r\nContent-Transfer-Encoding: quoted-printable\r\n\r\n{}",
+        mime_type,
+        encode_quoted_printable(text)
+    )
+}
+
+fn push_text_part(message: &mut String, boundary: &str, mime_type: &str, text: &str) {
+    message.push_str(&format!("--{}\r\n", boundary));
+    message.push_str(&text_part_content(mime_type, text));
+    message.push_str("\r\n");
+}
+
+/// RFC 2045 quoted-printable: 7-bit output in lines of at most 76 characters
+/// (SMTP rejects lines over 998), with line breaks normalized to CRLF
+fn encode_quoted_printable(text: &str) -> String {
+    const MAX_LINE: usize = 76;
+    let mut out = String::with_capacity(text.len() + text.len() / 8);
+    for (i, line) in text.split('\n').enumerate() {
+        if i > 0 {
+            out.push_str("\r\n");
+        }
+        let bytes = line.strip_suffix('\r').unwrap_or(line).as_bytes();
+        let mut line_len = 0;
+        for (j, &b) in bytes.iter().enumerate() {
+            let is_last = j + 1 == bytes.len();
+            let literal = (b'!'..=b'~').contains(&b) && b != b'='
+                || (matches!(b, b' ' | b'\t') && !is_last);
+            let token = if literal {
+                (b as char).to_string()
+            } else {
+                format!("={:02X}", b)
+            };
+            // Leave room for the '=' of a soft line break
+            if line_len + token.len() > MAX_LINE - 1 {
+                out.push_str("=\r\n");
+                line_len = 0;
+            }
+            out.push_str(&token);
+            line_len += token.len();
+        }
+    }
+    out
+}
+
 /// multipart/alternative body with a plain text fallback for an HTML body
 fn push_html_alternative(message: &mut String, html: &str) {
     let alt_boundary = new_boundary("Alt");
@@ -1564,8 +1612,8 @@ fn push_html_alternative(message: &mut String, html: &str) {
         "Content-Type: multipart/alternative; boundary=\"{}\"\r\n\r\n",
         alt_boundary
     ));
-    push_part(message, &alt_boundary, "text/plain; charset=utf-8", &strip_html_tags(html));
-    push_part(message, &alt_boundary, "text/html; charset=utf-8", html);
+    push_text_part(message, &alt_boundary, "text/plain", &strip_html_tags(html));
+    push_text_part(message, &alt_boundary, "text/html", html);
     message.push_str(&format!("--{}--\r\n", alt_boundary));
 }
 
@@ -1596,8 +1644,7 @@ fn build_mime_message(msg: &MimeMessage) -> String {
         if msg.is_html {
             push_html_alternative(&mut message, msg.body);
         } else {
-            message.push_str("Content-Type: text/plain; charset=utf-8\r\n\r\n");
-            message.push_str(msg.body);
+            message.push_str(&text_part_content("text/plain", msg.body));
         }
         return message;
     }
@@ -1612,7 +1659,7 @@ fn build_mime_message(msg: &MimeMessage) -> String {
         message.push_str(&format!("--{}\r\n", boundary));
         push_html_alternative(&mut message, msg.body);
     } else {
-        push_part(&mut message, &boundary, "text/plain; charset=utf-8", msg.body);
+        push_text_part(&mut message, &boundary, "text/plain", msg.body);
     }
 
     for attachment in msg.attachments {
@@ -2330,6 +2377,77 @@ mod tests {
         });
         assert!(message.contains("Content-Type: text/plain; name=\"say \\\"hi\\\".txt\"\r\n"));
         assert!(message.contains("Content-Disposition: attachment; filename=\"say \\\"hi\\\".txt\"\r\n"));
+    }
+
+    /// Independent RFC 2045 quoted-printable decoder for checking encoded bodies
+    fn decode_qp(encoded: &str) -> String {
+        let joined = encoded.replace("=\r\n", "");
+        let bytes = joined.as_bytes();
+        let mut out = Vec::new();
+        let mut i = 0;
+        while i < bytes.len() {
+            if bytes[i] == b'=' {
+                let hex = std::str::from_utf8(&bytes[i + 1..i + 3]).unwrap();
+                out.push(u8::from_str_radix(hex, 16).unwrap());
+                i += 3;
+            } else {
+                out.push(bytes[i]);
+                i += 1;
+            }
+        }
+        String::from_utf8(out).unwrap()
+    }
+
+    /// The body of the part declared by `content_type_line`, up to the next boundary
+    fn part_body<'a>(message: &'a str, content_type_line: &str) -> &'a str {
+        let start = message.find(content_type_line).expect("part present");
+        let headers_end = start + message[start..].find("\r\n\r\n").unwrap() + 4;
+        let rest = &message[headers_end..];
+        let end = rest.find("\r\n--").unwrap_or(rest.len());
+        &rest[..end]
+    }
+
+    fn assert_lines_within_limit(message: &str, limit: usize) {
+        for line in message.split("\r\n") {
+            assert!(line.len() <= limit, "line of {} chars: {:.40}...", line.len(), line);
+        }
+    }
+
+    #[test]
+    fn text_bodies_are_quoted_printable_with_short_lines() {
+        let long_line = "word ".repeat(400);
+        let body = format!("Hola, ¿qué tal? ☕\n{}\nend = 1 \n", long_line.trim_end());
+
+        let plain = build_mime_message(&MimeMessage { to: "x@example.com", body: &body, ..Default::default() });
+        assert!(plain.is_ascii(), "raw 8-bit text in the message");
+        assert_lines_within_limit(&plain, 998);
+        assert!(plain.contains("Content-Type: text/plain; charset=utf-8\r\nContent-Transfer-Encoding: quoted-printable\r\n\r\n"));
+        let encoded = &plain[plain.find("\r\n\r\n").unwrap() + 4..];
+        assert_lines_within_limit(encoded, 76);
+        assert_eq!(decode_qp(encoded), body.replace('\n', "\r\n"));
+
+        let html = format!("<p>{}</p><p>Café</p>", long_line);
+        let attachment = SendAttachment {
+            filename: "a.txt".to_string(),
+            mime_type: "text/plain".to_string(),
+            data: "QUJD".to_string(),
+        };
+        for attachments in [&[][..], std::slice::from_ref(&attachment)] {
+            let message = build_mime_message(&MimeMessage {
+                to: "x@example.com",
+                body: &html,
+                is_html: true,
+                attachments,
+                ..Default::default()
+            });
+            assert!(message.is_ascii());
+            assert_lines_within_limit(&message, 998);
+            let html_part = part_body(&message, "Content-Type: text/html; charset=utf-8\r\n");
+            assert_lines_within_limit(html_part, 76);
+            assert_eq!(decode_qp(html_part), html);
+            let text_part = part_body(&message, "Content-Type: text/plain; charset=utf-8\r\n");
+            assert!(decode_qp(text_part).ends_with("\r\nCafé\r\n"));
+        }
     }
 
     #[test]
