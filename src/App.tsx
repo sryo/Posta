@@ -115,6 +115,7 @@ import { safeGetItem, safeSetItem, safeRemoveItem, safeGetJSON, safeSetJSON } fr
 import { BG_COLORS, GMAIL_OPERATORS, type ActionSettings, type CardColor, type GroupBy } from "./shared/constants";
 import { createUndoableSend } from "./app/undoableSend";
 import { messageBodyHtml } from "./app/messageHtml";
+import { eventTimesFromForm, smartEventDefaults } from "./app/eventForm";
 import { getSmartEventTime, groupCalendarEvents, isUserLabel, mergeThreadGroups, regroupThreads, type CalendarEventGroup } from "./app/grouping";
 
 function App() {
@@ -621,26 +622,8 @@ function App() {
     closing: boolean;
   }
 
-  // Smart defaults: round up to next 30-min interval, end 30 mins later
-  const getSmartEventDefaults = () => {
-    const now = new Date();
-    const startTime = new Date(now);
-    if (now.getMinutes() <= 30) {
-      startTime.setMinutes(30, 0, 0);
-    } else {
-      startTime.setHours(startTime.getHours() + 1, 0, 0, 0);
-    }
-    const endTime = new Date(startTime.getTime() + 30 * 60 * 1000);
-    // Derive the date from startTime so rounding past midnight advances the day
-    return {
-      date: toDateInputString(startTime),
-      startTime: `${String(startTime.getHours()).padStart(2, '0')}:${String(startTime.getMinutes()).padStart(2, '0')}`,
-      endTime: `${String(endTime.getHours()).padStart(2, '0')}:${String(endTime.getMinutes()).padStart(2, '0')}`
-    };
-  };
-
   const defaultEventForm = (): EventFormState => {
-    const defaults = getSmartEventDefaults();
+    const defaults = smartEventDefaults();
     return {
       summary: "", description: "", location: "",
       startDate: defaults.date, startTime: defaults.startTime,
@@ -653,7 +636,7 @@ function App() {
   const [eventForm, setEventForm] = createSignal<EventFormState>(defaultEventForm());
 
   const resetEventFormToNow = () => {
-    const defaults = getSmartEventDefaults();
+    const defaults = smartEventDefaults();
     setEventForm(f => ({ ...f, startDate: defaults.date, startTime: defaults.startTime, endDate: defaults.date, endTime: defaults.endTime }));
   };
   const closeEventForm = () => {
@@ -2043,25 +2026,17 @@ function App() {
       return;
     }
 
+    const times = eventTimesFromForm(form);
+    if ("error" in times) {
+      setEventForm(f => ({ ...f, error: times.error }));
+      return;
+    }
+
     setEventForm(f => ({ ...f, saving: true, error: null }));
 
     const editing = form.editing;
 
     try {
-      let start: number, end: number;
-      if (form.allDay) {
-        const sParts = form.startDate.split('-');
-        start = Date.UTC(parseInt(sParts[0]), parseInt(sParts[1]) - 1, parseInt(sParts[2]), 12, 0, 0);
-
-        const eParts = form.endDate.split('-');
-        end = Date.UTC(parseInt(eParts[0]), parseInt(eParts[1]) - 1, parseInt(eParts[2]), 12, 0, 0);
-      } else {
-        const s = new Date(`${form.startDate}T${form.startTime}`);
-        start = s.getTime();
-        const e = new Date(`${form.endDate}T${form.endTime}`);
-        end = e.getTime();
-      }
-
       const attendeesList = form.attendees
         .split(',')
         .map(s => s.trim())
@@ -2071,8 +2046,8 @@ function App() {
         summary: form.summary,
         description: form.description || null,
         location: form.location || null,
-        startTime: start,
-        endTime: end,
+        startTime: times.start,
+        endTime: times.end,
         allDay: form.allDay,
         attendees: attendeesList.length > 0 ? attendeesList : null,
         recurrence: form.recurrence ? [form.recurrence] : null,
@@ -5230,7 +5205,7 @@ function App() {
             // time the user never chose (e.g. 17:00 in UTC-7), which would be
             // saved verbatim if "All day" gets unchecked. Prefill smart
             // defaults instead.
-            const timeDefaults = getSmartEventDefaults();
+            const timeDefaults = smartEventDefaults();
             setEventForm(f => ({
               ...f,
               summary: event.title || '',
