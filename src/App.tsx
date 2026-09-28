@@ -3692,6 +3692,7 @@ function App() {
   function selectContact(email: string) {
     setComposeTo(completeRecipient(composeTo(), email));
     setShowAutocomplete(false);
+    handleComposeInput();
   }
 
   return (

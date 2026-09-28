@@ -884,6 +884,22 @@ describe("App compose autocomplete", () => {
 
     expect(to).toHaveValue("ana@x.com, c11@y.com");
   });
+
+  it("saves a recipient picked from the suggestions in the draft", async () => {
+    handlers.fetch_contacts = () => [{ resource_name: "people/1", display_name: "Zed", email_addresses: ["zed@y.com"], photo_url: null }];
+    render(() => <App />);
+    await screen.findByText("Mail for A");
+    fireEvent.keyDown(document, { key: "c" });
+    const to = await screen.findByPlaceholderText("Recipients");
+    fireEvent.focus(to);
+    fireEvent.input(to, { target: { value: "ze" } });
+    // Only the pick may save what follows
+    localStorage.clear();
+    fireEvent.mouseDown(await screen.findByText("zed@y.com"));
+
+    const saved = Object.keys(localStorage).filter(k => k.startsWith("draft_new_a")).map(k => JSON.parse(localStorage.getItem(k)!));
+    expect(saved).toEqual([expect.objectContaining({ to: "zed@y.com" })]);
+  });
 });
 
 describe("App compose", () => {
