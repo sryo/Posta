@@ -2263,8 +2263,7 @@ button:disabled:hover {
     transition: opacity 100ms;
 }
 
-.thread:hover .thread-checkbox-wrap,
-.thread.selected {
+.thread:hover .thread-checkbox-wrap {
     background: var(--bg-hover);
 }
 
