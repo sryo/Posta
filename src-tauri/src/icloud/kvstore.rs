@@ -88,13 +88,13 @@ impl ICloudKVStore {
     pub fn load_cards(&self) -> Result<Option<Vec<Card>>, String> {
         // Pull the latest values from iCloud before reading
         let synced = self.backend.synchronize();
-        tracing::info!("iCloud synchronize result: {}", synced);
+        tracing::debug!("iCloud synchronize result: {}", synced);
 
         let cards: Option<Vec<Card>> = self.get_json(CARDS_KEY).map_err(|e| {
             tracing::error!("iCloud load_cards parse error: {}", e);
             e
         })?;
-        tracing::info!("iCloud load_cards: {} cards", cards.as_ref().map_or(0, Vec::len));
+        tracing::debug!("iCloud load_cards: {} cards", cards.as_ref().map_or(0, Vec::len));
         Ok(cards)
     }
 
