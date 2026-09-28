@@ -133,6 +133,7 @@ import { cidImagesToFetch, fetchCidImages } from "./app/cidImages";
 import { sendPending, type PendingSend } from "./app/pendingSend";
 import { parseMailto } from "./app/mailto";
 import { coalesceByKey } from "./app/coalesce";
+import { threadLoadErrorMessage } from "./app/loadErrors";
 import { createDraftSync, draftKey, findLatestDraft, hasDraftContent, markDraftClosed, removeAccountDrafts, sessionDraftKey, type DraftFields } from "./app/drafts";
 import { nextCardFocus, nextItemFocus } from "./app/keyboardNav";
 import { getSmartEventTime, groupCalendarEvents, isUserLabel, mergeThreadGroups, regroupThreads, type CalendarEventGroup } from "./app/grouping";
@@ -3298,7 +3299,8 @@ function App() {
     } catch (e) {
       if (activeThreadId() !== threadId) return;
       console.error("Failed to load thread details", e);
-      setThreadError("Failed to load email. Please try again.");
+      setThreadError(threadLoadErrorMessage(e));
+      noteBackgroundError(account.id, e);
     } finally {
       if (activeThreadId() === threadId) {
         setThreadLoading(false);

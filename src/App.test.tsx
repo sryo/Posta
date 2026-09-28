@@ -1743,3 +1743,21 @@ describe("App thread rows", () => {
     expect(rowOf("Other mail")).toBe(row);
   });
 });
+
+describe("App thread load errors", () => {
+  it("says why a thread could not be opened", async () => {
+    handlers.get_thread_details = () => { throw "API error 404 Not Found: gone"; };
+    render(() => <App />);
+    fireEvent.click(await screen.findByText("Mail for A"));
+    expect(await screen.findByText(/no longer exists/)).toBeInTheDocument();
+  });
+
+  it("offers to sign in again when opening a thread finds the session expired", async () => {
+    handlers.get_thread_details = () => { throw 'Token refresh failed: {"error": "invalid_grant"}'; };
+    render(() => <App />);
+    fireEvent.click(await screen.findByText("Mail for A"));
+    expect(await screen.findByText(/Sign in again to load this email/)).toBeInTheDocument();
+    const banner = document.querySelector(".auth-error") as HTMLElement;
+    expect(within(banner).getByRole("button", { name: "Sign in again" })).toBeInTheDocument();
+  });
+});
