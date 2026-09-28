@@ -1694,7 +1694,8 @@ fn build_mime_message(msg: &MimeMessage) -> String {
 /// Quoted-string for a `name`/`filename` parameter: RFC 2047 encoded when
 /// non-ASCII (widely understood even though not strictly allowed in parameters)
 fn quoted_filename_param(filename: &str) -> String {
-    let value = encode_header_value(filename);
+    let value = sanitize_header_value(filename);
+    let value = if value.is_ascii() { value } else { encoded_word(&value) };
     format!("\"{}\"", value.replace('\\', "\\\\").replace('"', "\\\""))
 }
 
@@ -1724,12 +1725,32 @@ fn sanitize_header_value(value: &str) -> String {
     value.replace("\r\n", " ").replace(['\r', '\n'], " ")
 }
 
-/// RFC 2047 encode a header value when it contains non-ASCII characters
+/// RFC 2047 encode a header value when it contains non-ASCII characters, as
+/// folded encoded-words short enough to keep "Subject: <word>" within 78 columns
 fn encode_header_value(value: &str) -> String {
     let value = sanitize_header_value(value);
     if value.is_ascii() {
         return value;
     }
+    encoded_words(&value).join("\r\n ")
+}
+
+/// UTF-8 "B" encoded-words, each holding whole characters
+fn encoded_words(value: &str) -> Vec<String> {
+    const MAX_WORD_BYTES: usize = 42;
+    let mut words = Vec::new();
+    let mut chunk_start = 0;
+    for (i, c) in value.char_indices() {
+        if i + c.len_utf8() - chunk_start > MAX_WORD_BYTES {
+            words.push(&value[chunk_start..i]);
+            chunk_start = i;
+        }
+    }
+    words.push(&value[chunk_start..]);
+    words.into_iter().map(encoded_word).collect()
+}
+
+fn encoded_word(value: &str) -> String {
     use base64::Engine;
     format!(
         "=?UTF-8?B?{}?=",
@@ -2062,6 +2083,34 @@ mod tests {
         let b64 = &encoded["=?UTF-8?B?".len()..encoded.len() - 2];
         let decoded = base64::engine::general_purpose::STANDARD.decode(b64).unwrap();
         assert_eq!(String::from_utf8(decoded).unwrap(), "Café ☕");
+    }
+
+    fn decode_encoded_words(value: &str) -> String {
+        use base64::Engine;
+        let mut bytes = Vec::new();
+        for word in value.split("\r\n ") {
+            let b64 = word.strip_prefix("=?UTF-8?B?").and_then(|w| w.strip_suffix("?=")).expect("encoded word");
+            let chunk = base64::engine::general_purpose::STANDARD.decode(b64).unwrap();
+            // Each word must hold whole characters (RFC 2047 section 5)
+            assert!(std::str::from_utf8(&chunk).is_ok(), "word splits a character");
+            bytes.extend(chunk);
+        }
+        String::from_utf8(bytes).unwrap()
+    }
+
+    #[test]
+    fn long_non_ascii_header_values_fold_into_short_encoded_words() {
+        let subject = "Reunión de planificación del año próximo — revisión del presupuesto ☕ y más";
+        let encoded = encode_header_value(subject);
+        for word in encoded.split("\r\n ") {
+            assert!(word.len() <= 75, "encoded word of {} chars", word.len());
+        }
+        assert!(encoded.contains("\r\n "));
+        assert_eq!(decode_encoded_words(&encoded), subject);
+
+        let message = build_mime_message(&MimeMessage { to: "x@example.com", subject, body: "b", ..Default::default() });
+        assert!(message.contains("\r\nSubject: =?UTF-8?B?"));
+        assert!(message.lines().all(|l| l.len() <= 78));
     }
 
     #[test]
