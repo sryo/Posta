@@ -91,6 +91,18 @@ struct CalendarListEntry {
     time_zone: Option<String>,
 }
 
+impl From<CalendarListEntry> for CalendarInfo {
+    fn from(c: CalendarListEntry) -> Self {
+        CalendarInfo {
+            id: c.id,
+            name: c.summary.unwrap_or_default(),
+            is_primary: c.primary.unwrap_or(false),
+            access_role: c.access_role.unwrap_or_else(|| "reader".to_string()),
+            timezone: c.time_zone,
+        }
+    }
+}
+
 #[derive(Debug, Deserialize)]
 struct EventsListResponse {
     items: Option<Vec<ApiEvent>>,
@@ -161,6 +173,7 @@ struct CreateEventRequest {
     start: EventDateTimeInput,
     end: EventDateTimeInput,
     attendees: Option<Vec<AttendeeInput>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     recurrence: Option<Vec<String>>,
 }
 
@@ -169,6 +182,9 @@ struct EventDateTimeInput {
     #[serde(rename = "dateTime")]
     date_time: Option<String>,
     date: Option<String>,
+    // Required by the API for recurring events: the zone the rule expands in
+    #[serde(rename = "timeZone", skip_serializing_if = "Option::is_none")]
+    time_zone: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -249,36 +265,27 @@ fn build_event_request(
     location: Option<String>,
     attendees: Option<Vec<String>>,
     recurrence: Option<Vec<String>>,
+    time_zone: Option<&str>,
 ) -> Result<CreateEventRequest, String> {
-    let start_dt = DateTime::<Utc>::from_timestamp(start_time / 1000, (start_time % 1000 * 1_000_000) as u32)
-        .ok_or("Invalid start time")?;
-    let end_dt = DateTime::<Utc>::from_timestamp(end_time / 1000, (end_time % 1000 * 1_000_000) as u32)
-        .ok_or("Invalid end time")?;
+    let start_dt = DateTime::<Utc>::from_timestamp_millis(start_time).ok_or("Invalid start time")?;
+    let end_dt = DateTime::<Utc>::from_timestamp_millis(end_time).ok_or("Invalid end time")?;
 
     let (start, end) = if all_day {
         // The form's end date is inclusive; Google's all-day end date is exclusive
-        let exclusive_end = end_dt + Duration::days(1);
-        (
-            EventDateTimeInput {
-                date: Some(start_dt.format("%Y-%m-%d").to_string()),
-                date_time: None,
-            },
-            EventDateTimeInput {
-                date: Some(exclusive_end.format("%Y-%m-%d").to_string()),
-                date_time: None,
-            },
-        )
+        let exclusive_end = end_dt.checked_add_signed(Duration::days(1)).ok_or("Invalid end time")?;
+        let date = |dt: DateTime<Utc>| EventDateTimeInput {
+            date: Some(dt.format("%Y-%m-%d").to_string()),
+            date_time: None,
+            time_zone: None,
+        };
+        (date(start_dt), date(exclusive_end))
     } else {
-        (
-            EventDateTimeInput {
-                date_time: Some(start_dt.to_rfc3339()),
-                date: None,
-            },
-            EventDateTimeInput {
-                date_time: Some(end_dt.to_rfc3339()),
-                date: None,
-            },
-        )
+        let date_time = |dt: DateTime<Utc>| EventDateTimeInput {
+            date_time: Some(dt.to_rfc3339()),
+            date: None,
+            time_zone: time_zone.map(str::to_string),
+        };
+        (date_time(start_dt), date_time(end_dt))
     };
 
     Ok(CreateEventRequest {
@@ -349,14 +356,39 @@ impl CalendarClient {
             .items
             .unwrap_or_default()
             .into_iter()
-            .map(|c| CalendarInfo {
-                id: c.id,
-                name: c.summary.unwrap_or_default(),
-                is_primary: c.primary.unwrap_or(false),
-                access_role: c.access_role.unwrap_or_else(|| "reader".to_string()),
-                timezone: c.time_zone,
-            })
+            .map(CalendarInfo::from)
             .collect())
+    }
+
+    /// Look up one calendar (accepts "primary"). Best-effort: used to label
+    /// events returned by write calls and to pick a recurrence time zone.
+    async fn calendar_info(&self, calendar_id: &str) -> Option<CalendarInfo> {
+        let url = format!(
+            "{}/users/me/calendarList/{}",
+            CALENDAR_API_BASE,
+            urlencoding::encode(calendar_id)
+        );
+        let result = async {
+            let resp = self
+                .http_client
+                .get(&url)
+                .bearer_auth(&self.access_token)
+                .send()
+                .await
+                .map_err(|e| e.to_string())?;
+            if !resp.status().is_success() {
+                return Err(format!("HTTP {}", resp.status()));
+            }
+            resp.json::<CalendarListEntry>().await.map_err(|e| e.to_string())
+        }
+        .await;
+        match result {
+            Ok(entry) => Some(entry.into()),
+            Err(e) => {
+                tracing::warn!("Failed to look up calendar {}: {}", calendar_id, e);
+                None
+            }
+        }
     }
 
     /// Search events across all calendars
@@ -491,8 +523,14 @@ impl CalendarClient {
             urlencoding::encode(calendar_id)
         );
 
+        let calendar = self.calendar_info(calendar_id).await;
+        let time_zone = recurrence
+            .as_ref()
+            .and(calendar.as_ref())
+            .and_then(|c| c.timezone.as_deref());
         let body = build_event_request(
             summary, description, start_time, end_time, all_day, location, attendees, recurrence,
+            time_zone,
         )?;
 
         let resp = self
@@ -515,9 +553,7 @@ impl CalendarClient {
             .await
             .map_err(|e| format!("Failed to parse created event: {}", e))?;
 
-        // We can use "primary" as calendar name for the returned object since we don't have it easily here, 
-        // or just empty string. It's mostly for display.
-        api_event_to_calendar_event(api_event, calendar_id, "", "owner")
+        written_event(api_event, calendar_id, calendar.as_ref())
             .ok_or_else(|| "Failed to convert created event".to_string())
     }
 
@@ -555,7 +591,8 @@ impl CalendarClient {
             .await
             .map_err(|e| format!("Failed to parse moved event: {}", e))?;
 
-        api_event_to_calendar_event(api_event, destination_calendar_id, "", "owner")
+        let calendar = self.calendar_info(destination_calendar_id).await;
+        written_event(api_event, destination_calendar_id, calendar.as_ref())
             .ok_or_else(|| "Failed to convert moved event".to_string())
     }
 
@@ -589,6 +626,9 @@ impl CalendarClient {
         Ok(())
     }
 
+    /// PATCH, not PUT: a PUT replaces the whole resource and would wipe
+    /// everything the form doesn't send (reminders, color, visibility,
+    /// availability, attachments, recurrence)
     pub async fn update_event(
         &self,
         calendar_id: &str,
@@ -609,13 +649,19 @@ impl CalendarClient {
             urlencoding::encode(event_id)
         );
 
+        let calendar = self.calendar_info(calendar_id).await;
+        let time_zone = recurrence
+            .as_ref()
+            .and(calendar.as_ref())
+            .and_then(|c| c.timezone.as_deref());
         let body = build_event_request(
             summary, description, start_time, end_time, all_day, location, attendees, recurrence,
+            time_zone,
         )?;
 
         let resp = self
             .http_client
-            .put(&url)
+            .patch(&url)
             .bearer_auth(&self.access_token)
             .json(&body)
             .send()
@@ -633,7 +679,7 @@ impl CalendarClient {
             .await
             .map_err(|e| format!("Failed to parse updated event: {}", e))?;
 
-        api_event_to_calendar_event(api_event, calendar_id, "", "owner")
+        written_event(api_event, calendar_id, calendar.as_ref())
             .ok_or_else(|| "Failed to convert updated event".to_string())
     }
 
@@ -865,6 +911,16 @@ fn api_event_to_calendar_event(event: ApiEvent, calendar_id: &str, calendar_name
         response_status,
         can_edit,
     })
+}
+
+/// Convert an event returned by a write call. Without the calendar's list
+/// entry, fall back to the requested id and assume write access (the write
+/// just succeeded).
+fn written_event(event: ApiEvent, calendar_id: &str, calendar: Option<&CalendarInfo>) -> Option<CalendarEvent> {
+    match calendar {
+        Some(c) => api_event_to_calendar_event(event, &c.id, &c.name, &c.access_role),
+        None => api_event_to_calendar_event(event, calendar_id, "", "writer"),
+    }
 }
 
 fn parse_event_datetime(dt: &EventDateTime) -> Option<(i64, bool)> {
@@ -1293,6 +1349,47 @@ mod tests {
         assert!(url("calendar:week status:Cancelled").contains("&showDeleted=true"));
         assert!(!url("calendar:week status:confirmed").contains("showDeleted"));
         assert!(url("calendar:week team sync").contains("&q=team%20sync"));
+    }
+
+    fn request_json(all_day: bool, recurrence: Option<Vec<String>>, time_zone: Option<&str>) -> serde_json::Value {
+        // 2024-12-23 12:00 UTC to 2024-12-24 12:00 UTC, as the form sends all-day dates
+        let start = 1_734_955_200_000;
+        let end = start + 24 * 3600 * 1000;
+        let req = build_event_request(
+            "Title".into(), None, start, end, all_day, None, None, recurrence, time_zone,
+        )
+        .unwrap();
+        serde_json::to_value(req).unwrap()
+    }
+
+    #[test]
+    fn all_day_request_uses_exclusive_end_date() {
+        let json = request_json(true, None, Some("America/New_York"));
+        assert_eq!(json["start"], serde_json::json!({ "date": "2024-12-23", "dateTime": null }));
+        assert_eq!(json["end"], serde_json::json!({ "date": "2024-12-25", "dateTime": null }));
+    }
+
+    #[test]
+    fn timed_request_carries_time_zone_for_recurrence_expansion() {
+        let json = request_json(false, Some(vec!["FREQ=WEEKLY".into()]), Some("America/New_York"));
+        assert_eq!(json["start"]["dateTime"], "2024-12-23T12:00:00+00:00");
+        assert_eq!(json["start"]["timeZone"], "America/New_York");
+        assert_eq!(json["end"]["timeZone"], "America/New_York");
+        assert_eq!(json["recurrence"], serde_json::json!(["RRULE:FREQ=WEEKLY"]));
+
+        let json = request_json(false, Some(vec!["RRULE:FREQ=DAILY".into(), "EXDATE:20241225".into()]), None);
+        assert_eq!(json["recurrence"], serde_json::json!(["RRULE:FREQ=DAILY", "EXDATE:20241225"]));
+        assert!(json["start"].get("timeZone").is_none());
+    }
+
+    #[test]
+    fn request_without_recurrence_leaves_existing_recurrence_alone() {
+        // Updates are PATCHes; a null recurrence would strip a series' rules
+        let json = request_json(false, None, None);
+        assert!(json.get("recurrence").is_none());
+        // Cleared optional fields are sent as null so a PATCH clears them
+        assert!(json["description"].is_null() && json.get("description").is_some());
+        assert!(json.get("attendees").is_some());
     }
 
     #[test]
