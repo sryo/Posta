@@ -975,7 +975,9 @@ function App() {
       setCards(cardList);
       forgetCardState([...before.keys()].filter(id => !kept.has(id)));
       for (const card of cardList) {
-        if (before.get(card.id) !== card.query && !collapsedCards[card.id]) loadCardThreads(card.id);
+        if (before.get(card.id) === card.query || collapsedCards[card.id]) continue;
+        // A changed card's cache holds its old query's threads
+        loadCardThreads(card.id, false, before.has(card.id));
       }
     } catch (e) {
       console.warn("iCloud card pull failed:", e);

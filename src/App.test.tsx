@@ -1835,6 +1835,18 @@ describe("App iCloud cards", () => {
     await waitFor(() => expect(invoke).toHaveBeenCalledWith("fetch_threads_paginated", expect.objectContaining({ cardId: "card-new" })));
   });
 
+  it("fetches a card whose query changed on another Mac instead of showing the old query's cache", async () => {
+    render(() => <App />);
+    await screen.findByText("Mail for A");
+    handlers.pull_from_icloud = () => true;
+    cardsByAccount.a = [{ ...card("card-a", "a", "Alpha"), query: "is:starred" }];
+    invoke.mockClear();
+    fireEvent.focus(window);
+
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith("fetch_threads_paginated", expect.objectContaining({ cardId: "card-a" })));
+    expect(invoke).not.toHaveBeenCalledWith("get_cached_card_threads", expect.anything());
+  });
+
   it("forgets a card deleted on another Mac", async () => {
     const shared = { ...thread("t-s", "In both cards"), labels: ["INBOX"] };
     cardsByAccount.a = [card("card-a", "a", "Alpha"), { ...card("card-b", "a", "Beta"), position: 1 }];
