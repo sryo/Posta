@@ -5130,15 +5130,15 @@ function App() {
           onDelete={async () => {
             const event = activeEvent();
             const account = selectedAccount();
-            const cardId = activeEventCardId();
             if (!event || !account) return;
             try {
               await deleteCalendarEvent(account.id, event.calendar_id, event.id);
-              // Remove event from card's event list
-              if (cardId) {
-                const currentEvents = cardCalendarEvents[cardId] || [];
-                setCardCalendarEvents(cardId, currentEvents.filter(e => e.id !== event.id));
-              }
+              // Every calendar card can be showing the event
+              setCardCalendarEvents(produce(s => {
+                for (const cId of Object.keys(s)) {
+                  s[cId] = s[cId].filter(e => e.id !== event.id);
+                }
+              }));
               showToast('Event deleted');
               closeEvent();
             } catch (e) {
