@@ -122,6 +122,7 @@ impl StubServer {
             client: http,
             api_base: format!("{}/gmail/v1", self.base),
             batch_endpoint: format!("{}/batch/gmail/v1", self.base),
+            upload_base: format!("{}/upload/gmail/v1", self.base),
             ..GmailClient::new("token".into())
         }
     }
@@ -264,6 +265,89 @@ async fn a_deletion_check_that_keeps_failing_fails_the_sync() {
     // Treating an unverified thread as deleted would drop it from the list
     let err = within(server.client().split_deleted_threads(&["t1".to_string()])).await.unwrap_err();
     assert!(err.contains("t1") && err.contains("503"), "{}", err);
+}
+
+/// The parts of a multipart request body as (headers, content)
+fn multipart_parts(request: &StubRequest) -> Vec<(String, String)> {
+    let content_type = request
+        .head
+        .lines()
+        .find_map(|l| {
+            let (k, v) = l.split_once(':')?;
+            k.eq_ignore_ascii_case("content-type").then(|| v.trim().to_string())
+        })
+        .unwrap_or_default();
+    assert!(content_type.starts_with("multipart/related"), "{}", content_type);
+    let boundary = batch_boundary(&content_type).expect("boundary");
+    let body = request.body_text();
+    body.split(&format!("--{}", boundary))
+        .skip(1)
+        .filter(|part| !part.starts_with("--"))
+        .map(|part| {
+            let part = part.strip_prefix("\r\n").unwrap_or(part);
+            let (headers, content) = part.split_once("\r\n\r\n").expect("part headers");
+            (headers.to_string(), content.strip_suffix("\r\n").unwrap_or(content).to_string())
+        })
+        .collect()
+}
+
+#[tokio::test]
+async fn messages_are_sent_through_the_upload_endpoint_as_rfc822() {
+    let server = StubServer::start(|_| Reply::Json(200, r#"{"id":"sent1","threadId":"t9"}"#.into())).await;
+    let gmail = server.client();
+
+    // A few MB of attachment: the JSON endpoint would need it base64url'd
+    // inside JSON and caps request bodies well below Gmail's 25MB limit
+    let attachment = SendAttachment {
+        filename: "big.bin".into(),
+        mime_type: "application/octet-stream".into(),
+        data: "A".repeat(4 * 1024 * 1024),
+    };
+    let attachments = [attachment];
+    let message = OutgoingMessage {
+        to: "bob@example.com",
+        subject: "Files",
+        body: "see attached",
+        attachments: &attachments,
+        ..Default::default()
+    };
+    within(gmail.send_email(&message)).await.unwrap();
+    within(gmail.reply_to_thread("t9", Some("<parent@example.com>"), &message)).await.unwrap();
+
+    let sends: Vec<StubRequest> = server
+        .requests()
+        .into_iter()
+        .filter(|r| r.method == "POST")
+        .collect();
+    assert_eq!(sends.len(), 2);
+    for (send, thread_id) in sends.iter().zip([None, Some("t9")]) {
+        assert_eq!(send.target, "/upload/gmail/v1/users/me/messages/send?uploadType=multipart");
+        let parts = multipart_parts(send);
+        assert_eq!(parts.len(), 2);
+        assert!(parts[0].0.to_ascii_lowercase().contains("application/json"));
+        let metadata: serde_json::Value = serde_json::from_str(&parts[0].1).unwrap();
+        assert_eq!(metadata.get("threadId").and_then(|v| v.as_str()), thread_id);
+        assert!(metadata.get("raw").is_none());
+        assert!(parts[1].0.to_ascii_lowercase().contains("message/rfc822"));
+        assert!(parts[1].1.starts_with("To: bob@example.com\r\n"), "{}", &parts[1].1[..40]);
+        assert!(parts[1].1.contains("filename=\"big.bin\""));
+    }
+    assert!(sends[1].body_text().contains("In-Reply-To: <parent@example.com>"));
+}
+
+#[tokio::test]
+async fn a_message_over_gmails_size_limit_is_refused_before_uploading() {
+    let server = StubServer::start(|_| Reply::Json(200, "{}".into())).await;
+    let attachments = [SendAttachment {
+        filename: "huge.bin".into(),
+        mime_type: "application/octet-stream".into(),
+        data: "A".repeat(MAX_UPLOAD_BYTES + 1),
+    }];
+    let message = OutgoingMessage { to: "bob@example.com", attachments: &attachments, ..Default::default() };
+
+    let err = within(server.client().send_email(&message)).await.unwrap_err();
+    assert!(err.contains("too large"), "{}", err);
+    assert!(server.requests().is_empty());
 }
 
 fn google_error(code: u16, status: &str, reason: &str, message: &str) -> String {

@@ -9,6 +9,9 @@ use std::collections::{HashMap, HashSet};
 pub const HISTORY_EXPIRED: &str = "History ID expired";
 const GMAIL_API_BASE: &str = "https://gmail.googleapis.com/gmail/v1";
 const BATCH_API_ENDPOINT: &str = "https://www.googleapis.com/batch/gmail/v1";
+const GMAIL_UPLOAD_BASE: &str = "https://gmail.googleapis.com/upload/gmail/v1";
+/// The most messages.send accepts through the upload endpoint (35MB)
+const MAX_UPLOAD_BYTES: usize = 35 * 1024 * 1024;
 const PAGE_SIZE: usize = 20;
 const MAX_BATCH_SIZE: usize = 50; // Gmail allows up to 100, but 50 is safer
 const MAX_INLINE_IMAGE_SIZE: i32 = 100_000; // 100KB max for inline images
@@ -37,6 +40,7 @@ pub struct GmailClient {
     access_token: String,
     api_base: String,
     batch_endpoint: String,
+    upload_base: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -283,6 +287,7 @@ impl GmailClient {
             access_token,
             api_base: GMAIL_API_BASE.to_string(),
             batch_endpoint: BATCH_API_ENDPOINT.to_string(),
+            upload_base: GMAIL_UPLOAD_BASE.to_string(),
         }
     }
 
@@ -624,19 +629,35 @@ impl GmailClient {
         self.send_raw(&raw, Some(thread_id)).await
     }
 
+    /// Send a raw RFC 5322 message through the upload endpoint, which takes
+    /// it as is (the JSON endpoint needs it base64url'd and accepts far less)
     async fn send_raw(&self, message: &str, thread_id: Option<&str>) -> Result<(), String> {
-        let url = format!("{}/users/me/messages/send", self.api_base);
-
-        let mut request_body = serde_json::json!({ "raw": encode_raw_message(message) });
-        if let Some(tid) = thread_id {
-            request_body["threadId"] = serde_json::json!(tid);
+        if message.len() > MAX_UPLOAD_BYTES {
+            return Err(format!(
+                "This message is too large to send ({}MB). Gmail allows up to 25MB of attachments.",
+                message.len().div_ceil(1024 * 1024)
+            ));
         }
+        let url = format!("{}/users/me/messages/send?uploadType=multipart", self.upload_base);
+
+        let mut metadata = serde_json::json!({});
+        if let Some(tid) = thread_id {
+            metadata["threadId"] = serde_json::json!(tid);
+        }
+        let boundary = new_boundary("Upload");
+        let mut body = String::with_capacity(message.len() + 512);
+        body.push_str(&format!("--{}\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n", boundary));
+        body.push_str(&metadata.to_string());
+        body.push_str(&format!("\r\n--{}\r\nContent-Type: message/rfc822\r\n\r\n", boundary));
+        body.push_str(message);
+        body.push_str(&format!("\r\n--{}--\r\n", boundary));
 
         let resp = self
             .client
             .post(&url)
             .bearer_auth(&self.access_token)
-            .json(&request_body)
+            .header("Content-Type", format!("multipart/related; boundary=\"{}\"", boundary))
+            .body(body)
             .send()
             .await
             .map_err(request_error)?;
