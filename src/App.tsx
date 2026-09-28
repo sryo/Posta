@@ -1,4 +1,4 @@
-import { batch, createSignal, onMount, onCleanup, Show, For, createMemo, createEffect, createComputed, on, untrack } from "solid-js";
+import { batch, createSignal, onMount, onCleanup, Show, For, Index, createMemo, createEffect, createComputed, on, untrack } from "solid-js";
 import { createStore, produce, reconcile, unwrap } from "solid-js/store";
 import DOMPurify from 'dompurify';
 import { DOMPURIFY_CONFIG } from './components/MessageBody';
@@ -2759,7 +2759,7 @@ function App() {
         if (stale()) return;
         if (cached && cached.groups.length > 0) {
           // Show cached data immediately
-          setCardThreads(cardId, cached.groups);
+          setCardThreads(cardId, reconcile(cached.groups, { key: "gmail_thread_id" }));
           setCardPageTokens(cardId, cached.next_page_token);
           setCardHasMore(cardId, !!cached.next_page_token);
           // cached_at is in seconds (Unix timestamp), convert to milliseconds
@@ -2784,7 +2784,7 @@ function App() {
         // Save merged groups to cache
         await saveCachedCardThreads(cardId, mergedGroups, result.next_page_token);
       } else {
-        setCardThreads(cardId, result.groups);
+        setCardThreads(cardId, reconcile(result.groups, { key: "gmail_thread_id" }));
         // Save to cache
         await saveCachedCardThreads(cardId, result.groups, result.next_page_token);
       }
@@ -2948,7 +2948,7 @@ function App() {
         await saveCachedCardThreads(cardId, result.groups, result.next_page_token);
         return;
       }
-      setCardThreads(cardId, result.groups);
+      setCardThreads(cardId, reconcile(result.groups, { key: "gmail_thread_id" }));
       setCardPageTokens(cardId, result.next_page_token);
       setCardHasMore(cardId, result.has_more);
       await saveCachedCardThreads(cardId, result.groups, result.next_page_token);
@@ -3433,7 +3433,7 @@ function App() {
       updatedCardThreads[cId] = applyThreadAction(groups, threadIds, action, actionRemovesFromCard(action, query));
     }
 
-    setCardThreads(reconcile(updatedCardThreads));
+    setCardThreads(reconcile(updatedCardThreads, { key: "gmail_thread_id" }));
     if (!silent) setActionsWheelOpen(false);
 
     // Clear selection after bulk action
@@ -4060,11 +4060,11 @@ function App() {
                             <Show when={getDisplayGroups(card.id).length === 0 && !(isPreviewingQuery(card.id) && queryPreviewLoading())}>
                               <div class="empty">All clear</div>
                             </Show>
-                            <For each={getDisplayGroups(card.id)}>
+                            <Index each={getDisplayGroups(card.id)}>
                               {(group) => (
                                 <>
-                                  <div class="date-header">{group.label}</div>
-                                  <For each={group.threads}>
+                                  <div class="date-header">{group().label}</div>
+                                  <For each={group().threads}>
                                     {(thread) => {
                                       // Load RSVP status once per invite row (guarded inside fetchRsvpStatus)
                                       createEffect(() => {
@@ -4266,7 +4266,7 @@ function App() {
                                   </For>
                                 </>
                               )}
-                            </For>
+                            </Index>
                             {/* Loading more indicator for infinite scroll */}
                             <Show when={loadingMore[card.id]}>
                               <div class="loading">Loading more...</div>

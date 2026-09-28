@@ -1668,3 +1668,40 @@ describe("App dock badge", () => {
     await waitFor(() => expect(setBadgeCount).toHaveBeenLastCalledWith(2));
   });
 });
+
+describe("App thread rows", () => {
+  const rowOf = (subject: string) => screen.getByText(subject).closest(".thread");
+
+  it("keeps a thread's row when a background refresh brings it back unchanged", async () => {
+    threadsByCard["card-a"] = [thread("t-a", "Mail for A"), thread("t-b", "Other mail")];
+    handlers.sync_threads_incremental = () => ({ modified_threads: [], deleted_thread_ids: [], is_full_sync: true });
+    render(() => <App />);
+    await screen.findByText("Mail for A");
+    const row = rowOf("Other mail");
+    const fetches = () => invoke.mock.calls.filter(([cmd]) => cmd === "fetch_threads_paginated").length;
+    const before = fetches();
+
+    threadsByCard["card-a"] = [thread("t-new", "Brand new"), thread("t-a", "Mail for A"), thread("t-b", "Other mail")];
+    window.dispatchEvent(new Event("focus"));
+    await screen.findByText("Brand new");
+    expect(fetches()).toBe(before + 1);
+
+    expect(rowOf("Other mail")).toBe(row);
+  });
+
+  it("keeps thread rows while the filter narrows the list", async () => {
+    threadsByCard["card-a"] = [thread("t-a", "Mail for A"), thread("t-b", "Other mail")];
+    render(() => <App />);
+    await screen.findByText("Mail for A");
+    const row = rowOf("Other mail");
+
+    fireEvent.keyDown(document, { key: "/" });
+    const filter = await screen.findByPlaceholderText(/Filter/i);
+    fireEvent.input(filter, { target: { value: "o" } });
+    await waitFor(() => expect(rowOf("Other mail")).not.toBeNull());
+    fireEvent.input(filter, { target: { value: "ot" } });
+    await waitFor(() => expect(screen.queryByText("Mail for A")).not.toBeInTheDocument());
+
+    expect(rowOf("Other mail")).toBe(row);
+  });
+});
