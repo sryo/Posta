@@ -2230,6 +2230,8 @@ mod tests {
     fn body_text_decodes_unpadded_base64_and_non_utf8() {
         let msg = message_with_parts(vec![part("text/plain", Some(b64url(b"ab")), None)]);
         assert_eq!(extract_body_text_from_message(&msg).as_deref(), Some("ab"));
+        let msg = message_with_parts(vec![part("text/plain", Some("YWI=".to_string()), None)]);
+        assert_eq!(extract_body_text_from_message(&msg).as_deref(), Some("ab"));
 
         // ISO-8859-1 "caf\xe9" must not make the whole body disappear
         let msg = message_with_parts(vec![part("text/plain", Some(b64url(b"caf\xe9 ok")), None)]);
@@ -2311,13 +2313,18 @@ mod tests {
 
     #[test]
     fn parse_reaction_finds_nested_reaction_part() {
+        // mixed > related > alternative > reaction
         let mut msg = message_with_parts(vec![part(
-            "multipart/alternative",
+            "multipart/related",
             None,
-            Some(vec![
-                part("text/plain", Some(b64url(b"Reacted with x")), None),
-                reaction_part("{\"version\":1,\"emoji\":\"\u{1F44D}\"}"),
-            ]),
+            Some(vec![part(
+                "multipart/alternative",
+                None,
+                Some(vec![
+                    part("text/plain", Some(b64url(b"Reacted with x")), None),
+                    reaction_part("{\"version\":1,\"emoji\":\"\u{1F44D}\"}"),
+                ]),
+            )]),
         )]);
         msg.payload.as_mut().unwrap().headers = Some(vec![
             header("From", "Bob <bob@example.com>"),
