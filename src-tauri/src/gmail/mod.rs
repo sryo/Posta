@@ -370,7 +370,7 @@ impl GmailClient {
             .await
             .map_err(|e| format!("Failed to parse thread: {}", e))?;
 
-        self.thread_detail_to_thread(detail).await
+        Ok(self.thread_detail_to_thread(detail).await)
     }
 
     /// Batch fetch thread details for multiple thread IDs
@@ -458,78 +458,23 @@ impl GmailClient {
         }
 
         // Get the response boundary from Content-Type header (must extract before consuming body)
-        let resp_boundary: String = resp
+        let resp_boundary = resp
             .headers()
             .get("content-type")
             .and_then(|v| v.to_str().ok())
-            .unwrap_or("")
-            .split("boundary=")
-            .nth(1)
-            .map(|b| b.trim_matches('"').to_string())
+            .and_then(batch_boundary)
             .ok_or("Missing boundary in response")?;
 
         let resp_body = resp.text().await.map_err(|e| format!("Failed to read response: {}", e))?;
 
-        self.parse_batch_response(&resp_body, &resp_boundary).await
-    }
-
-    /// Parse a batch response and extract thread details
-    async fn parse_batch_response(&self, body: &str, boundary: &str) -> Result<Vec<Thread>, String> {
         let mut threads = Vec::new();
-        let delimiter = format!("--{}", boundary);
-
-        // Split by boundary, skip first empty part and last closing boundary
-        let parts: Vec<&str> = body.split(&delimiter).collect();
-
-        for part in parts.iter().skip(1) {
-            // Skip the closing boundary marker
-            if part.trim() == "--" || part.trim().is_empty() {
-                continue;
-            }
-
-            // Find the JSON body (after double newline in HTTP response)
-            // Format: headers\r\n\r\nHTTP/1.1 200 OK\r\n...headers...\r\n\r\n{json}
-            if let Some(json_start) = part.find("\r\n\r\n{") {
-                let json_part = &part[json_start + 4..]; // Skip \r\n\r\n
-                if let Some(json_end) = json_part.rfind('}') {
-                    let json_str = &json_part[..=json_end];
-
-                    match serde_json::from_str::<ThreadDetail>(json_str) {
-                        Ok(detail) => {
-                            if let Ok(thread) = self.thread_detail_to_thread(detail).await {
-                                threads.push(thread);
-                            }
-                        }
-                        Err(e) => {
-                            tracing::warn!("Failed to parse thread from batch: {}", e);
-                        }
-                    }
-                }
-            } else if let Some(json_start) = part.find("\n\n{") {
-                // Try Unix-style line endings
-                let json_part = &part[json_start + 3..];
-                if let Some(json_end) = json_part.rfind('}') {
-                    let json_str = &json_part[..=json_end];
-
-                    match serde_json::from_str::<ThreadDetail>(json_str) {
-                        Ok(detail) => {
-                            if let Ok(thread) = self.thread_detail_to_thread(detail).await {
-                                threads.push(thread);
-                            }
-                        }
-                        Err(e) => {
-                            tracing::warn!("Failed to parse thread from batch: {}", e);
-                        }
-                    }
-                }
-            }
+        for detail in parse_batch_body(&resp_body, &resp_boundary) {
+            threads.push(self.thread_detail_to_thread(detail).await);
         }
-
         Ok(threads)
     }
 
-    /// Convert ThreadDetail to Thread (extracted from get_thread_detail for reuse)
-    async fn thread_detail_to_thread(&self, detail: ThreadDetail) -> Result<Thread, String> {
+    async fn thread_detail_to_thread(&self, detail: ThreadDetail) -> Thread {
         let messages = detail.messages.unwrap_or_default();
         let latest_msg = messages.last();
 
@@ -639,7 +584,7 @@ impl GmailClient {
 
         let has_attachment = !attachments.is_empty();
 
-        Ok(Thread {
+        Thread {
             gmail_thread_id: detail.id,
             account_id: String::new(),
             subject,
@@ -651,7 +596,7 @@ impl GmailClient {
             has_attachment,
             attachments,
             calendar_event,
-        })
+        }
     }
 
     /// Send an email (with optional attachments)
@@ -1286,6 +1231,36 @@ pub struct HistoryChanges {
     pub deleted_thread_ids: Vec<String>,
     pub deleted_message_ids: Vec<String>,
     pub new_history_id: String,
+}
+
+/// The `boundary` parameter of a multipart Content-Type header value
+fn batch_boundary(content_type: &str) -> Option<String> {
+    content_type.split(';').find_map(|param| {
+        let (key, value) = param.split_once('=')?;
+        key.trim()
+            .eq_ignore_ascii_case("boundary")
+            .then(|| value.trim().trim_matches('"').to_string())
+    })
+}
+
+/// Thread details from a Gmail batch response. Each part wraps an HTTP
+/// response whose JSON body follows the first blank line after the status
+/// line; sub-requests that failed (e.g. 429) carry an error body and are
+/// skipped so the caller can retry them.
+fn parse_batch_body(body: &str, boundary: &str) -> Vec<ThreadDetail> {
+    let delimiter = format!("--{}", boundary);
+    body.split(&delimiter)
+        .skip(1)
+        .filter_map(|part| {
+            let json_start = part.find("\r\n\r\n{").map(|i| i + 4)
+                .or_else(|| part.find("\n\n{").map(|i| i + 2))?;
+            let json_part = &part[json_start..];
+            let json_str = &json_part[..=json_part.rfind('}')?];
+            serde_json::from_str::<ThreadDetail>(json_str)
+                .map_err(|e| tracing::warn!("Failed to parse thread from batch: {}", e))
+                .ok()
+        })
+        .collect()
 }
 
 fn extract_email_address(from: &str) -> String {
@@ -2322,5 +2297,39 @@ mod tests {
             detail("4", &[], "me@example.com"),
         ];
         assert_eq!(thread_participants(&messages), vec!["a@example.com", "me@example.com"]);
+    }
+
+    #[test]
+    fn batch_body_parses_crlf_and_lf_parts_and_skips_errors() {
+        let body = concat!(
+            "--batch_x\r\n",
+            "Content-Type: application/http\r\n",
+            "Content-ID: <response-item0>\r\n\r\n",
+            "HTTP/1.1 200 OK\r\n",
+            "Content-Type: application/json; charset=UTF-8\r\n\r\n",
+            "{\"id\": \"t1\", \"messages\": []}\r\n",
+            "--batch_x\n",
+            "Content-Type: application/http\n\n",
+            "HTTP/1.1 200 OK\n",
+            "Content-Type: application/json\n\n",
+            "{\"id\": \"t2\"}\n",
+            "--batch_x\r\n",
+            "Content-Type: application/http\r\n\r\n",
+            "HTTP/1.1 429 Too Many Requests\r\n\r\n",
+            "{\"error\": {\"code\": 429}}\r\n",
+            "--batch_x--\r\n",
+        );
+        let ids: Vec<String> = parse_batch_body(body, "batch_x").into_iter().map(|d| d.id).collect();
+        assert_eq!(ids, vec!["t1", "t2"]);
+    }
+
+    #[test]
+    fn batch_boundary_ignores_trailing_parameters() {
+        assert_eq!(
+            batch_boundary("multipart/mixed; boundary=batch_abc; charset=UTF-8").as_deref(),
+            Some("batch_abc")
+        );
+        assert_eq!(batch_boundary("multipart/mixed; boundary=\"batch_q\"").as_deref(), Some("batch_q"));
+        assert_eq!(batch_boundary("application/json"), None);
     }
 }
