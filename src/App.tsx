@@ -2524,6 +2524,14 @@ function App() {
       await deleteCard(cardId);
       setCards(cards().filter(c => c.id !== cardId));
       setEditingCardId(null);
+      // Its threads would otherwise still count toward the dock badge
+      setCardThreads(produce(s => { delete s[cardId]; }));
+      setCardCalendarEvents(produce(s => { delete s[cardId]; }));
+      if (focusedCardId() === cardId) {
+        setFocusedCardId(null);
+        setFocusedThreadIndex(-1);
+        setFocusedEventIndex(-1);
+      }
       // Clean up collapsed state
       const { [cardId]: _, ...remainingCollapsed } = { ...collapsedCards };
       saveCollapsedState(remainingCollapsed);

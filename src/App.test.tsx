@@ -10,8 +10,9 @@ const invoke = vi.fn(async (cmd: string, args: Record<string, unknown> = {}) => 
 });
 
 vi.mock("@tauri-apps/api/core", () => ({ invoke: (cmd: string, args?: Record<string, unknown>) => invoke(cmd, args) }));
+const setBadgeCount = vi.fn(async (_count?: number) => {});
 vi.mock("@tauri-apps/api/window", () => ({
-  getCurrentWindow: () => ({ setBadgeCount: async () => {}, startDragging: async () => {} }),
+  getCurrentWindow: () => ({ setBadgeCount: (count?: number) => setBadgeCount(count), startDragging: async () => {} }),
 }));
 const eventListeners: Record<string, (event: { payload: unknown }) => void> = {};
 vi.mock("@tauri-apps/api/event", () => ({
@@ -293,6 +294,24 @@ describe("App mailto links", () => {
     await waitFor(() => expect(eventListeners["mailto-received"]).toBeDefined());
     eventListeners["mailto-received"]({ payload: { to: "bo@y.com", cc: "", bcc: "", subject: "Hi", body: "" } });
     await waitFor(() => expect(screen.getByPlaceholderText("Recipients")).toHaveValue("bo@y.com"));
+  });
+});
+
+describe("App card deletion", () => {
+  it("stops counting a deleted card's unread threads in the dock badge", async () => {
+    cardsByAccount.a = [card("card-a", "a", "Alpha"), { ...card("card-b", "a", "Beta"), position: 1 }];
+    threadsByCard["card-a"] = [thread("t-a", "Mail for A")];
+    threadsByCard["card-b"] = [{ ...thread("t-b", "Unread in B"), unread_count: 1 }];
+    handlers.delete_card = () => null;
+    render(() => <App />);
+    await screen.findByText("Unread in B");
+    await waitFor(() => expect(setBadgeCount).toHaveBeenLastCalledWith(1));
+
+    fireEvent.click(screen.getAllByTitle("Edit query")[1]);
+    fireEvent.click(await screen.findByRole("button", { name: /Delete/ }));
+
+    await waitFor(() => expect(screen.queryByText("Unread in B")).not.toBeInTheDocument());
+    await waitFor(() => expect(setBadgeCount).toHaveBeenLastCalledWith(undefined));
   });
 });
 
