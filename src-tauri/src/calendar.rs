@@ -265,10 +265,12 @@ fn send_updates(is_self_creator: bool) -> &'static str {
     if is_self_creator { "all" } else { "none" }
 }
 
-// Round-trips every attendee field: the RSVP PATCH replaces the whole
-// attendees array, so fields not echoed back would be wiped for everyone
+// Round-trips every attendee field, including ones not named here: the RSVP
+// PATCH replaces the whole attendees array, so fields not echoed back would
+// be wiped for everyone. Google leaves out the address of some guests.
 #[derive(Debug, Deserialize, Serialize, Clone, Default)]
 struct CalEventAttendee {
+    #[serde(default, skip_serializing_if = "String::is_empty")]
     email: String,
     #[serde(rename = "displayName", skip_serializing_if = "Option::is_none")]
     display_name: Option<String>,
@@ -284,6 +286,8 @@ struct CalEventAttendee {
     additional_guests: Option<i64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     resource: Option<bool>,
+    #[serde(flatten)]
+    other: serde_json::Map<String, serde_json::Value>,
 }
 
 pub struct CalendarClient {
@@ -1630,9 +1634,39 @@ mod tests {
         let json = serde_json::json!({
             "email": "a@x.com", "displayName": "A", "responseStatus": "accepted",
             "optional": true, "comment": "late", "additionalGuests": 2, "resource": false,
+            "id": "profile-1", "organizer": false,
         });
         let parsed: CalEventAttendee = serde_json::from_value(json.clone()).unwrap();
         assert_eq!(serde_json::to_value(parsed).unwrap(), json);
+    }
+
+    #[tokio::test]
+    async fn rsvp_keeps_guests_google_lists_without_an_address() {
+        // Google omits the address of some guests; the PATCH must still parse
+        // the list and send those guests back, or they'd be dropped
+        let server = StubServer::start(|method, target| match method {
+            "PATCH" => (200, "{}".to_string()),
+            _ if target.contains("iCalUID=") => (
+                200,
+                serde_json::json!({ "items": [{ "id": "e1", "attendees": [
+                    { "email": "me@x.com", "responseStatus": "needsAction" },
+                    { "id": "guest-7", "displayName": "No address", "responseStatus": "accepted" },
+                ] }] })
+                .to_string(),
+            ),
+            _ => (200, serde_json::json!({ "items": [] }).to_string()),
+        })
+        .await;
+        server.client().rsvp_calendar_event("me@x.com", "uid-1", "accepted").await.unwrap();
+        let patch = server.requests().into_iter().find(|(m, _, _)| m == "PATCH").expect("no PATCH sent");
+        let body: serde_json::Value = serde_json::from_str(&patch.2).unwrap();
+        assert_eq!(
+            body["attendees"],
+            serde_json::json!([
+                { "email": "me@x.com", "responseStatus": "accepted" },
+                { "id": "guest-7", "displayName": "No address", "responseStatus": "accepted" },
+            ])
+        );
     }
 
     type Handler = dyn Fn(&str, &str) -> (u16, String) + Send + Sync;
