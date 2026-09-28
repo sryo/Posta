@@ -375,23 +375,9 @@ fn push_cards_to_icloud(icloud: &ICloudSync, state: &AppState, deleted_card: Opt
         (accounts, cards)
     };
 
-    let backup = match icloud.load_backup() {
-        Ok(Some(backup)) => {
-            record.seen_backup = true;
-            backup
-        }
-        // No device has pushed yet, as far as this one knows
-        Ok(None) if !record.seen_backup => Backup::default(),
-        Ok(None) => {
-            tracing::warn!("iCloud card backup is unavailable; card changes stay on this device for now");
-            return;
-        }
-        Err(e) => {
-            tracing::warn!("iCloud card backup is unreadable, not overwriting it: {}", e);
-            return;
-        }
+    let Some(backup) = backup_to_push_onto(icloud.load_backup(), &mut record) else {
+        return;
     };
-
     let Some((backup, new_record)) = plan_push(&accounts, local_cards, backup, &record, now_ms()) else {
         return;
     };
@@ -402,6 +388,31 @@ fn push_cards_to_icloud(icloud: &ICloudSync, state: &AppState, deleted_card: Opt
     match icloud.store.sync_cards(&backup.cards) {
         Ok(()) => icloud.save_record(&new_record),
         Err(e) => tracing::warn!("iCloud card sync failed: {}", e),
+    }
+}
+
+/// The backup a push merges into, or None when the backup must not be
+/// overwritten. Marks the record as having seen a backup, which only sticks
+/// once the push is written.
+fn backup_to_push_onto(loaded: Result<Option<Backup>, String>, record: &mut SyncRecord) -> Option<Backup> {
+    match loaded {
+        Ok(Some(backup)) => {
+            record.seen_backup = true;
+            Some(backup)
+        }
+        // No device has pushed yet, as far as this one knows
+        Ok(None) if !record.seen_backup => {
+            record.seen_backup = true;
+            Some(Backup::default())
+        }
+        Ok(None) => {
+            tracing::warn!("iCloud card backup is unavailable; card changes stay on this device for now");
+            None
+        }
+        Err(e) => {
+            tracing::warn!("iCloud card backup is unreadable, not overwriting it: {}", e);
+            None
+        }
     }
 }
 
@@ -2141,6 +2152,27 @@ mod tests {
         let b = HashMap::from([("new".to_string(), NOW - 1), ("other".to_string(), NOW)]);
         let merged = merged_tombstones(&a, &b, NOW);
         assert_eq!(merged, HashMap::from([("new".to_string(), NOW - 1), ("other".to_string(), NOW)]));
+    }
+
+    #[test]
+    fn push_never_overwrites_a_backup_it_cannot_read() {
+        let mut seen = synced(&[]);
+        assert_eq!(super::backup_to_push_onto(Ok(None), &mut seen), None, "iCloud unavailable after a backup was seen");
+        assert_eq!(super::backup_to_push_onto(Err("bad json".into()), &mut seen), None);
+        assert_eq!(super::backup_to_push_onto(Err("bad json".into()), &mut SyncRecord::default()), None);
+
+        let b = backup(vec![owned_card("c", "a1")], &[], &[]);
+        let mut fresh = SyncRecord::default();
+        assert_eq!(super::backup_to_push_onto(Ok(Some(b.clone())), &mut fresh), Some(b));
+        assert!(fresh.seen_backup);
+    }
+
+    #[test]
+    fn the_first_push_starts_the_backup_and_later_empty_reads_are_not_trusted() {
+        let mut record = SyncRecord::default();
+        assert_eq!(super::backup_to_push_onto(Ok(None), &mut record), Some(Backup::default()));
+        assert!(record.seen_backup);
+        assert_eq!(super::backup_to_push_onto(Ok(None), &mut record), None);
     }
 
     #[test]
