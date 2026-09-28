@@ -191,6 +191,30 @@ describe("ThreadView keyboard shortcuts", () => {
     expect(container.querySelector(".thread-overlay.closing")).toBeNull();
   });
 
+  it("with the label drawer open, Escape closes only the drawer and other shortcuts are ignored", () => {
+    const onCloseLabelDrawer = vi.fn();
+    const { props, container } = renderThread({ labelDrawerOpen: true, onCloseLabelDrawer });
+    for (const key of ["a", "d", "#", "s", "u", "i", "!", "r", "f", "j", "k"]) {
+      fireEvent.keyDown(document, { key });
+    }
+    expect(props.onAction).not.toHaveBeenCalled();
+    expect(props.onReply).not.toHaveBeenCalled();
+    expect(props.onForward).not.toHaveBeenCalled();
+    expect(props.onFocusChange).not.toHaveBeenCalled();
+
+    fireEvent.keyDown(document, { key: "Escape" });
+    expect(onCloseLabelDrawer).toHaveBeenCalledTimes(1);
+    expect(container.querySelector(".thread-overlay.closing")).toBeNull();
+  });
+
+  it("toggles the label drawer shut on a second 'l'", () => {
+    const onCloseLabelDrawer = vi.fn();
+    const { props } = renderThread({ labelDrawerOpen: true, onCloseLabelDrawer });
+    fireEvent.keyDown(document, { key: "l" });
+    expect(onCloseLabelDrawer).toHaveBeenCalledTimes(1);
+    expect(props.onOpenLabels).not.toHaveBeenCalled();
+  });
+
   it("forwards the focused message on 'f'", () => {
     const { props } = renderThread({ focusedMessageIndex: 0 });
     fireEvent.keyDown(document, { key: "f" });
@@ -366,6 +390,53 @@ describe("ThreadView attachments", () => {
     expect(props.onOpenAttachment).toHaveBeenCalledWith("m0", "att-1", "invoice.pdf", "application/pdf", undefined);
   });
 
+  it("keeps same-named attachments apart when Gmail hands out fresh attachment ids", () => {
+    const thread = makeThread([{ from: "Alice <alice@example.com>", body: "" }]);
+    const image = (id: string) => ({ filename: "image.png", mimeType: "image/png", body: { attachmentId: id, size: 10 } });
+    thread.messages[0].payload = {
+      ...thread.messages[0].payload,
+      mimeType: "multipart/mixed",
+      parts: [{ mimeType: "text/plain", body: { data: b64("hi") } }, image("detail-1"), image("detail-2")],
+    };
+    const listed = (id: string, data: string) => ({
+      message_id: "m0", attachment_id: id, filename: "image.png", mime_type: "image/png", size: 10, inline_data: data, content_id: null,
+    });
+    const { container, props } = renderThread({
+      thread,
+      focusedMessageIndex: 0,
+      threadAttachments: [listed("list-1", "Rmlyc3Q"), listed("list-2", "U2Vjb25k")],
+    });
+    const thumbs = container.querySelectorAll<HTMLElement>(".attachment-thumb");
+    expect(thumbs).toHaveLength(2);
+    fireEvent.click(thumbs[0]);
+    fireEvent.click(thumbs[1]);
+    const inlineData = (props.onOpenAttachment as any).mock.calls.map((c: unknown[]) => c[4]);
+    expect(inlineData).toEqual(["Rmlyc3Q", "U2Vjb25k"]);
+  });
+
+  it("pairs same-named attachments by attachment id when the ids still match", () => {
+    const thread = makeThread([{ from: "Alice <alice@example.com>", body: "" }]);
+    const image = (id: string) => ({ filename: "image.png", mimeType: "image/png", body: { attachmentId: id, size: 10 } });
+    thread.messages[0].payload = {
+      ...thread.messages[0].payload,
+      mimeType: "multipart/mixed",
+      parts: [{ mimeType: "text/plain", body: { data: b64("hi") } }, image("id-1"), image("id-2")],
+    };
+    const listed = (id: string, data: string) => ({
+      message_id: "m0", attachment_id: id, filename: "image.png", mime_type: "image/png", size: 10, inline_data: data, content_id: null,
+    });
+    const { container, props } = renderThread({
+      thread,
+      focusedMessageIndex: 0,
+      threadAttachments: [listed("id-2", "U2Vjb25k"), listed("id-1", "Rmlyc3Q")],
+    });
+    const thumbs = container.querySelectorAll<HTMLElement>(".attachment-thumb");
+    fireEvent.click(thumbs[0]);
+    fireEvent.click(thumbs[1]);
+    const inlineData = (props.onOpenAttachment as any).mock.calls.map((c: unknown[]) => c[4]);
+    expect(inlineData).toEqual(["Rmlyc3Q", "U2Vjb25k"]);
+  });
+
   it("opens an attachment from the keyboard", () => {
     const thread = makeThread([{ from: "Alice <alice@example.com>", body: "" }]);
     thread.messages[0].payload = {
@@ -380,6 +451,45 @@ describe("ThreadView attachments", () => {
     expect(thumb.getAttribute("role")).toBe("button");
     fireEvent.keyDown(thumb, { key: "Enter" });
     expect(props.onOpenAttachment).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("ThreadView scrolling", () => {
+  const nextFrame = () => new Promise(r => requestAnimationFrame(() => r(null)));
+
+  it("scrolls to the newest message on open but keeps the reading position when the thread refreshes", async () => {
+    const messages = [
+      { from: "Alice <alice@example.com>", body: "first" },
+      { from: "Bob <bob@example.com>", body: "second" },
+    ];
+    const [thread, setThread] = createSignal(makeThread(messages));
+    const scroll = vi.fn();
+    Element.prototype.scrollIntoView = scroll;
+    render(() => (
+      <ThreadView
+        thread={thread()} loading={false} error={null} card={null} focusColor={null} onClose={vi.fn()}
+        focusedMessageIndex={0} onFocusChange={vi.fn()} onOpenAttachment={vi.fn()} onDownloadAttachment={vi.fn()}
+        onShowAttachmentMenu={vi.fn()} onReply={vi.fn()} onForward={vi.fn()} onAction={vi.fn()} onOpenLabels={vi.fn()}
+        accountId="acc" isStarred={false} isRead={true} isImportant={false} isInInbox={true} labelCount={0} inlineCompose={null}
+      />
+    ));
+    await nextFrame();
+    expect(scroll).toHaveBeenCalledWith({ block: "start" });
+
+    // Starring or relabelling reloads the same thread
+    const cardsBefore = Array.from(document.querySelectorAll(".message-card"));
+    scroll.mockClear();
+    setThread(makeThread(messages));
+    await nextFrame();
+    expect(scroll).not.toHaveBeenCalled();
+    // ...whose messages are unchanged, so their rows (and any text selection) stay
+    expect(Array.from(document.querySelectorAll(".message-card"))).toEqual(cardsBefore);
+    expect(cardsBefore.every(card => card.isConnected)).toBe(true);
+
+    // A reply arriving does bring the newest message into view
+    setThread(makeThread([...messages, { from: "Carol <carol@example.com>", body: "third" }]));
+    await nextFrame();
+    expect(scroll).toHaveBeenCalledWith({ block: "start" });
   });
 });
 

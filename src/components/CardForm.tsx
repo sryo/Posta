@@ -9,7 +9,7 @@ import {
 } from "../shared/constants";
 import { PaletteIcon, TrashIcon } from "./Icons";
 import { cardTypeForQuery } from "../app/cardType";
-import { onActivateKey } from "../shared/keyboard";
+import { isImeComposing, onActivateKey } from "../shared/keyboard";
 
 interface QuerySuggestion {
   text: string;
@@ -67,6 +67,7 @@ export const CardForm = (props: {
             value={props.name}
             onInput={(e) => props.setName(e.currentTarget.value)}
             onKeyDown={(e) => {
+              if (isImeComposing(e)) return;
               if (e.key === 'Escape') props.onCancel();
               else if (e.key === 'Enter' && (e.metaKey || e.ctrlKey) && !props.saveDisabled) {
                 e.preventDefault();
@@ -143,6 +144,7 @@ export const CardForm = (props: {
           }}
           onBlur={() => setTimeout(() => props.setQueryAutocompleteOpen(false), 150)}
           onKeyDown={(e) => {
+            if (isImeComposing(e)) return;
             const suggestions = props.getQuerySuggestions(props.query);
             if (e.key === 'Escape') {
               if (props.queryAutocompleteOpen()) {

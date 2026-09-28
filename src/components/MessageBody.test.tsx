@@ -1,5 +1,7 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { createSignal } from "solid-js";
 import { render } from "@solidjs/testing-library";
+import DOMPurify from "dompurify";
 import { MessageBody } from "./MessageBody";
 
 describe("MessageBody", () => {
@@ -50,5 +52,85 @@ describe("MessageBody", () => {
       <MessageBody body={'<img src="cid:logo@x">'} msgId="m1" msgPayloadParts={parts} />
     ));
     expect(container.querySelector("img")!.getAttribute("src")).toBe("data:image/gif;base64,R0lGOD+/");
+  });
+
+  it("does not let an email borrow the app's own classes", () => {
+    const { container } = render(() => (
+      <MessageBody body={'<div class="card btn">receipt</div>'} msgId="m1" />
+    ));
+    const div = container.querySelector(".message-body div")!;
+    expect(div.textContent).toBe("receipt");
+    expect(div.hasAttribute("class")).toBe(false);
+  });
+
+  it("uses the part's mime type for a cid image fetched on demand", () => {
+    const parts = [{
+      mimeType: "image/jpeg",
+      headers: [{ name: "Content-ID", value: "<pic@x>" }],
+      body: { attachmentId: "att1" },
+    }];
+    const { container } = render(() => (
+      <MessageBody body={'<img src="cid:pic@x">'} msgId="m1" msgPayloadParts={parts} cidAttachmentData={{ "pic@x": "AB-_" }} />
+    ));
+    expect(container.querySelector("img")!.getAttribute("src")).toBe("data:image/jpeg;base64,AB+/");
+  });
+
+  it("falls back to a thread attachment's inline data by Content-ID", () => {
+    const threadAttachments = [{
+      message_id: "m1", attachment_id: "a1", content_id: "logo@x", inline_data: "QUJD", mime_type: "image/png",
+    }];
+    const { container } = render(() => (
+      <MessageBody body={'<img src="cid:logo@x">'} msgId="m1" threadAttachments={threadAttachments} />
+    ));
+    expect(container.querySelector("img")!.getAttribute("src")).toBe("data:image/png;base64,QUJD");
+  });
+
+  it("takes an inline part's data from this message's listing entry with the same attachment id", () => {
+    const parts = [{
+      mimeType: "image/gif",
+      headers: [{ name: "Content-ID", value: "<logo@x>" }],
+      body: { attachmentId: "a1" },
+    }];
+    const threadAttachments = [
+      { message_id: "m0", attachment_id: "a1", content_id: "logo@x", inline_data: "T1RIRVI=", mime_type: "image/png" },
+      { message_id: "m1", attachment_id: "a1", content_id: null, inline_data: "R0lG", mime_type: "image/gif" },
+    ];
+    const { container } = render(() => (
+      <MessageBody body={'<img src="cid:logo@x">'} msgId="m1" msgPayloadParts={parts} threadAttachments={threadAttachments} />
+    ));
+    expect(container.querySelector("img")!.getAttribute("src")).toBe("data:image/gif;base64,R0lG");
+  });
+
+  it("ignores another message's attachments with the same Content-ID", () => {
+    const threadAttachments = [{
+      message_id: "m0", attachment_id: "a1", content_id: "logo@x", inline_data: "QUJD", mime_type: "image/png",
+    }];
+    const { container } = render(() => (
+      <MessageBody body={'<img src="cid:logo@x">'} msgId="m1" threadAttachments={threadAttachments} />
+    ));
+    expect(container.querySelector("img")!.getAttribute("src")).toBe("cid:logo@x");
+  });
+});
+
+describe("MessageBody cid image updates", () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  it("does not re-sanitize a message when cid images for other messages arrive", () => {
+    const [cidData, setCidData] = createSignal<Record<string, string>>({});
+    const sanitize = vi.spyOn(DOMPurify, "sanitize");
+    const { container } = render(() => (
+      <>
+        <MessageBody body={"<p>plain</p>"} msgId="m1" cidAttachmentData={cidData()} />
+        <MessageBody body={'<img src="cid:a@x"><p>see above</p>'} msgId="m2" cidAttachmentData={cidData()} />
+      </>
+    ));
+    expect(sanitize).toHaveBeenCalledTimes(2);
+
+    setCidData({ "b@x": "QUJD" });
+    expect(sanitize).toHaveBeenCalledTimes(2);
+
+    setCidData({ "b@x": "QUJD", "a@x": "REVG" });
+    expect(sanitize).toHaveBeenCalledTimes(3);
+    expect(container.querySelectorAll("img")[0].getAttribute("src")).toBe("data:image/png;base64,REVG");
   });
 });

@@ -1,5 +1,6 @@
 import { onCleanup } from "solid-js";
 import { CloseIcon } from "./Icons";
+import { isImeComposing } from "../shared/keyboard";
 
 // Shared compose components
 export const ComposeTextarea = (props: {
@@ -25,6 +26,7 @@ export const ComposeTextarea = (props: {
         onCleanup(() => clearTimeout(focusTimer));
       }}
       onKeyDown={(e) => {
+        if (isImeComposing(e)) return;
         if (e.key === 'Escape') {
           props.onCancel();
         } else if (e.key === 'Enter' && (e.metaKey || e.ctrlKey) && props.value.trim()) {

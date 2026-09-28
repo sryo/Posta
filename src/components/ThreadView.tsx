@@ -63,6 +63,8 @@ export const ThreadView = (props: {
   // Toolbar action props
   onAction: (action: string) => void,
   onOpenLabels: () => void,
+  labelDrawerOpen?: boolean,
+  onCloseLabelDrawer?: () => void,
   accountId: string,
   // Signed-in account's email; used to exclude self from reply-all recipients
   currentUserEmail?: string,
@@ -123,9 +125,32 @@ export const ThreadView = (props: {
     setTimeout(() => props.onClose(), 200); // Match animation duration
   };
 
-  // Scroll to newest message when thread loads
+  // Gmail messages never change content under the same id (a draft edit gets
+  // a new id), so a reloaded thread reuses the loaded message objects and
+  // <For> keeps their rendered rows instead of rebuilding every body
+  let loadedById = new Map<string, FullMessage>();
+  const messages = createMemo(() => {
+    const next = new Map<string, FullMessage>();
+    const list = (props.thread?.messages ?? []).map(m => {
+      const kept = loadedById.get(m.id) ?? m;
+      next.set(m.id, kept);
+      return kept;
+    });
+    loadedById = next;
+    return list;
+  });
+
+  // Scroll to the newest message when the thread loads or gains a message.
+  // Actions such as star or a label change reload the same thread, and must
+  // not pull the reader away from an earlier message.
+  let scrolledTo: { id: string; count: number } | null = null;
   createEffect(() => {
-    if (props.thread && contentRef) {
+    const loaded = props.thread;
+    if (!loaded) return;
+    const count = loaded.messages.length;
+    if (scrolledTo?.id === loaded.id && count <= scrolledTo.count) return;
+    scrolledTo = { id: loaded.id, count };
+    if (contentRef) {
       requestAnimationFrame(() => {
         const thread = props.thread;
         if (!thread) return;
@@ -227,10 +252,17 @@ export const ThreadView = (props: {
     if (e.key === 'Escape') {
       if (isTyping) return; // input-level handlers (e.g. ComposeForm) own Escape
       if (props.inlineCompose) { props.inlineCompose.onClose(); return; }
+      if (props.labelDrawerOpen) { props.onCloseLabelDrawer?.(); return; }
       handleClose();
       return;
     }
     if (isTyping || hasCommandModifier(e) || !props.thread) return;
+
+    // The drawer covers the thread, so only its own toggle stays live
+    if (props.labelDrawerOpen) {
+      if (e.key === 'l') { e.preventDefault(); props.onCloseLabelDrawer?.(); }
+      return;
+    }
 
     if (e.key === 'a') { e.preventDefault(); props.onAction(props.isInInbox ? 'archive' : 'inbox'); return; }
     if (e.key === 's') { e.preventDefault(); props.onAction(props.isStarred ? 'unstar' : 'star'); return; }
@@ -380,7 +412,7 @@ export const ThreadView = (props: {
 
         <Show when={props.thread}>
           <div class="messages-list">
-            <For each={props.thread!.messages}>
+            <For each={messages()}>
               {(msg, index) => {
                 const headers = msg.payload?.headers || [];
                 const from = findHeader(headers, 'From') || 'Unknown';
@@ -391,27 +423,37 @@ export const ThreadView = (props: {
                 // Extract attachments from message parts, enriched with inline_data from threadAttachments
                 const getAttachments = () => {
                   const attachments: { filename: string; mimeType: string; size: number; attachmentId?: string; inlineData?: string }[] = [];
-                  const findAttachments = (parts: any[]) => {
+                  const payload = msg.payload;
+                  const fileParts: any[] = [];
+                  const findFileParts = (parts: any[]) => {
                     parts?.forEach(part => {
-                      if (part.filename && part.filename.length > 0) {
-                        const attachmentId = part.body?.attachmentId;
-                        // Look up inline_data from threadAttachments if available
-                        const threadAtt = props.threadAttachments?.find(
-                          a => a.message_id === msg.id && (a.attachment_id === attachmentId || a.filename === part.filename)
-                        );
-                        attachments.push({
-                          filename: part.filename,
-                          mimeType: part.mimeType || 'application/octet-stream',
-                          size: part.body?.size || 0,
-                          attachmentId,
-                          inlineData: threadAtt?.inline_data || part.body?.data,
-                        });
-                      }
-                      if (part.parts) findAttachments(part.parts);
+                      if (part.filename && part.filename.length > 0) fileParts.push(part);
+                      if (part.parts) findFileParts(part.parts);
                     });
                   };
-                  const payload = msg.payload;
-                  findAttachments(payload?.parts?.length ? payload.parts : payload?.filename ? [payload] : []);
+                  findFileParts(payload?.parts?.length ? payload.parts : payload?.filename ? [payload] : []);
+
+                  // Gmail issues a new attachmentId on every fetch, so the
+                  // listing's ids often differ from these; fall back to
+                  // pairing same-named files in order, each listing entry once
+                  const listed = props.threadAttachments?.filter(a => a.message_id === msg.id) ?? [];
+                  const partIds = new Set(fileParts.map(p => p.body?.attachmentId));
+                  const unpaired = listed.filter(a => !partIds.has(a.attachment_id));
+                  for (const part of fileParts) {
+                    const attachmentId = part.body?.attachmentId;
+                    let threadAtt = listed.find(a => a.attachment_id === attachmentId);
+                    if (!threadAtt) {
+                      const i = unpaired.findIndex(a => a.filename === part.filename);
+                      if (i !== -1) threadAtt = unpaired.splice(i, 1)[0];
+                    }
+                    attachments.push({
+                      filename: part.filename,
+                      mimeType: part.mimeType || 'application/octet-stream',
+                      size: part.body?.size || 0,
+                      attachmentId,
+                      inlineData: threadAtt?.inline_data || part.body?.data,
+                    });
+                  }
                   return attachments;
                 };
 

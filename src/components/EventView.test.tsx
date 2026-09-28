@@ -124,3 +124,16 @@ describe("EventView description", () => {
     expect(el.querySelector("a")?.getAttribute("href")).toBe("https://x.test");
   });
 });
+
+describe("EventView video call", () => {
+  it("offers the video call link as a button rather than an in-app href", async () => {
+    const { openUrl } = await import("@tauri-apps/plugin-opener");
+    const { container } = renderEvent({ hangout_link: "https://meet.google.com/abc" });
+    const join = container.querySelector(".event-info-row .link-btn") as HTMLButtonElement;
+    expect(container.querySelector(".event-info-row a")).toBeNull();
+    expect(join.tagName).toBe("BUTTON");
+    expect(join.type).toBe("button");
+    fireEvent.click(join);
+    expect(openUrl).toHaveBeenCalledWith("https://meet.google.com/abc");
+  });
+});

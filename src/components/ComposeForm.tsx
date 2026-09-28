@@ -3,6 +3,7 @@ import type { SendAttachment } from "../api/tauri";
 import { getAvatarColor, truncateMiddle } from "../utils";
 import { CloseIcon, AttachmentIcon } from "./Icons";
 import { CloseButton } from "./ComposeAtoms";
+import { isImeComposing } from "../shared/keyboard";
 
 // Shared Compose Form component
 interface ComposeFormProps {
@@ -66,6 +67,7 @@ export const ComposeForm = (props: ComposeFormProps) => {
   const canSend = () => props.canSend !== undefined ? props.canSend : (props.to || '').trim().length > 0;
 
   const handleKeyDown = (e: KeyboardEvent) => {
+    if (isImeComposing(e)) return;
     if (e.key === 'Escape') {
       if (props.autocomplete?.show) {
         props.autocomplete.setShow(false);
@@ -80,6 +82,7 @@ export const ComposeForm = (props: ComposeFormProps) => {
 
   const handleToKeyDown = (e: KeyboardEvent) => {
     const ac = props.autocomplete;
+    if (isImeComposing(e)) return;
     if (ac && ac.show && ac.candidates.length > 0) {
       if (e.key === 'ArrowDown') {
         e.preventDefault();

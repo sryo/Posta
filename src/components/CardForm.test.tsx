@@ -4,7 +4,7 @@ import { createSignal } from "solid-js";
 import type { GroupBy } from "../shared/constants";
 import { CardForm } from "./CardForm";
 
-function renderCardForm(mode: "new" | "edit", init: { query?: string; groupBy?: GroupBy; setColor?: (c: any) => void; setColorPickerOpen?: (v: boolean) => void } = {}) {
+function renderCardForm(mode: "new" | "edit", init: { query?: string; groupBy?: GroupBy; setColor?: (c: any) => void; setColorPickerOpen?: (v: boolean) => void; onCancel?: () => void } = {}) {
   const [query, setQuery] = createSignal(init.query ?? "is:inbox");
   const [groupBy, setGroupBy] = createSignal<GroupBy>(init.groupBy ?? "date");
   render(() => (
@@ -21,7 +21,7 @@ function renderCardForm(mode: "new" | "edit", init: { query?: string; groupBy?: 
       colorPickerOpen={false}
       setColorPickerOpen={init.setColorPickerOpen ?? vi.fn()}
       onSave={vi.fn()}
-      onCancel={vi.fn()}
+      onCancel={init.onCancel ?? vi.fn()}
       saveDisabled={false}
       setQueryHelpOpen={vi.fn()}
       setQueryInputRef={vi.fn()}
@@ -45,6 +45,18 @@ describe("CardForm", () => {
     renderCardForm(mode);
     await new Promise(r => setTimeout(r, 100));
     expect(document.activeElement).toBe(screen.getByPlaceholderText("Inbox, Starred..."));
+  });
+});
+
+describe("CardForm while an input method is composing", () => {
+  it("does not discard the form on the Escape that cancels a composition", () => {
+    const onCancel = vi.fn();
+    renderCardForm("new", { onCancel });
+    fireEvent.keyDown(screen.getByPlaceholderText("Inbox, Starred..."), { key: "Escape", isComposing: true });
+    fireEvent.keyDown(screen.getByPlaceholderText("is:inbox, from:boss, newer_than:7d"), { key: "Escape", isComposing: true });
+    expect(onCancel).not.toHaveBeenCalled();
+    fireEvent.keyDown(screen.getByPlaceholderText("Inbox, Starred..."), { key: "Escape" });
+    expect(onCancel).toHaveBeenCalledTimes(1);
   });
 });
 

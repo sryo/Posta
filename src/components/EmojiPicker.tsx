@@ -1,6 +1,7 @@
 // Emoji picker component with categories and search
 
 import { createSignal, For, Show, onCleanup, onMount } from "solid-js";
+import { hasCommandModifier } from "../shared/keyboard";
 
 // Emoji data organized by category
 const EMOJI_CATEGORIES: { name: string; icon: string; emojis: string[] }[] = [
@@ -128,11 +129,22 @@ export const EmojiPicker = (props: EmojiPickerProps) => {
   };
 
   // Close on Escape. Captured and stopped so the thread view's own Escape
-  // handler, also on document, doesn't close the whole thread too
+  // handler, also on document, doesn't close the whole thread too. Letters
+  // typed while a category tab or emoji has focus go to the search box
+  // instead of reaching the thread's single-letter shortcuts (a archives).
+  // WebKit leaves focus on the body after a button click, so that counts as
+  // the picker too; a field outside it keeps its own typing.
   const handleKeyDown = (e: KeyboardEvent) => {
     if (e.key === "Escape") {
       e.stopImmediatePropagation();
       props.onClose();
+      return;
+    }
+    const active = document.activeElement;
+    const focusInPicker = !active || active === document.body || !!containerRef?.contains(active);
+    if (e.key.length === 1 && e.key !== " " && !hasCommandModifier(e) && focusInPicker && active !== searchRef) {
+      e.stopImmediatePropagation();
+      searchRef?.focus();
     }
   };
 
@@ -201,15 +213,17 @@ export const EmojiPicker = (props: EmojiPickerProps) => {
 
       <div class="emoji-grid-container">
         <Show when={query()}>
-          <div class="emoji-grid">
-            <For each={filteredEmojis()}>
-              {(emoji) => (
-                <button class="emoji-btn" onClick={() => handleEmojiClick(emoji)}>
-                  {emoji}
-                </button>
-              )}
-            </For>
-          </div>
+          <Show when={filteredEmojis().length > 0} fallback={<div class="emoji-section-title">No matching emoji</div>}>
+            <div class="emoji-grid">
+              <For each={filteredEmojis()}>
+                {(emoji) => (
+                  <button class="emoji-btn" onClick={() => handleEmojiClick(emoji)}>
+                    {emoji}
+                  </button>
+                )}
+              </For>
+            </div>
+          </Show>
         </Show>
 
         <Show when={!query()}>

@@ -37,4 +37,46 @@ describe("EmojiPicker", () => {
     expect(container.querySelectorAll(".emoji-btn").length).toBeGreaterThan(0);
     expect(container.querySelector(".emoji-categories-tabs")).not.toBeNull();
   });
+
+  it("sends letters typed after clicking a category to the search box, not to page shortcuts", () => {
+    const pageShortcut = vi.fn();
+    document.addEventListener("keydown", pageShortcut);
+    const { container } = render(() => <EmojiPicker onSelect={vi.fn()} onClose={vi.fn()} />);
+    const tab = container.querySelectorAll<HTMLButtonElement>(".emoji-category-tab")[2];
+    tab.focus();
+    fireEvent.keyDown(tab, { key: "a" });
+    expect(pageShortcut).not.toHaveBeenCalled();
+    expect(document.activeElement).toBe(container.querySelector(".emoji-search"));
+
+    // Space still activates the focused button, and shortcuts with modifiers pass
+    tab.focus();
+    fireEvent.keyDown(tab, { key: " " });
+    fireEvent.keyDown(tab, { key: "c", metaKey: true });
+    expect(pageShortcut).toHaveBeenCalledTimes(2);
+
+    // WebKit leaves a clicked button unfocused, so focus sits on the body
+    (document.activeElement as HTMLElement).blur();
+    fireEvent.keyDown(document.body, { key: "h" });
+    expect(pageShortcut).toHaveBeenCalledTimes(2);
+    expect(document.activeElement).toBe(container.querySelector(".emoji-search"));
+    document.removeEventListener("keydown", pageShortcut);
+  });
+
+  it("leaves letters typed in a field outside the picker to that field", () => {
+    const reply = document.createElement("textarea");
+    document.body.appendChild(reply);
+    render(() => <EmojiPicker onSelect={vi.fn()} onClose={vi.fn()} />);
+    reply.focus();
+    fireEvent.keyDown(reply, { key: "h" });
+    expect(document.activeElement).toBe(reply);
+    reply.remove();
+  });
+
+  it("says so when no category matches the search", () => {
+    const { container } = render(() => <EmojiPicker onSelect={vi.fn()} onClose={vi.fn()} />);
+    const input = container.querySelector<HTMLInputElement>(".emoji-search")!;
+    fireEvent.input(input, { target: { value: "zzz" } });
+    expect(container.querySelectorAll(".emoji-btn")).toHaveLength(0);
+    expect(container.querySelector(".emoji-grid-container")?.textContent).toBe("No matching emoji");
+  });
 });

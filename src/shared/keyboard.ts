@@ -14,6 +14,14 @@ export function hasCommandModifier(e: KeyboardEvent): boolean {
   return e.metaKey || e.ctrlKey || e.altKey;
 }
 
+// Keys pressed while an input method (or a dead key such as ´) is composing
+// text belong to that composition: Enter confirms it and Escape cancels it.
+// keyCode 229 covers WebKit, which can report the confirming key after
+// compositionend with isComposing already false.
+export function isImeComposing(e: KeyboardEvent): boolean {
+  return e.isComposing || e.keyCode === 229;
+}
+
 // keydown handler giving a clickable non-button element the Enter/Space
 // activation a <button> has. The key stops here so document-level shortcuts
 // (Enter opens the focused thread) don't also act on it.
