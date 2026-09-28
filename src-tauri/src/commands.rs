@@ -875,32 +875,57 @@ async fn get_access_token(
     app_handle: &tauri::AppHandle,
     account_id: &str,
 ) -> Result<String, String> {
-    if let Some(token) = cached_access_token(&state.token_cache, account_id)? {
+    let app_data_dir = get_app_data_dir(app_handle)?;
+    let account = account_id.to_string();
+    refreshed_access_token(&state.auth, &state.token_cache, account_id, move || {
+        auth::get_refresh_token(&account, &app_data_dir).map_err(|e| e.to_string())
+    })
+    .await
+}
+
+/// Exchanges a refresh token for an access token
+trait TokenRefresher {
+    async fn refresh(&self, refresh_token: &str) -> Result<(String, Option<u64>), String>;
+}
+
+impl TokenRefresher for GmailAuth {
+    async fn refresh(&self, refresh_token: &str) -> Result<(String, Option<u64>), String> {
+        self.refresh_access_token(refresh_token).await.map_err(|e| e.to_string())
+    }
+}
+
+/// The cached access token, or a fresh one refreshed with the refresh token
+/// `load_refresh_token` reads from secure storage
+async fn refreshed_access_token<R: TokenRefresher>(
+    auth: &Mutex<Option<R>>,
+    token_cache: &TokenCache,
+    account_id: &str,
+    load_refresh_token: impl FnOnce() -> Result<String, String> + Send + 'static,
+) -> Result<String, String> {
+    if let Some(token) = cached_access_token(token_cache, account_id)? {
         return Ok(token);
     }
 
-    let app_data_dir = get_app_data_dir(app_handle)?;
-    let refresh_token = auth::get_refresh_token(account_id, &app_data_dir).map_err(|e| e.to_string())?;
-
     let (access_token, expires_in) = {
-        let auth_guard = state.auth.lock().await;
-        // Parallel calls queue on the auth lock; the first one refreshes and
-        // the rest reuse its token instead of each refreshing again
-        if let Some(token) = cached_access_token(&state.token_cache, account_id)? {
+        let auth_guard = auth.lock().await;
+        // Parallel calls queue on the auth lock; the first one reads secure
+        // storage and refreshes, and the rest reuse its token
+        if let Some(token) = cached_access_token(token_cache, account_id)? {
             return Ok(token);
         }
         let auth = auth_guard
             .as_ref()
             .ok_or("Auth not configured. Please configure auth first.")?;
 
-        auth.refresh_access_token(&refresh_token)
+        // A keychain read can wait on a user prompt; keep it off the async workers
+        let refresh_token = tokio::task::spawn_blocking(load_refresh_token)
             .await
-            .map_err(|e| e.to_string())?
+            .map_err(|e| format!("Task error: {}", e))??;
+        auth.refresh(&refresh_token).await?
     };
 
     let expiry = Instant::now() + Duration::from_secs(expires_in.unwrap_or(3600));
-    state
-        .token_cache
+    token_cache
         .lock()
         .map_err(|_| "Lock error")?
         .insert(account_id.to_string(), (access_token.clone(), expiry));
@@ -2823,6 +2848,48 @@ mod tests {
         assert_eq!(cached_access_token(&cache, "fresh"), Ok(Some("t1".to_string())));
         assert_eq!(cached_access_token(&cache, "expiring"), Ok(None));
         assert_eq!(cached_access_token(&cache, "unknown"), Ok(None));
+    }
+
+    struct FakeRefresher(Arc<std::sync::atomic::AtomicUsize>);
+
+    impl super::TokenRefresher for FakeRefresher {
+        async fn refresh(&self, refresh_token: &str) -> Result<(String, Option<u64>), String> {
+            self.0.fetch_add(1, Ordering::SeqCst);
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            Ok((format!("access-for-{}", refresh_token), Some(3600)))
+        }
+    }
+
+    #[tokio::test]
+    async fn parallel_calls_on_an_expired_token_read_secure_storage_once() {
+        use std::sync::atomic::AtomicUsize;
+        let refreshes = Arc::new(AtomicUsize::new(0));
+        let loads = Arc::new(AtomicUsize::new(0));
+        let auth = tokio::sync::Mutex::new(Some(FakeRefresher(refreshes.clone())));
+        let cache = super::TokenCache::new(HashMap::new());
+
+        let calls = (0..10).map(|_| {
+            let loads = loads.clone();
+            super::refreshed_access_token(&auth, &cache, "a1", move || {
+                loads.fetch_add(1, Ordering::SeqCst);
+                std::thread::sleep(std::time::Duration::from_millis(20));
+                Ok("rt".to_string())
+            })
+        });
+        let tokens = futures::future::join_all(calls).await;
+
+        assert!(tokens.iter().all(|t| t.as_deref() == Ok("access-for-rt")), "{:?}", tokens);
+        assert_eq!(refreshes.load(Ordering::SeqCst), 1);
+        assert_eq!(loads.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn a_missing_refresh_token_fails_the_call_without_caching_anything() {
+        let auth = tokio::sync::Mutex::new(Some(FakeRefresher(Default::default())));
+        let cache = super::TokenCache::new(HashMap::new());
+        let err = super::refreshed_access_token(&auth, &cache, "a1", || Err("No matching entry".into())).await;
+        assert_eq!(err, Err("No matching entry".to_string()));
+        assert!(cache.lock().unwrap().is_empty());
     }
 
     fn card_at(position: i32) -> Card {
