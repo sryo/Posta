@@ -104,6 +104,20 @@ describe("CreateEventForm date navigation", () => {
   });
 });
 
+describe("CreateEventForm keyboard access", () => {
+  it("picks a day and a time with Enter or Space", () => {
+    const { container, startDate, startTime } = renderForm({ startDate: "2031-03-03", startTime: "10:00", endTime: "11:00" });
+    const days = container.querySelectorAll<HTMLElement>(".scheduler-day-card");
+    expect(days[2].tabIndex).toBe(0);
+    fireEvent.keyDown(days[2], { key: "Enter" });
+    expect(startDate()).toBe("2031-03-05");
+    const nine = slot(container, "start", "09:00");
+    expect(nine.getAttribute("role")).toBe("option");
+    fireEvent.keyDown(nine, { key: " " });
+    expect(startTime()).toBe("09:00");
+  });
+});
+
 describe("CreateEventForm time pickers", () => {
   it("keeps end after start on a single-day event", () => {
     const { container, endTime } = renderForm({ startDate: "2031-03-03", startTime: "10:00", endTime: "11:00" });

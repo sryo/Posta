@@ -365,4 +365,20 @@ describe("ThreadView attachments", () => {
     fireEvent.click(thumb);
     expect(props.onOpenAttachment).toHaveBeenCalledWith("m0", "att-1", "invoice.pdf", "application/pdf", undefined);
   });
+
+  it("opens an attachment from the keyboard", () => {
+    const thread = makeThread([{ from: "Alice <alice@example.com>", body: "" }]);
+    thread.messages[0].payload = {
+      ...thread.messages[0].payload,
+      mimeType: "application/pdf",
+      filename: "invoice.pdf",
+      body: { attachmentId: "att-1", size: 2048 },
+    };
+    const { container, props } = renderThread({ thread, focusedMessageIndex: 0 });
+    const thumb = container.querySelector(".attachment-thumb") as HTMLElement;
+    expect(thumb.tabIndex).toBe(0);
+    expect(thumb.getAttribute("role")).toBe("button");
+    fireEvent.keyDown(thumb, { key: "Enter" });
+    expect(props.onOpenAttachment).toHaveBeenCalledTimes(1);
+  });
 });

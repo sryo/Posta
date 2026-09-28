@@ -1,7 +1,7 @@
 import { createSignal, createEffect, createMemo, onMount, onCleanup, Show, For } from "solid-js";
 import { MessageBody } from './MessageBody';
 import { sendReaction, type FullThread, type FullMessage, type Attachment } from "../api/tauri";
-import { isTypingTarget, hasCommandModifier } from "../shared/keyboard";
+import { isTypingTarget, hasCommandModifier, onActivateKey } from "../shared/keyboard";
 import {
   findContent,
   formatFileSize,
@@ -521,11 +521,15 @@ export const ThreadView = (props: {
                                 });
                               };
                               const hasThumb = att.inlineData && isImage(att.mimeType);
+                              const open = () => props.onOpenAttachment(msg.id, att.attachmentId, att.filename, att.mimeType, att.inlineData);
                               return (
                                 <div
                                   class="attachment-thumb"
+                                  role="button"
+                                  tabIndex={0}
                                   title={`${att.filename} (${formatFileSize(att.size)})`}
-                                  onClick={() => props.onOpenAttachment(msg.id, att.attachmentId, att.filename, att.mimeType, att.inlineData)}
+                                  onClick={open}
+                                  on:keydown={onActivateKey(open)}
                                   onContextMenu={handleContextMenu}
                                 >
                                   {hasThumb ? (

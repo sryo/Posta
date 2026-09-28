@@ -1,6 +1,7 @@
 import { createSignal, onMount, Show, For } from "solid-js";
 import { ChevronLeftIcon, ChevronRightIcon } from "./Icons";
 import { CloseButton } from "./ComposeAtoms";
+import { onActivateKey } from "../shared/keyboard";
 
 // One labelled, scrollable single-choice list of the scheduler
 function SchedulerColumn<T>(props: {
@@ -13,13 +14,17 @@ function SchedulerColumn<T>(props: {
   return (
     <div class="scheduler-column">
       <label class="scheduler-column-label">{props.label}</label>
-      <div class={`scheduler-list ${props.listClass ?? ''}`}>
+      <div class={`scheduler-list ${props.listClass ?? ''}`} role="listbox" aria-label={props.label}>
         <For each={props.options}>
           {(opt) => (
             <div
               class={`scheduler-option ${props.selected === opt.value ? 'selected' : ''}`}
               data-selected={props.selected === opt.value}
+              role="option"
+              aria-selected={props.selected === opt.value}
+              tabIndex={0}
               onClick={() => props.onSelect(opt.value)}
+              on:keydown={onActivateKey(() => props.onSelect(opt.value))}
             >
               {opt.label}
             </div>
@@ -304,7 +309,11 @@ export const CreateEventForm = (props: {
                 return (
                   <div
                     class={`scheduler-day-card ${isSelectedDate(day) ? 'selected' : ''}`}
+                    role="button"
+                    tabIndex={0}
+                    aria-pressed={isSelectedDate(day)}
                     onClick={() => handleDateSelect(day)}
+                    on:keydown={onActivateKey(() => handleDateSelect(day))}
                   >
                     <span class="scheduler-day-name">{info.day}</span>
                     <span class="scheduler-day-number">{info.date}</span>

@@ -8,6 +8,7 @@ import {
   type GroupBy,
 } from "../shared/constants";
 import { PaletteIcon, TrashIcon } from "./Icons";
+import { onActivateKey } from "../shared/keyboard";
 
 interface QuerySuggestion {
   text: string;
@@ -79,23 +80,30 @@ export const CardForm = (props: {
               class={`color-picker-selected ${props.color === null ? 'no-color' : ''}`}
               style={props.color ? { background: COLOR_HEX[props.color] } : {}}
               onClick={(e) => { e.stopPropagation(); props.setColorPickerOpen(!props.colorPickerOpen); }}
+              role="button"
+              tabIndex={0}
+              aria-expanded={props.colorPickerOpen}
+              on:keydown={onActivateKey(() => props.setColorPickerOpen(!props.colorPickerOpen))}
               title="Card color"
             >
               <Show when={props.color === null}>
                 <PaletteIcon />
               </Show>
             </div>
-            <div
-              class="color-option no-color-option"
-              onClick={() => { props.setColor(null); props.setColorPickerOpen(false); }}
-            ></div>
-            <For each={CARD_COLORS}>
-              {(color) => (
-                <div
-                  class={`color-option ${color}`}
-                  onClick={() => { props.setColor(color); props.setColorPickerOpen(false); }}
-                ></div>
-              )}
+            <For each={[null, ...CARD_COLORS] as CardColor[]}>
+              {(color) => {
+                const pick = () => { props.setColor(color); props.setColorPickerOpen(false); };
+                return (
+                  <div
+                    class={color ? `color-option ${color}` : "color-option no-color-option"}
+                    role="button"
+                    tabIndex={props.colorPickerOpen ? 0 : -1}
+                    aria-label={color ?? "No color"}
+                    onClick={pick}
+                    on:keydown={onActivateKey(pick)}
+                  ></div>
+                );
+              }}
             </For>
           </div>
         </div>
