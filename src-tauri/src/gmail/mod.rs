@@ -12,6 +12,9 @@ const BATCH_API_ENDPOINT: &str = "https://www.googleapis.com/batch/gmail/v1";
 const PAGE_SIZE: usize = 20;
 const MAX_BATCH_SIZE: usize = 50; // Gmail allows up to 100, but 50 is safer
 const MAX_INLINE_IMAGE_SIZE: i32 = 100_000; // 100KB max for inline images
+const MAX_INLINE_IMAGES: usize = 3;
+/// Threads of a batch whose attachments are loaded at the same time
+const THREAD_LOAD_CONCURRENCY: usize = 5;
 
 /// Partial-response fields for thread list entries: message headers and the
 /// part tree (with part headers, for Content-ID) three levels deep, without bodies
@@ -438,132 +441,55 @@ impl GmailClient {
 
         let resp_body = resp.text().await.map_err(|e| format!("Failed to read response: {}", e))?;
 
-        let mut threads = Vec::new();
-        for detail in parse_batch_body(&resp_body, &resp_boundary) {
-            threads.push(self.thread_detail_to_thread(detail).await);
-        }
+        use futures::StreamExt;
+        let threads = futures::stream::iter(parse_batch_body(&resp_body, &resp_boundary))
+            .map(|detail| self.thread_detail_to_thread(detail))
+            .buffered(THREAD_LOAD_CONCURRENCY)
+            .collect()
+            .await;
         Ok(threads)
     }
 
     async fn thread_detail_to_thread(&self, detail: ThreadDetail) -> Thread {
-        let messages = detail.messages.unwrap_or_default();
-        let latest_msg = messages.last();
+        let mut thread = thread_summary(detail);
+        let calendar_attachments: Vec<Attachment> =
+            thread.attachments.iter().filter(|a| a.is_calendar()).cloned().collect();
+        let (_, calendar_event) = futures::join!(
+            self.load_inline_images(&mut thread.attachments),
+            self.load_calendar_event(&calendar_attachments)
+        );
+        thread.calendar_event = calendar_event;
+        thread
+    }
 
-        let subject = latest_msg
-            .and_then(|m| m.payload.as_ref())
-            .and_then(|p| p.headers.as_ref())
-            .and_then(|headers| {
-                headers
-                    .iter()
-                    .find(|h| h.name.eq_ignore_ascii_case("Subject"))
-                    .map(|h| h.value.clone())
-            })
-            .unwrap_or_else(|| "(No Subject)".to_string());
-
-        let snippet = latest_msg
-            .and_then(|m| m.snippet.clone())
-            .unwrap_or_default();
-
-        let last_date = latest_msg
-            .and_then(|m| m.internal_date.as_ref())
-            .and_then(|d| d.parse::<i64>().ok())
-            .map(|ms| DateTime::from_timestamp_millis(ms).unwrap_or_else(Utc::now))
-            .unwrap_or_else(Utc::now);
-
-        let unread_count = messages
-            .iter()
-            .filter(|m| {
-                m.label_ids
-                    .as_ref()
-                    .is_some_and(|labels| labels.iter().any(|l| l == "UNREAD"))
-            })
-            .count() as i32;
-
-        let participants = thread_participants(&messages);
-        let labels = thread_labels(&messages);
-
-        // Extract attachments from all messages
-        let mut attachments: Vec<Attachment> = Vec::new();
-        for msg in &messages {
-            if let Some(payload) = &msg.payload {
-                let infos = extract_attachments_from_parts(&payload.parts);
-                for info in infos {
-                    attachments.push(Attachment {
-                        message_id: msg.id.clone(),
-                        attachment_id: info.attachment_id,
-                        filename: info.filename,
-                        mime_type: info.mime_type,
-                        size: info.size,
-                        inline_data: None,
-                        content_id: info.content_id,
-                    });
-                }
+    /// Fetch the data of the first few small images so the list can show them
+    async fn load_inline_images(&self, attachments: &mut [Attachment]) {
+        let images = attachments
+            .iter_mut()
+            .filter(|a| a.mime_type.starts_with("image/") && a.size < MAX_INLINE_IMAGE_SIZE)
+            .take(MAX_INLINE_IMAGES);
+        futures::future::join_all(images.map(|attachment| async move {
+            match self.get_attachment(&attachment.message_id, &attachment.attachment_id).await {
+                Ok(data) => attachment.inline_data = Some(data),
+                Err(e) => tracing::warn!("Failed to fetch attachment {}: {}", attachment.filename, e),
             }
-        }
+        }))
+        .await;
+    }
 
-        // Fetch small image attachments inline (limit to first 3 images, < 100KB each)
-        // Collect indices and metadata for parallel fetch
-        let image_indices: Vec<(usize, String, String)> = attachments
-            .iter()
-            .enumerate()
-            .filter(|(_, a)| a.mime_type.starts_with("image/") && a.size < MAX_INLINE_IMAGE_SIZE)
-            .take(3)
-            .map(|(i, a)| (i, a.message_id.clone(), a.attachment_id.clone()))
-            .collect();
-
-        // Fetch all images in parallel
-        let fetch_futures = image_indices.iter().map(|(_, msg_id, att_id)| {
-            self.get_attachment(msg_id, att_id)
-        });
-        let results: Vec<Result<String, String>> = futures::future::join_all(fetch_futures).await;
-
-        // Apply results to attachments
-        for ((idx, _, _), result) in image_indices.into_iter().zip(results) {
-            match result {
+    /// The event of the first calendar attachment that parses
+    async fn load_calendar_event(&self, attachments: &[Attachment]) -> Option<CalendarEvent> {
+        for attachment in attachments {
+            match self.get_attachment(&attachment.message_id, &attachment.attachment_id).await {
                 Ok(data) => {
-                    attachments[idx].inline_data = Some(data);
-                }
-                Err(e) => {
-                    tracing::warn!("Failed to fetch attachment {}: {}", attachments[idx].filename, e);
-                }
-            }
-        }
-
-        // Parse calendar events from ICS attachments
-        let mut calendar_event: Option<CalendarEvent> = None;
-        for attachment in attachments.iter() {
-            if attachment.is_calendar() {
-                match self.get_attachment(&attachment.message_id, &attachment.attachment_id).await {
-                    Ok(data) => {
-                        if let Some(event) =
-                            decode_base64_body(&data).and_then(|ics| parse_ics_content(&ics))
-                        {
-                            calendar_event = Some(event);
-                            break;
-                        }
-                    }
-                    Err(e) => {
-                        tracing::warn!("Failed to fetch calendar attachment: {}", e);
+                    if let Some(event) = decode_base64_body(&data).and_then(|ics| parse_ics_content(&ics)) {
+                        return Some(event);
                     }
                 }
+                Err(e) => tracing::warn!("Failed to fetch calendar attachment: {}", e),
             }
         }
-
-        let has_attachment = !attachments.is_empty();
-
-        Thread {
-            gmail_thread_id: detail.id,
-            account_id: String::new(),
-            subject,
-            snippet,
-            last_message_date: last_date,
-            unread_count,
-            labels,
-            participants,
-            has_attachment,
-            attachments,
-            calendar_event,
-        }
+        None
     }
 
     /// Send an email (with optional attachments)
@@ -1040,6 +966,76 @@ fn extract_email_address(from: &str) -> String {
     }
     // Already just an email address
     from.trim().to_string()
+}
+
+/// A thread list entry built from a summary fetch, before any attachment data
+/// (inline images, calendar invites) is loaded
+fn thread_summary(detail: ThreadDetail) -> Thread {
+    let messages = detail.messages.unwrap_or_default();
+    let latest = messages.last();
+    // A reaction's subject is "Re: <emoji>" and its snippet "Reacted with ..."
+    let latest_content = messages.iter().rev().find(|m| !is_reaction_summary(m)).or(latest);
+
+    let subject = latest_content
+        .and_then(|m| m.payload.as_ref())
+        .and_then(|p| find_header(p.headers.as_deref(), "Subject"))
+        .map(str::to_string)
+        .unwrap_or_else(|| "(No Subject)".to_string());
+
+    let snippet = latest_content.and_then(|m| m.snippet.clone()).unwrap_or_default();
+
+    let last_message_date = latest
+        .and_then(|m| m.internal_date.as_ref())
+        .and_then(|d| d.parse::<i64>().ok())
+        .and_then(DateTime::from_timestamp_millis)
+        .unwrap_or_else(Utc::now);
+
+    let unread_count = messages
+        .iter()
+        .filter(|m| m.label_ids.as_ref().is_some_and(|labels| labels.iter().any(|l| l == "UNREAD")))
+        .count() as i32;
+
+    let attachments: Vec<Attachment> = messages
+        .iter()
+        .flat_map(|msg| {
+            let parts = msg.payload.as_ref().map(|p| &p.parts).unwrap_or(&None);
+            extract_attachments_from_parts(parts).into_iter().map(|info| Attachment {
+                message_id: msg.id.clone(),
+                attachment_id: info.attachment_id,
+                filename: info.filename,
+                mime_type: info.mime_type,
+                size: info.size,
+                inline_data: None,
+                content_id: info.content_id,
+            })
+        })
+        .collect();
+
+    Thread {
+        gmail_thread_id: detail.id,
+        account_id: String::new(),
+        subject,
+        snippet,
+        last_message_date,
+        unread_count,
+        labels: thread_labels(&messages),
+        participants: thread_participants(&messages),
+        has_attachment: !attachments.is_empty(),
+        attachments,
+        calendar_event: None,
+    }
+}
+
+fn is_reaction_summary(message: &MessageDetail) -> bool {
+    fn has_reaction_part(parts: &[MessagePart]) -> bool {
+        parts.iter().any(|p| {
+            p.mime_type == REACTION_MIME_TYPE || p.parts.as_deref().is_some_and(has_reaction_part)
+        })
+    }
+    message.payload.as_ref().is_some_and(|p| {
+        p.mime_type.as_deref() == Some(REACTION_MIME_TYPE)
+            || p.parts.as_deref().is_some_and(has_reaction_part)
+    })
 }
 
 /// Thread-level labels as Gmail defines them: a thread carries a label when any
@@ -2568,6 +2564,45 @@ mod tests {
             vec![("att-img", "logo@x.png", Some("logo@x")), ("att-pdf", "plan.pdf", None)]
         );
         assert_eq!(thread_participants(&messages), vec!["ann@example.com"]);
+    }
+
+    #[test]
+    fn thread_summary_takes_subject_from_latest_message_that_is_not_a_reaction() {
+        let response = r#"{
+            "id": "t1",
+            "messages": [
+                {"id": "m1", "labelIds": ["INBOX", "UNREAD"], "snippet": "Lunch at noon?",
+                 "internalDate": "1705330800000",
+                 "payload": {"mimeType": "text/plain",
+                             "headers": [{"name": "From", "value": "ann@example.com"},
+                                         {"name": "Subject", "value": "Plans"}]}},
+                {"id": "m2", "labelIds": ["INBOX", "UNREAD"], "snippet": "Reacted with 👍",
+                 "internalDate": "1705334400000",
+                 "payload": {"mimeType": "multipart/alternative",
+                             "headers": [{"name": "From", "value": "bob@example.com"},
+                                         {"name": "Subject", "value": "Re: 👍"}],
+                             "parts": [{"mimeType": "text/plain", "body": {"size": 5}},
+                                       {"mimeType": "text/vnd.google.email-reaction+json", "body": {"size": 30}}]}}
+            ]
+        }"#;
+        let thread = thread_summary(serde_json::from_str(response).unwrap());
+        assert_eq!(thread.gmail_thread_id, "t1");
+        assert_eq!(thread.subject, "Plans");
+        assert_eq!(thread.snippet, "Lunch at noon?");
+        // Ordering still follows the newest activity
+        assert_eq!(thread.last_message_date.timestamp_millis(), 1705334400000);
+        assert_eq!(thread.unread_count, 2);
+        assert_eq!(thread.participants, vec!["ann@example.com", "bob@example.com"]);
+        assert!(!thread.has_attachment);
+        assert!(thread.calendar_event.is_none());
+    }
+
+    #[test]
+    fn thread_summary_defaults_when_headers_are_missing() {
+        let thread = thread_summary(serde_json::from_str(r#"{"id": "t2"}"#).unwrap());
+        assert_eq!(thread.subject, "(No Subject)");
+        assert_eq!(thread.snippet, "");
+        assert_eq!(thread.unread_count, 0);
     }
 
     #[test]
