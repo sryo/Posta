@@ -2367,6 +2367,25 @@ function App() {
     }
   }
 
+  async function deleteEvent(event: GoogleCalendarEvent) {
+    const account = selectedAccount();
+    if (!account) return;
+    try {
+      await deleteCalendarEvent(account.id, event.calendar_id, event.id);
+      // Every calendar card can be showing the event
+      setCardCalendarEvents(produce(s => {
+        for (const cId of Object.keys(s)) {
+          s[cId] = s[cId].filter(e => e.id !== event.id);
+        }
+      }));
+      showToast('Event deleted');
+      if (activeEvent()?.id === event.id) closeEvent();
+    } catch (e) {
+      console.error('Failed to delete event:', e);
+      showToast(String(e));
+    }
+  }
+
   async function handleMoveEventToCalendar(destinationCalendarId: string) {
     const event = activeEvent();
     const account = selectedAccount();
@@ -4229,6 +4248,7 @@ function App() {
                                               startBatchReply={startBatchReply}
                                               handleForward={handleForward}
                                               handleThreadAction={handleThreadAction}
+                                              onDeleteEvent={deleteEvent}
                                               showToast={showToast}
                                             />
                                           </Show>
@@ -5040,25 +5060,7 @@ function App() {
               editing: { id: event.id, calendarId: event.calendar_id },
             }));
           }}
-          onDelete={async () => {
-            const event = activeEvent();
-            const account = selectedAccount();
-            if (!event || !account) return;
-            try {
-              await deleteCalendarEvent(account.id, event.calendar_id, event.id);
-              // Every calendar card can be showing the event
-              setCardCalendarEvents(produce(s => {
-                for (const cId of Object.keys(s)) {
-                  s[cId] = s[cId].filter(e => e.id !== event.id);
-                }
-              }));
-              showToast('Event deleted');
-              closeEvent();
-            } catch (e) {
-              console.error('Failed to delete event:', e);
-              showToast(String(e));
-            }
-          }}
+          onDelete={() => { const event = activeEvent(); if (event) deleteEvent(event); }}
           onOpenCalendars={() => { fetchAvailableCalendars(); setCalendarDrawerOpen(true); }}
           calendarDrawerOpen={calendarDrawerOpen()}
           onCloseCalendarDrawer={() => setCalendarDrawerOpen(false)}
