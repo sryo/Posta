@@ -108,6 +108,10 @@ export async function runOAuthFlow(): Promise<Account> {
   return await invoke('run_oauth_flow');
 }
 
+export async function cancelOAuthFlow(): Promise<void> {
+  return invoke("cancel_oauth_flow");
+}
+
 export async function getAccounts(): Promise<Account[]> {
   return invoke("get_accounts");
 }

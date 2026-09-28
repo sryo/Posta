@@ -605,6 +605,20 @@ pub async fn run_oauth_flow(
     finalize_oauth(&access_token, &refresh_token, expires_in, &app_handle, &state).await
 }
 
+/// Stop the sign-in waiting on the browser; it then fails with "OAuth flow
+/// cancelled" and releases the callback port
+#[tauri::command]
+pub async fn cancel_oauth_flow(state: State<'_, AppState>) -> Result<(), String> {
+    cancel_pending_oauth(&state.oauth_cancel)
+}
+
+fn cancel_pending_oauth(slot: &std::sync::Mutex<Option<Arc<AtomicBool>>>) -> Result<(), String> {
+    if let Some(flag) = slot.lock().map_err(|_| "Lock error")?.take() {
+        flag.store(true, Ordering::SeqCst);
+    }
+    Ok(())
+}
+
 struct UserInfo {
     email: String,
     picture: Option<String>,
@@ -2061,6 +2075,8 @@ mod tests {
     };
     use crate::models::{Account, Card, Thread};
     use std::collections::HashMap;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::Arc;
 
     fn account(id: &str, email: &str) -> Account {
         Account { id: id.into(), ..Account::new(email.into(), None) }
@@ -2677,6 +2693,17 @@ mod tests {
         assert_eq!(cached_at, three_days_ago);
         assert!(db.get_card_threads("deleted-card").unwrap().is_none(), "orphaned cache removed");
         std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn cancelling_sign_in_stops_the_flow_waiting_on_the_browser() {
+        let flag = Arc::new(AtomicBool::new(false));
+        let slot = std::sync::Mutex::new(Some(flag.clone()));
+        super::cancel_pending_oauth(&slot).unwrap();
+        assert!(flag.load(Ordering::SeqCst));
+        assert!(slot.lock().unwrap().is_none());
+        // Nothing in flight: nothing to do
+        super::cancel_pending_oauth(&slot).unwrap();
     }
 
     #[test]

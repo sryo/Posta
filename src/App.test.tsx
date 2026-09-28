@@ -1961,6 +1961,22 @@ describe("App quick reply feedback", () => {
 });
 
 describe("App sign-in flows", () => {
+  it("cancels a sign-in waiting on the browser without showing an error", async () => {
+    handlers.get_accounts = () => [];
+    let rejectFlow!: (e: unknown) => void;
+    handlers.run_oauth_flow = () => new Promise((_, reject) => { rejectFlow = reject; });
+    handlers.cancel_oauth_flow = () => { rejectFlow("OAuth callback error: OAuth flow cancelled"); return null; };
+    render(() => <App />);
+    fireEvent.click(await screen.findByText("Sign in with Google"));
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith("run_oauth_flow", undefined));
+    fireEvent.click(await screen.findByRole("button", { name: "Cancel" }));
+
+    expect(await screen.findByText("Sign in with Google")).toBeInTheDocument();
+    expect(invoke).toHaveBeenCalledWith("cancel_oauth_flow", undefined);
+    expect(screen.queryByText(/cancelled/)).not.toBeInTheDocument();
+    expect(screen.queryByText("Complete sign-in in your browser...")).not.toBeInTheDocument();
+  });
+
   it("connects with credentials entered in Settings", async () => {
     handlers.get_accounts = () => [];
     handlers.get_stored_credentials = () => null;

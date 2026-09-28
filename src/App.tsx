@@ -63,6 +63,7 @@ import {
   deleteCalendarEvent,
   updateCalendarEvent,
   pullFromICloud,
+  cancelOAuthFlow,
   getCachedCardEvents,
   saveCachedCardEvents,
   createCalendarEvent,
@@ -1560,6 +1561,7 @@ function App() {
 
     setAuthLoading(true);
     setError(null);
+    oauthCancelled = false;
     try {
       if (storedCreds) {
         await configureAuth({
@@ -1567,12 +1569,19 @@ function App() {
           client_secret: storedCreds.client_secret,
         });
       }
+      if (oauthCancelled) return;
       await afterAuth(await runOAuthFlow());
     } catch (e) {
-      setError(String(e));
+      if (!oauthCancelled) setError(String(e));
     } finally {
       setAuthLoading(false);
     }
+  }
+
+  let oauthCancelled = false;
+  function cancelSignIn() {
+    oauthCancelled = true;
+    cancelOAuthFlow().catch(e => console.warn("Failed to cancel sign-in:", e));
   }
 
   function handleSignIn() {
@@ -3836,6 +3845,7 @@ function App() {
         <div class="auth-screen">
           <div class="auth-spinner"></div>
           <p>Complete sign-in in your browser...</p>
+          <button class="btn btn-ghost" onClick={cancelSignIn}>Cancel</button>
         </div>
       </Show>
 
