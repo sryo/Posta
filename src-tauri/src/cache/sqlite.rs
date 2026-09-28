@@ -107,14 +107,7 @@ impl CacheDb {
     pub fn get_accounts(&self) -> Result<Vec<Account>, CacheError> {
         let conn = self.conn.lock().map_err(|_| CacheError::Lock)?;
         let mut stmt = conn.prepare("SELECT id, email, picture, signature FROM accounts ORDER BY email")?;
-        let rows = stmt.query_map([], |row| {
-            Ok(Account {
-                id: row.get(0)?,
-                email: row.get(1)?,
-                picture: row.get(2)?,
-                signature: row.get(3)?,
-            })
-        })?;
+        let rows = stmt.query_map([], account_from_row)?;
         rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
     }
 
@@ -123,19 +116,9 @@ impl CacheDb {
         let mut stmt = conn.prepare(
             "SELECT id, email, picture, signature FROM accounts WHERE email = ?1",
         )?;
-        let result = stmt.query_row(params![email], |row| {
-            Ok(Account {
-                id: row.get(0)?,
-                email: row.get(1)?,
-                picture: row.get(2)?,
-                signature: row.get(3)?,
-            })
-        });
-        match result {
-            Ok(account) => Ok(Some(account)),
-            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
-            Err(e) => Err(e.into()),
-        }
+        stmt.query_row(params![email], account_from_row)
+            .optional()
+            .map_err(Into::into)
     }
 
     pub fn insert_account(&self, account: &Account) -> Result<(), CacheError> {
@@ -353,13 +336,9 @@ impl CacheDb {
     pub fn get_history_id(&self, account_id: &str) -> Result<Option<String>, CacheError> {
         let conn = self.conn.lock().map_err(|_| CacheError::Lock)?;
         let mut stmt = conn.prepare("SELECT history_id FROM sync_state WHERE account_id = ?1")?;
-        let result = stmt.query_row(params![account_id], |row| row.get(0));
-
-        match result {
-            Ok(history_id) => Ok(Some(history_id)),
-            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
-            Err(e) => Err(e.into()),
-        }
+        stmt.query_row(params![account_id], |row| row.get(0))
+            .optional()
+            .map_err(Into::into)
     }
 
     pub fn set_history_id(&self, account_id: &str, history_id: &str) -> Result<(), CacheError> {
@@ -377,6 +356,15 @@ impl CacheDb {
         conn.execute("DELETE FROM sync_state WHERE account_id = ?1", params![account_id])?;
         Ok(())
     }
+}
+
+fn account_from_row(row: &rusqlite::Row) -> rusqlite::Result<Account> {
+    Ok(Account {
+        id: row.get(0)?,
+        email: row.get(1)?,
+        picture: row.get(2)?,
+        signature: row.get(3)?,
+    })
 }
 
 fn has_column(conn: &Connection, table: &str, column: &str) -> Result<bool, CacheError> {
