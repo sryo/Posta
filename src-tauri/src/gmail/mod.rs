@@ -1444,7 +1444,8 @@ fn strip_html_tags(html: &str) -> String {
                     .trim_end_matches('/')
                     .to_ascii_lowercase();
                 if let Some(hidden) = &hidden_element {
-                    if is_closing && *hidden == name {
+                    // </head> may be omitted; <body> then ends the head
+                    if (is_closing && *hidden == name) || (hidden == "head" && name == "body") {
                         hidden_element = None;
                     }
                 } else if !is_closing && matches!(name.as_str(), "style" | "script" | "head") {
@@ -1967,6 +1968,7 @@ mod tests {
         let html = "<html><head><title>Promo</title><style>p { color: red; }</style></head>\
                     <body><STYLE type=\"text/css\">.x{}</STYLE>Hi<script>alert(1)</script> there</body></html>";
         assert_eq!(strip_html_tags(html), "Hi there");
+        assert_eq!(strip_html_tags("<head><title>Promo</title><body>Hi</body>"), "Hi");
     }
 
     #[test]
