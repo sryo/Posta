@@ -201,6 +201,28 @@ describe("App attachments", () => {
     await waitFor(() => expect(compose).toHaveTextContent("report.pdf"));
   });
 
+  it("offers to save an attachment that is refused for opening because it can run code", async () => {
+    threadsByCard["card-a"] = [{
+      ...thread("t-a", "Mail for A"),
+      has_attachment: true,
+      attachments: [{
+        message_id: "m1", attachment_id: "att1", filename: "setup.pkg",
+        mime_type: "application/octet-stream", size: 10, inline_data: null, content_id: null,
+      }],
+    }];
+    handlers.open_attachment = () => {
+      throw "setup.pkg can run code on your computer, so Posta won't open it. Save it and open it yourself only if you trust the sender.";
+    };
+    handlers.save_attachment = () => "/Users/me/Downloads/setup.pkg";
+    render(() => <App />);
+
+    fireEvent.click(await screen.findByTitle("setup.pkg (10 B)"));
+    fireEvent.click(await screen.findByRole("button", { name: "Save instead" }));
+
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith("save_attachment", expect.objectContaining({ attachmentId: "att1", filename: "setup.pkg" })));
+    expect(await screen.findByText("Saved to /Users/me/Downloads/setup.pkg")).toBeInTheDocument();
+  });
+
   it("opens a mailto link as a new email without the previous compose's attachments", async () => {
     threadsByCard["card-a"] = [{
       ...thread("t-a", "Mail for A"),

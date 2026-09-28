@@ -241,6 +241,7 @@ function App() {
   const [lastAction, setLastAction] = createSignal<UndoableAction | null>(null);
   const [toast, setToast] = createSignal<{
     message: string | null;
+    action?: { label: string; run: () => void };
     visible: boolean;
     closing: boolean;
     key: number;
@@ -3176,6 +3177,15 @@ function App() {
       );
     } catch (e) {
       console.error('Failed to open attachment:', e);
+      // The backend refuses to open files that can run code; saving them is
+      // still allowed
+      if (String(e).includes("won't open it")) {
+        showToast(`${filename} can run code, so Posta won't open it`, {
+          label: "Save instead",
+          run: () => downloadAttachment(messageId, attachmentId, filename, mimeType, inlineData),
+        });
+        return;
+      }
       setError(`Failed to open attachment: ${e}`);
     }
   }
@@ -3404,7 +3414,7 @@ function App() {
     }
   }
 
-  function showToast(message?: string) {
+  function showToast(message?: string, action?: { label: string; run: () => void }) {
     clearTimeout(toastTimeoutId);
     // Cancel a pending hide so it can't null out this newer toast
     clearTimeout(toastHideTimeoutId);
@@ -3416,6 +3426,7 @@ function App() {
     }
     setToast(prev => ({
       message: message || null,
+      action,
       visible: true,
       closing: false,
       key: (prev?.key ?? 0) + 1, // Increment key to force remount and restart animation
@@ -5353,6 +5364,11 @@ function App() {
               <span class="toast-message">{toast()?.message || (lastAction() ? actionLabel(lastAction()!.action, lastAction()!.threadIds.length) : '')}</span>
               <Show when={!toast()?.message && lastAction()}>
                 <button class="toast-undo-btn" onClick={undoLastAction}>Undo <span class="shortcut-hint">z</span></button>
+              </Show>
+              <Show when={toast()?.action}>
+                {(action) => (
+                  <button class="toast-undo-btn" onClick={() => { hideToast(); action().run(); }}>{action().label}</button>
+                )}
               </Show>
               <button class="toast-close-btn" onClick={hideToast} title="Dismiss">
                 <CloseIcon />
