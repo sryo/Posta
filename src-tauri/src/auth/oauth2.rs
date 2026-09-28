@@ -271,20 +271,35 @@ fn token_keychain_key(account_id: &str) -> String {
 const CREDENTIALS_KEYCHAIN_KEY: &str = "oauth:credentials";
 const GEMINI_KEYCHAIN_KEY: &str = "gemini:api_key";
 
-/// Write a secret to the plaintext fallback file, restricting it to the
-/// current user on unix
+/// Write a secret to the plaintext fallback file, readable only by the
+/// current user on unix. The file may be the only copy of a refresh token,
+/// so the new one is written beside it and renamed over it: a crash leaves
+/// the old secret or the new one, never a truncated file.
 fn write_secret_file(path: &Path, secret: &str, what: &str) -> Result<(), AuthError> {
-    if let Some(parent) = path.parent() {
-        let _ = std::fs::create_dir_all(parent);
-    }
-    std::fs::write(path, secret)
-        .map_err(|e| AuthError::Keyring(format!("Failed to store {}: {}", what, e)))?;
+    let fail = |e: std::io::Error| AuthError::Keyring(format!("Failed to store {}: {}", what, e));
+    let parent = path.parent().ok_or_else(|| fail(std::io::ErrorKind::InvalidInput.into()))?;
+    let mut dir = std::fs::DirBuilder::new();
+    dir.recursive(true);
     #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600));
+    std::os::unix::fs::DirBuilderExt::mode(&mut dir, 0o700);
+    dir.create(parent).map_err(fail)?;
+
+    let tmp = parent.join(format!(".{}.tmp", uuid::Uuid::new_v4().simple()));
+    let written = (|| {
+        use std::io::Write;
+        let mut options = std::fs::OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
+        let mut file = options.open(&tmp)?;
+        file.write_all(secret.as_bytes())?;
+        file.sync_all()?;
+        std::fs::rename(&tmp, path)
+    })();
+    if written.is_err() {
+        let _ = std::fs::remove_file(&tmp);
     }
-    Ok(())
+    written.map_err(fail)
 }
 
 /// Keychain is the primary store; the plaintext file is only a fallback
@@ -530,6 +545,28 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("posta-{}-{}", name, uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
         dir
+    }
+
+    #[test]
+    fn rewriting_a_secret_file_replaces_it_whole_instead_of_truncating_it() {
+        use std::os::unix::fs::{MetadataExt, PermissionsExt};
+        let dir = temp_dir("replace");
+        let path = dir.join("tokens").join("acct.token");
+        write_secret_file(&path, "old-refresh", "token").unwrap();
+        // A second name for the first file: an in-place rewrite would show
+        // through it, and a crash mid-write would leave it truncated
+        let first = dir.join("first");
+        std::fs::hard_link(&path, &first).unwrap();
+
+        write_secret_file(&path, "new-refresh", "token").unwrap();
+
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "new-refresh");
+        assert_eq!(std::fs::read_to_string(&first).unwrap(), "old-refresh");
+        assert_ne!(std::fs::metadata(&path).unwrap().ino(), std::fs::metadata(&first).unwrap().ino());
+        assert_eq!(std::fs::metadata(&path).unwrap().permissions().mode() & 0o777, 0o600);
+        let names: Vec<_> = std::fs::read_dir(path.parent().unwrap()).unwrap().map(|e| e.unwrap().file_name()).collect();
+        assert_eq!(names, ["acct.token"], "no temporary file is left behind");
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
