@@ -85,7 +85,6 @@ import {
   addReplyPrefix,
   addForwardPrefix,
   toDateInputString,
-  escapeHtml,
 } from "./utils";
 import "./App.css";
 import {
@@ -128,6 +127,7 @@ import { readFilesAsAttachments } from "./app/attachments";
 import { eventTimesFromForm, smartEventDefaults } from "./app/eventForm";
 import { composePlacement } from "./app/composePlacement";
 import { cidImagesToFetch, fetchCidImages } from "./app/cidImages";
+import { sendPending, type PendingSend } from "./app/pendingSend";
 import { getSmartEventTime, groupCalendarEvents, isUserLabel, mergeThreadGroups, regroupThreads, type CalendarEventGroup } from "./app/grouping";
 
 function App() {
@@ -250,20 +250,9 @@ function App() {
   let toastHideTimeoutId: number | undefined;
 
   // Undo send state
-  interface PendingSend {
-    accountId: string;
-    to: string;
-    cc: string;
-    bcc: string;
-    subject: string;
-    body: string;
-    attachments: SendAttachment[];
-    reply?: { threadId: string; messageId?: string };
-    isHtml?: boolean;
-  }
   const undoableSend = createUndoableSend<PendingSend>({
     delayMs: 5000,
-    send: executeActualSend,
+    send: sendPending,
     onFailed: (pending, e) => {
       console.error("Failed to send email:", e);
       restoreSend(pending);
@@ -2059,31 +2048,6 @@ function App() {
     // closeCompose clears the draft and cancels any pending draft save
     closeCompose();
     undoableSend.queue(pending);
-  }
-
-  async function executeActualSend(pending: PendingSend) {
-    // Convert plain text to HTML if sending as HTML
-    let body = pending.body;
-    if (pending.isHtml) {
-      body = `<div>${escapeHtml(body).replace(/\n/g, '<br>\n')}</div>`;
-    }
-
-    if (pending.reply) {
-      await replyToThread(
-        pending.accountId,
-        pending.reply.threadId,
-        pending.to,
-        pending.cc,
-        pending.bcc,
-        pending.subject,
-        body,
-        pending.reply.messageId,
-        pending.attachments,
-        pending.isHtml
-      );
-    } else {
-      await sendEmail(pending.accountId, pending.to, pending.cc, pending.bcc, pending.subject, body, pending.attachments, pending.isHtml);
-    }
   }
 
   // The draft was already cleared and compose closed when the send was
