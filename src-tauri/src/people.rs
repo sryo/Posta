@@ -129,7 +129,8 @@ impl PeopleClient {
         }
         let mut all_contacts = Vec::new();
         let mut page_token: Option<String> = None;
-        let page_size = max_contacts.min(100) as i32;
+        // The People API serves up to 1000 connections a page
+        let page_size = max_contacts.min(1000) as i32;
 
         loop {
             let (contacts, next_token) = self
@@ -259,6 +260,15 @@ mod tests {
         let names: Vec<&str> = contacts.iter().map(|c| c.resource_name.as_str()).collect();
         assert_eq!(names, vec!["people/1", "people/2", "people/3"]);
         assert_eq!(server.requests().len(), 2);
+    }
+
+    #[tokio::test]
+    async fn the_contacts_posta_suggests_come_in_one_request() {
+        let server = StubServer::start(|_, _| (200, serde_json::json!({ "connections": [person(1)] }).to_string())).await;
+        stub_client(&server).fetch_all_contacts(200).await.unwrap();
+        let requests = server.requests();
+        assert_eq!(requests.len(), 1);
+        assert!(requests[0].1.contains("pageSize=200"), "{}", requests[0].1);
     }
 
     #[tokio::test]
