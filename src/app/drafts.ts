@@ -137,15 +137,8 @@ export function createDraftSync() {
       setSaving(true);
     }
     try {
-      let result: { id: string };
-      try {
-        result = await saveDraftToGmail(accountId, sentDraftId, draft);
-      } catch (e) {
-        // Sent or deleted from another client: start a new Gmail draft
-        if (!sentDraftId || !String(e).includes("API error 404")) throw e;
-        if (startedIn === epoch) setGmailDraftId(null);
-        result = await saveDraftToGmail(accountId, null, draft);
-      }
+      // A Gmail draft deleted or sent elsewhere is recreated by the backend
+      const result = await saveDraftToGmail(accountId, sentDraftId, draft);
       if (startedIn !== epoch) {
         const stored = safeGetJSON<Draft | null>(key, null);
         if (clearedEpochs.has(startedIn) || (!stored && storedLocally)) {

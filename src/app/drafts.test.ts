@@ -368,17 +368,14 @@ describe("createDraftSync", () => {
     expect(localStorage.getItem("k")).toBeNull();
   });
 
-  it("creates a new Gmail draft when the one it was updating is gone", async () => {
+  it("adopts the new Gmail draft the backend made when the one it was updating is gone", async () => {
     localStorage.setItem("k", JSON.stringify({ ...fields("saved"), gmailDraftId: "gone", savedAt: 1 }));
-    handlers.save_draft = ({ draftId }) => {
-      if (draftId === "gone") throw "Gmail API error: API error 404 Not Found: Requested entity was not found.";
-      return { id: "d2" };
-    };
+    handlers.save_draft = () => ({ id: "d2" });
     const drafts = sync();
     drafts.load("k");
     await drafts.save("k", "a", fields("edited"));
 
-    expect(invoke).toHaveBeenLastCalledWith("save_draft", expect.objectContaining({ draftId: null, body: "edited" }));
+    expect(invoke).toHaveBeenCalledTimes(1);
     expect(drafts.gmailDraftId()).toBe("d2");
     expect(JSON.parse(localStorage.getItem("k")!)).toMatchObject({ body: "edited", gmailDraftId: "d2" });
   });
