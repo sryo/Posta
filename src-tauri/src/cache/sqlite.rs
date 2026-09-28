@@ -232,6 +232,22 @@ impl CacheDb {
         Ok(())
     }
 
+    /// Remove cached threads and events of cards that no longer exist. Caches
+    /// of existing cards are kept however old: they are shown until the
+    /// refresh replaces them.
+    pub fn clear_orphaned_card_cache(&self) -> Result<usize, CacheError> {
+        let conn = self.conn.lock().map_err(|_| CacheError::Lock)?;
+        let thread_count = conn.execute(
+            "DELETE FROM card_thread_cache WHERE card_id NOT IN (SELECT id FROM cards)",
+            [],
+        )?;
+        let calendar_count = conn.execute(
+            "DELETE FROM card_calendar_cache WHERE card_id NOT IN (SELECT id FROM cards)",
+            [],
+        )?;
+        Ok(thread_count + calendar_count)
+    }
+
     /// Clear stale card caches (older than max_age_hours)
     pub fn clear_stale_card_cache(&self, max_age_hours: i64) -> Result<usize, CacheError> {
         let conn = self.conn.lock().map_err(|_| CacheError::Lock)?;
@@ -685,6 +701,36 @@ mod tests {
         let names: Vec<_> = db.get_cards("a").unwrap().into_iter().map(|c| c.name).collect();
         assert_eq!(names, ["Keep", "Gone"]);
         assert!(db.get_card_threads(&gone.id).unwrap().is_some());
+    }
+
+    #[test]
+    fn old_cache_of_an_existing_card_survives_and_orphans_go() {
+        let db = db();
+        let card = Card::new("a".into(), "A".into(), "q".into(), 0);
+        db.insert_card(&card).unwrap();
+        let two_days_ago = chrono::Utc::now().timestamp() - 2 * 24 * 3600;
+        {
+            let conn = db.conn.lock().unwrap();
+            for id in [card.id.as_str(), "deleted-card"] {
+                conn.execute(
+                    "INSERT INTO card_thread_cache (card_id, thread_data, cached_at) VALUES (?1, '[]', ?2)",
+                    params![id, two_days_ago],
+                )
+                .unwrap();
+                conn.execute(
+                    "INSERT INTO card_calendar_cache (card_id, events_data, cached_at) VALUES (?1, '[]', ?2)",
+                    params![id, two_days_ago],
+                )
+                .unwrap();
+            }
+        }
+
+        assert_eq!(db.clear_orphaned_card_cache().unwrap(), 2);
+
+        assert_eq!(db.get_card_threads(&card.id).unwrap().unwrap().2, two_days_ago);
+        assert!(db.get_card_events(&card.id).unwrap().is_some());
+        assert!(db.get_card_threads("deleted-card").unwrap().is_none());
+        assert!(db.get_card_events("deleted-card").unwrap().is_none());
     }
 
     #[test]
