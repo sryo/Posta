@@ -46,10 +46,10 @@ struct ConnectionsResponse {
     next_page_token: Option<String>,
 }
 
-fn connections_url(page_size: i32, page_token: Option<&str>) -> String {
+fn connections_url(api_base: &str, page_size: i32, page_token: Option<&str>) -> String {
     let mut url = format!(
         "{}/people/me/connections?personFields=names,emailAddresses,photos&sortOrder=LAST_MODIFIED_DESCENDING&pageSize={}",
-        PEOPLE_API_BASE, page_size
+        api_base, page_size
     );
     if let Some(token) = page_token {
         url.push_str(&format!("&pageToken={}", urlencoding::encode(token)));
@@ -70,13 +70,15 @@ fn people_error(status: reqwest::StatusCode, body: &str) -> String {
 pub struct PeopleClient {
     http_client: reqwest::Client,
     access_token: String,
+    api_base: String,
 }
 
 impl PeopleClient {
     pub fn new(access_token: String) -> Self {
         Self {
-            http_client: reqwest::Client::new(),
+            http_client: crate::calendar::HTTP_CLIENT.clone(),
             access_token,
+            api_base: PEOPLE_API_BASE.to_string(),
         }
     }
 
@@ -86,7 +88,7 @@ impl PeopleClient {
         page_size: i32,
         page_token: Option<&str>,
     ) -> Result<(Vec<Contact>, Option<String>), String> {
-        let url = connections_url(page_size, page_token);
+        let url = connections_url(&self.api_base, page_size, page_token);
 
         let resp = self
             .http_client
@@ -187,27 +189,29 @@ fn connection_to_contact(conn: PeopleConnection) -> Option<Contact> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::calendar::stub_server::StubServer;
 
     #[test]
     fn connections_url_asks_for_most_recently_modified_first() {
         // The list is capped, so with the API's default (oldest first) a
         // large address book would only yield its stalest contacts
-        let url = connections_url(100, None);
+        let url = connections_url(PEOPLE_API_BASE, 100, None);
         assert!(url.starts_with("https://people.googleapis.com/v1/people/me/connections?"));
         assert!(url.contains("personFields=names,emailAddresses,photos"));
         assert!(url.contains("pageSize=100"));
         assert!(url.contains("sortOrder=LAST_MODIFIED_DESCENDING"));
         assert!(!url.contains("pageToken"));
 
-        assert!(connections_url(100, Some("a+b/c")).contains("&pageToken=a%2Bb%2Fc"));
+        assert!(connections_url(PEOPLE_API_BASE, 100, Some("a+b/c")).contains("&pageToken=a%2Bb%2Fc"));
     }
 
     #[tokio::test]
     async fn fetch_all_contacts_with_no_budget_makes_no_request() {
-        // An invalid token would fail any real request, so Ok proves none was made
-        let client = PeopleClient::new("invalid".to_string());
+        let server = StubServer::start(|_, _| (200, serde_json::json!({ "connections": [person(1)] }).to_string())).await;
+        let client = stub_client(&server);
         assert!(client.fetch_all_contacts(0).await.unwrap().is_empty());
         assert!(client.fetch_all_contacts(-5).await.unwrap().is_empty());
+        assert!(server.requests().is_empty());
     }
 
     #[test]
@@ -230,6 +234,43 @@ mod tests {
         // The token cache is evicted on this exact wording
         let expired = people_error(reqwest::StatusCode::UNAUTHORIZED, "{}");
         assert!(expired.contains("401 Unauthorized"), "{expired}");
+    }
+
+    fn stub_client(server: &StubServer) -> PeopleClient {
+        PeopleClient { api_base: server.base.clone(), ..PeopleClient::new("token".into()) }
+    }
+
+    fn person(n: usize) -> serde_json::Value {
+        serde_json::json!({ "resourceName": format!("people/{n}"), "emailAddresses": [{ "value": format!("p{n}@x.com") }] })
+    }
+
+    #[tokio::test]
+    async fn contacts_follow_pages_up_to_the_limit() {
+        let server = StubServer::start(|_, target| {
+            let body = if target.contains("pageToken=2") {
+                serde_json::json!({ "connections": [person(3), person(4)], "nextPageToken": "3" })
+            } else {
+                serde_json::json!({ "connections": [person(1), person(2)], "nextPageToken": "2" })
+            };
+            (200, body.to_string())
+        })
+        .await;
+        let contacts = stub_client(&server).fetch_all_contacts(3).await.unwrap();
+        let names: Vec<&str> = contacts.iter().map(|c| c.resource_name.as_str()).collect();
+        assert_eq!(names, vec!["people/1", "people/2", "people/3"]);
+        assert_eq!(server.requests().len(), 2);
+    }
+
+    #[tokio::test]
+    async fn contact_fetches_reuse_connections() {
+        // Clients share the pool (and request timeout) of the other Google
+        // clients instead of opening a connection per fetch
+        let server = StubServer::start(|_, _| (200, serde_json::json!({ "connections": [person(1)] }).to_string())).await;
+        for _ in 0..3 {
+            stub_client(&server).fetch_all_contacts(10).await.unwrap();
+        }
+        assert_eq!(server.requests().len(), 3);
+        assert_eq!(server.connections(), 1);
     }
 
     fn connection(json: serde_json::Value) -> PeopleConnection {

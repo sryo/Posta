@@ -30,7 +30,7 @@ fn build_http_client(timeout: std::time::Duration) -> reqwest::Client {
 
 /// One connection pool for every Google API client, so each command doesn't
 /// pay for a fresh TLS handshake
-static HTTP_CLIENT: LazyLock<reqwest::Client> = LazyLock::new(|| build_http_client(REQUEST_TIMEOUT));
+pub(crate) static HTTP_CLIENT: LazyLock<reqwest::Client> = LazyLock::new(|| build_http_client(REQUEST_TIMEOUT));
 
 type CalendarListSlot = Arc<tokio::sync::Mutex<Option<(std::time::Instant, Result<Arc<Vec<CalendarInfo>>, String>)>>>;
 
