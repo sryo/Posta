@@ -1065,6 +1065,99 @@ fn attachment_filename(filename: &str, mime_type: Option<&str>) -> String {
     }
 }
 
+/// Extensions that run code or change the system when opened from the file
+/// manager, rather than being shown by a viewer
+const EXECUTABLE_EXTENSIONS: &[&str] = &[
+    "app", "command", "terminal", "tool", "sh", "bash", "zsh", "csh", "ksh", "fish",
+    "pkg", "mpkg", "workflow", "action", "scpt", "scptd", "applescript", "osax",
+    "prefpane", "mobileconfig", "kext", "plugin", "jar", "py", "pl", "rb", "php",
+    "fileloc", "inetloc", "webloc", "url", "desktop", "appimage", "run", "deb", "rpm",
+    "exe", "com", "scr", "msi", "msp", "bat", "cmd", "ps1", "vbs", "vbe", "js", "jse",
+    "wsf", "wsh", "hta", "lnk", "reg", "cpl",
+];
+
+fn is_executable_attachment(filename: &str) -> bool {
+    let trimmed = filename.trim_end_matches(|c: char| c == '.' || c.is_whitespace());
+    match trimmed.rsplit_once('.') {
+        Some((_, ext)) => EXECUTABLE_EXTENSIONS.iter().any(|e| e.eq_ignore_ascii_case(ext)),
+        None => false,
+    }
+}
+
+/// Per-message directory under `base`, so same-named attachments from
+/// different messages don't overwrite each other
+fn attachment_temp_dir(base: &std::path::Path, message_id: &str) -> std::path::PathBuf {
+    let safe: String = message_id
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric() || *c == '-' || *c == '_')
+        .collect();
+    base.join("posta-attachments")
+        .join(if safe.is_empty() { "message" } else { safe.as_str() })
+}
+
+/// Write `bytes` to `dir/filename`, or to `name (1).ext`, `name (2).ext`...
+/// when taken; checking and creating the name is one atomic step. With
+/// `reuse_identical`, a taken name that already holds these exact bytes is
+/// returned instead of writing another copy.
+fn write_unique_file(
+    dir: &std::path::Path,
+    filename: &str,
+    bytes: &[u8],
+    reuse_identical: bool,
+) -> std::io::Result<std::path::PathBuf> {
+    use std::io::Write;
+
+    let (stem, ext) = match filename.rsplit_once('.') {
+        Some((s, e)) if !s.is_empty() => (s, Some(e)),
+        _ => (filename, None),
+    };
+    for counter in 0..10_000 {
+        let candidate = match (counter, ext) {
+            (0, _) => filename.to_string(),
+            (n, Some(e)) => format!("{} ({}).{}", stem, n, e),
+            (n, None) => format!("{} ({})", stem, n),
+        };
+        let path = dir.join(candidate);
+        match std::fs::OpenOptions::new().write(true).create_new(true).open(&path) {
+            Ok(mut file) => {
+                if let Err(e) = file.write_all(bytes) {
+                    drop(file);
+                    let _ = std::fs::remove_file(&path);
+                    return Err(e);
+                }
+                return Ok(path);
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+                if reuse_identical && std::fs::read(&path).is_ok_and(|existing| existing == bytes) {
+                    return Ok(path);
+                }
+            }
+            Err(e) => return Err(e),
+        }
+    }
+    Err(std::io::Error::new(
+        std::io::ErrorKind::AlreadyExists,
+        format!("Too many files named {}", filename),
+    ))
+}
+
+/// Tag a file written from a sender's attachment with the quarantine
+/// attribute browsers put on downloads, so Gatekeeper vets it before it runs
+#[cfg(target_os = "macos")]
+fn mark_quarantined(path: &std::path::Path) {
+    let value = format!("0083;{:x};Posta;", chrono::Utc::now().timestamp());
+    let status = std::process::Command::new("/usr/bin/xattr")
+        .args(["-w", "com.apple.quarantine", &value])
+        .arg(path)
+        .status();
+    if !matches!(status, Ok(s) if s.success()) {
+        tracing::warn!("Failed to quarantine {:?}: {:?}", path, status);
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+fn mark_quarantined(_path: &std::path::Path) {}
+
 #[tauri::command]
 pub async fn open_attachment(
     account_id: String,
@@ -1075,13 +1168,23 @@ pub async fn open_attachment(
     inline_data: Option<String>,
     app_handle: tauri::AppHandle, state: State<'_, AppState>,
 ) -> Result<(), String> {
+    if is_executable_attachment(&attachment_filename(&filename, mime_type.as_deref())) {
+        return Err(format!(
+            "{} can run code on your computer, so Posta won't open it. Save it and open it yourself only if you trust the sender.",
+            filename
+        ));
+    }
+
     let (final_filename, bytes) = resolve_attachment_file(
         &account_id, &message_id, attachment_id, &filename,
         mime_type.as_deref(), inline_data, &app_handle, &state,
     ).await?;
 
-    let temp_path = std::env::temp_dir().join(&final_filename);
-    std::fs::write(&temp_path, &bytes).map_err(|e| format!("Failed to write temp file: {}", e))?;
+    let dir = attachment_temp_dir(&std::env::temp_dir(), &message_id);
+    std::fs::create_dir_all(&dir).map_err(|e| format!("Failed to create temp dir: {}", e))?;
+    let temp_path = write_unique_file(&dir, &final_filename, &bytes, true)
+        .map_err(|e| format!("Failed to write temp file: {}", e))?;
+    mark_quarantined(&temp_path);
 
     // Open with system default application
     open::that(&temp_path).map_err(|e| format!("Failed to open file: {}", e))?;
@@ -1110,23 +1213,9 @@ pub async fn save_attachment(
         .download_dir()
         .map_err(|e| format!("Failed to get downloads dir: {}", e))?;
 
-    // Avoid clobbering an existing file: name.ext, name (1).ext, name (2).ext...
-    let (stem, ext) = match final_filename.rsplit_once('.') {
-        Some((s, e)) if !s.is_empty() => (s.to_string(), Some(e.to_string())),
-        _ => (final_filename.clone(), None),
-    };
-    let mut path = download_dir.join(&final_filename);
-    let mut counter = 1;
-    while path.exists() {
-        let candidate = match &ext {
-            Some(e) => format!("{} ({}).{}", stem, counter, e),
-            None => format!("{} ({})", stem, counter),
-        };
-        path = download_dir.join(candidate);
-        counter += 1;
-    }
-
-    std::fs::write(&path, &bytes).map_err(|e| format!("Failed to write file: {}", e))?;
+    let path = write_unique_file(&download_dir, &final_filename, &bytes, false)
+        .map_err(|e| format!("Failed to write file: {}", e))?;
+    mark_quarantined(&path);
 
     Ok(path.to_string_lossy().to_string())
 }
@@ -1584,8 +1673,9 @@ pub async fn suggest_replies(
 #[cfg(test)]
 mod tests {
     use super::{
-        attachment_filename, icloud_card_account, is_auth_error, next_card_position,
-        sanitize_attachment_filename, vanished_thread_ids,
+        attachment_filename, attachment_temp_dir, icloud_card_account, is_auth_error,
+        is_executable_attachment, mark_quarantined, next_card_position,
+        sanitize_attachment_filename, vanished_thread_ids, write_unique_file,
     };
     use crate::models::{Account, Card, Thread};
     use std::collections::HashMap;
@@ -1687,6 +1777,85 @@ mod tests {
     fn attachment_filename_checks_extension_on_the_final_component() {
         assert_eq!(attachment_filename("v1.2/invoice", Some("application/pdf")), "invoice.pdf");
         assert_eq!(attachment_filename("../../evil.sh", Some("application/pdf")), "evil.sh");
+    }
+
+    fn scratch_dir() -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!("posta-test-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn executable_attachments_are_recognised_whatever_the_case() {
+        for name in ["run.command", "Setup.PKG", "x.terminal", "script.sh", "App.app", "evil.command. "] {
+            assert!(is_executable_attachment(name), "{}", name);
+        }
+        for name in ["report.pdf", "photo.jpeg", "notes", "command", "archive.zip", "sh.txt"] {
+            assert!(!is_executable_attachment(name), "{}", name);
+        }
+    }
+
+    #[test]
+    fn same_named_attachments_from_different_messages_get_different_dirs() {
+        let base = std::path::Path::new("/tmp/base");
+        let a = attachment_temp_dir(base, "18c4a");
+        let b = attachment_temp_dir(base, "18c4b");
+        assert_ne!(a, b);
+        assert!(a.starts_with(base));
+    }
+
+    #[test]
+    fn attachment_temp_dir_ignores_path_characters_in_the_message_id() {
+        let base = std::path::Path::new("/tmp/base");
+        let dir = attachment_temp_dir(base, "../../etc");
+        assert_eq!(dir, base.join("posta-attachments").join("etc"));
+        assert_eq!(attachment_temp_dir(base, "/.."), base.join("posta-attachments").join("message"));
+    }
+
+    #[test]
+    fn write_unique_file_never_overwrites() {
+        let dir = scratch_dir();
+        let first = write_unique_file(&dir, "a.txt", b"one", false).unwrap();
+        let second = write_unique_file(&dir, "a.txt", b"two", false).unwrap();
+        let third = write_unique_file(&dir, "a.txt", b"one", false).unwrap();
+        let bare = write_unique_file(&dir, "README", b"x", false).unwrap();
+        let bare2 = write_unique_file(&dir, "README", b"y", false).unwrap();
+        assert_eq!(first, dir.join("a.txt"));
+        assert_eq!(second, dir.join("a (1).txt"));
+        assert_eq!(third, dir.join("a (2).txt"));
+        assert_eq!(bare2, dir.join("README (1)"));
+        assert_eq!(std::fs::read(&first).unwrap(), b"one");
+        assert_eq!(std::fs::read(&second).unwrap(), b"two");
+        assert_eq!(std::fs::read(&bare).unwrap(), b"x");
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn write_unique_file_reuses_an_identical_copy_when_asked() {
+        let dir = scratch_dir();
+        let first = write_unique_file(&dir, "a.txt", b"one", true).unwrap();
+        assert_eq!(write_unique_file(&dir, "a.txt", b"one", true).unwrap(), first);
+        let other = write_unique_file(&dir, "a.txt", b"two", true).unwrap();
+        assert_eq!(other, dir.join("a (1).txt"));
+        assert_eq!(std::fs::read(&first).unwrap(), b"one");
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn written_attachments_carry_the_quarantine_attribute() {
+        let dir = scratch_dir();
+        let path = write_unique_file(&dir, "x.pdf", b"%PDF", false).unwrap();
+        mark_quarantined(&path);
+        let out = std::process::Command::new("/usr/bin/xattr")
+            .args(["-p", "com.apple.quarantine"])
+            .arg(&path)
+            .output()
+            .unwrap();
+        assert!(out.status.success());
+        let value = String::from_utf8_lossy(&out.stdout);
+        assert!(value.starts_with("0083;") && value.trim_end().ends_with(";Posta;"), "{}", value);
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     fn card_at(position: i32) -> Card {
