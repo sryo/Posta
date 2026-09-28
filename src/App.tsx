@@ -3626,6 +3626,13 @@ function App() {
               onMouseLeave={() => {
                 fabHoverTimeout = window.setTimeout(() => setComposeFabHovered(false), 250);
               }}
+              onFocusIn={() => {
+                clearTimeout(fabHoverTimeout);
+                setComposeFabHovered(true);
+              }}
+              onFocusOut={(e) => {
+                if (!e.currentTarget.contains(e.relatedTarget as Node | null)) setComposeFabHovered(false);
+              }}
             >
               <div
                 class="compose-btn-wrapper"
@@ -3645,20 +3652,32 @@ function App() {
                 <Show when={contactCandidates().length > 0}>
                   <div class={`compose-suggestions ${composeFabHovered() ? 'visible' : ''}`}>
                     <For each={contactCandidates().slice(0, 5)}>
-                      {(contact) => (
+                      {(contact) => {
+                        const writeTo = () => {
+                          startCompose({ to: contact.email, focusBody: true });
+                          setComposeFabHovered(false);
+                        };
+                        return (
                         <div
                           class="compose-suggestion-avatar"
+                          role="button"
+                          tabindex={composeFabHovered() ? 0 : -1}
+                          aria-label={`New email to ${contact.name || contact.email}`}
                           style={{ background: getAvatarColor(contact.name || contact.email) }}
                           title={contact.name ? `${contact.name} <${contact.email}>` : contact.email}
-                          onClick={() => {
-                            startCompose({ to: contact.email, focusBody: true });
-                            setComposeFabHovered(false);
+                          onClick={writeTo}
+                          onKeyDown={(e) => {
+                            if (e.key !== "Enter" && e.key !== " ") return;
+                            e.preventDefault();
+                            e.stopPropagation();
+                            writeTo();
                           }}
                         >
                           {(contact.name || contact.email).charAt(0).toUpperCase()}
                           <span class="suggestion-label">{contact.name || contact.email}</span>
                         </div>
-                      )}
+                        );
+                      }}
                     </For>
                   </div>
                 </Show>
@@ -3876,7 +3895,11 @@ function App() {
                             onClick={() => { if (!wasDragging) toggleCardCollapse(card.id); }}
                             {...sortable.dragActivators}
                           >
-                            <button class="collapse-btn">
+                            <button
+                              class="collapse-btn"
+                              aria-label={`${collapsedCards[card.id] ? "Expand" : "Collapse"} ${card.name}`}
+                              aria-expanded={!collapsedCards[card.id]}
+                            >
                               <ChevronIcon />
                             </button>
                             <span class="card-title">{card.name}</span>
@@ -5140,6 +5163,8 @@ function App() {
               <h3>Navigation</h3>
               <div class="shortcut-row"><kbd>j</kbd> <span>Next thread</span></div>
               <div class="shortcut-row"><kbd>k</kbd> <span>Previous thread</span></div>
+              <div class="shortcut-row"><kbd>h</kbd> <span>Previous card</span></div>
+              <div class="shortcut-row"><kbd>l</kbd> <span>Next card</span></div>
               <div class="shortcut-row"><kbd>Enter</kbd> <span>Open thread</span></div>
               <div class="shortcut-row"><kbd>Escape</kbd> <span>Close / Go back</span></div>
               <div class="shortcut-row"><kbd>/</kbd> <span>Open filter</span></div>
@@ -5150,11 +5175,13 @@ function App() {
               <div class="shortcut-row"><kbd>a</kbd> <span>Archive thread</span></div>
               <div class="shortcut-row"><kbd>s</kbd> <span>Star thread</span></div>
               <div class="shortcut-row"><kbd>d</kbd> <span>Delete thread</span></div>
+              <div class="shortcut-row"><kbd>#</kbd> <span>Delete thread</span></div>
               <div class="shortcut-row"><kbd>r</kbd> <span>Reply to thread</span></div>
               <div class="shortcut-row"><kbd>f</kbd> <span>Forward thread</span></div>
               <div class="shortcut-row"><kbd>u</kbd> <span>Toggle read</span></div>
               <div class="shortcut-row"><kbd>i</kbd> <span>Toggle important</span></div>
               <div class="shortcut-row"><kbd>!</kbd> <span>Report spam</span></div>
+              <div class="shortcut-row"><kbd>z</kbd> <span>Undo last action</span></div>
             </div>
             <div class="shortcuts-section">
               <h3>Open thread</h3>
@@ -5168,6 +5195,7 @@ function App() {
             <div class="shortcuts-section">
               <h3>Compose</h3>
               <div class="shortcut-row"><kbd>c</kbd> <span>New email</span></div>
+              <div class="shortcut-row"><kbd>e</kbd> <span>New event</span></div>
               <div class="shortcut-row"><kbd>⌘Enter</kbd> <span>Send email</span></div>
               <div class="shortcut-row"><kbd>Escape</kbd> <span>Close compose</span></div>
             </div>

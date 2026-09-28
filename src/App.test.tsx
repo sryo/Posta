@@ -1776,3 +1776,41 @@ describe("App Google API settings", () => {
     expect(hints).toMatch(/Gmail API.*Google Calendar API.*People API/);
   });
 });
+
+describe("App accessibility", () => {
+  it("lists every thread-list shortcut in the help", async () => {
+    render(() => <App />);
+    await screen.findByText("Mail for A");
+    fireEvent.keyDown(document, { key: "?" });
+    const help = (await screen.findByText("Keyboard Shortcuts")).closest(".shortcuts-modal") as HTMLElement;
+
+    for (const text of ["Previous card", "Next card", "Undo last action", "New event"]) {
+      expect(within(help).getByText(text)).toBeInTheDocument();
+    }
+    expect(within(help).getByText("#")).toBeInTheDocument();
+  });
+
+  it("names the collapse button and says whether the card is expanded", async () => {
+    render(() => <App />);
+    await screen.findByText("Mail for A");
+    const button = screen.getByRole("button", { name: "Collapse Alpha" });
+    expect(button).toHaveAttribute("aria-expanded", "true");
+
+    fireEvent.click(button);
+    await waitFor(() => expect(screen.getByRole("button", { name: "Expand Alpha" })).toHaveAttribute("aria-expanded", "false"));
+  });
+
+  it("starts an email to a suggested contact from the keyboard", async () => {
+    handlers.fetch_contacts = () => [{ resource_name: "people/1", display_name: "Bo", email_addresses: ["bo@y.com"], photo_url: null }];
+    render(() => <App />);
+    await screen.findByText("Mail for A");
+    const suggestion = await screen.findByRole("button", { name: "New email to Bo" });
+    expect(suggestion).toHaveAttribute("tabindex", "-1");
+    fireEvent.focusIn(screen.getByRole("button", { name: "Compose new email" }));
+    expect(suggestion).toHaveAttribute("tabindex", "0");
+    expect(suggestion.closest(".compose-suggestions")).toHaveClass("visible");
+    fireEvent.keyDown(suggestion, { key: "Enter" });
+
+    await waitFor(() => expect(screen.getByPlaceholderText("Recipients")).toHaveValue("bo@y.com"));
+  });
+});
