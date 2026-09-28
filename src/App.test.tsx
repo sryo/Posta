@@ -1048,7 +1048,7 @@ describe("App quick reply threading", () => {
     fireEvent.input(input, { target: { value: "Thanks" } });
     fireEvent.keyDown(input, { key: "Enter", metaKey: true });
 
-    await waitFor(() => expect(invoke).toHaveBeenCalledWith("reply_to_thread", expect.objectContaining({ to: "ana@x.com", messageId: "<m1@x>" })));
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith("reply_to_thread", expect.objectContaining({ to: "ana@x.com", messageId: "m1" })));
   });
 });
 
@@ -1089,7 +1089,7 @@ describe("App batch reply", () => {
     fireEvent.input(await screen.findByPlaceholderText(/^Reply to/), { target: { value: "Thanks" } });
     fireEvent.click(screen.getByRole("button", { name: /^Send ⌘/ }));
 
-    await waitFor(() => expect(invoke).toHaveBeenCalledWith("reply_to_thread", expect.objectContaining({ to: "ana@x.com", messageId: "<m1@x>" })));
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith("reply_to_thread", expect.objectContaining({ to: "ana@x.com", messageId: "m1" })));
   });
 
   it("says why a thread with no one to reply to cannot be sent", async () => {

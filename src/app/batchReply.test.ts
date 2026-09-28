@@ -16,11 +16,6 @@ describe("batchReplyEntry", () => {
     expect(entry).toMatchObject({ threadId: "t", messageId: "1", to: "ana@x.com", subject: "Plans", from: "Ana <ana@x.com>" });
   });
 
-  it("threads under the answered message's Message-ID", () => {
-    const entry = batchReplyEntry("t", [msg("1", { From: "ana@x.com", "Message-Id": "<1@x>" })], "me@x.com");
-    expect(entry?.messageId).toBe("<1@x>");
-  });
-
   it("answers at the Reply-To address", () => {
     const entry = batchReplyEntry("t", [msg("1", { From: "List <noreply@x.com>", "Reply-To": "Team <team@x.com>" })], "me@x.com");
     expect(entry?.to).toBe("team@x.com");
