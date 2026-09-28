@@ -1,5 +1,8 @@
 // Tauri command handlers
 
+// Command parameters are the frontend's invoke() argument names, so they stay flat
+#![allow(clippy::too_many_arguments)]
+
 use crate::auth::{self, CallbackServer, GmailAuth};
 use crate::ai::GeminiClient;
 use crate::cache::CacheDb;
@@ -202,8 +205,6 @@ pub async fn run_oauth_flow(
     app_handle: tauri::AppHandle,
     state: State<'_, AppState>,
 ) -> Result<Account, String> {
-    let _app_data_dir = get_app_data_dir(&app_handle)?;
-
     // Cancel any previous in-flight flow so it releases port 8420 promptly
     let cancel_flag = {
         let mut slot = state.oauth_cancel.lock().map_err(|_| "Lock error")?;
@@ -298,7 +299,7 @@ async fn finalize_oauth(
 
     // Reuse the existing account id on re-login so cards keep pointing at it;
     // only mint a new UUID for genuinely new emails
-    let existing = with_db(&state, |db| {
+    let existing = with_db(state, |db| {
         db.get_account_by_email(&user_info.email).map_err(|e| e.to_string())
     })?;
     let account = match existing {
@@ -310,14 +311,14 @@ async fn finalize_oauth(
     };
 
     // Get app data directory for secure storage
-    let app_data_dir = get_app_data_dir(&app_handle)?;
+    let app_data_dir = get_app_data_dir(app_handle)?;
 
     // Store refresh token securely
     auth::store_refresh_token(&account.id, refresh_token, &app_data_dir)
         .map_err(|e| e.to_string())?;
 
     // Save account to database
-    with_db(&state, |db| db.insert_account(&account).map_err(|e| e.to_string()))?;
+    with_db(state, |db| db.insert_account(&account).map_err(|e| e.to_string()))?;
 
     // Cache the fresh access token, replacing any stale entry for this account
     let expiry = Instant::now() + Duration::from_secs(expires_in.unwrap_or(3600));
@@ -512,6 +513,12 @@ async fn get_access_token(state: &AppState, account_id: &str, app_data_dir: &std
     Ok(access_token)
 }
 
+/// Gmail and People errors embed the HTTP status ("401 Unauthorized");
+/// calendar errors are rewritten into friendly messages
+fn is_auth_error(e: &str) -> bool {
+    e.contains("401 Unauthorized") || e.contains("Calendar access expired")
+}
+
 /// Evict the account's cached access token when an API call failed with an
 /// auth error (revoked/expired token), so the next call refreshes the token
 /// instead of reusing the stale one for its remaining cached lifetime.
@@ -522,7 +529,7 @@ fn evict_token_on_auth_error<T>(
     result: Result<T, String>,
 ) -> Result<T, String> {
     if let Err(e) = &result {
-        if e.contains("401") || e.contains("Calendar access expired") {
+        if is_auth_error(e) {
             if let Ok(mut cache) = state.token_cache.lock() {
                 if cache.remove(account_id).is_some() {
                     tracing::info!(
@@ -661,7 +668,7 @@ async fn sync_threads_incremental_impl(
                         is_full_sync: false,
                     })
                 }
-                Err(e) if e.contains("expired") => {
+                Err(e) if e.starts_with("History ID expired") => {
                     tracing::warn!("History ID expired, performing full sync");
                     // Clear the stale history ID and do full sync
                     {
@@ -1502,7 +1509,7 @@ pub async fn suggest_replies(
     let access_token = get_access_token(&state, &account_id, &app_data_dir).await?;
 
     // 1. Get thread details to build context
-    let gmail = GmailClient::new(access_token.clone());
+    let gmail = GmailClient::new(access_token);
     let thread = evict_token_on_auth_error(&state, &account_id, gmail.get_thread(&thread_id).await)
         .map_err(|e| format!("Failed to fetch thread: {}", e))?;
 
@@ -1562,8 +1569,23 @@ pub async fn suggest_replies(
 
 #[cfg(test)]
 mod tests {
-    use super::{attachment_filename, next_card_position, sanitize_attachment_filename};
+    use super::{attachment_filename, is_auth_error, next_card_position, sanitize_attachment_filename};
     use crate::models::Card;
+
+    #[test]
+    fn auth_errors_are_recognised_across_apis() {
+        assert!(is_auth_error("Search failed: API error 401 Unauthorized: {}"));
+        assert!(is_auth_error("People API error (401 Unauthorized): {}"));
+        assert!(is_auth_error("Calendar access expired. Please re-login."));
+    }
+
+    #[test]
+    fn ids_containing_401_are_not_auth_errors() {
+        assert!(!is_auth_error(
+            "Failed to modify thread 18c4015fe2: API error 500 Internal Server Error: {}"
+        ));
+        assert!(!is_auth_error("Calendar not found."));
+    }
 
     #[test]
     fn attachment_filename_adds_extension_from_mime() {
