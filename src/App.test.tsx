@@ -99,6 +99,33 @@ describe("App background sync", () => {
   });
 });
 
+describe("App background sync after an account switch", () => {
+  it("ignores a sync result for the account that is no longer selected", async () => {
+    handlers.get_accounts = () => [account("a", "a@x.com"), account("b", "b@x.com")];
+    render(() => <App />);
+    await screen.findByText("Mail for A");
+
+    let releaseSync!: () => void;
+    const slowSync = new Promise<void>(r => { releaseSync = r; });
+    handlers.sync_threads_incremental = async () => {
+      await slowSync;
+      return { modified_threads: [thread("t-new", "New for A")], deleted_thread_ids: [], is_full_sync: false };
+    };
+    window.dispatchEvent(new Event("focus"));
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith("sync_threads_incremental", { accountId: "a" }));
+
+    fireEvent.click(screen.getByTitle("a@x.com"));
+    fireEvent.click(await screen.findByText("b@x.com"));
+    await screen.findByText("Mail for B");
+    const fetchesForB = () => invoke.mock.calls.filter(([cmd, args]) => cmd === "fetch_threads_paginated" && args?.cardId === "card-b").length;
+    const before = fetchesForB();
+
+    releaseSync();
+    await new Promise(r => setTimeout(r, 30));
+    expect(fetchesForB()).toBe(before);
+  });
+});
+
 describe("App attachments", () => {
   it("forwards an attachment from its context menu in a new email", async () => {
     threadsByCard["card-a"] = [{

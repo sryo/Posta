@@ -942,6 +942,7 @@ function App() {
     isPolling = true;
     try {
       const result = await syncThreadsIncremental(account.id);
+      if (selectedAccount()?.id !== account.id) return;
 
       // Update sync times for non-collapsed email cards; calendar cards are
       // not touched by Gmail history sync and must not be stamped as synced
