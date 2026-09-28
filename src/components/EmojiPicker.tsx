@@ -118,6 +118,7 @@ export const EmojiPicker = (props: EmojiPickerProps) => {
   const [search, setSearch] = createSignal("");
   const [activeCategory, setActiveCategory] = createSignal(0);
   let containerRef: HTMLDivElement | undefined;
+  let searchRef: HTMLInputElement | undefined;
 
   // Close on outside click
   const handleClickOutside = (e: MouseEvent) => {
@@ -126,21 +127,25 @@ export const EmojiPicker = (props: EmojiPickerProps) => {
     }
   };
 
-  // Close on Escape
+  // Close on Escape. Captured and stopped so the thread view's own Escape
+  // handler, also on document, doesn't close the whole thread too
   const handleKeyDown = (e: KeyboardEvent) => {
     if (e.key === "Escape") {
+      e.stopImmediatePropagation();
       props.onClose();
     }
   };
 
   onMount(() => {
     document.addEventListener("mousedown", handleClickOutside);
-    document.addEventListener("keydown", handleKeyDown);
+    document.addEventListener("keydown", handleKeyDown, true);
+    // The autofocus attribute is ignored for elements inserted after load
+    searchRef?.focus();
   });
 
   onCleanup(() => {
     document.removeEventListener("mousedown", handleClickOutside);
-    document.removeEventListener("keydown", handleKeyDown);
+    document.removeEventListener("keydown", handleKeyDown, true);
   });
 
   // Filter emojis based on search. Without per-emoji keyword data, the query
@@ -176,7 +181,7 @@ export const EmojiPicker = (props: EmojiPickerProps) => {
           placeholder="Search emoji..."
           value={search()}
           onInput={(e) => setSearch(e.currentTarget.value)}
-          autofocus
+          ref={searchRef}
         />
       </div>
 

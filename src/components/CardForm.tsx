@@ -63,8 +63,7 @@ export const CardForm = (props: {
               }
             }}
             placeholder="Inbox, Starred..."
-            autofocus={props.mode === 'edit'}
-            ref={props.mode === 'new' ? (el) => setTimeout(() => el?.focus(), 50) : undefined}
+            ref={(el) => setTimeout(() => el.focus(), 50)}
           />
           <div class={`color-picker ${props.colorPickerOpen ? 'open' : ''}`}>
             <div

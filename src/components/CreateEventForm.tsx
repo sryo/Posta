@@ -99,13 +99,16 @@ export const CreateEventForm = (props: {
     }
   };
 
+  // Times only constrain each other when start and end fall on the same day
+  const isMultiDay = () => props.endDate > props.startDate;
+
   // Validate end time isn't before start time
   const handleStartTimeChange = (time: string) => {
     const oldStart = timeToMinutes(props.startTime);
     const oldEnd = timeToMinutes(props.endTime);
     props.setStartTime(time);
     const start = timeToMinutes(time);
-    if (start === null || oldEnd === null) return;
+    if (isMultiDay() || start === null || oldEnd === null) return;
     // If end time is now at or before start time, shift it to keep the duration
     if (oldEnd <= start) {
       const duration = oldStart !== null && oldEnd > oldStart ? oldEnd - oldStart : 30;
@@ -117,28 +120,36 @@ export const CreateEventForm = (props: {
     const start = timeToMinutes(props.startTime);
     const end = timeToMinutes(time);
     // Only allow if end is after start
-    if (start === null || (end !== null && end > start)) {
+    if (isMultiDay() || start === null || (end !== null && end > start)) {
       props.setEndTime(time);
     }
   };
 
+  // Move to the 1st before changing month/year: from the 31st (or Feb 29),
+  // setMonth/setFullYear would overflow into the following month
   const handleMonthSelect = (month: number) => {
     const newDate = new Date(viewDate());
-    newDate.setMonth(month);
     newDate.setDate(1);
+    newDate.setMonth(month);
     setViewDate(newDate);
   };
 
   const handleYearSelect = (year: number) => {
     const newDate = new Date(viewDate());
-    newDate.setFullYear(year);
     newDate.setDate(1);
+    newDate.setFullYear(year);
     setViewDate(newDate);
   };
 
   const months = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
   const currentYear = new Date().getFullYear();
-  const years = Array.from({ length: 5 }, (_, i) => currentYear + i);
+  // Next five years, widened to include the viewed year (e.g. editing a past event)
+  const years = () => {
+    const viewYear = viewDate().getFullYear();
+    const first = Math.min(currentYear, viewYear);
+    const last = Math.max(currentYear + 4, viewYear);
+    return Array.from({ length: last - first + 1 }, (_, i) => first + i);
+  };
 
   // Time Helpers
   const timeSlots: string[] = [];
@@ -216,7 +227,7 @@ export const CreateEventForm = (props: {
             value={props.summary}
             onInput={(e) => props.setSummary(e.currentTarget.value)}
             placeholder="Event title"
-            autofocus
+            ref={(el) => setTimeout(() => el.focus(), 0)}
           />
         </div>
 
@@ -240,7 +251,7 @@ export const CreateEventForm = (props: {
                 onChange={(e) => handleYearSelect(parseInt(e.currentTarget.value))}
                 style={{ "font-weight": "600", "font-size": "14px", background: "transparent", border: "none", color: "var(--text)", cursor: "pointer" }}
               >
-                <For each={years}>
+                <For each={years()}>
                   {(y) => <option value={y}>{y}</option>}
                 </For>
               </select>
