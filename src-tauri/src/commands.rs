@@ -517,10 +517,13 @@ async fn get_access_token(state: &AppState, account_id: &str, app_data_dir: &std
     Ok(access_token)
 }
 
-/// Gmail and People errors embed the HTTP status ("401 Unauthorized");
-/// calendar errors are rewritten into friendly messages
+/// Gmail and People errors embed the HTTP status ("401 Unauthorized"), most
+/// calendar errors are rewritten into friendly messages, and the RSVP calls
+/// carry only Google's JSON error body, whose status is "UNAUTHENTICATED"
 fn is_auth_error(e: &str) -> bool {
-    e.contains("401 Unauthorized") || e.contains("Calendar access expired")
+    e.contains("401 Unauthorized")
+        || e.contains("Calendar access expired")
+        || e.contains("\"UNAUTHENTICATED\"")
 }
 
 /// Evict the account's cached access token when an API call failed with an
@@ -1621,6 +1624,9 @@ mod tests {
         assert!(is_auth_error("Search failed: API error 401 Unauthorized: {}"));
         assert!(is_auth_error("People API error (401 Unauthorized): {}"));
         assert!(is_auth_error("Calendar access expired. Please re-login."));
+        assert!(is_auth_error(
+            r#"Failed to update RSVP: {"error": {"code": 401, "status": "UNAUTHENTICATED"}}"#
+        ));
     }
 
     #[test]
