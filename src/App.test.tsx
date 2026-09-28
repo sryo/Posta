@@ -2020,6 +2020,24 @@ describe("App iCloud cards", () => {
     await waitFor(() => expect(invoke).toHaveBeenCalledWith("fetch_threads_paginated", expect.objectContaining({ cardId: "card-new" })));
   });
 
+  it("leaves unchanged cards' columns and scroll positions alone when another Mac changes a card", async () => {
+    cardsByAccount.a = [card("card-a", "a", "Alpha"), { ...card("card-b", "a", "Beta"), position: 1 }];
+    handlers.get_cards = ({ accountId }) => structuredClone(cardsByAccount[accountId as string] ?? []);
+    render(() => <App />);
+    await screen.findByText("Mail for A");
+    const alpha = screen.getByRole("region", { name: "Alpha email card" });
+    const body = alpha.querySelector(".card-body") as HTMLElement;
+    body.scrollTop = 120;
+
+    handlers.pull_from_icloud = () => true;
+    cardsByAccount.a = [cardsByAccount.a[0], { ...cardsByAccount.a[1], name: "Beta renamed" }];
+    fireEvent.focus(window);
+
+    expect(await screen.findByRole("region", { name: "Beta renamed email card" })).toBeInTheDocument();
+    expect(screen.getByRole("region", { name: "Alpha email card" })).toBe(alpha);
+    expect(body.scrollTop).toBe(120);
+  });
+
   it("fetches a card whose query changed on another Mac instead of showing the old query's cache", async () => {
     render(() => <App />);
     await screen.findByText("Mail for A");

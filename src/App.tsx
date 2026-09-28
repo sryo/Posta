@@ -147,6 +147,7 @@ import { querySuggestions, type QuerySuggestion } from "./app/querySuggestions";
 import { inviteNamesEvent, rsvpSentMessage, type RsvpStatus } from "./app/rsvp";
 import { hasCommandModifier, onActivateKey } from "./shared/keyboard";
 import { askConfirm, ConfirmDialog, confirmOpen, dismissConfirm } from "./app/confirm";
+import { moveCard, reuseUnchanged } from "./app/cardOrder";
 
 const SESSION_EXPIRED_MESSAGE = "Session expired - sign in again";
 
@@ -987,7 +988,7 @@ function App() {
       if (selectedAccount()?.id !== account.id) return;
       const before = new Map(cards().map(c => [c.id, c.query]));
       const kept = new Set(cardList.map(c => c.id));
-      setCards(cardList);
+      setCards(reuseUnchanged(cards(), cardList));
       forgetCardState([...before.keys()].filter(id => !kept.has(id)));
       for (const card of cardList) {
         if (before.get(card.id) === card.query || collapsedCards[card.id]) continue;
@@ -1036,32 +1037,17 @@ function App() {
     const { draggable, droppable } = event;
     // Reset drag flag after a short delay to prevent click from firing
     setTimeout(() => { wasDragging = false; }, 100);
-    if (draggable && droppable) {
-      const currentIds = cardIds();
-      const fromIndex = currentIds.indexOf(String(draggable.id));
-      const toIndex = currentIds.indexOf(String(droppable.id));
-      if (fromIndex !== toIndex) {
-        const previousCards = cards();
-        const currentCards = [...previousCards];
-        const [movedCard] = currentCards.splice(fromIndex, 1);
-        currentCards.splice(toIndex, 0, movedCard);
-
-        const reorderedCards = currentCards.map((card, index) => ({
-          ...card,
-          position: index
-        }));
-
-        setCards(reorderedCards);
-
-        try {
-          const orders: [string, number][] = reorderedCards.map(c => [c.id, c.position]);
-          await reorderCards(orders);
-        } catch (err) {
-          console.error("Failed to persist card order:", err);
-          setCards(previousCards);
-          showToast(`Couldn't save the card order: ${err}`);
-        }
-      }
+    if (!draggable || !droppable) return;
+    const previousCards = cards();
+    const reorderedCards = moveCard(previousCards, String(draggable.id), String(droppable.id));
+    if (!reorderedCards) return;
+    setCards(reorderedCards);
+    try {
+      await reorderCards(reorderedCards.map((c, index): [string, number] => [c.id, index]));
+    } catch (err) {
+      console.error("Failed to persist card order:", err);
+      setCards(previousCards);
+      showToast(`Couldn't save the card order: ${err}`);
     }
   };
 
