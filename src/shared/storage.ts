@@ -7,11 +7,13 @@ export function safeGetItem(key: string): string | null {
   }
 }
 
-export function safeSetItem(key: string, value: string): void {
+// False when the value was not stored (localStorage unavailable or full)
+export function safeSetItem(key: string, value: string): boolean {
   try {
     localStorage.setItem(key, value);
+    return true;
   } catch {
-    // Silently fail - localStorage unavailable or quota exceeded
+    return false;
   }
 }
 
@@ -32,10 +34,12 @@ export function safeGetJSON<T>(key: string, defaultValue: T): T {
   }
 }
 
-export function safeSetJSON(key: string, value: unknown): void {
+export function safeSetJSON(key: string, value: unknown): boolean {
+  let json: string;
   try {
-    localStorage.setItem(key, JSON.stringify(value));
+    json = JSON.stringify(value);
   } catch {
-    // Silently fail
+    return false;
   }
+  return safeSetItem(key, json);
 }

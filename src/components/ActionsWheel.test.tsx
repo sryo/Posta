@@ -134,7 +134,23 @@ describe("ActionsWheel event RSVP", () => {
     const showToast = vi.fn();
     render(() => <ActionsWheel {...baseProps} showToast={showToast} selectedAccount={() => ({ id: "acc" } as any)} event={event} onRsvped={onRsvped} />);
     fireEvent.click(screen.getByTitle("RSVP Yes"));
-    await vi.waitFor(() => expect(showToast).toHaveBeenCalledWith("Failed to RSVP"));
+    await vi.waitFor(() => expect(showToast).toHaveBeenCalledWith("Failed to RSVP: offline"));
     expect(onRsvped).not.toHaveBeenCalled();
+  });
+
+  it("sends one RSVP at a time however often the buttons are clicked", async () => {
+    let finish!: () => void;
+    rsvpCalendarEvent.mockReset().mockReturnValue(new Promise<void>(r => { finish = r; }));
+    const onRsvped = vi.fn();
+    render(() => <ActionsWheel {...baseProps} selectedAccount={() => ({ id: "acc" } as any)} event={event} onRsvped={onRsvped} />);
+    fireEvent.click(screen.getByTitle("RSVP Yes"));
+    fireEvent.click(screen.getByTitle("RSVP Yes"));
+    fireEvent.click(screen.getByTitle("RSVP No"));
+    expect(rsvpCalendarEvent).toHaveBeenCalledTimes(1);
+    finish();
+    await vi.waitFor(() => expect(onRsvped).toHaveBeenCalledTimes(1));
+    rsvpCalendarEvent.mockResolvedValue(null);
+    fireEvent.click(screen.getByTitle("RSVP No"));
+    await vi.waitFor(() => expect(onRsvped).toHaveBeenLastCalledWith(event.id, "declined"));
   });
 });

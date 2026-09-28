@@ -4,7 +4,7 @@ import { createSignal } from "solid-js";
 import type { GroupBy } from "../shared/constants";
 import { CardForm } from "./CardForm";
 
-function renderCardForm(mode: "new" | "edit", init: { query?: string; groupBy?: GroupBy } = {}) {
+function renderCardForm(mode: "new" | "edit", init: { query?: string; groupBy?: GroupBy; setColor?: (c: any) => void; setColorPickerOpen?: (v: boolean) => void } = {}) {
   const [query, setQuery] = createSignal(init.query ?? "is:inbox");
   const [groupBy, setGroupBy] = createSignal<GroupBy>(init.groupBy ?? "date");
   render(() => (
@@ -15,11 +15,11 @@ function renderCardForm(mode: "new" | "edit", init: { query?: string; groupBy?: 
       query={query()}
       setQuery={setQuery}
       color={null}
-      setColor={vi.fn()}
+      setColor={init.setColor ?? vi.fn()}
       groupBy={groupBy()}
       setGroupBy={setGroupBy}
       colorPickerOpen={false}
-      setColorPickerOpen={vi.fn()}
+      setColorPickerOpen={init.setColorPickerOpen ?? vi.fn()}
       onSave={vi.fn()}
       onCancel={vi.fn()}
       saveDisabled={false}
@@ -63,5 +63,28 @@ describe("CardForm grouping", () => {
     const { groupBy } = renderCardForm("edit", { query: "calendar:week", groupBy: "organizer" });
     expect(groupBy()).toBe("organizer");
     expect(active()).toBe("Organizer");
+  });
+});
+
+describe("CardForm color picker keyboard access", () => {
+  it("opens the picker and picks a color from the keyboard", () => {
+    const setColor = vi.fn();
+    const setColorPickerOpen = vi.fn();
+    renderCardForm("new", { setColor, setColorPickerOpen });
+    const selected = document.querySelector<HTMLElement>(".color-picker-selected")!;
+    expect(selected.tabIndex).toBe(0);
+    // App-level shortcuts (Enter opens the focused thread) must not see it
+    const globalShortcut = vi.fn();
+    document.addEventListener("keydown", globalShortcut);
+    fireEvent.keyDown(selected, { key: "Enter" });
+    document.removeEventListener("keydown", globalShortcut);
+    expect(setColorPickerOpen).toHaveBeenCalledWith(true);
+    expect(globalShortcut).not.toHaveBeenCalled();
+    const blue = document.querySelector<HTMLElement>(".color-option.blue")!;
+    expect(blue.getAttribute("role")).toBe("button");
+    fireEvent.keyDown(blue, { key: " " });
+    expect(setColor).toHaveBeenCalledWith("blue");
+    fireEvent.keyDown(document.querySelector<HTMLElement>(".no-color-option")!, { key: "Enter" });
+    expect(setColor).toHaveBeenLastCalledWith(null);
   });
 });

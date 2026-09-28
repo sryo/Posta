@@ -1,6 +1,7 @@
 import { createSignal, onMount, Show, For } from "solid-js";
 import { ChevronLeftIcon, ChevronRightIcon } from "./Icons";
 import { CloseButton } from "./ComposeAtoms";
+import { onActivateKey } from "../shared/keyboard";
 
 // One labelled, scrollable single-choice list of the scheduler
 function SchedulerColumn<T>(props: {
@@ -13,13 +14,17 @@ function SchedulerColumn<T>(props: {
   return (
     <div class="scheduler-column">
       <label class="scheduler-column-label">{props.label}</label>
-      <div class={`scheduler-list ${props.listClass ?? ''}`}>
+      <div class={`scheduler-list ${props.listClass ?? ''}`} role="listbox" aria-label={props.label}>
         <For each={props.options}>
           {(opt) => (
             <div
               class={`scheduler-option ${props.selected === opt.value ? 'selected' : ''}`}
               data-selected={props.selected === opt.value}
+              role="option"
+              aria-selected={props.selected === opt.value}
+              tabIndex={0}
               onClick={() => props.onSelect(opt.value)}
+              on:keydown={onActivateKey(() => props.onSelect(opt.value))}
             >
               {opt.label}
             </div>
@@ -121,8 +126,9 @@ export const CreateEventForm = (props: {
   // works in the inline edit form, which the app-level shortcut (gated on
   // creatingEvent) never reaches. Double-saves in panel mode are prevented
   // by the saving flag, set synchronously by onSave.
+  const hasTitle = () => props.summary.trim().length > 0;
   const handleKeyDown = (e: KeyboardEvent) => {
-    if (e.key === 'Enter' && (e.metaKey || e.ctrlKey) && !props.saving && props.summary) {
+    if (e.key === 'Enter' && (e.metaKey || e.ctrlKey) && !props.saving && hasTitle()) {
       e.preventDefault();
       props.onSave();
     }
@@ -303,7 +309,11 @@ export const CreateEventForm = (props: {
                 return (
                   <div
                     class={`scheduler-day-card ${isSelectedDate(day) ? 'selected' : ''}`}
+                    role="button"
+                    tabIndex={0}
+                    aria-pressed={isSelectedDate(day)}
                     onClick={() => handleDateSelect(day)}
+                    on:keydown={onActivateKey(() => handleDateSelect(day))}
                   >
                     <span class="scheduler-day-name">{info.day}</span>
                     <span class="scheduler-day-number">{info.date}</span>
@@ -387,7 +397,7 @@ export const CreateEventForm = (props: {
         <button class="btn" onClick={props.onClose} style={{ "margin-right": "8px" }}>
           Cancel
         </button>
-        <button class="btn btn-primary" disabled={props.saving || !props.summary} onClick={props.onSave} title="Save event (⌘Enter)">
+        <button class="btn btn-primary" disabled={props.saving || !hasTitle()} onClick={props.onSave} title="Save event (⌘Enter)">
           {props.saving ? "Saving..." : <>{props.isEditing ? "Update" : "Save"} <span class="shortcut-hint">⌘↵</span></>}
         </button>
       </div>

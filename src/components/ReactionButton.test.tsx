@@ -18,6 +18,24 @@ describe("ReactionButton", () => {
     expect(container.querySelector(".emoji-picker")).toBeNull();
   });
 
+  it("closes the open picker when its button is clicked again", () => {
+    const { container } = render(() => <ReactionButton onSelect={() => {}} />);
+    const button = screen.getByTitle("Add reaction");
+    fireEvent.click(button);
+    expect(container.querySelector(".emoji-picker")).not.toBeNull();
+    // A real click is mousedown then click; the picker closes on outside mousedown
+    fireEvent.mouseDown(button);
+    fireEvent.click(button);
+    expect(container.querySelector(".emoji-picker")).toBeNull();
+  });
+
+  it("still closes on a mousedown elsewhere", () => {
+    const { container } = render(() => <ReactionButton onSelect={() => {}} />);
+    fireEvent.click(screen.getByTitle("Add reaction"));
+    fireEvent.mouseDown(document.body);
+    expect(container.querySelector(".emoji-picker")).toBeNull();
+  });
+
   it("stays closed while sending", () => {
     const { container } = render(() => <ReactionButton onSelect={() => {}} sending />);
     const button = screen.getByTitle("Add reaction");

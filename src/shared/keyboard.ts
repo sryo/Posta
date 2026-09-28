@@ -13,3 +13,16 @@ export function isTypingTarget(target: EventTarget | null): boolean {
 export function hasCommandModifier(e: KeyboardEvent): boolean {
   return e.metaKey || e.ctrlKey || e.altKey;
 }
+
+// keydown handler giving a clickable non-button element the Enter/Space
+// activation a <button> has. The key stops here so document-level shortcuts
+// (Enter opens the focused thread) don't also act on it.
+export function onActivateKey(action: () => void) {
+  return (e: KeyboardEvent) => {
+    if (e.key !== 'Enter' && e.key !== ' ') return;
+    if (hasCommandModifier(e)) return;
+    e.preventDefault();
+    e.stopPropagation();
+    action();
+  };
+}

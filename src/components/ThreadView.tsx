@@ -1,7 +1,7 @@
 import { createSignal, createEffect, createMemo, onMount, onCleanup, Show, For } from "solid-js";
 import { MessageBody } from './MessageBody';
 import { sendReaction, type FullThread, type FullMessage, type Attachment } from "../api/tauri";
-import { isTypingTarget, hasCommandModifier } from "../shared/keyboard";
+import { isTypingTarget, hasCommandModifier, onActivateKey } from "../shared/keyboard";
 import {
   findContent,
   formatFileSize,
@@ -13,6 +13,7 @@ import {
   extractMessageHtml,
   extractMessageText,
   buildQuotedBody,
+  buildForwardBody,
   addReplyPrefix,
   addForwardPrefix,
   splitEmailList,
@@ -37,7 +38,7 @@ import { ComposeForm } from "./ComposeForm";
 import { MessageActionsWheel } from "./MessageActionsWheel";
 import { COLOR_HEX } from "../shared/constants";
 import type { InlineComposeProps } from "./types";
-import { findHeader } from "../app/messages";
+import { findHeader, lastMessageFromOthers } from "../app/messages";
 
 const normalizeMessageId = (id: string) => id.trim().replace(/^<|>$/g, '').toLowerCase();
 
@@ -206,8 +207,12 @@ export const ThreadView = (props: {
       reply: (prefix = '') => reply(false, prefix),
       replyAll: () => reply(true),
       forward: () => {
-        const plainBody = extractMessageText(msg.payload, msg.snippet);
-        const fwdBody = `\n\n---------- Forwarded message ----------\nFrom: ${from}\nDate: ${date}\nSubject: ${subject}\n\n${plainBody}`;
+        const fwdBody = buildForwardBody({
+          from, date, subject,
+          to: findHeader(headers, 'To'),
+          cc: findHeader(headers, 'Cc'),
+          body: extractMessageText(msg.payload, msg.snippet),
+        });
         setForwardSourceId(msg.id);
         props.onForward(addForwardPrefix(subject), fwdBody);
       },
@@ -516,11 +521,15 @@ export const ThreadView = (props: {
                                 });
                               };
                               const hasThumb = att.inlineData && isImage(att.mimeType);
+                              const open = () => props.onOpenAttachment(msg.id, att.attachmentId, att.filename, att.mimeType, att.inlineData);
                               return (
                                 <div
                                   class="attachment-thumb"
+                                  role="button"
+                                  tabIndex={0}
                                   title={`${att.filename} (${formatFileSize(att.size)})`}
-                                  onClick={() => props.onOpenAttachment(msg.id, att.attachmentId, att.filename, att.mimeType, att.inlineData)}
+                                  onClick={open}
+                                  on:keydown={onActivateKey(open)}
                                   onContextMenu={handleContextMenu}
                                 >
                                   {hasThumb ? (
@@ -588,8 +597,8 @@ export const ThreadView = (props: {
             accountId={props.accountId}
             threadId={props.thread!.id}
             onSelect={(suggestion) => {
-              const lastMsg = props.thread!.messages[props.thread!.messages.length - 1];
-              if (lastMsg) messageActions(lastMsg).reply(suggestion);
+              const target = lastMessageFromOthers(props.thread!.messages, props.currentUserEmail ?? '');
+              if (target) messageActions(target).reply(suggestion);
             }}
           />
         </Show>

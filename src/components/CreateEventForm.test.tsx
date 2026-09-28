@@ -1,9 +1,9 @@
-import { describe, expect, it, vi } from "vitest";
+import { beforeAll, describe, expect, it, vi } from "vitest";
 import { fireEvent, render } from "@solidjs/testing-library";
 import { createSignal } from "solid-js";
 import { CreateEventForm } from "./CreateEventForm";
 
-function renderForm(init: { startDate: string; endDate?: string; startTime?: string; endTime?: string; isEditing?: boolean; allDay?: boolean; setRecurrence?: (v: string | null) => void }) {
+function renderForm(init: { startDate: string; endDate?: string; startTime?: string; endTime?: string; isEditing?: boolean; allDay?: boolean; setRecurrence?: (v: string | null) => void; summary?: string; onSave?: () => void }) {
   const [startDate, setStartDate] = createSignal(init.startDate);
   const [endDate, setEndDate] = createSignal(init.endDate ?? init.startDate);
   const [startTime, setStartTime] = createSignal(init.startTime ?? "10:00");
@@ -11,7 +11,7 @@ function renderForm(init: { startDate: string; endDate?: string; startTime?: str
   const result = render(() => (
     <CreateEventForm
       onClose={vi.fn()}
-      summary="Trip"
+      summary={init.summary ?? "Trip"}
       setSummary={vi.fn()}
       description=""
       setDescription={vi.fn()}
@@ -32,7 +32,7 @@ function renderForm(init: { startDate: string; endDate?: string; startTime?: str
       recurrence={null}
       setRecurrence={init.setRecurrence ?? vi.fn()}
       saving={false}
-      onSave={vi.fn()}
+      onSave={init.onSave ?? vi.fn()}
       error={null}
       isEditing={init.isEditing}
     />
@@ -45,6 +45,29 @@ const firstDayCard = (container: HTMLElement) => container.querySelector(".sched
 
 const slot = (container: HTMLElement, picker: "start" | "end", time: string) =>
   Array.from(container.querySelectorAll<HTMLElement>(`.time-picker-${picker} > div`)).find(el => el.textContent === time)!;
+
+// jsdom has no layout; the form scrolls the selected times into view on open
+beforeAll(() => {
+  Element.prototype.scrollIntoView = vi.fn();
+});
+
+describe("CreateEventForm saving", () => {
+  it("won't save an event whose title is only spaces", () => {
+    const onSave = vi.fn();
+    const { container } = renderForm({ startDate: "2025-03-10", summary: "   ", onSave });
+    const save = container.querySelector<HTMLButtonElement>(".btn-primary")!;
+    expect(save.disabled).toBe(true);
+    fireEvent.keyDown(container.querySelector("textarea")!, { key: "Enter", metaKey: true });
+    expect(onSave).not.toHaveBeenCalled();
+  });
+
+  it("saves on ⌘Enter once there is a title", () => {
+    const onSave = vi.fn();
+    const { container } = renderForm({ startDate: "2025-03-10", summary: "Trip", onSave });
+    fireEvent.keyDown(container.querySelector("textarea")!, { key: "Enter", metaKey: true });
+    expect(onSave).toHaveBeenCalledTimes(1);
+  });
+});
 
 describe("CreateEventForm focus", () => {
   it("focuses the title when opened", async () => {
@@ -78,6 +101,30 @@ describe("CreateEventForm date navigation", () => {
     const [month, year] = selects(container);
     expect(year.value).toBe("2019");
     expect(month.value).toBe("5");
+  });
+});
+
+describe("CreateEventForm keyboard access", () => {
+  it("picks a day and a time with Enter or Space", () => {
+    const { container, startDate, startTime } = renderForm({ startDate: "2031-03-03", startTime: "10:00", endTime: "11:00" });
+    const days = container.querySelectorAll<HTMLElement>(".scheduler-day-card");
+    expect(days[2].tabIndex).toBe(0);
+    fireEvent.keyDown(days[2], { key: "Enter" });
+    expect(startDate()).toBe("2031-03-05");
+    const nine = slot(container, "start", "09:00");
+    expect(nine.getAttribute("role")).toBe("option");
+    fireEvent.keyDown(nine, { key: " " });
+    expect(startTime()).toBe("09:00");
+  });
+
+  it("still saves with Cmd+Enter while a day or time is focused", () => {
+    const onSave = vi.fn();
+    const { container, startDate } = renderForm({ startDate: "2031-03-03", onSave });
+    const days = container.querySelectorAll<HTMLElement>(".scheduler-day-card");
+    fireEvent.keyDown(days[2], { key: "Enter", metaKey: true });
+    fireEvent.keyDown(slot(container, "start", "09:00"), { key: "Enter", ctrlKey: true });
+    expect(onSave).toHaveBeenCalledTimes(2);
+    expect(startDate()).toBe("2031-03-03");
   });
 });
 

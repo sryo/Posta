@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   addForwardPrefix,
   addReplyPrefix,
+  buildForwardBody,
   extractEmail,
   extractMessageHtml,
   extractMessageText,
@@ -237,5 +238,32 @@ describe("textOrHtmlToHtml", () => {
   it("escapes plain text", () => {
     const el = renderHtml(textOrHtmlToHtml("a <5 min> b\nc"));
     expect(el.textContent).toBe("a <5 min> b\nc");
+  });
+});
+
+describe("buildForwardBody", () => {
+  it("heads the forwarded text with its From, Date, Subject, To and Cc", () => {
+    expect(buildForwardBody({
+      from: "Alice <alice@example.com>",
+      date: "Mon, 1 Jan 2024 10:00:00 +0000",
+      subject: "Lunch",
+      to: "Bob <bob@example.com>",
+      cc: "carol@example.com",
+      body: "See you at noon",
+    })).toBe(
+      "\n\n---------- Forwarded message ----------\n" +
+      "From: Alice <alice@example.com>\n" +
+      "Date: Mon, 1 Jan 2024 10:00:00 +0000\n" +
+      "Subject: Lunch\n" +
+      "To: Bob <bob@example.com>\n" +
+      "Cc: carol@example.com\n\n" +
+      "See you at noon",
+    );
+  });
+
+  it("leaves out To and Cc lines it has no value for", () => {
+    const body = buildForwardBody({ from: "a@x.com", date: "", subject: "Hi", body: "text" });
+    expect(body).toBe("\n\n---------- Forwarded message ----------\nFrom: a@x.com\nDate: \nSubject: Hi\n\ntext");
+    expect(buildForwardBody({ from: "a@x.com", date: "", subject: "Hi", to: "", cc: "  ", body: "text" })).toBe(body);
   });
 });

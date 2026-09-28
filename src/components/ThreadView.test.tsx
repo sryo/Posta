@@ -4,6 +4,12 @@ import { fireEvent, render } from "@solidjs/testing-library";
 import { ThreadView } from "./ThreadView";
 import type { FullThread } from "../api/tauri";
 
+vi.mock("./SmartReplies", () => ({
+  SmartReplies: (props: { onSelect: (text: string) => void }) => (
+    <button class="reply-chip" onClick={() => props.onSelect("Sounds good")}>Sounds good</button>
+  ),
+}));
+
 const b64 = (s: string) =>
   btoa(String.fromCharCode(...new TextEncoder().encode(s))).replace(/\+/g, "-").replace(/\//g, "_");
 
@@ -195,6 +201,16 @@ describe("ThreadView keyboard shortcuts", () => {
     expect(body).toContain("first");
   });
 
+  it("names the forwarded message's recipients", () => {
+    const { props } = renderThread({
+      thread: makeThread([{ from: "Alice <alice@example.com>", to: "Bob <bob@example.com>", cc: "carol@example.com", body: "hi" }]),
+      focusedMessageIndex: 0,
+    });
+    fireEvent.keyDown(document, { key: "f" });
+    const body = (props.onForward as any).mock.calls[0][1];
+    expect(body).toContain("Subject: Lunch\nTo: Bob <bob@example.com>\nCc: carol@example.com\n\nhi");
+  });
+
   it("shows and quotes a plain-text body verbatim, line breaks and angle brackets included", () => {
     const { props, container } = renderThread({
       thread: makeThread([{ from: "Alice <alice@example.com>", body: "Ask Bob <bob@example.com>\nThanks" }]),
@@ -273,6 +289,24 @@ describe("ThreadView reactions", () => {
   });
 });
 
+describe("ThreadView smart replies", () => {
+  it("replies to the latest message from someone else, skipping reactions", () => {
+    const thread = makeThread([
+      { from: "Alice <alice@example.com>", body: "Lunch at noon?" },
+      { from: "Bob <bob@example.com>", body: "reaction fallback" },
+    ]);
+    thread.messages[1].reaction = { emoji: "👍", from_addr: "bob@example.com", in_reply_to: "<msg0@example.com>", message_id: "m1" };
+    const { props, container } = renderThread({ thread });
+    fireEvent.click(container.querySelector(".reply-chip")!);
+    const [to, , subject, body, messageId] = (props.onReply as any).mock.calls[0];
+    expect(to).toBe("alice@example.com");
+    expect(subject).toBe("Re: Lunch");
+    expect(body.startsWith("Sounds good")).toBe(true);
+    expect(body).toContain("> Lunch at noon?");
+    expect(messageId).toBe("<msg0@example.com>");
+  });
+});
+
 describe("ThreadView inline forward", () => {
   const composeStub = (isForward: boolean) => ({
     replyToMessageId: null, isForward, to: "", setTo: vi.fn(), cc: "", setCc: vi.fn(), bcc: "", setBcc: vi.fn(),
@@ -330,5 +364,21 @@ describe("ThreadView attachments", () => {
     expect(thumb).toHaveTextContent("invoice.pdf");
     fireEvent.click(thumb);
     expect(props.onOpenAttachment).toHaveBeenCalledWith("m0", "att-1", "invoice.pdf", "application/pdf", undefined);
+  });
+
+  it("opens an attachment from the keyboard", () => {
+    const thread = makeThread([{ from: "Alice <alice@example.com>", body: "" }]);
+    thread.messages[0].payload = {
+      ...thread.messages[0].payload,
+      mimeType: "application/pdf",
+      filename: "invoice.pdf",
+      body: { attachmentId: "att-1", size: 2048 },
+    };
+    const { container, props } = renderThread({ thread, focusedMessageIndex: 0 });
+    const thumb = container.querySelector(".attachment-thumb") as HTMLElement;
+    expect(thumb.tabIndex).toBe(0);
+    expect(thumb.getAttribute("role")).toBe("button");
+    fireEvent.keyDown(thumb, { key: "Enter" });
+    expect(props.onOpenAttachment).toHaveBeenCalledTimes(1);
   });
 });

@@ -194,6 +194,14 @@ export function buildQuotedBody(date: string, from: string, plainBody: string): 
   return `\n\nOn ${date}, ${from} wrote:\n> ${plainBody.split('\n').join('\n> ')}`;
 }
 
+// Build a forwarded message body: the original's headers, then its text
+export function buildForwardBody(original: { from: string; date: string; subject: string; to?: string; cc?: string; body: string }): string {
+  const headers = [`From: ${original.from}`, `Date: ${original.date}`, `Subject: ${original.subject}`];
+  if (original.to?.trim()) headers.push(`To: ${original.to}`);
+  if (original.cc?.trim()) headers.push(`Cc: ${original.cc}`);
+  return `\n\n---------- Forwarded message ----------\n${headers.join('\n')}\n\n${original.body}`;
+}
+
 // Add Re: prefix if not already present (case-insensitive)
 export function addReplyPrefix(subject: string): string {
   return /^\s*re:/i.test(subject) ? subject : `Re: ${subject}`;

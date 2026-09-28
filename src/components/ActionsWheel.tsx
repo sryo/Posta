@@ -76,6 +76,24 @@ export const ActionsWheel = (props: {
     }
   };
 
+  // One response at a time: a double click would otherwise send two
+  let rsvpInFlight = false;
+  const rsvp = async (eventId: string, status: "accepted" | "declined", label: string) => {
+    const account = props.selectedAccount();
+    if (!account || rsvpInFlight) return;
+    rsvpInFlight = true;
+    try {
+      await rsvpWithFallback(account.id, eventId, status);
+      props.onRsvped?.(eventId, status);
+      props.showToast(`RSVP: ${label}`);
+      props.onClose();
+    } catch (err) {
+      props.showToast(`Failed to RSVP: ${err instanceof Error ? err.message : String(err)}`);
+    } finally {
+      rsvpInFlight = false;
+    }
+  };
+
   // Derived so titles, icons and click handlers track thread/event state and
   // selection changes while the wheel stays mounted
   const actions = createMemo(() => {
@@ -118,38 +136,14 @@ export const ActionsWheel = (props: {
           cls: evt.response_status === 'accepted' ? 'event-rsvp-active' : 'event-rsvp',
           title: 'RSVP Yes',
           icon: CheckIcon,
-          onClick: async (e) => {
-            e.stopPropagation();
-            const account = props.selectedAccount();
-            if (!account) return;
-            try {
-              await rsvpWithFallback(account.id, evt.id, 'accepted');
-              props.onRsvped?.(evt.id, 'accepted');
-              props.showToast('RSVP: Yes');
-              props.onClose();
-            } catch (err) {
-              props.showToast('Failed to RSVP');
-            }
-          },
+          onClick: (e) => { e.stopPropagation(); rsvp(evt.id, 'accepted', 'Yes'); },
           available: true
         },
         rsvpNo: {
           cls: evt.response_status === 'declined' ? 'event-rsvp-active' : 'event-rsvp',
           title: 'RSVP No',
           icon: ThumbsDownIcon,
-          onClick: async (e) => {
-            e.stopPropagation();
-            const account = props.selectedAccount();
-            if (!account) return;
-            try {
-              await rsvpWithFallback(account.id, evt.id, 'declined');
-              props.onRsvped?.(evt.id, 'declined');
-              props.showToast('RSVP: No');
-              props.onClose();
-            } catch (err) {
-              props.showToast('Failed to RSVP');
-            }
-          },
+          onClick: (e) => { e.stopPropagation(); rsvp(evt.id, 'declined', 'No'); },
           available: true
         },
         delete: {
