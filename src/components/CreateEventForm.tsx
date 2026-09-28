@@ -58,6 +58,7 @@ export const CreateEventForm = (props: {
   error: string | null;
   inline?: boolean;
   isEditing?: boolean;
+  occurrenceOnly?: boolean;
 }) => {
   // Snapshot is safe: both call sites mount this inside a <Show>, so a fresh
   // instance is created each time the form opens.
@@ -336,12 +337,22 @@ export const CreateEventForm = (props: {
                 onSelect={handleEndTimeChange}
               />
             </Show>
-            <SchedulerColumn
-              label="Repeat"
-              options={recurrenceOptions}
-              selected={props.recurrence}
-              onSelect={props.setRecurrence}
-            />
+            <Show
+              when={!props.occurrenceOnly}
+              fallback={
+                <div class="scheduler-column">
+                  <label class="scheduler-column-label">Repeat</label>
+                  <p class="scheduler-occurrence-note">Repeats (editing this occurrence only)</p>
+                </div>
+              }
+            >
+              <SchedulerColumn
+                label="Repeat"
+                options={recurrenceOptions}
+                selected={props.recurrence}
+                onSelect={props.setRecurrence}
+              />
+            </Show>
           </div>
         </div>
 

@@ -51,6 +51,8 @@ export interface InlineEditEventProps {
   setAttendees: (v: string) => void;
   recurrence: string | null;
   setRecurrence: (v: string | null) => void;
+  // Editing one occurrence of a repeating event, which can't take a rule of its own
+  occurrenceOnly: boolean;
   saving: boolean;
   onSave: () => void;
   onClose: () => void;

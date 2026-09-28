@@ -446,6 +446,7 @@ export interface GoogleCalendarEvent {
   hangout_link: string | null;
   response_status: string | null; // accepted, declined, tentative, needsAction
   can_edit: boolean; // whether the current user can edit this event
+  recurring_event_id?: string | null; // set on one occurrence of a repeating event (the series id)
 }
 
 interface CalendarInfo {

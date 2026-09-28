@@ -4947,6 +4947,12 @@ button:disabled:hover {
     flex-direction: column;
 }
 
+.scheduler-occurrence-note {
+    margin: 0;
+    font-size: 12px;
+    color: var(--text-secondary);
+}
+
 .scheduler-column-label {
     display: flex;
     align-items: center;

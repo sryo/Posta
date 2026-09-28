@@ -4658,7 +4658,8 @@ function App() {
               endTime: event.all_day ? timeDefaults.endTime : endDateVal.toTimeString().slice(0, 5),
               allDay: event.all_day,
               attendees: event.attendees.map(a => a.email).join(', '),
-              recurrence: null, // Recurrence editing not supported yet
+              // Cards list single occurrences; a null rule leaves a series' recurrence alone
+              recurrence: null,
               editing: { id: event.id, calendarId: event.calendar_id },
             }));
           }}
@@ -4717,6 +4718,7 @@ function App() {
             setAttendees: (v: string) => setEventForm(f => ({ ...f, attendees: v })),
             recurrence: eventForm().recurrence,
             setRecurrence: (v: string | null) => setEventForm(f => ({ ...f, recurrence: v })),
+            occurrenceOnly: !!activeEvent()!.recurring_event_id,
             saving: eventForm().saving,
             onSave: handleCreateEvent,
             onClose: () => setEventForm(f => ({ ...f, editing: null })),

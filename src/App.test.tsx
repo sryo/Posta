@@ -925,6 +925,26 @@ describe("App calendar", () => {
     await waitFor(() => expect(screen.queryAllByText("Planning")).toHaveLength(0));
   });
 
+  it("edits one occurrence of a repeating event without offering a repeat rule", async () => {
+    calendarCards();
+    cardsByAccount.a = [{ ...card("cal-1", "a", "Week"), query: "calendar:7d", card_type: "calendar" }];
+    handlers.fetch_calendar_events = () => [
+      { ...calendarEvent("ev-1_20260101", "Standup"), recurring_event_id: "ev-1" },
+      calendarEvent("ev-2", "Planning"),
+    ];
+    render(() => <App />);
+    fireEvent.click(await screen.findByText("Standup"));
+    fireEvent.keyDown(document, { key: "e" });
+    expect(await screen.findByText("Repeats (editing this occurrence only)")).toBeInTheDocument();
+    expect(screen.queryByText("Weekly")).toBeNull();
+
+    fireEvent.keyDown(document, { key: "Escape" });
+    fireEvent.keyDown(document, { key: "Escape" });
+    fireEvent.click(await screen.findByText("Planning"));
+    fireEvent.keyDown(document, { key: "e" });
+    expect(await screen.findByText("Weekly")).toBeInTheDocument();
+  });
+
   it("drops a deleted event from the calendar cards' saved cache", async () => {
     calendarCards();
     cardsByAccount.a = [{ ...card("cal-1", "a", "Week"), query: "calendar:7d", card_type: "calendar" }];
