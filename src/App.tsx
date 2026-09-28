@@ -142,8 +142,12 @@ import { createDraftSync, draftKey, findLatestDraft, findUnsentDrafts, hasDraftC
 import { nextCardFocus, nextItemFocus } from "./app/keyboardNav";
 import { getSmartEventTime, groupCalendarEvents, isUserLabel, mergeThreadGroups, regroupThreads, type CalendarEventGroup } from "./app/grouping";
 import { pullLayoutWithRetry } from "./app/icloudRestore";
+import { onActivateKey } from "./shared/keyboard";
 
 const SESSION_EXPIRED_MESSAGE = "Session expired - sign in again";
+
+// Names for BG_COLORS, in its order, for the colour picker's options
+const BG_COLOR_NAMES = ["Red", "Orange", "Yellow", "Green", "Teal", "Blue", "Purple", "Pink"];
 
 function App() {
   const [loading, setLoading] = createSignal(true);
@@ -3929,9 +3933,11 @@ function App() {
                 class={`color-picker-selected ${selectedBgColorIndex() === null ? 'no-color' : ''}`}
                 style={selectedBgColorIndex() !== null ? { background: BG_COLORS[selectedBgColorIndex()!].hex } : {}}
                 onClick={(e) => { e.stopPropagation(); setBgColorPickerOpen(!bgColorPickerOpen()); }}
+                on:keydown={onActivateKey(() => setBgColorPickerOpen(!bgColorPickerOpen()))}
                 title="Background color"
                 role="button"
                 aria-label="Choose background color"
+                aria-expanded={bgColorPickerOpen()}
                 tabindex="0"
               >
                 <Show when={selectedBgColorIndex() === null}>
@@ -3940,14 +3946,22 @@ function App() {
               </div>
               <div
                 class="color-option no-color-option"
+                role="button"
+                tabIndex={bgColorPickerOpen() ? 0 : -1}
+                aria-label="No color"
                 onClick={() => selectBgColor(null)}
+                on:keydown={onActivateKey(() => selectBgColor(null))}
               ></div>
               <For each={BG_COLORS}>
                 {(color, index) => (
                   <div
                     class="color-option"
                     style={{ background: color.hex }}
+                    role="button"
+                    tabIndex={bgColorPickerOpen() ? 0 : -1}
+                    aria-label={BG_COLOR_NAMES[index()] ?? `Color ${index() + 1}`}
                     onClick={() => selectBgColor(index())}
+                    on:keydown={onActivateKey(() => selectBgColor(index()))}
                   ></div>
                 )}
               </For>
@@ -3958,6 +3972,8 @@ function App() {
                   class="toolbar-avatar"
                   onClick={(e) => { e.stopPropagation(); setAccountChooserOpen(!accountChooserOpen()); }}
                   title={selectedAccount()?.email || "Account"}
+                  aria-haspopup="menu"
+                  aria-expanded={accountChooserOpen()}
                 >
                   {selectedAccount()?.picture ? (
                     <img src={selectedAccount()!.picture!} alt="" class="toolbar-avatar-img" />

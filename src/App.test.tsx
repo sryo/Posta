@@ -2343,6 +2343,30 @@ describe("App accessibility", () => {
     await waitFor(() => expect(screen.getByRole("button", { name: "Expand Alpha" })).toHaveAttribute("aria-expanded", "false"));
   });
 
+  it("picks a background colour from the keyboard", async () => {
+    render(() => <App />);
+    await screen.findByText("Mail for A");
+    const picker = screen.getByRole("button", { name: "Choose background color" });
+    expect(picker).toHaveAttribute("aria-expanded", "false");
+    fireEvent.keyDown(picker, { key: "Enter" });
+    expect(picker).toHaveAttribute("aria-expanded", "true");
+
+    fireEvent.keyDown(screen.getByRole("button", { name: "Blue" }), { key: " " });
+    expect(localStorage.getItem("bgColorIndex")).toBe("5");
+    expect(picker).toHaveAttribute("aria-expanded", "false");
+    expect(screen.getByRole("button", { name: "No color", hidden: true })).toBeInTheDocument();
+  });
+
+  it("says the account button opens a menu and whether it is open", async () => {
+    render(() => <App />);
+    await screen.findByText("Mail for A");
+    const avatar = screen.getByTitle("a@x.com");
+    expect(avatar).toHaveAttribute("aria-haspopup", "menu");
+    expect(avatar).toHaveAttribute("aria-expanded", "false");
+    fireEvent.click(avatar);
+    expect(avatar).toHaveAttribute("aria-expanded", "true");
+  });
+
   it("starts an email to a suggested contact from the keyboard", async () => {
     handlers.fetch_contacts = () => [{ resource_name: "people/1", display_name: "Bo", email_addresses: ["bo@y.com"], photo_url: null }];
     render(() => <App />);
