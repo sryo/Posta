@@ -51,4 +51,36 @@ describe("MessageBody", () => {
     ));
     expect(container.querySelector("img")!.getAttribute("src")).toBe("data:image/gif;base64,R0lGOD+/");
   });
+
+  it("does not let an email borrow the app's own classes", () => {
+    const { container } = render(() => (
+      <MessageBody body={'<div class="card btn">receipt</div>'} msgId="m1" />
+    ));
+    const div = container.querySelector(".message-body div")!;
+    expect(div.textContent).toBe("receipt");
+    expect(div.hasAttribute("class")).toBe(false);
+  });
+
+  it("uses the part's mime type for a cid image fetched on demand", () => {
+    const parts = [{
+      mimeType: "image/jpeg",
+      headers: [{ name: "Content-ID", value: "<pic@x>" }],
+      body: { attachmentId: "att1" },
+    }];
+    const { container } = render(() => (
+      <MessageBody body={'<img src="cid:pic@x">'} msgId="m1" msgPayloadParts={parts} cidAttachmentData={{ "pic@x": "AB-_" }} />
+    ));
+    expect(container.querySelector("img")!.getAttribute("src")).toBe("data:image/jpeg;base64,AB+/");
+  });
+
+  it("falls back to a thread attachment's inline data by Content-ID", () => {
+    const threadAttachments = [{
+      message_id: "m1", attachment_id: "a1", content_id: "logo@x", inline_data: "QUJD", mime_type: "image/png",
+    }];
+    const { container } = render(() => (
+      <MessageBody body={'<img src="cid:logo@x">'} msgId="m1" threadAttachments={threadAttachments} />
+    ));
+    expect(container.querySelector("img")!.getAttribute("src")).toBe("data:image/png;base64,QUJD");
+  });
 });
+

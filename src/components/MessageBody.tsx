@@ -12,7 +12,7 @@ const DOMPURIFY_CONFIG = {
     'img', 'pre', 'code', 'hr', 'sub', 'sup', 'font', 'center', 'small', 's', 'strike'
   ],
   ALLOWED_ATTR: [
-    'href', 'src', 'alt', 'title', 'style', 'class', 'target', 'width', 'height', 'color', 'size', 'face',
+    'href', 'src', 'alt', 'title', 'style', 'target', 'width', 'height', 'color', 'size', 'face',
     'colspan', 'rowspan', 'align', 'valign', 'bgcolor', 'border', 'cellpadding', 'cellspacing'
   ],
   ALLOW_DATA_ATTR: false,
