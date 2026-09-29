@@ -969,33 +969,37 @@ function App() {
     const matchedThreadIds = new Set<string>();
     const cardsWithModified = new Set<string>();
     const cardsWithDeleted = new Set<string>();
+    const deleted = new Set(deletedThreadIds);
+    const modifiedById = new Map(modifiedThreads.map(t => [t.gmail_thread_id, t]));
 
     for (const cardId of Object.keys(cardThreads)) {
       const groups = cardThreads[cardId];
       if (!groups) continue;
 
       const updatedGroups = groups.map(group => {
-        let threads = group.threads.filter(t => !deletedThreadIds.includes(t.gmail_thread_id));
+        const threads = group.threads.filter(t => !deleted.has(t.gmail_thread_id)).map(t => {
+          const modified = modifiedById.get(t.gmail_thread_id);
+          if (!modified) return t;
+          matchedThreadIds.add(t.gmail_thread_id);
+          cardsWithModified.add(cardId);
+          return modified;
+        });
         if (threads.length !== group.threads.length) cardsWithDeleted.add(cardId);
-
-        // Update modified threads
-        for (const modifiedThread of modifiedThreads) {
-          const existingIndex = threads.findIndex(t => t.gmail_thread_id === modifiedThread.gmail_thread_id);
-          if (existingIndex >= 0) {
-            threads[existingIndex] = modifiedThread;
-            matchedThreadIds.add(modifiedThread.gmail_thread_id);
-            cardsWithModified.add(cardId);
-          }
-        }
-
         return { ...group, threads };
       });
 
-      // Filter out empty groups
-      updatedCardThreads[cardId] = updatedGroups.filter(g => g.threads.length > 0);
+      if (cardsWithModified.has(cardId) || cardsWithDeleted.has(cardId)) {
+        updatedCardThreads[cardId] = updatedGroups.filter(g => g.threads.length > 0);
+      }
     }
 
-    setCardThreads(produce(s => { Object.assign(s, updatedCardThreads); }));
+    // Reconciled so a changed thread's row updates in place, and only the
+    // cards holding a change are touched
+    batch(() => {
+      for (const [cardId, groups] of Object.entries(updatedCardThreads)) {
+        setCardThreads(cardId, reconcile(groups, { key: "gmail_thread_id" }));
+      }
+    });
 
     // A modified thread may no longer match its card's query (archived or
     // read elsewhere), and a thread in no card may be new to some card; only

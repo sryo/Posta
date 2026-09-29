@@ -145,6 +145,29 @@ describe("App background sync", () => {
   });
 });
 
+describe("App background sync updates", () => {
+  it("updates a changed thread's row in place and leaves other cards alone", async () => {
+    cardsByAccount.a = [card("card-a", "a", "Alpha"), { ...card("card-b", "a", "Beta"), position: 1 }];
+    threadsByCard["card-b"] = [thread("t-b", "Mail for B")];
+    render(() => <App />);
+    const row = (await screen.findByText("Mail for A")).closest(".thread")!;
+    const other = (await screen.findByText("Mail for B")).closest(".thread")!;
+    await new Promise(r => setTimeout(r, 20));
+
+    threadsByCard["card-a"] = [{ ...thread("t-a", "Mail for A"), unread_count: 1 }];
+    handlers.sync_threads_incremental = () => ({
+      modified_threads: [{ ...thread("t-a", "Mail for A"), unread_count: 1 }],
+      deleted_thread_ids: [],
+      is_full_sync: false,
+    });
+    window.dispatchEvent(new Event("focus"));
+
+    await waitFor(() => expect(row).toHaveClass("unread"));
+    expect(screen.getByText("Mail for A").closest(".thread")).toBe(row);
+    expect(screen.getByText("Mail for B").closest(".thread")).toBe(other);
+  });
+});
+
 describe("App background sync deletions", () => {
   it("drops a thread deleted elsewhere from the card's saved cache", async () => {
     threadsByCard["card-a"] = [thread("t-a", "Mail for A"), thread("t-b", "Other mail")];
