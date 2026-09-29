@@ -470,28 +470,32 @@ function App() {
   const [focusedThreadIndex, setFocusedThreadIndex] = createSignal<number>(-1);
   const [focusedEventIndex, setFocusedEventIndex] = createSignal<number>(-1);
 
-  // Native context menu for attachments
-  async function showAttachmentContextMenu(
-    att: { messageId: string; attachmentId: string; filename: string; mimeType: string; inlineData: string | null }
-  ) {
-    const openItem = await MenuItem.new({
-      text: "Open",
-      action: () => openAttachment(att.messageId, att.attachmentId, att.filename, att.mimeType, att.inlineData),
-    });
-    const downloadItem = await MenuItem.new({
-      text: "Download",
-      action: () => downloadAttachment(att.messageId, att.attachmentId, att.filename, att.mimeType, att.inlineData),
-    });
-    const separator = await PredefinedMenuItem.new({ item: "Separator" });
-    const forwardItem = await MenuItem.new({
-      text: "Forward",
-      action: () => forwardAttachment(att),
-    });
-
-    const menu = await Menu.new({
-      items: [openItem, downloadItem, separator, forwardItem],
-    });
-    await menu.popup();
+  // Native context menu for attachments. Its items live in the backend until
+  // closed, so one menu serves every right-click, acting on the attachment
+  // clicked last.
+  type MenuAttachment = { messageId: string; attachmentId: string; filename: string; mimeType: string; inlineData: string | null };
+  let menuAttachment: MenuAttachment | null = null;
+  let attachmentMenu: Promise<Menu> | null = null;
+  function createAttachmentMenu(): Promise<Menu> {
+    const withAttachment = (run: (att: MenuAttachment) => void) => () => { if (menuAttachment) run(menuAttachment); };
+    return (async () => Menu.new({
+      items: [
+        await MenuItem.new({ text: "Open", action: withAttachment(att => openAttachment(att.messageId, att.attachmentId, att.filename, att.mimeType, att.inlineData)) }),
+        await MenuItem.new({ text: "Download", action: withAttachment(att => downloadAttachment(att.messageId, att.attachmentId, att.filename, att.mimeType, att.inlineData)) }),
+        await PredefinedMenuItem.new({ item: "Separator" }),
+        await MenuItem.new({ text: "Forward", action: withAttachment(forwardAttachment) }),
+      ],
+    }))();
+  }
+  async function showAttachmentContextMenu(att: MenuAttachment) {
+    menuAttachment = att;
+    try {
+      attachmentMenu ??= createAttachmentMenu();
+      await (await attachmentMenu).popup();
+    } catch (e) {
+      attachmentMenu = null;
+      console.error("Failed to show the attachment menu:", e);
+    }
   }
 
   // Attach to the open compose, or start a new email with it

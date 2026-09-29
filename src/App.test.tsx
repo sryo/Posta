@@ -33,8 +33,9 @@ const openUrl = vi.fn(async (_url: string) => {});
 vi.mock("@tauri-apps/plugin-opener", () => ({ openUrl: (url: string) => openUrl(url) }));
 type MenuItemOptions = { text?: string; enabled?: boolean; action?: () => void };
 let lastMenu: MenuItemOptions[] = [];
+let menusCreated = 0;
 vi.mock("@tauri-apps/api/menu", () => ({
-  Menu: { new: async ({ items }: { items: MenuItemOptions[] }) => ({ popup: async () => { lastMenu = items; } }) },
+  Menu: { new: async ({ items }: { items: MenuItemOptions[] }) => { menusCreated++; return { popup: async () => { lastMenu = items; } }; } },
   MenuItem: { new: async (opts: MenuItemOptions) => opts },
   PredefinedMenuItem: { new: async () => ({}) },
 }));
@@ -257,6 +258,25 @@ describe("App background sync after an account switch", () => {
 });
 
 describe("App attachments", () => {
+  it("reuses one native menu for every attachment right-click, acting on the one clicked last", async () => {
+    const attachment = (id: string, filename: string) => ({
+      message_id: "m1", attachment_id: id, filename, mime_type: "application/pdf", size: 10, inline_data: null, content_id: null,
+    });
+    threadsByCard["card-a"] = [{ ...thread("t-a", "Mail for A"), has_attachment: true, attachments: [attachment("att1", "one.pdf"), attachment("att2", "two.pdf")] }];
+    handlers.save_attachment = ({ filename }) => `/Downloads/${filename}`;
+    render(() => <App />);
+    const before = menusCreated;
+    fireEvent.contextMenu(await screen.findByTitle("one.pdf (10 B)"));
+    await waitFor(() => expect(lastMenu.length).toBeGreaterThan(0));
+    lastMenu = [];
+    fireEvent.contextMenu(screen.getByTitle("two.pdf (10 B)"));
+    await waitFor(() => expect(lastMenu.length).toBeGreaterThan(0));
+
+    expect(menusCreated - before).toBe(1);
+    lastMenu.find(i => i.text === "Download")!.action!();
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith("save_attachment", expect.objectContaining({ attachmentId: "att2", filename: "two.pdf" })));
+  });
+
   it("forwards an attachment from its context menu in a new email", async () => {
     threadsByCard["card-a"] = [{
       ...thread("t-a", "Mail for A"),
