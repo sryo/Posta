@@ -71,8 +71,8 @@ describe("nextCardFocus", () => {
 
 describe("escapeTarget", () => {
   const none = {
-    filter: false, accountChooser: false, colorPicker: false, shortcutsHelp: false, batchReply: false,
-    compose: false, queryHelp: false, eventForm: false, cardEditor: false, settings: false,
+    filter: false, accountChooser: false, colorPicker: false, batchReply: false,
+    compose: false, cardEditor: false, settings: false,
     actionConfigMenu: false, selection: false, cardFocus: false,
   };
 
@@ -85,8 +85,7 @@ describe("escapeTarget", () => {
       open = { ...open, [target]: false };
     }
     expect(order).toEqual([
-      "filter", "accountChooser", "colorPicker", "shortcutsHelp", "batchReply", "compose",
-      "queryHelp", "eventForm", "cardEditor", "settings", "actionConfigMenu", "selection", "cardFocus",
+      "filter", "accountChooser", "colorPicker", "batchReply", "compose", "cardEditor", "settings", "actionConfigMenu", "selection", "cardFocus",
     ]);
   });
 

@@ -17,7 +17,7 @@ describe("event form layout", () => {
   });
 
   it("sets the title at 17px semibold", () => {
-    const title = decls(".event-title-input");
+    const title = decls(".form-title-field");
     expect(title.get("font-size")).toBe("17px");
     expect(title.get("font-weight")).toBe("600");
   });

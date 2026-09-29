@@ -226,3 +226,20 @@ describe("ComposeForm attaching dropped and pasted files", () => {
     expect(onAddFiles).not.toHaveBeenCalled();
   });
 });
+
+describe("ComposeForm fields and footer", () => {
+  it("builds its rows and footer from the shared form parts", () => {
+    renderCompose("kim@example.com");
+    expect(screen.getByLabelText("To").closest(".form-field-row")).not.toBeNull();
+    expect(screen.getByLabelText("Cc").closest(".form-field-row")).not.toBeNull();
+    const footer = document.querySelector(".form-footer.compose-footer")!;
+    expect(footer).not.toBeNull();
+    expect(footer.querySelector(".form-footer-actions")!.contains(screen.getByRole("button", { name: /Send/ }))).toBe(true);
+    expect(footer.contains(screen.getByTitle("Attach files"))).toBe(true);
+  });
+
+  it("shows Sending... on its button while a send is in flight", () => {
+    renderCompose("kim@example.com", true);
+    expect(screen.getByRole("button", { name: "Sending..." })).toBeDisabled();
+  });
+});

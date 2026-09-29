@@ -134,7 +134,7 @@ import { CardForm } from "./components/CardForm";
 import { Dialog } from "./components/Dialog";
 import { Toasts } from "./components/Toasts";
 import { createToasts, type ToastAction, type ToastTone } from "./app/toasts";
-import { failureMessage } from "./app/errorText";
+import { failureMessage, storedCredentialsFailure } from "./app/errorText";
 import { formatWhen, threadGroupLabel } from "./app/dateFormat";
 import { safeGetItem, safeSetItem, safeRemoveItem, safeGetJSON, safeSetJSON } from "./shared/storage";
 import { BG_COLORS, type ActionSettings, type CardColor, type GroupBy } from "./shared/constants";
@@ -626,6 +626,7 @@ function App() {
       } catch (e) {
         if (seq !== queryPreviewSeq) return;
         setQueryPreviewCalendarEvents([]);
+        console.warn("Query preview failed:", e);
         setQueryPreviewError(queryPreviewErrorMessage(e, true));
       } finally {
         if (seq === queryPreviewSeq) setQueryPreviewLoading(false);
@@ -642,6 +643,7 @@ function App() {
     } catch (e) {
       if (seq !== queryPreviewSeq) return;
       setQueryPreviewThreads([]);
+      console.warn("Query preview failed:", e);
       setQueryPreviewError(queryPreviewErrorMessage(e, false));
     } finally {
       if (seq === queryPreviewSeq) setQueryPreviewLoading(false);
@@ -1280,8 +1282,9 @@ function App() {
         await loadStoredCredentials();
       } catch (e) {
         console.warn("Stored credentials unavailable:", e);
-        credentialsError = String(e);
-        setError(credentialsError);
+        const failure = storedCredentialsFailure(e);
+        credentialsError = failure.message;
+        setErrorState(failure);
       }
 
       // Pull cards/accounts from iCloud if available (restores layout after re-login)
@@ -1580,11 +1583,8 @@ function App() {
         filter: showGlobalFilter(),
         accountChooser: accountChooserOpen(),
         colorPicker: colorPickerOpen() || editColorPickerOpen() || bgColorPickerOpen(),
-        shortcutsHelp: shortcutsHelpOpen(),
         batchReply: batchReplyOpen(),
         compose: composing() && !closingCompose(),
-        queryHelp: queryHelpOpen(),
-        eventForm: creatingEvent(),
         cardEditor: !!editingCardId(),
         settings: settingsOpen(),
         actionConfigMenu: !!actionConfigMenu(),
@@ -1595,11 +1595,8 @@ function App() {
         case "filter": setShowGlobalFilter(false); setGlobalFilter(""); break;
         case "accountChooser": setAccountChooserOpen(false); break;
         case "colorPicker": setColorPickerOpen(false); setEditColorPickerOpen(false); setBgColorPickerOpen(false); break;
-        case "shortcutsHelp": setShortcutsHelpOpen(false); break;
         case "batchReply": dismissBatchReply(); break;
         case "compose": closeCompose(); break;
-        case "queryHelp": setQueryHelpOpen(false); break;
-        case "eventForm": dismissEventForm(); break;
         case "cardEditor": setEditingCardId(null); break;
         case "settings": setSettingsOpen(false); break;
         case "actionConfigMenu": setActionConfigMenu(null); break;
@@ -1902,7 +1899,8 @@ function App() {
       try {
         storedCreds = await getStoredCredentials();
       } catch (e) {
-        setFailure("Couldn't read the saved Google credentials", e);
+        console.error("Couldn't read the saved Google credentials:", e);
+        setErrorState(storedCredentialsFailure(e));
         return;
       }
     }
@@ -3112,6 +3110,7 @@ function App() {
 
       const failures = results.filter((r): r is PromiseRejectedResult => r.status === 'rejected');
       if (failures.length === 0) return;
+      console.error("Batch reply couldn't load threads:", failures.map(f => f.reason));
       noteBackgroundError(account.id, failures[0].reason);
       if (failures.length === results.length) {
         setBatchReplyError({ message: batchReplyLoadErrorMessage(failures[0].reason), threadIds });
@@ -5920,7 +5919,7 @@ function App() {
         })()}
       </Show>
 
-      <Toasts toasts={toasts}>
+      <Toasts toasts={toasts} othersShowing={undoableSend.toastVisible()}>
         {/* Send Toast with Undo */}
         <Show when={undoableSend.toastVisible()}>
           <div class={`undo-toast send-toast ${undoableSend.toastClosing() ? 'closing' : ''}`}>

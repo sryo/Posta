@@ -228,7 +228,7 @@ describe("CreateEventForm header", () => {
   it("keeps the title and the calendar together in a header that stays in view", () => {
     const { container, getByRole } = renderForm({ startDate: "2031-03-03", extra: { calendars, calendarId: "team", setCalendarId: vi.fn() } });
     const header = container.querySelector(".event-form-header")!;
-    expect(header.querySelector('input[placeholder="Event title"]')).toHaveClass("event-title-input");
+    expect(header.querySelector('input[placeholder="Event title"]')).toHaveClass("form-title-field");
     const select = getByRole("combobox", { name: "Calendar" }) as HTMLSelectElement;
     expect(header.contains(select)).toBe(true);
     expect(select.value).toBe("team");
@@ -327,5 +327,34 @@ describe("CreateEventForm repeat", () => {
     const { getByRole } = renderForm({ startDate: "2024-06-10", setRecurrence });
     fireEvent.change(getByRole("combobox", { name: "Repeat" }), { target: { value: "" } });
     expect(setRecurrence).toHaveBeenCalledWith(null);
+  });
+});
+
+describe("CreateEventForm fields and footer", () => {
+  it("labels its location and guests rows like the compose form's", () => {
+    const setLocation = vi.fn();
+    const { getByLabelText, container } = renderForm({ startDate: "2031-03-03", extra: { setLocation } });
+    const location = getByLabelText("Location") as HTMLInputElement;
+    expect(location.closest(".form-field-row")).not.toBeNull();
+    fireEvent.input(location, { target: { value: "Studio 2" } });
+    expect(setLocation).toHaveBeenCalledWith("Studio 2");
+    expect(container.querySelector("label[for]:not([for=''])")).not.toBeNull();
+    expect((getByLabelText("Guests") as HTMLElement).closest(".form-field-row")).not.toBeNull();
+  });
+
+  it("ends in the shared footer, with Cancel showing Escape", () => {
+    const onClose = vi.fn();
+    const { container, getByRole } = renderForm({ startDate: "2031-03-03", onClose });
+    const footer = container.querySelector(".form-footer.event-form-footer")!;
+    const cancel = getByRole("button", { name: /Cancel/ });
+    expect(footer.contains(cancel)).toBe(true);
+    expect(cancel.querySelector(".shortcut-hint")).toHaveTextContent("ESC");
+    fireEvent.click(cancel);
+    expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
+  it("shows a failed save in the footer, announced", () => {
+    const { container } = renderForm({ startDate: "2031-03-03", extra: { error: "Couldn't save the event." } });
+    expect(container.querySelector('.form-footer [role="alert"]')).toHaveTextContent("Couldn't save the event.");
   });
 });

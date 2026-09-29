@@ -54,16 +54,14 @@ export function nextCardFocus(
   return addingCard ? { cardId: last, addingCard: false } : null;
 }
 
-// What is open, as far as Escape is concerned
+// What is open, as far as Escape is concerned; dialogs and the event form
+// are layers (see layers.ts), which Escape closes before any of these
 export interface EscapeState {
   filter: boolean;
   accountChooser: boolean;
   colorPicker: boolean;
-  shortcutsHelp: boolean;
   batchReply: boolean;
   compose: boolean;
-  queryHelp: boolean;
-  eventForm: boolean;
   cardEditor: boolean;
   settings: boolean;
   actionConfigMenu: boolean;
@@ -74,8 +72,8 @@ export interface EscapeState {
 
 // Front to back: each Escape closes the first of these that is open
 const ESCAPE_ORDER: (keyof EscapeState)[] = [
-  "filter", "accountChooser", "colorPicker", "shortcutsHelp", "batchReply", "compose",
-  "queryHelp", "eventForm", "cardEditor", "settings", "actionConfigMenu", "selection", "cardFocus",
+  "filter", "accountChooser", "colorPicker", "batchReply", "compose",
+  "cardEditor", "settings", "actionConfigMenu", "selection", "cardFocus",
 ];
 
 export function escapeTarget(state: EscapeState): keyof EscapeState | null {

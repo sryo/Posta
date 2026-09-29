@@ -8,6 +8,17 @@ describe("queryPreviewErrorMessage", () => {
       .toBe('Unknown range "x". Try today, tomorrow, week, month, 7d, 2w');
   });
 
+  it("says Gmail didn't understand the query instead of showing its error", () => {
+    expect(queryPreviewErrorMessage('Search failed: API error 400 Bad Request: {"error": {"message": "Invalid query"}}', false))
+      .toBe("Gmail didn't understand this query.");
+  });
+
+  it("says it couldn't preview the query for a failure that isn't the query's", () => {
+    expect(queryPreviewErrorMessage('Search failed: API error 503 Service Unavailable: {"error": {}}', false))
+      .toBe("Couldn't preview this query.");
+    expect(queryPreviewErrorMessage("Calendar error (500)", true)).toBe("Couldn't preview this query.");
+  });
+
   it("says the service could not be reached when offline", () => {
     expect(queryPreviewErrorMessage("Search failed: Request failed: could not reach Gmail.", false))
       .toBe("Couldn't reach Gmail to preview this query.");
@@ -36,8 +47,8 @@ describe("threadLoadErrorMessage", () => {
       .toBe("Couldn't reach Gmail. Check your connection and open the email again.");
   });
 
-  it("keeps the reason for anything else", () => {
-    expect(threadLoadErrorMessage(new Error("API error 500 Internal Server Error"))).toBe("Couldn't load this email: Error: API error 500 Internal Server Error");
+  it("says it couldn't load the email for anything else, leaving the backend's text out", () => {
+    expect(threadLoadErrorMessage(new Error("API error 500 Internal Server Error"))).toBe("Couldn't load this email. Try opening it again.");
   });
 });
 
@@ -58,10 +69,20 @@ describe("cardLoadErrorMessage", () => {
     expect(cardLoadErrorMessage(message, true)).toBe(message);
   });
 
-  it("keeps the reason for anything else, without the backend's prefixes", () => {
-    expect(cardLoadErrorMessage("Search failed: API error 400 Bad Request: Invalid query", false))
-      .toBe("Couldn't load this card: API error 400 Bad Request: Invalid query");
-    expect(cardLoadErrorMessage("Calendar error (500)", true)).toBe("Couldn't load this card: Calendar error (500)");
+  it("says it couldn't load the card for anything else, leaving the backend's text out", () => {
+    expect(cardLoadErrorMessage('Search failed: API error 500 Internal Server Error: {"error": {"code": 500}}', false))
+      .toBe("Couldn't load this card.");
+    expect(cardLoadErrorMessage("Calendar error (500)", true)).toBe("Couldn't load this card.");
+  });
+
+  it("keeps a reason the backend wrote for people", () => {
+    expect(cardLoadErrorMessage("Google Calendar is having trouble right now. Try again shortly.", true))
+      .toBe("Couldn't load this card: Google Calendar is having trouble right now. Try again shortly.");
+  });
+
+  it("says Gmail didn't understand a card's query", () => {
+    expect(cardLoadErrorMessage('Search failed: API error 400 Bad Request: {"error": {"message": "Invalid query"}}', false))
+      .toBe("Couldn't load this card: Gmail didn't understand its query.");
   });
 });
 
@@ -70,6 +91,6 @@ describe("batchReplyLoadErrorMessage", () => {
     expect(batchReplyLoadErrorMessage("Failed to fetch thread: Request failed: could not reach Gmail. Check your connection."))
       .toBe("Couldn't reach Gmail. Check your connection and try again.");
     expect(batchReplyLoadErrorMessage('Token refresh failed: {"error": "invalid_grant"}')).toMatch(/Sign in again/);
-    expect(batchReplyLoadErrorMessage("API error 500")).toBe("Couldn't load the emails: API error 500");
+    expect(batchReplyLoadErrorMessage("API error 500")).toBe("Couldn't load the emails.");
   });
 });

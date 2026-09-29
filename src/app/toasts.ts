@@ -33,25 +33,16 @@ export interface ShownToast extends ToastInput {
   durationMs: number | null;
 }
 
-// One toast at a time. An undo toast is never cut short by an info toast,
-// which waits for it instead; a newer undo toast takes over and commits the
-// change of the one it replaces.
-export function createToasts({ infoMs = 5000, errorMs = 10000, closeMs = 200 } = {}) {
+// One place on screen that shows a toast at a time, with its timer
+function createSlot(durationFor: (input: ToastInput) => number | null, closeMs: number, nextId: () => number) {
   const [current, setCurrent] = createSignal<ShownToast | null>(null);
   const queue: ToastInput[] = [];
-  let nextId = 1;
   let timer: ReturnType<typeof setTimeout> | undefined;
   let closeTimer: ReturnType<typeof setTimeout> | undefined;
   let remainingMs = 0;
   let startedAt = 0;
   // Whether the shown toast's onExpire is still to run
   let pendingExpire: (() => void) | undefined;
-
-  const durationFor = (input: ToastInput): number | null => {
-    if (input.tone !== "error") return infoMs;
-    // An error stays until dismissed, unless it offers to try again
-    return input.action ? errorMs : null;
-  };
 
   function startTimer(ms: number) {
     clearTimeout(timer);
@@ -64,7 +55,7 @@ export function createToasts({ infoMs = 5000, errorMs = 10000, closeMs = 200 } =
     clearTimeout(timer);
     clearTimeout(closeTimer);
     pendingExpire = input.onExpire;
-    const toast: ShownToast = { ...input, id: nextId++, closing: false, paused: false, durationMs: durationFor(input) };
+    const toast: ShownToast = { ...input, id: nextId(), closing: false, paused: false, durationMs: durationFor(input) };
     setCurrent(toast);
     if (toast.durationMs !== null) startTimer(toast.durationMs);
   }
@@ -108,7 +99,7 @@ export function createToasts({ infoMs = 5000, errorMs = 10000, closeMs = 200 } =
     return true;
   }
 
-  function runAction(index = 0) {
+  function runAction(index: number) {
     const toast = current();
     const action = toast && toastActions(toast)[index];
     if (!toast || toast.closing || !action) return;
@@ -137,15 +128,43 @@ export function createToasts({ infoMs = 5000, errorMs = 10000, closeMs = 200 } =
     clearTimeout(closeTimer);
   });
 
+  return { current, show, undo, runAction, pause, resume, close };
+}
+
+type Slot = ReturnType<typeof createSlot>;
+
+// Information and undo toasts show one at a time. An undo toast is never cut
+// short by an info toast, which waits for it instead; a newer undo toast
+// takes over and commits the change of the one it replaces. An error shows
+// at once, raised over whatever toast is already showing, and replaces only
+// an earlier error.
+export function createToasts({ infoMs = 5000, errorMs = 10000, closeMs = 200 } = {}) {
+  let lastId = 0;
+  const nextId = () => ++lastId;
+  const info = createSlot(() => infoMs, closeMs, nextId);
+  // An error stays until dismissed, unless it offers to try again
+  const errors = createSlot((input) => (input.action ? errorMs : null), closeMs, nextId);
+
+  // The slot showing toast `id`; the info slot when none is given
+  const slotOf = (id?: number): Slot | null => {
+    if (id === undefined) return info;
+    if (info.current()?.id === id) return info;
+    if (errors.current()?.id === id) return errors;
+    return null;
+  };
+
   return {
-    current,
-    show,
-    undo,
-    runAction,
-    pause,
-    resume,
-    dismiss: () => close(true),
-    dismissTag: (tag: string) => { if (current()?.tag === tag) close(true); },
-    hasUndo: () => { const t = current(); return !!t && !t.closing && !!t.undo; },
+    current: info.current,
+    error: errors.current,
+    show: (input: ToastInput) => (input.tone === "error" ? errors : info).show(input),
+    undo: info.undo,
+    runAction: (index = 0, id?: number) => slotOf(id)?.runAction(index),
+    pause: (id?: number) => slotOf(id)?.pause(),
+    resume: (id?: number) => slotOf(id)?.resume(),
+    dismiss: (id?: number) => slotOf(id)?.close(true),
+    dismissTag: (tag: string) => {
+      for (const slot of [info, errors]) if (slot.current()?.tag === tag) slot.close(true);
+    },
+    hasUndo: () => { const t = info.current(); return !!t && !t.closing && !!t.undo; },
   };
 }

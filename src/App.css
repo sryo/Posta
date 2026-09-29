@@ -40,6 +40,8 @@
     --toast-action-hover: rgba(138, 180, 248, 0.15);
     --toast-muted: #999;
     --toast-close-hover: rgba(255, 255, 255, 0.1);
+    /* A toast's height and the gap above it, for one raised over another */
+    --toast-row: 64px;
 
     /* Z-index scale - hierarchical layers
        Low (within cards): 10-40
@@ -2725,6 +2727,10 @@ button:disabled:hover {
     text-align: right;
 }
 
+.form-field-row label {
+    min-width: 64px;
+}
+
 .compose-field input {
     flex: 1;
     border: none;
@@ -2782,6 +2788,24 @@ button:disabled:hover {
     outline: none;
     resize: none;
     font-family: inherit;
+}
+
+/* Leading controls, then the error or status, then the buttons */
+.form-footer {
+    display: flex;
+    align-items: center;
+    gap: var(--space-md);
+}
+
+.form-footer-status {
+    flex: 1;
+    min-width: 0;
+}
+
+.form-footer-actions {
+    display: flex;
+    align-items: center;
+    gap: var(--space-md);
 }
 
 .compose-footer {
@@ -5094,6 +5118,10 @@ button.settings-section-title {
     z-index: 1;
 }
 
+.undo-toast.raised {
+    bottom: calc(24px + var(--toast-row));
+}
+
 .undo-toast.closing {
     animation: toast-slide-down 0.2s ease-in forwards;
 }
@@ -5534,10 +5562,6 @@ button.settings-section-title {
     background: var(--bg-secondary);
 }
 
-.compose-spacer {
-    flex: 1;
-}
-
 /* Event form: title and calendar above the scrolling body, actions below */
 .event-form-header {
     position: sticky;
@@ -5551,7 +5575,7 @@ button.settings-section-title {
     background: var(--bg-primary);
 }
 
-.event-title-input {
+.form-title-field {
     flex: 1;
     min-width: 0;
     padding: var(--space-xs) 0;
@@ -5564,7 +5588,7 @@ button.settings-section-title {
     outline: none;
 }
 
-.event-title-input::placeholder {
+.form-title-field::placeholder {
     color: var(--text-muted);
     font-weight: 500;
 }

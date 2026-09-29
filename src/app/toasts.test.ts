@@ -92,17 +92,56 @@ describe("toasts", () => {
   it("keeps an error until it is dismissed, or for longer when it offers to retry", () => {
     toasts.show({ message: "Couldn't archive 1 thread.", tone: "error" });
     vi.advanceTimersByTime(60000);
-    expect(message()).toBe("Couldn't archive 1 thread.");
-    toasts.dismiss();
+    expect(toasts.error()?.message).toBe("Couldn't archive 1 thread.");
+    toasts.dismiss(toasts.error()!.id);
     vi.advanceTimersByTime(200);
-    expect(toasts.current()).toBeNull();
+    expect(toasts.error()).toBeNull();
 
     toasts.show({ message: "Couldn't send.", tone: "error", action: { label: "Retry", run: () => {} } });
-    expect(toasts.current()?.durationMs).toBe(10000);
+    expect(toasts.error()?.durationMs).toBe(10000);
     vi.advanceTimersByTime(9999);
+    expect(toasts.error()?.closing).toBe(false);
+    vi.advanceTimersByTime(1);
+    expect(toasts.error()?.closing).toBe(true);
+  });
+
+  it("shows an error at once beside an undo toast, which keeps its Undo and its time", () => {
+    const undo = vi.fn();
+    const onExpire = vi.fn();
+    toasts.show({ message: "Deleted card", undo, onExpire });
+    vi.advanceTimersByTime(1000);
+    toasts.show({ message: "Couldn't archive 1 thread.", tone: "error" });
+    expect(toasts.error()?.message).toBe("Couldn't archive 1 thread.");
+    expect(message()).toBe("Deleted card");
+    expect(onExpire).not.toHaveBeenCalled();
+    expect(toasts.hasUndo()).toBe(true);
+    vi.advanceTimersByTime(3999);
     expect(toasts.current()?.closing).toBe(false);
     vi.advanceTimersByTime(1);
-    expect(toasts.current()?.closing).toBe(true);
+    expect(onExpire).toHaveBeenCalledTimes(1);
+    expect(toasts.error()?.message).toBe("Couldn't archive 1 thread.");
+  });
+
+  it("replaces a shown error with a newer one, leaving the other toast alone", () => {
+    toasts.show({ message: "Reply sent" });
+    toasts.show({ message: "Couldn't star 1 thread.", tone: "error" });
+    toasts.show({ message: "Couldn't archive 1 thread.", tone: "error" });
+    expect(toasts.error()?.message).toBe("Couldn't archive 1 thread.");
+    expect(message()).toBe("Reply sent");
+  });
+
+  it("runs, pauses and dismisses the toast it is given by id", () => {
+    const retry = vi.fn();
+    toasts.show({ message: "Reply sent" });
+    toasts.show({ message: "Couldn't send.", tone: "error", action: { label: "Retry", run: retry } });
+    const errorId = toasts.error()!.id;
+    toasts.pause(errorId);
+    expect(toasts.error()?.paused).toBe(true);
+    expect(toasts.current()?.paused).toBe(false);
+    toasts.runAction(0, errorId);
+    expect(retry).toHaveBeenCalledTimes(1);
+    expect(toasts.error()?.closing).toBe(true);
+    expect(toasts.current()?.closing).toBe(false);
   });
 
   it("runs a toast's action once and closes it", () => {

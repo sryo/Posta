@@ -30,7 +30,42 @@ describe("Toasts", () => {
     expect(polite).toHaveTextContent("Reply sent");
     toasts.show({ message: "Couldn't send the reply.", tone: "error" });
     expect(assertive).toHaveTextContent("Couldn't send the reply.");
-    expect(polite).not.toHaveTextContent("Reply sent");
+    expect(polite).toHaveTextContent("Reply sent");
+  });
+
+  it("raises an error over the toast already showing instead of making it wait", () => {
+    const { toasts, polite, assertive } = setup();
+    const undo = vi.fn();
+    toasts.show({ message: "Archived 1 thread", undo });
+    toasts.show({ message: "Couldn't star 1 thread.", tone: "error" });
+    expect(polite).toHaveTextContent("Archived 1 thread");
+    expect(assertive.querySelector(".undo-toast")).toHaveClass("raised");
+    fireEvent.click(within(assertive).getByTitle("Dismiss"));
+    expect(toasts.error()?.closing).toBe(true);
+    expect(toasts.current()?.closing).toBe(false);
+    fireEvent.click(within(polite).getByRole("button", { name: /Undo/ }));
+    expect(undo).toHaveBeenCalledTimes(1);
+  });
+
+  it("raises an error over the send toast, which the store doesn't hold", () => {
+    let toasts!: ReturnType<typeof createToasts>;
+    const result = render(() => {
+      toasts = createToasts();
+      return (
+        <Toasts toasts={toasts} othersShowing>
+          <div class="undo-toast send-toast">Sending…</div>
+        </Toasts>
+      );
+    });
+    toasts.show({ message: "Couldn't star 1 thread.", tone: "error" });
+    const assertive = result.container.querySelector('[aria-live="assertive"]') as HTMLElement;
+    expect(assertive.querySelector(".undo-toast")).toHaveClass("raised");
+  });
+
+  it("leaves an error where toasts show when nothing else is showing", () => {
+    const { toasts, assertive } = setup();
+    toasts.show({ message: "Couldn't star 1 thread.", tone: "error" });
+    expect(assertive.querySelector(".undo-toast")).not.toHaveClass("raised");
   });
 
   it("offers every action a toast carries", () => {

@@ -1,4 +1,4 @@
-import { createSignal, Show, For } from "solid-js";
+import { createSignal, createUniqueId, Show, For } from "solid-js";
 import { ChevronLeftIcon, ChevronRightIcon, VideoIcon } from "./Icons";
 import { CloseButton } from "./ComposeAtoms";
 import { isImeComposing, isTypingTarget, onActivateKey } from "../shared/keyboard";
@@ -8,6 +8,7 @@ import { minutesToTime, timeToMinutes } from "../app/timeInput";
 import { TimeCombobox } from "./TimeCombobox";
 import { GuestChips } from "./GuestChips";
 import { ScopeMenu, type RecurrenceScope } from "./ScopeMenu";
+import { CancelButton, FieldRow, FormFooter, SubmitButton, TitleField } from "./FormParts";
 
 export const CreateEventForm = (props: {
   closing?: boolean;
@@ -84,6 +85,7 @@ export const CreateEventForm = (props: {
     { label: "Weekdays", value: "FREQ=WEEKLY;BYDAY=MO,TU,WE,TH,FR" }
   ];
 
+  const fieldId = createUniqueId();
 
   // The save button advertises ⌘Enter; handle it on the form so it also
   // works in the inline edit form, which the app-level shortcut (gated on
@@ -200,15 +202,7 @@ export const CreateEventForm = (props: {
   const formContent = () => (
     <>
       <div class="event-form-header">
-        <input
-          type="text"
-          class="event-title-input"
-          value={props.summary}
-          onInput={(e) => props.setSummary(e.currentTarget.value)}
-          placeholder="Event title"
-          aria-label="Event title"
-          ref={(el) => setTimeout(() => el.focus(), 0)}
-        />
+        <TitleField value={props.summary} onInput={props.setSummary} placeholder="Event title" autofocus />
         <Show when={!props.isEditing && props.setCalendarId && writableCalendars().length > 0}>
           <select
             class="event-calendar-select"
@@ -319,16 +313,17 @@ export const CreateEventForm = (props: {
           </div>
         </div>
 
-        <div class="compose-field">
+        <FieldRow label="Location" for={`${fieldId}-location`}>
           <input
+            id={`${fieldId}-location`}
             type="text"
             value={props.location}
             onInput={(e) => props.setLocation(e.currentTarget.value)}
-            placeholder="Location"
+            placeholder="Add a place"
           />
-        </div>
+        </FieldRow>
         <Show when={props.setAddMeet}>
-          <div class="compose-field event-meet-field">
+          <FieldRow class="event-meet-field">
             <VideoIcon />
             <Show when={!props.hasMeet} fallback={<span>Has a Google Meet link</span>}>
               <label class="event-meet-toggle">
@@ -336,11 +331,11 @@ export const CreateEventForm = (props: {
                 Add Google Meet
               </label>
             </Show>
-          </div>
+          </FieldRow>
         </Show>
-        <div class="compose-field">
-          <GuestChips value={props.attendees} onChange={props.setAttendees} suggest={props.guestSuggestions} />
-        </div>
+        <FieldRow label="Guests" for={`${fieldId}-guests`}>
+          <GuestChips id={`${fieldId}-guests`} value={props.attendees} onChange={props.setAttendees} suggest={props.guestSuggestions} />
+        </FieldRow>
         <div class="compose-content">
           <textarea
             value={props.description}
@@ -350,16 +345,17 @@ export const CreateEventForm = (props: {
           />
         </div>
       </div>
-      <div class={`event-form-footer ${props.inline ? "inline-event-footer" : "compose-footer"}`}>
-        <Show when={props.error}><div class="compose-error">{props.error}</div></Show>
-        <div class="compose-spacer" />
-        <button class="btn" onClick={props.onClose} style={{ "margin-right": "8px" }}>
-          Cancel
-        </button>
+      <FormFooter class={`event-form-footer ${props.inline ? "inline-event-footer" : "compose-footer"}`} error={props.error}>
+        <CancelButton onClick={props.onClose} />
         <div class="scope-menu-anchor">
-          <button class="btn btn-primary" disabled={props.saving || !hasTitle()} onClick={save} title="Save event (⌘Enter)">
-            {props.saving ? "Saving..." : <>{props.isEditing ? "Update" : "Save"} <span class="shortcut-hint">⌘↵</span></>}
-          </button>
+          <SubmitButton
+            label={props.isEditing ? "Update" : "Save"}
+            busy={props.saving}
+            busyLabel="Saving..."
+            disabled={!hasTitle()}
+            onClick={save}
+            title="Save event (⌘Enter)"
+          />
           <Show when={choosingScope()}>
             <ScopeMenu
               title="Change repeating event"
@@ -368,7 +364,7 @@ export const CreateEventForm = (props: {
             />
           </Show>
         </div>
-      </div>
+      </FormFooter>
     </>
   );
 

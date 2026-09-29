@@ -7,6 +7,7 @@ import { isImeComposing } from "../shared/keyboard";
 import { splitQuotedText } from "../app/quotedHistory";
 import { RecipientInput, type RecipientSuggestion } from "./RecipientInput";
 import { carriesFiles, transferredFiles } from "../app/fileDrop";
+import { FieldRow, FormFooter, SubmitButton } from "./FormParts";
 
 // Shared Compose Form component
 interface ComposeFormProps {
@@ -114,8 +115,7 @@ export const ComposeForm = (props: ComposeFormProps) => {
 
   // Shared field components (only rendered when showFields !== false)
   const ToField = () => (
-    <div class="compose-field">
-      <label for={`${fieldId}-to`}>To</label>
+    <FieldRow label="To" for={`${fieldId}-to`}>
       <div class="compose-to-row">
         <RecipientInput
           id={`${fieldId}-to`}
@@ -133,13 +133,12 @@ export const ComposeForm = (props: ComposeFormProps) => {
           <button type="button" class="cc-bcc-toggle" onClick={() => props.setShowCcBcc!(true)}>Cc/Bcc</button>
         </Show>
       </div>
-    </div>
+    </FieldRow>
   );
 
   const CcBccFields = () => (
     <Show when={props.showCcBcc && props.setCc && props.setBcc}>
-      <div class="compose-field">
-        <label for={`${fieldId}-cc`}>Cc</label>
+      <FieldRow label="Cc" for={`${fieldId}-cc`}>
         <RecipientInput
           id={`${fieldId}-cc`}
           value={props.cc || ''}
@@ -148,9 +147,8 @@ export const ComposeForm = (props: ComposeFormProps) => {
           onKeyDown={handleKeyDown}
           placeholder="Cc recipients"
         />
-      </div>
-      <div class="compose-field">
-        <label for={`${fieldId}-bcc`}>Bcc</label>
+      </FieldRow>
+      <FieldRow label="Bcc" for={`${fieldId}-bcc`}>
         <RecipientInput
           id={`${fieldId}-bcc`}
           value={props.bcc || ''}
@@ -159,14 +157,13 @@ export const ComposeForm = (props: ComposeFormProps) => {
           onKeyDown={handleKeyDown}
           placeholder="Bcc recipients"
         />
-      </div>
+      </FieldRow>
     </Show>
   );
 
   const SubjectField = () => (
     <Show when={props.showSubject && props.setSubject}>
-      <div class="compose-field">
-        <label for={`${fieldId}-subject`}>Subject</label>
+      <FieldRow label="Subject" for={`${fieldId}-subject`}>
         <input
           id={`${fieldId}-subject`}
           type="text"
@@ -175,7 +172,7 @@ export const ComposeForm = (props: ComposeFormProps) => {
           onKeyDown={handleKeyDown}
           placeholder="Subject"
         />
-      </div>
+      </FieldRow>
     </Show>
   );
 
@@ -256,39 +253,40 @@ export const ComposeForm = (props: ComposeFormProps) => {
   );
 
   const Footer = () => (
-    <div class="compose-footer">
-      <input
-        type="file"
-        id={props.fileInputId}
-        onChange={props.onFileSelect}
-        multiple
-        style={{ display: 'none' }}
-      />
-      <button
-        class="compose-attach-btn"
-        onClick={() => (document.getElementById(props.fileInputId) as HTMLInputElement)?.click()}
-        title="Attach files"
-      >
-        <AttachmentIcon />
-      </button>
-      <Show when={props.error}>
-        <div class="compose-error">{props.error}</div>
-      </Show>
-      <Show when={props.draftSaving && !props.error}>
-        <div class="draft-saved">Saving...</div>
-      </Show>
-      <Show when={props.draftSaved && !props.draftSaving && !props.error}>
-        <div class="draft-saved">Draft saved</div>
-      </Show>
-      <div class="compose-spacer" />
-      <button
-        class="btn btn-primary"
-        disabled={!canSend() || props.sending}
-        onClick={props.onSend}
-      >
-        {props.sending ? 'Sending...' : <>Send <span class="shortcut-hint">⌘↵</span></>}
-      </button>
-    </div>
+    <FormFooter
+      class="compose-footer"
+      error={props.error}
+      leading={
+        <>
+          <input
+            type="file"
+            id={props.fileInputId}
+            onChange={props.onFileSelect}
+            multiple
+            style={{ display: 'none' }}
+          />
+          <button
+            class="compose-attach-btn"
+            onClick={() => (document.getElementById(props.fileInputId) as HTMLInputElement)?.click()}
+            title="Attach files"
+          >
+            <AttachmentIcon />
+          </button>
+        </>
+      }
+      status={
+        <>
+          <Show when={props.draftSaving}>
+            <div class="draft-saved">Saving...</div>
+          </Show>
+          <Show when={props.draftSaved && !props.draftSaving}>
+            <div class="draft-saved">Draft saved</div>
+          </Show>
+        </>
+      }
+    >
+      <SubmitButton label="Send" busy={props.sending} busyLabel="Sending..." disabled={!canSend()} onClick={props.onSend} />
+    </FormFooter>
   );
 
   return (

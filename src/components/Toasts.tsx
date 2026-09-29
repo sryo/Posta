@@ -4,18 +4,19 @@ import { CloseIcon } from "./Icons";
 
 type ToastStore = ReturnType<typeof createToasts>;
 
-function Toast(props: { toast: ShownToast; toasts: ToastStore }) {
+function Toast(props: { toast: ShownToast; toasts: ToastStore; raised?: boolean }) {
   const t = () => props.toast;
+  const id = () => props.toast.id;
   return (
     <div
-      class={`undo-toast ${t().closing ? "closing" : ""} ${t().paused ? "paused" : ""}`}
-      onMouseEnter={() => props.toasts.pause()}
+      class={`undo-toast ${t().closing ? "closing" : ""} ${t().paused ? "paused" : ""} ${props.raised ? "raised" : ""}`}
+      onMouseEnter={() => props.toasts.pause(id())}
       onMouseLeave={(e) => {
-        if (!e.currentTarget.contains(document.activeElement)) props.toasts.resume();
+        if (!e.currentTarget.contains(document.activeElement)) props.toasts.resume(id());
       }}
-      onFocusIn={() => props.toasts.pause()}
+      onFocusIn={() => props.toasts.pause(id())}
       onFocusOut={(e) => {
-        if (!e.currentTarget.contains(e.relatedTarget as Node | null)) props.toasts.resume();
+        if (!e.currentTarget.contains(e.relatedTarget as Node | null)) props.toasts.resume(id());
       }}
     >
       <Show when={t().durationMs}>
@@ -27,9 +28,9 @@ function Toast(props: { toast: ShownToast; toasts: ToastStore }) {
           <button class="toast-undo-btn" onClick={() => props.toasts.undo()}>Undo <span class="shortcut-hint">z</span></button>
         </Show>
         <For each={toastActions(t())}>
-          {(action, i) => <button class="toast-undo-btn" onClick={() => props.toasts.runAction(i())}>{action.label}</button>}
+          {(action, i) => <button class="toast-undo-btn" onClick={() => props.toasts.runAction(i(), id())}>{action.label}</button>}
         </For>
-        <button class="toast-close-btn" onClick={() => props.toasts.dismiss()} title="Dismiss">
+        <button class="toast-close-btn" onClick={() => props.toasts.dismiss(id())} title="Dismiss">
           <CloseIcon />
         </button>
       </div>
@@ -38,22 +39,22 @@ function Toast(props: { toast: ShownToast; toasts: ToastStore }) {
 }
 
 // Both live regions stay in the page, empty or not: a region added together
-// with its first message is often not announced
-export function Toasts(props: { toasts: ToastStore; children?: JSX.Element }) {
+// with its first message is often not announced. `othersShowing` says a
+// toast outside the store (the send toast, passed as children) is up, so an
+// error rises above it too.
+export function Toasts(props: { toasts: ToastStore; othersShowing?: boolean; children?: JSX.Element }) {
   // Keyed by id so each toast mounts afresh and its progress fill restarts
-  const shown = (tone: "info" | "error") => {
-    const t = props.toasts.current();
-    return t && (t.tone ?? "info") === tone ? [t.id] : [];
-  };
-  const render = () => <Toast toast={props.toasts.current()!} toasts={props.toasts} />;
+  const infoIds = () => { const t = props.toasts.current(); return t ? [t.id] : []; };
+  const errorIds = () => { const t = props.toasts.error(); return t ? [t.id] : []; };
+  const raised = () => !!props.toasts.current() || !!props.othersShowing;
   return (
     <>
       <div role="status" aria-live="polite">
-        <For each={shown("info")}>{render}</For>
+        <For each={infoIds()}>{() => <Toast toast={props.toasts.current()!} toasts={props.toasts} />}</For>
         {props.children}
       </div>
       <div aria-live="assertive">
-        <For each={shown("error")}>{render}</For>
+        <For each={errorIds()}>{() => <Toast toast={props.toasts.error()!} toasts={props.toasts} raised={raised()} />}</For>
       </div>
     </>
   );

@@ -26,6 +26,25 @@ describe("dialogs", () => {
   });
 });
 
+describe("form parts", () => {
+  it("lay a form footer out as leading controls, a status taking the room left, and the buttons", () => {
+    expect(declarationsOf(".form-footer").get("display")).toBe("flex");
+    expect(declarationsOf(".form-footer-status").get("flex")).toBe("1");
+    expect(declarationsOf(".form-footer-actions").get("display")).toBe("flex");
+    expect(declarationsOf(".form-footer-actions").get("gap")).toBe("var(--space-md)");
+  });
+
+  it("draw a title field large and borderless", () => {
+    const decl = declarationsOf(".form-title-field");
+    expect(decl.get("font-size")).toBe("17px");
+    expect(decl.get("border")).toBe("none");
+  });
+
+  it("give every field row's label the same width", () => {
+    expect(declarationsOf(".form-field-row label").get("min-width")).toBe("64px");
+  });
+});
+
 describe("buttons", () => {
   it("fade a disabled primary button in its own colour, so it can't pass for an enabled grey one", () => {
     const decl = declarationsOf(".btn-primary:disabled");
@@ -83,6 +102,12 @@ describe("toasts", () => {
 
   it("hold their progress fill while paused", () => {
     expect(declarationsOf(".undo-toast.paused .toast-progress").get("animation-play-state")).toBe("paused");
+  });
+
+  it("raise an error above a toast already showing, clear of it", () => {
+    expect(declarationsOf(".undo-toast").get("bottom")).toBe("24px");
+    expect(declarationsOf(".undo-toast.raised").get("bottom")).toBe("calc(24px + var(--toast-row))");
+    expect(declarationsOf(":root").get("--toast-row")).toBeDefined();
   });
 });
 
