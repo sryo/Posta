@@ -4722,7 +4722,8 @@ button:disabled:hover {
     position: absolute;
     top: 100%;
     left: 0;
-    z-index: 100;
+    /* Above .message-actions-wheel, which comes later in the same card */
+    z-index: 101;
     width: 320px;
     max-height: 360px;
     background: var(--bg-primary);
