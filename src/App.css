@@ -887,7 +887,8 @@ a:focus-visible,
 }
 
 .sync-status.sync-fresh,
-.sync-status.sync-stale {
+.sync-status.sync-stale,
+.sync-status.sync-waiting {
     opacity: 0.6;
 }
 

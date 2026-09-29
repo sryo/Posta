@@ -868,6 +868,25 @@ describe("App card load errors", () => {
     expect(screen.getByRole("region", { name: "Alpha email card" })).toHaveClass("stale");
   });
 
+  it("shows each cached card's age instead of a sync failure while offline", async () => {
+    const cachedAt = Date.now() - 5 * 60_000;
+    handlers.get_cached_card_threads = () => ({ groups: [{ label: "Today", threads: [thread("t-a", "Cached mail")] }], next_page_token: null, cached_at: Math.floor(cachedAt / 1000) });
+    handlers.fetch_threads_paginated = () => { throw "Search failed: Request failed: could not reach Gmail. Check your connection."; };
+    render(() => <App />);
+
+    await screen.findByText("Cached mail");
+    await waitFor(() => expect(document.querySelector(".connection-status")).not.toBeNull());
+    const alpha = screen.getByRole("region", { name: "Alpha email card" });
+    const age = await waitFor(() => {
+      const el = alpha.querySelector(".sync-status");
+      expect(el).not.toBeNull();
+      return el as HTMLElement;
+    });
+    expect(age).toHaveTextContent("5m ago");
+    expect(age).toHaveClass("sync-waiting");
+    expect(within(alpha).queryByText("sync failed")).not.toBeInTheDocument();
+  });
+
   it("tries again as soon as the Mac is back online", async () => {
     let offline = true;
     const fetchPage = handlers.fetch_threads_paginated;

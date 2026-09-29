@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { cardWaitingMessage, connectionStatus } from "./connectionStatus";
+import { cardSyncLabel, cardWaitingMessage, connectionStatus } from "./connectionStatus";
 
 const at = (h: number, m: number) => new Date(2026, 8, 29, h, m).getTime();
 const time = (t: number) => new Date(t).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" });
@@ -43,5 +43,33 @@ describe("cardWaitingMessage", () => {
   it("leaves errors that belong to the card to the card", () => {
     expect(cardWaitingMessage("Couldn't load this card: Invalid query", "Search failed: Invalid query", false)).toBeNull();
     expect(cardWaitingMessage("Calendar permission denied. Please re-login to grant calendar access.", "Calendar permission denied. Please re-login to grant calendar access.", false)).toBeNull();
+  });
+});
+
+describe("cardSyncLabel", () => {
+  const now = at(11, 0);
+
+  it("says nothing for a card that never synced", () => {
+    expect(cardSyncLabel({ lastSyncedAt: null, now, syncError: null, boardDown: true })).toBeNull();
+  });
+
+  it("shows a cached card's age, never a failure, while the board can't reach Google", () => {
+    expect(cardSyncLabel({ lastSyncedAt: at(10, 55), now, syncError: "could not reach Gmail", boardDown: true })).toEqual({
+      text: "5m ago", tone: "waiting", title: "Last synced: 5m ago",
+    });
+  });
+
+  it("names a failure only this card has", () => {
+    expect(cardSyncLabel({ lastSyncedAt: at(10, 55), now, syncError: "Invalid query", boardDown: false })).toEqual({
+      text: "sync failed", tone: "error", title: "Sync failed: Invalid query",
+    });
+  });
+
+  it("marks a fresh or old sync while everything works", () => {
+    expect(cardSyncLabel({ lastSyncedAt: now - 1000, now, syncError: null, boardDown: false })?.tone).toBe("fresh");
+    expect(cardSyncLabel({ lastSyncedAt: at(10, 55), now, syncError: null, boardDown: false })?.tone).toBe("normal");
+    expect(cardSyncLabel({ lastSyncedAt: at(10, 0), now, syncError: null, boardDown: false })).toEqual({
+      text: "1h ago", tone: "stale", title: "Last synced: 1h ago",
+    });
   });
 });

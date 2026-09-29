@@ -257,6 +257,11 @@ describe("board connection status", () => {
   it("dims the mail of cards that can't update", () => {
     expect(declarationsOf(".card.stale .card-body").get("opacity")).toBeDefined();
   });
+
+  it("keeps the age of a card that can't update in view", () => {
+    expect(declarationsOf(".sync-status").get("opacity")).toBe("0");
+    expect(Number(declarationsOf(".sync-status.sync-waiting").get("opacity"))).toBeGreaterThan(0);
+  });
 });
 
 describe("snippet previews", () => {
