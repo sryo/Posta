@@ -1790,11 +1790,12 @@ a:focus-visible,
     color: var(--text-muted);
 }
 
+/* The place keeps its icon and a few letters when a clash crowds it */
 .invite-place {
     display: inline-flex;
     align-items: center;
     gap: var(--icon-gap-meta);
-    min-width: 0;
+    min-width: calc(var(--icon-meta) + var(--icon-gap-meta) + 4ch);
     color: var(--text-muted);
 }
 
@@ -1817,11 +1818,17 @@ a:focus-visible,
     display: inline-flex;
     align-items: center;
     gap: var(--icon-gap-meta);
-    flex-shrink: 0;
+    flex-shrink: 1;
+    min-width: 0;
     margin-left: auto;
     font: var(--type-meta);
-    white-space: nowrap;
     color: var(--warning-text);
+}
+
+.invite-clash-title {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
 }
 
 .invite-foot {

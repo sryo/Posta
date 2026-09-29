@@ -284,7 +284,7 @@ export const InviteRowLines = (props: {
           <Show when={clashes().length > 0}>
             <span class="invite-clash">
               <WarningIcon size="meta" />
-              {clashes()[0].title}{clashes().length > 1 ? ` +${clashes().length - 1}` : ""}
+              <span class="invite-clash-title">{clashes()[0].title}{clashes().length > 1 ? ` +${clashes().length - 1}` : ""}</span>
             </span>
           </Show>
         </div>
