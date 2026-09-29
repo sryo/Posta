@@ -112,6 +112,8 @@ import {
   LocationIcon,
   WarningIcon,
   CheckIcon,
+  MailIcon,
+  RepeatIcon,
 } from "./components/Icons";
 import { ReactionButton } from "./components/ReactionButton";
 import { ComposeTextarea, ComposeSendButton, CloseButton } from "./components/ComposeAtoms";
@@ -142,7 +144,7 @@ import { Dialog } from "./components/Dialog";
 import { Toasts } from "./components/Toasts";
 import { createToasts, type ToastAction, type ToastTone } from "./app/toasts";
 import { failureMessage, storedCredentialsFailure } from "./app/errorText";
-import { formatClock, formatWhen, threadGroupLabel } from "./app/dateFormat";
+import { formatClock, formatShortDate, formatWhen, threadGroupLabel } from "./app/dateFormat";
 import { safeGetItem, safeSetItem, safeRemoveItem, safeGetJSON, safeSetJSON } from "./shared/storage";
 import { BOARD_COLORS, type ActionSettings, type CardColor, type GroupBy } from "./shared/constants";
 import { createUndoableSend } from "./app/undoableSend";
@@ -167,6 +169,7 @@ import { AttachmentLightbox, type PreviewAttachment } from "./components/Attachm
 import { MessageSender } from "./components/MessageSender";
 import { isForwardSubject } from "./app/quotedHistory";
 import { eventAttendees, eventFromThread, eventTimesFromForm, smartEventDefaults } from "./app/eventForm";
+import { rankEventSuggestions, type EventSuggestion } from "./app/eventSuggestions";
 import { composePlacement, panelBesideView } from "./app/composePlacement";
 import { cidImagesToFetch, createLruCache, fetchCidImages } from "./app/cidImages";
 import { sendPending, type PendingSend } from "./app/pendingSend";
@@ -896,7 +899,11 @@ function App() {
   const [composeSubject, setComposeSubject] = createSignal("");
   const [composeBody, setComposeBody] = createSignal("");
   const [composeIsHtml, setComposeIsHtml] = createSignal(false);
-  const [composeFabHovered, setComposeFabHovered] = createSignal(false);
+  // Which sidebar button shows its suggestions; one at a time, since an open
+  // list pushes the buttons below it down
+  const [fabHovered, setFabHovered] = createSignal<"compose" | "event" | null>(null);
+  const composeFabHovered = () => fabHovered() === "compose";
+  const eventFabHovered = () => fabHovered() === "event";
   const [forwardingThread, setForwardingThread] = createSignal<{ threadId: string; subject: string; body: string } | null>(null);
   const [replyingToThread, setReplyingToThread] = createSignal<{ threadId: string; messageId?: string } | null>(null);
   const [replyingToEvent, setReplyingToEvent] = createSignal<{ eventId: string } | null>(null);
@@ -914,6 +921,10 @@ function App() {
   const [composeEmailError, setComposeEmailError] = createSignal<string | null>(null);
   const [composeAttachments, setComposeAttachments] = createSignal<SendAttachment[]>([]);
   let fabHoverTimeout: number | undefined;
+  const showFabSuggestions = (button: "compose" | "event") => {
+    clearTimeout(fabHoverTimeout);
+    setFabHovered(button);
+  };
   let draftSaveTimeout: number | undefined;
   const drafts = createDraftSync();
   // Where the open compose keeps its draft, chosen when it opens
@@ -4590,6 +4601,17 @@ function App() {
   ) : []);
   // Kept while the suggestions fade out after the pointer leaves
   const fabSuggestions = createMemo<RecentContact[]>(shown => composeFabHovered() ? rankedContacts().slice(0, 5) : shown, []);
+  // The default account's threads and events, read only while New Event is hovered
+  const eventFabSuggestions = createMemo<EventSuggestion[]>(shown => {
+    if (!eventFabHovered()) return shown;
+    const accountId = selectedAccount()?.id;
+    const threads = cards().flatMap(card => (cardThreads[card.id] ?? [])
+      .flatMap(g => g.threads)
+      .filter(t => threadAccountId(t, card) === accountId));
+    const events = cards().flatMap(card => (cardCalendarEvents[card.id] ?? [])
+      .filter(e => eventAccountId(e, card) === accountId));
+    return rankEventSuggestions(threads, events, accounts().map(a => a.email), Date.now());
+  }, []);
 
   const suggestContacts = (query: string) => matchContacts(rankedContacts(), query, 8);
   const sidePanelBesideView = () => panelBesideView({
@@ -4644,22 +4666,16 @@ function App() {
               class="compose-toolbar"
               data-board
               onMouseLeave={() => {
-                fabHoverTimeout = window.setTimeout(() => setComposeFabHovered(false), 250);
-              }}
-              onFocusIn={() => {
-                clearTimeout(fabHoverTimeout);
-                setComposeFabHovered(true);
+                fabHoverTimeout = window.setTimeout(() => setFabHovered(null), 250);
               }}
               onFocusOut={(e) => {
-                if (!e.currentTarget.contains(e.relatedTarget as Node | null)) setComposeFabHovered(false);
+                if (!e.currentTarget.contains(e.relatedTarget as Node | null)) setFabHovered(null);
               }}
             >
               <div
                 class="compose-btn-wrapper"
-                onMouseEnter={() => {
-                  clearTimeout(fabHoverTimeout);
-                  setComposeFabHovered(true);
-                }}
+                onMouseEnter={() => showFabSuggestions("compose")}
+                onFocusIn={() => showFabSuggestions("compose")}
               >
                 <button
                   class="compose-btn"
@@ -4675,7 +4691,7 @@ function App() {
                       {(contact) => {
                         const writeTo = () => {
                           startCompose({ to: contact.email, focusBody: true });
-                          setComposeFabHovered(false);
+                          setFabHovered(null);
                         };
                         return (
                         <div
@@ -4697,14 +4713,53 @@ function App() {
                   </div>
                 </Show>
               </div>
-              <button
-                class="new-event-btn"
-                onClick={() => openNewEventForm()}
-                title="New event (E)"
-                aria-label="Create new calendar event"
+              <div
+                class="compose-btn-wrapper"
+                onMouseEnter={() => showFabSuggestions("event")}
+                onFocusIn={() => showFabSuggestions("event")}
               >
-                <CalendarIcon size="tool" />
-              </button>
+                <button
+                  class="new-event-btn"
+                  onClick={() => openNewEventForm()}
+                  title="New event (E)"
+                  aria-label="Create new calendar event"
+                >
+                  <CalendarIcon size="tool" />
+                </button>
+                <Show when={eventFabSuggestions().length > 0}>
+                  <div class={`compose-suggestions ${eventFabHovered() ? 'visible' : ''}`}>
+                    <For each={eventFabSuggestions()}>
+                      {(suggestion) => {
+                        const start = () => {
+                          openNewEventForm({ summary: suggestion.summary, attendees: suggestion.attendees });
+                          setFabHovered(null);
+                        };
+                        const guests = suggestion.names.join(", ");
+                        const detail = suggestion.kind === "thread"
+                          ? `with ${guests}`
+                          : `again with ${guests} · ${formatShortDate(new Date(suggestion.at), undefined, { weekday: true })}`;
+                        return (
+                        <div
+                          class="compose-suggestion-avatar event-suggestion"
+                          role="button"
+                          tabindex={eventFabHovered() ? 0 : -1}
+                          aria-label={`New event: ${suggestion.summary}, ${detail}`}
+                          data-hue={getAvatarHue(suggestion.names[0] ?? suggestion.summary)}
+                          onClick={start}
+                          on:keydown={onActivateKey(start)}
+                        >
+                          {suggestion.kind === "thread" ? <MailIcon /> : <RepeatIcon />}
+                          <span class="suggestion-label">
+                            <span class="event-suggestion-title">{suggestion.summary}</span>
+                            <span class="event-suggestion-detail">{detail}</span>
+                          </span>
+                        </div>
+                        );
+                      }}
+                    </For>
+                  </div>
+                </Show>
+              </div>
             </div>
           </Show>
 

@@ -962,6 +962,24 @@ a:focus-visible,
     white-space: nowrap;
 }
 
+/* An event to start from a thread or a past meeting: a glyph in the pill, and
+   the title over its guests in the label */
+.event-suggestion .suggestion-label {
+    display: flex;
+    flex-direction: column;
+    max-width: 240px;
+}
+
+.event-suggestion-title,
+.event-suggestion-detail {
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.event-suggestion-detail {
+    color: var(--text-secondary);
+}
+
 /* Deck */
 .deck {
     display: flex;
