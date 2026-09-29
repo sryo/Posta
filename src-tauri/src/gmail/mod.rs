@@ -1806,8 +1806,10 @@ fn video_call_link(text: &str) -> Option<String> {
             .take_while(|c| !c.is_whitespace() && !matches!(c, '<' | '>' | '"' | '\'' | ')' | ']'))
             .collect();
         let url = url.trim_end_matches(['.', ',', ';', ':']);
-        let host = url["https://".len()..].split(['/', '?', '#']).next()?.to_ascii_lowercase();
-        let is_call = VIDEO_CALL_HOSTS.iter().any(|h| host == *h || host.ends_with(&format!(".{h}")));
+        let authority = url["https://".len()..].split(['/', '\\', '?', '#']).next()?;
+        let host = authority.split_once(':').map_or(authority, |(host, _)| host).to_ascii_lowercase();
+        let plain_host = host.chars().all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '-');
+        let is_call = plain_host && VIDEO_CALL_HOSTS.iter().any(|h| host == *h || host.ends_with(&format!(".{h}")));
         is_call.then(|| url.to_string())
     })
 }
@@ -3362,6 +3364,11 @@ mod tests {
         // Other links in an invite are not calls
         assert_eq!(join("DESCRIPTION:Agenda at https://docs.google.com/document/d/1 and https://example.com/zoom.us"), None);
         assert_eq!(join("LOCATION:https://notzoom.us/j/1"), None);
+        // A browser reads a backslash as a slash and what precedes @ as a user
+        // name, so these open evil.test, not Zoom
+        assert_eq!(join("LOCATION:https://evil.test\\\\.zoom.us/j/1"), None);
+        assert_eq!(join("LOCATION:https://evil.test\\\\@acme.zoom.us/j/1"), None);
+        assert_eq!(join("LOCATION:https://acme.zoom.us:443/j/1"), Some("https://acme.zoom.us:443/j/1".to_string()));
     }
 
     #[test]
