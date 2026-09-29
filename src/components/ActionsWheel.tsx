@@ -126,14 +126,14 @@ export const ActionsWheel = (props: {
         },
         rsvpYes: {
           cls: evt.response_status === 'accepted' ? 'event-rsvp-active' : 'event-rsvp',
-          title: 'RSVP Yes',
+          title: 'Going',
           icon: CheckIcon,
           onClick: (e) => { e.stopPropagation(); rsvp(evt, 'accepted'); },
           available: can.rsvp
         },
         rsvpNo: {
           cls: evt.response_status === 'declined' ? 'event-rsvp-active' : 'event-rsvp',
-          title: 'RSVP No',
+          title: 'Not going',
           icon: ThumbsDownIcon,
           onClick: (e) => { e.stopPropagation(); rsvp(evt, 'declined'); },
           available: can.rsvp

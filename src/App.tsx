@@ -5629,7 +5629,7 @@ function App() {
           const settings = isEvent ? eventActionSettings() : actionSettings();
           const handlers = isEvent ? eventActionHandlers : threadActionHandlers;
           const labels: Record<string, string> = isEvent
-            ? { quickReply: 'Reply', joinMeeting: 'Join Meeting', openCalendar: 'Open in Calendar', rsvpYes: 'RSVP Yes', rsvpNo: 'RSVP No', delete: 'Delete' }
+            ? { quickReply: 'Reply', joinMeeting: 'Join Meeting', openCalendar: 'Open in Calendar', rsvpYes: 'Going', rsvpNo: 'Not going', delete: 'Delete' }
             : { quickReply: 'Reply', quickForward: 'Forward', archive: 'Archive', star: 'Star', trash: 'Delete', markRead: 'Read', markImportant: 'Important', spam: 'Spam' };
           const defaultEnabled = isEvent ? ['quickReply'] : ['quickReply', 'quickForward'];
 

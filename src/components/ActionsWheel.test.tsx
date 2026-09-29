@@ -106,8 +106,8 @@ describe("ActionsWheel key hints", () => {
 describe("ActionsWheel event actions follow the user's role", () => {
   it("offers no RSVP or reply on the user's own solo event", () => {
     render(() => <ActionsWheel {...baseProps} event={event} onDeleteEvent={vi.fn()} />);
-    expect(screen.queryByTitle("RSVP Yes")).toBeNull();
-    expect(screen.queryByTitle("RSVP No")).toBeNull();
+    expect(screen.queryByTitle("Going")).toBeNull();
+    expect(screen.queryByTitle("Not going")).toBeNull();
     expect(screen.queryByTitle("Reply to organizer")).toBeNull();
     expect(screen.getByTitle("Delete")).toBeInTheDocument();
   });
@@ -169,10 +169,10 @@ describe("ActionsWheel event delete", () => {
     expect(onDeleteEvent).not.toHaveBeenCalled();
   });
 
-  it("offers no delete on events the user cannot edit, where RSVP No already declines", () => {
+  it("offers no delete on events the user cannot edit, where Not going already declines", () => {
     render(() => <ActionsWheel {...baseProps} event={invite} onDeleteEvent={vi.fn()} />);
     expect(screen.queryByTitle("Delete")).toBeNull();
-    expect(screen.getByTitle("RSVP No")).toBeInTheDocument();
+    expect(screen.getByTitle("Not going")).toBeInTheDocument();
   });
 });
 
@@ -182,7 +182,7 @@ describe("ActionsWheel event RSVP", () => {
     const onRsvped = vi.fn();
     const showToast = vi.fn();
     render(() => <ActionsWheel {...baseProps} showToast={showToast} selectedAccount={() => ({ id: "acc" } as any)} event={{ ...invite, id: "e1_20260928T150000Z", calendar_id: "team@x.com" }} onRsvped={onRsvped} />);
-    fireEvent.click(screen.getByTitle("RSVP Yes"));
+    fireEvent.click(screen.getByTitle("Going"));
     await vi.waitFor(() => expect(onRsvped).toHaveBeenCalledWith("e1_20260928T150000Z", "accepted"));
     expect(rsvpListedCalendarEvent).toHaveBeenCalledWith("acc", "team@x.com", "e1_20260928T150000Z", "accepted");
     expect(showToast).toHaveBeenCalledWith("You're going");
@@ -192,9 +192,9 @@ describe("ActionsWheel event RSVP", () => {
     rsvpListedCalendarEvent.mockReset().mockResolvedValue(null);
     const onRsvped = vi.fn();
     render(() => <ActionsWheel {...baseProps} selectedAccount={() => ({ id: "acc" } as any)} event={invite} onRsvped={onRsvped} />);
-    fireEvent.click(screen.getByTitle("RSVP Yes"));
+    fireEvent.click(screen.getByTitle("Going"));
     await vi.waitFor(() => expect(onRsvped).toHaveBeenCalledWith(invite.id, "accepted"));
-    fireEvent.click(screen.getByTitle("RSVP No"));
+    fireEvent.click(screen.getByTitle("Not going"));
     await vi.waitFor(() => expect(onRsvped).toHaveBeenCalledWith(invite.id, "declined"));
   });
 
@@ -203,7 +203,7 @@ describe("ActionsWheel event RSVP", () => {
     const onRsvped = vi.fn();
     const showToast = vi.fn();
     render(() => <ActionsWheel {...baseProps} showToast={showToast} selectedAccount={() => ({ id: "acc" } as any)} event={invite} onRsvped={onRsvped} />);
-    fireEvent.click(screen.getByTitle("RSVP Yes"));
+    fireEvent.click(screen.getByTitle("Going"));
     await vi.waitFor(() => expect(showToast).toHaveBeenCalledWith("Couldn't RSVP: offline"));
     expect(onRsvped).not.toHaveBeenCalled();
   });
@@ -213,14 +213,14 @@ describe("ActionsWheel event RSVP", () => {
     rsvpListedCalendarEvent.mockReset().mockReturnValue(new Promise<void>(r => { finish = r; }));
     const onRsvped = vi.fn();
     render(() => <ActionsWheel {...baseProps} selectedAccount={() => ({ id: "acc" } as any)} event={invite} onRsvped={onRsvped} />);
-    fireEvent.click(screen.getByTitle("RSVP Yes"));
-    fireEvent.click(screen.getByTitle("RSVP Yes"));
-    fireEvent.click(screen.getByTitle("RSVP No"));
+    fireEvent.click(screen.getByTitle("Going"));
+    fireEvent.click(screen.getByTitle("Going"));
+    fireEvent.click(screen.getByTitle("Not going"));
     expect(rsvpListedCalendarEvent).toHaveBeenCalledTimes(1);
     finish();
     await vi.waitFor(() => expect(onRsvped).toHaveBeenCalledTimes(1));
     rsvpListedCalendarEvent.mockResolvedValue(null);
-    fireEvent.click(screen.getByTitle("RSVP No"));
+    fireEvent.click(screen.getByTitle("Not going"));
     await vi.waitFor(() => expect(onRsvped).toHaveBeenLastCalledWith(invite.id, "declined"));
   });
 });
