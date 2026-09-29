@@ -624,6 +624,18 @@ describe("ThreadView load errors", () => {
   });
 });
 
+describe("ThreadView message header", () => {
+  it("says who each message went to under its sender", () => {
+    const { container } = renderThread({
+      thread: makeThread([{ from: "Alice <alice@example.com>", to: "Me <me@example.com>, Bob <bob@example.com>", cc: "carol@example.com", body: "hi" }]),
+      focusedMessageIndex: 0,
+    });
+    const header = container.querySelector(".message-header")!;
+    expect(header.querySelector(".message-sender")?.textContent).toBe("Alice <alice@example.com>");
+    expect(header.querySelector(".message-recipients-toggle")?.textContent).toBe("to me, Bob +1");
+  });
+});
+
 describe("ThreadView toolbar", () => {
   const labels = (container: HTMLElement) =>
     Array.from(container.querySelectorAll(".thread-toolbar-label")).map(l => l.textContent);

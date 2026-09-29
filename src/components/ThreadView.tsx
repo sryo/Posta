@@ -38,6 +38,7 @@ import { ReactionButton } from "./ReactionButton";
 import { CloseButton } from "./ComposeAtoms";
 import { ComposeForm } from "./ComposeForm";
 import { MessageActionsWheel } from "./MessageActionsWheel";
+import { MessageRecipients } from "./MessageRecipients";
 import { COLOR_HEX } from "../shared/constants";
 import type { InlineComposeProps } from "./types";
 import { findHeader, lastMessageFromOthers, nearestShownIndex, normalizeMessageId, reactionsShownAsChips, stepShownIndex } from "../app/messages";
@@ -517,7 +518,10 @@ export const ThreadView = (props: {
                       ref={(el) => { messageRefs[index()] = el; }}
                     >
                       <div class="message-header">
-                        <div class="message-sender">{from}</div>
+                        <div class="message-from">
+                          <div class="message-sender">{from}</div>
+                          <MessageRecipients to={findHeader(headers, 'To')} cc={findHeader(headers, 'Cc')} currentUserEmail={props.currentUserEmail} />
+                        </div>
                         <div class="message-header-actions">
                           <Show when={!msg.reaction && extractEmail(from).toLowerCase() !== props.currentUserEmail?.toLowerCase()}>
                             <ReactionButton
