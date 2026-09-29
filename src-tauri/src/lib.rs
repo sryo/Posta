@@ -161,7 +161,19 @@ pub fn run() {
         .with_env_filter(log_filter(std::env::var("RUST_LOG").ok().as_deref()))
         .init();
 
-    let app = tauri::Builder::default()
+    let builder = tauri::Builder::default();
+    // Must be registered first: a second launch (e.g. clicking a mailto: link
+    // while Posta runs on Windows/Linux) would otherwise open the same
+    // database and OAuth port from another process
+    #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+    let builder = builder.plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
+        if let Some(window) = app.get_webview_window("main") {
+            let _ = window.show();
+            let _ = window.set_focus();
+        }
+    }));
+
+    let app = builder
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_deep_link::init())
         .manage(AppState::new())
