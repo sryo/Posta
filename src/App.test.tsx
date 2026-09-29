@@ -51,6 +51,18 @@ vi.mock("./app/grouping", async (importOriginal) => {
   };
 });
 
+const rankContacts = vi.hoisted(() => ({ calls: 0 }));
+vi.mock("./app/contacts", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("./app/contacts")>();
+  return {
+    ...actual,
+    rankContacts: (...args: Parameters<typeof actual.rankContacts>) => {
+      rankContacts.calls++;
+      return actual.rankContacts(...args);
+    },
+  };
+});
+
 import App from "./App";
 import type { Account, Card, Thread } from "./api/tauri";
 import { ICLOUD_RESTORE_DELAYS_MS } from "./app/icloudRestore";
@@ -72,6 +84,7 @@ const cardsByAccount: Record<string, Card[]> = {};
 const threadsByCard: Record<string, Thread[]> = {};
 
 beforeEach(() => {
+  rankContacts.calls = 0;
   localStorage.clear();
   lastMenu = [];
   invoke.mockClear();
@@ -1034,6 +1047,9 @@ describe("App compose autocomplete", () => {
       return [contact("Bea")];
     };
     render(() => <App />);
+    await screen.findByText("Mail for A");
+    // The suggestions show while the pointer is over the compose button
+    fireEvent.mouseEnter(document.querySelector(".compose-btn-wrapper")!);
     await screen.findByText("Ann");
 
     fireEvent.click(screen.getByTitle("a@x.com"));
@@ -2848,14 +2864,28 @@ describe("App accessibility", () => {
     handlers.fetch_contacts = () => [{ resource_name: "people/1", display_name: "Bo", email_addresses: ["bo@y.com"], photo_url: null }];
     render(() => <App />);
     await screen.findByText("Mail for A");
-    const suggestion = await screen.findByRole("button", { name: "New email to Bo" });
-    expect(suggestion).toHaveAttribute("tabindex", "-1");
     fireEvent.focusIn(screen.getByRole("button", { name: "Compose new email" }));
+    const suggestion = await screen.findByRole("button", { name: "New email to Bo" });
     expect(suggestion).toHaveAttribute("tabindex", "0");
     expect(suggestion.closest(".compose-suggestions")).toHaveClass("visible");
     fireEvent.keyDown(suggestion, { key: "Enter" });
 
     await waitFor(() => expect(screen.getByPlaceholderText("Recipients")).toHaveValue("bo@y.com"));
+  });
+
+  it("ranks contacts only when suggestions are wanted, not on every mail change", async () => {
+    threadsByCard["card-a"] = [{ ...thread("t-a", "Mail for A"), participants: ["Ana <ana@x.com>"], unread_count: 1, labels: ["INBOX", "UNREAD"] }];
+    handlers.modify_threads = () => null;
+    handlers.get_thread_details = () => ({ id: "t-a", messages: [] });
+    render(() => <App />);
+    fireEvent.click(await screen.findByText("Mail for A"));
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith("modify_threads", expect.anything()));
+    fireEvent.keyDown(document, { key: "Escape" });
+    await new Promise(r => setTimeout(r, 20));
+    expect(rankContacts.calls).toBe(0);
+
+    fireEvent.mouseEnter(document.querySelector(".compose-btn-wrapper")!);
+    expect(await screen.findByRole("button", { name: "New email to Ana" })).toBeInTheDocument();
   });
 });
 

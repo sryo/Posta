@@ -122,7 +122,7 @@ import { BG_COLORS, type ActionSettings, type CardColor, type GroupBy } from "./
 import { createUndoableSend } from "./app/undoableSend";
 import { findHeader, lastMessageFromOthers } from "./app/messages";
 import { batchReplyEntry, type BatchReplyThread } from "./app/batchReply";
-import { completeRecipient, currentRecipient, matchContacts, rankContacts } from "./app/contacts";
+import { completeRecipient, currentRecipient, matchContacts, rankContacts, type RecentContact } from "./app/contacts";
 import { eventReplyRecipients } from "./app/eventReply";
 import { actionFailureLabel, actionLabel, actionRemovesFromCard, applyThreadAction, labelChangeFor, threadMayJoinCard, undoLabelChanges, type LabelReversal } from "./app/threadActions";
 import { PRESETS } from "./app/presets";
@@ -3829,13 +3829,17 @@ function App() {
     setSelectedEvents({ ...selectedEvents(), [cardId]: currentMap });
   }
 
-  const rankedContacts = createMemo(() => rankContacts(
+  // Ranking reads every loaded thread; only rank while something shows
+  // contacts, so mail changes don't re-sort them in the background
+  const contactsWanted = () => composeFabHovered() || (composing() && !closingCompose()) || addingCard() || editingCardId() !== null;
+  const rankedContacts = createMemo(() => contactsWanted() ? rankContacts(
     googleContacts(),
     Object.values(cardThreads).flatMap(groups => groups.flatMap(g => g.threads)),
     selectedAccount()?.email,
     Date.now(),
-  ));
-  const contactCandidates = () => rankedContacts().slice(0, 8);
+  ) : []);
+  // Kept while the suggestions fade out after the pointer leaves
+  const fabSuggestions = createMemo<RecentContact[]>(shown => composeFabHovered() ? rankedContacts().slice(0, 5) : shown, []);
 
   function selectContact(email: string) {
     setComposeTo(completeRecipient(composeTo(), email));
@@ -3906,9 +3910,9 @@ function App() {
                 >
                   <ComposeIcon />
                 </button>
-                <Show when={contactCandidates().length > 0}>
+                <Show when={fabSuggestions().length > 0}>
                   <div class={`compose-suggestions ${composeFabHovered() ? 'visible' : ''}`}>
-                    <For each={contactCandidates().slice(0, 5)}>
+                    <For each={fabSuggestions()}>
                       {(contact) => {
                         const writeTo = () => {
                           startCompose({ to: contact.email, focusBody: true });
