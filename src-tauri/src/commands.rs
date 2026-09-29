@@ -2018,6 +2018,11 @@ fn pull_cards_from_icloud(state: &AppState) -> Result<bool, String> {
 }
 
 fn merge_cards_from_icloud(icloud: &mut ICloudSync, state: &AppState) -> Result<bool, String> {
+    // Merging a half-downloaded store would mark the backup as seen, which
+    // lets the push after it replace the rest of the backup
+    if icloud.store.as_ref().is_some_and(|s| !s.initial_sync_done()) && !icloud.load_record().seen_backup {
+        return Ok(false);
+    }
     let Some(backup) = icloud.load_backup()? else {
         // After a backup was seen, an empty store means iCloud is unavailable
         if icloud.store.is_some() && icloud.load_record().seen_backup {
@@ -2613,6 +2618,30 @@ mod tests {
         };
         super::change_cards(&state, None, |_| Ok(())).unwrap();
         assert_eq!(sorted_ids(&store.backup().cards), vec!["new", "old"]);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn a_pull_on_a_fresh_device_waits_for_the_icloud_download() {
+        // Only the mappings key has arrived; merging it would mark the backup
+        // as seen and push this Mac's cards over the ones still downloading
+        let dir = scratch_dir();
+        let (state, store) = synced_state(&dir, &[owned_card("here", "a1")]);
+        state.icloud.lock().unwrap().save_record(&SyncRecord::default());
+        *store.0.lock().unwrap() =
+            FakeBackup { mappings: Some(mappings(&[("a1", "me@x.com")])), downloading: true, ..Default::default() };
+
+        assert_eq!(super::pull_cards_from_icloud(&state), Ok(false));
+        assert_eq!(store.0.lock().unwrap().cards, None, "nothing written over the undownloaded backup");
+        assert!(!state.icloud.lock().unwrap().load_record().seen_backup);
+
+        *store.0.lock().unwrap() = FakeBackup {
+            cards: Some(vec![owned_card("old", "a1")]),
+            mappings: Some(mappings(&[("a1", "me@x.com")])),
+            ..Default::default()
+        };
+        super::pull_cards_from_icloud(&state).unwrap();
+        assert_eq!(sorted_ids(&store.backup().cards), vec!["here", "old"]);
         std::fs::remove_dir_all(dir).unwrap();
     }
 
