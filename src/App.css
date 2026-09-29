@@ -3593,6 +3593,13 @@ button:disabled:hover {
     transform: scale(0.95);
 }
 
+.thread-toolbar-btn:disabled {
+    background: transparent;
+    color: var(--text-muted);
+    cursor: default;
+    transform: none;
+}
+
 .thread-toolbar-btn svg {
     flex-shrink: 0;
     width: 15px;

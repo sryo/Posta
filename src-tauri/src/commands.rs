@@ -1441,6 +1441,13 @@ pub async fn send_reaction(
     evict_token_on_auth_error(&state, &account_id, result)
 }
 
+/// Posts a mailing list's one-click unsubscribe request (RFC 8058)
+#[tauri::command]
+pub async fn unsubscribe_one_click(url: String) -> Result<(), String> {
+    let url = crate::unsubscribe::one_click_url(&url)?;
+    crate::unsubscribe::post_one_click(&crate::unsubscribe::HTTP_CLIENT, url).await
+}
+
 #[derive(Debug, Serialize)]
 pub struct CachedCardThreads {
     pub groups: Vec<ThreadGroup>,

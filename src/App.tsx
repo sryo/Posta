@@ -42,6 +42,7 @@ import {
   getThreadDetails,
   type FullThread,
   sendEmail,
+  unsubscribeOneClick,
   replyToThread,
   getCachedCardThreads,
   saveCachedCardThreads,
@@ -127,6 +128,7 @@ import { completeRecipient, currentRecipient, matchContacts, rankContacts, type 
 import { eventReplyRecipients } from "./app/eventReply";
 import { labelDisplayName } from "./app/labels";
 import { personName } from "./app/people";
+import { runUnsubscribe, type UnsubscribeMethod } from "./app/unsubscribe";
 import { actionFailureLabel, actionLabel, actionRemovesFromCard, applyThreadAction, bulkActionConfirm, labelChangeFor, threadMayJoinCard, undoLabelChanges, type LabelReversal } from "./app/threadActions";
 import { PRESETS } from "./app/presets";
 import { normalizeActionOrder } from "./app/actionOrder";
@@ -2454,6 +2456,18 @@ function App() {
 
   function handleForwardFromThread(subject: string, body: string) {
     startCompose({ subject, body, forward: { threadId: activeThreadId() || '', subject, body } });
+  }
+
+  async function unsubscribeFromList(method: UnsubscribeMethod, listName: string) {
+    const account = selectedAccount();
+    if (!account) return;
+    try {
+      const outcome = await runUnsubscribe(account.id, method, { sendEmail, postOneClick: unsubscribeOneClick, openUrl });
+      showToast(outcome === "done" ? `Unsubscribed from ${listName}` : `Finish unsubscribing from ${listName} on its page`);
+    } catch (e) {
+      showToast(`Couldn't unsubscribe: ${e}`);
+      throw e;
+    }
   }
 
   // Label drawer functions
@@ -4932,6 +4946,7 @@ function App() {
           onShowAttachmentMenu={showAttachmentContextMenu}
           onReply={handleReplyFromThread}
           onForward={handleForwardFromThread}
+          onUnsubscribe={unsubscribeFromList}
           onAction={handleThreadViewAction}
           onOpenLabels={() => { fetchAccountLabels({ refresh: true }); setLabelDrawerOpen(true); }}
           labelDrawerOpen={labelDrawerOpen()}

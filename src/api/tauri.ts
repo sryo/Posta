@@ -584,3 +584,9 @@ export async function sendReaction(
 ): Promise<void> {
   return invoke("send_reaction", { accountId, threadId, messageId, emoji, toEmail });
 }
+
+// Mailing lists
+
+export async function unsubscribeOneClick(url: string): Promise<void> {
+  return invoke("unsubscribe_one_click", { url });
+}

@@ -1,4 +1,4 @@
-import { createSignal, createEffect, createMemo, onMount, onCleanup, Show, For } from "solid-js";
+import { createSignal, createEffect, createMemo, on, onMount, onCleanup, Show, For } from "solid-js";
 import { MessageBody } from './MessageBody';
 import { sendReaction, type FullThread, type FullMessage, type Attachment } from "../api/tauri";
 import { createCloseAfterAnimation } from "../shared/closeAfterAnimation";
@@ -32,6 +32,7 @@ import {
   EyeOpenIcon,
   EyeClosedIcon,
   LabelIcon,
+  UnsubscribeIcon,
 } from "./Icons";
 import { SmartReplies } from "./SmartReplies";
 import { ReactionButton } from "./ReactionButton";
@@ -39,6 +40,8 @@ import { CloseButton } from "./ComposeAtoms";
 import { ComposeForm } from "./ComposeForm";
 import { MessageActionsWheel } from "./MessageActionsWheel";
 import { MessageRecipients } from "./MessageRecipients";
+import { isMailingList, unsubscribeMethod, type UnsubscribeMethod } from "../app/unsubscribe";
+import { personName } from "../app/people";
 import { COLOR_HEX } from "../shared/constants";
 import type { InlineComposeProps } from "./types";
 import { findHeader, lastMessageFromOthers, nearestShownIndex, normalizeMessageId, reactionsShownAsChips, stepShownIndex } from "../app/messages";
@@ -82,6 +85,8 @@ export const ThreadView = (props: {
   onError?: (message: string) => void,
   // Whether a Gemini key is saved; smart replies ask the keychain when unknown
   geminiKeySaved?: boolean,
+  // listName: how the list's sender reads, for saying what was left
+  onUnsubscribe?: (method: UnsubscribeMethod, listName: string) => Promise<void>,
 }) => {
   let messageRefs: (HTMLDivElement | undefined)[] = [];
   let contentRef: HTMLDivElement | undefined;
@@ -137,6 +142,31 @@ export const ThreadView = (props: {
     loadedById = next;
     return list;
   });
+
+  // The newest list message's way out of the list
+  const unsubscribe = createMemo(() => {
+    const list = props.thread?.messages ?? [];
+    for (let i = list.length - 1; i >= 0; i--) {
+      const headers = list[i].payload?.headers;
+      const method = unsubscribeMethod(headers);
+      if (method) return { method, listName: personName(findHeader(headers, 'From') || '') || 'the list' };
+    }
+    return null;
+  });
+  const [unsubscribeState, setUnsubscribeState] = createSignal<'idle' | 'working' | 'done'>('idle');
+  createEffect(on(() => props.thread?.id, () => setUnsubscribeState('idle')));
+  const handleUnsubscribe = async () => {
+    const target = unsubscribe();
+    if (!target || !props.onUnsubscribe || unsubscribeState() !== 'idle') return;
+    setUnsubscribeState('working');
+    try {
+      await props.onUnsubscribe(target.method, target.listName);
+      // A web page still needs the reader to finish there
+      setUnsubscribeState(target.method.kind === 'web' ? 'idle' : 'done');
+    } catch {
+      setUnsubscribeState('idle');
+    }
+  };
 
   const chipReactions = createMemo(() => reactionsShownAsChips(props.thread?.messages ?? []));
   const hiddenMessages = () => (props.thread?.messages ?? []).map(m => chipReactions().has(m.id));
@@ -369,6 +399,15 @@ export const ThreadView = (props: {
               <span class="shortcut-hint">L</span>
             </button>
 
+            <Show when={props.onUnsubscribe && unsubscribe()}>
+              <button class="thread-toolbar-btn" onClick={handleUnsubscribe} disabled={unsubscribeState() !== 'idle'} title="Unsubscribe from this mailing list">
+                <UnsubscribeIcon />
+                <span class="thread-toolbar-label">
+                  {unsubscribeState() === 'working' ? 'Unsubscribing…' : unsubscribeState() === 'done' ? 'Unsubscribed' : 'Unsubscribe'}
+                </span>
+              </button>
+            </Show>
+
             <div class="thread-toolbar-divider" />
 
             <button class="thread-toolbar-btn thread-toolbar-btn-danger" onClick={() => props.onAction('spam')} title="Report spam">
@@ -523,7 +562,7 @@ export const ThreadView = (props: {
                           <MessageRecipients to={findHeader(headers, 'To')} cc={findHeader(headers, 'Cc')} currentUserEmail={props.currentUserEmail} />
                         </div>
                         <div class="message-header-actions">
-                          <Show when={!msg.reaction && extractEmail(from).toLowerCase() !== props.currentUserEmail?.toLowerCase()}>
+                          <Show when={!msg.reaction && !isMailingList(headers) && extractEmail(from).toLowerCase() !== props.currentUserEmail?.toLowerCase()}>
                             <ReactionButton
                               onSelect={(emoji) => handleSendReaction(msg.id, emoji)}
                               sending={sendingReaction()}
@@ -652,16 +691,18 @@ export const ThreadView = (props: {
               }}
             </For>
           </div>
-          <SmartReplies
-            accountId={props.accountId}
-            threadId={props.thread!.id}
-            lastMessageId={props.thread!.messages[props.thread!.messages.length - 1]?.id}
-            keySaved={props.geminiKeySaved}
-            onSelect={(suggestion) => {
-              const target = lastMessageFromOthers(props.thread!.messages, props.currentUserEmail ?? '');
-              if (target) messageActions(target).reply(suggestion);
-            }}
-          />
+          <Show when={!isMailingList(lastMessageFromOthers(props.thread!.messages, props.currentUserEmail ?? '')?.payload?.headers)}>
+            <SmartReplies
+              accountId={props.accountId}
+              threadId={props.thread!.id}
+              lastMessageId={props.thread!.messages[props.thread!.messages.length - 1]?.id}
+              keySaved={props.geminiKeySaved}
+              onSelect={(suggestion) => {
+                const target = lastMessageFromOthers(props.thread!.messages, props.currentUserEmail ?? '');
+                if (target) messageActions(target).reply(suggestion);
+              }}
+            />
+          </Show>
         </Show>
       </div>
 

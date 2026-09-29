@@ -28,6 +28,15 @@ describe("reading view stacking", () => {
   });
 });
 
+describe("thread toolbar", () => {
+  it("shows a disabled button, such as Unsubscribed, as inert", () => {
+    document.body.innerHTML = '<button class="thread-toolbar-btn" id="b" disabled></button>';
+    const decl = cascadedDeclarations(rules, document.getElementById("b")!);
+    expect(decl.get("cursor")).toBe("default");
+    expect(decl.get("color")).toBe("var(--text-muted)");
+  });
+});
+
 describe("message body", () => {
   it("drops the top margin of an email's opening paragraph inside MessageBody's own wrapper", () => {
     document.body.innerHTML = '<div class="message-body"><div><div dir="ltr"><div><p id="p">Hi</p></div></div></div></div>';

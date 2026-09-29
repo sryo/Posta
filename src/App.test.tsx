@@ -3627,4 +3627,47 @@ describe("App reading view", () => {
     expect(row.querySelector(".thread-participants")?.textContent?.trim()).toBe("Ana Pérez, bob@x.com");
     expect(row.getAttribute("aria-label")).toContain("from Ana Pérez, bob@x.com");
   });
+
+  it("unsubscribes from a newsletter with its one-click link and says so", async () => {
+    const message = fullMessage("m1", "The Weekly Byte <hello@weeklybyte.test>");
+    message.payload.headers.push(
+      { name: "List-Unsubscribe", value: "<https://weeklybyte.test/u/1>" },
+      { name: "List-Unsubscribe-Post", value: "List-Unsubscribe=One-Click" },
+    );
+    handlers.get_thread_details = () => ({ id: "t-a", messages: [message] });
+    handlers.unsubscribe_one_click = () => null;
+    render(() => <App />);
+    fireEvent.click(await screen.findByText("Mail for A"));
+    fireEvent.click(await screen.findByRole("button", { name: "Unsubscribe" }));
+
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith("unsubscribe_one_click", { url: "https://weeklybyte.test/u/1" }));
+    expect(await screen.findByText(/Unsubscribed from The Weekly Byte/)).toBeInTheDocument();
+  });
+
+  it("emails a list's unsubscribe address when that is all it offers", async () => {
+    const message = fullMessage("m1", "Digest <digest@ds.test>");
+    message.payload.headers.push({ name: "List-Unsubscribe", value: "<mailto:leave@ds.test?subject=unsubscribe>" });
+    handlers.get_thread_details = () => ({ id: "t-a", messages: [message] });
+    handlers.send_email = () => null;
+    render(() => <App />);
+    fireEvent.click(await screen.findByText("Mail for A"));
+    fireEvent.click(await screen.findByRole("button", { name: "Unsubscribe" }));
+
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith("send_email", expect.objectContaining({ to: "leave@ds.test", subject: "unsubscribe" })));
+    expect(await screen.findByText(/Unsubscribed from Digest/)).toBeInTheDocument();
+  });
+
+  it("says when unsubscribing failed", async () => {
+    const message = fullMessage("m1", "The Weekly Byte <hello@weeklybyte.test>");
+    message.payload.headers.push(
+      { name: "List-Unsubscribe", value: "<https://weeklybyte.test/u/1>" },
+      { name: "List-Unsubscribe-Post", value: "List-Unsubscribe=One-Click" },
+    );
+    handlers.get_thread_details = () => ({ id: "t-a", messages: [message] });
+    handlers.unsubscribe_one_click = () => { throw "The list refused the unsubscribe request (500)"; };
+    render(() => <App />);
+    fireEvent.click(await screen.findByText("Mail for A"));
+    fireEvent.click(await screen.findByRole("button", { name: "Unsubscribe" }));
+    expect(await screen.findByText(/Couldn't unsubscribe: The list refused/)).toBeInTheDocument();
+  });
 });

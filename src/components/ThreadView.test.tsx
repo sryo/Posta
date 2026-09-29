@@ -624,6 +624,49 @@ describe("ThreadView load errors", () => {
   });
 });
 
+describe("ThreadView mailing lists", () => {
+  const newsletter = () => {
+    const thread = makeThread([{ from: "The Weekly Byte <hello@weeklybyte.test>", body: "Issue 212" }]);
+    thread.messages[0].payload!.headers!.push(
+      { name: "List-Unsubscribe", value: "<https://weeklybyte.test/u/1>" },
+      { name: "List-Unsubscribe-Post", value: "List-Unsubscribe=One-Click" },
+    );
+    return thread;
+  };
+
+  it("offers to unsubscribe from list mail, once", async () => {
+    let finish!: () => void;
+    const onUnsubscribe = vi.fn(() => new Promise<void>(r => { finish = r; }));
+    const { getByRole } = renderThread({ thread: newsletter(), focusedMessageIndex: 0, onUnsubscribe });
+    fireEvent.click(getByRole("button", { name: /Unsubscribe/ }));
+    expect(onUnsubscribe).toHaveBeenCalledWith({ kind: "oneClick", url: "https://weeklybyte.test/u/1" }, "The Weekly Byte");
+    expect(getByRole("button", { name: /Unsubscribing/ })).toBeDisabled();
+    finish();
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(getByRole("button", { name: /Unsubscribed/ })).toBeDisabled();
+  });
+
+  it("lets the user try again when unsubscribing fails", async () => {
+    const onUnsubscribe = vi.fn(async () => { throw new Error("offline"); });
+    const { getByRole } = renderThread({ thread: newsletter(), focusedMessageIndex: 0, onUnsubscribe });
+    fireEvent.click(getByRole("button", { name: /Unsubscribe/ }));
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(getByRole("button", { name: /Unsubscribe/ })).not.toBeDisabled();
+  });
+
+  it("offers no unsubscribe, reaction or smart replies where they don't fit", () => {
+    const list = renderThread({ thread: newsletter(), focusedMessageIndex: 0, onUnsubscribe: vi.fn() });
+    expect(list.container.querySelector(".add-reaction-btn")).toBeNull();
+    expect(list.container.querySelector(".reply-chip")).toBeNull();
+    list.unmount();
+    const personal = renderThread({ onUnsubscribe: vi.fn() });
+    expect(personal.queryByRole("button", { name: /Unsubscribe/ })).toBeNull();
+    expect(personal.container.querySelector(".reply-chip")).not.toBeNull();
+  });
+});
+
 describe("ThreadView message header", () => {
   it("says who each message went to under its sender", () => {
     const { container } = renderThread({
