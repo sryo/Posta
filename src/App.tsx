@@ -4356,9 +4356,7 @@ function App() {
       {/* Drag region for frameless window */}
       <div class="drag-region" data-tauri-drag-region></div>
 
-      <Show when={boardStatus()}>
-        {(status) => <ConnectionStatusBar status={status()} onRetry={retryConnection} onSignIn={handleReauth} />}
-      </Show>
+      <ConnectionStatusBar status={boardStatus()} onRetry={retryConnection} onSignIn={handleReauth} />
 
       {/* Global filter bar - keyboard activated */}
       <div class={`global-filter-bar ${showGlobalFilter() ? 'visible' : ''}`}>

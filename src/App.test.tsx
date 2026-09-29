@@ -909,6 +909,19 @@ describe("App card load errors", () => {
     expect(await screen.findByText(/You're offline/)).toBeInTheDocument();
   });
 
+  it("announces going offline through a live region that was already on the page", async () => {
+    render(() => <App />);
+    await screen.findByText("Mail for A");
+    const region = document.querySelector(".connection-status-region") as HTMLElement;
+    expect(region).not.toBeNull();
+    expect(region).toHaveAttribute("aria-live", "polite");
+    expect(region).toBeEmptyDOMElement();
+
+    window.dispatchEvent(new Event("offline"));
+    await waitFor(() => expect(region).toHaveTextContent("You're offline"));
+    expect(document.querySelector(".connection-status-region")).toBe(region);
+  });
+
   it("stops saying it's offline once a sync gets through", async () => {
     render(() => <App />);
     await screen.findByText("Mail for A");
