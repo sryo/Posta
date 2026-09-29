@@ -81,6 +81,30 @@ describe("card pill over a thread or event", () => {
   }
 });
 
+describe("quiet text on a coloured card", () => {
+  const colorOf = (selector: string) =>
+    new Map(rules.filter(r => !r.context && r.selectors.includes(selector)).flatMap(r => r.declarations)).get("color");
+  const cardTints = (dark: boolean) => rules
+    .filter(r => r.selectors.some(s => /^\.card\[data-color="\w+"\]$/.test(s)) && dark === r.context.includes("prefers-color-scheme: dark"))
+    .map(r => [r.selectors[0], new Map(r.declarations).get("background")!] as const);
+
+  for (const selector of [".empty", ".thread-draft-discard"]) {
+    for (const dark of [false, true]) {
+      it(`keeps ${selector} at 4.5:1 on every card colour in ${dark ? "dark" : "light"} mode`, () => {
+        const tokens = rootTokens(dark);
+        const token = (value: string) => parseColor(tokens.get(value.match(/^var\((--[\w-]+)\)$/)![1])!);
+        const board = token("var(--bg-secondary)");
+        const tints = cardTints(dark);
+        expect(tints.length).toBe(8);
+        for (const [card, tint] of tints) {
+          const bg = over(parseColor(tint), board);
+          expect(contrast(over(token(colorOf(selector)!), bg), bg), card).toBeGreaterThanOrEqual(4.5);
+        }
+      });
+    }
+  }
+});
+
 describe("status colour tokens", () => {
   for (const dark of [false, true]) {
     const mode = dark ? "dark" : "light";

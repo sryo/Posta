@@ -23,7 +23,7 @@ describe("compose styles", () => {
 
   it("keeps a draft row's Discard button a quiet control that turns to danger on hover or focus", () => {
     const button = declarations(".thread-draft-discard");
-    expect(button.get("color")).toBe("var(--text-muted)");
+    expect(button.get("color")).toBe("var(--text-secondary)");
     expect(button.get("flex-shrink")).toBe("0");
     const hover = declarations(".thread-draft-discard:hover");
     expect(hover.get("color")).toBe("var(--danger)");
