@@ -1066,8 +1066,33 @@ function App() {
     }
   }
 
+  // Set while the stored OAuth client couldn't be read (a locked keychain);
+  // the next window focus tries again
+  let credentialsError: string | null = null;
+  async function loadStoredCredentials() {
+    const storedCreds = await getStoredCredentials();
+    if (storedCreds) {
+      await configureAuth({
+        client_id: storedCreds.client_id,
+        client_secret: storedCreds.client_secret,
+      });
+    }
+  }
+  async function retryStoredCredentials() {
+    const failed = credentialsError;
+    if (!failed) return;
+    try {
+      await loadStoredCredentials();
+      credentialsError = null;
+      if (error() === failed) setError(null);
+    } catch (e) {
+      console.warn("Stored credentials still unavailable:", e);
+    }
+  }
+
   // Handle window focus - reset to fast polling and sync immediately
-  function handleWindowFocus() {
+  async function handleWindowFocus() {
+    await retryStoredCredentials();
     setPollInterval(BASE_POLL_INTERVAL);
     setCurrentTime(Date.now());
     performIncrementalSync();
@@ -1184,13 +1209,13 @@ function App() {
     try {
       await initApp();
 
-      // Configure auth from stored credentials if available
-      const storedCreds = await getStoredCredentials();
-      if (storedCreds) {
-        await configureAuth({
-          client_id: storedCreds.client_id,
-          client_secret: storedCreds.client_secret,
-        });
+      // A locked keychain must not keep the cached cards from showing
+      try {
+        await loadStoredCredentials();
+      } catch (e) {
+        console.warn("Stored credentials unavailable:", e);
+        credentialsError = String(e);
+        setError(credentialsError);
       }
 
       // Pull cards/accounts from iCloud if available (restores layout after re-login)

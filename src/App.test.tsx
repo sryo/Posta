@@ -402,6 +402,26 @@ describe("App attachments", () => {
   });
 });
 
+describe("App locked keychain at startup", () => {
+  const LOCKED = "Keychain unavailable (locked or access denied). Unlock the keychain and try again. (User interaction is not allowed.)";
+
+  it("still shows the cards and their cached mail, says why, and reads the keychain again on focus", async () => {
+    let locked = true;
+    handlers.get_stored_credentials = () => { if (locked) throw LOCKED; return { client_id: "id", client_secret: "secret" }; };
+    handlers.get_cached_card_threads = () => ({ groups: [{ label: "Today", threads: [thread("t-c", "Cached mail")] }], next_page_token: null, cached_at: 1 });
+    render(() => <App />);
+
+    expect(await screen.findByText("Cached mail")).toBeInTheDocument();
+    expect(await screen.findByText(/Keychain unavailable/)).toBeInTheDocument();
+    expect(screen.queryByText(/Session expired/)).not.toBeInTheDocument();
+
+    locked = false;
+    fireEvent.focus(window);
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith("configure_auth", { config: { client_id: "id", client_secret: "secret" } }));
+    await waitFor(() => expect(screen.queryByText(/Keychain unavailable/)).not.toBeInTheDocument());
+  });
+});
+
 describe("App mailto links", () => {
   it("opens a mailto link even when startup failed", async () => {
     delete eventListeners["mailto-received"];
