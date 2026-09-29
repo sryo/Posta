@@ -2296,6 +2296,30 @@ describe("App calendar", () => {
     }
   });
 
+  it("shows the user's answer in the event's guest list too", async () => {
+    calendarCards();
+    cardsByAccount.a = [{ ...card("cal-1", "a", "Week"), query: "calendar:7d", card_type: "calendar" }];
+    handlers.fetch_calendar_events = () => [{
+      ...calendarEvent("ev-1", "Planning"), organizer: "org@x.com", response_status: "needsAction", can_edit: false,
+      attendees: [
+        { email: "org@x.com", display_name: "Org", response_status: "accepted", is_self: false, is_organizer: true },
+        { email: "a@x.com", display_name: "Me", response_status: "needsAction", is_self: true, is_organizer: false },
+      ],
+    }];
+    handlers.rsvp_listed_calendar_event = () => null;
+    render(() => <App />);
+    fireEvent.click(await screen.findByText("Planning"));
+    const myRow = () => screen.getByText("Me").closest(".event-attendee")!;
+    expect(await within(await screen.findByRole("dialog")).findByText("Me")).toBeInTheDocument();
+    expect(myRow()).toHaveTextContent("Not answered");
+    fireEvent.keyDown(document, { key: "n" });
+
+    await waitFor(() => expect(myRow()).toHaveTextContent("Not going"));
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith("save_cached_card_events", {
+      cardId: "cal-1", events: [expect.objectContaining({ attendees: expect.arrayContaining([expect.objectContaining({ email: "a@x.com", response_status: "declined" })]) })],
+    }));
+  });
+
   it("shows an opened invite email's event above the message and answers it there", async () => {
     threadsByCard["card-a"] = [{
       ...thread("t-inv", "Invitation: Planning"),

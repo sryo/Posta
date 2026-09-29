@@ -177,7 +177,7 @@ import { querySuggestions, type QuerySuggestion } from "./app/querySuggestions";
 import { calendarRangeError } from "./app/queryTokens";
 import { useLayer } from "./app/layers";
 import { QueryHelpSheet } from "./components/QueryHelpSheet";
-import { inviteNamesEvent, ownResponseLabel, rsvpForKey, rsvpSentMessage, type RsvpStatus } from "./app/rsvp";
+import { inviteNamesEvent, ownResponseLabel, rsvpForKey, rsvpSentMessage, withOwnResponse, type RsvpStatus } from "./app/rsvp";
 import { createRsvpLookups } from "./app/rsvpLookups";
 import { nextSelection } from "./app/selection";
 import { bulkActionForKey, extendSelection, keyTargets } from "./app/bulkKeys";
@@ -2846,8 +2846,9 @@ function App() {
   }
 
   function markEventRsvp(eventId: string, status: string) {
-    setActiveEvent(ev => (ev && ev.id === eventId ? { ...ev, response_status: status } : ev));
-    updateEventInCards(eventId, ev => ({ ...ev, response_status: status }));
+    const email = selectedAccount()?.email ?? "";
+    setActiveEvent(ev => (ev && ev.id === eventId ? withOwnResponse(ev, status, email) : ev));
+    updateEventInCards(eventId, ev => withOwnResponse(ev, status, email));
   }
 
   // Events deleted in the app whose deletion waits out their Undo toast

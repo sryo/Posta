@@ -45,6 +45,21 @@ export function ownResponseLabel(status: string | null | undefined): string {
   return answerLabel(status) ?? "Going?";
 }
 
+type Answerable = {
+  response_status: string | null;
+  attendees: { email: string; is_self: boolean; response_status: string | null }[];
+};
+
+// The event as it reads once the user answered: their own response and
+// their row in the guest list
+export function withOwnResponse<E extends Answerable>(event: E, status: string, accountEmail: string): E {
+  const self = accountEmail.toLowerCase();
+  const index = event.attendees.findIndex(a => a.is_self || a.email.toLowerCase() === self);
+  if (index === -1) return { ...event, response_status: status };
+  const attendees = event.attendees.map((a, i) => (i === index ? { ...a, response_status: status } : a));
+  return { ...event, response_status: status, attendees };
+}
+
 // Whether the calendar event with this id is the one an invite email's
 // iCalendar UID names
 export function inviteNamesEvent(inviteUid: string, eventId: string): boolean {
