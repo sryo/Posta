@@ -109,7 +109,7 @@ pub struct MessageBody {
 pub struct MessagePart {
     #[serde(rename = "partId")]
     pub part_id: Option<String>,
-    #[serde(rename = "mimeType")]
+    #[serde(rename = "mimeType", default)]
     pub mime_type: String,
     pub filename: Option<String>,
     pub headers: Option<Vec<Header>>,
@@ -131,7 +131,9 @@ pub struct MessagePayload {
 
 #[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct Header {
+    #[serde(default)]
     pub name: String,
+    #[serde(default)]
     pub value: String,
 }
 
@@ -4172,6 +4174,23 @@ mod tests {
         assert_eq!(thread.subject, "(No Subject)");
         assert_eq!(thread.snippet, "");
         assert_eq!(thread.unread_count, 0);
+    }
+
+    #[test]
+    fn a_part_or_header_with_an_empty_field_left_out_still_parses() {
+        // Google's JSON leaves out fields holding their default, such as an
+        // empty header value; one odd part must not make the thread unreadable
+        let json = r#"{"id": "t3", "messages": [{"id": "m1", "payload": {
+            "headers": [{"name": "Subject", "value": "Hi"}, {"name": "Cc"}],
+            "parts": [{"filename": "", "body": {"size": 5}}]
+        }}]}"#;
+        let thread = thread_summary(serde_json::from_str(json).unwrap());
+        assert_eq!(thread.subject, "Hi");
+        let full: FullThread = serde_json::from_str(
+            r#"{"id": "t3", "messages": [{"id": "m1", "threadId": "t3", "payload": {"headers": [{"name": "Cc"}], "parts": [{}]}}]}"#,
+        )
+        .unwrap();
+        assert_eq!(full.messages.len(), 1);
     }
 
     #[test]
