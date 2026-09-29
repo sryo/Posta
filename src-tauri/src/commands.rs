@@ -3393,16 +3393,25 @@ mod tests {
         // Calls that take a closure and run it on the blocking pool
         const OFFLOADERS: &[&str] = &["blocking(", "refreshed_access_token("];
         let mut offending = Vec::new();
-        let (mut in_async_fn, mut offloaded) = (false, false);
+        let mut in_async_fn = false;
+        // Paren depth, and the depth an offloader call opened at: lines are
+        // offloaded until its parentheses close again
+        let (mut depth, mut offloaded_at): (i32, Option<i32>) = (0, None);
         for line in source.lines().take_while(|l| l.trim() != "#[cfg(test)]") {
             let code = line.trim_start();
             if ["fn ", "pub fn ", "async fn ", "pub async fn "].iter().any(|p| code.starts_with(p)) {
                 in_async_fn = code.contains("async fn ");
-                offloaded = false;
+                (depth, offloaded_at) = (0, None);
             }
-            offloaded |= OFFLOADERS.iter().any(|o| code.contains(o));
-            if in_async_fn && !offloaded && BLOCKING_WORK.iter().any(|w| code.contains(w)) {
+            if offloaded_at.is_none() && OFFLOADERS.iter().any(|o| code.contains(o)) {
+                offloaded_at = Some(depth);
+            }
+            if in_async_fn && offloaded_at.is_none() && BLOCKING_WORK.iter().any(|w| code.contains(w)) {
                 offending.push(code.to_string());
+            }
+            depth += code.matches('(').count() as i32 - code.matches(')').count() as i32;
+            if offloaded_at.is_some_and(|at| depth <= at) {
+                offloaded_at = None;
             }
         }
         offending
@@ -3416,6 +3425,9 @@ mod tests {
         assert_eq!(blocking_work_on_async_workers(include_str!("commands.rs")), Vec::<String>::new());
         let sample = "pub async fn a() {\n    with_db(state, f)?;\n}\nasync fn b() {\n    blocking(&state, |s| with_db(s, f)).await\n}\n";
         assert_eq!(blocking_work_on_async_workers(sample), vec!["with_db(state, f)?;"]);
+        // Only work inside the offloaded closure is off the async worker
+        let after = "async fn c() {\n    blocking(&state, move |s| {\n        with_db(s, f)\n    })\n    .await?;\n    with_db(state, g)?;\n}\n";
+        assert_eq!(blocking_work_on_async_workers(after), vec!["with_db(state, g)?;"]);
     }
 
     #[tokio::test]
