@@ -1422,6 +1422,37 @@ describe("App calendar", () => {
     }));
   });
 
+  it("looks an invite's answer up once per event, skips past events, and retries a failure on focus", async () => {
+    const invite = (id: string, uid: string, start: number) => ({
+      ...thread(id, `Invite ${id}`),
+      calendar_event: {
+        uid, title: "Planning", start_time: start, end_time: null, all_day: false,
+        location: null, description: null, organizer: "org@x.com", attendees: [], method: "REQUEST", status: null, response_status: null,
+      },
+    });
+    threadsByCard["card-a"] = [
+      invite("t-1", "ev-1@google.com", Date.now() + 3600_000),
+      invite("t-2", "ev-1@google.com", Date.now() + 3600_000),
+      invite("t-old", "ev-old@google.com", Date.now() - 30 * 86400_000),
+    ];
+    let fail = true;
+    handlers.get_calendar_rsvp_status = () => { if (fail) throw "could not reach Google Calendar"; return "accepted"; };
+    const lookups = () => invoke.mock.calls.filter(([cmd]) => cmd === "get_calendar_rsvp_status");
+    render(() => <App />);
+    await screen.findByText("Invite t-1");
+    await waitFor(() => expect(lookups()).toHaveLength(1));
+    await new Promise(r => setTimeout(r, 30));
+    expect(lookups()).toEqual([["get_calendar_rsvp_status", { accountId: "a", eventUid: "ev-1@google.com" }]]);
+
+    fail = false;
+    window.dispatchEvent(new Event("focus"));
+    await waitFor(() => expect(lookups()).toHaveLength(2));
+    for (const id of ["t-1", "t-2"]) {
+      const row = screen.getByText(`Invite ${id}`).closest(".thread") as HTMLElement;
+      await waitFor(() => expect(within(row).getByRole("button", { name: "Yes" })).toHaveClass("selected"));
+    }
+  });
+
   it("does not show an account's calendars once another account is selected", async () => {
     calendarCards();
     let releaseA!: () => void;

@@ -145,6 +145,7 @@ import { getSmartEventTime, groupCalendarEvents, isUserLabel, mergeThreadGroups,
 import { pullLayoutWithRetry } from "./app/icloudRestore";
 import { querySuggestions, type QuerySuggestion } from "./app/querySuggestions";
 import { inviteNamesEvent, rsvpSentMessage, type RsvpStatus } from "./app/rsvp";
+import { createRsvpLookups } from "./app/rsvpLookups";
 import { hasCommandModifier, onActivateKey } from "./shared/keyboard";
 import { askConfirm, ConfirmDialog, confirmOpen, dismissConfirm } from "./app/confirm";
 import { moveCard, reuseUnchanged } from "./app/cardOrder";
@@ -210,25 +211,14 @@ function App() {
   // Google Contacts from People API
   const [googleContacts, setGoogleContacts] = createSignal<Contact[]>([]);
 
-  // RSVP status tracking (thread ID -> "accepted" | "tentative" | "declined" | "needsAction")
+  // The user's answer to each invite, by rsvpLookups.key(account, event uid):
+  // "accepted" | "tentative" | "declined" | "needsAction"
   const [rsvpStatus, setRsvpStatus] = createStore<Record<string, string>>({});
   const [rsvpLoading, setRsvpLoading] = createStore<Record<string, boolean>>({});
-
-  // Fetch RSVP status for a calendar event (at most once per thread, guarded
-  // against re-fires from re-renders while the request is in flight or failed)
-  const rsvpStatusRequested = new Set<string>();
-  const fetchRsvpStatus = async (threadId: string, eventUid: string) => {
-    if (!selectedAccount() || !eventUid) return;
-    if (rsvpStatusRequested.has(threadId)) return;
-    rsvpStatusRequested.add(threadId);
-    try {
-      const status = await getCalendarRsvpStatus(selectedAccount()!.id, eventUid);
-      if (status) {
-        setRsvpStatus(threadId, status);
-      }
-    } catch (e) {
-      console.error("Failed to fetch RSVP status:", e);
-    }
+  const rsvpLookups = createRsvpLookups({ lookup: getCalendarRsvpStatus, onStatus: setRsvpStatus });
+  const inviteRsvp = (uid: string | null) => {
+    const account = selectedAccount();
+    return account && uid ? rsvpStatus[rsvpLookups.key(account.id, uid)] : undefined;
   };
 
   // Answers an invite from its email; the calendar cards showing the event
@@ -239,7 +229,7 @@ function App() {
     setRsvpLoading(threadId, true);
     try {
       await rsvpCalendarEvent(account.id, eventUid, status);
-      setRsvpStatus(threadId, status);
+      setRsvpStatus(rsvpLookups.key(account.id, eventUid), status);
       const eventIds = new Set(Object.values(cardCalendarEvents).flatMap(events =>
         (events ?? []).filter(ev => inviteNamesEvent(eventUid, ev.id)).map(ev => ev.id)));
       for (const eventId of eventIds) markEventRsvp(eventId, status);
@@ -1063,6 +1053,7 @@ function App() {
     setCurrentTime(Date.now());
     performIncrementalSync();
     pullCardsFromICloud();
+    rsvpLookups.retryFailed();
     // Re-arm the timer so the fast interval applies now, not after the
     // previously scheduled (possibly backed-off) timeout fires
     schedulePoll();
@@ -4374,12 +4365,13 @@ function App() {
                                   <div class="date-header">{group().label}</div>
                                   <For each={group().threads}>
                                     {(thread) => {
-                                      // Load RSVP status once per invite row (guarded inside fetchRsvpStatus)
+                                      // An event that is over needs no answer
                                       createEffect(() => {
-                                        const uid = thread.calendar_event?.uid;
-                                        if (thread.calendar_event?.method === "REQUEST" && uid) {
-                                          fetchRsvpStatus(thread.gmail_thread_id, uid);
-                                        }
+                                        const invite = thread.calendar_event;
+                                        const account = selectedAccount();
+                                        if (!account || invite?.method !== "REQUEST" || !invite.uid) return;
+                                        if ((invite.end_time ?? invite.start_time) < Date.now()) return;
+                                        rsvpLookups.request(account.id, invite.uid);
                                       });
                                       return (
                                       <>
@@ -4425,17 +4417,17 @@ function App() {
                                               <Show when={thread.calendar_event!.method === "REQUEST" && thread.calendar_event!.uid}>
                                                 <div class="calendar-rsvp" onClick={(e) => e.stopPropagation()}>
                                                   <button
-                                                    class={rsvpStatus[thread.gmail_thread_id] === "accepted" ? "selected" : ""}
+                                                    class={inviteRsvp(thread.calendar_event!.uid) === "accepted" ? "selected" : ""}
                                                     disabled={rsvpLoading[thread.gmail_thread_id]}
                                                     onClick={() => handleRsvp(thread.gmail_thread_id, thread.calendar_event!.uid, "accepted")}
                                                   >Yes</button>
                                                   <button
-                                                    class={rsvpStatus[thread.gmail_thread_id] === "tentative" ? "selected" : ""}
+                                                    class={inviteRsvp(thread.calendar_event!.uid) === "tentative" ? "selected" : ""}
                                                     disabled={rsvpLoading[thread.gmail_thread_id]}
                                                     onClick={() => handleRsvp(thread.gmail_thread_id, thread.calendar_event!.uid, "tentative")}
                                                   >Maybe</button>
                                                   <button
-                                                    class={rsvpStatus[thread.gmail_thread_id] === "declined" ? "selected" : ""}
+                                                    class={inviteRsvp(thread.calendar_event!.uid) === "declined" ? "selected" : ""}
                                                     disabled={rsvpLoading[thread.gmail_thread_id]}
                                                     onClick={() => handleRsvp(thread.gmail_thread_id, thread.calendar_event!.uid, "declined")}
                                                   >No</button>
