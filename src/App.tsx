@@ -2464,6 +2464,10 @@ function App() {
   }
 
   const labelNames = createMemo(() => Object.fromEntries(accountLabels().map(l => [l.id, l.name])));
+  const filteredLabels = createMemo(() => {
+    const query = labelSearchQuery().toLowerCase();
+    return query ? accountLabels().filter(l => l.name.toLowerCase().includes(query)) : accountLabels();
+  });
 
   // "Group by label" shows label names, and a card query completes label:
   // from them; only the label list carries them
@@ -4926,9 +4930,7 @@ function App() {
               </Show>
 
               <Show when={!labelsLoading()}>
-                <For each={accountLabels().filter(l =>
-                  !labelSearchQuery() || l.name.toLowerCase().includes(labelSearchQuery().toLowerCase())
-                )}>
+                <For each={filteredLabels()}>
                   {(label) => {
                     const isApplied = () => getCurrentThreadLabels().includes(label.id);
                     const isSystem = () => label.label_type !== 'user';
@@ -4955,9 +4957,7 @@ function App() {
                     <button class="retry-btn" onClick={() => fetchAccountLabels()}>Try again</button>
                   </div>
                 </Show>
-                <Show when={!labelsLoading() && !labelsFailed() && accountLabels().filter(l =>
-                  !labelSearchQuery() || l.name.toLowerCase().includes(labelSearchQuery().toLowerCase())
-                ).length === 0}>
+                <Show when={!labelsLoading() && !labelsFailed() && filteredLabels().length === 0}>
                   <div class="label-drawer-empty">No labels found</div>
                 </Show>
               </Show>

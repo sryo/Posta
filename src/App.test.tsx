@@ -3216,6 +3216,22 @@ describe("App label drawer", () => {
     expect(screen.getByText("body m1")).toBeInTheDocument();
   });
 
+  it("filters the labels by name, ignoring case, and says when none match", async () => {
+    handlers.get_thread_details = () => ({ id: "t-a", messages: [fullMessage("m1", "Ana <ana@x.com>")] });
+    handlers.list_labels = () => ["Receipts", "Travel"].map((name, i) => ({ id: `L${i}`, name, messageListVisibility: null, labelListVisibility: null, label_type: "user" }));
+    render(() => <App />);
+    fireEvent.click(await screen.findByText("Mail for A"));
+    await screen.findByText("body m1");
+    fireEvent.keyDown(document, { key: "l" });
+    const search = await screen.findByPlaceholderText("Search labels...");
+    await screen.findByText("Travel");
+    fireEvent.input(search, { target: { value: "REC" } });
+    expect(screen.getByText("Receipts")).toBeInTheDocument();
+    expect(screen.queryByText("Travel")).not.toBeInTheDocument();
+    fireEvent.input(search, { target: { value: "zzz" } });
+    expect(screen.getByText("No labels found")).toBeInTheDocument();
+  });
+
   it("opens the drawer unfiltered after the thread it was searched in closes", async () => {
     handlers.get_thread_details = () => ({ id: "t-a", messages: [fullMessage("m1", "Ana <ana@x.com>")] });
     handlers.list_labels = () => [{ id: "L1", name: "Receipts", messageListVisibility: null, labelListVisibility: null, label_type: "user" }];
