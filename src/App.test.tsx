@@ -760,6 +760,29 @@ describe("App expired session after dismissing the banner", () => {
   });
 });
 
+describe("App card load errors", () => {
+  it("says in words that Gmail couldn't be reached, keeping the backend's text for the sync tooltip", async () => {
+    let offline = true;
+    const fetchPage = handlers.fetch_threads_paginated;
+    handlers.fetch_threads_paginated = (args) => {
+      if (offline) throw "Search failed: Request failed: could not reach Gmail. Check your connection.";
+      return fetchPage(args);
+    };
+    render(() => <App />);
+
+    const cardError = await waitFor(() => {
+      const el = document.querySelector(".card-error");
+      expect(el).not.toBeNull();
+      return el as HTMLElement;
+    });
+    expect(cardError).toHaveTextContent("Couldn't reach Gmail. Check your connection and try again.");
+    expect(cardError).not.toHaveTextContent("Search failed");
+    offline = false;
+    fireEvent.click(within(cardError).getByRole("button", { name: "Try again" }));
+    await screen.findByText("Mail for A");
+  });
+});
+
 describe("App Gemini API key", () => {
   it("moves a key left in localStorage by earlier builds into the keychain", async () => {
     localStorage.setItem("gemini_api_key", "AIza-old");
@@ -1624,6 +1647,43 @@ describe("App quick reply threading", () => {
 });
 
 describe("App batch reply", () => {
+  async function openBatchReplyForTwo() {
+    threadsByCard["card-a"] = [thread("t-1", "One"), thread("t-2", "Two")];
+    render(() => <App />);
+    await screen.findByText("One");
+    fireEvent.keyDown(document, { key: "l" });
+    fireEvent.keyDown(document, { key: "x" });
+    fireEvent.keyDown(document, { key: "j" });
+    fireEvent.keyDown(document, { key: "x" });
+    fireEvent.click(await screen.findByTitle("Batch Reply"));
+  }
+
+  it("says why no thread could be loaded and loads them again on Try again", async () => {
+    let offline = true;
+    handlers.get_thread_details = ({ threadId }) => {
+      if (offline) throw "Failed to fetch thread: Request failed: could not reach Gmail. Check your connection.";
+      return { id: threadId, messages: [fullMessage("m1", "Ana <ana@x.com>")] };
+    };
+    await openBatchReplyForTwo();
+
+    expect(await screen.findByText("Couldn't reach Gmail. Check your connection and try again.")).toBeInTheDocument();
+    expect(screen.queryByText("No threads to reply to")).not.toBeInTheDocument();
+    offline = false;
+    fireEvent.click(screen.getByRole("button", { name: "Try again" }));
+    await waitFor(() => expect(screen.getAllByPlaceholderText(/^Reply to/)).toHaveLength(2));
+  });
+
+  it("says how many threads could not be loaded when only some fail", async () => {
+    handlers.get_thread_details = ({ threadId }) => {
+      if (threadId === "t-2") throw "API error 500";
+      return { id: threadId, messages: [fullMessage("m1", "Ana <ana@x.com>")] };
+    };
+    await openBatchReplyForTwo();
+
+    expect(await screen.findByText("Couldn't load 1 of 2 emails")).toBeInTheDocument();
+    expect(screen.getAllByPlaceholderText(/^Reply to/)).toHaveLength(1);
+  });
+
   it("replies at the Reply-To address", async () => {
     handlers.get_thread_details = () => ({
       id: "t-a",

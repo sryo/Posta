@@ -137,7 +137,7 @@ import { cidImagesToFetch, createLruCache, fetchCidImages } from "./app/cidImage
 import { sendPending, type PendingSend } from "./app/pendingSend";
 import { parseMailto } from "./app/mailto";
 import { coalesceByKey } from "./app/coalesce";
-import { threadLoadErrorMessage } from "./app/loadErrors";
+import { batchReplyLoadErrorMessage, cardLoadErrorMessage, threadLoadErrorMessage } from "./app/loadErrors";
 import { cardTypeForQuery } from "./app/cardType";
 import { createDraftSync, draftKey, findLatestDraft, findUnsentDrafts, hasDraftContent, markDraftClosed, markDraftSending, pruneDrafts, removeAccountDrafts, sessionDraftKey, type DraftFields } from "./app/drafts";
 import { escapeTarget, nextCardFocus, nextItemFocus } from "./app/keyboardNav";
@@ -892,6 +892,8 @@ function App() {
   const [batchReplySending, setBatchReplySending] = createSignal<Record<string, boolean>>({});
   const [batchReplyLoading, setBatchReplyLoading] = createSignal(false);
   const [batchReplyAttachments, setBatchReplyAttachments] = createSignal<Record<string, SendAttachment[]>>({});
+  // Set when none of the batch's threads could be loaded, with what to retry
+  const [batchReplyError, setBatchReplyError] = createSignal<{ message: string; threadIds: string[] } | null>(null);
 
   // Settings form
   const [clientId, setClientId] = createSignal("");
@@ -2650,6 +2652,7 @@ function App() {
 
     const request = ++batchReplyRequest;
     setBatchReplyLoading(true);
+    setBatchReplyError(null);
     setBatchReplyOpen(true);
     setBatchReplyCardId(cardId);
     setBatchReplyMessages({});
@@ -2659,13 +2662,22 @@ function App() {
       const results = await Promise.allSettled(threadIds.map(async threadId =>
         batchReplyEntry(threadId, (await getThreadDetails(account.id, threadId)).messages ?? [], account.email)
       ));
+      if (request !== batchReplyRequest) return;
 
       const threads = results
         .filter((r): r is PromiseFulfilledResult<BatchReplyThread | null> => r.status === 'fulfilled')
         .map(r => r.value)
         .filter((t): t is BatchReplyThread => t !== null);
+      setBatchReplyThreads(threads);
 
-      if (request === batchReplyRequest) setBatchReplyThreads(threads);
+      const failures = results.filter((r): r is PromiseRejectedResult => r.status === 'rejected');
+      if (failures.length === 0) return;
+      noteBackgroundError(account.id, failures[0].reason);
+      if (failures.length === results.length) {
+        setBatchReplyError({ message: batchReplyLoadErrorMessage(failures[0].reason), threadIds });
+      } else {
+        showToast(`Couldn't load ${failures.length} of ${results.length} emails`);
+      }
     } finally {
       if (request === batchReplyRequest) setBatchReplyLoading(false);
     }
@@ -2674,6 +2686,7 @@ function App() {
   function closeBatchReply() {
     batchReplyRequest++;
     setBatchReplyLoading(false);
+    setBatchReplyError(null);
     setBatchReplyOpen(false);
     setBatchReplyCardId(null);
     setBatchReplyThreads([]);
@@ -3172,7 +3185,7 @@ function App() {
   function handleCardLoadError(cardId: string, e: unknown) {
     const errorMsg = String(e);
     if (!isSessionExpiredError(errorMsg)) {
-      setCardErrors(cardId, errorMsg);
+      setCardErrors(cardId, cardLoadErrorMessage(errorMsg, isCalendarCard(cardId)));
       setSyncErrors(cardId, errorMsg);
       return;
     }
@@ -5164,7 +5177,15 @@ function App() {
                 Loading threads...
               </div>
             </Show>
-            <Show when={!batchReplyLoading() && batchReplyThreads().length === 0}>
+            <Show when={!batchReplyLoading() && batchReplyError()}>
+              {(failed) => (
+                <div class="batch-reply-empty" role="alert">
+                  {failed().message}{" "}
+                  <button class="retry-btn" onClick={() => startBatchReply(batchReplyCardId() ?? "", failed().threadIds)}>Try again</button>
+                </div>
+              )}
+            </Show>
+            <Show when={!batchReplyLoading() && !batchReplyError() && batchReplyThreads().length === 0}>
               <div class="batch-reply-empty">No threads to reply to</div>
             </Show>
             <div class="messages-list">
