@@ -17,6 +17,33 @@ export function scopeLabel(card: Pick<Card, "account_id">, accounts: Account[]):
   return accounts.find(a => a.id === card.account_id)?.email ?? "";
 }
 
+// The shortest name that tells each account apart from the others, by id:
+// the address's local part, or its domain for accounts whose local parts
+// match, or the whole address when neither does
+export function shortAccountLabel(accounts: Account[]): Map<string, string> {
+  const parts = accounts.map(a => {
+    const at = a.email.lastIndexOf("@");
+    return { id: a.id, email: a.email, local: a.email.slice(0, at), domain: a.email.slice(at + 1) };
+  });
+  const same = (x: string, y: string) => x.toLowerCase() === y.toLowerCase();
+  const labels = new Map<string, string>();
+  for (const p of parts) {
+    const sameLocal = parts.filter(o => same(o.local, p.local));
+    if (sameLocal.length === 1) labels.set(p.id, p.local);
+    else if (sameLocal.filter(o => same(o.domain, p.domain)).length === 1) labels.set(p.id, p.domain);
+    else labels.set(p.id, p.email);
+  }
+  return labels;
+}
+
+// Whether cards need to say whose mail they show: some card shows another
+// account's mail than the rest, or every account's while there's more than one
+export function boardMixesScopes(cards: Pick<Card, "account_id">[], accounts: Account[]): boolean {
+  if (accounts.length <= 1) return false;
+  const scopes = new Set(cards.map(c => c.account_id));
+  return scopes.size > 1 || scopes.has(ALL_ACCOUNTS);
+}
+
 // The account a listed thread came from. Caches written before threads named
 // their account say "", and belong to their card's account; "" when that
 // can't tell either.

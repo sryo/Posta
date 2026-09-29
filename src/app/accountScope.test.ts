@@ -4,11 +4,13 @@ import {
   ALL_ACCOUNTS,
   accountFromError,
   accountsToPoll,
+  boardMixesScopes,
   cardAccountIds,
   cardCoversAccount,
   eventAccountId,
   inAccount,
   scopeLabel,
+  shortAccountLabel,
   threadAccountId,
   threadIdsByAccount,
   threadKey,
@@ -89,5 +91,50 @@ describe("naming the account in a message", () => {
     expect(inAccount("Archived 1 thread", ["b@x.com"], 2)).toBe("Archived 1 thread in b@x.com");
     expect(inAccount("Archived 3 threads", ["a@x.com", "b@x.com"], 2)).toBe("Archived 3 threads in 2 accounts");
     expect(inAccount("Sending message", ["b@x.com"], 2, "from")).toBe("Sending message from b@x.com");
+  });
+});
+
+describe("short account labels", () => {
+  it("are the local part of each address when those differ", () => {
+    const labels = shortAccountLabel([account("a", "ana@x.com"), account("b", "bo@work.com")]);
+    expect(labels.get("a")).toBe("ana");
+    expect(labels.get("b")).toBe("bo");
+  });
+
+  it("are the domain when two addresses share a local part", () => {
+    const labels = shortAccountLabel([account("m", "mateo@posta.test"), account("w", "mateo@acme.co")]);
+    expect(labels.get("m")).toBe("posta.test");
+    expect(labels.get("w")).toBe("acme.co");
+  });
+
+  it("only fall back to the domain for the accounts whose local part clashes, ignoring case", () => {
+    const labels = shortAccountLabel([account("m", "Mateo@posta.test"), account("w", "mateo@acme.co"), account("a", "ana@acme.co")]);
+    expect([...labels.entries()]).toEqual([["m", "posta.test"], ["w", "acme.co"], ["a", "ana"]]);
+  });
+
+  it("are the whole address when neither part tells two accounts apart", () => {
+    const labels = shortAccountLabel([account("a", "ana@x.com"), account("b", "ana@X.com")]);
+    expect(labels.get("a")).toBe("ana@x.com");
+    expect(labels.get("b")).toBe("ana@X.com");
+  });
+});
+
+describe("a board that mixes scopes", () => {
+  it("has cards for different accounts", () => {
+    expect(boardMixesScopes([card("c", "a"), card("d", "b")], [a, b])).toBe(true);
+  });
+
+  it("has an all-inboxes card while more than one account is signed in", () => {
+    expect(boardMixesScopes([card("c", ALL_ACCOUNTS)], [a, b])).toBe(true);
+    expect(boardMixesScopes([card("c", ALL_ACCOUNTS), card("d", ALL_ACCOUNTS)], [a, b])).toBe(true);
+  });
+
+  it("is not one whose every card shows the same account, however many are signed in", () => {
+    expect(boardMixesScopes([card("c", "a"), card("d", "a")], [a, b])).toBe(false);
+    expect(boardMixesScopes([], [a, b])).toBe(false);
+  });
+
+  it("is not one with a single account signed in, where all inboxes is that account", () => {
+    expect(boardMixesScopes([card("c", "a"), card("d", ALL_ACCOUNTS)], [a])).toBe(false);
   });
 });
