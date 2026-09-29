@@ -1217,6 +1217,45 @@ describe("App calendar", () => {
     await waitFor(() => expect(screen.queryAllByText("Planning")).toHaveLength(0));
   });
 
+  it("creates a new event, not an edit of the last one, after closing an event mid-edit", async () => {
+    calendarCards();
+    cardsByAccount.a = [{ ...card("cal-1", "a", "Week"), query: "calendar:7d", card_type: "calendar" }];
+    handlers.fetch_calendar_events = () => [calendarEvent("ev-1", "Planning")];
+    handlers.create_calendar_event = () => calendarEvent("ev-2", "Lunch");
+    handlers.update_calendar_event = () => calendarEvent("ev-1", "Lunch");
+    render(() => <App />);
+    fireEvent.click(await screen.findByText("Planning"));
+    fireEvent.keyDown(document, { key: "e" });
+    expect(await screen.findByDisplayValue("Planning")).toBeInTheDocument();
+    fireEvent.click(screen.getAllByTitle("Close (Esc)")[0]);
+    await waitFor(() => expect(screen.queryByDisplayValue("Planning")).not.toBeInTheDocument());
+    await new Promise(r => setTimeout(r, 300));
+
+    fireEvent.keyDown(document, { key: "e" });
+    const title = await screen.findByPlaceholderText("Event title");
+    expect(title).toHaveValue("");
+    fireEvent.input(title, { target: { value: "Lunch" } });
+    fireEvent.keyDown(title, { key: "Enter", metaKey: true });
+
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith("create_calendar_event", expect.anything()));
+    expect(invoke).not.toHaveBeenCalledWith("update_calendar_event", expect.anything());
+  });
+
+  it("starts a new event empty after an edit was cancelled with Escape", async () => {
+    calendarCards();
+    render(() => <App />);
+    fireEvent.click(await screen.findByText("Event of a"));
+    fireEvent.keyDown(document, { key: "e" });
+    expect(await screen.findByDisplayValue("Event of a")).toBeInTheDocument();
+    fireEvent.keyDown(document, { key: "Escape" });
+    await waitFor(() => expect(screen.queryByDisplayValue("Event of a")).not.toBeInTheDocument());
+    fireEvent.keyDown(document, { key: "Escape" });
+    await new Promise(r => setTimeout(r, 300));
+
+    fireEvent.keyDown(document, { key: "e" });
+    expect(await screen.findByPlaceholderText("Event title")).toHaveValue("");
+  });
+
   it("edits one occurrence of a repeating event without offering a repeat rule", async () => {
     calendarCards();
     cardsByAccount.a = [{ ...card("cal-1", "a", "Week"), query: "calendar:7d", card_type: "calendar" }];
@@ -3015,5 +3054,27 @@ describe("App batch reply closing", () => {
 
     expect(screen.getByPlaceholderText(/^Reply to/)).toHaveValue("A long answer");
     expect(invoke).not.toHaveBeenCalledWith("get_cards", { accountId: "b" });
+  });
+
+  it("asks before an account switch throws away a typed quick reply", async () => {
+    handlers.get_accounts = () => [account("a", "a@x.com"), account("b", "b@x.com")];
+    render(() => <App />);
+    await screen.findByText("Mail for A");
+    fireEvent.keyDown(document, { key: "l" });
+    fireEvent.keyDown(document, { key: "r" });
+    const input = await screen.findByPlaceholderText("Write a reply...");
+    fireEvent.input(input, { target: { value: "Quick answer" } });
+    fireEvent.click(screen.getByTitle("a@x.com"));
+    fireEvent.click(await screen.findByText("b@x.com"));
+    await answerConfirm(false, /quick reply/);
+    await new Promise(r => setTimeout(r, 20));
+
+    expect(screen.getByPlaceholderText("Write a reply...")).toHaveValue("Quick answer");
+    expect(invoke).not.toHaveBeenCalledWith("get_cards", { accountId: "b" });
+
+    fireEvent.click(screen.getByTitle("a@x.com"));
+    fireEvent.click(await screen.findByText("b@x.com"));
+    await answerConfirm(true);
+    expect(await screen.findByText("Mail for B")).toBeInTheDocument();
   });
 });

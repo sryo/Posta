@@ -733,9 +733,14 @@ function App() {
 
   const [eventForm, setEventForm] = createSignal<EventFormState>(defaultEventForm());
 
-  const resetEventFormToNow = () => {
+  // A new event starts now; what was typed into a closed new-event form stays,
+  // but an event's edit never carries into a new one
+  const openNewEventForm = () => {
     const defaults = smartEventDefaults();
-    setEventForm(f => ({ ...f, startDate: defaults.date, startTime: defaults.startTime, endDate: defaults.date, endTime: defaults.endTime }));
+    setEventForm(f => f.editing
+      ? defaultEventForm()
+      : { ...f, startDate: defaults.date, startTime: defaults.startTime, endDate: defaults.date, endTime: defaults.endTime });
+    setCreatingEvent(true);
   };
   const closeEventForm = () => {
     setEventForm(f => ({ ...f, closing: true }));
@@ -1366,8 +1371,7 @@ function App() {
     // e to create event
     if (e.key === 'e') {
       e.preventDefault();
-      resetEventFormToNow();
-      setCreatingEvent(true);
+      openNewEventForm();
       return;
     }
 
@@ -2652,10 +2656,15 @@ function App() {
     setBatchReplyAttachments({});
   }
 
+  function unsentBatchReplies(): string | null {
+    const unsent = Object.values(batchReplyMessages()).filter(m => m.trim()).length;
+    return unsent === 0 ? null : `${unsent} unsent repl${unsent === 1 ? "y" : "ies"}`;
+  }
+
   // Closing by hand throws away typed replies, so ask first
   async function confirmDiscardBatchReplies(): Promise<boolean> {
-    const unsent = Object.values(batchReplyMessages()).filter(m => m.trim()).length;
-    return unsent === 0 || askConfirm(`Discard ${unsent} unsent repl${unsent === 1 ? "y" : "ies"}?`, "Discard");
+    const unsent = unsentBatchReplies();
+    return !unsent || askConfirm(`Discard ${unsent}?`, "Discard");
   }
 
   async function dismissBatchReply() {
@@ -2960,7 +2969,12 @@ function App() {
 
   async function switchAccount(account: Account) {
     if (selectedAccount()?.id === account.id) return;
-    if (batchReplyOpen() && !(await confirmDiscardBatchReplies())) return;
+    // Leaving the account closes its views; typed text in them is kept nowhere
+    const lost = [
+      batchReplyOpen() ? unsentBatchReplies() : null,
+      quickReply().text.trim() ? "your quick reply" : null,
+    ].filter((what): what is string => !!what);
+    if (lost.length > 0 && !(await askConfirm(`Discard ${lost.join(" and ")}?`, "Discard"))) return;
     if (selectedAccount()?.id === account.id) return;
 
     closeAccountViews();
@@ -3569,6 +3583,7 @@ function App() {
     setReplyingToEvent(null);
     setForwardingEvent(null);
     setCalendarDrawerOpen(false);
+    if (eventForm().editing && !creatingEvent()) setEventForm(defaultEventForm());
     if (wasComposing) {
       closeCompose();
     }
@@ -3923,7 +3938,7 @@ function App() {
               </div>
               <button
                 class="new-event-btn"
-                onClick={() => { resetEventFormToNow(); setCreatingEvent(true); }}
+                onClick={openNewEventForm}
                 title="New event (E)"
                 aria-label="Create new calendar event"
               >
@@ -5098,7 +5113,7 @@ function App() {
             occurrenceOnly: !!activeEvent()!.recurring_event_id,
             saving: eventForm().saving,
             onSave: handleCreateEvent,
-            onClose: () => setEventForm(f => ({ ...f, editing: null })),
+            onClose: () => setEventForm(defaultEventForm()),
             error: eventForm().error,
             resizing: inlineResizing(),
             onResizeStart: handleInlineResizeStart,
