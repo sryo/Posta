@@ -1007,12 +1007,23 @@ describe("App card loading and empty states", () => {
     expect(alpha.querySelector("[aria-busy='true']")).toBeNull();
   });
 
-  it("says what an empty card's query is", async () => {
+  it("postmarks an empty card with its name, when it emptied and its query", async () => {
     handlers.fetch_threads_paginated = () => ({ groups: [], next_page_token: null, has_more: false });
     cardsByAccount.a = [{ ...card("card-a", "a", "Alpha"), query: "is:starred" }];
     render(() => <App />);
-    const empty = await screen.findByText(/Nothing matches/);
-    expect(empty.closest(".empty")).toHaveTextContent("Nothing matches is:starred");
+    const empty = await screen.findByRole("status", { name: /^Alpha is empty\. Cleared at .+\. Query: is:starred$/ });
+    expect(empty.querySelector(".empty-query")).toHaveTextContent("is:starred");
+    expect(empty.querySelector(".postmark")).not.toHaveClass("lands");
+  });
+
+  it("lands the postmark when a card's last thread goes", async () => {
+    render(() => <App />);
+    await screen.findByText("Mail for A");
+    handlers.fetch_threads_paginated = () => ({ groups: [], next_page_token: null, has_more: false });
+    await waitFor(() => expect(screen.getAllByTitle("Refresh")[0]).not.toBeDisabled());
+    fireEvent.click(screen.getAllByTitle("Refresh")[0]);
+    const empty = await screen.findByRole("status", { name: /^Alpha is empty\./ });
+    expect(empty.querySelector(".postmark")).toHaveClass("lands");
   });
 });
 
@@ -4469,6 +4480,20 @@ describe("App card query help and errors", () => {
 
     expect(await screen.findByText("Invalid query")).toBeInTheDocument();
     expect(screen.queryByText("No matches")).not.toBeInTheDocument();
+  });
+
+  it("says nothing matches, not a postmark, when an edited query finds nothing", async () => {
+    handlers.list_labels = () => [];
+    handlers.search_threads_preview = () => [];
+    render(() => <App />);
+    await screen.findByText("Mail for A");
+    fireEvent.click(screen.getByTitle("Edit query"));
+    const query = screen.getByPlaceholderText("e.g. from:boss is:unread newer_than:7d");
+    fireEvent.input(query, { target: { value: "from:nobody" } });
+
+    const empty = await screen.findByText(/Nothing matches/);
+    expect(empty.closest(".empty")).toHaveTextContent("Nothing matches from:nobody");
+    expect(document.querySelector(".postmark")).toBeNull();
   });
 
   it("names an unknown calendar range without asking the calendar", async () => {

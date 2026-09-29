@@ -7,6 +7,7 @@ import solid from "vite-plugin-solid";
 const NO_DOM = [
   "src/App.css.test.ts",
   "src/App.css.global.test.ts",
+  "src/App.css.postmark.test.ts",
   "src/api/commandContract.test.ts",
   "src/app/actionOrder.test.ts",
   "src/app/authErrors.test.ts",
@@ -27,6 +28,7 @@ const NO_DOM = [
   "src/app/mailto.test.ts",
   "src/app/messages.test.ts",
   "src/app/pendingSend.test.ts",
+  "src/app/postmark.test.ts",
   "src/app/signature.test.ts",
   "src/app/storedWidth.test.ts",
   "src/app/threadActions.test.ts",
