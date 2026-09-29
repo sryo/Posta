@@ -5525,6 +5525,12 @@ button.settings-section-title {
     box-sizing: border-box;
 }
 
+/* Recipient suggestions hang below the box */
+.inline-compose:has(.compose-autocomplete),
+.message-row.with-compose .inline-compose:has(.compose-autocomplete) {
+    overflow: visible;
+}
+
 /* Floats over the form, so the column's width doesn't bind it */
 .message-row.with-compose .inline-compose .scope-menu {
     min-width: 200px !important;

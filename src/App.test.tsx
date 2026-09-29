@@ -2703,16 +2703,75 @@ describe("App batch reply", () => {
     expect(screen.getAllByTitle("notes.txt")).toHaveLength(1);
   });
 
-  it("says how many replies Send All couldn't send, keeping them in the list", async () => {
+  it("puts a reply Send All couldn't send back in the batch once the undo window is over", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
     handlers.get_thread_details = ({ threadId }) => ({ id: threadId, messages: [fullMessage("m1", "Ana <ana@x.com>")] });
     handlers.reply_to_thread = ({ threadId }) => { if (threadId === "t-2") throw "API error 500"; return null; };
     await openBatchReplyForTwo();
     await waitFor(() => expect(screen.getAllByPlaceholderText(/^Reply to/)).toHaveLength(2));
     for (const field of screen.getAllByPlaceholderText(/^Reply to/)) fireEvent.input(field, { target: { value: "Thanks" } });
     fireEvent.click(screen.getByRole("button", { name: /^Send All/ }));
+    await waitFor(() => expect(screen.queryByPlaceholderText(/^Reply to/)).not.toBeInTheDocument());
 
-    expect(await screen.findByText(/Couldn't send 1 of 2 replies/)).toBeInTheDocument();
+    await vi.advanceTimersByTimeAsync(6000);
     await waitFor(() => expect(screen.getAllByPlaceholderText(/^Reply to/)).toHaveLength(1));
+    expect(screen.getByPlaceholderText(/^Reply to/)).toHaveValue("Thanks");
+    expect(invoke).toHaveBeenCalledWith("reply_to_thread", expect.objectContaining({ threadId: "t-1" }));
+  });
+
+  it("sends a reply only after the undo window, like any other email", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    handlers.get_thread_details = ({ threadId }) => ({ id: threadId, messages: [fullMessage("m1", "Ana <ana@x.com>")] });
+    handlers.reply_to_thread = () => null;
+    await openBatchReplyForTwo();
+    await waitFor(() => expect(screen.getAllByPlaceholderText(/^Reply to/)).toHaveLength(2));
+    const [first] = screen.getAllByPlaceholderText(/^Reply to/);
+    fireEvent.input(first, { target: { value: "Thanks" } });
+    fireEvent.keyDown(first, { key: "Enter", metaKey: true });
+
+    expect(await screen.findByText("Sending message...")).toBeInTheDocument();
+    await waitFor(() => expect(screen.getAllByPlaceholderText(/^Reply to/)).toHaveLength(1));
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(invoke).not.toHaveBeenCalledWith("reply_to_thread", expect.anything());
+
+    await vi.advanceTimersByTimeAsync(5000);
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith("reply_to_thread", expect.objectContaining({ body: "Thanks" })));
+  });
+
+  it("puts an undone reply back in the batch with what was written", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    handlers.get_thread_details = ({ threadId }) => ({ id: threadId, messages: [fullMessage("m1", "Ana <ana@x.com>")] });
+    handlers.reply_to_thread = () => null;
+    await openBatchReplyForTwo();
+    await waitFor(() => expect(screen.getAllByPlaceholderText(/^Reply to/)).toHaveLength(2));
+    const [first] = screen.getAllByPlaceholderText(/^Reply to/);
+    fireEvent.input(first, { target: { value: "Thanks" } });
+    fireEvent.keyDown(first, { key: "Enter", metaKey: true });
+    fireEvent.click(await screen.findByRole("button", { name: "Undo" }));
+    await vi.advanceTimersByTimeAsync(6000);
+
+    const back = screen.getAllByPlaceholderText(/^Reply to/);
+    expect(back).toHaveLength(2);
+    expect(back.map(r => (r as HTMLTextAreaElement).value)).toContain("Thanks");
+    expect(invoke).not.toHaveBeenCalledWith("reply_to_thread", expect.anything());
+  });
+
+  it("puts every reply of an undone Send All back in the batch", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    handlers.get_thread_details = ({ threadId }) => ({ id: threadId, messages: [fullMessage("m1", "Ana <ana@x.com>")] });
+    handlers.reply_to_thread = () => null;
+    await openBatchReplyForTwo();
+    await waitFor(() => expect(screen.getAllByPlaceholderText(/^Reply to/)).toHaveLength(2));
+    const [first, second] = screen.getAllByPlaceholderText(/^Reply to/);
+    fireEvent.input(first, { target: { value: "Thanks" } });
+    fireEvent.input(second, { target: { value: "Got it" } });
+    fireEvent.click(screen.getByRole("button", { name: /^Send All/ }));
+    fireEvent.click(await screen.findByRole("button", { name: "Undo" }));
+    await vi.advanceTimersByTimeAsync(6000);
+
+    const back = await screen.findAllByPlaceholderText(/^Reply to/);
+    expect(back.map(r => (r as HTMLTextAreaElement).value).sort()).toEqual(["Got it", "Thanks"]);
+    expect(invoke).not.toHaveBeenCalledWith("reply_to_thread", expect.anything());
   });
 
   it("shows a message's inline images, downloading those that didn't come with it", async () => {
@@ -2774,7 +2833,7 @@ describe("App batch reply", () => {
     fireEvent.input(await screen.findByPlaceholderText(/^Reply to/), { target: { value: "Thanks" } });
     fireEvent.click(screen.getByRole("button", { name: /^Send ⌘/ }));
 
-    await waitFor(() => expect(invoke).toHaveBeenCalledWith("reply_to_thread", expect.objectContaining({ to: "team@x.com" })));
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith("reply_to_thread", expect.objectContaining({ to: "team@x.com" })), { timeout: 8000 });
   });
 
   it("signs each reply", async () => {
@@ -2789,7 +2848,7 @@ describe("App batch reply", () => {
     fireEvent.input(await screen.findByPlaceholderText(/^Reply to/), { target: { value: "Thanks" } });
     fireEvent.click(screen.getByRole("button", { name: /^Send ⌘/ }));
 
-    await waitFor(() => expect(invoke).toHaveBeenCalledWith("reply_to_thread", expect.objectContaining({ body: "Thanks\n\n-- \nAna" })));
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith("reply_to_thread", expect.objectContaining({ body: "Thanks\n\n-- \nAna" })), { timeout: 8000 });
   });
 
   it("replies to the message it shows, not to the user's own later one", async () => {
@@ -2808,7 +2867,7 @@ describe("App batch reply", () => {
     fireEvent.input(await screen.findByPlaceholderText(/^Reply to/), { target: { value: "Thanks" } });
     fireEvent.click(screen.getByRole("button", { name: /^Send ⌘/ }));
 
-    await waitFor(() => expect(invoke).toHaveBeenCalledWith("reply_to_thread", expect.objectContaining({ to: "ana@x.com", messageId: "m1" })));
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith("reply_to_thread", expect.objectContaining({ to: "ana@x.com", messageId: "m1" })), { timeout: 8000 });
   });
 
   it("says why a thread with no one to reply to cannot be sent", async () => {

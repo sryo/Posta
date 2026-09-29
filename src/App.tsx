@@ -340,6 +340,8 @@ function App() {
     delayMs: 5000,
     send: async pending => {
       await sendPending(pending);
+      const fromBatch = batchReplyOrigins.get(pending);
+      if (fromBatch?.cardId && selectedAccount()?.id === pending.accountId) fetchAndCacheThreads(pending.accountId, fromBatch.cardId);
       const draft = pending.draft;
       if (draft) {
         markDraftSending(draft.key, null);
@@ -369,6 +371,12 @@ function App() {
 
   // A failed send says so even when its email opens again by itself
   function putBackSend(pending: PendingSend, message: string, tone: ToastTone = "info") {
+    const fromBatch = batchReplyOrigins.get(pending);
+    if (fromBatch && selectedAccount()?.id === pending.accountId) {
+      restoreBatchReply(fromBatch);
+      if (tone === "error") toasts.show({ message, tone });
+      return;
+    }
     if (pending.draft) {
       sendingDraftKeys.delete(pending.draft.key);
       markDraftSending(pending.draft.key, null);
@@ -944,7 +952,6 @@ function App() {
   const [batchReplyCardId, setBatchReplyCardId] = createSignal<string | null>(null);
   const [batchReplyThreads, setBatchReplyThreads] = createSignal<BatchReplyThread[]>([]);
   const [batchReplyMessages, setBatchReplyMessages] = createSignal<Record<string, string>>({});
-  const [batchReplySending, setBatchReplySending] = createSignal<Record<string, boolean>>({});
   const [batchReplyLoading, setBatchReplyLoading] = createSignal(false);
   const [batchReplyAttachments, setBatchReplyAttachments] = createSignal<Record<string, SendAttachment[]>>({});
   // Inline image data downloaded for each thread's message (thread id -> cid -> data)
@@ -2561,8 +2568,9 @@ function App() {
   }
 
   function undoSend() {
-    const pending = undoableSend.undo();
-    if (pending) putBackSend(pending, `"${pending.subject || "(no subject)"}" wasn't sent`);
+    for (const pending of undoableSend.undoAll()) {
+      putBackSend(pending, `"${pending.subject || "(no subject)"}" wasn't sent`);
+    }
   }
 
   function openMailto(mailto: MailtoData) {
@@ -3103,7 +3111,6 @@ function App() {
     setBatchReplyOpen(true);
     setBatchReplyCardId(cardId);
     setBatchReplyMessages({});
-    setBatchReplySending({});
 
     try {
       const results = await Promise.allSettled(threadIds.map(async threadId =>
@@ -3151,7 +3158,6 @@ function App() {
     setBatchReplyCardId(null);
     setBatchReplyThreads([]);
     setBatchReplyMessages({});
-    setBatchReplySending({});
     setBatchReplyAttachments({});
   }
 
@@ -3221,9 +3227,36 @@ function App() {
     if (!removeBatchReplyThread(threadId)) closeBatchReply();
   }
 
-  // Resolves false if the reply couldn't be sent. `quiet` leaves saying so
-  // to Send All, which reports every failure at once.
-  async function sendBatchReply(threadId: string, { quiet = false } = {}): Promise<boolean> {
+  // What a batch reply queued to send was written as, to put it back in the
+  // batch if it is undone or fails
+  interface BatchReplyOrigin {
+    thread: BatchReplyThread;
+    message: string;
+    attachments: SendAttachment[];
+    cardId: string | null;
+  }
+  const batchReplyOrigins = new WeakMap<PendingSend, BatchReplyOrigin>();
+
+  function restoreBatchReply(origin: BatchReplyOrigin) {
+    const threadId = origin.thread.threadId;
+    batch(() => {
+      if (!batchReplyOpen()) {
+        closeBatchReply();
+        setBatchReplyOpen(true);
+        setBatchReplyCardId(origin.cardId);
+      }
+      if (!batchReplyThreads().some(t => t.threadId === threadId)) {
+        setBatchReplyThreads([...batchReplyThreads(), origin.thread]);
+      }
+      setBatchReplyMessages({ ...batchReplyMessages(), [threadId]: origin.message });
+      setBatchReplyAttachments({ ...batchReplyAttachments(), [threadId]: origin.attachments });
+    });
+  }
+
+  // Queues the reply behind the undo window, or hands it to `queue`; resolves
+  // false if it can't be sent. `quiet` leaves saying so to Send All, which
+  // reports every failure at once.
+  async function sendBatchReply(threadId: string, { quiet = false, queue = undoableSend.queue } = {}): Promise<boolean> {
     const account = selectedAccount();
     const thread = batchReplyThreads().find(t => t.threadId === threadId);
     const message = batchReplyMessages()[threadId];
@@ -3235,32 +3268,33 @@ function App() {
       return false;
     }
 
-    setBatchReplySending({ ...batchReplySending(), [threadId]: true });
-
-    try {
-      const replySubject = addReplyPrefix(thread.subject);
-      await replyToThread(account.id, threadId, thread.to, "", "", replySubject, message + signatureBlock(account.signature), thread.messageId, attachments, false);
-
-      const cardId = batchReplyCardId();
-      if (cardId) fetchAndCacheThreads(account.id, cardId);
-      if (!removeBatchReplyThread(threadId)) {
-        closeBatchReply();
-        if (cardId) setSelectedThreads({ ...selectedThreads(), [cardId]: new Set() });
-      }
-      return true;
-    } catch (e) {
-      console.error('Failed to send reply:', e);
-      if (!quiet) showFailure(`Couldn't send the reply to “${thread.subject}”`, e);
-      return false;
-    } finally {
-      setBatchReplySending({ ...batchReplySending(), [threadId]: false });
+    const cardId = batchReplyCardId();
+    const pending: PendingSend = {
+      accountId: account.id,
+      to: thread.to,
+      cc: "",
+      bcc: "",
+      subject: addReplyPrefix(thread.subject),
+      body: message + signatureBlock(account.signature),
+      attachments,
+      reply: { threadId, messageId: thread.messageId },
+      isHtml: false,
+    };
+    batchReplyOrigins.set(pending, { thread, message, attachments, cardId });
+    queue(pending);
+    if (!removeBatchReplyThread(threadId)) {
+      closeBatchReply();
+      if (cardId) setSelectedThreads({ ...selectedThreads(), [cardId]: new Set() });
     }
+    return true;
   }
 
   async function sendAllBatchReplies() {
     const messages = batchReplyMessages();
     const toSend = batchReplyThreads().filter(t => messages[t.threadId]?.trim());
-    const sent = await Promise.all(toSend.map(thread => sendBatchReply(thread.threadId, { quiet: true })));
+    const queued: PendingSend[] = [];
+    const sent = await Promise.all(toSend.map(thread => sendBatchReply(thread.threadId, { quiet: true, queue: p => queued.push(p) })));
+    undoableSend.queueAll(queued);
     const failed = sent.filter(ok => !ok).length;
     if (failed > 0) showToast(`Couldn't send ${failed} of ${toSend.length} replies; they're still here to try again`);
   }
@@ -5659,7 +5693,6 @@ function App() {
                         onFileSelect={(e) => handleBatchReplyFileSelect(thread.threadId, e)}
                         onAddFiles={(files) => addBatchReplyFiles(thread.threadId, files)}
                         fileInputId={`batch-reply-file-input-${thread.threadId}`}
-                        sending={batchReplySending()[thread.threadId]}
                         onSend={() => sendBatchReply(thread.threadId)}
                         onClose={dismissBatchReply}
                         onSkip={() => discardBatchReplyThread(thread.threadId)}

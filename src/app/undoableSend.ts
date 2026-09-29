@@ -4,13 +4,14 @@ const TOAST_EXIT_MS = 200;
 
 // Delays each send so it can be undone. Several sends can overlap: each keeps
 // its own timer, only the most recent one is offered for undo, and the toast
-// stays up until nothing is queued or still going out.
+// stays up until nothing is queued or still going out. Sends queued together
+// are undone together.
 export function createUndoableSend<T>(opts: {
   delayMs: number;
   send: (item: T) => Promise<void>;
   onFailed: (item: T, error: unknown) => void;
 }) {
-  interface Entry { item: T; timeoutId: number; queuedAt: number }
+  interface Entry { item: T; timeoutId: number; queuedAt: number; group: object }
   const [queued, setQueued] = createSignal<Entry[]>([]);
   const [progress, setProgress] = createSignal(0);
   const [toastVisible, setToastVisible] = createSignal(false);
@@ -43,13 +44,13 @@ export function createUndoableSend<T>(opts: {
     }, TOAST_EXIT_MS);
   }
 
-  function queue(item: T) {
+  function queue(item: T, group: object = {}) {
     clearTimeout(hideTimeoutId);
     setToastClosing(false);
     setToastVisible(true);
     setProgress(0);
 
-    const entry: Entry = { item, timeoutId: 0, queuedAt: Date.now() };
+    const entry: Entry = { item, timeoutId: 0, queuedAt: Date.now(), group };
     entry.timeoutId = window.setTimeout(async () => {
       // Leave the undo window before the network call so a late undo can't
       // reopen compose while the mail still goes out
@@ -88,9 +89,27 @@ export function createUndoableSend<T>(opts: {
     return entry.item;
   }
 
+  function queueAll(items: T[]) {
+    const group = {};
+    for (const item of items) queue(item, group);
+  }
+
+  // The most recent send and those queued with it
+  function undoAll(): T[] {
+    const group = latest()?.group;
+    if (!group) return [];
+    const entries = queued().filter(e => e.group === group);
+    for (const entry of entries) clearTimeout(entry.timeoutId);
+    setQueued(q => q.filter(e => e.group !== group));
+    settle();
+    return entries.map(e => e.item);
+  }
+
   return {
-    queue,
+    queue: (item: T) => queue(item),
+    queueAll,
     undo,
+    undoAll,
     pending: () => latest()?.item ?? null,
     progress,
     toastVisible,

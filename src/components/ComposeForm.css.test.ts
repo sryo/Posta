@@ -14,6 +14,13 @@ describe("compose styles", () => {
     expect(declarations(".compose-field").get("position")).toBe("relative");
   });
 
+  it("lets an inline reply's recipient suggestions reach past its clipped box", () => {
+    expect(declarations(".inline-compose").get("overflow")).toBe("hidden");
+    expect(declarations(".inline-compose:has(.compose-autocomplete)").get("overflow")).toBe("visible");
+    expect(declarations(".message-row.with-compose .inline-compose").get("overflow")).toBe("hidden");
+    expect(declarations(".message-row.with-compose .inline-compose:has(.compose-autocomplete)").get("overflow")).toBe("visible");
+  });
+
   it("keeps a draft row's Discard button a quiet control that turns to danger on hover or focus", () => {
     const button = declarations(".thread-draft-discard");
     expect(button.get("color")).toBe("var(--text-muted)");
