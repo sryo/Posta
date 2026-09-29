@@ -451,6 +451,33 @@ async fn saving_over_a_draft_deleted_elsewhere_creates_a_new_one() {
 }
 
 #[tokio::test]
+async fn a_reply_draft_recreated_after_a_deletion_elsewhere_looks_its_parent_up_once() {
+    let server = StubServer::start(|request| match (request.method.as_str(), request.target.as_str()) {
+        ("PUT", _) => Reply::Json(404, google_error(404, "NOT_FOUND", "notFound", "Requested entity was not found.")),
+        ("POST", "/gmail/v1/users/me/drafts") => Reply::Json(200, r#"{"id":"fresh","message":{"id":"m2"}}"#.into()),
+        ("GET", target) if target.starts_with("/gmail/v1/users/me/threads/t1?") => Reply::Json(
+            200,
+            r#"{"id":"t1","messages":[{"id":"m1","threadId":"t1","payload":{"headers":[{"name":"Message-ID","value":"<parent@example.com>"}]}}]}"#
+                .into(),
+        ),
+        _ => Reply::Json(500, "{}".into()),
+    })
+    .await;
+    let message = OutgoingMessage { to: "bob@example.com", body: "still writing", ..Default::default() };
+
+    let draft = within(server.client().update_draft("gone", &message, Some("t1"))).await.unwrap();
+
+    assert_eq!(draft.id, "fresh");
+    let requests = server.requests();
+    let created = requests.iter().find(|r| r.method == "POST").expect("draft recreated");
+    let body = serde_json::from_slice::<serde_json::Value>(&created.body).unwrap();
+    let raw = decode_base64_body(body["message"]["raw"].as_str().unwrap()).unwrap();
+    assert!(raw.contains("In-Reply-To: <parent@example.com>"), "{}", raw);
+    assert_eq!(body["message"]["threadId"], "t1");
+    assert_eq!(requests.iter().filter(|r| r.method == "GET").count(), 1);
+}
+
+#[tokio::test]
 async fn other_draft_save_failures_are_not_retried_as_new_drafts() {
     let server = StubServer::start(|_| Reply::Json(500, "{}".into())).await;
     let message = OutgoingMessage { to: "bob@example.com", body: "text", ..Default::default() };

@@ -807,8 +807,8 @@ impl GmailClient {
         message: &OutgoingMessage<'_>,
         thread_id: Option<&str>,
     ) -> Result<GmailDraft, String> {
-        let url = format!("{}/users/me/drafts", self.api_base);
-        self.upsert_draft(self.client.post(&url), message, thread_id).await
+        let body = self.draft_body(message, thread_id).await;
+        self.save_draft(self.client.post(format!("{}/users/me/drafts", self.api_base)), &body).await
     }
 
     pub async fn update_draft(
@@ -817,24 +817,21 @@ impl GmailClient {
         message: &OutgoingMessage<'_>,
         thread_id: Option<&str>,
     ) -> Result<GmailDraft, String> {
+        let body = self.draft_body(message, thread_id).await;
         let url = format!("{}/users/me/drafts/{}", self.api_base, path_id(draft_id));
-        match self.upsert_draft(self.client.put(&url), message, thread_id).await {
+        match self.save_draft(self.client.put(&url), &body).await {
             // Sent or discarded from another device while this compose stayed
             // open; without a new draft the text would never reach Gmail again
             Err(e) if e.starts_with("API error 404") => {
                 tracing::info!("Draft {} no longer exists, saving as a new draft", draft_id);
-                self.create_draft(message, thread_id).await
+                self.save_draft(self.client.post(format!("{}/users/me/drafts", self.api_base)), &body).await
             }
             result => result,
         }
     }
 
-    async fn upsert_draft(
-        &self,
-        request: reqwest::RequestBuilder,
-        message: &OutgoingMessage<'_>,
-        thread_id: Option<&str>,
-    ) -> Result<GmailDraft, String> {
+    /// The drafts.create/update request body for `message`
+    async fn draft_body(&self, message: &OutgoingMessage<'_>, thread_id: Option<&str>) -> serde_json::Value {
         // Gmail only files a draft into a thread when it carries the RFC 2822
         // threading headers, not just the threadId
         let reply_headers = match thread_id {
@@ -842,19 +839,21 @@ impl GmailClient {
             None => None,
         };
 
-        let mut request_body = serde_json::json!({
+        let mut body = serde_json::json!({
             "message": {
                 "raw": encode_raw_message(&build_mime_message(message, reply_headers.as_ref()))
             }
         });
-
         if let Some(tid) = thread_id {
-            request_body["message"]["threadId"] = serde_json::json!(tid);
+            body["message"]["threadId"] = serde_json::json!(tid);
         }
+        body
+    }
 
+    async fn save_draft(&self, request: reqwest::RequestBuilder, body: &serde_json::Value) -> Result<GmailDraft, String> {
         let resp = request
             .bearer_auth(&self.access_token)
-            .json(&request_body)
+            .json(body)
             .send()
             .await
             .map_err(request_error)?;
