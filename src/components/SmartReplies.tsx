@@ -1,4 +1,4 @@
-import { createSignal, createEffect, on, onMount, Show, For } from "solid-js";
+import { createSignal, createEffect, createMemo, on, onMount, Show, For } from "solid-js";
 import { hasGeminiApiKey, suggestReplies } from "../api/tauri";
 
 interface SmartRepliesProps {
@@ -71,11 +71,10 @@ export const SmartReplies = (props: SmartRepliesProps) => {
         fetchSuggestions();
     });
 
-    createEffect(on(
-        () => [props.threadId, props.lastMessageId] as const,
-        () => { if (enabled()) fetchSuggestions(); },
-        { defer: true },
-    ));
+    // A memo so a thread reloaded with the same messages (after starring,
+    // say) does not ask again
+    const answering = createMemo(() => `${props.threadId}\n${props.lastMessageId ?? ''}`);
+    createEffect(on(answering, () => { if (enabled()) fetchSuggestions(); }, { defer: true }));
 
     // Gate in JSX rather than an early return: a top-level `return null`
     // freezes this instance as null forever, while <Show> re-evaluates

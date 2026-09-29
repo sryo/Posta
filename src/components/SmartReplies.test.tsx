@@ -82,15 +82,16 @@ describe("SmartReplies", () => {
 
   it("asks again only when a new message arrives in the open thread", async () => {
     suggestReplies.mockResolvedValueOnce(["Old reply"]).mockResolvedValueOnce(["New reply"]);
-    const [last, setLast] = createSignal("m1");
-    const [other, setOther] = createSignal(0);
-    render(() => <SmartReplies accountId="acc" threadId="t1" lastMessageId={last()} keySaved={true} onSelect={() => other()} />);
+    // Starring or relabelling reloads the thread as a new object with the same messages
+    const [thread, setThread] = createSignal({ messages: [{ id: "m1" }] });
+    const last = () => thread().messages[thread().messages.length - 1].id;
+    render(() => <SmartReplies accountId="acc" threadId="t1" lastMessageId={last()} keySaved={true} onSelect={vi.fn()} />);
     expect(await screen.findByText("Old reply")).toBeInTheDocument();
-    setOther(1);
-    setLast("m1");
+    setThread({ messages: [{ id: "m1" }] });
     await new Promise(r => setTimeout(r, 0));
     expect(suggestReplies).toHaveBeenCalledTimes(1);
-    setLast("m2");
+    expect(screen.getByText("Old reply")).toBeInTheDocument();
+    setThread({ messages: [{ id: "m1" }, { id: "m2" }] });
     expect(await screen.findByText("New reply")).toBeInTheDocument();
     expect(screen.queryByText("Old reply")).toBeNull();
     expect(suggestReplies).toHaveBeenCalledTimes(2);
