@@ -81,3 +81,23 @@ export const GMAIL_OPERATORS: { op: string; desc: string }[] = [
   { op: "deliveredto:", desc: "Delivered to address" },
   { op: "list:", desc: "Mailing list" },
 ];
+
+// A calendar card's query starts with one of these ranges
+export const CALENDAR_RANGES: { op: string; desc: string }[] = [
+  { op: "calendar:today", desc: "Today's events" },
+  { op: "calendar:tomorrow", desc: "Tomorrow's events" },
+  { op: "calendar:week", desc: "Next 7 days, from today" },
+  { op: "calendar:month", desc: "Next 30 days, from today" },
+  { op: "calendar:7d", desc: "Next 7 days, from now" },
+  { op: "calendar:2w", desc: "Next 2 weeks, from now" },
+];
+
+export const CALENDAR_OPERATORS: { op: string; desc: string }[] = [
+  { op: "with:", desc: "Attendee name or address" },
+  { op: "organizer:", desc: "Event organizer" },
+  { op: "location:", desc: "Event location" },
+  { op: "response:needsAction", desc: "Events you haven't answered" },
+  { op: "response:accepted", desc: "Events you're going to" },
+  { op: "response:declined", desc: "Events you declined" },
+  { op: "status:cancelled", desc: "Cancelled events" },
+];

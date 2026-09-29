@@ -512,6 +512,24 @@ describe("App presets", () => {
     expect(invoke.mock.calls.filter(([cmd]) => cmd === "create_card")).toHaveLength(4);
   });
 
+  it("starts the Posta preset's catch-all card collapsed and doesn't load it", async () => {
+    signInToEmptyLayout();
+    fireEvent.click(await screen.findByText("Sign in with Google"));
+    fireEvent.click((await screen.findByText("Focus on what matters")).closest(".preset-option")!);
+
+    const rest = await screen.findByRole("region", { name: "Everything else email card" });
+    expect(rest).toHaveClass("collapsed");
+    expect(screen.getByRole("region", { name: "Hot email card" })).not.toHaveClass("collapsed");
+    const restIndex = invoke.mock.calls.findIndex(([cmd, args]) => cmd === "create_card" && args?.name === "Everything else");
+    const created = await invoke.mock.results[restIndex].value as Card;
+    const hotIndex = invoke.mock.calls.findIndex(([cmd, args]) => cmd === "create_card" && args?.name === "Hot");
+    const hot = await invoke.mock.results[hotIndex].value as Card;
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith("fetch_threads_paginated", expect.objectContaining({ cardId: hot.id })));
+    await new Promise(r => setTimeout(r, 20));
+    expect(invoke.mock.calls.some(([cmd, args]) => cmd === "fetch_threads_paginated" && args?.cardId === created.id)).toBe(false);
+    expect(JSON.parse(localStorage.getItem("collapsedCards") ?? "{}")[created.id]).toBe(true);
+  });
+
   it("shows the cards that were created when a later one fails", async () => {
     signInToEmptyLayout();
     const create = handlers.create_card;
@@ -642,7 +660,7 @@ describe("App expired session", () => {
     window.dispatchEvent(new Event("focus"));
 
     const banner = await waitFor(() => {
-      const el = document.querySelector(".auth-error");
+      const el = document.querySelector(".connection-status");
       expect(el).not.toBeNull();
       return el as HTMLElement;
     });
@@ -657,7 +675,7 @@ describe("App expired session", () => {
     await screen.findByText("Mail for A");
 
     const banner = await waitFor(() => {
-      const el = document.querySelector(".auth-error");
+      const el = document.querySelector(".connection-status");
       expect(el).not.toBeNull();
       return el as HTMLElement;
     });
@@ -676,7 +694,7 @@ describe("App expired session", () => {
     render(() => <App />);
 
     const banner = await waitFor(() => {
-      const el = document.querySelector(".auth-error");
+      const el = document.querySelector(".connection-status");
       expect(el).not.toBeNull();
       return el as HTMLElement;
     });
@@ -735,8 +753,8 @@ describe("App error banner", () => {
     expect(await screen.findByRole("alert")).toHaveTextContent(/^Couldn't save the card\.Details/);
 
     fireEvent.click(screen.getByTitle("New card"));
-    fireEvent.input(screen.getAllByPlaceholderText("Inbox, Starred...").slice(-1)[0], { target: { value: "News" } });
-    fireEvent.input(screen.getAllByPlaceholderText("is:inbox, from:boss, newer_than:7d").slice(-1)[0], { target: { value: "label:news" } });
+    fireEvent.input(screen.getAllByPlaceholderText("e.g. Clients").slice(-1)[0], { target: { value: "News" } });
+    fireEvent.input(screen.getAllByPlaceholderText("e.g. from:boss is:unread newer_than:7d").slice(-1)[0], { target: { value: "label:news" } });
     fireEvent.click(screen.getByTitle("Add (⌘Enter)"));
     await waitFor(() => expect(screen.getByRole("alert")).toHaveTextContent(/^Couldn't add the card\.Details/));
     expect(screen.getByRole("alert").querySelector("details")).toHaveTextContent("disk full");
@@ -748,23 +766,23 @@ describe("App error banner", () => {
     await screen.findByText("Mail for A");
     handlers.sync_threads_incremental = () => { throw 'Token refresh failed: {"error": "invalid_grant"}'; };
     window.dispatchEvent(new Event("focus"));
-    await screen.findByText("Session expired - sign in again");
+    await screen.findByText("Posta lost access to a@x.com");
 
     handlers.sync_threads_incremental = () => ({ modified_threads: [], deleted_thread_ids: [], is_full_sync: false });
     fireEvent.click(screen.getByTitle("a@x.com"));
     fireEvent.click(await screen.findByText("b@x.com"));
     await screen.findByText("Mail for B");
-    expect(screen.queryByText("Session expired - sign in again")).not.toBeInTheDocument();
+    expect(screen.queryByText("Posta lost access to a@x.com")).not.toBeInTheDocument();
 
     fireEvent.click(screen.getByTitle("b@x.com"));
     fireEvent.click(await screen.findByText("a@x.com"));
-    const banner = await screen.findByRole("alert");
+    const banner = (await screen.findByText("Posta lost access to a@x.com")).closest(".connection-status") as HTMLElement;
     expect(within(banner).getByRole("button", { name: "Sign in again" })).toBeInTheDocument();
   });
 });
 
-describe("App expired session after dismissing the banner", () => {
-  it("still offers to sign in again from the card", async () => {
+describe("App expired session in a card", () => {
+  it("leaves signing in again to the status strip, the card only waiting for it", async () => {
     let expired = true;
     const fetchPage = handlers.fetch_threads_paginated;
     handlers.fetch_threads_paginated = (args) => {
@@ -774,25 +792,51 @@ describe("App expired session after dismissing the banner", () => {
     handlers.run_oauth_flow = () => { expired = false; return account("a", "a@x.com"); };
     render(() => <App />);
 
-    await screen.findByRole("button", { name: "Dismiss error" });
-    fireEvent.click(screen.getByRole("button", { name: "Dismiss error" }));
-    const cardError = await waitFor(() => {
-      const el = document.querySelector(".card-error");
-      expect(el).not.toBeNull();
-      return el as HTMLElement;
-    });
-    fireEvent.click(within(cardError).getByRole("button", { name: "Sign in again" }));
+    const alpha = await screen.findByRole("region", { name: "Alpha email card" });
+    expect(await within(alpha).findByText("Waiting for sign-in")).toBeInTheDocument();
+    expect(within(alpha).queryByRole("button", { name: "Sign in again" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
 
+    const strip = document.querySelector(".connection-status") as HTMLElement;
+    fireEvent.click(within(strip).getByRole("button", { name: "Sign in again" }));
     await screen.findByText("Mail for A");
+    expect(document.querySelector(".connection-status")).toBeNull();
   });
 });
 
 describe("App card load errors", () => {
-  it("says in words that Gmail couldn't be reached, keeping the backend's text for the sync tooltip", async () => {
+  it("says once, for the whole board, that Gmail couldn't be reached, and loads the cards on Try now", async () => {
     let offline = true;
     const fetchPage = handlers.fetch_threads_paginated;
     handlers.fetch_threads_paginated = (args) => {
       if (offline) throw "Search failed: Request failed: could not reach Gmail. Check your connection.";
+      return fetchPage(args);
+    };
+    handlers.sync_threads_incremental = () => {
+      if (offline) throw "Request failed: could not reach Gmail. Check your connection.";
+      return { modified_threads: [], deleted_thread_ids: [], is_full_sync: false };
+    };
+    cardsByAccount.a = [card("card-a", "a", "Alpha"), { ...card("card-z", "a", "Zeta"), position: 1 }];
+    render(() => <App />);
+
+    const alpha = await screen.findByRole("region", { name: "Alpha email card" });
+    expect(await within(alpha).findByText("Waiting for connection")).toBeInTheDocument();
+    expect(within(alpha).queryByRole("button", { name: "Try again" })).not.toBeInTheDocument();
+    await waitFor(() => expect(screen.getAllByText("Waiting for connection")).toHaveLength(2));
+    const strip = document.querySelector(".connection-status") as HTMLElement;
+    expect(strip).toHaveTextContent("You're offline");
+
+    offline = false;
+    fireEvent.click(within(strip).getByRole("button", { name: "Try now" }));
+    await screen.findByText("Mail for A");
+    await waitFor(() => expect(document.querySelector(".connection-status")).toBeNull());
+  });
+
+  it("keeps an error only one card has inside that card, with Try again", async () => {
+    let bad = true;
+    const fetchPage = handlers.fetch_threads_paginated;
+    handlers.fetch_threads_paginated = (args) => {
+      if (bad) throw "Search failed: API error 400 Bad Request: Invalid query";
       return fetchPage(args);
     };
     render(() => <App />);
@@ -802,11 +846,88 @@ describe("App card load errors", () => {
       expect(el).not.toBeNull();
       return el as HTMLElement;
     });
-    expect(cardError).toHaveTextContent("Couldn't reach Gmail. Check your connection and try again.");
-    expect(cardError).not.toHaveTextContent("Search failed");
-    offline = false;
+    expect(cardError).toHaveTextContent("Invalid query");
+    expect(document.querySelector(".connection-status")).toBeNull();
+    bad = false;
     fireEvent.click(within(cardError).getByRole("button", { name: "Try again" }));
     await screen.findByText("Mail for A");
+  });
+
+  it("shows cached mail dimmed while offline and says since when it is from", async () => {
+    handlers.get_cached_card_threads = () => ({ groups: [{ label: "Today", threads: [thread("t-a", "Cached mail")] }], next_page_token: null, cached_at: 1 });
+    handlers.fetch_threads_paginated = () => { throw "Search failed: Request failed: could not reach Gmail. Check your connection."; };
+    render(() => <App />);
+
+    await screen.findByText("Cached mail");
+    const strip = await waitFor(() => {
+      const el = document.querySelector(".connection-status");
+      expect(el).not.toBeNull();
+      return el as HTMLElement;
+    });
+    expect(strip).toHaveTextContent(/You're offline — showing mail from/);
+    expect(screen.getByRole("region", { name: "Alpha email card" })).toHaveClass("stale");
+  });
+
+  it("tries again as soon as the Mac is back online", async () => {
+    let offline = true;
+    const fetchPage = handlers.fetch_threads_paginated;
+    handlers.fetch_threads_paginated = (args) => {
+      if (offline) throw "Search failed: Request failed: could not reach Gmail. Check your connection.";
+      return fetchPage(args);
+    };
+    render(() => <App />);
+    await screen.findByText("Waiting for connection");
+
+    offline = false;
+    window.dispatchEvent(new Event("online"));
+    expect(await screen.findByText("Mail for A")).toBeInTheDocument();
+  });
+
+  it("goes offline when the Mac says so", async () => {
+    render(() => <App />);
+    await screen.findByText("Mail for A");
+    window.dispatchEvent(new Event("offline"));
+    expect(await screen.findByText(/You're offline/)).toBeInTheDocument();
+  });
+
+  it("stops saying it's offline once a sync gets through", async () => {
+    render(() => <App />);
+    await screen.findByText("Mail for A");
+    window.dispatchEvent(new Event("offline"));
+    await screen.findByText(/You're offline/);
+
+    window.dispatchEvent(new Event("focus"));
+    await waitFor(() => expect(document.querySelector(".connection-status")).toBeNull());
+  });
+});
+
+describe("App card loading and empty states", () => {
+  it("shows skeleton rows while a card loads for the first time", async () => {
+    let release!: () => void;
+    const slow = new Promise<void>(r => { release = r; });
+    const fetchPage = handlers.fetch_threads_paginated;
+    handlers.fetch_threads_paginated = async (args) => { await slow; return fetchPage(args); };
+    render(() => <App />);
+
+    const alpha = await screen.findByRole("region", { name: "Alpha email card" });
+    const skeleton = await waitFor(() => {
+      const el = alpha.querySelector("[aria-busy='true']");
+      expect(el).not.toBeNull();
+      return el as HTMLElement;
+    });
+    expect(skeleton.querySelectorAll(".card-skeleton-row")).toHaveLength(3);
+    expect(within(alpha).queryByText("Loading...")).not.toBeInTheDocument();
+    release();
+    await screen.findByText("Mail for A");
+    expect(alpha.querySelector("[aria-busy='true']")).toBeNull();
+  });
+
+  it("says what an empty card's query is", async () => {
+    handlers.fetch_threads_paginated = () => ({ groups: [], next_page_token: null, has_more: false });
+    cardsByAccount.a = [{ ...card("card-a", "a", "Alpha"), query: "is:starred" }];
+    render(() => <App />);
+    const empty = await screen.findByText(/Nothing matches/);
+    expect(empty.closest(".empty")).toHaveTextContent("Nothing matches is:starred");
   });
 });
 
@@ -1644,6 +1765,56 @@ describe("App calendar", () => {
     expect(within(row).getByRole("checkbox")).not.toBeChecked();
   });
 
+  it("refreshes calendar cards when the window gains focus", async () => {
+    calendarCards();
+    handlers.get_accounts = () => [account("a", "a@x.com")];
+    let title = "Planning";
+    handlers.fetch_calendar_events = () => [calendarEvent("ev-1", title)];
+    render(() => <App />);
+    await screen.findByText("Planning");
+
+    await new Promise(r => setTimeout(r, 20));
+
+    title = "Moved planning";
+    window.dispatchEvent(new Event("focus"));
+
+    expect(await screen.findByText("Moved planning")).toBeInTheDocument();
+  });
+
+  it("reports an expired session found by a calendar card's background refresh", async () => {
+    calendarCards();
+    handlers.get_accounts = () => [account("a", "a@x.com")];
+    render(() => <App />);
+    await screen.findByText("Event of a");
+    await new Promise(r => setTimeout(r, 20));
+
+    handlers.fetch_calendar_events = () => { throw "Token refresh failed: invalid_grant"; };
+    window.dispatchEvent(new Event("focus"));
+
+    expect(await screen.findByRole("button", { name: "Sign in again" })).toBeInTheDocument();
+  });
+
+  it("refreshes calendar cards on the polling timer, but not collapsed ones", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    calendarCards();
+    handlers.get_accounts = () => [account("a", "a@x.com")];
+    cardsByAccount.a = [
+      { ...card("cal-1", "a", "Week"), query: "calendar:7d", card_type: "calendar" },
+      { ...card("cal-2", "a", "Month"), query: "calendar:month", card_type: "calendar", position: 1 },
+    ];
+    localStorage.setItem("collapsedCards", JSON.stringify({ "cal-2": true }));
+    let title = "Planning";
+    handlers.fetch_calendar_events = () => [calendarEvent("ev-1", title)];
+    render(() => <App />);
+    await screen.findByText("Planning");
+
+    title = "Moved planning";
+    await vi.advanceTimersByTimeAsync(31_000);
+
+    expect(await screen.findByText("Moved planning")).toBeInTheDocument();
+    expect(invoke.mock.calls.some(([cmd, args]) => cmd === "fetch_calendar_events" && args?.query === "calendar:month")).toBe(false);
+  });
+
   it("moves the day labels and thread times on at midnight", async () => {
     const lateEvening = new Date();
     lateEvening.setHours(23, 59, 0, 0);
@@ -1651,7 +1822,8 @@ describe("App calendar", () => {
     calendarCards();
     cardsByAccount.a = [card("card-a", "a", "Alpha"), { ...card("cal-1", "a", "Week"), query: "calendar:7d", card_type: "calendar", position: 1 }];
     threadsByCard["card-a"] = [{ ...thread("t-a", "Mail for A"), last_message_date: lateEvening.getTime() - 60_000 }];
-    handlers.fetch_calendar_events = () => [calendarEvent("ev-1", "Planning")];
+    const planning = calendarEvent("ev-1", "Planning");
+    handlers.fetch_calendar_events = () => [planning];
     render(() => <App />);
     await screen.findByText("Planning");
     const week = screen.getByRole("region", { name: "Week calendar card" });
@@ -3045,12 +3217,12 @@ describe("App new card form", () => {
     render(() => <App />);
     await screen.findByText("Mail for A");
     fireEvent.click(screen.getByTitle("New card"));
-    fireEvent.input(screen.getByPlaceholderText("Inbox, Starred..."), { target: { value: "Temp" } });
+    fireEvent.input(screen.getByPlaceholderText("e.g. Clients"), { target: { value: "Temp" } });
     fireEvent.click(screen.getByTitle("Cancel (Esc)"));
-    await waitFor(() => expect(screen.queryByPlaceholderText("Inbox, Starred...")).not.toBeInTheDocument());
+    await waitFor(() => expect(screen.queryByPlaceholderText("e.g. Clients")).not.toBeInTheDocument());
 
     fireEvent.click(screen.getByTitle("New card"));
-    expect(screen.getByPlaceholderText("Inbox, Starred...")).toHaveValue("");
+    expect(screen.getByPlaceholderText("e.g. Clients")).toHaveValue("");
   });
 });
 
@@ -3116,7 +3288,7 @@ describe("App card query edits", () => {
     fireEvent.click(screen.getByTitle("Refresh"));
     await waitFor(() => expect(calls).toBe(2));
     fireEvent.click(screen.getByTitle("Edit query"));
-    fireEvent.input(screen.getByPlaceholderText("is:inbox, from:boss, newer_than:7d"), { target: { value: "is:starred" } });
+    fireEvent.input(screen.getByPlaceholderText("e.g. from:boss is:unread newer_than:7d"), { target: { value: "is:starred" } });
     fireEvent.click(screen.getByTitle("Save (⌘Enter)"));
     await screen.findByText("New query result");
 
@@ -3137,14 +3309,14 @@ describe("App card editor and iCloud", () => {
     render(() => <App />);
     await screen.findByText("Mail for A");
     fireEvent.click(screen.getByTitle("Edit query"));
-    fireEvent.input(screen.getByPlaceholderText("Inbox, Starred..."), { target: { value: "Alpha renamed" } });
+    fireEvent.input(screen.getByPlaceholderText("e.g. Clients"), { target: { value: "Alpha renamed" } });
 
     handlers.pull_from_icloud = () => true;
     cardsByAccount.a = [{ ...card("card-a", "a", "Alpha"), query: "is:starred" }];
     fireEvent.focus(window);
     await waitFor(() => expect(invoke).toHaveBeenCalledWith("get_cards", { accountId: "a" }));
-    await waitFor(() => expect(screen.getByPlaceholderText("is:inbox, from:boss, newer_than:7d")).toHaveValue("is:starred"));
-    expect(screen.getByPlaceholderText("Inbox, Starred...")).toHaveValue("Alpha renamed");
+    await waitFor(() => expect(screen.getByPlaceholderText("e.g. from:boss is:unread newer_than:7d")).toHaveValue("is:starred"));
+    expect(screen.getByPlaceholderText("e.g. Clients")).toHaveValue("Alpha renamed");
     await new Promise(r => setTimeout(r, 20));
     invoke.mockClear();
     fireEvent.click(screen.getByTitle("Save (⌘Enter)"));
@@ -3391,7 +3563,7 @@ describe("App thread load errors", () => {
     render(() => <App />);
     fireEvent.click(await screen.findByText("Mail for A"));
     expect(await screen.findByText(/Sign in again to load this email/)).toBeInTheDocument();
-    const banner = document.querySelector(".auth-error") as HTMLElement;
+    const banner = document.querySelector(".connection-status") as HTMLElement;
     expect(within(banner).getByRole("button", { name: "Sign in again" })).toBeInTheDocument();
   });
 });
@@ -3548,13 +3720,58 @@ describe("App card query autocomplete", () => {
     fireEvent.click(screen.getByTitle("New card"));
     await waitFor(() => expect(invoke).toHaveBeenCalledWith("list_labels", { accountId: "a" }));
     await new Promise(r => setTimeout(r, 10));
-    const query = screen.getAllByPlaceholderText("is:inbox, from:boss, newer_than:7d").slice(-1)[0];
+    const query = screen.getAllByPlaceholderText("e.g. from:boss is:unread newer_than:7d").slice(-1)[0];
     fireEvent.focus(query);
     fireEvent.input(query, { target: { value: "label:tr" } });
 
     const suggestion = await screen.findByText("label:travel");
     expect(suggestion.closest(".query-autocomplete")).not.toBeNull();
     expect(screen.queryByText("label:inbox")).not.toBeInTheDocument();
+  });
+});
+
+describe("App card query help and errors", () => {
+  it("adds an operator picked in the help sheet to the query being edited", async () => {
+    handlers.list_labels = () => [];
+    handlers.search_threads_preview = () => [];
+    render(() => <App />);
+    await screen.findByText("Mail for A");
+    fireEvent.click(screen.getByTitle("New card"));
+    const query = screen.getAllByPlaceholderText("e.g. from:boss is:unread newer_than:7d").slice(-1)[0];
+    fireEvent.focus(query);
+    fireEvent.input(query, { target: { value: "is:unread" } });
+    fireEvent.click(screen.getByTitle("Query operators help"));
+    fireEvent.click(screen.getByRole("button", { name: /^has:attachment/ }));
+
+    expect(query).toHaveValue("is:unread has:attachment");
+    expect(screen.queryByText("Query Operators")).not.toBeInTheDocument();
+  });
+
+  it("shows why a preview failed instead of saying nothing matches", async () => {
+    handlers.list_labels = () => [];
+    handlers.search_threads_preview = () => { throw "Search failed: Invalid query"; };
+    render(() => <App />);
+    await screen.findByText("Mail for A");
+    fireEvent.click(screen.getByTitle("New card"));
+    const query = screen.getAllByPlaceholderText("e.g. from:boss is:unread newer_than:7d").slice(-1)[0];
+    fireEvent.input(query, { target: { value: "larger:huge" } });
+
+    expect(await screen.findByText("Invalid query")).toBeInTheDocument();
+    expect(screen.queryByText("No matches")).not.toBeInTheDocument();
+  });
+
+  it("names an unknown calendar range without asking the calendar", async () => {
+    handlers.list_labels = () => [];
+    handlers.fetch_calendar_events = () => [];
+    render(() => <App />);
+    await screen.findByText("Mail for A");
+    fireEvent.click(screen.getByTitle("Edit query"));
+    const query = screen.getByPlaceholderText("e.g. from:boss is:unread newer_than:7d");
+    fireEvent.input(query, { target: { value: "calendar:nextweek" } });
+
+    expect(await screen.findByText('Unknown range "nextweek". Try today, tomorrow, week, month, 7d, 2w')).toBeInTheDocument();
+    expect(screen.queryByText("No events")).not.toBeInTheDocument();
+    expect(invoke).not.toHaveBeenCalledWith("fetch_calendar_events", expect.anything());
   });
 });
 
@@ -3565,7 +3782,7 @@ describe("App new card preview", () => {
     render(() => <App />);
     await screen.findByText("Mail for A");
     fireEvent.click(screen.getByTitle("New card"));
-    const query = screen.getAllByPlaceholderText("is:inbox, from:boss, newer_than:7d").slice(-1)[0];
+    const query = screen.getAllByPlaceholderText("e.g. from:boss is:unread newer_than:7d").slice(-1)[0];
     fireEvent.input(query, { target: { value: "calendar:7d" } });
 
     expect(await screen.findByText("Meeting 0")).toBeInTheDocument();

@@ -1,5 +1,20 @@
 import { describe, expect, it } from "vitest";
-import { batchReplyLoadErrorMessage, cardLoadErrorMessage, threadLoadErrorMessage } from "./loadErrors";
+import { batchReplyLoadErrorMessage, cardLoadErrorMessage, queryPreviewErrorMessage, threadLoadErrorMessage } from "./loadErrors";
+
+describe("queryPreviewErrorMessage", () => {
+  it("keeps the reason without the backend's prefixes", () => {
+    expect(queryPreviewErrorMessage("Search failed: Invalid query", false)).toBe("Invalid query");
+    expect(queryPreviewErrorMessage('Unknown range "x". Try today, tomorrow, week, month, 7d, 2w', true))
+      .toBe('Unknown range "x". Try today, tomorrow, week, month, 7d, 2w');
+  });
+
+  it("says the service could not be reached when offline", () => {
+    expect(queryPreviewErrorMessage("Search failed: Request failed: could not reach Gmail.", false))
+      .toBe("Couldn't reach Gmail to preview this query.");
+    expect(queryPreviewErrorMessage("Google Calendar didn't respond.", true))
+      .toBe("Couldn't reach Google Calendar to preview this query.");
+  });
+});
 
 describe("threadLoadErrorMessage", () => {
   it("says a thread that is gone was deleted", () => {

@@ -1194,8 +1194,24 @@ pub enum TimeRange {
 }
 
 impl CalendarQuery {
+    /// Like `parse`, but a `calendar:` value that names no range is an error
+    /// instead of falling back to today
+    pub fn try_parse(query: &str) -> Result<Self, String> {
+        match Self::parse_reporting_unknown_range(query) {
+            (_, Some(unknown)) => Err(format!(
+                r#"Unknown range "{unknown}". Try today, tomorrow, week, month, 7d, 2w"#
+            )),
+            (cq, None) => Ok(cq),
+        }
+    }
+
     pub fn parse(query: &str) -> Self {
+        Self::parse_reporting_unknown_range(query).0
+    }
+
+    fn parse_reporting_unknown_range(query: &str) -> (Self, Option<String>) {
         let mut cq = CalendarQuery::default();
+        let mut unknown_range = None;
         let mut remaining_text = Vec::new();
 
         for token in tokenize_query(query) {
@@ -1213,6 +1229,7 @@ impl CalendarQuery {
                         if let Some(duration) = parse_duration(other) {
                             TimeRange::Upcoming(duration)
                         } else {
+                            unknown_range = Some(value.to_string());
                             TimeRange::Today
                         }
                     }
@@ -1238,7 +1255,7 @@ impl CalendarQuery {
             cq.text = Some(remaining_text.join(" "));
         }
 
-        cq
+        (cq, unknown_range)
     }
 
     pub fn get_time_range(&self, timezone: Option<&str>) -> (DateTime<Utc>, DateTime<Utc>) {
@@ -2489,6 +2506,15 @@ mod tests {
         assert_eq!(parse_duration("2m"), Some(Duration::days(60)));
         assert_eq!(parse_duration("1y"), Some(Duration::days(365)));
         assert_eq!(parse_duration("invalid"), None);
+    }
+
+    #[test]
+    fn try_parse_rejects_an_unknown_range() {
+        let err = CalendarQuery::try_parse("calendar:nextweek with:ana").unwrap_err();
+        assert_eq!(err, r#"Unknown range "nextweek". Try today, tomorrow, week, month, 7d, 2w"#);
+        assert!(CalendarQuery::try_parse("calendar:3é").is_err());
+        assert!(matches!(CalendarQuery::try_parse("calendar:Week").unwrap().time_range, TimeRange::Week));
+        assert!(matches!(CalendarQuery::try_parse("calendar:3d dentist").unwrap().time_range, TimeRange::Upcoming(_)));
     }
 
     #[test]

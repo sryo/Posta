@@ -4,6 +4,7 @@ export interface CardPreset {
   name: string;
   query: string;
   color?: CardColor;
+  collapsed?: boolean;
 }
 
 export const PRESETS: Record<string, { label: string; description: string; cards: CardPreset[] }> = {
@@ -11,10 +12,11 @@ export const PRESETS: Record<string, { label: string; description: string; cards
     label: "Posta",
     description: "Focus on what matters",
     cards: [
-      { name: "Hot", query: "is:important newer_than:1d", color: "blue" },
+      { name: "Hot", query: "is:important in:inbox", color: "blue" },
       { name: "Meh", query: "category:promotions OR category:updates OR category:social -is:important -is:starred", color: "red" },
       { name: "Files", query: "has:attachment", color: "purple" },
       { name: "Today", query: "calendar:today" },
+      { name: "Everything else", query: "in:inbox", collapsed: true },
     ],
   },
   traditional: {

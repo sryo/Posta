@@ -150,13 +150,17 @@ import { cidImagesToFetch, createLruCache, fetchCidImages } from "./app/cidImage
 import { sendPending, type PendingSend } from "./app/pendingSend";
 import { parseMailto } from "./app/mailto";
 import { coalesceByKey } from "./app/coalesce";
-import { batchReplyLoadErrorMessage, cardLoadErrorMessage, threadLoadErrorMessage } from "./app/loadErrors";
+import { batchReplyLoadErrorMessage, cardLoadErrorMessage, isOfflineError, queryPreviewErrorMessage, threadLoadErrorMessage } from "./app/loadErrors";
+import { cardWaitingMessage, connectionStatus } from "./app/connectionStatus";
+import { CardEmpty, CardSkeleton, ConnectionStatusBar } from "./components/CardStates";
 import { cardTypeForQuery } from "./app/cardType";
 import { createDraftSync, draftKey, findLatestDraft, findUnsentDrafts, hasDraftContent, markDraftClosed, markDraftSending, pruneDrafts, removeAccountDrafts, sessionDraftKey, type DraftFields } from "./app/drafts";
 import { escapeTarget, nextCardFocus, nextItemFocus, type ItemFocus } from "./app/keyboardNav";
 import { getSmartEventTime, groupCalendarEvents, isUserLabel, mergeThreadGroups, regroupThreads, type CalendarEventGroup } from "./app/grouping";
 import { pullLayoutWithRetry } from "./app/icloudRestore";
 import { querySuggestions, type QuerySuggestion } from "./app/querySuggestions";
+import { calendarRangeError } from "./app/queryTokens";
+import { QueryHelpSheet } from "./components/QueryHelpSheet";
 import { inviteNamesEvent, rsvpSentMessage, type RsvpStatus } from "./app/rsvp";
 import { createRsvpLookups } from "./app/rsvpLookups";
 import { nextSelection } from "./app/selection";
@@ -166,7 +170,6 @@ import { hasCommandModifier, isTypingTarget, onActivateKey } from "./shared/keyb
 import { askConfirm, ConfirmDialog, confirmOpen, dismissConfirm } from "./app/confirm";
 import { moveCard, reuseUnchanged } from "./app/cardOrder";
 
-const SESSION_EXPIRED_MESSAGE = "Session expired - sign in again";
 
 // As many as the backend's preview of an email query returns
 const NEW_CARD_PREVIEW_EVENTS = 5;
@@ -217,6 +220,11 @@ function App() {
     toasts.show({ message: failureMessage(failure, e).message, tone: "error", action: retry && { label: "Retry", run: retry } });
   }
   const [expiredAccountId, setExpiredAccountId] = createSignal<string | null>(null);
+  // Set when Google couldn't be reached or the Mac says it's offline, until
+  // a request gets through
+  const [offline, setOffline] = createSignal(typeof navigator !== "undefined" && navigator.onLine === false);
+  const [reconnecting, setReconnecting] = createSignal(false);
+  const sessionExpired = () => !!expiredAccountId() && expiredAccountId() === selectedAccount()?.id;
   const [accounts, setAccounts] = createSignal<Account[]>([]);
   const [selectedAccount, setSelectedAccount] = createSignal<Account | null>(null);
   const [cards, setCards] = createSignal<Card[]>([]);
@@ -538,46 +546,18 @@ function App() {
     }
   }
 
-  // Gmail search autocomplete
-  const [queryAutocompleteOpen, setQueryAutocompleteOpen] = createSignal(false);
-  const [queryAutocompleteIndex, setQueryAutocompleteIndex] = createSignal(0);
-  const [queryInputRef, setQueryInputRef] = createSignal<HTMLInputElement | null>(null);
-  const [queryDropdownPos, setQueryDropdownPos] = createSignal<{ top: number; left: number; width: number } | null>(null);
+  // Card query preview
   const [queryPreviewThreads, setQueryPreviewThreads] = createSignal<ThreadGroup[]>([]);
   const [queryPreviewCalendarEvents, setQueryPreviewCalendarEvents] = createSignal<GoogleCalendarEvent[]>([]);
   const [queryPreviewLoading, setQueryPreviewLoading] = createSignal(false);
+  const [queryPreviewError, setQueryPreviewError] = createSignal<string | null>(null);
   const [queryHelpOpen, setQueryHelpOpen] = createSignal(false);
   const [globalFilter, setGlobalFilter] = createSignal("");
   const [showGlobalFilter, setShowGlobalFilter] = createSignal(false);
   let filterInputRef: HTMLInputElement | undefined;
-  const [activeQueryGetter, setActiveQueryGetter] = createSignal<(() => string) | null>(null);
-  const [activeQuerySetter, setActiveQuerySetter] = createSignal<((q: string) => void) | null>(null);
+  // Inserts text at the caret of the query field shown or focused last
+  let insertIntoQueryField: ((text: string) => void) | null = null;
   let queryPreviewTimeout: number | undefined;
-
-  function updateDropdownPosition() {
-    const input = queryInputRef();
-    if (input) {
-      const rect = input.getBoundingClientRect();
-      setQueryDropdownPos({ top: rect.bottom + 4, left: rect.left, width: rect.width });
-    }
-  }
-
-  // The dropdown floats at app level with fixed coordinates; keep it glued
-  // to its input while open (deck/card scrolls are caught via capture phase)
-  createEffect(() => {
-    if (!queryAutocompleteOpen()) return;
-    window.addEventListener("resize", updateDropdownPosition);
-    window.addEventListener("scroll", updateDropdownPosition, true);
-    onCleanup(() => {
-      window.removeEventListener("resize", updateDropdownPosition);
-      window.removeEventListener("scroll", updateDropdownPosition, true);
-    });
-  });
-
-  function getCurrentQuery(): string {
-    const getter = activeQueryGetter();
-    return getter ? getter() : "";
-  }
 
   // Preview requests can resolve out of order; only the latest may render
   let queryPreviewSeq = 0;
@@ -585,9 +565,12 @@ function App() {
   async function fetchQueryPreview(query: string) {
     const seq = ++queryPreviewSeq;
 
-    if (!query.trim()) {
+    setQueryPreviewError(null);
+    const rangeError = calendarRangeError(query);
+    if (!query.trim() || rangeError) {
       setQueryPreviewThreads([]);
       setQueryPreviewCalendarEvents([]);
+      setQueryPreviewError(rangeError);
       setQueryPreviewLoading(false);
       return;
     }
@@ -607,9 +590,10 @@ function App() {
         const events = await fetchCalendarEvents(account.id, query);
         if (seq !== queryPreviewSeq) return;
         setQueryPreviewCalendarEvents(events);
-      } catch {
+      } catch (e) {
         if (seq !== queryPreviewSeq) return;
         setQueryPreviewCalendarEvents([]);
+        setQueryPreviewError(queryPreviewErrorMessage(e, true));
       } finally {
         if (seq === queryPreviewSeq) setQueryPreviewLoading(false);
       }
@@ -622,9 +606,10 @@ function App() {
       const groups = await searchThreadsPreview(account.id, query);
       if (seq !== queryPreviewSeq) return;
       setQueryPreviewThreads(groups);
-    } catch {
+    } catch (e) {
       if (seq !== queryPreviewSeq) return;
       setQueryPreviewThreads([]);
+      setQueryPreviewError(queryPreviewErrorMessage(e, false));
     } finally {
       if (seq === queryPreviewSeq) setQueryPreviewLoading(false);
     }
@@ -953,9 +938,11 @@ function App() {
     if (!account || isPolling) return;
 
     isPolling = true;
+    refreshCalendarCards(account.id);
     try {
       const result = await syncThreadsIncremental(account.id);
       if (selectedAccount()?.id !== account.id) return;
+      setOffline(false);
 
       // Update sync times for non-collapsed email cards; calendar cards are
       // not touched by Gmail history sync and must not be stamped as synced
@@ -1145,6 +1132,8 @@ function App() {
       backgroundSyncStarted = true;
       schedulePoll();
       window.addEventListener("focus", handleWindowFocus);
+      window.addEventListener("online", retryConnection);
+      window.addEventListener("offline", goOffline);
     }
     fetchContacts(accountId)
       .then(contacts => { if (selectedAccount()?.id === accountId) setGoogleContacts(contacts); })
@@ -1302,6 +1291,8 @@ function App() {
     clearInterval(timeUpdateInterval);
     dismissConfirm();
     window.removeEventListener("focus", handleWindowFocus);
+    window.removeEventListener("online", retryConnection);
+    window.removeEventListener("offline", goOffline);
     if (handleResize) window.removeEventListener("resize", handleResize);
     window.removeEventListener("dragover", preventFileNavigation);
     window.removeEventListener("drop", preventFileNavigation);
@@ -1914,7 +1905,7 @@ function App() {
   // kept on this Mac, so Settings can bring it back. Resolves to whether
   // the swap went through.
   let replacingLayout = false;
-  async function replaceLayout(specs: CardSpec[]): Promise<boolean> {
+  async function replaceLayout(specs: (CardSpec & { collapsed?: boolean })[]): Promise<boolean> {
     const account = selectedAccount();
     if (!account || replacingLayout) return false;
     replacingLayout = true;
@@ -1937,9 +1928,12 @@ function App() {
       }
 
       const newCards: Card[] = [];
+      const collapsed: Record<string, boolean> = {};
       try {
         for (const spec of specs) {
-          newCards.push(await createCard(account.id, spec.name, spec.query, spec.color, spec.group_by, spec.card_type));
+          const created = await createCard(account.id, spec.name, spec.query, spec.color, spec.group_by, spec.card_type);
+          newCards.push(created);
+          collapsed[created.id] = spec.collapsed ?? false;
         }
       } catch (e) {
         setFailure("Couldn't create the cards", e);
@@ -1950,8 +1944,8 @@ function App() {
       // Show whatever was created, even if a later card failed: the created
       // ones are already stored, and hiding them invites duplicates on retry
       setCards(newCards);
-      setCollapsedCards(reconcile(Object.fromEntries(newCards.map(c => [c.id, false]))));
-      newCards.forEach(card => loadCardThreads(card.id));
+      saveCollapsedState(collapsed);
+      newCards.forEach(card => { if (!collapsed[card.id]) loadCardThreads(card.id); });
       return true;
     } finally {
       replacingLayout = false;
@@ -1962,7 +1956,7 @@ function App() {
     const preset = PRESETS[presetKey];
     if (!preset) return;
     const specs = preset.cards.map(c => ({
-      name: c.name, query: c.query, color: c.color || null, group_by: "date" as const, card_type: cardTypeForQuery(c.query),
+      name: c.name, query: c.query, color: c.color || null, group_by: "date" as const, card_type: cardTypeForQuery(c.query), collapsed: c.collapsed,
     }));
     if (await replaceLayout(specs)) setShowPresetSelection(false);
   }
@@ -3375,7 +3369,7 @@ function App() {
     closeAccountViews();
     // The banner speaks for the account being left; an expired session
     // stays with its own account
-    setError(expiredAccountId() === account.id ? SESSION_EXPIRED_MESSAGE : null);
+    setError(null);
     setSelectedAccount(account);
     try {
       if (await loadAccountCards(account)) startBackgroundSync(account.id);
@@ -3481,6 +3475,7 @@ function App() {
       setCardHasMore(cardId, result.has_more);
       setLastSyncTimes(cardId, Date.now());
       setSyncErrors(cardId, null);
+      setOffline(false);
     } catch (e) {
       if (stale()) return;
       console.error("loadCardThreads error:", e);
@@ -3542,6 +3537,7 @@ function App() {
   function handleCardLoadError(cardId: string, e: unknown) {
     const errorMsg = String(e);
     if (!isSessionExpiredError(errorMsg)) {
+      if (isOfflineError(errorMsg)) setOffline(true);
       setCardErrors(cardId, cardLoadErrorMessage(errorMsg, isCalendarCard(cardId)));
       setSyncErrors(cardId, errorMsg);
       return;
@@ -3554,14 +3550,13 @@ function App() {
   // The account and its cards stay: signing in again with the same email
   // reuses the account id, so the layout comes back as it was
   function markSessionExpired(accountId: string) {
-    if (expiredAccountId() === accountId) return;
     setExpiredAccountId(accountId);
-    setError(SESSION_EXPIRED_MESSAGE);
   }
 
   // Background syncs keep showing cached mail; an expired session must still
   // surface, or the cards silently go stale
   function noteBackgroundError(accountId: string, e: unknown) {
+    if (isOfflineError(e)) setOffline(true);
     if (isSessionExpiredError(String(e)) && selectedAccount()?.id === accountId) markSessionExpired(accountId);
   }
 
@@ -3572,6 +3567,34 @@ function App() {
     setSelectedAccount(account);
     if (await loadAccountCards(account)) startBackgroundSync(account.id);
   }
+
+  // Asks Google again for everything the board couldn't load or refresh
+  async function retryConnection() {
+    if (reconnecting()) return;
+    setReconnecting(true);
+    try {
+      const failed = cards().filter(c => !collapsedCards[c.id] && (cardErrors[c.id] || syncErrors[c.id]));
+      await Promise.all([performIncrementalSync(), ...failed.map(c => loadCardThreads(c.id, false, true))]);
+    } finally {
+      setReconnecting(false);
+    }
+  }
+  const goOffline = () => setOffline(true);
+
+  const boardStatus = createMemo(() => {
+    const account = selectedAccount();
+    if (!account) return null;
+    const synced = cards().map(c => lastSyncTimes[c.id]).filter((t): t is number => !!t);
+    return connectionStatus(
+      {
+        expiredEmail: sessionExpired() ? account.email : null,
+        offline: offline(),
+        reconnecting: reconnecting(),
+        lastSyncedAt: synced.length > 0 ? Math.max(...synced) : null,
+      },
+      t => new Date(t).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }),
+    );
+  });
 
   function handleReauth() {
     return signInWithGoogle(resumeAccountAfterAuth);
@@ -3585,6 +3608,7 @@ function App() {
       await saveCachedCardEvents(cardId, events);
       setLastSyncTimes(cardId, Date.now());
       setSyncErrors(cardId, null);
+      setOffline(false);
     } catch (e) {
       console.error("Failed to fetch calendar events:", e);
       setSyncErrors(cardId, String(e));
@@ -3592,6 +3616,21 @@ function App() {
       if (loadingThreads[cardId]) {
         throw e;
       }
+      noteBackgroundError(accountId, e);
+    }
+  }
+
+  // Calendar cards have no change feed, so every sync tick refetches the
+  // expanded ones
+  const refreshCalendarCard = coalesceByKey((key: string) => {
+    const [accountId, cardId, query] = JSON.parse(key) as [string, string, string];
+    return fetchAndCacheCalendarEvents(accountId, cardId, query);
+  });
+  function refreshCalendarCards(accountId: string) {
+    for (const card of cards()) {
+      if (card.account_id !== accountId || card.card_type !== "calendar") continue;
+      if (collapsedCards[card.id] || loadingThreads[card.id]) continue;
+      refreshCalendarCard(JSON.stringify([accountId, card.id, card.query])).catch(() => {});
     }
   }
 
@@ -3639,6 +3678,7 @@ function App() {
       await saveCardCache(cardId, result.groups, result.next_page_token);
       setLastSyncTimes(cardId, Date.now());
       setSyncErrors(cardId, null);
+      setOffline(false);
     } catch (e) {
       // Background refresh failed - set sync error but keep cached data shown
       setSyncErrors(cardId, String(e));
@@ -3864,23 +3904,8 @@ function App() {
 
   const userLabelNames = createMemo(() => accountLabels().filter(l => l.label_type === "user").map(l => l.name));
 
-  // Gmail search autocomplete suggestions
-  function getQuerySuggestions(query: string): QuerySuggestion[] {
-    return querySuggestions(query, rankedContacts(), userLabelNames());
-  }
-
-  function applyQuerySuggestion(suggestion: { text: string; replace: { start: number; end: number } }) {
-    const query = getCurrentQuery();
-    const setQuery = activeQuerySetter();
-    if (!setQuery) return;
-
-    const before = query.slice(0, suggestion.replace.start);
-    const newQuery = before + suggestion.text + (suggestion.text.endsWith(':') ? '' : ' ');
-    setQuery(newQuery);
-    setQueryAutocompleteOpen(false);
-    debounceQueryPreview(newQuery);
-    // Focus back on input
-    queryInputRef()?.focus();
+  function suggestQuery(query: string, caret: number): QuerySuggestion[] {
+    return querySuggestions(query, rankedContacts(), userLabelNames(), caret);
   }
 
   async function openThread(threadId: string, cardId: string) {
@@ -4150,6 +4175,10 @@ function App() {
       {/* Drag region for frameless window */}
       <div class="drag-region" data-tauri-drag-region></div>
 
+      <Show when={boardStatus()}>
+        {(status) => <ConnectionStatusBar status={status()} onRetry={retryConnection} onSignIn={handleReauth} />}
+      </Show>
+
       {/* Global filter bar - keyboard activated */}
       <div class={`global-filter-bar ${showGlobalFilter() ? 'visible' : ''}`}>
         <div class="global-filter-container">
@@ -4368,9 +4397,6 @@ function App() {
               </details>
             )}
           </Show>
-          <Show when={expiredAccountId() && expiredAccountId() === selectedAccount()?.id}>
-            <button class="btn btn-primary" onClick={handleReauth}>Sign in again</button>
-          </Show>
           <button class="btn" onClick={() => setError(null)} aria-label="Dismiss error">×</button>
         </div>
       </Show>
@@ -4414,7 +4440,7 @@ function App() {
       <Show when={!loading() && selectedAccount()}>
         <DragDropProvider onDragStart={onDragStart} onDragEnd={onDragEnd as any} collisionDetector={mostIntersecting}>
           <DragDropSensors />
-          <div class={`deck ${resizing() ? 'resizing' : ''}`} style={{ background: deckBackground() }} data-board>
+          <div class={`deck ${resizing() ? 'resizing' : ''} ${boardStatus() ? 'has-status' : ''}`} style={{ background: deckBackground() }} data-board>
             <SortableProvider ids={cardIds()}>
               <For each={cards()}>
                 {(card) => {
@@ -4428,7 +4454,7 @@ function App() {
                       }}
                     >
                       <div
-                        class={`card ${collapsedCards[card.id] ? 'collapsed' : ''} ${editingCardId() === card.id ? 'editing' : ''}`}
+                        class={`card ${collapsedCards[card.id] ? 'collapsed' : ''} ${editingCardId() === card.id ? 'editing' : ''} ${(offline() || sessionExpired()) && (cardThreads[card.id] || cardCalendarEvents[card.id]) ? 'stale' : ''}`}
                         classList={{ 'dragging': sortable.isActiveDraggable }}
                         data-id={card.id}
                         data-color={editingCardId() === card.id ? (editCardColor() || undefined) : (card.color || undefined)}
@@ -4453,17 +4479,11 @@ function App() {
                             onDelete={() => handleDeleteCard(card.id)}
                             saveDisabled={!editCardName() || !editCardQuery()}
                             setQueryHelpOpen={setQueryHelpOpen}
-                            setQueryInputRef={setQueryInputRef}
-                            getQuerySuggestions={getQuerySuggestions}
-                            queryAutocompleteOpen={queryAutocompleteOpen}
-                            setQueryAutocompleteOpen={setQueryAutocompleteOpen}
-                            queryAutocompleteIndex={queryAutocompleteIndex}
-                            setQueryAutocompleteIndex={setQueryAutocompleteIndex}
-                            updateDropdownPosition={updateDropdownPosition}
+                            suggestQuery={suggestQuery}
+                            contacts={rankedContacts()}
+                            labelNames={userLabelNames()}
                             debounceQueryPreview={debounceQueryPreview}
-                            setActiveQueryGetter={setActiveQueryGetter}
-                            setActiveQuerySetter={setActiveQuerySetter}
-                            applyQuerySuggestion={applyQuerySuggestion}
+                            onQueryFieldActive={(insert) => { insertIntoQueryField = insert; }}
                           />
                         </Show>
                         <Show when={editingCardId() !== card.id}>
@@ -4529,17 +4549,23 @@ function App() {
                         >
                           {/* Only show loading if no cached data */}
                           <Show when={loadingThreads[card.id] && !cardThreads[card.id] && !cardCalendarEvents[card.id]}>
-                            <div class="loading">Loading...</div>
+                            <CardSkeleton />
                           </Show>
                           <Show when={isPreviewingQuery(card.id) && queryPreviewLoading()}>
                             <div class="loading">Searching...</div>
                           </Show>
-                          <Show when={!loadingThreads[card.id] && cardErrors[card.id] && !cardThreads[card.id] && !cardCalendarEvents[card.id]}>
+                          <Show when={isPreviewingQuery(card.id) && !queryPreviewLoading() && queryPreviewError()}>
+                            <div class="query-preview-error" aria-live="polite">{queryPreviewError()}</div>
+                          </Show>
+                          <Show when={!loadingThreads[card.id] && cardErrors[card.id] && !cardThreads[card.id] && !cardCalendarEvents[card.id] && cardWaitingMessage(cardErrors[card.id]!, syncErrors[card.id], sessionExpired())}>
+                            {(waiting) => <div class="card-waiting">{waiting()}</div>}
+                          </Show>
+                          <Show when={!loadingThreads[card.id] && cardErrors[card.id] && !cardThreads[card.id] && !cardCalendarEvents[card.id] && !cardWaitingMessage(cardErrors[card.id]!, syncErrors[card.id], sessionExpired())}>
                             <div class="card-error">
                               <span class="error-icon">⚠</span>
                               <span class="error-text">{cardErrors[card.id]}</span>
                               <Show
-                                when={(expiredAccountId() && expiredAccountId() === selectedAccount()?.id) || needsSignInAgain(cardErrors[card.id] ?? "")}
+                                when={needsSignInAgain(cardErrors[card.id] ?? "")}
                                 fallback={<button class="retry-btn" onClick={(e) => refreshCard(card.id, e)}>Try again</button>}
                               >
                                 <button class="retry-btn" onClick={handleReauth}>Sign in again</button>
@@ -4549,8 +4575,8 @@ function App() {
 
                           {/* Calendar card: show calendar events */}
                           <Show when={effectiveCardType(card) === "calendar" && (isPreviewingQuery(card.id) || cardCalendarEvents[card.id])}>
-                            <Show when={getCalendarEventGroups(card.id).length === 0 && !(isPreviewingQuery(card.id) && queryPreviewLoading())}>
-                              <div class="empty">No events</div>
+                            <Show when={getCalendarEventGroups(card.id).length === 0 && !(isPreviewingQuery(card.id) && (queryPreviewLoading() || queryPreviewError()))}>
+                              <CardEmpty query={isPreviewingQuery(card.id) ? editCardQuery() : card.query} />
                             </Show>
                             <Index each={getCalendarEventGroups(card.id)}>
                               {(group) => (
@@ -4675,8 +4701,8 @@ function App() {
 
                           {/* Email card: show threads */}
                           <Show when={effectiveCardType(card) !== "calendar" && (isPreviewingQuery(card.id) || cardThreads[card.id])}>
-                            <Show when={getDisplayGroups(card.id).length === 0 && !(isPreviewingQuery(card.id) && queryPreviewLoading())}>
-                              <div class="empty">All clear</div>
+                            <Show when={getDisplayGroups(card.id).length === 0 && !(isPreviewingQuery(card.id) && (queryPreviewLoading() || queryPreviewError()))}>
+                              <CardEmpty query={isPreviewingQuery(card.id) ? editCardQuery() : card.query} />
                             </Show>
                             <Index each={getDisplayGroups(card.id)}>
                               {(group) => (
@@ -4944,26 +4970,23 @@ function App() {
                     onCancel={cancelAddCard}
                     saveDisabled={!newCardName() || !newCardQuery()}
                     setQueryHelpOpen={setQueryHelpOpen}
-                    setQueryInputRef={setQueryInputRef}
-                    getQuerySuggestions={getQuerySuggestions}
-                    queryAutocompleteOpen={queryAutocompleteOpen}
-                    setQueryAutocompleteOpen={setQueryAutocompleteOpen}
-                    queryAutocompleteIndex={queryAutocompleteIndex}
-                    setQueryAutocompleteIndex={setQueryAutocompleteIndex}
-                    updateDropdownPosition={updateDropdownPosition}
+                    suggestQuery={suggestQuery}
+                    contacts={rankedContacts()}
+                    labelNames={userLabelNames()}
                     debounceQueryPreview={debounceQueryPreview}
-                    setActiveQueryGetter={setActiveQueryGetter}
-                    setActiveQuerySetter={setActiveQuerySetter}
-                    applyQuerySuggestion={applyQuerySuggestion}
+                    onQueryFieldActive={(insert) => { insertIntoQueryField = insert; }}
                   />
                   {/* Query preview for new card */}
                   <div class="card-body">
                     <Show when={queryPreviewLoading()}>
                       <div class="loading">Searching...</div>
                     </Show>
+                    <Show when={!queryPreviewLoading() && queryPreviewError()}>
+                      <div class="query-preview-error" aria-live="polite">{queryPreviewError()}</div>
+                    </Show>
                     {/* Calendar events preview */}
                     <Show when={!queryPreviewLoading() && cardTypeForQuery(newCardQuery()) === "calendar"}>
-                      <Show when={queryPreviewCalendarEvents().length === 0}>
+                      <Show when={queryPreviewCalendarEvents().length === 0 && !queryPreviewError()}>
                         <div class="empty">No events</div>
                       </Show>
                       <For each={groupCalendarEvents(queryPreviewCalendarEvents().slice(0, NEW_CARD_PREVIEW_EVENTS), newCardGroupBy())}>
@@ -5004,7 +5027,7 @@ function App() {
                       </Show>
                     </Show>
                     {/* Email threads preview */}
-                    <Show when={!queryPreviewLoading() && queryPreviewThreads().length === 0 && newCardQuery().trim() && cardTypeForQuery(newCardQuery()) !== "calendar"}>
+                    <Show when={!queryPreviewLoading() && !queryPreviewError() && queryPreviewThreads().length === 0 && newCardQuery().trim() && cardTypeForQuery(newCardQuery()) !== "calendar"}>
                       <div class="empty">No matches</div>
                     </Show>
                     <Show when={!queryPreviewLoading() && queryPreviewThreads().length > 0}>
@@ -5501,123 +5524,8 @@ function App() {
         </div>
       </Show>
 
-      {/* Query help sheet */}
       <Show when={queryHelpOpen()}>
-        <div class="query-help-overlay" onClick={() => setQueryHelpOpen(false)}></div>
-        <Dialog
-          class="query-help-sheet"
-          labelledBy="query-help-title"
-          onClose={() => setQueryHelpOpen(false)}
-          initialFocus={(el) => el.querySelector<HTMLElement>(".query-help-body")}
-        >
-          <div class="query-help-header">
-            <h3 id="query-help-title">Query Operators</h3>
-            <CloseButton onClick={() => setQueryHelpOpen(false)} />
-          </div>
-          <div class="query-help-body" tabindex="0">
-            <div class="query-help-section">
-              <h4>Email Operators</h4>
-              <div class="query-help-table">
-                <div class="query-help-row">
-                  <code>from:</code>
-                  <span>Sender email or name</span>
-                </div>
-                <div class="query-help-row">
-                  <code>to:</code>
-                  <span>Recipient email</span>
-                </div>
-                <div class="query-help-row">
-                  <code>subject:</code>
-                  <span>Words in subject</span>
-                </div>
-                <div class="query-help-row">
-                  <code>label:</code>
-                  <span>Gmail label (e.g., label:inbox)</span>
-                </div>
-                <div class="query-help-row">
-                  <code>is:unread</code>
-                  <span>Unread messages</span>
-                </div>
-                <div class="query-help-row">
-                  <code>is:starred</code>
-                  <span>Starred messages</span>
-                </div>
-                <div class="query-help-row">
-                  <code>has:attachment</code>
-                  <span>Has attachments</span>
-                </div>
-                <div class="query-help-row">
-                  <code>newer_than:7d</code>
-                  <span>Last 7 days (d/m/y)</span>
-                </div>
-                <div class="query-help-row">
-                  <code>older_than:1m</code>
-                  <span>Older than 1 month</span>
-                </div>
-                <div class="query-help-row">
-                  <code>-word</code>
-                  <span>Exclude word</span>
-                </div>
-              </div>
-            </div>
-            <div class="query-help-section">
-              <h4>Calendar Operators</h4>
-              <p class="query-help-note">Start query with <code>calendar:</code> to create a calendar card</p>
-              <div class="query-help-table">
-                <div class="query-help-row">
-                  <code>calendar:today</code>
-                  <span>Today's events</span>
-                </div>
-                <div class="query-help-row">
-                  <code>calendar:tomorrow</code>
-                  <span>Tomorrow's events</span>
-                </div>
-                <div class="query-help-row">
-                  <code>calendar:7d</code>
-                  <span>Next 7 days</span>
-                </div>
-                <div class="query-help-row">
-                  <code>calendar:2w</code>
-                  <span>Next 2 weeks</span>
-                </div>
-                <div class="query-help-row">
-                  <code>calendar:month</code>
-                  <span>This month</span>
-                </div>
-                <div class="query-help-row">
-                  <code>with:name</code>
-                  <span>Attendee name/email</span>
-                </div>
-                <div class="query-help-row">
-                  <code>organizer:email</code>
-                  <span>Event organizer</span>
-                </div>
-                <div class="query-help-row">
-                  <code>location:text</code>
-                  <span>Event location</span>
-                </div>
-                <div class="query-help-row">
-                  <code>response:needsAction</code>
-                  <span>Needs RSVP</span>
-                </div>
-                <div class="query-help-row">
-                  <code>-keyword</code>
-                  <span>Exclude events</span>
-                </div>
-              </div>
-            </div>
-            <div class="query-help-section">
-              <h4>Examples</h4>
-              <div class="query-help-examples">
-                <code>from:boss is:unread</code>
-                <code>label:inbox newer_than:1d</code>
-                <code>has:attachment -newsletter</code>
-                <code>calendar:week with:john</code>
-                <code>calendar:today response:needsAction</code>
-              </div>
-            </div>
-          </div>
-        </Dialog>
+        <QueryHelpSheet onClose={() => setQueryHelpOpen(false)} onInsert={(text) => insertIntoQueryField?.(text)} />
       </Show>
 
       {/* Settings sidebar */}
@@ -5810,30 +5718,6 @@ function App() {
             </div>
           </div>
         </Dialog>
-      </Show>
-
-      {/* Query autocomplete dropdown - rendered at app level to avoid clipping */}
-      <Show when={queryAutocompleteOpen() && queryDropdownPos()}>
-        <div
-          class="query-autocomplete"
-          style={{
-            top: `${queryDropdownPos()!.top}px`,
-            left: `${queryDropdownPos()!.left}px`,
-            width: `${queryDropdownPos()!.width}px`,
-          }}
-        >
-          <For each={getQuerySuggestions(getCurrentQuery())}>
-            {(suggestion, i) => (
-              <div
-                class={`query-autocomplete-item ${i() === queryAutocompleteIndex() ? 'selected' : ''}`}
-                onMouseDown={() => applyQuerySuggestion(suggestion)}
-              >
-                <span class="query-autocomplete-op">{suggestion.text}</span>
-                <span class="query-autocomplete-desc">{suggestion.desc}</span>
-              </div>
-            )}
-          </For>
-        </div>
       </Show>
 
       {/* Action config context menu */}

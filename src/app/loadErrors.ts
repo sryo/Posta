@@ -2,6 +2,11 @@ import { isSessionExpiredError, needsSignInAgain } from "./authErrors";
 
 export const OFFLINE = /error sending request|could not reach|couldn't reach|timed out|didn't respond|did not respond|network/i;
 
+// Errors meaning Google couldn't be reached at all
+export function isOfflineError(error: unknown): boolean {
+  return OFFLINE.test(String(error));
+}
+
 // Shown in the thread view when a thread's messages can't be loaded
 export function threadLoadErrorMessage(error: unknown): string {
   const text = String(error);
@@ -18,6 +23,13 @@ export function cardLoadErrorMessage(error: unknown, calendar: boolean): string 
   if (needsSignInAgain(text)) return text;
   if (OFFLINE.test(text)) return `Couldn't reach ${calendar ? "Google Calendar" : "Gmail"}. Check your connection and try again.`;
   return `Couldn't load this card: ${text.replace(/^(Search failed: |Request failed: )+/, "")}`;
+}
+
+// Shown in place of a card query's preview when it can't be fetched
+export function queryPreviewErrorMessage(error: unknown, calendar: boolean): string {
+  const text = String(error);
+  if (OFFLINE.test(text)) return `Couldn't reach ${calendar ? "Google Calendar" : "Gmail"} to preview this query.`;
+  return text.replace(/^(Search failed: |Request failed: )+/, "");
 }
 
 // Shown in the Batch Reply panel when none of its threads could be loaded

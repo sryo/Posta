@@ -42,6 +42,48 @@ describe("querySuggestions", () => {
   });
 });
 
+describe("querySuggestions at the caret", () => {
+  it("completes the word the caret is in, not the last one", () => {
+    const suggestions = querySuggestions("is:unr newer_than:7d", [], [], 6);
+    expect(suggestions[0]).toEqual({ text: "is:unread", desc: "Unread messages", replace: { start: 0, end: 6 } });
+  });
+
+  it("suggests nothing when the caret sits on a space", () => {
+    expect(querySuggestions("is:unread  from:a", [], [], 10)).toEqual([]);
+  });
+});
+
+describe("querySuggestions for calendar queries", () => {
+  it("offers calendar ranges when the query starts with calendar", () => {
+    expect(querySuggestions("calendar:w", [], []).map(s => s.text)).toEqual(["calendar:week"]);
+    expect(querySuggestions("cal", [], []).map(s => s.text)).toContain("calendar:today");
+  });
+
+  it("offers calendar operators, not email ones, after a leading calendar: token", () => {
+    const texts = querySuggestions("calendar:week wi", [], []).map(s => s.text);
+    expect(texts).toContain("with:");
+    expect(querySuggestions("calendar:week is:", [], []).map(s => s.text)).not.toContain("is:unread");
+  });
+
+  it("completes with: from contacts", () => {
+    const suggestions = querySuggestions("calendar:week with:an", [contact("ana@x.com", "Ana", 2)], []);
+    expect(suggestions.map(s => s.text)).toEqual(["with:ana@x.com"]);
+  });
+
+  it("doesn't offer calendar: after an email query's first word", () => {
+    expect(querySuggestions("is:unread cal", [], []).map(s => s.text)).not.toContain("calendar:today");
+  });
+});
+
+describe("contact suggestion counts", () => {
+  it("says 1 email, and leaves out a count of zero", () => {
+    const one = querySuggestions("from:an", [contact("ana@x.com", "Ana", 1)], []);
+    expect(one[0].desc).toBe("Ana (1 email)");
+    const none = querySuggestions("from:an", [contact("ana@x.com", "Ana", 0), contact("andy@x.com", undefined, 0)], []);
+    expect(none.map(s => s.desc)).toEqual(["Ana", ""]);
+  });
+});
+
 describe("labelQueryValue", () => {
   it("lowercases and hyphenates spaces and slashes", () => {
     expect(labelQueryValue("Work/Big Projects")).toBe("work-big-projects");
