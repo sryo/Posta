@@ -226,6 +226,32 @@ describe("board connection status", () => {
     expect(declarationsOf(".connection-status.expired").get("background")).toBe("var(--danger-bg)");
   });
 
+  it("keeps the amber offline text readable on its background in both themes", () => {
+    // [light, dark] values of a custom property, in the order App.css defines them
+    const token = (name: string) => [...css.matchAll(new RegExp(`${name}:\\s*([^;]+);`, "g"))].map((m) => m[1].trim());
+    const rgba = (value: string): [number, number, number, number] => {
+      const hex = /^#([0-9a-f]{3}|[0-9a-f]{6})$/i.exec(value);
+      if (hex) {
+        const h = hex[1].length === 3 ? [...hex[1]].map((c) => c + c).join("") : hex[1];
+        return [parseInt(h.slice(0, 2), 16), parseInt(h.slice(2, 4), 16), parseInt(h.slice(4, 6), 16), 1];
+      }
+      const [r, g, b, a = "1"] = /rgba?\(([^)]+)\)/.exec(value)![1].split(",").map((p) => p.trim());
+      return [Number(r), Number(g), Number(b), Number(a)];
+    };
+    const luminance = ([r, g, b]: number[]) => {
+      const lin = (c: number) => (c / 255 <= 0.03928 ? c / 255 / 12.92 : ((c / 255 + 0.055) / 1.055) ** 2.4);
+      return 0.2126 * lin(r) + 0.7152 * lin(g) + 0.0722 * lin(b);
+    };
+    const [text, bg, page] = [token("--warning"), token("--warning-bg"), token("--bg-primary")];
+    for (const theme of [0, 1]) {
+      const [br, bgG, bb, alpha] = rgba(bg[theme]);
+      const [pr, pg, pb] = rgba(page[theme]);
+      const under = [br * alpha + pr * (1 - alpha), bgG * alpha + pg * (1 - alpha), bb * alpha + pb * (1 - alpha)];
+      const [l1, l2] = [luminance(rgba(text[theme])), luminance(under)].sort((x, y) => y - x);
+      expect((l1 + 0.05) / (l2 + 0.05)).toBeGreaterThanOrEqual(4.5);
+    }
+  });
+
   it("dims the mail of cards that can't update", () => {
     expect(declarationsOf(".card.stale .card-body").get("opacity")).toBeDefined();
   });
