@@ -185,6 +185,11 @@ trait CardBackupStore: Send {
     fn load_account_mappings(&self) -> Result<Option<HashMap<String, String>>, String>;
     fn sync_cards(&self, cards: &[Card]) -> Result<(), String>;
     fn sync_account_mappings(&self, mappings: &HashMap<String, String>) -> Result<(), String>;
+    /// Whether this device's first download of the backup from iCloud has
+    /// finished; until then an empty or partial store says nothing about it
+    fn initial_sync_done(&self) -> bool {
+        true
+    }
 }
 
 impl CardBackupStore for ICloudKVStore {
@@ -213,13 +218,46 @@ pub struct ICloudSync {
     store: Option<Box<dyn CardBackupStore>>,
     /// Where the `SyncRecord` lives; set once the app data dir is known
     record_path: Option<std::path::PathBuf>,
+    last_synced_at: Option<i64>,
+    last_error: Option<String>,
+}
+
+/// How card sync with iCloud last went, for Settings: a failed write or read
+/// otherwise only reaches the log, and the layout on this Mac may be its
+/// only copy
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct ICloudSyncStatus {
+    /// False in builds without an iCloud store (debug builds)
+    pub available: bool,
+    /// Unix ms of the last push or pull that reached iCloud
+    pub last_synced_at: Option<i64>,
+    /// Why the last push or pull didn't reach iCloud; cleared by one that does
+    pub last_error: Option<String>,
 }
 
 impl ICloudSync {
     fn new() -> Self {
         let store: Option<Box<dyn CardBackupStore>> =
             if cfg!(debug_assertions) { None } else { Some(Box::new(ICloudKVStore::new())) };
-        Self { store, record_path: None }
+        Self { store, record_path: None, last_synced_at: None, last_error: None }
+    }
+
+    fn note_synced(&mut self) {
+        self.last_synced_at = Some(now_ms());
+        self.last_error = None;
+    }
+
+    fn note_failure(&mut self, error: String) {
+        tracing::warn!("{}", error);
+        self.last_error = Some(error);
+    }
+
+    fn status(&self) -> ICloudSyncStatus {
+        ICloudSyncStatus {
+            available: self.store.is_some(),
+            last_synced_at: self.last_synced_at,
+            last_error: self.last_error.clone(),
+        }
     }
 
     /// A missing or unreadable record only loses the change tracking, so
@@ -284,47 +322,53 @@ fn merged_tombstones(
     merged
 }
 
-/// Which side changed a card that both sides have, judged against the base
-#[derive(Debug, PartialEq)]
-enum Changed {
-    Neither,
-    Local,
-    Remote,
-    /// Both sides, or no base to tell
-    Both,
-}
-
-fn changed_side(local: &Card, remote: &Card, base: Option<&Card>) -> Changed {
-    if local == remote {
-        Changed::Neither
-    } else if base == Some(local) {
-        Changed::Remote
-    } else if base == Some(remote) {
-        Changed::Local
-    } else {
-        Changed::Both
+/// A card both sides have, merged field by field against the base: each side
+/// keeps the fields only it changed, so a reorder on one device and a rename
+/// on another both survive. A field changed on both sides, or any field when
+/// there is no base, goes to iCloud when `remote_wins`, else to this device.
+fn merged_card(local: &Card, remote: &Card, base: Option<&Card>, remote_wins: bool) -> Card {
+    let Some(base) = base else {
+        return if remote_wins { remote.clone() } else { local.clone() };
+    };
+    // Destructured so a new Card field can't be left out of the merge
+    let Card { id: _, account_id: _, name: _, query: _, position: _, collapsed: _, color: _, group_by: _, card_type: _ } =
+        local;
+    let mut merged = local.clone();
+    macro_rules! take_remote_changes {
+        ($($field:ident),*) => {$(
+            if remote.$field != base.$field && (local.$field == base.$field || remote_wins) {
+                merged.$field = remote.$field.clone();
+            }
+        )*};
     }
+    take_remote_changes!(account_id, name, query, position, collapsed, color, group_by, card_type);
+    merged
 }
 
 /// Backup cards not tombstoned, split into those owned by a local account
-/// (re-keyed to its local id) and those of accounts this device lacks
+/// (re-keyed to its local id) and those of accounts this device lacks. A card
+/// id the backup holds more than once, which a torn read of the cards and
+/// mappings can produce, is kept once: the first copy a local account owns,
+/// else the first copy.
 fn split_backup_cards(
     backup_cards: Vec<Card>,
     emails: &HashMap<String, String>,
     tombstones: &HashMap<String, i64>,
     accounts: &[Account],
 ) -> (Vec<Card>, Vec<Card>) {
-    let mut own = Vec::new();
-    let mut foreign = Vec::new();
+    let mut own: Vec<Card> = Vec::new();
+    let mut foreign: Vec<Card> = Vec::new();
     for mut card in backup_cards {
-        if tombstones.contains_key(&card.id) {
+        if tombstones.contains_key(&card.id) || own.iter().any(|c| c.id == card.id) {
             continue;
         }
         match icloud_card_account(&card.account_id, emails, accounts) {
             Some(account_id) => {
                 card.account_id = account_id;
+                foreign.retain(|c| c.id != card.id);
                 own.push(card);
             }
+            None if foreign.iter().any(|c| c.id == card.id) => {}
             None => foreign.push(card),
         }
     }
@@ -354,7 +398,9 @@ fn plan_push(
     }
 
     let tombstones = merged_tombstones(&record.tombstones, &backup.tombstones, now_ms);
-    let (mut remote, foreign) = split_backup_cards(backup.cards, &backup.emails, &tombstones, accounts);
+    let (mut remote, mut foreign) = split_backup_cards(backup.cards, &backup.emails, &tombstones, accounts);
+    // The backup copy of a local card whose owner mapping is missing
+    foreign.retain(|f| !local_cards.iter().any(|c| c.id == f.id));
     let mut new_record = SyncRecord { base: HashMap::new(), tombstones: tombstones.clone(), seen_backup: record.seen_backup };
 
     let mut cards = Vec::new();
@@ -363,19 +409,13 @@ fn plan_push(
         if tombstones.contains_key(&local.id) {
             continue;
         }
-        let base = record.base.get(&local.id);
         let card = match take_card(&mut remote, &local.id) {
-            // The base stays at the local copy, so the next pull still sees
-            // the change as made elsewhere and applies it here
-            Some(remote) if changed_side(&local, &remote, base) == Changed::Remote => {
-                new_record.base.insert(local.id.clone(), local);
-                remote
-            }
-            _ => {
-                new_record.base.insert(local.id.clone(), local.clone());
-                local
-            }
+            Some(remote) => merged_card(&local, &remote, record.base.get(&local.id), false),
+            None => local.clone(),
         };
+        // The base stays at the local copy, so the next pull still sees
+        // fields taken from iCloud as changed elsewhere and applies them here
+        new_record.base.insert(local.id.clone(), local);
         cards.push(card);
     }
     cards.extend(remote);
@@ -392,7 +432,17 @@ fn plan_push(
 /// Push every card to iCloud after a local card change. The caller holds the
 /// iCloud lock from before its database write, so a pull can't merge in
 /// between.
-fn push_cards_to_icloud(icloud: &ICloudSync, state: &AppState, deleted_card: Option<&str>) {
+fn push_cards_to_icloud(icloud: &mut ICloudSync, state: &AppState, deleted_card: Option<&str>) {
+    match write_cards_to_icloud(icloud, state, deleted_card) {
+        Ok(true) => icloud.note_synced(),
+        Ok(false) => {}
+        Err(e) => icloud.note_failure(e),
+    }
+}
+
+/// True once the backup is written; false when there was nothing to push
+/// or no store to push to
+fn write_cards_to_icloud(icloud: &ICloudSync, state: &AppState, deleted_card: Option<&str>) -> Result<bool, String> {
     let mut record = icloud.load_record();
     if let Some(id) = deleted_card {
         record.tombstones.insert(id.to_string(), now_ms());
@@ -403,61 +453,62 @@ fn push_cards_to_icloud(icloud: &ICloudSync, state: &AppState, deleted_card: Opt
     }
 
     let (accounts, local_cards) = {
-        let Ok(db_guard) = state.db.lock() else { return };
-        let Some(db) = db_guard.as_ref() else { return };
-        let Ok(accounts) = db.get_accounts() else { return };
+        let Ok(db_guard) = state.db.lock() else { return Ok(false) };
+        let Some(db) = db_guard.as_ref() else { return Ok(false) };
+        let Ok(accounts) = db.get_accounts() else { return Ok(false) };
         let mut cards = Vec::new();
         for account in &accounts {
             match db.get_cards(&account.id) {
                 Ok(c) => cards.extend(c),
                 // A partial list would drop the missing cards from iCloud
-                Err(_) => return,
+                Err(_) => return Ok(false),
             }
         }
         (accounts, cards)
     };
 
-    let Some(store) = &icloud.store else { return };
-    let Some(backup) = backup_to_push_onto(icloud.load_backup(), &mut record) else {
-        return;
-    };
+    let Some(store) = &icloud.store else { return Ok(false) };
+    let backup = backup_to_push_onto(icloud.load_backup(), &mut record, store.initial_sync_done())?;
     let Some((backup, new_record)) = plan_push(&accounts, local_cards, backup, &record, now_ms()) else {
-        return;
+        return Ok(false);
     };
-    if let Err(e) = store.sync_account_mappings(&backup.mappings()) {
-        tracing::warn!("iCloud account mapping sync failed: {}", e);
-        return;
-    }
-    match store.sync_cards(&backup.cards) {
-        Ok(()) => icloud.save_record(&new_record),
-        Err(e) => tracing::warn!("iCloud card sync failed: {}", e),
-    }
+    store
+        .sync_account_mappings(&backup.mappings())
+        .map_err(|e| format!("iCloud account mapping sync failed: {}", e))?;
+    store.sync_cards(&backup.cards).map_err(|e| format!("iCloud card sync failed: {}", e))?;
+    icloud.save_record(&new_record);
+    Ok(true)
 }
 
-/// The backup a push merges into, or None when the backup must not be
-/// overwritten. Marks the record as having seen a backup, which only sticks
-/// once the push is written.
-fn backup_to_push_onto(loaded: Result<Option<Backup>, String>, record: &mut SyncRecord) -> Option<Backup> {
+/// The backup a push merges into, or why the backup must not be overwritten.
+/// Marks the record as having seen a backup, which only sticks once the push
+/// is written.
+fn backup_to_push_onto(
+    loaded: Result<Option<Backup>, String>,
+    record: &mut SyncRecord,
+    initial_sync_done: bool,
+) -> Result<Backup, String> {
+    // A new Mac's store is empty, or holds only some keys, until iCloud has
+    // downloaded it; a write then would replace the backup other Macs made
+    if !record.seen_backup && !initial_sync_done {
+        return Err("iCloud has not downloaded the card backup yet; card changes stay on this Mac for now".into());
+    }
     match loaded {
         Ok(Some(backup)) => {
             record.seen_backup = true;
-            Some(backup)
+            Ok(backup)
         }
         // No device has pushed yet, as far as this one knows
         Ok(None) if !record.seen_backup => {
             record.seen_backup = true;
-            Some(Backup::default())
+            Ok(Backup::default())
         }
-        Ok(None) => {
-            tracing::warn!("iCloud card backup is unavailable; card changes stay on this device for now");
-            None
-        }
-        Err(e) => {
-            tracing::warn!("iCloud card backup is unreadable, not overwriting it: {}", e);
-            None
-        }
+        Ok(None) => Err(BACKUP_UNAVAILABLE.into()),
+        Err(e) => Err(format!("iCloud card backup is unreadable, so it was not overwritten: {}", e)),
     }
 }
+
+const BACKUP_UNAVAILABLE: &str = "iCloud card backup is unavailable; card changes stay on this Mac for now";
 
 /// Run a card database write, then push the cards to iCloud
 fn change_cards<T>(
@@ -465,9 +516,9 @@ fn change_cards<T>(
     deleted_card: Option<&str>,
     write: impl FnOnce(&CacheDb) -> Result<T, String>,
 ) -> Result<T, String> {
-    let icloud = state.icloud.lock().map_err(|_| "Lock error")?;
+    let mut icloud = state.icloud.lock().map_err(|_| "Lock error")?;
     let result = with_db(state, write)?;
-    push_cards_to_icloud(&icloud, state, deleted_card);
+    push_cards_to_icloud(&mut icloud, state, deleted_card);
     Ok(result)
 }
 
@@ -572,16 +623,7 @@ pub async fn run_oauth_flow(
     app_handle: tauri::AppHandle,
     state: State<'_, AppState>,
 ) -> Result<Account, String> {
-    // Cancel any previous in-flight flow so it releases port 8420 promptly
-    let cancel_flag = {
-        let mut slot = state.oauth_cancel.lock().map_err(|_| "Lock error")?;
-        if let Some(prev) = slot.take() {
-            prev.store(true, Ordering::SeqCst);
-        }
-        let flag = Arc::new(AtomicBool::new(false));
-        *slot = Some(flag.clone());
-        flag
-    };
+    let pending = PendingOAuth::begin(&state.oauth_cancel)?;
 
     // Bind the callback listener BEFORE opening the browser so the redirect
     // can't race the bind. Retry briefly: a just-cancelled flow may still be
@@ -620,18 +662,11 @@ pub async fn run_oauth_flow(
         .map_err(|e| format!("Failed to open browser: {}", e))?;
 
     // Wait for callback in a blocking thread
-    let wait_cancel = cancel_flag.clone();
+    let wait_cancel = pending.flag.clone();
     let callback_result = tokio::task::spawn_blocking(move || server.wait_for_callback(120, wait_cancel, &expected_state))
         .await
         .map_err(|e| format!("Task error: {}", e))?;
-
-    // Release the cancel slot if it still belongs to this flow
-    {
-        let mut slot = state.oauth_cancel.lock().map_err(|_| "Lock error")?;
-        if slot.as_ref().is_some_and(|f| Arc::ptr_eq(f, &cancel_flag)) {
-            *slot = None;
-        }
-    }
+    drop(pending);
 
     let callback_result = callback_result.map_err(|e| format!("OAuth callback error: {}", e))?;
 
@@ -646,6 +681,35 @@ pub async fn run_oauth_flow(
 
     // Finalize the OAuth flow and return account
     finalize_oauth(&access_token, &refresh_token, expires_in, &app_handle, &state).await
+}
+
+/// The cancel flag of the sign-in in flight, held in the app's slot until
+/// the flow stops waiting on the browser or returns early
+struct PendingOAuth<'a> {
+    slot: &'a std::sync::Mutex<Option<Arc<AtomicBool>>>,
+    flag: Arc<AtomicBool>,
+}
+
+impl<'a> PendingOAuth<'a> {
+    /// Cancels any previous flow, so it releases port 8420 promptly
+    fn begin(slot: &'a std::sync::Mutex<Option<Arc<AtomicBool>>>) -> Result<Self, String> {
+        let mut current = slot.lock().map_err(|_| "Lock error")?;
+        if let Some(prev) = current.take() {
+            prev.store(true, Ordering::SeqCst);
+        }
+        let flag = Arc::new(AtomicBool::new(false));
+        *current = Some(flag.clone());
+        Ok(Self { slot, flag })
+    }
+}
+
+impl Drop for PendingOAuth<'_> {
+    fn drop(&mut self) {
+        let mut current = self.slot.lock().unwrap_or_else(|e| e.into_inner());
+        if current.as_ref().is_some_and(|f| Arc::ptr_eq(f, &self.flag)) {
+            *current = None;
+        }
+    }
 }
 
 /// Stop the sign-in waiting on the browser; it then fails with "OAuth flow
@@ -731,12 +795,15 @@ async fn fetch_user_info(client: &reqwest::Client, url: &str, access_token: &str
         .bearer_auth(access_token)
         .send()
         .await
-        .map_err(|e| format!("Failed to read your Google account: {}", e.without_url()))?;
+        .map_err(|e| format!("Couldn't read your Google account: {}", e.without_url()))?;
 
     if !resp.status().is_success() {
         let status = resp.status();
         let body = resp.text().await.unwrap_or_default();
-        return Err(format!("API error {}: {}", status, body));
+        return Err(match google_error_message(&body) {
+            Some(message) => format!("Couldn't read your Google account ({}): {}", status, message),
+            None => format!("Couldn't read your Google account ({})", status),
+        });
     }
 
     #[derive(Deserialize)]
@@ -745,13 +812,25 @@ async fn fetch_user_info(client: &reqwest::Client, url: &str, access_token: &str
         picture: Option<String>,
     }
 
-    let body = resp.text().await.map_err(|e| format!("Failed to read response: {}", e))?;
-    let info: GoogleUserInfo = serde_json::from_str(&body)
-        .map_err(|e| format!("Failed to parse response: {} - Body: {}", e, body))?;
+    let info: GoogleUserInfo = resp
+        .json()
+        .await
+        .map_err(|e| format!("Couldn't read your Google account: unexpected response ({})", e.without_url()))?;
     Ok(UserInfo {
         email: info.email,
         picture: info.picture,
     })
+}
+
+/// The readable message in a Google error body: `error.message` from the
+/// APIs, or `error_description` from the OAuth endpoints
+fn google_error_message(body: &str) -> Option<String> {
+    let value: serde_json::Value = serde_json::from_str(body).ok()?;
+    let message = [&value["error"]["message"], &value["error_description"]]
+        .into_iter()
+        .find_map(|v| v.as_str().filter(|s| !s.trim().is_empty()))
+        .map(str::to_string);
+    message
 }
 
 #[tauri::command]
@@ -1183,21 +1262,32 @@ pub async fn modify_threads(
 
     let results = for_each_thread(thread_ids, |thread_id| {
         let (gmail, add, remove) = (&gmail, add_labels.clone(), remove_labels.clone());
-        async move {
-            gmail
-                .modify_thread(&thread_id, add, remove)
-                .await
-                .map_err(|e| format!("Failed to modify thread {}: {}", thread_id, e))
-        }
+        async move { gmail.modify_thread(&thread_id, add, remove).await }
     })
     .await;
 
-    // Return first error if any
-    for result in results {
-        evict_token_on_auth_error(&state, &account_id, result)?;
-    }
+    settle_thread_results(&state, &account_id, results)
+}
 
-    Ok(())
+/// Ok when every thread went through, else one failure, counting the others:
+/// an auth error if there is one, since it evicts the cached token and
+/// signing in fixes it, else the first
+fn settle_thread_results(
+    state: &AppState,
+    account_id: &str,
+    results: Vec<(String, Result<(), String>)>,
+) -> Result<(), String> {
+    let total = results.len();
+    let failures: Vec<(String, String)> =
+        results.into_iter().filter_map(|(id, r)| r.err().map(|e| (id, e))).collect();
+    let Some((id, e)) = failures.iter().find(|(_, e)| is_auth_error(e)).or(failures.first()) else {
+        return Ok(());
+    };
+    let message = match failures.len() {
+        1 => format!("Failed to modify thread {}: {}", id, e),
+        n => format!("Failed to modify {} of {} threads: {}", n, total, e),
+    };
+    evict_token_on_auth_error(state, account_id, Err(message))
 }
 
 /// Gmail answers 429 "Too many concurrent requests for user" past a few
@@ -1205,14 +1295,18 @@ pub async fn modify_threads(
 /// at a time
 const MAX_CONCURRENT_THREAD_REQUESTS: usize = 8;
 
-async fn for_each_thread<F, Fut>(thread_ids: Vec<String>, request: F) -> Vec<Result<(), String>>
+/// Each thread id with the result of its request
+async fn for_each_thread<F, Fut>(thread_ids: Vec<String>, mut request: F) -> Vec<(String, Result<(), String>)>
 where
     F: FnMut(String) -> Fut,
     Fut: std::future::Future<Output = Result<(), String>>,
 {
     use futures::StreamExt;
     futures::stream::iter(thread_ids)
-        .map(request)
+        .map(|id| {
+            let response = request(id.clone());
+            async move { (id, response.await) }
+        })
         .buffer_unordered(MAX_CONCURRENT_THREAD_REQUESTS)
         .collect()
         .await
@@ -1882,19 +1976,14 @@ fn plan_pull(
             }
             continue;
         };
-        match changed_side(local, &remote, base) {
-            Changed::Neither => {
-                merge.record.base.insert(local.id.clone(), remote);
-            }
-            Changed::Local => {
-                merge.needs_push = true;
-                merge.record.base.insert(local.id.clone(), remote);
-            }
-            Changed::Remote | Changed::Both => {
-                merge.record.base.insert(local.id.clone(), remote.clone());
-                merge.update.push(remote);
-            }
+        let merged = merged_card(local, &remote, base, true);
+        // Against iCloud's copy, the next push sees the fields kept from
+        // this device as changed here
+        merge.needs_push |= merged != remote;
+        if merged != *local {
+            merge.update.push(merged);
         }
+        merge.record.base.insert(local.id.clone(), remote);
     }
 
     for card in remote {
@@ -1920,9 +2009,25 @@ pub async fn pull_from_icloud(state: State<'_, AppState>) -> Result<bool, String
 
 fn pull_cards_from_icloud(state: &AppState) -> Result<bool, String> {
     // Held for the whole merge so a local card change can't push in between
-    let icloud = state.icloud.lock().map_err(|_| "Lock error")?;
+    let mut icloud = state.icloud.lock().map_err(|_| "Lock error")?;
+    let result = merge_cards_from_icloud(&mut icloud, state);
+    if let Err(e) = &result {
+        icloud.note_failure(format!("Couldn't pull cards from iCloud: {}", e));
+    }
+    result
+}
 
+fn merge_cards_from_icloud(icloud: &mut ICloudSync, state: &AppState) -> Result<bool, String> {
+    // Merging a half-downloaded store would mark the backup as seen, which
+    // lets the push after it replace the rest of the backup
+    if icloud.store.as_ref().is_some_and(|s| !s.initial_sync_done()) && !icloud.load_record().seen_backup {
+        return Ok(false);
+    }
     let Some(backup) = icloud.load_backup()? else {
+        // After a backup was seen, an empty store means iCloud is unavailable
+        if icloud.store.is_some() && icloud.load_record().seen_backup {
+            icloud.note_failure(BACKUP_UNAVAILABLE.into());
+        }
         return Ok(false);
     };
 
@@ -1948,11 +2053,19 @@ fn pull_cards_from_icloud(state: &AppState) -> Result<bool, String> {
         merge
     };
     icloud.save_record(&merge.record);
+    icloud.note_synced();
     if merge.needs_push {
-        push_cards_to_icloud(&icloud, state, None);
+        push_cards_to_icloud(icloud, state, None);
     }
 
     Ok(!(merge.insert.is_empty() && merge.update.is_empty() && merge.delete.is_empty()))
+}
+
+/// How card sync with iCloud last went
+#[tauri::command]
+pub async fn get_icloud_sync_status(state: State<'_, AppState>) -> Result<ICloudSyncStatus, String> {
+    // Waits out a sync in progress, which holds the lock
+    blocking(&state, |state| Ok(state.icloud.lock().map_err(|_| "Lock error")?.status())).await
 }
 
 // People API commands (contacts)
@@ -2330,7 +2443,7 @@ mod tests {
         let peak = AtomicUsize::new(0);
         let ids: Vec<String> = (0..60).map(|i| format!("t{}", i)).collect();
 
-        let results = super::for_each_thread(ids, |id| {
+        let results = super::for_each_thread(ids, |id: String| {
             let (in_flight, peak) = (&in_flight, &peak);
             async move {
                 let now = in_flight.fetch_add(1, Ordering::SeqCst) + 1;
@@ -2343,9 +2456,33 @@ mod tests {
         .await;
 
         assert_eq!(results.len(), 60, "a failure does not stop the others");
-        assert_eq!(results.iter().filter(|r| r.is_err()).count(), 1);
+        let failed: Vec<&str> = results.iter().filter(|(_, r)| r.is_err()).map(|(id, _)| id.as_str()).collect();
+        assert_eq!(failed, vec!["t7"]);
         let peak = peak.load(Ordering::SeqCst);
         assert!(peak > 1 && peak <= super::MAX_CONCURRENT_THREAD_REQUESTS, "peak {}", peak);
+    }
+
+    #[test]
+    fn a_bulk_action_evicts_the_token_on_any_auth_error_and_counts_failures() {
+        use std::time::{Duration, Instant};
+        let state = super::AppState::new();
+        let token = || ("t".to_string(), Instant::now() + Duration::from_secs(600));
+        state.token_cache.lock().unwrap().insert("a1".into(), token());
+        let results = vec![
+            ("t1".to_string(), Err("API error 429 Too Many Requests: {}".to_string())),
+            ("t2".to_string(), Ok(())),
+            ("t3".to_string(), Err("API error 401 Unauthorized: {}".to_string())),
+        ];
+        let err = super::settle_thread_results(&state, "a1", results).unwrap_err();
+        assert_eq!(err, "Failed to modify 2 of 3 threads: API error 401 Unauthorized: {}");
+        assert!(state.token_cache.lock().unwrap().is_empty(), "the 401 was not the first to fail");
+
+        state.token_cache.lock().unwrap().insert("a1".into(), token());
+        let one = vec![("t1".to_string(), Err("API error 500 Internal Server Error: {}".to_string()))];
+        let err = super::settle_thread_results(&state, "a1", one).unwrap_err();
+        assert_eq!(err, "Failed to modify thread t1: API error 500 Internal Server Error: {}");
+        assert!(!state.token_cache.lock().unwrap().is_empty());
+        assert_eq!(super::settle_thread_results(&state, "a1", vec![("t1".to_string(), Ok(()))]), Ok(()));
     }
 
     #[test]
@@ -2426,22 +2563,86 @@ mod tests {
     #[test]
     fn push_never_overwrites_a_backup_it_cannot_read() {
         let mut seen = synced(&[]);
-        assert_eq!(super::backup_to_push_onto(Ok(None), &mut seen), None, "iCloud unavailable after a backup was seen");
-        assert_eq!(super::backup_to_push_onto(Err("bad json".into()), &mut seen), None);
-        assert_eq!(super::backup_to_push_onto(Err("bad json".into()), &mut SyncRecord::default()), None);
+        assert_eq!(super::backup_to_push_onto(Ok(None), &mut seen, true).ok(), None, "iCloud unavailable after a backup was seen");
+        assert_eq!(super::backup_to_push_onto(Err("bad json".into()), &mut seen, true).ok(), None);
+        assert_eq!(super::backup_to_push_onto(Err("bad json".into()), &mut SyncRecord::default(), true).ok(), None);
 
         let b = backup(vec![owned_card("c", "a1")], &[], &[]);
         let mut fresh = SyncRecord::default();
-        assert_eq!(super::backup_to_push_onto(Ok(Some(b.clone())), &mut fresh), Some(b));
+        assert_eq!(super::backup_to_push_onto(Ok(Some(b.clone())), &mut fresh, true), Ok(b));
         assert!(fresh.seen_backup);
     }
 
     #[test]
     fn the_first_push_starts_the_backup_and_later_empty_reads_are_not_trusted() {
         let mut record = SyncRecord::default();
-        assert_eq!(super::backup_to_push_onto(Ok(None), &mut record), Some(Backup::default()));
+        assert_eq!(super::backup_to_push_onto(Ok(None), &mut record, true), Ok(Backup::default()));
         assert!(record.seen_backup);
-        assert_eq!(super::backup_to_push_onto(Ok(None), &mut record), None);
+        assert_eq!(super::backup_to_push_onto(Ok(None), &mut record, true).ok(), None);
+    }
+
+    #[test]
+    fn a_fresh_device_does_not_push_before_icloud_has_downloaded() {
+        // An empty or half-downloaded store on a new Mac is not the backup;
+        // writing over it would replace the only copy of the layout
+        let mut fresh = SyncRecord::default();
+        assert_eq!(super::backup_to_push_onto(Ok(None), &mut fresh, false).ok(), None);
+        let partial = backup(Vec::new(), &[("a1", "me@x.com")], &[]);
+        assert_eq!(super::backup_to_push_onto(Ok(Some(partial)), &mut fresh, false).ok(), None);
+        assert!(!fresh.seen_backup);
+
+        // A device that has synced before keeps pushing onto what it reads
+        let b = backup(vec![owned_card("c", "a1")], &[], &[]);
+        assert_eq!(super::backup_to_push_onto(Ok(Some(b.clone())), &mut synced(&[]), false), Ok(b));
+    }
+
+    #[test]
+    fn a_card_change_on_a_fresh_device_waits_for_the_icloud_download() {
+        let dir = scratch_dir();
+        let (state, store) = synced_state(&dir, &[]);
+        {
+            let icloud = state.icloud.lock().unwrap();
+            icloud.save_record(&SyncRecord::default());
+        }
+        *store.0.lock().unwrap() = FakeBackup { downloading: true, ..Default::default() };
+
+        super::change_cards(&state, None, |db| db.insert_card(&owned_card("new", "a1")).map_err(|e| e.to_string())).unwrap();
+        assert_eq!(store.0.lock().unwrap().cards, None, "nothing written over the undownloaded backup");
+        assert!(!state.icloud.lock().unwrap().load_record().seen_backup);
+
+        // Once the download is in, the backup is merged rather than replaced
+        *store.0.lock().unwrap() = FakeBackup {
+            cards: Some(vec![owned_card("old", "a1")]),
+            mappings: Some(mappings(&[("a1", "me@x.com")])),
+            ..Default::default()
+        };
+        super::change_cards(&state, None, |_| Ok(())).unwrap();
+        assert_eq!(sorted_ids(&store.backup().cards), vec!["new", "old"]);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn a_pull_on_a_fresh_device_waits_for_the_icloud_download() {
+        // Only the mappings key has arrived; merging it would mark the backup
+        // as seen and push this Mac's cards over the ones still downloading
+        let dir = scratch_dir();
+        let (state, store) = synced_state(&dir, &[owned_card("here", "a1")]);
+        state.icloud.lock().unwrap().save_record(&SyncRecord::default());
+        *store.0.lock().unwrap() =
+            FakeBackup { mappings: Some(mappings(&[("a1", "me@x.com")])), downloading: true, ..Default::default() };
+
+        assert_eq!(super::pull_cards_from_icloud(&state), Ok(false));
+        assert_eq!(store.0.lock().unwrap().cards, None, "nothing written over the undownloaded backup");
+        assert!(!state.icloud.lock().unwrap().load_record().seen_backup);
+
+        *store.0.lock().unwrap() = FakeBackup {
+            cards: Some(vec![owned_card("old", "a1")]),
+            mappings: Some(mappings(&[("a1", "me@x.com")])),
+            ..Default::default()
+        };
+        super::pull_cards_from_icloud(&state).unwrap();
+        assert_eq!(sorted_ids(&store.backup().cards), vec!["here", "old"]);
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]
@@ -2635,6 +2836,79 @@ mod tests {
         let merge = plan_pull(&accounts, std::slice::from_ref(&card), b, &SyncRecord::default(), NOW);
         assert_eq!(merge.update, vec![renamed(&card, "Theirs")]);
         assert!(!merge.needs_push);
+    }
+
+    fn moved(card: &Card, position: i32) -> Card {
+        Card { position, ..card.clone() }
+    }
+
+    #[test]
+    fn pull_keeps_a_rename_made_here_when_another_device_reordered() {
+        let accounts = [account("a1", "me@x.com")];
+        let card = owned_card("c", "a1");
+        let b = backup(vec![moved(&card, 5)], &[], &[]);
+        let merge = plan_pull(&accounts, &[renamed(&card, "Mine")], b, &synced(std::slice::from_ref(&card)), NOW);
+        let both = moved(&renamed(&card, "Mine"), 5);
+        assert_eq!(merge.update, vec![both]);
+        assert!(merge.needs_push, "the rename still has to reach iCloud");
+        // Against iCloud's copy, the next push sees the rename as made here
+        assert_eq!(merge.record.base["c"], moved(&card, 5));
+    }
+
+    #[test]
+    fn push_keeps_a_reorder_made_elsewhere_when_this_device_renamed() {
+        let accounts = [account("a1", "me@x.com")];
+        let card = owned_card("c", "a1");
+        let mine = Card { collapsed: true, ..renamed(&card, "Mine") };
+        let b = backup(vec![moved(&card, 5)], &[], &[]);
+        let (pushed, record) = plan_push(&accounts, vec![mine.clone()], b, &synced(std::slice::from_ref(&card)), NOW).unwrap();
+        assert_eq!(pushed.cards, vec![moved(&mine, 5)]);
+        // The next pull still sees the reorder as made elsewhere and applies it here
+        assert_eq!(record.base["c"], mine);
+    }
+
+    #[test]
+    fn a_field_changed_on_both_sides_goes_to_the_side_that_merges() {
+        let accounts = [account("a1", "me@x.com")];
+        let card = owned_card("c", "a1");
+        let mine = moved(&renamed(&card, "Mine"), 1);
+        let theirs = renamed(&card, "Theirs");
+        let merge = plan_pull(&accounts, std::slice::from_ref(&mine), backup(vec![theirs.clone()], &[], &[]), &synced(std::slice::from_ref(&card)), NOW);
+        assert_eq!(merge.update, vec![moved(&theirs, 1)]);
+        let (pushed, _) =
+            plan_push(&accounts, vec![mine.clone()], backup(vec![theirs], &[], &[]), &synced(&[card]), NOW).unwrap();
+        assert_eq!(pushed.cards, vec![mine]);
+    }
+
+    #[test]
+    fn a_card_id_the_backup_holds_twice_is_pulled_once() {
+        // Inserting it twice would fail the whole pull, on every focus
+        let accounts = [account("a1", "me@x.com"), account("a2", "b@x.com")];
+        let first = owned_card("x", "a1");
+        let b = backup(
+            vec![first.clone(), renamed(&first, "Again"), owned_card("x", "w9")],
+            &[("a1", "me@x.com"), ("w9", "work@x.com")],
+            &[],
+        );
+        let merge = plan_pull(&accounts, &[], b, &SyncRecord::default(), NOW);
+        assert_eq!(merge.insert, vec![first]);
+    }
+
+    #[test]
+    fn push_writes_each_card_id_once() {
+        // "x" is a local card whose backup copy lost its owner mapping, plus
+        // a duplicate of "y" from an earlier torn write
+        let accounts = [account("a1", "me@x.com"), account("a2", "b@x.com")];
+        let x = owned_card("x", "a1");
+        let y = owned_card("y", "a1");
+        let b = backup(
+            vec![owned_card("x", "lost"), y.clone(), renamed(&y, "Again"), owned_card("w", "w9"), owned_card("w", "w9")],
+            &[("a1", "me@x.com"), ("w9", "work@x.com")],
+            &[],
+        );
+        let (pushed, _) = plan_push(&accounts, vec![x.clone()], b, &synced(&[x]), NOW).unwrap();
+        assert_eq!(sorted_ids(&pushed.cards), vec!["w", "x", "y"]);
+        assert_eq!(pushed.cards.iter().find(|c| c.id == "y"), Some(&y));
     }
 
     #[test]
@@ -2974,6 +3248,10 @@ mod tests {
     /// A local HTTP server that answers every request with `reply`, or
     /// never answers when it is None
     async fn one_reply_server(reply: Option<&'static str>) -> String {
+        status_reply_server("200 OK", reply).await
+    }
+
+    async fn status_reply_server(status: &'static str, reply: Option<&'static str>) -> String {
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let url = format!("http://{}/userinfo", listener.local_addr().unwrap());
@@ -2985,7 +3263,8 @@ mod tests {
                     match reply {
                         Some(body) => {
                             let response = format!(
-                                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                                "HTTP/1.1 {}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                                status,
                                 body.len(),
                                 body
                             );
@@ -3007,8 +3286,34 @@ mod tests {
             .await
             .expect("the lookup must time out on its own");
         let err = result.err().expect("a hung lookup is an error");
-        assert!(err.starts_with("Failed to read your Google account"), "{}", err);
+        assert!(err.starts_with("Couldn't read your Google account"), "{}", err);
         assert!(!err.contains("127.0.0.1"), "{}", err);
+    }
+
+    async fn user_info_error(status: &'static str, body: &'static str) -> String {
+        let url = status_reply_server(status, Some(body)).await;
+        let client = super::userinfo_http_client(std::time::Duration::from_secs(5));
+        super::fetch_user_info(&client, &url, "t").await.err().expect("the lookup fails")
+    }
+
+    #[tokio::test]
+    async fn a_failed_account_lookup_shows_googles_message_not_the_raw_body() {
+        let err = user_info_error(
+            "401 Unauthorized",
+            r#"{"error": {"code": 401, "message": "Request had invalid authentication credentials.", "status": "UNAUTHENTICATED"}}"#,
+        )
+        .await;
+        assert_eq!(err, "Couldn't read your Google account (401 Unauthorized): Request had invalid authentication credentials.");
+
+        let err = user_info_error("401 Unauthorized", r#"{"error": "invalid_token", "error_description": "Invalid Value"}"#).await;
+        assert_eq!(err, "Couldn't read your Google account (401 Unauthorized): Invalid Value");
+
+        let err = user_info_error("502 Bad Gateway", "<html><body>Bad gateway</body></html>").await;
+        assert_eq!(err, "Couldn't read your Google account (502 Bad Gateway)");
+
+        let err = user_info_error("200 OK", r#"{"name": "no email here"}"#).await;
+        assert!(err.starts_with("Couldn't read your Google account: "), "{}", err);
+        assert!(!err.contains("no email here"), "{}", err);
     }
 
     #[tokio::test]
@@ -3093,6 +3398,21 @@ mod tests {
     }
 
     #[test]
+    fn a_sign_in_releases_its_cancel_flag_however_it_ends() {
+        let slot = std::sync::Mutex::new(None);
+        let first = super::PendingOAuth::begin(&slot).unwrap();
+        let first_flag = first.flag.clone();
+        // A retry cancels the flow before it and takes the slot over
+        let second = super::PendingOAuth::begin(&slot).unwrap();
+        assert!(first_flag.load(Ordering::SeqCst));
+        drop(first);
+        assert!(slot.lock().unwrap().is_some(), "the earlier flow must not release the retry's flag");
+        // An early return (no browser, no auth config) drops the guard
+        drop(second);
+        assert!(slot.lock().unwrap().is_none());
+    }
+
+    #[test]
     fn credentials_already_in_secure_storage_are_not_written_again() {
         let known = std::sync::Mutex::new(None);
         let config = super::AuthConfig { client_id: "id".into(), client_secret: "secret".into() };
@@ -3130,16 +3450,25 @@ mod tests {
         // Calls that take a closure and run it on the blocking pool
         const OFFLOADERS: &[&str] = &["blocking(", "refreshed_access_token("];
         let mut offending = Vec::new();
-        let (mut in_async_fn, mut offloaded) = (false, false);
+        let mut in_async_fn = false;
+        // Paren depth, and the depth an offloader call opened at: lines are
+        // offloaded until its parentheses close again
+        let (mut depth, mut offloaded_at): (i32, Option<i32>) = (0, None);
         for line in source.lines().take_while(|l| l.trim() != "#[cfg(test)]") {
             let code = line.trim_start();
             if ["fn ", "pub fn ", "async fn ", "pub async fn "].iter().any(|p| code.starts_with(p)) {
                 in_async_fn = code.contains("async fn ");
-                offloaded = false;
+                (depth, offloaded_at) = (0, None);
             }
-            offloaded |= OFFLOADERS.iter().any(|o| code.contains(o));
-            if in_async_fn && !offloaded && BLOCKING_WORK.iter().any(|w| code.contains(w)) {
+            if offloaded_at.is_none() && OFFLOADERS.iter().any(|o| code.contains(o)) {
+                offloaded_at = Some(depth);
+            }
+            if in_async_fn && offloaded_at.is_none() && BLOCKING_WORK.iter().any(|w| code.contains(w)) {
                 offending.push(code.to_string());
+            }
+            depth += code.matches('(').count() as i32 - code.matches(')').count() as i32;
+            if offloaded_at.is_some_and(|at| depth <= at) {
+                offloaded_at = None;
             }
         }
         offending
@@ -3153,6 +3482,9 @@ mod tests {
         assert_eq!(blocking_work_on_async_workers(include_str!("commands.rs")), Vec::<String>::new());
         let sample = "pub async fn a() {\n    with_db(state, f)?;\n}\nasync fn b() {\n    blocking(&state, |s| with_db(s, f)).await\n}\n";
         assert_eq!(blocking_work_on_async_workers(sample), vec!["with_db(state, f)?;"]);
+        // Only work inside the offloaded closure is off the async worker
+        let after = "async fn c() {\n    blocking(&state, move |s| {\n        with_db(s, f)\n    })\n    .await?;\n    with_db(state, g)?;\n}\n";
+        assert_eq!(blocking_work_on_async_workers(after), vec!["with_db(state, g)?;"]);
     }
 
     #[tokio::test]
@@ -3185,13 +3517,16 @@ mod tests {
         std::fs::remove_dir_all(dir).unwrap();
     }
 
-    /// In-memory card backup; `readable` false models an iCloud store that
-    /// errors on every read
+    /// In-memory card backup; `unreadable` models an iCloud store that
+    /// errors on every read, `refuses` one that errors on every write, and
+    /// `downloading` one whose first download from iCloud has not finished
     #[derive(Default)]
     struct FakeBackup {
         cards: Option<Vec<Card>>,
         mappings: Option<HashMap<String, String>>,
         unreadable: bool,
+        refuses: bool,
+        downloading: bool,
     }
 
     #[derive(Clone, Default)]
@@ -3209,13 +3544,25 @@ mod tests {
         }
 
         fn sync_cards(&self, cards: &[Card]) -> Result<(), String> {
-            self.0.lock().unwrap().cards = Some(cards.to_vec());
+            let mut b = self.0.lock().unwrap();
+            if b.refuses {
+                return Err("iCloud key-value store is unavailable".into());
+            }
+            b.cards = Some(cards.to_vec());
             Ok(())
         }
 
         fn sync_account_mappings(&self, mappings: &HashMap<String, String>) -> Result<(), String> {
-            self.0.lock().unwrap().mappings = Some(mappings.clone());
+            let mut b = self.0.lock().unwrap();
+            if b.refuses {
+                return Err("iCloud key-value store is unavailable".into());
+            }
+            b.mappings = Some(mappings.clone());
             Ok(())
+        }
+
+        fn initial_sync_done(&self) -> bool {
+            !self.0.lock().unwrap().downloading
         }
     }
 
@@ -3305,8 +3652,61 @@ mod tests {
         std::fs::remove_dir_all(dir).unwrap();
     }
 
+    fn icloud_status(state: &super::AppState) -> super::ICloudSyncStatus {
+        state.icloud.lock().unwrap().status()
+    }
+
+    #[test]
+    fn a_card_backup_icloud_refuses_is_reported_until_a_write_goes_through() {
+        let dir = scratch_dir();
+        let (state, store) = synced_state(&dir, &[owned_card("keep", "a1")]);
+        assert_eq!(icloud_status(&state), super::ICloudSyncStatus { available: true, last_synced_at: None, last_error: None });
+
+        store.0.lock().unwrap().refuses = true;
+        super::change_cards(&state, None, |db| db.insert_card(&owned_card("new", "a1")).map_err(|e| e.to_string())).unwrap();
+        let status = icloud_status(&state);
+        assert!(status.last_error.as_deref().is_some_and(|e| e.contains("unavailable")), "{:?}", status);
+        assert_eq!(status.last_synced_at, None);
+
+        store.0.lock().unwrap().refuses = false;
+        super::change_cards(&state, None, |_| Ok(())).unwrap();
+        let status = icloud_status(&state);
+        assert_eq!(status.last_error, None);
+        assert!(status.last_synced_at.is_some());
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn a_pull_that_cannot_read_icloud_is_reported() {
+        let dir = scratch_dir();
+        let (state, store) = synced_state(&dir, &[owned_card("keep", "a1")]);
+        store.0.lock().unwrap().unreadable = true;
+        assert!(super::pull_cards_from_icloud(&state).is_err());
+        assert!(icloud_status(&state).last_error.is_some());
+
+        // A device that has synced before reads an empty store as iCloud
+        // being unavailable, not as nothing to pull
+        *store.0.lock().unwrap() = FakeBackup::default();
+        assert_eq!(super::pull_cards_from_icloud(&state), Ok(false));
+        assert!(icloud_status(&state).last_error.as_deref().is_some_and(|e| e.contains("unavailable")));
+
+        *store.0.lock().unwrap() =
+            FakeBackup { cards: Some(vec![owned_card("keep", "a1")]), mappings: Some(mappings(&[("a1", "me@x.com")])), ..Default::default() };
+        super::pull_cards_from_icloud(&state).unwrap();
+        let status = icloud_status(&state);
+        assert_eq!(status.last_error, None);
+        assert!(status.last_synced_at.is_some());
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[cfg(debug_assertions)]
+    #[test]
+    fn debug_builds_report_icloud_sync_as_unavailable() {
+        assert!(!super::ICloudSync::new().status().available);
+    }
+
     fn record_at(path: std::path::PathBuf) -> super::ICloudSync {
-        super::ICloudSync { store: None, record_path: Some(path) }
+        super::ICloudSync { store: None, record_path: Some(path), last_synced_at: None, last_error: None }
     }
 
     #[test]
@@ -3317,7 +3717,7 @@ mod tests {
 
         let mut record = record_at(path).load_record();
         assert!(record.seen_backup);
-        assert_eq!(super::backup_to_push_onto(Ok(None), &mut record), None);
+        assert_eq!(super::backup_to_push_onto(Ok(None), &mut record, true).ok(), None);
         std::fs::remove_dir_all(dir).unwrap();
     }
 

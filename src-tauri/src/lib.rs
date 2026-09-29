@@ -238,6 +238,7 @@ pub fn run() {
             commands::rsvp_listed_calendar_event,
             commands::get_calendar_rsvp_status,
             commands::pull_from_icloud,
+            commands::get_icloud_sync_status,
             commands::fetch_contacts,
             commands::list_calendars,
             commands::fetch_calendar_events,
