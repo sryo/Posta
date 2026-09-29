@@ -1,7 +1,8 @@
 // MessageBody component - handles reactive CID image replacement
-import { createMemo } from "solid-js";
+import { createMemo, createSignal, Show } from "solid-js";
 import DOMPurify from 'dompurify';
 import { normalizeBase64Url } from "../utils";
+import { splitQuotedHtml } from "../app/quotedHistory";
 
 // Configure DOMPurify with safe defaults for email HTML
 const DOMPURIFY_CONFIG = {
@@ -104,10 +105,34 @@ export const MessageBody = (props: MessageBodyProps) => {
         return dataUrl ? `src="${dataUrl}"` : match;
       });
     }
-    return DOMPurify.sanitize(html, DOMPURIFY_CONFIG);
+    const split = splitQuotedHtml(html);
+    if (!split) return { main: DOMPurify.sanitize(html, DOMPURIFY_CONFIG), quoted: null };
+    return { main: DOMPurify.sanitize(split.main, DOMPURIFY_CONFIG), quoted: DOMPurify.sanitize(split.quoted, DOMPURIFY_CONFIG) };
   });
 
-  return <div class="message-body" innerHTML={processedHtml()}></div>;
+  const [quotedShown, setQuotedShown] = createSignal(false);
+
+  return (
+    <div class="message-body">
+      <div innerHTML={processedHtml().main}></div>
+      <Show when={processedHtml().quoted}>
+        {(quoted) => (
+          <>
+            <button
+              class="quoted-toggle"
+              aria-expanded={quotedShown()}
+              aria-label={quotedShown() ? 'Hide quoted text' : 'Show quoted text'}
+              title={quotedShown() ? 'Hide quoted text' : 'Show quoted text'}
+              onClick={() => setQuotedShown(!quotedShown())}
+            >•••</button>
+            <Show when={quotedShown()}>
+              <div class="message-quoted" innerHTML={quoted()}></div>
+            </Show>
+          </>
+        )}
+      </Show>
+    </div>
+  );
 };
 
 // Export DOMPURIFY_CONFIG for use in other places

@@ -27,3 +27,17 @@ describe("reading view stacking", () => {
     expect(z("picker")).toBeGreaterThan(z("wheel"));
   });
 });
+
+describe("message body", () => {
+  it("drops the top margin of an email's opening paragraph inside MessageBody's own wrapper", () => {
+    document.body.innerHTML = '<div class="message-body"><div><div dir="ltr"><div><p id="p">Hi</p></div></div></div></div>';
+    expect(cascadedDeclarations(rules, document.getElementById("p")!).get("margin-top")).toBe("0");
+  });
+
+  it("marks the quoted-history toggle as open while the history shows", () => {
+    document.body.innerHTML = '<button class="quoted-toggle" id="closed" aria-expanded="false"></button><button class="quoted-toggle" id="open" aria-expanded="true"></button>';
+    const background = (id: string) => cascadedDeclarations(rules, document.getElementById(id)!).get("background");
+    expect(background("closed")).toBe("var(--bg-hover)");
+    expect(background("open")).toBe("var(--bg-tertiary)");
+  });
+});

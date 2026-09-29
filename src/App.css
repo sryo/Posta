@@ -4020,10 +4020,12 @@ button:disabled:hover {
 
 /* Containment stops the first block's top margin from collapsing into the
    header's gap, so drop it to keep the spacing it had before. Emails often
-   wrap the opening paragraph in divs whose margins it collapses through. */
+   wrap the opening paragraph in divs whose margins it collapses through;
+   MessageBody adds one more wrapper of its own. */
 .message-body > :first-child,
 .message-body > :first-child > :first-child,
-.message-body > :first-child > :first-child > :first-child {
+.message-body > :first-child > :first-child > :first-child,
+.message-body > :first-child > :first-child > :first-child > :first-child {
     margin-top: 0;
 }
 
@@ -4048,6 +4050,32 @@ button:disabled:hover {
     padding-left: 16px;
     border-left: 3px solid var(--border-color);
     color: var(--text-secondary);
+}
+
+.quoted-toggle {
+    display: inline-flex;
+    align-items: center;
+    height: 14px;
+    margin-top: var(--space-md);
+    padding: 0 var(--space-md);
+    border: none;
+    border-radius: var(--radius-sm);
+    background: var(--bg-hover);
+    color: var(--text-secondary);
+    font-size: var(--font-size-xs);
+    letter-spacing: 1px;
+    line-height: 1;
+    cursor: pointer;
+}
+
+.quoted-toggle:hover,
+.quoted-toggle[aria-expanded="true"] {
+    background: var(--bg-tertiary);
+    color: var(--text-primary);
+}
+
+.message-quoted {
+    margin-top: var(--space-md);
 }
 
 .message-body pre,
