@@ -18,6 +18,8 @@ import {
   takePendingMailtos,
   configureAuth,
   getStoredCredentials,
+  getICloudSyncStatus,
+  type ICloudSyncStatus,
   runOAuthFlow,
   getAccounts,
   getCards,
@@ -3670,6 +3672,21 @@ function App() {
     }
   }
 
+  const [icloudStatus, setICloudStatus] = createSignal<ICloudSyncStatus | null>(null);
+  createEffect(on(settingsOpen, open => {
+    if (!open) return;
+    getICloudSyncStatus().then(setICloudStatus, e => {
+      console.warn("iCloud sync status unavailable:", e);
+      setICloudStatus(null);
+    });
+  }));
+  const icloudStatusText = (status: ICloudSyncStatus) => {
+    if (!status.available) return "iCloud sync: not available in this build";
+    if (status.last_error) return `iCloud sync: not working, ${status.last_error}`;
+    if (!status.last_synced_at) return "iCloud sync: on, not synced yet";
+    return `iCloud sync: on, last synced ${formatSyncTime(status.last_synced_at, currentTime())}`;
+  };
+
   // Earlier builds kept the key in localStorage; move it to the keychain
   async function loadGeminiKeyState() {
     try {
@@ -5437,6 +5454,14 @@ function App() {
               </Show>
             </Show>
           </div>
+          <Show when={icloudStatus()}>
+            {(status) => (
+              <div class="settings-section">
+                <div class="settings-section-title">Card layout</div>
+                <p class="settings-hint">{icloudStatusText(status())}</p>
+              </div>
+            )}
+          </Show>
         </div>
         <div class="settings-footer">
           <Show when={selectedAccount()}>

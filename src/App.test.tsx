@@ -2872,6 +2872,36 @@ describe("App background sync refetches", () => {
   });
 });
 
+describe("App iCloud sync status", () => {
+  beforeEach(() => {
+    handlers.get_accounts = () => [];
+    handlers.get_stored_credentials = () => null;
+  });
+  const openSettings = async () => {
+    fireEvent.click(await screen.findByRole("button", { name: "Settings" }));
+    return document.querySelector(".settings-sidebar")!;
+  };
+
+  it("says in Settings why card sync with iCloud isn't working", async () => {
+    handlers.get_icloud_sync_status = () => ({ available: true, last_synced_at: null, last_error: "iCloud refused the card backup" });
+    render(() => <App />);
+    const settings = await openSettings();
+    await waitFor(() => expect(settings).toHaveTextContent("iCloud sync: not working, iCloud refused the card backup"));
+  });
+
+  it("says when card sync last reached iCloud, asking again each time Settings opens", async () => {
+    handlers.get_icloud_sync_status = () => ({ available: true, last_synced_at: Date.now() - 5.5 * 60_000, last_error: null });
+    render(() => <App />);
+    const settings = await openSettings();
+    await waitFor(() => expect(settings).toHaveTextContent("iCloud sync: on, last synced 5m ago"));
+
+    fireEvent.click(document.querySelector(".settings-overlay")!);
+    handlers.get_icloud_sync_status = () => ({ available: false, last_synced_at: null, last_error: null });
+    await openSettings();
+    await waitFor(() => expect(settings).toHaveTextContent("iCloud sync: not available in this build"));
+  });
+});
+
 describe("App full sync", () => {
   it("refetches a card that was collapsed during a full sync once it is expanded", async () => {
     render(() => <App />);

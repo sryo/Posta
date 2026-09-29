@@ -419,6 +419,19 @@ export async function pullFromICloud(): Promise<boolean> {
   return invoke("pull_from_icloud");
 }
 
+export interface ICloudSyncStatus {
+  /** False in builds without an iCloud store (debug builds) */
+  available: boolean;
+  /** Unix ms of the last push or pull that reached iCloud */
+  last_synced_at: number | null;
+  /** Why the last push or pull didn't reach iCloud */
+  last_error: string | null;
+}
+
+export async function getICloudSyncStatus(): Promise<ICloudSyncStatus> {
+  return invoke("get_icloud_sync_status");
+}
+
 // People API (Contacts)
 
 export interface Contact {
