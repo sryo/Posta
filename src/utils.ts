@@ -29,21 +29,6 @@ function isSameDay(date1: Date, date2: Date): boolean {
   return date1.toDateString() === date2.toDateString();
 }
 
-// --- Calendar response status helpers ---
-
-/**
- * Get human-readable label for calendar response status
- */
-export function getResponseStatusLabel(status: string | null | undefined): string {
-  switch (status) {
-    case 'accepted': return 'Going';
-    case 'tentative': return 'Maybe';
-    case 'declined': return 'Declined';
-    case 'needsAction': return 'Pending';
-    default: return status || 'No response';
-  }
-}
-
 /**
  * Decode HTML entities like &amp; &#39; etc.
  */

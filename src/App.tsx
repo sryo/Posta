@@ -64,6 +64,7 @@ import {
   type Contact,
   fetchCalendarEvents,
   type GoogleCalendarEvent,
+  type CalendarInfo,
   listCalendars,
   moveCalendarEvent,
   deleteCalendarEvent,
@@ -89,9 +90,8 @@ import {
   extractMessageText,
   getAvatarColor,
   validateEmailList,
-  formatCalendarEventDate,
+  splitEmailList,
   decodeHtmlEntities,
-  getResponseStatusLabel,
   normalizeBase64Url,
   addReplyPrefix,
   addForwardPrefix,
@@ -112,7 +112,6 @@ import {
   PaletteIcon,
   CalendarIcon,
   LocationIcon,
-  ClockIcon,
 } from "./components/Icons";
 import { ReactionButton } from "./components/ReactionButton";
 import { ComposeTextarea, ComposeSendButton, CloseButton } from "./components/ComposeAtoms";
@@ -125,6 +124,10 @@ import { GoogleCredentialsForm } from "./components/GoogleCredentialsForm";
 import { credentialsValid, shortClientId } from "./app/googleCredentials";
 import { ComposeForm } from "./components/ComposeForm";
 import { CreateEventForm } from "./components/CreateEventForm";
+import { InviteBlock } from "./components/InviteBlock";
+import { eventActions } from "./app/eventActions";
+import { defaultCalendarId, lastUsedCalendar, rememberCalendar } from "./app/eventCalendars";
+import { deletedByScope, type RecurrenceScope } from "./app/recurrence";
 import { ThreadView } from "./components/ThreadView";
 import { EventView } from "./components/EventView";
 import { ActionsWheel } from "./components/ActionsWheel";
@@ -155,7 +158,7 @@ import { isSessionExpiredError, needsSignInAgain } from "./app/authErrors";
 import { signatureBlock, withSignature } from "./app/signature";
 import { isCalendarAttachment, isPreviewable, readFilesAsAttachments } from "./app/attachments";
 import { AttachmentLightbox, type PreviewAttachment } from "./components/AttachmentLightbox";
-import { eventAttendees, eventTimesFromForm, smartEventDefaults } from "./app/eventForm";
+import { eventAttendees, eventFromThread, eventTimesFromForm, smartEventDefaults } from "./app/eventForm";
 import { composePlacement } from "./app/composePlacement";
 import { cidImagesToFetch, createLruCache, fetchCidImages } from "./app/cidImages";
 import { sendPending, type PendingSend } from "./app/pendingSend";
@@ -172,8 +175,9 @@ import { getSmartEventTime, groupCalendarEvents, isUserLabel, mergeThreadGroups,
 import { pullLayoutWithRetry } from "./app/icloudRestore";
 import { querySuggestions, type QuerySuggestion } from "./app/querySuggestions";
 import { calendarRangeError } from "./app/queryTokens";
+import { useLayer } from "./app/layers";
 import { QueryHelpSheet } from "./components/QueryHelpSheet";
-import { inviteNamesEvent, rsvpSentMessage, type RsvpStatus } from "./app/rsvp";
+import { inviteNamesEvent, ownResponseLabel, rsvpForKey, rsvpSentMessage, type RsvpStatus } from "./app/rsvp";
 import { createRsvpLookups } from "./app/rsvpLookups";
 import { nextSelection } from "./app/selection";
 import { bulkActionForKey, extendSelection, keyTargets } from "./app/bulkKeys";
@@ -205,7 +209,7 @@ function App() {
 
   // Calendar drawer state (for events)
   const [calendarDrawerOpen, setCalendarDrawerOpen] = createSignal(false);
-  const [availableCalendars, setAvailableCalendars] = createSignal<{ id: string; name: string; is_primary: boolean }[]>([]);
+  const [availableCalendars, setAvailableCalendars] = createSignal<CalendarInfo[]>([]);
   const [calendarsLoading, setCalendarsLoading] = createSignal(false);
   // The account availableCalendars was loaded for
   let calendarsAccountId: string | null = null;
@@ -275,6 +279,22 @@ function App() {
   const inviteRsvp = (uid: string | null) => {
     const account = selectedAccount();
     return account && uid ? rsvpStatus[rsvpLookups.key(account.id, uid)] : undefined;
+  };
+
+  // Answers an event listed in a calendar card or open in the event view
+  const answerListedEvent = async (event: GoogleCalendarEvent, status: RsvpStatus) => {
+    const account = selectedAccount();
+    if (!account || rsvpLoading[event.id]) return;
+    setRsvpLoading(event.id, true);
+    try {
+      await rsvpListedCalendarEvent(account.id, event.calendar_id, event.id, status);
+      markEventRsvp(event.id, status);
+      showToast(rsvpSentMessage(status));
+    } catch (e) {
+      showFailure("Couldn't send your RSVP", e);
+    } finally {
+      setRsvpLoading(event.id, false);
+    }
   };
 
   // Answers an invite from its email; the calendar cards showing the event
@@ -760,6 +780,9 @@ function App() {
     allDay: boolean;
     attendees: string;
     recurrence: string | null;
+    // Chosen in the form; null goes to the default calendar
+    calendarId: string | null;
+    addMeet: boolean;
     saving: boolean;
     error: string | null;
     editing: { id: string; calendarId: string } | null;
@@ -772,7 +795,7 @@ function App() {
       summary: "", description: "", location: "",
       startDate: defaults.date, startTime: defaults.startTime,
       endDate: defaults.endDate, endTime: defaults.endTime,
-      allDay: false, attendees: "", recurrence: null,
+      allDay: false, attendees: "", recurrence: null, calendarId: null, addMeet: false,
       saving: false, error: null, editing: null, closing: false,
     };
   };
@@ -781,12 +804,20 @@ function App() {
 
   // A new event starts now; what was typed into a closed new-event form stays,
   // but an event's edit never carries into a new one
-  const openNewEventForm = () => {
+  // `about` starts the event from an email thread instead
+  const openNewEventForm = (about?: { summary: string; attendees: string }) => {
     const defaults = smartEventDefaults();
-    setEventForm(f => f.editing
+    setEventForm(f => about
+      ? { ...defaultEventForm(), ...about }
+      : f.editing
       ? defaultEventForm()
       : { ...f, startDate: defaults.date, startTime: defaults.startTime, endDate: defaults.endDate, endTime: defaults.endTime });
     setCreatingEvent(true);
+    fetchAvailableCalendars();
+  };
+  const newEventCalendarId = () => {
+    const account = selectedAccount();
+    return eventForm().calendarId ?? (account ? defaultCalendarId(availableCalendars(), lastUsedCalendar(account.id)) : null);
   };
   // The form is kept nowhere once closed, so typed details need a yes first
   const dismissEventForm = async () => {
@@ -795,6 +826,8 @@ function App() {
     if (f.closing || (typed && !(await askConfirm({ title: "Discard this event?", message: "What you typed in it is lost.", confirmLabel: "Discard", cancelLabel: "Keep editing", tone: "danger" })))) return;
     if (creatingEvent()) closeEventForm();
   };
+  // The form can open over a thread or event view, so Escape reaches it first
+  useLayer(() => creatingEvent(), () => { dismissEventForm(); });
   const closeEventForm = () => {
     setEventForm(f => ({ ...f, closing: true }));
     setTimeout(() => {
@@ -1307,6 +1340,19 @@ function App() {
     return getDisplayGroups(cardId).flatMap(g => g.threads);
   }
 
+  // The open thread as its card lists it, with the attachments and invite
+  // the listing parsed
+  function activeListedThread(): Thread | undefined {
+    const cardId = activeThreadCardId();
+    const threadId = activeThreadId();
+    if (!cardId || !threadId) return undefined;
+    for (const group of cardThreads[cardId] || []) {
+      const thread = group.threads.find(t => t.gmail_thread_id === threadId);
+      if (thread) return thread;
+    }
+    return undefined;
+  }
+
   // Get the focused thread
   function getFocusedThread(): Thread | null {
     const cardId = focusedCardId();
@@ -1487,7 +1533,8 @@ function App() {
 
     // ThreadView/EventView own the keyboard while open; without this, keys
     // like a/s/d also hit the focused thread *behind* the overlay
-    if (activeThreadId() || activeEvent()) {
+    // The new-event form over a thread is handled below like any overlay
+    if ((activeThreadId() || activeEvent()) && !creatingEvent()) {
       return;
     }
 
@@ -1666,6 +1713,13 @@ function App() {
     // Quick actions on focused thread
     const thread = getFocusedThread();
     if (thread && cardId) {
+      const invite = thread.calendar_event;
+      const answer = invite?.method === "REQUEST" && invite.uid ? rsvpForKey(e) : null;
+      if (answer) {
+        e.preventDefault();
+        if (inviteRsvp(invite!.uid) !== answer) handleRsvp(thread.gmail_thread_id, invite!.uid, answer);
+        return;
+      }
       if (e.key === 'a') {
         e.preventDefault();
         const isInInbox = thread.labels?.includes('INBOX') ?? true;
@@ -1720,7 +1774,14 @@ function App() {
     // Quick actions on focused event
     const event = getFocusedEvent();
     if (event && cardId) {
-      if (e.key === 'r') {
+      const can = eventActions(event, selectedAccount()?.email ?? '');
+      const answer = can.rsvp ? rsvpForKey(e) : null;
+      if (answer) {
+        e.preventDefault();
+        if (event.response_status !== answer) answerListedEvent(event, answer);
+        return;
+      }
+      if (e.key === 'r' && (can.reply || can.emailGuests)) {
         e.preventDefault();
         openEventQuickReply(event.id);
         return;
@@ -2329,7 +2390,7 @@ function App() {
     setComposeAttachments(composeAttachments().filter((_, i) => i !== index));
   }
 
-  async function handleCreateEvent() {
+  async function handleCreateEvent(scope: RecurrenceScope = "this") {
     const account = selectedAccount();
     if (!account) return;
 
@@ -2362,27 +2423,22 @@ function App() {
         allDay: form.allDay,
         attendees: attendeesList.length > 0 ? attendeesList : null,
         recurrence: form.recurrence ? [form.recurrence] : null,
+        addMeet: form.addMeet,
       };
 
       if (editing) {
         // Update existing event
-        const updated = await updateCalendarEvent(
-          account.id,
-          editing.calendarId,
-          editing.id,
-          eventInput
-        );
+        const updated = await updateCalendarEvent(account.id, editing.calendarId, editing.id, eventInput, scope);
+        // The occurrence shown may no longer exist once its series changed
+        if (scope !== "this" && activeEvent()?.id === editing.id) closeEvent();
         // Sync the open EventView and the card's copy immediately; the
         // background refetch below lands later
         setActiveEvent(ev => (ev && ev.id === updated.id ? updated : ev));
         updateEventInCards(updated.id, () => updated);
       } else {
-        // Create new event
-        await createCalendarEvent(
-          account.id,
-          null,
-          eventInput
-        );
+        const calendarId = newEventCalendarId();
+        await createCalendarEvent(account.id, calendarId, eventInput);
+        if (calendarId) rememberCalendar(account.id, calendarId);
       }
 
       setCreatingEvent(false);
@@ -2682,7 +2738,7 @@ function App() {
       const outcome = await runUnsubscribe(account.id, method, { sendEmail, postOneClick: unsubscribeOneClick, openUrl });
       showToast(outcome === "done" ? `Unsubscribed from ${listName}` : `Finish unsubscribing from ${listName} on its page`);
     } catch (e) {
-      showToast(`Couldn't unsubscribe: ${e}`);
+      showFailure("Couldn't unsubscribe", e);
       throw e;
     }
   }
@@ -2796,23 +2852,42 @@ function App() {
   // Events deleted in the app whose deletion waits out their Undo toast
   const heldEventDeletes = new Set<string>();
 
+  function removeDeletedEvents(event: GoogleCalendarEvent, scope: RecurrenceScope) {
+    if (scope === "this") {
+      updateEventInCards(event.id, () => null);
+      return;
+    }
+    for (const [cardId, events] of Object.entries(cardCalendarEvents)) {
+      const kept = (events ?? []).filter(ev => !deletedByScope(ev, event, scope));
+      if (kept.length === events?.length) continue;
+      setCardCalendarEvents(cardId, reconcile(kept, { key: "id" }));
+      saveCachedCardEvents(cardId, kept).catch(e => console.warn("Failed to update event cache:", e));
+    }
+  }
+
   // Deleting an event tells its guests, which can't be taken back, so that
-  // asks first and happens at once; any other delete waits out its toast
-  async function deleteEvent(event: GoogleCalendarEvent) {
+  // asks first (unless the scope menu, which says so, already asked) and
+  // happens at once, as does deleting several occurrences of a series;
+  // deleting one event without guests waits out its toast
+  async function deleteEvent(event: GoogleCalendarEvent, chosenScope?: RecurrenceScope) {
     const account = selectedAccount();
     if (!account) return;
-    const guests = event.attendees.filter(a => !a.is_self).length;
-    if (guests > 0) {
-      const confirmed = await askConfirm({
-        title: `Delete and notify ${guests} guest${guests === 1 ? "" : "s"}?`,
-        message: "Each guest gets an email saying the event was cancelled.",
-        confirmLabel: "Delete event",
-        tone: "danger",
-      });
-      if (!confirmed || selectedAccount()?.id !== account.id) return;
+    const scope = chosenScope ?? "this";
+    const { role, guestCount: guests } = eventActions(event, account.email);
+    const notifiesGuests = role === "organizer";
+    if (notifiesGuests || scope !== "this") {
+      if (notifiesGuests && !chosenScope) {
+        const confirmed = await askConfirm({
+          title: `Delete and notify ${guests} guest${guests === 1 ? "" : "s"}?`,
+          message: "Each guest gets an email saying the event was cancelled.",
+          confirmLabel: "Delete event",
+          tone: "danger",
+        });
+        if (!confirmed || selectedAccount()?.id !== account.id) return;
+      }
       try {
-        await deleteCalendarEvent(account.id, event.calendar_id, event.id);
-        updateEventInCards(event.id, () => null);
+        await deleteCalendarEvent(account.id, event.calendar_id, event.id, scope);
+        removeDeletedEvents(event, scope);
         showToast("Event deleted");
         if (activeEvent()?.id === event.id) { closeEvent(); restoreOpenedRowFocus(); }
       } catch (e) {
@@ -4056,7 +4131,7 @@ function App() {
     try {
       await discardThreadDrafts(account.id, threadId, { listThreadDrafts, deleteDraft });
     } catch (e) {
-      showToast(`Couldn't discard the draft: ${e}`);
+      showFailure("Couldn't discard the draft", e);
       return;
     }
     if (selectedAccount()?.id !== account.id) return;
@@ -4263,7 +4338,9 @@ function App() {
 
   // Ranking reads every loaded thread; only rank while something shows
   // contacts, so mail changes don't re-sort them in the background
-  const contactsWanted = () => composeFabHovered() || (composing() && !closingCompose()) || addingCard() || editingCardId() !== null;
+  const contactsWanted = () => composeFabHovered() || (composing() && !closingCompose()) || addingCard() || editingCardId() !== null
+    || creatingEvent() || !!eventForm().editing;
+  const guestSuggestions = (query: string) => matchContacts(rankedContacts(), query, 8);
   const rankedContacts = createMemo(() => contactsWanted() ? rankContacts(
     googleContacts(),
     Object.values(cardThreads).flatMap(groups => groups.flatMap(g => g.threads)),
@@ -4373,7 +4450,7 @@ function App() {
               </div>
               <button
                 class="new-event-btn"
-                onClick={openNewEventForm}
+                onClick={() => openNewEventForm()}
                 title="New event (E)"
                 aria-label="Create new calendar event"
               >
@@ -4715,7 +4792,7 @@ function App() {
                                         </Show>
                                         <Show when={event.response_status}>
                                           <div class={`calendar-event-response ${event.response_status}`}>
-                                            {getResponseStatusLabel(event.response_status)}
+                                            {ownResponseLabel(event.response_status)}
                                           </div>
                                         </Show>
                                         <Show when={event.hangout_link}>
@@ -4862,37 +4939,13 @@ function App() {
                                           </div>
                                           {/* Calendar event preview */}
                                           <Show when={thread.calendar_event}>
-                                            <div class="calendar-event-preview">
-                                              <div class="calendar-event-time">
-                                                <ClockIcon />
-                                                <span>{formatCalendarEventDate(thread.calendar_event!.start_time, thread.calendar_event!.end_time, thread.calendar_event!.all_day)}</span>
-                                              </div>
-                                              <Show when={thread.calendar_event!.location}>
-                                                <div class="calendar-event-location">
-                                                  <LocationIcon />
-                                                  <span>{thread.calendar_event!.location}</span>
-                                                </div>
-                                              </Show>
-                                              <Show when={thread.calendar_event!.method === "REQUEST" && thread.calendar_event!.uid}>
-                                                <div class="calendar-rsvp" onClick={(e) => e.stopPropagation()}>
-                                                  <button
-                                                    class={inviteRsvp(thread.calendar_event!.uid) === "accepted" ? "selected" : ""}
-                                                    disabled={rsvpLoading[thread.gmail_thread_id]}
-                                                    onClick={() => handleRsvp(thread.gmail_thread_id, thread.calendar_event!.uid, "accepted")}
-                                                  >Yes</button>
-                                                  <button
-                                                    class={inviteRsvp(thread.calendar_event!.uid) === "tentative" ? "selected" : ""}
-                                                    disabled={rsvpLoading[thread.gmail_thread_id]}
-                                                    onClick={() => handleRsvp(thread.gmail_thread_id, thread.calendar_event!.uid, "tentative")}
-                                                  >Maybe</button>
-                                                  <button
-                                                    class={inviteRsvp(thread.calendar_event!.uid) === "declined" ? "selected" : ""}
-                                                    disabled={rsvpLoading[thread.gmail_thread_id]}
-                                                    onClick={() => handleRsvp(thread.gmail_thread_id, thread.calendar_event!.uid, "declined")}
-                                                  >No</button>
-                                                </div>
-                                              </Show>
-                                            </div>
+                                            <InviteBlock
+                                              invite={thread.calendar_event!}
+                                              rsvp={inviteRsvp(thread.calendar_event!.uid)}
+                                              disabled={rsvpLoading[thread.gmail_thread_id]}
+                                              showKeys={isThreadFocused(card.id, thread.gmail_thread_id)}
+                                              onAnswer={(status) => handleRsvp(thread.gmail_thread_id, thread.calendar_event!.uid, status)}
+                                            />
                                           </Show>
                                           <Show when={!thread.calendar_event}>
                                             <div class="thread-snippet">{decodeHtmlEntities(thread.snippet)}</div>
@@ -5096,7 +5149,7 @@ function App() {
                                   </Show>
                                   <Show when={event.response_status}>
                                     <div class={`calendar-event-response ${event.response_status}`}>
-                                      {getResponseStatusLabel(event.response_status)}
+                                      {ownResponseLabel(event.response_status)}
                                     </div>
                                   </Show>
                                 </div>
@@ -5246,6 +5299,12 @@ function App() {
           setAttendees={(v: string) => setEventForm(f => ({ ...f, attendees: v }))}
           recurrence={eventForm().recurrence}
           setRecurrence={(v: string | null) => setEventForm(f => ({ ...f, recurrence: v }))}
+          calendars={availableCalendars()}
+          calendarId={newEventCalendarId()}
+          guestSuggestions={guestSuggestions}
+          addMeet={eventForm().addMeet}
+          setAddMeet={(v: boolean) => setEventForm(f => ({ ...f, addMeet: v }))}
+          setCalendarId={(id: string) => setEventForm(f => ({ ...f, calendarId: id }))}
           saving={eventForm().saving}
           onSave={handleCreateEvent}
           error={eventForm().error}
@@ -5298,6 +5357,16 @@ function App() {
           onStepThread={stepActiveThread}
           onAction={handleThreadViewAction}
           onOpenLabels={() => { fetchAccountLabels({ refresh: true }); setLabelDrawerOpen(true); }}
+          keysPaused={creatingEvent()}
+          onCreateEvent={() => {
+            const messages = activeThread()?.messages ?? [];
+            const people = messages
+              .flatMap(m => m.payload?.headers ?? [])
+              .filter(h => /^(from|to|cc)$/i.test(h.name))
+              .flatMap(h => splitEmailList(h.value));
+            const subject = activeListedThread()?.subject ?? findHeader(messages[0]?.payload?.headers, 'Subject') ?? '';
+            openNewEventForm(eventFromThread(subject, people, selectedAccount()?.email ?? ''));
+          }}
           labelDrawerOpen={labelDrawerOpen()}
           onCloseLabelDrawer={closeLabelDrawer}
           isStarred={isThreadStarred()}
@@ -5307,16 +5376,17 @@ function App() {
           labelCount={getThreadUserLabelCount()}
           // Inline compose props
           inlineCompose={composeShownIn() === "thread" ? threadInlineCompose : null}
-          threadAttachments={(() => {
-            const cardId = activeThreadCardId();
-            const threadId = activeThreadId();
-            if (!cardId || !threadId) return undefined;
-            const groups = cardThreads[cardId] || [];
-            for (const group of groups) {
-              const thread = group.threads.find(t => t.gmail_thread_id === threadId);
-              if (thread) return thread.attachments;
-            }
-            return undefined;
+          threadAttachments={activeListedThread()?.attachments}
+          invite={(() => {
+            const listed = activeListedThread();
+            const event = listed?.calendar_event;
+            if (!listed || !event) return null;
+            return {
+              event,
+              rsvp: inviteRsvp(event.uid),
+              onAnswer: (status: RsvpStatus) => handleRsvp(listed.gmail_thread_id, event.uid, status),
+              disabled: !!rsvpLoading[listed.gmail_thread_id],
+            };
           })()}
           cidAttachmentData={cidAttachmentData()}
         />
@@ -5399,21 +5469,7 @@ function App() {
           })() : null}
           focusColor={selectedBgColorIndex() !== null ? BG_COLORS[selectedBgColorIndex()!].hex : null}
           onClose={() => { closeEvent(); restoreOpenedRowFocus(); }}
-          onRsvp={async (status) => {
-            const event = activeEvent();
-            const account = selectedAccount();
-            if (!event || !account || rsvpLoading[event.id]) return;
-            setRsvpLoading(event.id, true);
-            try {
-              await rsvpListedCalendarEvent(account.id, event.calendar_id, event.id, status);
-              markEventRsvp(event.id, status);
-              showToast(rsvpSentMessage(status));
-            } catch (e) {
-              showFailure("Couldn't send your RSVP", e);
-            } finally {
-              setRsvpLoading(event.id, false);
-            }
-          }}
+          onRsvp={(status) => { const event = activeEvent(); if (event) answerListedEvent(event, status); }}
           onReplyOrganizer={() => {
             const event = activeEvent();
             if (!event) return;
@@ -5469,13 +5525,15 @@ function App() {
               attendees: event.attendees.map(a => a.email).join(', '),
               // Cards list single occurrences; a null rule leaves a series' recurrence alone
               recurrence: null,
+              addMeet: false,
               editing: { id: event.id, calendarId: event.calendar_id },
             }));
           }}
-          onDelete={() => { const event = activeEvent(); if (event) deleteEvent(event); }}
+          onDelete={(scope) => { const event = activeEvent(); if (event) deleteEvent(event, scope); }}
           onOpenCalendars={() => { fetchAvailableCalendars(); setCalendarDrawerOpen(true); }}
           calendarDrawerOpen={calendarDrawerOpen()}
           onCloseCalendarDrawer={() => setCalendarDrawerOpen(false)}
+          accountEmail={selectedAccount()?.email ?? ""}
           calendars={availableCalendars()}
           calendarsLoading={calendarsLoading()}
           onMoveToCalendar={handleMoveEventToCalendar}
@@ -5503,6 +5561,11 @@ function App() {
             recurrence: eventForm().recurrence,
             setRecurrence: (v: string | null) => setEventForm(f => ({ ...f, recurrence: v })),
             occurrenceOnly: !!activeEvent()!.recurring_event_id,
+            askScope: !!activeEvent()!.recurring_event_id,
+            guestSuggestions,
+            addMeet: eventForm().addMeet,
+            setAddMeet: (v: boolean) => setEventForm(f => ({ ...f, addMeet: v })),
+            hasMeet: !!activeEvent()!.hangout_link,
             saving: eventForm().saving,
             onSave: handleCreateEvent,
             onClose: () => setEventForm(defaultEventForm()),
@@ -5750,6 +5813,7 @@ function App() {
               <div class="shortcut-row"><kbd>u</kbd> <span>Toggle read</span></div>
               <div class="shortcut-row"><kbd>i</kbd> <span>Toggle important</span></div>
               <div class="shortcut-row"><kbd>!</kbd> <span>Report spam</span></div>
+              <div class="shortcut-row"><kbd>y ⇧M n</kbd> <span>Answer a focused invite: Going, Maybe, Not going</span></div>
               <div class="shortcut-row"><kbd>z</kbd> <span>Undo last action</span></div>
             </div>
             <div class="shortcuts-section">
@@ -5762,6 +5826,7 @@ function App() {
               <div class="shortcut-row"><kbd>⇧R</kbd> <span>Reply all</span></div>
               <div class="shortcut-row"><kbd>f</kbd> <span>Forward message</span></div>
               <div class="shortcut-row"><kbd>l</kbd> <span>Labels</span></div>
+              <div class="shortcut-row"><kbd>e</kbd> <span>Create event from thread</span></div>
               <div class="shortcut-row"><kbd>a</kbd> <span>Archive</span></div>
               <div class="shortcut-row"><kbd>s</kbd> <span>Star</span></div>
               <div class="shortcut-row"><kbd>u</kbd> <span>Toggle read</span></div>
@@ -5774,9 +5839,12 @@ function App() {
               <div class="shortcut-row"><kbd>r</kbd> <span>Reply to organizer</span></div>
               <div class="shortcut-row"><kbd>⇧R</kbd> <span>Reply all</span></div>
               <div class="shortcut-row"><kbd>f</kbd> <span>Forward</span></div>
-              <div class="shortcut-row"><kbd>j</kbd> <span>Join meeting</span></div>
+              <div class="shortcut-row"><kbd>v</kbd> <span>Join meeting</span></div>
               <div class="shortcut-row"><kbd>o</kbd> <span>Open in Google Calendar</span></div>
-              <div class="shortcut-row"><kbd>c</kbd> <span>Move to calendar</span></div>
+              <div class="shortcut-row"><kbd>m</kbd> <span>Move to calendar</span></div>
+              <div class="shortcut-row"><kbd>y</kbd> <span>Going</span></div>
+              <div class="shortcut-row"><kbd>⇧M</kbd> <span>Maybe</span></div>
+              <div class="shortcut-row"><kbd>n</kbd> <span>Not going</span></div>
               <div class="shortcut-row"><kbd>e</kbd> <span>Edit</span></div>
               <div class="shortcut-row"><kbd>d</kbd> <span>Delete</span></div>
             </div>
@@ -5813,7 +5881,7 @@ function App() {
           const settings = isEvent ? eventActionSettings() : actionSettings();
           const handlers = isEvent ? eventActionHandlers : threadActionHandlers;
           const labels: Record<string, string> = isEvent
-            ? { quickReply: 'Reply', joinMeeting: 'Join Meeting', openCalendar: 'Open in Calendar', rsvpYes: 'RSVP Yes', rsvpNo: 'RSVP No', delete: 'Delete' }
+            ? { quickReply: 'Reply', joinMeeting: 'Join Meeting', openCalendar: 'Open in Calendar', rsvpYes: 'Going', rsvpNo: 'Not going', delete: 'Delete' }
             : { quickReply: 'Reply', quickForward: 'Forward', archive: 'Archive', star: 'Star', trash: 'Delete', markRead: 'Read', markImportant: 'Important', spam: 'Spam' };
           const defaultEnabled = isEvent ? ['quickReply'] : ['quickReply', 'quickForward'];
 

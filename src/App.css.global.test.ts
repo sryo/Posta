@@ -52,14 +52,14 @@ function contrast(a: string, b: string): number {
 describe("confirm dialog", () => {
   it("fills a destructive answer's button red", () => {
     const decl = declarationsOf(".confirm-dialog .btn-danger");
-    expect(decl.get("background")).toBe("var(--danger-fill)");
-    expect(decl.get("color")).toBe("var(--on-danger)");
+    expect(decl.get("background")).toBe("var(--danger)");
+    expect(decl.get("color")).toBe("var(--on-status)");
   });
 
   it("keeps the red button's label readable in light and dark mode", () => {
     for (const context of ["", "@media (prefers-color-scheme: dark)"]) {
       const root = declarationsOf(":root", context);
-      expect(contrast(root.get("--danger-fill")!, root.get("--on-danger")!)).toBeGreaterThanOrEqual(4.5);
+      expect(contrast(root.get("--danger")!, root.get("--on-status")!)).toBeGreaterThanOrEqual(4.5);
     }
   });
 });

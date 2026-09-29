@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { eventAttendees, eventTimesFromForm, smartEventDefaults } from "./eventForm";
+import { eventAttendees, eventFromThread, eventTimesFromForm, smartEventDefaults } from "./eventForm";
 
 const form = (over: Partial<Parameters<typeof eventTimesFromForm>[0]> = {}) => ({
   startDate: "2026-03-11", startTime: "10:00",
@@ -54,6 +54,19 @@ describe("smartEventDefaults", () => {
 
   it("ends the next day when an event starting at half past eleven runs past midnight", () => {
     expect(smartEventDefaults(new Date(2026, 2, 11, 23, 10))).toEqual({ date: "2026-03-11", startTime: "23:30", endDate: "2026-03-12", endTime: "00:00" });
+  });
+});
+
+describe("eventFromThread", () => {
+  it("names the event after the subject, without reply or forward prefixes", () => {
+    expect(eventFromThread("Re: Fwd: Lunch on Thursday", [], "me@x.com").summary).toBe("Lunch on Thursday");
+    expect(eventFromThread("RE: FW: Offsite", [], "me@x.com").summary).toBe("Offsite");
+    expect(eventFromThread("Planning", [], "me@x.com").summary).toBe("Planning");
+  });
+
+  it("invites the thread's participants except the user, once each", () => {
+    const { attendees } = eventFromThread("Lunch", ["Ana <ana@y.com>", "Me <ME@x.com>", "ana@y.com", "bo@z.com"], "me@x.com");
+    expect(attendees).toBe("Ana <ana@y.com>, bo@z.com");
   });
 });
 

@@ -224,6 +224,8 @@ describe("board connection status", () => {
   it("marks offline in amber and a lost sign-in in the danger color", () => {
     expect(declarationsOf(".connection-status.offline").get("background")).toBe("var(--warning-bg)");
     expect(declarationsOf(".connection-status.expired").get("background")).toBe("var(--danger-bg)");
+    expect(declarationsOf(".connection-status.offline").get("color")).toBe("var(--warning-fg)");
+    expect(declarationsOf(".connection-status.expired").get("color")).toBe("var(--danger-fg)");
   });
 
   it("keeps the amber offline text readable on its background in both themes", () => {
@@ -242,7 +244,7 @@ describe("board connection status", () => {
       const lin = (c: number) => (c / 255 <= 0.03928 ? c / 255 / 12.92 : ((c / 255 + 0.055) / 1.055) ** 2.4);
       return 0.2126 * lin(r) + 0.7152 * lin(g) + 0.0722 * lin(b);
     };
-    const [text, bg, page] = [token("--warning"), token("--warning-bg"), token("--bg-primary")];
+    const [text, bg, page] = [token("--warning-fg"), token("--warning-bg"), token("--bg-primary")];
     for (const theme of [0, 1]) {
       const [br, bgG, bb, alpha] = rgba(bg[theme]);
       const [pr, pg, pb] = rgba(page[theme]);

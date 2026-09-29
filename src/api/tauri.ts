@@ -1,6 +1,7 @@
 // Tauri command bindings
 
 import { invoke } from "@tauri-apps/api/core";
+import type { RecurrenceScope } from "../app/recurrence";
 
 export interface Account {
   id: string;
@@ -35,6 +36,8 @@ export interface EventInput {
   allDay: boolean;
   attendees: string[] | null;
   recurrence: string[] | null;
+  // Ask Google to attach a new Meet link
+  addMeet?: boolean;
 }
 
 export interface Attachment {
@@ -47,7 +50,7 @@ export interface Attachment {
   content_id: string | null; // Content-ID for inline images (cid: references)
 }
 
-interface CalendarEvent {
+export interface CalendarEvent {
   uid: string | null;
   title: string;
   start_time: number; // Unix timestamp in milliseconds
@@ -60,6 +63,7 @@ interface CalendarEvent {
   method: string | null; // REQUEST, REPLY, CANCEL
   status: string | null; // CONFIRMED, TENTATIVE, CANCELLED
   response_status: string | null; // accepted, tentative, declined, needsAction
+  conference_url?: string | null; // video call link
 }
 
 export interface Thread {
@@ -492,7 +496,7 @@ export interface GoogleCalendarEvent {
   recurring_event_id?: string | null; // set on one occurrence of a repeating event (the series id)
 }
 
-interface CalendarInfo {
+export interface CalendarInfo {
   id: string;
   name: string;
   is_primary: boolean;
@@ -527,6 +531,7 @@ export async function createCalendarEvent(
     allDay: event.allDay,
     attendees: event.attendees,
     recurrence: event.recurrence,
+    addMeet: event.addMeet ?? false,
   });
 }
 
@@ -544,15 +549,18 @@ export async function moveCalendarEvent(
   });
 }
 
+// `scope` picks the occurrences of a repeating event; one-off events ignore it
 export async function deleteCalendarEvent(
   accountId: string,
   calendarId: string,
-  eventId: string
+  eventId: string,
+  scope: RecurrenceScope = "this"
 ): Promise<void> {
   return invoke("delete_calendar_event", {
     accountId,
     calendarId,
     eventId,
+    scope,
   });
 }
 
@@ -560,7 +568,8 @@ export async function updateCalendarEvent(
   accountId: string,
   calendarId: string,
   eventId: string,
-  event: EventInput
+  event: EventInput,
+  scope: RecurrenceScope = "this"
 ): Promise<GoogleCalendarEvent> {
   return invoke("update_calendar_event", {
     accountId,
@@ -574,6 +583,8 @@ export async function updateCalendarEvent(
     allDay: event.allDay,
     attendees: event.attendees,
     recurrence: event.recurrence,
+    addMeet: event.addMeet ?? false,
+    scope,
   });
 }
 

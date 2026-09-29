@@ -18,16 +18,21 @@
     --border-light: rgba(0, 0, 0, 0.08);
     --accent: #4285f4;
     --shadow: rgba(0, 0, 0, 0.1);
-    --danger: #e53935;
-    --danger-bg: rgba(229, 57, 53, 0.1);
-    /* A button filled red, and its label */
-    --danger-fill: #d32f2f;
-    --on-danger: #fff;
+    /* Status colours: the plain token is a fill that --on-status reads on,
+       -fg is text on a surface or on its own -bg tint */
+    --on-status: #fff;
+    --success: #1e7e34;
+    --success-fg: #176a2b;
+    --success-bg: rgba(30, 126, 52, 0.12);
+    --warning: #a35200;
+    --warning-fg: #8c4600;
+    --warning-bg: rgba(163, 82, 0, 0.12);
+    --danger: #d32f2f;
+    --danger-fg: #b71c1c;
+    --danger-bg: rgba(211, 47, 47, 0.1);
     /* Controls floating over the page: wheels, pickers, dropdowns */
     --bg-elevated: #fff;
     --elevated-ring: var(--border-color);
-    --warning: #8a5200;
-    --warning-bg: rgba(251, 140, 0, 0.16);
     --toast-bg: #323232;
     --toast-text: #fff;
     --toast-progress: #3d3d3d;
@@ -103,12 +108,16 @@
         --border-color: rgba(255, 255, 255, 0.15);
         --border-light: rgba(255, 255, 255, 0.08);
         --shadow: rgba(0, 0, 0, 0.3);
+        --on-status: #121212;
+        --success: #5cc76c;
+        --success-fg: #6fd17e;
+        --success-bg: rgba(92, 199, 108, 0.15);
+        --warning: #f0a54a;
+        --warning-fg: #f3b262;
+        --warning-bg: rgba(240, 165, 74, 0.15);
         --danger: #ff6b6b;
+        --danger-fg: #ff8080;
         --danger-bg: rgba(255, 107, 107, 0.15);
-        --warning: #ffb74d;
-        --warning-bg: rgba(255, 183, 77, 0.16);
-        --danger-fill: #ff6b6b;
-        --on-danger: #1e1e1e;
         --bg-elevated: #2c2c2c;
         --elevated-ring: rgba(255, 255, 255, 0.14);
         /* A light toast stands out from the dark page */
@@ -1155,38 +1164,90 @@ a:focus-visible,
     white-space: nowrap;
 }
 
-.calendar-rsvp {
+/* RSVP segmented control (RsvpControl) */
+.rsvp-control {
     display: flex;
-    margin-top: 6px;
-    background: var(--bg-secondary);
+    background: var(--bg-primary);
     box-shadow: inset 0 0 0 1px var(--border-color);
-    border-radius: var(--radius-sm);
+    border-radius: var(--radius-md);
     overflow: hidden;
-    width: fit-content;
 }
 
-.calendar-rsvp button {
-    padding: var(--space-sm) var(--space-lg);
+.rsvp-control-sm {
+    width: fit-content;
+    margin-top: 6px;
+    border-radius: var(--radius-sm);
+}
+
+.rsvp-segment {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: var(--space-sm);
     background: transparent;
     border: none;
-    font-size: var(--font-size-sm);
-    color: var(--text-muted);
+    color: var(--text-secondary);
+    font-weight: 500;
     cursor: pointer;
     transition: background 0.15s ease, color 0.15s ease;
 }
 
-.calendar-rsvp button:not(:last-child) {
+.rsvp-control-sm .rsvp-segment {
+    padding: var(--space-sm) var(--space-lg);
+    font-size: var(--font-size-sm);
+}
+
+.rsvp-control-md .rsvp-segment {
+    flex: 1;
+    padding: var(--space-lg) var(--space-xl);
+    font-size: var(--font-size-lg);
+}
+
+.rsvp-segment:not(:last-child) {
     border-right: 1px solid var(--border-color);
 }
 
-.calendar-rsvp button:hover {
-    background: var(--bg-hover);
-    color: var(--text-secondary);
-}
-
-.calendar-rsvp button.selected {
+.rsvp-segment:hover:not(:disabled):not(.selected) {
     background: var(--bg-hover);
     color: var(--text-primary);
+}
+
+.rsvp-segment:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+}
+
+.rsvp-segment.rsvp-success.selected {
+    background: var(--success);
+    color: var(--on-status);
+}
+
+.rsvp-segment.rsvp-warning.selected {
+    background: var(--warning);
+    color: var(--on-status);
+}
+
+.rsvp-segment.rsvp-danger.selected {
+    background: var(--danger);
+    color: var(--on-status);
+}
+
+.rsvp-segment.selected:disabled {
+    opacity: 1;
+}
+
+.rsvp-check {
+    display: inline-flex;
+}
+
+.rsvp-control-sm .rsvp-check svg {
+    width: 11px;
+    height: 11px;
+}
+
+.rsvp-segment .shortcut-hint {
+    color: inherit;
+    opacity: 0.6;
 }
 
 .calendar-event-title {
@@ -1207,18 +1268,18 @@ a:focus-visible,
 }
 
 .calendar-event-response.accepted {
-    background: rgba(34, 197, 94, 0.15);
-    color: #22c55e;
+    background: var(--success-bg);
+    color: var(--success-fg);
 }
 
 .calendar-event-response.tentative {
-    background: rgba(234, 179, 8, 0.15);
-    color: #eab308;
+    background: var(--warning-bg);
+    color: var(--warning-fg);
 }
 
 .calendar-event-response.declined {
-    background: rgba(239, 68, 68, 0.15);
-    color: #ef4444;
+    background: var(--danger-bg);
+    color: var(--danger-fg);
 }
 
 /* Calendar card event items */
@@ -1304,7 +1365,7 @@ a:focus-visible,
 }
 
 .calendar-event-response.needsAction {
-    background: rgba(150, 150, 150, 0.15);
+    background: var(--bg-hover);
     color: var(--text-muted);
 }
 
@@ -1322,6 +1383,46 @@ a:focus-visible,
 
 .calendar-join-btn:hover {
     opacity: 0.9;
+}
+
+/* InviteBlock: Join and the RSVP control share a row */
+.invite-actions {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--space-md);
+    margin-top: 6px;
+}
+
+.invite-actions .calendar-join-btn,
+.invite-actions .rsvp-control-sm {
+    margin-top: 0;
+}
+
+.invite-actions .calendar-join-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--space-sm);
+}
+
+.invite-actions .calendar-join-btn svg {
+    width: 14px;
+    height: 14px;
+}
+
+.invite-block-md {
+    margin: 0 0 var(--space-xl);
+    padding: var(--space-lg) var(--space-xl);
+}
+
+.invite-block-md .calendar-event-title {
+    font-size: var(--font-size-lg);
+    font-weight: 600;
+}
+
+.invite-block-md .invite-actions .rsvp-control-md {
+    flex: 1;
+    min-width: 240px;
 }
 
 .thread-participants {
@@ -1422,12 +1523,12 @@ a:focus-visible,
 
 .connection-status.offline {
     background: var(--warning-bg);
-    color: var(--warning);
+    color: var(--warning-fg);
 }
 
 .connection-status.expired {
     background: var(--danger-bg);
-    color: var(--danger);
+    color: var(--danger-fg);
 }
 
 .connection-status-message {
@@ -1967,13 +2068,13 @@ a:focus-visible,
 
 /* The destructive answer of a confirm dialog */
 .confirm-dialog .btn-danger {
-    background: var(--danger-fill);
-    border-color: var(--danger-fill);
-    color: var(--on-danger);
+    background: var(--danger);
+    border-color: var(--danger);
+    color: var(--on-status);
 }
 
 .confirm-dialog .btn-danger:hover {
-    background: var(--danger-fill);
+    background: var(--danger);
     filter: brightness(1.08);
 }
 
@@ -3875,59 +3976,6 @@ button.settings-section-title {
     margin-bottom: 12px;
 }
 
-.event-rsvp-status {
-    font-weight: 500;
-}
-
-.event-rsvp-status.accepted {
-    color: #43A047;
-}
-
-.event-rsvp-status.tentative {
-    color: #FB8C00;
-}
-
-.event-rsvp-status.declined {
-    color: #E53935;
-}
-
-.event-rsvp-status.needsAction {
-    color: var(--text-muted);
-}
-
-.event-rsvp-buttons {
-    display: flex;
-    gap: var(--space-md);
-}
-
-.event-rsvp-btn {
-    flex: 1;
-    padding: var(--space-lg) var(--space-xl);
-    border: 1px solid var(--border-color);
-    background: var(--bg-primary);
-    color: var(--text-primary);
-    border-radius: var(--radius-lg);
-    font-size: 0.875rem;
-    font-weight: 500;
-    cursor: pointer;
-    transition: all 0.15s;
-}
-
-.event-rsvp-btn:hover {
-    background: var(--bg-secondary);
-}
-
-.event-rsvp-btn.active {
-    background: var(--accent);
-    color: white;
-    border-color: var(--accent);
-}
-
-.event-rsvp-btn:disabled {
-    opacity: 0.5;
-    cursor: not-allowed;
-}
-
 .event-attendees-section {
     padding: 16px 0;
     border-top: 1px solid var(--border-light);
@@ -3977,22 +4025,22 @@ button.settings-section-title {
 }
 
 .event-attendee-status.accepted {
-    background: rgba(67, 160, 71, 0.15);
-    color: #43A047;
+    background: var(--success-bg);
+    color: var(--success-fg);
 }
 
 .event-attendee-status.tentative {
-    background: rgba(251, 140, 0, 0.15);
-    color: #FB8C00;
+    background: var(--warning-bg);
+    color: var(--warning-fg);
 }
 
 .event-attendee-status.declined {
-    background: rgba(229, 57, 53, 0.15);
-    color: #E53935;
+    background: var(--danger-bg);
+    color: var(--danger-fg);
 }
 
 .event-attendee-status.needsAction {
-    background: rgba(150, 150, 150, 0.15);
+    background: var(--bg-hover);
     color: var(--text-muted);
 }
 
@@ -5458,6 +5506,174 @@ button.settings-section-title {
     flex: 1;
 }
 
+/* Event form: title and calendar above the scrolling body, actions below */
+.event-form-header {
+    position: sticky;
+    top: 0;
+    z-index: 1;
+    display: flex;
+    align-items: center;
+    gap: var(--space-md);
+    padding: var(--space-lg) var(--space-lg) var(--space-lg) var(--space-xl);
+    border-bottom: 1px solid var(--border-color);
+    background: var(--bg-primary);
+}
+
+.event-title-input {
+    flex: 1;
+    min-width: 0;
+    padding: var(--space-xs) 0;
+    border: none;
+    background: transparent;
+    color: var(--text-primary);
+    font-family: inherit;
+    font-size: 17px;
+    font-weight: 600;
+    outline: none;
+}
+
+.event-title-input::placeholder {
+    color: var(--text-muted);
+    font-weight: 500;
+}
+
+.event-calendar-select {
+    max-width: 40%;
+    padding: var(--space-sm) var(--space-md);
+    border: 1px solid var(--border-color);
+    border-radius: var(--radius-md);
+    background: var(--bg-primary);
+    color: var(--text-primary);
+    font-size: var(--font-size-base);
+}
+
+.event-form-footer {
+    position: sticky;
+    bottom: 0;
+}
+
+/* ScopeMenu: anchored above the Save or Delete button that opened it */
+.scope-menu-anchor {
+    position: relative;
+    display: inline-flex;
+}
+
+.scope-menu {
+    position: absolute;
+    right: 0;
+    bottom: calc(100% + 6px);
+    z-index: var(--z-dropdown);
+    display: flex;
+    flex-direction: column;
+    min-width: 200px;
+    padding: var(--space-sm);
+    border: 1px solid var(--border-color);
+    border-radius: var(--radius-lg);
+    background: var(--bg-primary);
+    box-shadow: 0 4px 16px var(--shadow);
+}
+
+.thread-bar-actions .scope-menu {
+    top: calc(100% + 6px);
+    bottom: auto;
+    left: 0;
+    right: auto;
+}
+
+.scope-menu-title {
+    padding: var(--space-sm) var(--space-md);
+    font-size: var(--font-size-sm);
+    font-weight: 600;
+    color: var(--text-secondary);
+}
+
+.scope-menu-item {
+    padding: var(--space-md);
+    border: none;
+    border-radius: var(--radius-md);
+    background: transparent;
+    color: var(--text-primary);
+    font-size: var(--font-size-md);
+    text-align: left;
+    cursor: pointer;
+}
+
+.scope-menu-item:hover,
+.scope-menu-item:focus-visible {
+    background: var(--bg-hover);
+}
+
+.event-meet-field {
+    color: var(--text-secondary);
+    font-size: var(--font-size-md);
+}
+
+.event-meet-field svg {
+    flex-shrink: 0;
+    color: var(--text-muted);
+}
+
+.event-meet-toggle {
+    display: flex;
+    align-items: center;
+    gap: var(--space-sm);
+    cursor: pointer;
+}
+
+/* GuestChips */
+.guest-chips {
+    position: relative;
+    flex: 1;
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--space-sm);
+    min-height: 28px;
+}
+
+.guest-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--space-xs);
+    max-width: 220px;
+    padding: var(--space-xs) var(--space-xs) var(--space-xs) var(--space-md);
+    border-radius: var(--radius-lg);
+    background: var(--bg-hover);
+    color: var(--text-primary);
+    font-size: var(--font-size-base);
+}
+
+.guest-chip-label {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.guest-chip-remove {
+    display: inline-flex;
+    padding: 2px;
+    border: none;
+    border-radius: var(--radius-full);
+    background: transparent;
+    color: var(--text-muted);
+    cursor: pointer;
+}
+
+.guest-chip-remove:hover {
+    background: var(--bg-hover);
+    color: var(--text-primary);
+}
+
+.guest-chip-remove svg {
+    width: 10px;
+    height: 10px;
+}
+
+.compose-field .guest-chips-input {
+    flex: 1;
+    min-width: 120px;
+}
+
 /* Smart Replies */
 .smart-replies-container {
     padding: var(--space-lg);
@@ -5756,15 +5972,14 @@ button.settings-section-title {
 
 .scheduler-times {
     display: flex;
-    gap: 15px;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--space-md);
     padding: 0 15px;
-    height: 200px;
 }
 
-.scheduler-column {
-    flex: 1;
-    display: flex;
-    flex-direction: column;
+.scheduler-time-separator {
+    color: var(--text-muted);
 }
 
 .scheduler-occurrence-note {
@@ -5773,33 +5988,63 @@ button.settings-section-title {
     color: var(--text-secondary);
 }
 
-.scheduler-column-label {
-    display: flex;
-    align-items: center;
-    height: 17px;
-    margin-bottom: 5px;
-    font-size: 12px;
-    color: var(--text-secondary);
-}
-
-.scheduler-list {
-    flex: 1;
-    overflow-y: auto;
-    border: 1px solid var(--border-color);
-    border-radius: 6px;
-}
-
-.scheduler-option {
+.scheduler-repeat {
+    margin-left: auto;
     padding: 6px 10px;
-    cursor: pointer;
-    border-radius: 6px;
-    font-size: 13px;
-    text-align: center;
+    border: 1px solid var(--border-color);
+    border-radius: var(--radius-md);
+    background: var(--bg-primary);
     color: var(--text-primary);
+    font-size: 13px;
 }
 
-.scheduler-option.selected {
-    background-color: var(--accent);
+/* TimeCombobox: a typeable time with the day's steps below it */
+.time-combobox {
+    position: relative;
+}
+
+.time-combobox-input {
+    width: 104px;
+    padding: 6px 10px;
+    border: 1px solid var(--border-color);
+    border-radius: var(--radius-md);
+    background: var(--bg-primary);
+    color: var(--text-primary);
+    font-family: inherit;
+    font-size: 13px;
+    font-variant-numeric: tabular-nums;
+}
+
+.time-combobox-list {
+    position: absolute;
+    top: calc(100% + 4px);
+    left: 0;
+    z-index: var(--z-dropdown);
+    width: 100%;
+    max-height: 200px;
+    overflow-y: auto;
+    padding: var(--space-xs);
+    border: 1px solid var(--border-color);
+    border-radius: var(--radius-md);
+    background: var(--bg-primary);
+    box-shadow: 0 4px 12px var(--shadow);
+}
+
+.time-combobox-option {
+    padding: 5px 8px;
+    border-radius: var(--radius-sm);
+    font-size: 13px;
+    font-variant-numeric: tabular-nums;
+    color: var(--text-primary);
+    cursor: pointer;
+}
+
+.time-combobox-option:hover {
+    background: var(--bg-hover);
+}
+
+.time-combobox-option.selected {
+    background: var(--accent);
     color: #fff;
 }
 

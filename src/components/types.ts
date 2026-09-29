@@ -1,4 +1,5 @@
 import type { SendAttachment } from "../api/tauri";
+import type { RecurrenceScope } from "../app/recurrence";
 
 // Props for the inline compose form rendered inside ThreadView and EventView
 export interface InlineComposeProps {
@@ -55,8 +56,14 @@ export interface InlineEditEventProps {
   setRecurrence: (v: string | null) => void;
   // Editing one occurrence of a repeating event, which can't take a rule of its own
   occurrenceOnly: boolean;
+  guestSuggestions?: (query: string) => { email: string; name?: string }[];
+  addMeet?: boolean;
+  setAddMeet?: (v: boolean) => void;
+  hasMeet?: boolean;
   saving: boolean;
-  onSave: () => void;
+  onSave: (scope?: RecurrenceScope) => void;
+  // Saving asks which occurrences of a repeating event to change
+  askScope?: boolean;
   onClose: () => void;
   error: string | null;
   // Resize props

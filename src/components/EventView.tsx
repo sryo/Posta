@@ -1,11 +1,16 @@
-import { onMount, onCleanup, Show, For } from "solid-js";
+import { createEffect, createMemo, createSignal, on, onMount, onCleanup, Show, For } from "solid-js";
 import DOMPurify from 'dompurify';
 import { DOMPURIFY_CONFIG } from './MessageBody';
 import { openUrl } from '@tauri-apps/plugin-opener';
 import type { GoogleCalendarEvent } from "../api/tauri";
-import { formatCalendarEventDate, getResponseStatusLabel, textOrHtmlToHtml } from "../utils";
+import { formatCalendarEventDate, textOrHtmlToHtml } from "../utils";
+import { guestResponseLabel, isRsvpAnswer, ownResponseLabel, rsvpForKey } from "../app/rsvp";
+import { RsvpControl } from "./RsvpControl";
+import { ScopeMenu, type RecurrenceScope } from "./ScopeMenu";
+import { deletePrompt, eventActions, isWritableCalendar } from "../app/eventActions";
 import {
   ReplyIcon,
+  ReplyAllIcon,
   TrashIcon,
   EditIcon,
   CalendarIcon,
@@ -35,11 +40,14 @@ export const EventView = (props: {
   onReplyAll: () => void;
   onForward: () => void;
   onEdit: () => void;
-  onDelete: () => void;
+  // An occurrence of a repeating event passes the scope the user chose
+  onDelete: (scope?: RecurrenceScope) => void;
   onOpenCalendars: () => void;
   calendarDrawerOpen: boolean;
   onCloseCalendarDrawer: () => void;
-  calendars: { id: string; name: string; is_primary: boolean }[];
+  // Signed-in account's email; decides whether the user owns, hosts or is invited to the event
+  accountEmail: string;
+  calendars: { id: string; name: string; is_primary: boolean; access_role: string }[];
   calendarsLoading: boolean;
   onMoveToCalendar: (calendarId: string) => void;
   rsvpLoading: boolean;
@@ -50,29 +58,47 @@ export const EventView = (props: {
   const { closing, close: handleClose } = createCloseAfterAnimation(() => props.onClose());
   const dialogRef = useDialog({ onClose: handleClose, labelledBy: "event-view-title", initialFocus: (el) => el });
 
+  const actions = createMemo(() => props.event ? eventActions(props.event, props.accountEmail) : null);
+  const moveTargets = () => props.calendars.filter(isWritableCalendar);
 
-  // Shortcuts advertised by the toolbar badges (R/J/O/C/E/#) and the actions wheel (R/⇧R/F)
+  const [choosingDeleteScope, setChoosingDeleteScope] = createSignal(false);
+  const handleDelete = () => {
+    if (props.event?.recurring_event_id) setChoosingDeleteScope(true);
+    else props.onDelete();
+  };
+  createEffect(on(() => props.event?.id, () => setChoosingDeleteScope(false), { defer: true }));
+
+  // Shortcuts advertised by the toolbar badges (R/V/O/M/E/#), the RSVP control (Y/⇧M/N)
+  // and the actions wheel (R/⇧R/F)
   const handleKeyDown = (e: KeyboardEvent) => {
     if (isTypingTarget(e.target) || hasCommandModifier(e) || !props.event || props.inlineCompose || props.inlineEdit) return;
     const event = props.event;
+    const can = actions()!;
 
-    if (e.key === 'r' && event.organizer) { e.preventDefault(); props.onReplyOrganizer(); return; }
-    if (e.key === 'R') { e.preventDefault(); props.onReplyAll(); return; }
+    if (e.key === 'r' && can.reply) { e.preventDefault(); props.onReplyOrganizer(); return; }
+    if (e.key === 'r' && can.emailGuests) { e.preventDefault(); props.onReplyAll(); return; }
+    if (e.key === 'R' && can.reply) { e.preventDefault(); props.onReplyAll(); return; }
     if (e.key === 'f') { e.preventDefault(); props.onForward(); return; }
-    if (e.key === 'j' && event.hangout_link) { e.preventDefault(); openUrl(event.hangout_link); return; }
+    if (e.key === 'v' && event.hangout_link) { e.preventDefault(); openUrl(event.hangout_link); return; }
     if (e.key === 'o' && event.html_link) { e.preventDefault(); openUrl(event.html_link); return; }
-    if (e.key === 'c') {
+    if (e.key === 'm' && can.move) {
       // The drawer footer promises a toggle, so close when already open
       e.preventDefault();
       if (props.calendarDrawerOpen) props.onCloseCalendarDrawer();
       else props.onOpenCalendars();
       return;
     }
-    if (e.key === 'e' && event.can_edit) { e.preventDefault(); props.onEdit(); return; }
-    if ((e.key === 'd' || e.key === '#') && event.can_edit) {
+    const answer = can.rsvp ? rsvpForKey(e) : null;
+    if (answer) {
+      e.preventDefault();
+      if (answer !== event.response_status && !props.rsvpLoading) props.onRsvp(answer);
+      return;
+    }
+    if (e.key === 'e' && can.edit) { e.preventDefault(); props.onEdit(); return; }
+    if ((e.key === 'd' || e.key === '#') && can.delete) {
       e.preventDefault();
       // A held key repeats
-      if (!e.repeat) props.onDelete();
+      if (!e.repeat) handleDelete();
       return;
     }
   };
@@ -115,8 +141,7 @@ export const EventView = (props: {
         {/* Row 2: Actions */}
         <Show when={props.event}>
           <div class="thread-floating-bar-row thread-bar-actions">
-            {/* Reply to organizer */}
-            <Show when={props.event!.organizer}>
+            <Show when={actions()!.reply}>
               <button
                 class="thread-toolbar-btn"
                 onClick={props.onReplyOrganizer}
@@ -124,6 +149,18 @@ export const EventView = (props: {
               >
                 <ReplyIcon />
                 <span class="thread-toolbar-label">Reply</span>
+                <span class="shortcut-hint">R</span>
+              </button>
+            </Show>
+
+            <Show when={actions()!.emailGuests}>
+              <button
+                class="thread-toolbar-btn"
+                onClick={props.onReplyAll}
+                title="Email guests"
+              >
+                <ReplyAllIcon />
+                <span class="thread-toolbar-label">Email guests</span>
                 <span class="shortcut-hint">R</span>
               </button>
             </Show>
@@ -137,7 +174,7 @@ export const EventView = (props: {
               >
                 <VideoIcon />
                 <span class="thread-toolbar-label">Join</span>
-                <span class="shortcut-hint">J</span>
+                <span class="shortcut-hint">V</span>
               </button>
             </Show>
 
@@ -148,20 +185,24 @@ export const EventView = (props: {
                 title="Open in Google Calendar"
               >
                 <CalendarIcon />
-                <span class="thread-toolbar-label">Open</span>
+                <span class="thread-toolbar-label">Google Calendar ↗</span>
                 <span class="shortcut-hint">O</span>
               </button>
             </Show>
 
-            <button class="thread-toolbar-btn" onClick={props.onOpenCalendars} title="Move to calendar">
-              <CalendarIcon />
-              <span class="thread-toolbar-label">Move</span>
-              <span class="shortcut-hint">C</span>
-            </button>
+            <Show when={actions()!.move}>
+              <button class="thread-toolbar-btn" onClick={props.onOpenCalendars} title="Move to calendar">
+                <CalendarIcon />
+                <span class="thread-toolbar-label">Move to…</span>
+                <span class="shortcut-hint">M</span>
+              </button>
+            </Show>
 
-            <Show when={props.event!.can_edit}>
+            <Show when={actions()!.edit || actions()!.delete}>
               <div class="thread-toolbar-divider" />
+            </Show>
 
+            <Show when={actions()!.edit}>
               <button
                 class="thread-toolbar-btn"
                 onClick={props.onEdit}
@@ -171,16 +212,27 @@ export const EventView = (props: {
                 <span class="thread-toolbar-label">Edit</span>
                 <span class="shortcut-hint">E</span>
               </button>
+            </Show>
 
+            <Show when={actions()!.delete}>
+              <div class="scope-menu-anchor">
               <button
                 class="thread-toolbar-btn thread-toolbar-btn-danger"
-                onClick={(e) => { if (e.detail <= 1) props.onDelete(); }}
+                onClick={(e) => { if (e.detail <= 1) handleDelete(); }}
                 title="Delete event"
               >
                 <TrashIcon />
                 <span class="thread-toolbar-label">Delete</span>
                 <span class="shortcut-hint">#</span>
               </button>
+              <Show when={choosingDeleteScope()}>
+                <ScopeMenu
+                  title={actions()!.role === 'organizer' ? deletePrompt(actions()!) : "Delete repeating event"}
+                  onChoose={(scope) => { setChoosingDeleteScope(false); props.onDelete(scope); }}
+                  onCancel={() => setChoosingDeleteScope(false)}
+                />
+              </Show>
+              </div>
             </Show>
           </div>
         </Show>
@@ -200,8 +252,9 @@ export const EventView = (props: {
                   {/* Message Actions Wheel - hide when composing or editing */}
                   <Show when={!props.inlineCompose && !props.inlineEdit}>
                     <MessageActionsWheel
-                      onReply={props.onReplyOrganizer}
-                      onReplyAll={props.onReplyAll}
+                      onReply={actions()!.reply ? props.onReplyOrganizer : undefined}
+                      onReplyAll={actions()!.reply || actions()!.emailGuests ? props.onReplyAll : undefined}
+                      replyAllTitle={actions()!.emailGuests ? "Email guests" : undefined}
                       onForward={props.onForward}
                       open={true}
                       showHints={true}
@@ -240,36 +293,17 @@ export const EventView = (props: {
                   </Show>
 
                   {/* RSVP Section */}
-                  <Show when={props.event!.response_status}>
+                  <Show when={actions()!.rsvp}>
                     <div class="event-rsvp-section">
                       <div class="event-rsvp-current">
-                        Your response: <span class={`event-rsvp-status ${props.event!.response_status}`}>
-                          {getResponseStatusLabel(props.event!.response_status)}
-                        </span>
+                        {isRsvpAnswer(props.event!.response_status) ? "Your response" : ownResponseLabel(props.event!.response_status)}
                       </div>
-                      <div class="event-rsvp-buttons">
-                        <button
-                          class={`event-rsvp-btn ${props.event!.response_status === 'accepted' ? 'active' : ''}`}
-                          onClick={() => props.onRsvp('accepted')}
-                          disabled={props.rsvpLoading}
-                        >
-                          Yes
-                        </button>
-                        <button
-                          class={`event-rsvp-btn ${props.event!.response_status === 'tentative' ? 'active' : ''}`}
-                          onClick={() => props.onRsvp('tentative')}
-                          disabled={props.rsvpLoading}
-                        >
-                          Maybe
-                        </button>
-                        <button
-                          class={`event-rsvp-btn ${props.event!.response_status === 'declined' ? 'active' : ''}`}
-                          onClick={() => props.onRsvp('declined')}
-                          disabled={props.rsvpLoading}
-                        >
-                          No
-                        </button>
-                      </div>
+                      <RsvpControl
+                        value={props.event!.response_status}
+                        onAnswer={props.onRsvp}
+                        disabled={props.rsvpLoading}
+                        showKeys
+                      />
                     </div>
                   </Show>
 
@@ -286,7 +320,7 @@ export const EventView = (props: {
                                 {attendee.is_organizer && <span class="event-attendee-badge">Organizer</span>}
                               </span>
                               <span class={`event-attendee-status ${attendee.response_status || ''}`}>
-                                {getResponseStatusLabel(attendee.response_status)}
+                                {guestResponseLabel(attendee.response_status)}
                               </span>
                             </div>
                           )}
@@ -365,6 +399,11 @@ export const EventView = (props: {
                     recurrence={props.inlineEdit!.recurrence}
                     setRecurrence={props.inlineEdit!.setRecurrence}
                     occurrenceOnly={props.inlineEdit!.occurrenceOnly}
+                    askScope={props.inlineEdit!.askScope}
+                    guestSuggestions={props.inlineEdit!.guestSuggestions}
+                    addMeet={props.inlineEdit!.addMeet}
+                    setAddMeet={props.inlineEdit!.setAddMeet}
+                    hasMeet={props.inlineEdit!.hasMeet}
                     saving={props.inlineEdit!.saving}
                     onSave={props.inlineEdit!.onSave}
                     error={props.inlineEdit!.error}
@@ -391,7 +430,7 @@ export const EventView = (props: {
             </Show>
 
             <Show when={!props.calendarsLoading}>
-              <For each={props.calendars}>
+              <For each={moveTargets()}>
                 {(cal) => {
                   const isCurrent = () => props.event?.calendar_id === cal.id;
 
@@ -412,14 +451,14 @@ export const EventView = (props: {
                 }}
               </For>
 
-              <Show when={!props.calendarsLoading && props.calendars.length === 0}>
+              <Show when={!props.calendarsLoading && moveTargets().length === 0}>
                 <div class="label-drawer-empty">No calendars found</div>
               </Show>
             </Show>
           </div>
 
           <div class="label-drawer-footer">
-            <span class="shortcut-hint">Press C to toggle calendars</span>
+            <span class="shortcut-hint">M to close</span>
           </div>
         </div>
       </Show>

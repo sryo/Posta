@@ -2,9 +2,8 @@ import { beforeAll, describe, expect, it, vi } from "vitest";
 import { fireEvent, render } from "@solidjs/testing-library";
 import { createSignal } from "solid-js";
 import { CreateEventForm } from "./CreateEventForm";
-import { formatClock, uses12HourClock } from "../app/dateFormat";
 
-function renderForm(init: { startDate: string; endDate?: string; startTime?: string; endTime?: string; isEditing?: boolean; allDay?: boolean; setRecurrence?: (v: string | null) => void; summary?: string; onSave?: () => void; onClose?: () => void }) {
+function renderForm(init: { startDate: string; endDate?: string; startTime?: string; endTime?: string; isEditing?: boolean; allDay?: boolean; setRecurrence?: (v: string | null) => void; summary?: string; onSave?: () => void; onClose?: () => void; extra?: Partial<Parameters<typeof CreateEventForm>[0]> }) {
   const [startDate, setStartDate] = createSignal(init.startDate);
   const [endDate, setEndDate] = createSignal(init.endDate ?? init.startDate);
   const [startTime, setStartTime] = createSignal(init.startTime ?? "10:00");
@@ -36,6 +35,7 @@ function renderForm(init: { startDate: string; endDate?: string; startTime?: str
       onSave={init.onSave ?? vi.fn()}
       error={null}
       isEditing={init.isEditing}
+      {...(init.extra ?? {})}
     />
   ));
   return { ...result, startDate, endDate, startTime, endTime };
@@ -44,26 +44,19 @@ function renderForm(init: { startDate: string; endDate?: string; startTime?: str
 const selects = (container: HTMLElement) => container.querySelectorAll<HTMLSelectElement>(".scheduler-header select");
 const firstDayCard = (container: HTMLElement) => container.querySelector(".scheduler-day-card")!.textContent;
 
-// A slot's label, as the locale writes the HH:MM time it stands for
-const clock = (time: string) => {
-  const [h, m] = time.split(":").map(Number);
-  return formatClock(new Date(2000, 0, 1, h, m));
+const timeField = (container: HTMLElement, label: "Start" | "End") =>
+  container.querySelector<HTMLInputElement>(`input[role="combobox"][aria-label="${label}"]`)!;
+
+// Types a time into the Start or End field and confirms it
+const typeTime = (container: HTMLElement, label: "Start" | "End", text: string) => {
+  const input = timeField(container, label);
+  fireEvent.input(input, { target: { value: text } });
+  fireEvent.keyDown(input, { key: "Enter" });
 };
-const slot = (container: HTMLElement, picker: "start" | "end", time: string) =>
-  Array.from(container.querySelectorAll<HTMLElement>(`.time-picker-${picker} > div`)).find(el => el.textContent === clock(time))!;
 
 // jsdom has no layout; the form scrolls the selected times into view on open
 beforeAll(() => {
   Element.prototype.scrollIntoView = vi.fn();
-});
-
-describe("CreateEventForm time lists", () => {
-  it("write the times as the locale does", () => {
-    const { container } = renderForm({ startDate: "2030-06-10" });
-    const labels = Array.from(container.querySelectorAll<HTMLElement>(".time-picker-start > div")).map(el => el.textContent);
-    expect(labels).toContain(clock("14:30"));
-    if (uses12HourClock()) expect(labels).not.toContain("14:30");
-  });
 });
 
 describe("CreateEventForm closing", () => {
@@ -167,15 +160,13 @@ describe("CreateEventForm date navigation", () => {
 });
 
 describe("CreateEventForm keyboard access", () => {
-  it("picks a day and a time with Enter or Space", () => {
+  it("picks a day with Enter or Space and types a time", () => {
     const { container, startDate, startTime } = renderForm({ startDate: "2031-03-03", startTime: "10:00", endTime: "11:00" });
     const days = container.querySelectorAll<HTMLElement>(".scheduler-day-card");
     expect(days[2].tabIndex).toBe(0);
     fireEvent.keyDown(days[2], { key: "Enter" });
     expect(startDate()).toBe("2031-03-05");
-    const nine = slot(container, "start", "09:00");
-    expect(nine.getAttribute("role")).toBe("option");
-    fireEvent.keyDown(nine, { key: " " });
+    typeTime(container, "Start", "9am");
     expect(startTime()).toBe("09:00");
   });
 
@@ -184,7 +175,7 @@ describe("CreateEventForm keyboard access", () => {
     const { container, startDate } = renderForm({ startDate: "2031-03-03", onSave });
     const days = container.querySelectorAll<HTMLElement>(".scheduler-day-card");
     fireEvent.keyDown(days[2], { key: "Enter", metaKey: true });
-    fireEvent.keyDown(slot(container, "start", "09:00"), { key: "Enter", ctrlKey: true });
+    fireEvent.keyDown(timeField(container, "Start"), { key: "Enter", ctrlKey: true });
     expect(onSave).toHaveBeenCalledTimes(2);
     expect(startDate()).toBe("2031-03-03");
   });
@@ -193,15 +184,27 @@ describe("CreateEventForm keyboard access", () => {
 describe("CreateEventForm time pickers", () => {
   it("keeps end after start on a single-day event", () => {
     const { container, endTime } = renderForm({ startDate: "2031-03-03", startTime: "10:00", endTime: "11:00" });
-    fireEvent.click(slot(container, "end", "09:00"));
+    typeTime(container, "End", "09:00");
     expect(endTime()).toBe("11:00");
+  });
+
+  it("moves the end along with the start, keeping the length", () => {
+    const { container, endTime } = renderForm({ startDate: "2031-03-03", startTime: "10:00", endTime: "11:00" });
+    typeTime(container, "Start", "11:30");
+    expect(endTime()).toBe("12:30");
+  });
+
+  it("offers times in 15-minute steps", () => {
+    const { container } = renderForm({ startDate: "2031-03-03", startTime: "10:00", endTime: "11:00" });
+    fireEvent.focus(timeField(container, "Start"));
+    expect(container.querySelectorAll(".time-picker-start [role=option]")).toHaveLength(96);
   });
 
   it("allows an end time earlier in the day than the start on a multi-day event", () => {
     const { container, endTime } = renderForm({
       startDate: "2031-03-03", endDate: "2031-03-05", startTime: "22:00", endTime: "23:00", isEditing: true,
     });
-    fireEvent.click(slot(container, "end", "09:00"));
+    typeTime(container, "End", "09:00");
     expect(endTime()).toBe("09:00");
   });
 
@@ -209,18 +212,120 @@ describe("CreateEventForm time pickers", () => {
     const { container, endTime } = renderForm({
       startDate: "2031-03-03", endDate: "2031-03-05", startTime: "08:00", endTime: "09:00", isEditing: true,
     });
-    fireEvent.click(slot(container, "start", "10:00"));
+    typeTime(container, "Start", "10:00");
     expect(endTime()).toBe("09:00");
   });
 });
 
 
+describe("CreateEventForm header", () => {
+  const calendars = [
+    { id: "me@x.test", name: "me@x.test", is_primary: true, access_role: "owner" },
+    { id: "birthdays", name: "Birthdays", is_primary: false, access_role: "reader" },
+    { id: "team", name: "Team", is_primary: false, access_role: "writer" },
+  ];
+
+  it("keeps the title and the calendar together in a header that stays in view", () => {
+    const { container, getByRole } = renderForm({ startDate: "2031-03-03", extra: { calendars, calendarId: "team", setCalendarId: vi.fn() } });
+    const header = container.querySelector(".event-form-header")!;
+    expect(header.querySelector('input[placeholder="Event title"]')).toHaveClass("event-title-input");
+    const select = getByRole("combobox", { name: "Calendar" }) as HTMLSelectElement;
+    expect(header.contains(select)).toBe(true);
+    expect(select.value).toBe("team");
+  });
+
+  it("offers only calendars the user can write to", () => {
+    const setCalendarId = vi.fn();
+    const { getByRole } = renderForm({ startDate: "2031-03-03", extra: { calendars, calendarId: "me@x.test", setCalendarId } });
+    const select = getByRole("combobox", { name: "Calendar" }) as HTMLSelectElement;
+    expect(Array.from(select.options).map(o => o.textContent)).toEqual(["me@x.test", "Team"]);
+    fireEvent.change(select, { target: { value: "team" } });
+    expect(setCalendarId).toHaveBeenCalledWith("team");
+  });
+
+  it("leaves the calendar of an event being edited to Move", () => {
+    const { queryByRole } = renderForm({ startDate: "2031-03-03", isEditing: true, extra: { calendars, calendarId: "team", setCalendarId: vi.fn() } });
+    expect(queryByRole("combobox", { name: "Calendar" })).toBeNull();
+  });
+
+  it("keeps Cancel and Save in a footer that stays in view", () => {
+    const { container } = renderForm({ startDate: "2031-03-03" });
+    expect(container.querySelector(".event-form-footer .btn-primary")).not.toBeNull();
+  });
+});
+
+describe("CreateEventForm guests", () => {
+  it("adds guests as chips from the contact suggestions", () => {
+    const setAttendees = vi.fn();
+    const guestSuggestions = vi.fn(() => [{ email: "ana@x.test", name: "Ana" }]);
+    const { getByRole } = renderForm({ startDate: "2031-03-03", extra: { setAttendees, guestSuggestions } });
+    const input = getByRole("combobox", { name: "Guests" });
+    fireEvent.input(input, { target: { value: "an" } });
+    expect(guestSuggestions).toHaveBeenCalledWith("an");
+    fireEvent.keyDown(input, { key: "Enter" });
+    expect(setAttendees).toHaveBeenCalledWith('"Ana" <ana@x.test>');
+  });
+});
+
+describe("CreateEventForm Google Meet", () => {
+  it("adds a Meet link with a toggle", () => {
+    const setAddMeet = vi.fn();
+    const { getByRole } = renderForm({ startDate: "2031-03-03", extra: { addMeet: false, setAddMeet } });
+    const toggle = getByRole("checkbox", { name: "Add Google Meet" });
+    fireEvent.click(toggle);
+    expect(setAddMeet).toHaveBeenCalledWith(true);
+  });
+
+  it("says an event already has a Meet link instead of offering another", () => {
+    const { queryByRole, getByText } = renderForm({ startDate: "2031-03-03", isEditing: true, extra: { addMeet: false, setAddMeet: vi.fn(), hasMeet: true } });
+    expect(queryByRole("checkbox", { name: "Add Google Meet" })).toBeNull();
+    expect(getByText("Has a Google Meet link")).toBeInTheDocument();
+  });
+});
+
+describe("CreateEventForm repeating event", () => {
+  it("asks which events to change before saving an occurrence", () => {
+    const onSave = vi.fn();
+    const { container, getByRole } = renderForm({ startDate: "2031-03-03", isEditing: true, onSave, extra: { askScope: true } });
+    fireEvent.click(container.querySelector<HTMLButtonElement>(".event-form-footer .btn-primary")!);
+    expect(onSave).not.toHaveBeenCalled();
+    fireEvent.click(getByRole("menuitem", { name: "All events" }));
+    expect(onSave).toHaveBeenCalledWith("all");
+  });
+
+  it("asks on ⌘Enter too, and Escape goes back to the form", () => {
+    const onSave = vi.fn();
+    const onClose = vi.fn();
+    const { container, getByRole, queryByRole } = renderForm({ startDate: "2031-03-03", isEditing: true, onSave, onClose, extra: { askScope: true } });
+    fireEvent.keyDown(container.querySelector("textarea")!, { key: "Enter", metaKey: true });
+    const menu = getByRole("menu");
+    fireEvent.keyDown(menu, { key: "Escape" });
+    expect(queryByRole("menu")).toBeNull();
+    expect(onClose).not.toHaveBeenCalled();
+    expect(onSave).not.toHaveBeenCalled();
+  });
+
+  it("saves a one-off event straight away", () => {
+    const onSave = vi.fn();
+    const { container } = renderForm({ startDate: "2031-03-03", isEditing: true, onSave });
+    fireEvent.click(container.querySelector<HTMLButtonElement>(".event-form-footer .btn-primary")!);
+    expect(onSave).toHaveBeenCalledTimes(1);
+  });
+});
+
 describe("CreateEventForm repeat", () => {
   it("offers repeat options for all-day events and hides the time pickers", () => {
     const setRecurrence = vi.fn();
-    const { container, getByText } = renderForm({ startDate: "2024-06-10", allDay: true, setRecurrence });
+    const { container, getByRole } = renderForm({ startDate: "2024-06-10", allDay: true, setRecurrence });
     expect(container.querySelector(".time-picker-start")).toBeNull();
-    fireEvent.click(getByText("Weekly"));
+    fireEvent.change(getByRole("combobox", { name: "Repeat" }), { target: { value: "FREQ=WEEKLY" } });
     expect(setRecurrence).toHaveBeenCalledWith("FREQ=WEEKLY");
+  });
+
+  it("goes back to no repeat", () => {
+    const setRecurrence = vi.fn();
+    const { getByRole } = renderForm({ startDate: "2024-06-10", setRecurrence });
+    fireEvent.change(getByRole("combobox", { name: "Repeat" }), { target: { value: "" } });
+    expect(setRecurrence).toHaveBeenCalledWith(null);
   });
 });

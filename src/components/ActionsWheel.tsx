@@ -7,9 +7,11 @@ import {
   type GoogleCalendarEvent,
 } from "../api/tauri";
 import { rsvpSentMessage, type RsvpStatus } from "../app/rsvp";
+import { eventActions } from "../app/eventActions";
 import {
   ClearIcon,
   ReplyIcon,
+  ReplyAllIcon,
   ForwardIcon,
   ArchiveIcon,
   InboxIcon,
@@ -95,44 +97,45 @@ export const ActionsWheel = (props: {
       const evtSelectedCount = props.selectedEvents()[cId]?.size || 0;
       const evtSettings = props.eventActionSettings();
       const evtOrder = props.eventActionOrder();
+      const can = eventActions(evt, props.selectedAccount()?.email ?? '');
 
       // Event action definitions
       const eventActionDefs: Record<string, { cls: string; title: string; keyHint?: string; icon: () => JSX.Element; onClick: (e: MouseEvent) => void; available: boolean }> = {
         quickReply: {
           cls: 'bulk-reply',
-          title: 'Reply to organizer',
+          title: can.emailGuests ? 'Email guests' : 'Reply to organizer',
           keyHint: 'r',
-          icon: ReplyIcon,
+          icon: can.emailGuests ? ReplyAllIcon : ReplyIcon,
           onClick: (e) => { e.stopPropagation(); props.openEventQuickReply(evt.id); },
-          available: !!evt.organizer
+          available: can.reply || can.emailGuests
         },
         joinMeeting: {
           cls: 'event-join',
           title: 'Join meeting',
           icon: VideoIcon,
           onClick: (e) => { e.stopPropagation(); evt.hangout_link && openUrl(evt.hangout_link); },
-          available: !!evt.hangout_link
+          available: can.join
         },
         openCalendar: {
           cls: 'event-open',
           title: 'Open in Calendar',
           icon: CalendarIcon,
           onClick: (e) => { e.stopPropagation(); evt.html_link && openUrl(evt.html_link); },
-          available: !!evt.html_link
+          available: can.open
         },
         rsvpYes: {
           cls: evt.response_status === 'accepted' ? 'event-rsvp-active' : 'event-rsvp',
-          title: 'RSVP Yes',
+          title: 'Going',
           icon: CheckIcon,
           onClick: (e) => { e.stopPropagation(); rsvp(evt, 'accepted'); },
-          available: true
+          available: can.rsvp
         },
         rsvpNo: {
           cls: evt.response_status === 'declined' ? 'event-rsvp-active' : 'event-rsvp',
-          title: 'RSVP No',
+          title: 'Not going',
           icon: ThumbsDownIcon,
           onClick: (e) => { e.stopPropagation(); rsvp(evt, 'declined'); },
-          available: true
+          available: can.rsvp
         },
         delete: {
           cls: 'bulk-danger',
@@ -145,7 +148,7 @@ export const ActionsWheel = (props: {
             props.onDeleteEvent?.(evt);
             props.onClose();
           },
-          available: evt.can_edit && !!props.onDeleteEvent
+          available: can.delete && !!props.onDeleteEvent
         }
       };
 

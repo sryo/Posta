@@ -1,6 +1,9 @@
 import { createSignal, createEffect, createMemo, on, onMount, onCleanup, Show, For } from "solid-js";
 import { MessageBody } from './MessageBody';
-import { sendReaction, type FullThread, type FullMessage, type Attachment } from "../api/tauri";
+import { sendReaction, type FullThread, type FullMessage, type Attachment, type CalendarEvent } from "../api/tauri";
+import type { RsvpStatus } from "../app/rsvp";
+import { isCalendarAttachment } from "../app/attachments";
+import { InviteBlock } from "./InviteBlock";
 import { createCloseAfterAnimation } from "../shared/closeAfterAnimation";
 import { isTypingTarget, hasCommandModifier, onActivateKey } from "../shared/keyboard";
 import {
@@ -35,6 +38,7 @@ import {
   UnsubscribeIcon,
   ChevronLeftIcon,
   ChevronRightIcon,
+  CalendarIcon,
 } from "./Icons";
 import { SmartReplies } from "./SmartReplies";
 import { ReactionButton } from "./ReactionButton";
@@ -103,6 +107,12 @@ export const ThreadView = (props: {
   // Where the thread sits among its card's threads, counting from one
   position?: { index: number; total: number } | null,
   onStepThread?: (direction: 1 | -1) => void,
+  // The event of an invite email, shown above the body of the message carrying it
+  invite?: { event: CalendarEvent; rsvp: string | null | undefined; onAnswer: (status: RsvpStatus) => void; disabled: boolean } | null,
+  // Opens a new event named after the thread, with its people as guests
+  onCreateEvent?: () => void,
+  // A panel over the thread (the new-event form) owns the keyboard
+  keysPaused?: boolean,
 }) => {
   let messageRefs: (HTMLDivElement | undefined)[] = [];
   let contentRef: HTMLDivElement | undefined;
@@ -148,6 +158,15 @@ export const ThreadView = (props: {
   // a new id), so a reloaded thread reuses the loaded message objects and
   // <For> keeps their rendered rows instead of rebuilding every body
   let loadedById = new Map<string, FullMessage>();
+  // The message whose parts include the calendar file, else the first
+  const inviteMessageId = createMemo(() => {
+    if (!props.invite) return null;
+    const list = props.thread?.messages ?? [];
+    const hasCalendarPart = (parts: any[] | undefined): boolean => !!parts?.some(p =>
+      isCalendarAttachment({ filename: p.filename ?? "", mime_type: p.mimeType ?? "" }) || hasCalendarPart(p.parts));
+    return (list.find(m => hasCalendarPart(m.payload?.parts)) ?? list[0])?.id ?? null;
+  });
+
   const messages = createMemo(() => {
     const next = new Map<string, FullMessage>();
     const list = (props.thread?.messages ?? []).map(m => {
@@ -349,6 +368,7 @@ export const ThreadView = (props: {
   };
 
   const handleKeyDown = (e: KeyboardEvent) => {
+    if (props.keysPaused) return;
     if (isTypingTarget(e.target) || hasCommandModifier(e) || !props.thread) return;
 
     // The drawer covers the thread, so only its own toggle stays live
@@ -366,6 +386,7 @@ export const ThreadView = (props: {
     if (e.key === 'l') { e.preventDefault(); props.onOpenLabels(); return; }
     if ((e.key === 'J' || e.key === ']') && props.onStepThread) { e.preventDefault(); props.onStepThread(1); return; }
     if ((e.key === 'K' || e.key === '[') && props.onStepThread) { e.preventDefault(); props.onStepThread(-1); return; }
+    if (e.key === 'e' && props.onCreateEvent) { e.preventDefault(); props.onCreateEvent(); return; }
 
     // Reply shortcuts advertised by the focused message's actions wheel
     if ((e.key === 'r' || e.key === 'R' || e.key === 'f') && !props.inlineCompose) {
@@ -477,6 +498,14 @@ export const ThreadView = (props: {
                 <span class="thread-toolbar-label">
                   {unsubscribeState() === 'working' ? 'Unsubscribing…' : unsubscribeState() === 'done' ? 'Unsubscribed' : 'Unsubscribe'}
                 </span>
+              </button>
+            </Show>
+
+            <Show when={props.onCreateEvent}>
+              <button class="thread-toolbar-btn" onClick={() => props.onCreateEvent!()} title="Create event from this thread">
+                <CalendarIcon />
+                <span class="thread-toolbar-label">Create event…</span>
+                <span class="shortcut-hint">E</span>
               </button>
             </Show>
 
@@ -617,6 +646,16 @@ export const ThreadView = (props: {
                           showHints={props.focusedMessageIndex === index()}
                           onMouseEnter={() => showMessageWheel(msg.id)}
                           onMouseLeave={hideMessageWheel}
+                        />
+                      </Show>
+                      <Show when={props.invite && inviteMessageId() === msg.id}>
+                        <InviteBlock
+                          invite={props.invite!.event}
+                          rsvp={props.invite!.rsvp}
+                          onAnswer={props.invite!.onAnswer}
+                          disabled={props.invite!.disabled}
+                          showTitle
+                          size="md"
                         />
                       </Show>
                       <Show

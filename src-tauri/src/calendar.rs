@@ -225,6 +225,8 @@ struct EventDateTime {
     #[serde(rename = "dateTime")]
     date_time: Option<String>,
     date: Option<String>,
+    #[serde(rename = "timeZone", default)]
+    time_zone: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -259,6 +261,16 @@ struct CreateEventRequest {
     attendees: Option<Vec<CalEventAttendee>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     recurrence: Option<Vec<String>>,
+    #[serde(rename = "conferenceData", skip_serializing_if = "Option::is_none")]
+    conference_data: Option<serde_json::Value>,
+}
+
+impl CreateEventRequest {
+    /// The query the write needs besides sendUpdates: Google ignores
+    /// conferenceData unless asked for version 1
+    fn conference_query(&self) -> &'static str {
+        if self.conference_data.is_some() { "&conferenceDataVersion=1" } else { "" }
+    }
 }
 
 #[derive(Debug, Serialize)]
@@ -359,6 +371,85 @@ pub struct EventFields {
     pub all_day: bool,
     pub attendees: Option<Vec<String>>,
     pub recurrence: Option<Vec<String>>,
+    /// Ask Google to attach a new Meet link
+    pub add_meet: bool,
+}
+
+/// Which occurrences of a repeating event a change or delete applies to
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RecurrenceScope {
+    This,
+    Following,
+    All,
+}
+
+impl RecurrenceScope {
+    pub fn parse(scope: Option<&str>) -> Result<Self, String> {
+        match scope {
+            None | Some("this") => Ok(Self::This),
+            Some("following") => Ok(Self::Following),
+            Some("all") => Ok(Self::All),
+            Some(other) => Err(format!("Unknown recurrence scope: {}", other)),
+        }
+    }
+}
+
+/// What a scoped change needs to know of an occurrence and of its series
+#[derive(Debug, Deserialize)]
+struct SeriesFacts {
+    id: String,
+    #[serde(rename = "recurringEventId")]
+    recurring_event_id: Option<String>,
+    start: Option<EventDateTime>,
+    #[serde(rename = "originalStartTime")]
+    original_start_time: Option<EventDateTime>,
+    recurrence: Option<Vec<String>>,
+}
+
+/// An occurrence's place in its series: the series, when the occurrence
+/// starts now, and when the series' rule put it (timestamp, all-day)
+struct SeriesSplit {
+    series: SeriesFacts,
+    series_start: (i64, bool),
+    occurrence_start: (i64, bool),
+    original_start: (i64, bool),
+}
+
+const DAY_MS: i64 = 24 * 3600 * 1000;
+
+/// RRULE parts other than the given limits (COUNT, UNTIL)
+fn rule_without_limits(rule: &str) -> Option<Vec<&str>> {
+    let body = rule.strip_prefix("RRULE:")?;
+    Some(body.split(';').filter(|p| !p.starts_with("COUNT=") && !p.starts_with("UNTIL=")).collect())
+}
+
+/// The series' rules, ending before the occurrence that starts at `split`
+fn ended_rules(rules: &[String], split: i64, all_day: bool) -> Vec<String> {
+    let until = if all_day {
+        DateTime::<Utc>::from_timestamp_millis(split - DAY_MS).map(|d| d.format("%Y%m%d").to_string())
+    } else {
+        DateTime::<Utc>::from_timestamp_millis(split - 1000).map(|d| d.format("%Y%m%dT%H%M%SZ").to_string())
+    }
+    .unwrap_or_default();
+    rules
+        .iter()
+        .map(|rule| match rule_without_limits(rule) {
+            Some(mut parts) => {
+                let until = format!("UNTIL={}", until);
+                parts.push(&until);
+                format!("RRULE:{}", parts.join(";"))
+            }
+            None => rule.clone(),
+        })
+        .collect()
+}
+
+/// The series' rules without an end, for the series that continues it
+fn unbounded_rules(rules: &[String]) -> Vec<String> {
+    rules
+        .iter()
+        .map(|rule| rule_without_limits(rule).map_or_else(|| rule.clone(), |parts| format!("RRULE:{}", parts.join(";"))))
+        .collect()
 }
 
 /// The guest list to write, or None to leave the event's guests as they are.
@@ -420,7 +511,17 @@ fn build_event_request(
         (date_time(start_dt), date_time(end_dt))
     };
 
+    let conference_data = fields.add_meet.then(|| {
+        serde_json::json!({
+            "createRequest": {
+                "requestId": uuid::Uuid::new_v4().to_string(),
+                "conferenceSolutionKey": { "type": "hangoutsMeet" },
+            }
+        })
+    });
+
     Ok(CreateEventRequest {
+        conference_data,
         summary: fields.summary,
         description: fields.description,
         location: fields.location,
@@ -643,16 +744,16 @@ impl CalendarClient {
         calendar_id: &str,
         fields: EventFields,
     ) -> Result<CalendarEvent, String> {
-        let url = format!(
-            "{}/calendars/{}/events?sendUpdates={}",
-            self.api_base,
-            urlencoding::encode(calendar_id),
-            send_updates(true)
-        );
-
         let calendar = self.calendar_info(calendar_id).await;
         let time_zone = recurrence_time_zone(&fields, calendar.as_ref());
         let body = build_event_request(fields, time_zone, &[])?;
+        let url = format!(
+            "{}/calendars/{}/events?sendUpdates={}{}",
+            self.api_base,
+            urlencoding::encode(calendar_id),
+            send_updates(true),
+            body.conference_query()
+        );
         let api_event: ApiEvent = self.send_json(self.http_client.post(&url).json(&body)).await?;
 
         written_event(api_event, calendar_id, calendar.as_ref())
@@ -713,6 +814,18 @@ impl CalendarClient {
         event_id: &str,
         fields: EventFields,
     ) -> Result<CalendarEvent, String> {
+        self.patch_event(calendar_id, event_id, fields, None).await
+    }
+
+    /// `series_zone` is the zone a whole series expands in, which a new
+    /// start of the series has to name
+    async fn patch_event(
+        &self,
+        calendar_id: &str,
+        event_id: &str,
+        fields: EventFields,
+        series_zone: Option<&str>,
+    ) -> Result<CalendarEvent, String> {
         let (calendar, existing) =
             futures::join!(self.calendar_info(calendar_id), self.event_people(calendar_id, event_id));
         // The current guest list is only needed when the form lists guests,
@@ -722,19 +835,112 @@ impl CalendarClient {
             Err(e) if fields.attendees.as_ref().is_some_and(|a| !a.is_empty()) => return Err(e),
             Err(_) => (Vec::new(), false),
         };
+        let time_zone = series_zone.or_else(|| recurrence_time_zone(&fields, calendar.as_ref()));
+        let body = build_event_request(fields, time_zone, &existing_attendees)?;
         let url = format!(
-            "{}/calendars/{}/events/{}?sendUpdates={}",
+            "{}/calendars/{}/events/{}?sendUpdates={}{}",
             self.api_base,
             urlencoding::encode(calendar_id),
             urlencoding::encode(event_id),
-            send_updates(is_self_creator)
+            send_updates(is_self_creator),
+            body.conference_query()
         );
-        let time_zone = recurrence_time_zone(&fields, calendar.as_ref());
-        let body = build_event_request(fields, time_zone, &existing_attendees)?;
         let api_event: ApiEvent = self.send_json(self.http_client.patch(&url).json(&body)).await?;
 
         written_event(api_event, calendar_id, calendar.as_ref())
             .ok_or_else(|| "Failed to convert updated event".to_string())
+    }
+
+    /// Change an occurrence of a repeating event, the ones after it too, or
+    /// the whole series. `fields` holds the occurrence as edited: for the
+    /// whole series its move is applied to the series' own start.
+    pub async fn update_event_in_series(
+        &self,
+        calendar_id: &str,
+        event_id: &str,
+        mut fields: EventFields,
+        scope: RecurrenceScope,
+    ) -> Result<CalendarEvent, String> {
+        let split = match scope {
+            RecurrenceScope::This => None,
+            _ => self.series_split(calendar_id, event_id).await?,
+        };
+        let Some(split) = split else {
+            return self.update_event(calendar_id, event_id, fields).await;
+        };
+        if scope == RecurrenceScope::All || split.original_start.0 <= split.series_start.0 {
+            let moved = fields.start_time - split.occurrence_start.0;
+            // All-day times are anchored at noon, the API's dates at midnight
+            let moved = if fields.all_day { moved.div_euclid(DAY_MS) * DAY_MS } else { moved };
+            let length = fields.end_time - fields.start_time;
+            fields.start_time = split.series_start.0 + moved;
+            fields.end_time = fields.start_time + length;
+            let calendar = self.calendar_info(calendar_id).await;
+            let zone = split.series.start.as_ref().and_then(|s| s.time_zone.clone());
+            let zone = zone.or_else(|| calendar.and_then(|c| c.timezone));
+            return self.patch_event(calendar_id, &split.series.id, fields, zone.as_deref()).await;
+        }
+        let rules = split.series.recurrence.clone().unwrap_or_default();
+        self.end_series_before(calendar_id, &split.series.id, &rules, split.original_start).await?;
+        if fields.recurrence.is_none() {
+            fields.recurrence = Some(unbounded_rules(&rules));
+        }
+        self.create_event(calendar_id, fields).await
+    }
+
+    /// Delete an occurrence of a repeating event, the ones after it too, or
+    /// the whole series
+    pub async fn delete_event_in_series(&self, calendar_id: &str, event_id: &str, scope: RecurrenceScope) -> Result<(), String> {
+        let split = match scope {
+            RecurrenceScope::This => None,
+            _ => self.series_split(calendar_id, event_id).await?,
+        };
+        let Some(split) = split else {
+            return self.delete_event(calendar_id, event_id).await;
+        };
+        if scope == RecurrenceScope::All || split.original_start.0 <= split.series_start.0 {
+            return self.delete_event(calendar_id, &split.series.id).await;
+        }
+        let rules = split.series.recurrence.clone().unwrap_or_default();
+        self.end_series_before(calendar_id, &split.series.id, &rules, split.original_start).await
+    }
+
+    async fn series_facts(&self, calendar_id: &str, event_id: &str) -> Result<SeriesFacts, String> {
+        let url = format!(
+            "{}/calendars/{}/events/{}?fields=id,recurringEventId,start,originalStartTime,recurrence",
+            self.api_base,
+            urlencoding::encode(calendar_id),
+            urlencoding::encode(event_id)
+        );
+        self.send_json(self.http_client.get(&url)).await
+    }
+
+    /// None when the event is not an occurrence of a series
+    async fn series_split(&self, calendar_id: &str, event_id: &str) -> Result<Option<SeriesSplit>, String> {
+        let occurrence = self.series_facts(calendar_id, event_id).await?;
+        let Some(series_id) = occurrence.recurring_event_id.as_deref() else {
+            return Ok(None);
+        };
+        let series = self.series_facts(calendar_id, series_id).await?;
+        let start_of = |dt: Option<&EventDateTime>| dt.and_then(parse_event_datetime).ok_or("Couldn't read when the repeating event starts");
+        let occurrence_start = start_of(occurrence.start.as_ref())?;
+        let original_start = start_of(occurrence.original_start_time.as_ref()).unwrap_or(occurrence_start);
+        let series_start = start_of(series.start.as_ref())?;
+        Ok(Some(SeriesSplit { series, series_start, occurrence_start, original_start }))
+    }
+
+    async fn end_series_before(&self, calendar_id: &str, series_id: &str, rules: &[String], split: (i64, bool)) -> Result<(), String> {
+        let is_self_creator = self.is_self_creator(calendar_id, series_id).await;
+        let url = format!(
+            "{}/calendars/{}/events/{}?sendUpdates={}",
+            self.api_base,
+            urlencoding::encode(calendar_id),
+            urlencoding::encode(series_id),
+            send_updates(is_self_creator)
+        );
+        let body = serde_json::json!({ "recurrence": ended_rules(rules, split.0, split.1) });
+        self.send(self.http_client.patch(&url).json(&body)).await?;
+        Ok(())
     }
 
     async fn event_people(&self, calendar_id: &str, event_id: &str) -> Result<CalEventSearchItem, String> {
@@ -1611,6 +1817,7 @@ mod tests {
             all_day,
             attendees: None,
             recurrence: None,
+            add_meet: false,
         }
     }
 
@@ -2314,6 +2521,139 @@ mod tests {
         let server = StubServer::start(creator_stub(true)).await;
         server.client().create_event("cal", fields(0, 3_600_000, false)).await.unwrap();
         assert_eq!(mutation_targets(&server), vec!["/calendars/cal/events?sendUpdates=all"]);
+    }
+
+    const OCCURRENCE: &str = "s1_20240110T100000Z";
+
+    /// A daily series `s1` from 2024-01-01 10:00 UTC, created by the user,
+    /// whose 2024-01-10 occurrence is OCCURRENCE
+    fn series_stub(rule: &'static str) -> impl Fn(&str, &str) -> (u16, String) + Send + Sync + 'static {
+        move |method, target| {
+            let json = match method {
+                "GET" if target.starts_with("/users/me/calendarList") => calendar_entry("cal"),
+                "GET" if target.contains(&format!("/events/{OCCURRENCE}?fields=id,recurringEventId")) => serde_json::json!({
+                    "id": OCCURRENCE, "recurringEventId": "s1",
+                    "start": { "dateTime": "2024-01-10T10:00:00Z" },
+                    "originalStartTime": { "dateTime": "2024-01-10T10:00:00Z" },
+                }),
+                "GET" if target.contains("/events/s1?fields=id,recurringEventId") => serde_json::json!({
+                    "id": "s1", "start": { "dateTime": "2024-01-01T10:00:00Z", "timeZone": "Europe/Madrid" }, "recurrence": [rule],
+                }),
+                "GET" => serde_json::json!({ "id": "e", "creator": { "self": true } }),
+                "DELETE" => return (204, String::new()),
+                _ => serde_json::json!({ "id": "written", "start": { "dateTime": "2024-01-10T11:00:00Z" } }),
+            };
+            (200, json.to_string())
+        }
+    }
+
+    fn writes(server: &StubServer) -> Vec<(String, String, serde_json::Value)> {
+        server
+            .requests()
+            .into_iter()
+            .filter(|(method, _, _)| method != "GET")
+            .map(|(method, target, body)| (method, target, serde_json::from_str(&body).unwrap_or_default()))
+            .collect()
+    }
+
+    // 2024-01-10 11:00 to 11:30 UTC
+    fn moved_occurrence() -> EventFields {
+        fields(1_704_884_400_000, 1_704_886_200_000, false)
+    }
+
+    #[tokio::test]
+    async fn changing_all_events_moves_the_series_by_the_same_amount() {
+        let server = StubServer::start(series_stub("RRULE:FREQ=DAILY")).await;
+        server.client().update_event_in_series("cal", OCCURRENCE, moved_occurrence(), RecurrenceScope::All).await.unwrap();
+
+        let writes = writes(&server);
+        assert_eq!(writes.len(), 1, "{writes:?}");
+        let (method, target, body) = &writes[0];
+        assert_eq!((method.as_str(), target.as_str()), ("PATCH", "/calendars/cal/events/s1?sendUpdates=all"));
+        assert_eq!(body["start"]["dateTime"], "2024-01-01T11:00:00+00:00");
+        assert_eq!(body["end"]["dateTime"], "2024-01-01T11:30:00+00:00");
+        // Google expands a series in its own zone and needs it with a new start
+        assert_eq!(body["start"]["timeZone"], "Europe/Madrid");
+        assert_eq!(body["end"]["timeZone"], "Europe/Madrid");
+        assert!(body.get("recurrence").is_none(), "{body}");
+    }
+
+    #[tokio::test]
+    async fn changing_this_and_following_ends_the_series_and_starts_a_new_one() {
+        let server = StubServer::start(series_stub("RRULE:FREQ=DAILY;COUNT=30")).await;
+        server.client().update_event_in_series("cal", OCCURRENCE, moved_occurrence(), RecurrenceScope::Following).await.unwrap();
+
+        let writes = writes(&server);
+        assert_eq!(writes.len(), 2, "{writes:?}");
+        let (method, target, body) = &writes[0];
+        assert_eq!((method.as_str(), target.as_str()), ("PATCH", "/calendars/cal/events/s1?sendUpdates=all"));
+        assert_eq!(body, &serde_json::json!({ "recurrence": ["RRULE:FREQ=DAILY;UNTIL=20240110T095959Z"] }));
+        let (method, target, body) = &writes[1];
+        assert_eq!((method.as_str(), target.as_str()), ("POST", "/calendars/cal/events?sendUpdates=all"));
+        assert_eq!(body["start"]["dateTime"], "2024-01-10T11:00:00+00:00");
+        assert_eq!(body["recurrence"], serde_json::json!(["RRULE:FREQ=DAILY"]));
+    }
+
+    #[tokio::test]
+    async fn changing_this_event_only_touches_the_occurrence() {
+        let server = StubServer::start(series_stub("RRULE:FREQ=DAILY")).await;
+        server.client().update_event_in_series("cal", OCCURRENCE, moved_occurrence(), RecurrenceScope::This).await.unwrap();
+        let targets: Vec<String> = writes(&server).into_iter().map(|(_, t, _)| t).collect();
+        assert_eq!(targets, vec![format!("/calendars/cal/events/{OCCURRENCE}?sendUpdates=all")]);
+    }
+
+    #[tokio::test]
+    async fn deleting_by_scope() {
+        let server = StubServer::start(series_stub("RRULE:FREQ=DAILY")).await;
+        let client = server.client();
+        client.delete_event_in_series("cal", OCCURRENCE, RecurrenceScope::This).await.unwrap();
+        client.delete_event_in_series("cal", OCCURRENCE, RecurrenceScope::All).await.unwrap();
+        client.delete_event_in_series("cal", OCCURRENCE, RecurrenceScope::Following).await.unwrap();
+
+        let writes = writes(&server);
+        let summary: Vec<(&str, &str)> = writes.iter().map(|(m, t, _)| (m.as_str(), t.as_str())).collect();
+        assert_eq!(summary, vec![
+            ("DELETE", "/calendars/cal/events/s1_20240110T100000Z?sendUpdates=all"),
+            ("DELETE", "/calendars/cal/events/s1?sendUpdates=all"),
+            ("PATCH", "/calendars/cal/events/s1?sendUpdates=all"),
+        ]);
+        assert_eq!(writes[2].2, serde_json::json!({ "recurrence": ["RRULE:FREQ=DAILY;UNTIL=20240110T095959Z"] }));
+    }
+
+    #[test]
+    fn a_series_ends_before_the_split_whatever_its_rule_said() {
+        let until = |rule: &str, all_day: bool| {
+            let split = if all_day { 1_704_844_800_000 } else { 1_704_880_800_000 };
+            ended_rules(&[rule.to_string(), "EXDATE:20240105T100000Z".to_string()], split, all_day)
+        };
+        assert_eq!(until("RRULE:FREQ=WEEKLY;UNTIL=20250101T000000Z;BYDAY=MO", false), vec![
+            "RRULE:FREQ=WEEKLY;BYDAY=MO;UNTIL=20240110T095959Z".to_string(),
+            "EXDATE:20240105T100000Z".to_string(),
+        ]);
+        assert_eq!(until("RRULE:FREQ=DAILY", true)[0], "RRULE:FREQ=DAILY;UNTIL=20240109");
+        assert_eq!(unbounded_rules(&["RRULE:FREQ=DAILY;COUNT=5;INTERVAL=2".to_string()]), vec!["RRULE:FREQ=DAILY;INTERVAL=2".to_string()]);
+    }
+
+    #[tokio::test]
+    async fn an_event_can_ask_google_for_a_meet_link() {
+        let server = StubServer::start(creator_stub(true)).await;
+        let client = server.client();
+        client.create_event("cal", EventFields { add_meet: true, ..fields(0, 3_600_000, false) }).await.unwrap();
+        client.update_event("cal", "e1", EventFields { add_meet: true, ..fields(0, 3_600_000, false) }).await.unwrap();
+        client.create_event("cal", fields(0, 3_600_000, false)).await.unwrap();
+
+        let writes: Vec<(String, String, String)> = server.requests().into_iter().filter(|(m, _, _)| m != "GET").collect();
+        assert_eq!(writes[0].1, "/calendars/cal/events?sendUpdates=all&conferenceDataVersion=1");
+        assert_eq!(writes[1].1, "/calendars/cal/events/e1?sendUpdates=all&conferenceDataVersion=1");
+        for (_, _, body) in &writes[..2] {
+            let body: serde_json::Value = serde_json::from_str(body).unwrap();
+            let request = &body["conferenceData"]["createRequest"];
+            assert_eq!(request["conferenceSolutionKey"]["type"], "hangoutsMeet");
+            assert!(request["requestId"].as_str().is_some_and(|id| !id.is_empty()), "{body}");
+        }
+        let plain: serde_json::Value = serde_json::from_str(&writes[2].2).unwrap();
+        assert_eq!(writes[2].1, "/calendars/cal/events?sendUpdates=all");
+        assert!(plain.get("conferenceData").is_none(), "{plain}");
     }
 
     #[tokio::test]

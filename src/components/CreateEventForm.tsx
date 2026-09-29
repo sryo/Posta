@@ -1,40 +1,13 @@
-import { createSignal, onCleanup, onMount, Show, For } from "solid-js";
-import { ChevronLeftIcon, ChevronRightIcon } from "./Icons";
+import { createSignal, Show, For } from "solid-js";
+import { ChevronLeftIcon, ChevronRightIcon, VideoIcon } from "./Icons";
 import { CloseButton } from "./ComposeAtoms";
 import { isImeComposing, isTypingTarget, onActivateKey } from "../shared/keyboard";
-import { formatClock, monthNames, shortWeekday } from "../app/dateFormat";
-
-// One labelled, scrollable single-choice list of the scheduler
-function SchedulerColumn<T>(props: {
-  label: string;
-  listClass?: string;
-  options: { label: string; value: T }[];
-  selected: T;
-  onSelect: (value: T) => void;
-}) {
-  return (
-    <div class="scheduler-column">
-      <label class="scheduler-column-label">{props.label}</label>
-      <div class={`scheduler-list ${props.listClass ?? ''}`} role="listbox" aria-label={props.label}>
-        <For each={props.options}>
-          {(opt) => (
-            <div
-              class={`scheduler-option ${props.selected === opt.value ? 'selected' : ''}`}
-              data-selected={props.selected === opt.value}
-              role="option"
-              aria-selected={props.selected === opt.value}
-              tabIndex={0}
-              onClick={() => props.onSelect(opt.value)}
-              on:keydown={onActivateKey(() => props.onSelect(opt.value))}
-            >
-              {opt.label}
-            </div>
-          )}
-        </For>
-      </div>
-    </div>
-  );
-}
+import { monthNames, shortWeekday } from "../app/dateFormat";
+import { isWritableCalendar } from "../app/eventActions";
+import { minutesToTime, timeToMinutes } from "../app/timeInput";
+import { TimeCombobox } from "./TimeCombobox";
+import { GuestChips } from "./GuestChips";
+import { ScopeMenu, type RecurrenceScope } from "./ScopeMenu";
 
 export const CreateEventForm = (props: {
   closing?: boolean;
@@ -60,11 +33,23 @@ export const CreateEventForm = (props: {
   recurrence: string | null;
   setRecurrence: (v: string | null) => void;
   saving: boolean;
-  onSave: () => void;
+  // A repeating event's occurrence passes the scope the user chose
+  onSave: (scope?: RecurrenceScope) => void;
   error: string | null;
   inline?: boolean;
   isEditing?: boolean;
   occurrenceOnly?: boolean;
+  // Saving an occurrence of a repeating event asks which events to change
+  askScope?: boolean;
+  // The calendar a new event goes to; an edited event moves with Move instead
+  calendars?: { id: string; name: string; is_primary: boolean; access_role: string }[];
+  calendarId?: string | null;
+  setCalendarId?: (id: string) => void;
+  guestSuggestions?: (query: string) => { email: string; name?: string }[];
+  addMeet?: boolean;
+  setAddMeet?: (v: boolean) => void;
+  // The event being edited already has a Meet link
+  hasMeet?: boolean;
 }) => {
   // Snapshot is safe: both call sites mount this inside a <Show>, so a fresh
   // instance is created each time the form opens.
@@ -100,35 +85,16 @@ export const CreateEventForm = (props: {
   ];
 
 
-  // Auto-scroll to selected times when form opens
-  onMount(() => {
-    // Wait for DOM to be ready
-    const scrollTimer = setTimeout(() => {
-      const startContainer = document.querySelector('.time-picker-start') as HTMLDivElement;
-      const endContainer = document.querySelector('.time-picker-end') as HTMLDivElement;
-
-      if (startContainer) {
-        const selectedEl = startContainer.querySelector('[data-selected="true"]') as HTMLElement;
-        if (selectedEl) {
-          selectedEl.scrollIntoView({ block: 'center' });
-        }
-      }
-
-      if (endContainer) {
-        const selectedEl = endContainer.querySelector('[data-selected="true"]') as HTMLElement;
-        if (selectedEl) {
-          selectedEl.scrollIntoView({ block: 'center' });
-        }
-      }
-    }, 150);
-    onCleanup(() => clearTimeout(scrollTimer));
-  });
-
   // The save button advertises ⌘Enter; handle it on the form so it also
   // works in the inline edit form, which the app-level shortcut (gated on
   // creatingEvent) never reaches. Double-saves in panel mode are prevented
   // by the saving flag, set synchronously by onSave.
   const hasTitle = () => props.summary.trim().length > 0;
+  const [choosingScope, setChoosingScope] = createSignal(false);
+  const save = () => {
+    if (props.askScope) setChoosingScope(true);
+    else props.onSave();
+  };
   const handleKeyDown = (e: KeyboardEvent) => {
     // The title field has focus from the start, and the app-level Escape
     // skips text fields; elsewhere the hosting view's Escape closes the form.
@@ -139,7 +105,7 @@ export const CreateEventForm = (props: {
     }
     if (e.key === 'Enter' && (e.metaKey || e.ctrlKey) && !props.saving && hasTitle()) {
       e.preventDefault();
-      props.onSave();
+      save();
     }
   };
 
@@ -195,47 +161,6 @@ export const CreateEventForm = (props: {
     return Array.from({ length: last - first + 1 }, (_, i) => first + i);
   };
 
-  // Time Helpers
-  const timeSlots: string[] = [];
-  for (let h = 0; h < 24; h++) {
-    for (let m = 0; m < 60; m += 30) {
-      const hh = h.toString().padStart(2, '0');
-      const mm = m.toString().padStart(2, '0');
-      timeSlots.push(`${hh}:${mm}`);
-    }
-  }
-
-  const timeToMinutes = (t: string): number | null => {
-    const [h, m] = t.split(':').map(Number);
-    return Number.isFinite(h) && Number.isFinite(m) ? h * 60 + m : null;
-  };
-
-  const minutesToTime = (mins: number) =>
-    `${String(Math.floor(mins / 60)).padStart(2, '0')}:${String(mins % 60).padStart(2, '0')}`;
-
-  // Events created elsewhere can have times off the 30-minute grid; insert
-  // the current value as an extra slot so it stays visible and selected
-  const slotsWithValue = (value: string) => {
-    const mins = timeToMinutes(value);
-    if (mins === null || timeSlots.includes(value)) return timeSlots;
-    const idx = timeSlots.findIndex(t => (timeToMinutes(t) ?? 0) > mins);
-    const slots = [...timeSlots];
-    slots.splice(idx === -1 ? slots.length : idx, 0, value);
-    return slots;
-  };
-
-  // Stable option objects so <For> keeps the rendered rows when a time changes
-  const timeOptions = new Map<string, { label: string; value: string }>();
-  const toOptions = (slots: string[]) => slots.map(t => {
-    if (!timeOptions.has(t)) {
-      const [h, m] = t.split(':').map(Number);
-      timeOptions.set(t, { label: formatClock(new Date(2000, 0, 1, h, m)), value: t });
-    }
-    return timeOptions.get(t)!;
-  });
-  const startOptions = () => toOptions(slotsWithValue(props.startTime));
-  const endOptions = () => toOptions(slotsWithValue(props.endTime));
-
   const formatDateStr = (d: Date) => {
     const year = d.getFullYear();
     const month = String(d.getMonth() + 1).padStart(2, '0');
@@ -270,18 +195,37 @@ export const CreateEventForm = (props: {
     };
   };
 
+  const writableCalendars = () => (props.calendars ?? []).filter(isWritableCalendar);
+
   const formContent = () => (
     <>
+      <div class="event-form-header">
+        <input
+          type="text"
+          class="event-title-input"
+          value={props.summary}
+          onInput={(e) => props.setSummary(e.currentTarget.value)}
+          placeholder="Event title"
+          aria-label="Event title"
+          ref={(el) => setTimeout(() => el.focus(), 0)}
+        />
+        <Show when={!props.isEditing && props.setCalendarId && writableCalendars().length > 0}>
+          <select
+            class="event-calendar-select"
+            aria-label="Calendar"
+            value={props.calendarId ?? ""}
+            onChange={(e) => props.setCalendarId!(e.currentTarget.value)}
+          >
+            <For each={writableCalendars()}>
+              {(cal) => <option value={cal.id} selected={cal.id === props.calendarId}>{cal.name}</option>}
+            </For>
+          </select>
+        </Show>
+        <Show when={!props.inline}>
+          <CloseButton onClick={props.onClose} />
+        </Show>
+      </div>
       <div class={props.inline ? "inline-event-body" : "compose-body"} style={{ flex: 1, "overflow-y": "auto" }}>
-        <div class="compose-field">
-          <input
-            type="text"
-            value={props.summary}
-            onInput={(e) => props.setSummary(e.currentTarget.value)}
-            placeholder="Event title"
-            ref={(el) => setTimeout(() => el.focus(), 0)}
-          />
-        </div>
 
         {/* Custom Scheduler UI */}
         <div class="scheduler-ui">
@@ -340,39 +284,37 @@ export const CreateEventForm = (props: {
             All day
           </label>
 
-          {/* Vertical Time Lists + Repeat; all-day events only repeat */}
+          {/* Times, then Repeat; all-day events only repeat */}
           <div class="scheduler-times">
             <Show when={!props.allDay}>
-              <SchedulerColumn
+              <TimeCombobox
                 label="Start"
-                listClass="time-picker-start"
-                options={startOptions()}
-                selected={props.startTime}
-                onSelect={handleStartTimeChange}
+                class="time-picker-start"
+                value={props.startTime}
+                onChange={handleStartTimeChange}
               />
-              <SchedulerColumn
+              <span class="scheduler-time-separator" aria-hidden="true">–</span>
+              <TimeCombobox
                 label="End"
-                listClass="time-picker-end"
-                options={endOptions()}
-                selected={props.endTime}
-                onSelect={handleEndTimeChange}
+                class="time-picker-end"
+                value={props.endTime}
+                onChange={handleEndTimeChange}
               />
             </Show>
             <Show
               when={!props.occurrenceOnly}
-              fallback={
-                <div class="scheduler-column">
-                  <label class="scheduler-column-label">Repeat</label>
-                  <p class="scheduler-occurrence-note">Repeats (editing this occurrence only)</p>
-                </div>
-              }
+              fallback={<p class="scheduler-occurrence-note">Repeats</p>}
             >
-              <SchedulerColumn
-                label="Repeat"
-                options={recurrenceOptions}
-                selected={props.recurrence}
-                onSelect={props.setRecurrence}
-              />
+              <select
+                class="scheduler-repeat"
+                aria-label="Repeat"
+                value={props.recurrence ?? ""}
+                onChange={(e) => props.setRecurrence(e.currentTarget.value || null)}
+              >
+                <For each={recurrenceOptions}>
+                  {(opt) => <option value={opt.value ?? ""} selected={opt.value === props.recurrence}>{opt.label}</option>}
+                </For>
+              </select>
             </Show>
           </div>
         </div>
@@ -385,13 +327,19 @@ export const CreateEventForm = (props: {
             placeholder="Location"
           />
         </div>
+        <Show when={props.setAddMeet}>
+          <div class="compose-field event-meet-field">
+            <VideoIcon />
+            <Show when={!props.hasMeet} fallback={<span>Has a Google Meet link</span>}>
+              <label class="event-meet-toggle">
+                <input type="checkbox" checked={!!props.addMeet} onChange={(e) => props.setAddMeet!(e.currentTarget.checked)} />
+                Add Google Meet
+              </label>
+            </Show>
+          </div>
+        </Show>
         <div class="compose-field">
-          <input
-            type="text"
-            value={props.attendees}
-            onInput={(e) => props.setAttendees(e.currentTarget.value)}
-            placeholder="Guests (comma separated emails)"
-          />
+          <GuestChips value={props.attendees} onChange={props.setAttendees} suggest={props.guestSuggestions} />
         </div>
         <div class="compose-content">
           <textarea
@@ -402,15 +350,24 @@ export const CreateEventForm = (props: {
           />
         </div>
       </div>
-      <div class={props.inline ? "inline-event-footer" : "compose-footer"}>
+      <div class={`event-form-footer ${props.inline ? "inline-event-footer" : "compose-footer"}`}>
         <Show when={props.error}><div class="compose-error">{props.error}</div></Show>
         <div class="compose-spacer" />
         <button class="btn" onClick={props.onClose} style={{ "margin-right": "8px" }}>
           Cancel
         </button>
-        <button class="btn btn-primary" disabled={props.saving || !hasTitle()} onClick={props.onSave} title="Save event (⌘Enter)">
-          {props.saving ? "Saving..." : <>{props.isEditing ? "Update" : "Save"} <span class="shortcut-hint">⌘↵</span></>}
-        </button>
+        <div class="scope-menu-anchor">
+          <button class="btn btn-primary" disabled={props.saving || !hasTitle()} onClick={save} title="Save event (⌘Enter)">
+            {props.saving ? "Saving..." : <>{props.isEditing ? "Update" : "Save"} <span class="shortcut-hint">⌘↵</span></>}
+          </button>
+          <Show when={choosingScope()}>
+            <ScopeMenu
+              title="Change repeating event"
+              onChoose={(scope) => { setChoosingScope(false); props.onSave(scope); }}
+              onCancel={() => setChoosingScope(false)}
+            />
+          </Show>
+        </div>
       </div>
     </>
   );
@@ -424,11 +381,13 @@ export const CreateEventForm = (props: {
   }
 
   return (
-    <div class={`compose-panel event-compose ${props.closing ? 'closing' : ''}`} onKeyDown={handleKeyDown} style={{ height: "auto", display: "flex", "flex-direction": "column" }}>
-      <div class="compose-header">
-        <h3>{props.isEditing ? "Edit event" : "New event"}</h3>
-        <CloseButton onClick={props.onClose} />
-      </div>
+    <div
+      class={`compose-panel event-compose ${props.closing ? 'closing' : ''}`}
+      role="dialog"
+      aria-label={props.isEditing ? "Edit event" : "New event"}
+      onKeyDown={handleKeyDown}
+      style={{ height: "auto", display: "flex", "flex-direction": "column" }}
+    >
       {formContent()}
     </div>
   );
