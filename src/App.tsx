@@ -1355,7 +1355,7 @@ function App() {
     }
 
     // Same for modals and panels over the cards; Escape still closes them
-    const overlayOpen = settingsOpen() || shortcutsHelpOpen() || queryHelpOpen() || creatingEvent() || showPresetSelection() || showRestorePrompt();
+    const overlayOpen = settingsOpen() || shortcutsHelpOpen() || queryHelpOpen() || creatingEvent() || batchReplyOpen() || showPresetSelection() || showRestorePrompt();
     if (overlayOpen && e.key !== 'Escape') {
       return;
     }

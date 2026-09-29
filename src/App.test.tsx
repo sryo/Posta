@@ -3073,6 +3073,16 @@ describe("App batch reply closing", () => {
     expect(invoke).not.toHaveBeenCalledWith("get_cards", { accountId: "b" });
   });
 
+  it("does not act on the threads behind the panel", async () => {
+    handlers.modify_threads = () => null;
+    await openBatchReplyWithText();
+    for (const key of ["d", "a", "s", "u", "!", "j"]) fireEvent.keyDown(document, { key });
+    await new Promise(r => setTimeout(r, 20));
+
+    expect(invoke).not.toHaveBeenCalledWith("modify_threads", expect.anything());
+    expect(screen.getByPlaceholderText(/^Reply to/)).toHaveValue("A long answer");
+  });
+
   it("asks before an account switch throws away a typed quick reply", async () => {
     handlers.get_accounts = () => [account("a", "a@x.com"), account("b", "b@x.com")];
     render(() => <App />);
