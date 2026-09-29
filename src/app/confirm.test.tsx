@@ -80,9 +80,9 @@ describe("askConfirm", () => {
 // WKWebView answers window.confirm/alert/prompt with Cancel unless the app
 // implements its UI delegate, which wry does not
 describe("native dialogs", () => {
-  it("are never used by the app shell", () => {
-    const sources = import.meta.glob(["./*.ts", "./*.tsx", "!./*.test.ts", "!./*.test.tsx", "../App.tsx", "../index.tsx"], { query: "?raw", import: "default", eager: true }) as Record<string, string>;
-    expect(Object.keys(sources)).toContain("../App.tsx");
+  it("are never used by the app", () => {
+    const sources = import.meta.glob(["../**/*.ts", "../**/*.tsx", "!../**/*.test.ts", "!../**/*.test.tsx", "!../test/**"], { query: "?raw", import: "default", eager: true }) as Record<string, string>;
+    expect(Object.keys(sources)).toEqual(expect.arrayContaining(["../App.tsx", "../utils.ts", "../components/EventView.tsx"]));
     for (const [file, source] of Object.entries(sources)) {
       expect(source, file).not.toMatch(/(?<![\w.])(?:window\.)?(?:confirm|alert|prompt)\(/);
     }
