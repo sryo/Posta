@@ -2217,6 +2217,45 @@ describe("App calendar", () => {
     expect(screen.getByText("Planning")).toBeInTheDocument();
   });
 
+  it("asks which repeating events the card wheel's Delete removes", async () => {
+    localStorage.setItem("eventActionSettings", JSON.stringify({ delete: true }));
+    calendarCards();
+    cardsByAccount.a = [{ ...card("cal-1", "a", "Week"), query: "calendar:7d", card_type: "calendar" }];
+    const occurrence = (n: number) => ({ ...calendarEvent(`ev-1_${n}`, `Standup ${n}`), recurring_event_id: "ev-1", start_time: tomorrowAt(8 + n) });
+    handlers.fetch_calendar_events = () => [occurrence(1), occurrence(2), calendarEvent("ev-2", "Planning")];
+    handlers.delete_calendar_event = () => null;
+    render(() => <App />);
+    fireEvent.mouseEnter((await screen.findByText("Standup 1")).closest(".calendar-event-item")!);
+    fireEvent.click(await screen.findByTitle("Delete"), { detail: 1 });
+
+    const menu = await screen.findByRole("menu", { name: "Delete repeating event" });
+    expect(invoke).not.toHaveBeenCalledWith("delete_calendar_event", expect.anything());
+    fireEvent.click(within(menu).getByRole("menuitem", { name: "All events" }));
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith("delete_calendar_event", {
+      accountId: "a", calendarId: "primary", eventId: "ev-1_1", scope: "all",
+    }));
+    await waitFor(() => expect(screen.queryByText("Standup 2")).not.toBeInTheDocument());
+    expect(screen.getByText("Planning")).toBeInTheDocument();
+    expect(screen.queryByRole("menu")).toBeNull();
+  });
+
+  it("deletes nothing when the card wheel's scope menu is dismissed", async () => {
+    localStorage.setItem("eventActionSettings", JSON.stringify({ delete: true }));
+    calendarCards();
+    cardsByAccount.a = [{ ...card("cal-1", "a", "Week"), query: "calendar:7d", card_type: "calendar" }];
+    handlers.fetch_calendar_events = () => [{ ...calendarEvent("ev-1_1", "Standup"), recurring_event_id: "ev-1" }];
+    handlers.delete_calendar_event = () => null;
+    render(() => <App />);
+    fireEvent.mouseEnter((await screen.findByText("Standup")).closest(".calendar-event-item")!);
+    fireEvent.click(await screen.findByTitle("Delete"), { detail: 1 });
+    await screen.findByRole("menu", { name: "Delete repeating event" });
+    fireEvent.keyDown(document, { key: "Escape" });
+
+    await waitFor(() => expect(screen.queryByRole("menu")).toBeNull());
+    expect(screen.getByText("Standup")).toBeInTheDocument();
+    expect(invoke).not.toHaveBeenCalledWith("delete_calendar_event", expect.anything());
+  });
+
   it("drops a deleted event from the calendar cards' saved cache", async () => {
     calendarCards();
     cardsByAccount.a = [{ ...card("cal-1", "a", "Week"), query: "calendar:7d", card_type: "calendar" }];

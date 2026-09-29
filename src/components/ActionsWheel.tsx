@@ -8,6 +8,7 @@ import {
 } from "../api/tauri";
 import { rsvpSentMessage, type RsvpStatus } from "../app/rsvp";
 import { eventActions } from "../app/eventActions";
+import type { ScopeAnchor } from "../app/scopePrompt";
 import {
   ClearIcon,
   ReplyIcon,
@@ -55,7 +56,9 @@ export const ActionsWheel = (props: {
   handleForward: (threadId: string, cardId: string) => void;
   handleThreadAction: (action: string, threadIds: string[], cardId: string) => void;
   // Deletes an event the user can edit; without it the wheel offers no delete
-  onDeleteEvent?: (event: GoogleCalendarEvent) => void;
+  // `anchor` is where the delete button was, for a menu asking which of a
+  // repeating event's occurrences to delete
+  onDeleteEvent?: (event: GoogleCalendarEvent, anchor: ScopeAnchor) => void;
   onRsvped?: (eventId: string, status: string) => void;
   showToast: (message: string) => void;
   // "Couldn't …", with the error that caused it
@@ -145,7 +148,8 @@ export const ActionsWheel = (props: {
             e.stopPropagation();
             // The second click of a double click would delete it again
             if (e.detail > 1) return;
-            props.onDeleteEvent?.(evt);
+            const button = (e.currentTarget as HTMLElement).getBoundingClientRect();
+            props.onDeleteEvent?.(evt, { left: button.left, bottom: button.bottom });
             props.onClose();
           },
           available: can.delete && !!props.onDeleteEvent

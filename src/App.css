@@ -5580,6 +5580,21 @@ button.settings-section-title {
     right: auto;
 }
 
+.scope-prompt {
+    position: fixed;
+    z-index: var(--z-modal);
+}
+
+.scope-prompt-centered {
+    top: 30%;
+    left: 50%;
+    transform: translateX(-50%);
+}
+
+.scope-prompt .scope-menu {
+    position: static;
+}
+
 .scope-menu-title {
     padding: var(--space-sm) var(--space-md);
     font-size: var(--font-size-sm);

@@ -125,7 +125,7 @@ import { credentialsValid, shortClientId } from "./app/googleCredentials";
 import { ComposeForm } from "./components/ComposeForm";
 import { CreateEventForm } from "./components/CreateEventForm";
 import { InviteBlock } from "./components/InviteBlock";
-import { eventActions } from "./app/eventActions";
+import { deletePrompt, eventActions } from "./app/eventActions";
 import { defaultCalendarId, lastUsedCalendar, rememberCalendar } from "./app/eventCalendars";
 import { deletedByScope, type RecurrenceScope } from "./app/recurrence";
 import { ThreadView } from "./components/ThreadView";
@@ -184,6 +184,7 @@ import { bulkActionForKey, extendSelection, keyTargets } from "./app/bulkKeys";
 import { fingerprint } from "./app/fingerprint";
 import { hasCommandModifier, isTypingTarget, onActivateKey } from "./shared/keyboard";
 import { askConfirm, ConfirmDialog, confirmOpen, dismissConfirm } from "./app/confirm";
+import { askScope, ScopePrompt, type ScopeAnchor } from "./app/scopePrompt";
 import { moveCard, reuseUnchanged } from "./app/cardOrder";
 
 
@@ -2869,11 +2870,18 @@ function App() {
   // asks first (unless the scope menu, which says so, already asked) and
   // happens at once, as does deleting several occurrences of a series;
   // deleting one event without guests waits out its toast
-  async function deleteEvent(event: GoogleCalendarEvent, chosenScope?: RecurrenceScope) {
+  async function deleteEvent(event: GoogleCalendarEvent, chosenScope?: RecurrenceScope, anchor?: ScopeAnchor) {
     const account = selectedAccount();
     if (!account) return;
+    const actions = eventActions(event, account.email);
+    if (!chosenScope && event.recurring_event_id) {
+      const title = actions.role === "organizer" ? deletePrompt(actions) : "Delete repeating event";
+      const asked = await askScope(title, anchor ?? null);
+      if (!asked || selectedAccount()?.id !== account.id) return;
+      chosenScope = asked;
+    }
     const scope = chosenScope ?? "this";
-    const { role, guestCount: guests } = eventActions(event, account.email);
+    const { role, guestCount: guests } = actions;
     const notifiesGuests = role === "organizer";
     if (notifiesGuests || scope !== "this") {
       if (notifiesGuests && !chosenScope) {
@@ -4842,7 +4850,7 @@ function App() {
                                               startBatchReply={startBatchReply}
                                               handleForward={handleForward}
                                               handleThreadAction={handleThreadAction}
-                                              onDeleteEvent={deleteEvent}
+                                              onDeleteEvent={(ev, anchor) => deleteEvent(ev, undefined, anchor)}
                                               onRsvped={markEventRsvp}
                                               showToast={showToast}
                                               showFailure={showFailure}
@@ -5939,6 +5947,7 @@ function App() {
       </Toasts>
 
       <ConfirmDialog />
+      <ScopePrompt />
       <Show when={attachmentPreview()}>
         {(preview) => (
           <AttachmentLightbox

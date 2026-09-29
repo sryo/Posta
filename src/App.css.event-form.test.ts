@@ -22,6 +22,13 @@ describe("event form layout", () => {
     expect(title.get("font-weight")).toBe("600");
   });
 
+  it("floats the card wheel's scope menu over the board", () => {
+    const prompt = decls(".scope-prompt");
+    expect(prompt.get("position")).toBe("fixed");
+    expect(prompt.get("z-index")).toBe("var(--z-modal)");
+    expect(decls(".scope-prompt .scope-menu").get("position")).toBe("static");
+  });
+
   it("keeps Cancel and Save in view", () => {
     const footer = decls(".event-form-footer");
     expect(footer.get("position")).toBe("sticky");
