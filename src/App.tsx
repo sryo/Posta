@@ -5922,7 +5922,7 @@ function App() {
         })()}
       </Show>
 
-      <Toasts toasts={toasts}>
+      <Toasts toasts={toasts} othersShowing={undoableSend.toastVisible()}>
         {/* Send Toast with Undo */}
         <Show when={undoableSend.toastVisible()}>
           <div class={`undo-toast send-toast ${undoableSend.toastClosing() ? 'closing' : ''}`}>

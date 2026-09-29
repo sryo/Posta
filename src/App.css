@@ -40,6 +40,8 @@
     --toast-action-hover: rgba(138, 180, 248, 0.15);
     --toast-muted: #999;
     --toast-close-hover: rgba(255, 255, 255, 0.1);
+    /* A toast's height and the gap above it, for one raised over another */
+    --toast-row: 64px;
 
     /* Z-index scale - hierarchical layers
        Low (within cards): 10-40
@@ -5060,6 +5062,10 @@ button.settings-section-title {
     gap: var(--space-lg);
     padding: var(--space-lg) var(--space-xl);
     z-index: 1;
+}
+
+.undo-toast.raised {
+    bottom: calc(24px + var(--toast-row));
 }
 
 .undo-toast.closing {

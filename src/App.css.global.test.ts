@@ -84,6 +84,12 @@ describe("toasts", () => {
   it("hold their progress fill while paused", () => {
     expect(declarationsOf(".undo-toast.paused .toast-progress").get("animation-play-state")).toBe("paused");
   });
+
+  it("raise an error above a toast already showing, clear of it", () => {
+    expect(declarationsOf(".undo-toast").get("bottom")).toBe("24px");
+    expect(declarationsOf(".undo-toast.raised").get("bottom")).toBe("calc(24px + var(--toast-row))");
+    expect(declarationsOf(":root").get("--toast-row")).toBeDefined();
+  });
 });
 
 describe("floating controls", () => {
