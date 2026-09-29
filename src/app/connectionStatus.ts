@@ -1,5 +1,5 @@
 import { formatSyncTime, getSyncState } from "../utils";
-import { isOfflineError } from "./loadErrors";
+import { isOfflineError, syncFailureReason } from "./loadErrors";
 
 export interface ConnectionStatus {
   kind: "offline" | "expired" | "reconnecting";
@@ -46,6 +46,9 @@ export function cardSyncLabel(state: { lastSyncedAt: number | null | undefined; 
   const age = formatSyncTime(state.lastSyncedAt, state.now);
   const title = `Last synced: ${age}`;
   if (state.boardDown) return { text: age, tone: "waiting", title };
-  if (state.syncError) return { text: "sync failed", tone: "error", title: `Sync failed: ${state.syncError}` };
+  if (state.syncError) {
+    const reason = syncFailureReason(state.syncError);
+    return { text: "sync failed", tone: "error", title: reason ? `Sync failed: ${reason}` : "Sync failed" };
+  }
   return { text: age, tone: getSyncState(state.lastSyncedAt, state.now), title };
 }

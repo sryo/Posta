@@ -49,6 +49,13 @@ export function queryPreviewErrorMessage(error: unknown, calendar: boolean): str
   return readableReason(text) ?? "Couldn't preview this query.";
 }
 
+// Why a card's background sync failed, for its tooltip, when that can be said
+export function syncFailureReason(error: unknown): string | null {
+  const text = String(error);
+  if (BAD_QUERY.test(text)) return "Gmail didn't understand this card's query";
+  return readableReason(text);
+}
+
 // Shown in the Batch Reply panel when none of its threads could be loaded
 export function batchReplyLoadErrorMessage(error: unknown): string {
   const text = String(error);

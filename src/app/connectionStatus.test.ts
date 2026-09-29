@@ -65,6 +65,12 @@ describe("cardSyncLabel", () => {
     });
   });
 
+  it("keeps raw backend text out of a failed sync's tooltip", () => {
+    const title = (syncError: string) => cardSyncLabel({ lastSyncedAt: at(10, 55), now, syncError, boardDown: false })?.title;
+    expect(title('Search failed: API error 500: {"error": {"code": 500}}')).toBe("Sync failed");
+    expect(title("Search failed: API error 400: Invalid query")).toBe("Sync failed: Gmail didn't understand this card's query");
+  });
+
   it("marks a fresh or old sync while everything works", () => {
     expect(cardSyncLabel({ lastSyncedAt: now - 1000, now, syncError: null, boardDown: false })?.tone).toBe("fresh");
     expect(cardSyncLabel({ lastSyncedAt: at(10, 55), now, syncError: null, boardDown: false })?.tone).toBe("normal");
