@@ -60,6 +60,12 @@ pub struct GmailClient {
 /// Threading headers of a reply draft's thread, by thread id, with when they were read
 type DraftParents = HashMap<String, (Option<(String, String)>, std::time::Instant)>;
 
+/// A messages.attachments.get response
+#[derive(Deserialize)]
+struct AttachmentResponse {
+    data: String,
+}
+
 #[derive(Debug, Deserialize)]
 struct ThreadListResponse {
     threads: Option<Vec<ThreadRef>>,
@@ -485,11 +491,6 @@ impl GmailClient {
 
         let resp = ensure_success(resp).await?;
 
-        #[derive(Deserialize)]
-        struct AttachmentResponse {
-            data: String,
-        }
-
         let attachment: AttachmentResponse = resp
             .json()
             .await
@@ -622,10 +623,6 @@ impl GmailClient {
             };
             let mut cache = self.attachment_cache.lock().unwrap_or_else(|e| e.into_inner());
             for (&i, body) in chunk.iter().zip(bodies) {
-                #[derive(Deserialize)]
-                struct AttachmentResponse {
-                    data: String,
-                }
                 let fetched = body
                     .and_then(|body| serde_json::from_str::<AttachmentResponse>(&body).ok())
                     .map(|a| a.data);
