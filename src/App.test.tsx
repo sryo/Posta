@@ -2296,6 +2296,20 @@ describe("App calendar", () => {
     }
   });
 
+  it("shows the user's answer on invite rows only, not on events the user hosts", async () => {
+    calendarCards();
+    cardsByAccount.a = [{ ...card("cal-1", "a", "Week"), query: "calendar:7d", card_type: "calendar" }];
+    const me = { email: "a@x.com", display_name: null, response_status: "accepted", is_self: true, is_organizer: false };
+    handlers.fetch_calendar_events = () => [
+      { ...calendarEvent("ev-1", "Focus time"), organizer: "a@x.com", response_status: "accepted" },
+      { ...calendarEvent("ev-2", "Planning"), organizer: "org@x.com", can_edit: false, response_status: "accepted", attendees: [me] },
+    ];
+    render(() => <App />);
+    const row = async (title: string) => (await screen.findByText(title)).closest(".calendar-event-item")!;
+    expect((await row("Planning")).querySelector(".calendar-event-response")).toHaveTextContent("Going");
+    expect((await row("Focus time")).querySelector(".calendar-event-response")).toBeNull();
+  });
+
   it("shows the user's answer in the event's guest list too", async () => {
     calendarCards();
     cardsByAccount.a = [{ ...card("cal-1", "a", "Week"), query: "calendar:7d", card_type: "calendar" }];
@@ -2396,7 +2410,7 @@ describe("App calendar", () => {
         location: null, description: null, organizer: "org@x.com", attendees: [], method: "REQUEST", status: null, response_status: null,
       },
     }];
-    handlers.fetch_calendar_events = () => [{ ...calendarEvent("ev-1", "Planning"), response_status: "needsAction" }];
+    handlers.fetch_calendar_events = () => [{ ...calendarEvent("ev-1", "Planning"), response_status: "needsAction", can_edit: false, attendees: [{ email: "a@x.com", display_name: null, response_status: "needsAction", is_self: true, is_organizer: false }] }];
     handlers.get_calendar_rsvp_status = () => null;
     handlers.rsvp_calendar_event = () => null;
     render(() => <App />);

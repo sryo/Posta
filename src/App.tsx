@@ -4799,7 +4799,7 @@ function App() {
                                             <span>{event.location}</span>
                                           </div>
                                         </Show>
-                                        <Show when={event.response_status}>
+                                        <Show when={event.response_status && eventActions(event, selectedAccount()?.email ?? '').rsvp}>
                                           <div class={`calendar-event-response ${event.response_status}`}>
                                             {ownResponseLabel(event.response_status)}
                                           </div>
