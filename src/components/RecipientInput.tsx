@@ -1,0 +1,114 @@
+import { createMemo, createSignal, For, Show } from "solid-js";
+import { completeRecipient, currentRecipient } from "../app/contacts";
+import { getAvatarColor } from "../utils";
+import { isImeComposing } from "../shared/keyboard";
+
+export interface RecipientSuggestion {
+  email: string;
+  name?: string;
+}
+
+// A To/Cc/Bcc field that suggests contacts for the recipient being typed, as
+// an ARIA combobox. Keys it doesn't use for the suggestions go to onKeyDown.
+export const RecipientInput = (props: {
+  id: string;
+  value: string;
+  onChange: (value: string) => void;
+  suggest?: (query: string) => RecipientSuggestion[];
+  placeholder?: string;
+  onKeyDown?: (e: KeyboardEvent) => void;
+  inputRef?: (el: HTMLInputElement) => void;
+}) => {
+  const listId = `${props.id}-suggestions`;
+  const optionId = (i: number) => `${props.id}-suggestion-${i}`;
+  const [focused, setFocused] = createSignal(false);
+  const [dismissed, setDismissed] = createSignal(false);
+  const [active, setActive] = createSignal(0);
+
+  const query = () => currentRecipient(props.value);
+  const candidates = createMemo(() => (props.suggest && query() ? props.suggest(query()) : []));
+  const open = () => focused() && !dismissed() && candidates().length > 0;
+
+  function commit(email: string) {
+    props.onChange(completeRecipient(props.value, email));
+    setDismissed(true);
+  }
+
+  function handleKeyDown(e: KeyboardEvent) {
+    if (isImeComposing(e)) return;
+    if (open()) {
+      const count = candidates().length;
+      if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+        e.preventDefault();
+        setActive(i => (i + (e.key === "ArrowDown" ? 1 : -1) + count) % count);
+        return;
+      }
+      if ((e.key === "Enter" && !(e.metaKey || e.ctrlKey)) || (e.key === "Tab" && !e.shiftKey)) {
+        e.preventDefault();
+        commit(candidates()[Math.min(active(), count - 1)].email);
+        return;
+      }
+      if (e.key === "Escape") {
+        e.stopPropagation();
+        setDismissed(true);
+        return;
+      }
+    }
+    props.onKeyDown?.(e);
+  }
+
+  return (
+    <>
+      <input
+        ref={el => props.inputRef?.(el)}
+        id={props.id}
+        type="text"
+        role="combobox"
+        aria-autocomplete="list"
+        aria-expanded={open()}
+        aria-controls={open() ? listId : undefined}
+        aria-activedescendant={open() ? optionId(active()) : undefined}
+        autocomplete="off"
+        value={props.value}
+        onInput={e => {
+          setDismissed(false);
+          setActive(0);
+          props.onChange(e.currentTarget.value);
+        }}
+        onFocus={() => setFocused(true)}
+        onBlur={() => setFocused(false)}
+        onKeyDown={handleKeyDown}
+        placeholder={props.placeholder}
+      />
+      <Show when={open()}>
+        <div class="compose-autocomplete" role="listbox" id={listId}>
+          <For each={candidates()}>
+            {(contact, i) => (
+              <div
+                id={optionId(i())}
+                role="option"
+                aria-selected={i() === active()}
+                class={`compose-autocomplete-item ${i() === active() ? "selected" : ""}`}
+                onMouseDown={e => {
+                  e.preventDefault();
+                  commit(contact.email);
+                }}
+                onMouseEnter={() => setActive(i())}
+              >
+                <div class="compose-autocomplete-avatar" style={{ background: getAvatarColor(contact.name || contact.email) }}>
+                  {(contact.name || contact.email).charAt(0).toUpperCase()}
+                </div>
+                <div class="compose-autocomplete-info">
+                  <Show when={contact.name}>
+                    <div class="compose-autocomplete-name">{contact.name}</div>
+                  </Show>
+                  <div class="compose-autocomplete-email">{contact.email}</div>
+                </div>
+              </div>
+            )}
+          </For>
+        </div>
+      </Show>
+    </>
+  );
+};

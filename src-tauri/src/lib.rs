@@ -249,6 +249,7 @@ pub fn run() {
             commands::list_labels,
             commands::save_draft,
             commands::delete_draft,
+            commands::list_thread_drafts,
             commands::rsvp_calendar_event,
             commands::rsvp_listed_calendar_event,
             commands::get_calendar_rsvp_status,

@@ -1912,6 +1912,18 @@ pub async fn delete_draft(
 }
 
 #[tauri::command]
+pub async fn list_thread_drafts(
+    account_id: String,
+    thread_id: String,
+    app_handle: tauri::AppHandle, state: State<'_, AppState>,
+) -> Result<Vec<GmailDraft>, String> {
+    let access_token = account_access_token(&state, &app_handle, &account_id).await?;
+    let gmail = GmailClient::new(access_token);
+
+    evict_token_on_auth_error(&state, &account_id, gmail.list_thread_drafts(&thread_id).await)
+}
+
+#[tauri::command]
 pub async fn rsvp_calendar_event(
     account_id: String,
     event_uid: String,

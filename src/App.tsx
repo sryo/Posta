@@ -41,6 +41,8 @@ import {
   type Thread,
   type Attachment,
   getThreadDetails,
+  listThreadDrafts,
+  deleteDraft,
   type FullThread,
   sendEmail,
   unsubscribeOneClick,
@@ -137,7 +139,7 @@ import { BG_COLORS, type ActionSettings, type CardColor, type GroupBy } from "./
 import { createUndoableSend } from "./app/undoableSend";
 import { findHeader, lastMessageFromOthers } from "./app/messages";
 import { batchReplyEntry, type BatchReplyThread } from "./app/batchReply";
-import { completeRecipient, currentRecipient, matchContacts, rankContacts, type RecentContact } from "./app/contacts";
+import { matchContacts, rankContacts, type RecentContact } from "./app/contacts";
 import { eventReplyRecipients } from "./app/eventReply";
 import { labelDisplayName } from "./app/labels";
 import { personName } from "./app/people";
@@ -163,6 +165,7 @@ import { batchReplyLoadErrorMessage, cardLoadErrorMessage, isOfflineError, query
 import { cardWaitingMessage, connectionStatus } from "./app/connectionStatus";
 import { CardEmpty, CardSkeleton, ConnectionStatusBar } from "./components/CardStates";
 import { cardTypeForQuery } from "./app/cardType";
+import { discardThreadDrafts, draftToOpen, isDraftThread, prepareDraftCompose, withDraftsDiscarded, type DraftToOpen } from "./app/draftThreads";
 import { createDraftSync, draftKey, findLatestDraft, findUnsentDrafts, hasDraftContent, markDraftClosed, markDraftSending, pruneDrafts, removeAccountDrafts, sessionDraftKey, type DraftFields } from "./app/drafts";
 import { escapeTarget, nextCardFocus, nextItemFocus, type ItemFocus } from "./app/keyboardNav";
 import { getSmartEventTime, groupCalendarEvents, isUserLabel, mergeThreadGroups, regroupThreads, type CalendarEventGroup } from "./app/grouping";
@@ -807,8 +810,6 @@ function App() {
   const [composeSubject, setComposeSubject] = createSignal("");
   const [composeBody, setComposeBody] = createSignal("");
   const [composeIsHtml, setComposeIsHtml] = createSignal(false);
-  const [showAutocomplete, setShowAutocomplete] = createSignal(false);
-  const [autocompleteIndex, setAutocompleteIndex] = createSignal(0);
   const [composeFabHovered, setComposeFabHovered] = createSignal(false);
   const [forwardingThread, setForwardingThread] = createSignal<{ threadId: string; subject: string; body: string } | null>(null);
   const [replyingToThread, setReplyingToThread] = createSignal<{ threadId: string; messageId?: string } | null>(null);
@@ -1219,8 +1220,6 @@ function App() {
     window.addEventListener("resize", handleResize);
     // The webview would open a file dropped anywhere but a drop zone in
     // place of the app
-    window.addEventListener("dragover", preventFileNavigation);
-    window.addEventListener("drop", preventFileNavigation);
 
     // Listen for color scheme changes
     colorSchemeQuery = window.matchMedia?.("(prefers-color-scheme: dark)");
@@ -1283,10 +1282,6 @@ function App() {
   });
 
   // Only file drags: text dropped into a field must still land there
-  const preventFileNavigation = (e: DragEvent) => {
-    if (Array.from(e.dataTransfer?.types ?? []).includes("Files")) e.preventDefault();
-  };
-
   const timeUpdateInterval = setInterval(() => setCurrentTime(Date.now()), 15000);
 
   onCleanup(() => {
@@ -1303,8 +1298,6 @@ function App() {
     window.removeEventListener("online", retryConnection);
     window.removeEventListener("offline", goOffline);
     if (handleResize) window.removeEventListener("resize", handleResize);
-    window.removeEventListener("dragover", preventFileNavigation);
-    window.removeEventListener("drop", preventFileNavigation);
     if (handleColorSchemeChange) colorSchemeQuery?.removeEventListener("change", handleColorSchemeChange);
     unlistenMailto?.();
   });
@@ -2117,11 +2110,13 @@ function App() {
       setBcc: setComposeBcc,
       get showCcBcc() { return showCcBcc(); },
       setShowCcBcc: setShowCcBcc,
+      suggestContacts: (query: string) => suggestContacts(query),
       get body() { return composeBody(); },
       setBody: setComposeBody,
       get attachments() { return composeAttachments(); },
       onRemoveAttachment: removeAttachment,
       onFileSelect: handleFileSelect,
+      onAddFiles: addComposeFiles,
       get error() { return composeEmailError(); },
       get draftSaving() { return drafts.saving(); },
       get draftSaved() { return drafts.saved(); },
@@ -2180,14 +2175,14 @@ function App() {
         }
         toasts.show({
           message,
-          action: {
+          action: [{ ...reopen, label: "Open" }, {
             label: "Discard",
             run: () => {
               // A reply opened again since continues this draft
               if (composing() && !closingCompose() && composeDraftKey === key) return;
               if (accountId) drafts.discard(key, accountId);
             },
-          },
+          }],
           tag: discardDraftTag(key),
         });
       };
@@ -2315,15 +2310,19 @@ function App() {
   async function handleFileSelect(e: Event) {
     const input = e.target as HTMLInputElement;
     if (!input.files || input.files.length === 0) return;
+    const files = Array.from(input.files);
+    input.value = ''; // Reset input so same file can be selected again
+    await addComposeFiles(files);
+  }
 
-    const { attachments, skipped } = await readFilesAsAttachments(Array.from(input.files));
+  async function addComposeFiles(files: File[]) {
+    const { attachments, skipped } = await readFilesAsAttachments(files);
     if (skipped.length > 0) {
       setComposeEmailError(`Skipped: ${skipped.join(', ')}`);
     }
     if (attachments.length > 0) {
       setComposeAttachments([...composeAttachments(), ...attachments]);
     }
-    input.value = ''; // Reset input so same file can be selected again
   }
 
   function removeAttachment(index: number) {
@@ -3094,8 +3093,13 @@ function App() {
   async function handleBatchReplyFileSelect(threadId: string, e: Event) {
     const input = e.target as HTMLInputElement;
     if (!input.files || input.files.length === 0) return;
+    const files = Array.from(input.files);
+    input.value = '';
+    await addBatchReplyFiles(threadId, files);
+  }
 
-    const { attachments, skipped } = await readFilesAsAttachments(Array.from(input.files));
+  async function addBatchReplyFiles(threadId: string, files: File[]) {
+    const { attachments, skipped } = await readFilesAsAttachments(files);
     if (skipped.length > 0) {
       showToast(`Skipped: ${skipped.join(', ')}`);
     }
@@ -3103,7 +3107,6 @@ function App() {
       const current = batchReplyAttachments()[threadId] || [];
       setBatchReplyAttachments({ ...batchReplyAttachments(), [threadId]: [...current, ...attachments] });
     }
-    input.value = '';
   }
 
   function removeBatchReplyAttachment(threadId: string, index: number) {
@@ -4007,7 +4010,15 @@ function App() {
       // A slower response for a thread the user already left must not
       // clobber the one they're looking at now
       if (activeThreadId() !== threadId) return;
+      const gmailDraft = draftToOpen(details);
+      if (gmailDraft && !gmailDraft.replyTo) {
+        setThreadLoading(false);
+        closeThreadView();
+        continueGmailDraft(account.id, threadId, gmailDraft);
+        return;
+      }
       setActiveThread(details);
+      if (gmailDraft) continueGmailDraft(account.id, threadId, gmailDraft);
       // Focus the most recent (last) message
       setFocusedMessageIndex(details.messages.length - 1);
 
@@ -4023,6 +4034,37 @@ function App() {
         setThreadLoading(false);
       }
     }
+  }
+
+  // Continue a thread's Gmail draft in compose: a new email in the compose
+  // panel, a reply in the open thread
+  async function continueGmailDraft(accountId: string, threadId: string, draft: DraftToOpen) {
+    const { init, missingAttachments } = await prepareDraftCompose(accountId, threadId, draft, {
+      listThreadDrafts,
+      download: (messageId, attachmentId) => downloadAttachmentApi(accountId, messageId, attachmentId),
+    }, Date.now());
+    if (activeThreadId() !== (draft.replyTo ? threadId : null) || selectedAccount()?.id !== accountId) return;
+    openComposeUnlessBusy(`Draft: ${init.subject || "(no subject)"}`, () => {
+      startCompose({ ...init, accountId, signature: false, focusBody: true });
+      if (missingAttachments.length > 0) showToast(`Attach again: ${missingAttachments.join(", ")}`);
+    });
+  }
+
+  async function discardDraftRow(threadId: string) {
+    const account = selectedAccount();
+    if (!account) return;
+    try {
+      await discardThreadDrafts(account.id, threadId, { listThreadDrafts, deleteDraft });
+    } catch (e) {
+      showToast(`Couldn't discard the draft: ${e}`);
+      return;
+    }
+    if (selectedAccount()?.id !== account.id) return;
+    const updated: Record<string, ThreadGroup[]> = { ...cardThreads };
+    for (const card of cards()) {
+      if (updated[card.id]) updated[card.id] = withDraftsDiscarded(updated[card.id], threadId, card.query);
+    }
+    setCardThreads(reconcile(updated, { key: "gmail_thread_id" }));
   }
 
   // Fetch CID image attachments for inline display; reopening a thread
@@ -4106,7 +4148,7 @@ function App() {
     }
   }
 
-  function showToast(message: string, action?: ToastAction) {
+  function showToast(message: string, action?: ToastAction | ToastAction[]) {
     toasts.show({ message, action });
   }
 
@@ -4231,11 +4273,7 @@ function App() {
   // Kept while the suggestions fade out after the pointer leaves
   const fabSuggestions = createMemo<RecentContact[]>(shown => composeFabHovered() ? rankedContacts().slice(0, 5) : shown, []);
 
-  function selectContact(email: string) {
-    setComposeTo(completeRecipient(composeTo(), email));
-    setShowAutocomplete(false);
-    handleComposeInput();
-  }
+  const suggestContacts = (query: string) => matchContacts(rankedContacts(), query, 8);
 
   return (
     <div class="app" onClick={handleAppClick}>
@@ -4812,6 +4850,14 @@ function App() {
                                                 <AttachmentIcon />
                                               </span>
                                             </Show>
+                                            <Show when={isDraftThread(thread)}>
+                                              <button
+                                                class="thread-draft-discard"
+                                                aria-label="Discard draft"
+                                                onClick={(e) => { e.stopPropagation(); discardDraftRow(thread.gmail_thread_id); }}
+                                                on:keydown={(e) => { if (e.key === 'Enter' || e.key === ' ') e.stopPropagation(); }}
+                                              >Discard</button>
+                                            </Show>
                                             <span class="thread-time">{threadTime(thread.last_message_date)}</span>
                                           </div>
                                           {/* Calendar event preview */}
@@ -5147,7 +5193,7 @@ function App() {
             mode="new"
             showSubject={true}
             to={composeTo()}
-            setTo={(v) => { setComposeTo(v); setComposeEmailError(null); setAutocompleteIndex(0); }}
+            setTo={(v) => { setComposeTo(v); setComposeEmailError(null); }}
             cc={composeCc()}
             setCc={(v) => { setComposeCc(v); setComposeEmailError(null); }}
             bcc={composeBcc()}
@@ -5161,6 +5207,7 @@ function App() {
             attachments={composeAttachments()}
             onRemoveAttachment={removeAttachment}
             onFileSelect={handleFileSelect}
+            onAddFiles={addComposeFiles}
             fileInputId="compose-file-input"
             error={composeEmailError()}
             draftSaving={drafts.saving()}
@@ -5169,14 +5216,7 @@ function App() {
             onClose={closeCompose}
             onInput={handleComposeInput}
             focusBody={focusComposeBody()}
-            autocomplete={{
-              show: showAutocomplete(),
-              candidates: matchContacts(rankedContacts(), currentRecipient(composeTo()), 8),
-              selectedIndex: autocompleteIndex(),
-              setSelectedIndex: setAutocompleteIndex,
-              onSelect: selectContact,
-              setShow: setShowAutocomplete,
-            }}
+            suggestContacts={suggestContacts}
           />
         </div>
       </Show>
@@ -5548,6 +5588,7 @@ function App() {
                         attachments={batchReplyAttachments()[thread.threadId] || []}
                         onRemoveAttachment={(i) => removeBatchReplyAttachment(thread.threadId, i)}
                         onFileSelect={(e) => handleBatchReplyFileSelect(thread.threadId, e)}
+                        onAddFiles={(files) => addBatchReplyFiles(thread.threadId, files)}
                         fileInputId={`batch-reply-file-input-${thread.threadId}`}
                         sending={batchReplySending()[thread.threadId]}
                         onSend={() => sendBatchReply(thread.threadId)}

@@ -10,8 +10,8 @@ export interface ToastAction {
 export interface ToastInput {
   message: string;
   tone?: ToastTone;
-  // A button besides Undo: Open, Discard, Retry
-  action?: ToastAction;
+  // Buttons besides Undo: Open, Discard, Retry
+  action?: ToastAction | ToastAction[];
   // Makes it an undo toast, with an Undo button that z presses too
   undo?: () => void;
   // Runs when the toast goes without its Undo: commits a change held back
@@ -19,6 +19,10 @@ export interface ToastInput {
   onExpire?: () => void;
   // Lets whoever showed it close it again
   tag?: string;
+}
+
+export function toastActions(toast: ToastInput): ToastAction[] {
+  return toast.action ? [toast.action].flat() : [];
 }
 
 export interface ShownToast extends ToastInput {
@@ -104,10 +108,11 @@ export function createToasts({ infoMs = 5000, errorMs = 10000, closeMs = 200 } =
     return true;
   }
 
-  function runAction() {
+  function runAction(index = 0) {
     const toast = current();
-    if (!toast || toast.closing || !toast.action) return;
-    const { run } = toast.action;
+    const action = toast && toastActions(toast)[index];
+    if (!toast || toast.closing || !action) return;
+    const { run } = action;
     close(true);
     run();
   }

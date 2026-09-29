@@ -1021,6 +1021,23 @@ a:focus-visible,
     flex-shrink: 0;
 }
 
+.thread-draft-discard {
+    flex-shrink: 0;
+    padding: 0 var(--space-sm);
+    border: none;
+    border-radius: var(--radius-sm);
+    background: none;
+    font-size: var(--font-size-sm);
+    color: var(--text-muted);
+    cursor: pointer;
+}
+
+.thread-draft-discard:hover,
+.thread-draft-discard:focus-visible {
+    color: var(--danger);
+    background: var(--danger-bg);
+}
+
 .thread-indicator {
     display: inline-flex;
     align-items: center;
@@ -2565,6 +2582,7 @@ button:disabled:hover {
 }
 
 .compose-field {
+    position: relative;
     display: flex;
     align-items: center;
     gap: var(--space-md);
@@ -2875,6 +2893,27 @@ button:disabled:hover {
 
 .quick-reply-actions .reaction-btn-container {
     margin-right: auto;
+}
+
+.compose-drop-zone {
+    display: contents;
+    border-radius: inherit;
+}
+
+.compose-drop-overlay {
+    position: absolute;
+    inset: 0;
+    z-index: 70;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border: 2px dashed var(--accent);
+    border-radius: inherit;
+    background: color-mix(in srgb, var(--bg-primary) 88%, var(--accent));
+    color: var(--accent);
+    font-size: var(--font-size-md);
+    font-weight: 600;
+    pointer-events: none;
 }
 
 /* Compose autocomplete dropdown */
@@ -5368,6 +5407,7 @@ button.settings-section-title {
 
 /* Inline Compose (Reply/Forward in Thread) */
 .inline-compose {
+    position: relative;
     margin: 12px 0;
     background: var(--bg-primary);
     border: 1px solid var(--border-color);

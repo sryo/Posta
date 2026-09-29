@@ -1,5 +1,5 @@
 import { For, Show, type JSX } from "solid-js";
-import type { createToasts, ShownToast } from "../app/toasts";
+import { toastActions, type createToasts, type ShownToast } from "../app/toasts";
 import { CloseIcon } from "./Icons";
 
 type ToastStore = ReturnType<typeof createToasts>;
@@ -24,9 +24,9 @@ function Toast(props: { toast: ShownToast; toasts: ToastStore }) {
         <Show when={t().undo}>
           <button class="toast-undo-btn" onClick={() => props.toasts.undo()}>Undo <span class="shortcut-hint">z</span></button>
         </Show>
-        <Show when={t().action}>
-          {(action) => <button class="toast-undo-btn" onClick={() => props.toasts.runAction()}>{action().label}</button>}
-        </Show>
+        <For each={toastActions(t())}>
+          {(action, i) => <button class="toast-undo-btn" onClick={() => props.toasts.runAction(i())}>{action.label}</button>}
+        </For>
         <button class="toast-close-btn" onClick={() => props.toasts.dismiss()} title="Dismiss">
           <CloseIcon />
         </button>

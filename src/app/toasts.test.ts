@@ -114,6 +114,16 @@ describe("toasts", () => {
     expect(toasts.current()?.closing).toBe(true);
   });
 
+  it("runs the chosen one of several actions", () => {
+    const open = vi.fn();
+    const discard = vi.fn();
+    toasts.show({ message: "Draft saved", action: [{ label: "Open", run: open }, { label: "Discard", run: discard }] });
+    toasts.runAction(1);
+    expect(discard).toHaveBeenCalledTimes(1);
+    expect(open).not.toHaveBeenCalled();
+    expect(toasts.current()?.closing).toBe(true);
+  });
+
   it("closes a tagged toast by its tag only", () => {
     toasts.show({ message: "Draft saved", tag: "draft:1" });
     toasts.dismissTag("draft:2");

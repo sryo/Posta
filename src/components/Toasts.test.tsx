@@ -33,6 +33,15 @@ describe("Toasts", () => {
     expect(polite).not.toHaveTextContent("Reply sent");
   });
 
+  it("offers every action a toast carries", () => {
+    const { toasts, polite } = setup();
+    const discard = vi.fn();
+    toasts.show({ message: "Draft saved", action: [{ label: "Open", run: () => {} }, { label: "Discard", run: discard }] });
+    expect(within(polite).getByRole("button", { name: "Open" })).toBeInTheDocument();
+    fireEvent.click(within(polite).getByRole("button", { name: "Discard" }));
+    expect(discard).toHaveBeenCalledTimes(1);
+  });
+
   it("stops its timer while the pointer or keyboard focus is on it", () => {
     const { toasts, polite } = setup();
     toasts.show({ message: "Reply sent", action: { label: "Open", run: () => {} } });

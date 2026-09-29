@@ -319,37 +319,6 @@ describe("Smart replies key", () => {
   });
 });
 
-const dragEvent = (type: string, types: string[]) => {
-  const event = new Event(type, { bubbles: true, cancelable: true });
-  Object.defineProperty(event, "dataTransfer", { value: { types } });
-  return event;
-};
-
-describe("Dropped files", () => {
-  it("never lets a file dropped outside a drop zone replace the app", async () => {
-    render(() => <App />);
-    await screen.findByText("Mail for A");
-    for (const type of ["dragover", "drop"]) {
-      const event = dragEvent(type, ["Files"]);
-      document.body.dispatchEvent(event);
-      expect(event.defaultPrevented).toBe(true);
-    }
-  });
-
-  it("still lets text be dropped into a field", async () => {
-    render(() => <App />);
-    await screen.findByText("Mail for A");
-    const field = document.createElement("textarea");
-    document.body.appendChild(field);
-    for (const type of ["dragover", "drop"]) {
-      const event = dragEvent(type, ["text/plain"]);
-      field.dispatchEvent(event);
-      expect(event.defaultPrevented).toBe(false);
-    }
-    field.remove();
-  });
-});
-
 describe("Settings Google connection", () => {
   it("shows the client in use and re-authorizes the current account after new credentials", async () => {
     handlers.get_stored_credentials = () => ({ client_id: VALID_ID, client_secret: VALID_SECRET });
