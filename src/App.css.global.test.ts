@@ -21,6 +21,12 @@ describe("dialogs", () => {
     expect(declarationsOf(".query-help-body").get("min-height")).toBe("0");
   });
 
+  it("keep a shortcut's keys on one line however long its description", () => {
+    const key = declarationsOf(".shortcut-row kbd");
+    expect(key.get("white-space")).toBe("nowrap");
+    expect(key.get("flex-shrink")).toBe("0");
+  });
+
   it("draw no focus ring on a dialog focused as a whole", () => {
     expect(declarationsOf('[role="dialog"][tabindex="-1"]:focus').get("outline")).toBe("none");
   });

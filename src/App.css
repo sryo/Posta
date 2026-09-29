@@ -5287,9 +5287,11 @@ button.settings-section-title {
     display: inline-flex;
     align-items: center;
     justify-content: center;
+    flex-shrink: 0;
     min-width: 28px;
     height: 24px;
     padding: 0 8px;
+    white-space: nowrap;
     background: var(--bg-secondary);
     border: 1px solid var(--border-color);
     border-radius: var(--radius-md);
