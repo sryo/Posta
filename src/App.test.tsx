@@ -907,6 +907,20 @@ describe("App card load errors", () => {
     expect(screen.getByRole("region", { name: "Alpha email card" })).toHaveClass("stale");
   });
 
+  it("writes the offline cache time on the same clock as the rest of the app", async () => {
+    const language = vi.spyOn(navigator, "language", "get").mockReturnValue("es-ES");
+    handlers.get_cached_card_threads = () => ({ groups: [{ label: "Today", threads: [thread("t-a", "Cached mail")] }], next_page_token: null, cached_at: 1 });
+    handlers.fetch_threads_paginated = () => { throw "Search failed: Request failed: could not reach Gmail. Check your connection."; };
+    render(() => <App />);
+    const strip = await waitFor(() => {
+      const el = document.querySelector(".connection-status");
+      expect(el).not.toBeNull();
+      return el as HTMLElement;
+    });
+    expect(strip).toHaveTextContent(/showing mail from \d\d:\d\d(?!\s*[AP]M)/i);
+    language.mockRestore();
+  });
+
   it("shows each cached card's age instead of a sync failure while offline", async () => {
     const cachedAt = Date.now() - 5 * 60_000;
     handlers.get_cached_card_threads = () => ({ groups: [{ label: "Today", threads: [thread("t-a", "Cached mail")] }], next_page_token: null, cached_at: Math.floor(cachedAt / 1000) });

@@ -137,7 +137,7 @@ import { Dialog } from "./components/Dialog";
 import { Toasts } from "./components/Toasts";
 import { createToasts, type ToastAction, type ToastTone } from "./app/toasts";
 import { failureMessage, storedCredentialsFailure } from "./app/errorText";
-import { formatWhen, threadGroupLabel } from "./app/dateFormat";
+import { formatClock, formatWhen, threadGroupLabel } from "./app/dateFormat";
 import { safeGetItem, safeSetItem, safeRemoveItem, safeGetJSON, safeSetJSON } from "./shared/storage";
 import { BG_COLORS, type ActionSettings, type CardColor, type GroupBy } from "./shared/constants";
 import { createUndoableSend } from "./app/undoableSend";
@@ -3881,7 +3881,7 @@ function App() {
         reconnecting: reconnecting(),
         lastSyncedAt: synced.length > 0 ? Math.max(...synced) : null,
       },
-      t => new Date(t).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }),
+      t => formatClock(new Date(t)),
     );
   });
 
