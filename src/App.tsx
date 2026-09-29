@@ -1550,7 +1550,9 @@ function App() {
       }
       if (e.key === 'r') {
         e.preventDefault();
-        openThreadQuickReply(thread.gmail_thread_id, cardId);
+        const selected = selectedThreads()[cardId];
+        if (selected?.size) startBatchReply(cardId, [...selected]);
+        else openThreadQuickReply(thread.gmail_thread_id, cardId);
         return;
       }
       if (e.key === 'u') {

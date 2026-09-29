@@ -1811,6 +1811,20 @@ describe("App batch reply", () => {
     await waitFor(() => expect(screen.getAllByPlaceholderText(/^Reply to/)).toHaveLength(2));
   });
 
+  it("opens for the selected threads on r", async () => {
+    handlers.get_thread_details = ({ threadId }) => ({ id: threadId, messages: [fullMessage("m1", "Ana <ana@x.com>")] });
+    threadsByCard["card-a"] = [thread("t-1", "One"), thread("t-2", "Two")];
+    render(() => <App />);
+    await screen.findByText("One");
+    fireEvent.keyDown(document, { key: "l" });
+    fireEvent.keyDown(document, { key: "x" });
+    fireEvent.keyDown(document, { key: "j" });
+    fireEvent.keyDown(document, { key: "x" });
+    fireEvent.keyDown(document, { key: "r" });
+    await waitFor(() => expect(screen.getAllByPlaceholderText(/^Reply to/)).toHaveLength(2));
+    expect(screen.getByText("Batch Reply")).toBeInTheDocument();
+  });
+
   it("attaches a file dropped on one reply to that reply only", async () => {
     handlers.get_thread_details = ({ threadId }) => ({ id: threadId, messages: [fullMessage("m1", "Ana <ana@x.com>")] });
     await openBatchReplyForTwo();
