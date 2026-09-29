@@ -37,6 +37,21 @@ describe("layer stack", () => {
     }
   });
 
+  it("runs before document handlers added before the first layer", async () => {
+    const behind = vi.fn();
+    document.addEventListener("keydown", behind);
+    vi.resetModules();
+    const fresh = await import("./layers");
+    const remove = fresh.pushLayer(() => {});
+    try {
+      escape(document.body);
+      expect(behind).not.toHaveBeenCalled();
+    } finally {
+      remove();
+      document.removeEventListener("keydown", behind);
+    }
+  });
+
   it("leaves Escape in a text field to the field unless the layer asks for it", () => {
     const input = document.body.appendChild(document.createElement("input"));
     const close = vi.fn();

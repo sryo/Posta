@@ -44,6 +44,8 @@ describe("Toasts", () => {
     expect(toasts.current()?.paused).toBe(false);
     fireEvent.focusIn(within(polite).getByRole("button", { name: "Open" }));
     expect(toasts.current()?.paused).toBe(true);
+    fireEvent.focusOut(within(polite).getByRole("button", { name: "Open" }), { relatedTarget: within(polite).getByTitle("Dismiss") });
+    expect(toasts.current()?.paused).toBe(true);
     fireEvent.focusOut(within(polite).getByRole("button", { name: "Open" }));
     expect(toasts.current()?.paused).toBe(false);
   });

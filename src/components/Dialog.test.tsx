@@ -53,6 +53,21 @@ describe("Dialog", () => {
     expect(board).not.toHaveAttribute("inert");
   });
 
+  it("keeps the board inert until the last of two dialogs closes", () => {
+    const [inner, setInner] = createSignal(true);
+    const { container, setOpen } = renderDialog();
+    render(() => (
+      <Show when={inner()}>
+        <Dialog class="inner" onClose={() => setInner(false)}><button>Inner</button></Dialog>
+      </Show>
+    ));
+    const board = container.querySelector("[data-board]")!;
+    setInner(false);
+    expect(board).toHaveAttribute("inert");
+    setOpen(false);
+    expect(board).not.toHaveAttribute("inert");
+  });
+
   it("closes on Escape and gives focus back to what opened it", () => {
     const { opener, onClose } = renderDialog();
     fireEvent.keyDown(document.activeElement!, { key: "Escape" });
