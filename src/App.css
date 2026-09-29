@@ -4738,8 +4738,20 @@ button.settings-section-title {
     margin: 0;
     display: flex;
     flex-wrap: wrap;
-    gap: 0 var(--space-md);
+    gap: 0 var(--space-lg);
     word-break: break-word;
+}
+
+.message-recipient {
+    max-width: 100%;
+}
+
+.message-recipient-name {
+    color: var(--text-primary);
+}
+
+.message-recipient-address {
+    color: var(--text-secondary);
 }
 
 .message-date {

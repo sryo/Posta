@@ -20,9 +20,19 @@ describe("MessageRecipients", () => {
     render(() => <MessageRecipients to="Ana Pérez <ana@x.com>" cc="lucas@x.com" currentUserEmail="me@x.com" />);
     fireEvent.click(screen.getByRole("button", { name: /to Ana/ }));
     expect(screen.getByRole("button", { name: /to Ana/ })).toHaveAttribute("aria-expanded", "true");
-    expect(screen.getByText("Ana Pérez <ana@x.com>")).toBeInTheDocument();
     expect(screen.getByText("lucas@x.com")).toBeInTheDocument();
     expect(screen.getByText("Cc")).toBeInTheDocument();
+  });
+
+  it("writes an opened recipient as a name with its address beside it, like the sender", () => {
+    const { container } = render(() => <MessageRecipients to={'"Martin, Jules" <jules@x.com>, lucas@x.com'} />);
+    fireEvent.click(screen.getByRole("button", { name: /to Jules/ }));
+    const [named, bare] = Array.from(container.querySelectorAll(".message-recipient"));
+    expect(named.querySelector(".message-recipient-name")?.textContent).toBe("Martin, Jules");
+    expect(named.querySelector(".message-recipient-address")?.textContent).toBe("jules@x.com");
+    expect(container.textContent).not.toContain("<");
+    expect(bare.querySelector(".message-recipient-name")?.textContent).toBe("lucas@x.com");
+    expect(bare.querySelector(".message-recipient-address")).toBeNull();
   });
 
   it("renders nothing when the message names no recipients", () => {
