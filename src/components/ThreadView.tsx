@@ -48,6 +48,7 @@ import { MessageActionsWheel } from "./MessageActionsWheel";
 import { MessageRecipients } from "./MessageRecipients";
 import type { PreviewAttachment } from "./AttachmentLightbox";
 import { isPreviewable } from "../app/attachments";
+import { isForwardSubject } from "../app/quotedHistory";
 import { isMailingList, unsubscribeMethod, type UnsubscribeMethod } from "../app/unsubscribe";
 import { personName } from "../app/people";
 import { COLOR_HEX } from "../shared/constants";
@@ -666,6 +667,7 @@ export const ThreadView = (props: {
                             cidAttachmentData={props.cidAttachmentData}
                             msgPayloadParts={msg.payload?.parts}
                             msgId={msg.id}
+                            forward={isForwardSubject(findHeader(headers, 'Subject') || '')}
                             threadAttachments={props.threadAttachments}
                           />
                         }

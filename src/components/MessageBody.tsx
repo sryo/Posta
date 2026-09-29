@@ -38,6 +38,8 @@ interface MessageBodyProps {
   cidAttachmentData?: Record<string, string>;
   msgPayloadParts?: any[];
   msgId: string;
+  // The message is a forward, so the history it carries stays in view
+  forward?: boolean;
   threadAttachments?: { message_id: string; attachment_id: string; content_id: string | null; inline_data: string | null; mime_type: string }[];
 }
 
@@ -105,7 +107,7 @@ export const MessageBody = (props: MessageBodyProps) => {
         return dataUrl ? `src="${dataUrl}"` : match;
       });
     }
-    const split = splitQuotedHtml(html);
+    const split = splitQuotedHtml(html, { forward: props.forward });
     if (!split) return { main: DOMPurify.sanitize(html, DOMPURIFY_CONFIG), quoted: null };
     return { main: DOMPurify.sanitize(split.main, DOMPURIFY_CONFIG), quoted: DOMPurify.sanitize(split.quoted, DOMPURIFY_CONFIG) };
   });

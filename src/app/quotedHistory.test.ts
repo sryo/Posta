@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { splitQuotedHtml, splitQuotedText } from "./quotedHistory";
+import { isForwardSubject, splitQuotedHtml, splitQuotedText } from "./quotedHistory";
 
 const text = (html: string) => new DOMParser().parseFromString(html, "text/html").body.textContent ?? "";
 
@@ -73,9 +73,29 @@ describe("splitQuotedHtml", () => {
     expect(splitQuotedHtml(apple)).toBeNull();
   });
 
+  it("keeps an Outlook forward in view when its subject says it is one", () => {
+    const outlook = '<p>FYI</p><div id="appendonsend"></div><hr><div id="divRplyFwdMsg"><b>From:</b> Ana<br><b>Subject:</b> The plan</div><div>The plan</div>';
+    expect(splitQuotedHtml(outlook, { forward: true })).toBeNull();
+    expect(splitQuotedHtml(outlook, { forward: false })).not.toBeNull();
+  });
+
   it("keeps a body with no quote, or a quote with nothing written above it, whole", () => {
     expect(splitQuotedHtml("<p>Hello</p><blockquote>A quote a newsletter uses</blockquote><p>More</p>")).toBeNull();
     expect(splitQuotedHtml('<div class="gmail_quote">only the forward</div>')).toBeNull();
     expect(splitQuotedHtml('<div style="white-space: pre-wrap">On Mon, Ana wrote:\n&gt; Hi</div>')).toBeNull();
+  });
+});
+
+describe("isForwardSubject", () => {
+  it("recognises the forward prefixes mail clients write", () => {
+    for (const subject of ["Fwd: plan", "FW: plan", "fw:plan", "  Fwd: Re: plan", "TR: plan", "WG: plan", "RV: plan", "ENC: plan"]) {
+      expect(isForwardSubject(subject)).toBe(true);
+    }
+  });
+
+  it("leaves replies, including replies to a forward, and other subjects", () => {
+    for (const subject of ["Re: Fwd: plan", "Forward planning", "FWIW notes", "", "Twenty: plan"]) {
+      expect(isForwardSubject(subject)).toBe(false);
+    }
   });
 });
