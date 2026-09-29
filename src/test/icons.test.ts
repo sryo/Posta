@@ -17,6 +17,9 @@ const SVG_ALLOWED: Record<string, string> = {
   "/components/CardStates.tsx": "the empty-card postmark illustration and its shared defs",
 };
 
+// Unicode standing in for a drawn icon. Key labels (⌘ ⇧ ↵) and the · separator are text.
+const GLYPH_ICON = /[⚠✓✔✕✖×•↗📎📄🖼]/u;
+
 const withoutComments = (source: string) =>
   source.replace(/\{\/\*[\s\S]*?\*\/\}/g, "").replace(/\/\*[\s\S]*?\*\//g, "").replace(/(^|[^:"'`])\/\/.*$/gm, "$1");
 
@@ -38,6 +41,26 @@ describe("one source for icons", () => {
       const found = sources.find(([file]) => file.endsWith(suffix));
       expect(found && /<svg\b/.test(found[1]), suffix).toBe(true);
     }
+  });
+
+  it("recognises a glyph standing in for an icon", () => {
+    for (const text of ["⚠ Design review", "✓ Going", ">•••</button>", "Google Calendar ↗", "'📎'", "'🖼️'", ">×</button>"]) {
+      expect(GLYPH_ICON.test(text), text).toBe(true);
+    }
+    for (const text of ["<kbd>⌘</kbd>", "⇧M", "↵ to send", "15 m · Studio 2", "→"]) {
+      expect(GLYPH_ICON.test(text), text).toBe(false);
+    }
+  });
+
+  it("sets no unicode glyph as an icon in a component", () => {
+    const offenders = sources.flatMap(([file, source]) =>
+      withoutComments(source)
+        .split("\n")
+        .map((line, i) => ({ line, at: `${file}:${i + 1}` }))
+        .filter(({ line }) => GLYPH_ICON.test(line))
+        .map(({ at, line }) => `${at}: ${line.trim()}`),
+    );
+    expect(offenders).toEqual([]);
   });
 });
 

@@ -113,7 +113,9 @@ describe("EventView keys match the rest of the app", () => {
 
   it("names the Google Calendar link for where it goes", () => {
     renderEvent();
-    expect(screen.getByTitle("Open in Google Calendar").querySelector(".thread-toolbar-label")).toHaveTextContent("Google Calendar ↗");
+    const link = screen.getByTitle("Open in Google Calendar");
+    expect(link.querySelector(".thread-toolbar-label")).toHaveTextContent(/^Google Calendar$/);
+    expect(link.querySelector("svg[data-icon=external]")).not.toBeNull();
   });
 
   it("answers an invite with y, ⇧M and n, and shows those keys", () => {

@@ -40,9 +40,6 @@ const EXCEPTIONS: Record<string, string> = {
   ".postmark-text letter-spacing": "1.4px",
   // Drag handle dots are a glyph, pulled together into a grip
   ".action-config-item .drag-handle letter-spacing": "-2px",
-  // The quoted-history toggle is a row of dots set as text
-  ".quoted-toggle letter-spacing": "1px",
-  ".quoted-toggle line-height": "1",
 };
 
 function offenders(): string[] {

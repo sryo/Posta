@@ -17,6 +17,7 @@ import {
   MoveToCalendarIcon,
   LocationIcon,
   VideoIcon,
+  ExternalIcon,
 } from "./Icons";
 import { CloseButton } from "./ComposeAtoms";
 import { ComposeForm } from "./ComposeForm";
@@ -176,7 +177,7 @@ export const EventView = (props: {
                 title="Open in Google Calendar"
               >
                 <CalendarIcon />
-                <span class="thread-toolbar-label">Google Calendar ↗</span>
+                <span class="thread-toolbar-label">Google Calendar</span><ExternalIcon size="meta" />
                 <span class="shortcut-hint">O</span>
               </button>
             </Show>

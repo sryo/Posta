@@ -347,7 +347,8 @@ describe("Settings Google connection", () => {
     const sidebar = await (async () => { render(() => <App />); return openSettingsFromChooser(); })();
 
     expect(within(sidebar).getByText("Google connection")).toBeInTheDocument();
-    await waitFor(() => expect(sidebar).toHaveTextContent("Using client 1234…apps.googleusercontent.com ✓"));
+    await waitFor(() => expect(sidebar).toHaveTextContent("Using client 1234…apps.googleusercontent.com"));
+    expect(sidebar.querySelector(".settings-hint svg[data-icon=check]")).not.toBeNull();
     expect(within(sidebar).queryByLabelText("OAuth client ID")).not.toBeInTheDocument();
     const change = within(sidebar).getByRole("button", { name: "Change credentials" });
     expect(change).toHaveAttribute("aria-expanded", "false");

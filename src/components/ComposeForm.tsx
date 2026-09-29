@@ -1,7 +1,7 @@
 import { Show, For, onCleanup, createUniqueId, createSignal, createEffect } from "solid-js";
 import type { Account, SendAttachment } from "../api/tauri";
 import { truncateMiddle } from "../utils";
-import { CloseIcon, AttachmentIcon } from "./Icons";
+import { CloseIcon, AttachmentIcon, MoreIcon } from "./Icons";
 import { CloseButton } from "./ComposeAtoms";
 import { isImeComposing } from "../shared/keyboard";
 import { splitQuotedText } from "../app/quotedHistory";
@@ -257,7 +257,7 @@ export const ComposeForm = (props: ComposeFormProps) => {
           aria-label={quoteShown() ? 'Hide quoted text' : 'Show quoted text'}
           title={quoteShown() ? 'Hide quoted text' : 'Show quoted text'}
           onClick={() => setQuoteShown(!quoteShown())}
-        >•••</button>
+        ><MoreIcon /></button>
       </Show>
     </div>
   );

@@ -144,7 +144,7 @@ describe("MessageBody quoted history", () => {
     expect(container.textContent).not.toContain("Earlier");
     const toggle = getByRole("button", { name: "Show quoted text" });
     expect(toggle).toHaveAttribute("aria-expanded", "false");
-    expect(toggle.textContent).toBe("•••");
+    expect(toggle.querySelector("svg[data-icon=more]")).not.toBeNull();
 
     fireEvent.click(toggle);
     expect(container.textContent).toContain("On Mon, Ana wrote:");

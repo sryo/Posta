@@ -110,6 +110,8 @@ import {
   PaletteIcon,
   CalendarIcon,
   LocationIcon,
+  WarningIcon,
+  CheckIcon,
 } from "./components/Icons";
 import { ReactionButton } from "./components/ReactionButton";
 import { ComposeTextarea, ComposeSendButton, CloseButton } from "./components/ComposeAtoms";
@@ -4785,7 +4787,7 @@ function App() {
                             )}
                             <span class="account-chooser-email">{account.email}</span>
                             {account.id === selectedAccount()?.id && (
-                              <span class="account-chooser-check">✓</span>
+                              <span class="account-chooser-check"><CheckIcon /></span>
                             )}
                           </button>
                         )}
@@ -4827,7 +4829,7 @@ function App() {
               </details>
             )}
           </Show>
-          <button class="btn" onClick={() => setError(null)} aria-label="Dismiss error">×</button>
+          <button class="btn" onClick={() => setError(null)} aria-label="Dismiss error"><CloseIcon /></button>
         </div>
       </Show>
 
@@ -4995,7 +4997,7 @@ function App() {
                           </Show>
                           <Show when={!loadingThreads[card.id] && cardErrors[card.id] && !cardThreads[card.id] && !cardCalendarEvents[card.id] && !cardWaitingMessage(cardErrors[card.id]!, syncErrors[card.id], cardExpired(card))}>
                             <div class="card-error">
-                              <span class="error-icon">⚠</span>
+                              <span class="error-icon"><WarningIcon /></span>
                               <span class="error-text">{cardErrors[card.id]}</span>
                               <Show
                                 when={needsSignInAgain(cardErrors[card.id] ?? "")}
@@ -5978,7 +5980,7 @@ function App() {
             <Show when={storedClientId()}>
               {(id) => (
                 <p class="settings-hint">
-                  Using client {shortClientId(id())} ✓ ·{" "}
+                  Using client {shortClientId(id())} <CheckIcon size="meta" /> ·{" "}
                   <button class="link-btn" aria-expanded={googleFormOpen()} onClick={() => setGoogleFormOpen(!googleFormOpen())}>
                     Change credentials
                   </button>

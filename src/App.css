@@ -794,9 +794,8 @@ a:focus-visible,
 }
 
 .account-chooser-check {
+    display: inline-flex;
     color: var(--text-link);
-    font-size: var(--size-14);
-    font-weight: var(--weight-strong);
 }
 
 .account-chooser-divider {
@@ -1815,6 +1814,9 @@ a:focus-visible,
 }
 
 .invite-clash {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--icon-gap-meta);
     flex-shrink: 0;
     margin-left: auto;
     font: var(--type-meta);
@@ -2293,8 +2295,8 @@ a:focus-visible,
 }
 
 .card-error .error-icon {
-    font-size: var(--size-20);
-    color: var(--danger-text);
+    display: inline-flex;
+    color: var(--warning-text);
 }
 
 .card-error .error-text {
@@ -2627,6 +2629,8 @@ a:focus-visible,
 }
 
 .query-chip-remove {
+    display: inline-flex;
+    align-items: center;
     padding: 0 var(--space-md) 0 var(--space-sm);
     border: none;
     background: none;
@@ -5495,9 +5499,6 @@ button.settings-section-title {
     border-radius: var(--radius-sm);
     background: var(--surface-hover);
     color: var(--text-secondary);
-    font-size: var(--size-10);
-    letter-spacing: 1px;
-    line-height: 1;
     cursor: pointer;
 }
 
@@ -5687,8 +5688,9 @@ button.settings-section-title {
     display: flex;
     align-items: center;
     justify-content: center;
-    font-size: var(--size-20);
     flex-shrink: 0;
+    /* icons take text ink, never the decorative --card-ink */
+    color: var(--card-ink-text);
 }
 
 .attachment-icon.image {

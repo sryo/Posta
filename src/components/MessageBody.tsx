@@ -3,6 +3,7 @@ import { createMemo, createSignal, Show } from "solid-js";
 import DOMPurify from 'dompurify';
 import { normalizeBase64Url } from "../utils";
 import { splitQuotedHtml } from "../app/quotedHistory";
+import { MoreIcon } from "./Icons";
 
 // Configure DOMPurify with safe defaults for email HTML
 const DOMPURIFY_CONFIG = {
@@ -126,7 +127,7 @@ export const MessageBody = (props: MessageBodyProps) => {
               aria-label={quotedShown() ? 'Hide quoted text' : 'Show quoted text'}
               title={quotedShown() ? 'Hide quoted text' : 'Show quoted text'}
               onClick={() => setQuotedShown(!quotedShown())}
-            >•••</button>
+            ><MoreIcon /></button>
             <Show when={quotedShown()}>
               <div class="message-quoted" innerHTML={quoted()}></div>
             </Show>

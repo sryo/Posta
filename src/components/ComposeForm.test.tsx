@@ -149,7 +149,7 @@ describe("ComposeForm quoted history in a reply", () => {
     const { body, textarea } = renderReply(quote);
     expect(textarea.value).toBe("");
     const toggle = screen.getByRole("button", { name: "Show quoted text" });
-    expect(toggle.textContent).toBe("•••");
+    expect(toggle.querySelector("svg[data-icon=more]")).not.toBeNull();
     fireEvent.click(toggle);
     expect(textarea.value).toBe(quote);
     fireEvent.input(textarea, { target: { value: "Hi" + quote.replace("Lunch?", "Lunch? no") } });

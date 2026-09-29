@@ -8,7 +8,7 @@ import { inviteDuration, invitePlace, inviteState, inviteWhen, type InviteState 
 import { useLayer } from "../app/layers";
 import { joinLabel, meetingProgress } from "../app/nowSection";
 import { RSVP_ANSWERS, rsvpForKey, type RsvpStatus } from "../app/rsvp";
-import { CalendarIcon, CheckCircleIcon, CheckIcon, ChevronIcon, CrossCircleIcon, LocationIcon, QuestionCircleIcon, VideoIcon } from "./Icons";
+import { WarningIcon, CalendarIcon, CheckCircleIcon, CheckIcon, ChevronIcon, CrossCircleIcon, LocationIcon, QuestionCircleIcon, VideoIcon } from "./Icons";
 
 // An invite email's row on a card keeps a mail row's three lines: the event's
 // time where the arrival time goes, its length and place where the snippet
@@ -283,7 +283,8 @@ export const InviteRowLines = (props: {
           </Show>
           <Show when={clashes().length > 0}>
             <span class="invite-clash">
-              ⚠ {clashes()[0].title}{clashes().length > 1 ? ` +${clashes().length - 1}` : ""}
+              <WarningIcon size="meta" />
+              {clashes()[0].title}{clashes().length > 1 ? ` +${clashes().length - 1}` : ""}
             </span>
           </Show>
         </div>
