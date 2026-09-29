@@ -1579,11 +1579,8 @@ function App() {
         filter: showGlobalFilter(),
         accountChooser: accountChooserOpen(),
         colorPicker: colorPickerOpen() || editColorPickerOpen() || bgColorPickerOpen(),
-        shortcutsHelp: shortcutsHelpOpen(),
         batchReply: batchReplyOpen(),
         compose: composing() && !closingCompose(),
-        queryHelp: queryHelpOpen(),
-        eventForm: creatingEvent(),
         cardEditor: !!editingCardId(),
         settings: settingsOpen(),
         actionConfigMenu: !!actionConfigMenu(),
@@ -1594,11 +1591,8 @@ function App() {
         case "filter": setShowGlobalFilter(false); setGlobalFilter(""); break;
         case "accountChooser": setAccountChooserOpen(false); break;
         case "colorPicker": setColorPickerOpen(false); setEditColorPickerOpen(false); setBgColorPickerOpen(false); break;
-        case "shortcutsHelp": setShortcutsHelpOpen(false); break;
         case "batchReply": dismissBatchReply(); break;
         case "compose": closeCompose(); break;
-        case "queryHelp": setQueryHelpOpen(false); break;
-        case "eventForm": dismissEventForm(); break;
         case "cardEditor": setEditingCardId(null); break;
         case "settings": setSettingsOpen(false); break;
         case "actionConfigMenu": setActionConfigMenu(null); break;
