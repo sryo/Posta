@@ -40,6 +40,21 @@ describe("askConfirm", () => {
     expect(await answer).toBe(true);
   });
 
+  it("gives focus back to what had it once answered", async () => {
+    render(() => <ConfirmDialog />);
+    const opener = document.createElement("button");
+    document.body.appendChild(opener);
+    opener.focus();
+    const answer = askConfirm("Delete?");
+    const cancel = await screen.findByRole("button", { name: "Cancel" });
+    await new Promise(r => setTimeout(r, 0));
+    expect(document.activeElement).not.toBe(opener);
+    fireEvent.click(cancel);
+    await answer;
+    expect(document.activeElement).toBe(opener);
+    opener.remove();
+  });
+
   it("cancels a question still open when another is asked", async () => {
     render(() => <ConfirmDialog />);
     const first = askConfirm("First?");

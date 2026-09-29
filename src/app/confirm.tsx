@@ -6,6 +6,8 @@ interface ConfirmRequest {
   message: string;
   confirmLabel: string;
   resolve: (ok: boolean) => void;
+  // Where keyboard focus goes back to once answered
+  returnFocus: Element | null;
 }
 
 const [request, setRequest] = createSignal<ConfirmRequest | null>(null);
@@ -16,9 +18,10 @@ export function confirmOpen(): boolean {
 
 // Asks in the app's own dialog; a question still open is answered "no"
 export function askConfirm(message: string, confirmLabel = "OK"): Promise<boolean> {
-  request()?.resolve(false);
+  const previous = request();
+  previous?.resolve(false);
   return new Promise(resolve => {
-    setRequest({ message, confirmLabel, resolve });
+    setRequest({ message, confirmLabel, resolve, returnFocus: previous?.returnFocus ?? document.activeElement });
   });
 }
 
@@ -26,6 +29,7 @@ function answer(ok: boolean) {
   const open = request();
   if (!open) return;
   setRequest(null);
+  if (open.returnFocus instanceof HTMLElement && open.returnFocus.isConnected) open.returnFocus.focus();
   open.resolve(ok);
 }
 
