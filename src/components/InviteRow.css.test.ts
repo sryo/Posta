@@ -16,17 +16,17 @@ describe("invite row styles", () => {
   });
 
   it("writes the event's time in the accent, muted once past and struck through when not going", () => {
-    expect(declarations(".invite-when").get("color")).toBe("var(--accent)");
+    expect(declarations(".invite-when").get("color")).toBe("var(--text-link)");
     expect(declarations(".invite-when.past").get("color")).toBe("var(--text-muted)");
     expect(declarations(".invite-when.struck").get("text-decoration")).toBe("line-through");
   });
 
   it("colours the answer by its status token", () => {
-    expect(declarations(".invite-answer.accepted").get("color")).toBe("var(--success-fg)");
-    expect(declarations(".invite-answer.tentative").get("color")).toBe("var(--warning-fg)");
-    expect(declarations(".invite-answer-item.accepted .invite-answer-icon").get("color")).toBe("var(--success-fg)");
-    expect(declarations(".invite-answer-item.tentative .invite-answer-icon").get("color")).toBe("var(--warning-fg)");
-    expect(declarations(".invite-answer-item.declined .invite-answer-icon").get("color")).toBe("var(--danger-fg)");
+    expect(declarations(".invite-answer.accepted").get("color")).toBe("var(--success-text)");
+    expect(declarations(".invite-answer.tentative").get("color")).toBe("var(--warning-text)");
+    expect(declarations(".invite-answer-item.accepted .invite-answer-icon").get("color")).toBe("var(--success-text)");
+    expect(declarations(".invite-answer-item.tentative .invite-answer-icon").get("color")).toBe("var(--warning-text)");
+    expect(declarations(".invite-answer-item.declined .invite-answer-icon").get("color")).toBe("var(--danger-text)");
   });
 
   it("keeps the event's time clear of the row's checkbox on hover and focus", () => {

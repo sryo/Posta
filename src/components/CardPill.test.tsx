@@ -7,8 +7,8 @@ describe("CardPill", () => {
     const { container } = render(() => <CardPill color="purple">Newsletters · 3 of 5</CardPill>);
     const pill = container.querySelector<HTMLElement>(".thread-bar-card")!;
     expect(pill).toHaveClass("tinted");
-    expect(pill.style.getPropertyValue("--pill-color")).toBe("#5E35B1");
-    expect(pill.style.color).toBe("");
+    expect(pill).toHaveAttribute("data-hue", "purple");
+    expect(pill.getAttribute("style")).toBeNull();
     expect(pill).toHaveTextContent("Newsletters · 3 of 5");
   });
 
@@ -16,6 +16,7 @@ describe("CardPill", () => {
     const { container } = render(() => <CardPill color={null}>Inbox</CardPill>);
     const pill = container.querySelector<HTMLElement>(".thread-bar-card")!;
     expect(pill).not.toHaveClass("tinted");
+    expect(pill).not.toHaveAttribute("data-hue");
     expect(pill.getAttribute("style")).toBeNull();
   });
 });

@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { parseRules } from "./test/css";
 import { readRepoFile } from "./test/files";
-import { CARD_COLORS, COLOR_HEX } from "./shared/constants";
+import { CARD_COLORS } from "./shared/constants";
 
 const raw = readRepoFile("src/App.css");
 const css = raw.replace(/\/\*[\s\S]*?\*\//g, "");
@@ -15,15 +15,15 @@ function declaration(selector: string, prop: string, context = ""): string | und
 describe("postmark styles", () => {
   it("inks each card colour's stamp in that colour's solid hue", () => {
     for (const color of CARD_COLORS) {
-      expect(declaration(`.card[data-color="${color}"] .postmark`, "--postmark-hue")?.toLowerCase()).toBe(COLOR_HEX[color].toLowerCase());
+      const rule = rules.find(r => !r.context && r.selectors.includes(`.card[data-color="${color}"]`) && r.declarations.some(([p]) => p === "--card-hue"));
+      expect(rule?.declarations.find(([p]) => p === "--card-hue")?.[1], color).toBe(`var(--hue-${color})`);
     }
   });
 
   it("pulls the hue toward the text colour, with a grey stamp on colourless cards", () => {
-    expect(declaration(".postmark", "color")).toBe("var(--text-secondary)");
-    const mixed = rules.find(r => r.selectors.includes(".postmark") && r.context.includes("@supports"));
-    expect(mixed?.declarations.find(([p]) => p === "color")?.[1])
-      .toBe("color-mix(in oklab, var(--postmark-hue, var(--text-secondary)) 70%, var(--text-primary))");
+    expect(declaration(".postmark", "color")).toBe("var(--card-ink)");
+    expect(declaration(":root", "--card-ink")).toBe("var(--text-secondary)");
+    expect(declaration(".card[data-color]", "--card-ink")).toBe("color-mix(in oklab, var(--card-hue) 70%, var(--text-primary))");
   });
 
   it("lands the stamp only when it is told to", () => {

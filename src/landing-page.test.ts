@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { parseRules, selectorClasses, unusedKeyframes } from "./test/css";
 import { readRepoFile } from "./test/files";
+import { resolveColor, tokenScope, toHex } from "./test/color";
 
 const page = readRepoFile("docs/index.html");
 
@@ -69,25 +70,35 @@ describe("landing page (docs/index.html)", () => {
     expect(repeated).toEqual([]);
   });
 
-  it("uses the app's palette for every theme token it shares with App.css", () => {
+  it("uses the app's palette for every colour token it mirrors from App.css", () => {
     const appRules = parseRules(readRepoFile("src/App.css").replace(/\/\*[\s\S]*?\*\//g, ""));
-    const tokens = (from: typeof rules, context: string) =>
-      new Map(
-        from
-          .filter((r) => r.context === context && r.selectors.join(",") === ":root")
-          .flatMap((r) => r.declarations.filter(([prop]) => prop.startsWith("--"))),
-      );
+    // The page keeps the app's older, shorter names; each stands for one role
+    const ROLES: Record<string, string> = {
+      "--bg-primary": "--surface-card",
+      "--bg-secondary": "--surface-app",
+      "--bg-tertiary": "--surface-subtle",
+      "--bg-hover": "--surface-hover",
+      "--text-primary": "--text-primary",
+      "--text-secondary": "--text-secondary",
+      "--text-muted": "--text-muted",
+      "--border-color": "--border-default",
+      "--border-light": "--border-subtle",
+      "--accent": "--accent-fill",
+      "--shadow": "--shadow-color",
+      "--danger": "--danger-text",
+      "--danger-bg": "--danger-tint",
+    };
     const drift: string[] = [];
-    let shared = 0;
-    for (const context of ["", "@media (prefers-color-scheme: dark)"]) {
-      const app = tokens(appRules, context);
-      for (const [prop, value] of tokens(rules, context)) {
-        if (!app.has(prop)) continue;
-        shared++;
-        if (app.get(prop) !== value) drift.push(`${context || "light"} ${prop}: ${value} vs app ${app.get(prop)}`);
+    for (const theme of ["light", "dark"] as const) {
+      const pageScope = tokenScope(rules, theme);
+      const appScope = tokenScope(appRules, theme);
+      for (const [name, role] of Object.entries(ROLES)) {
+        expect(pageScope.has(name), name).toBe(true);
+        const [ours, app] = [resolveColor(`var(${name})`, pageScope), resolveColor(`var(${role})`, appScope)];
+        const same = ours.every((c, i) => Math.abs(c - app[i]) < 1 / 255);
+        if (!same) drift.push(`${theme} ${name}: ${toHex(ours)}/${ours[3]} vs app ${role} ${toHex(app)}/${app[3].toFixed(2)}`);
       }
     }
-    expect(shared).toBeGreaterThan(20);
     expect(drift).toEqual([]);
   });
 

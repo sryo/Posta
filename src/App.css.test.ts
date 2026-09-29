@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { parseRules, selectorClasses, unusedKeyframes } from "./test/css";
 import { readRepoFile } from "./test/files";
+import { contrast, over, resolveColor, tokenScope } from "./test/color";
 
 const css = readRepoFile("src/App.css").replace(/\/\*[\s\S]*?\*\//g, "");
 
@@ -214,11 +215,11 @@ describe("card query field", () => {
     expect(box.get("border")).toBe("none");
     expect(box.get("flex")).toBe("0 1 auto");
     expect(declarationsOf(".query-chips input:last-child").get("flex-grow")).toBe("1");
-    expect(declarationsOf(".query-chips:focus-within").get("border-color")).toBe("var(--accent)");
+    expect(declarationsOf(".query-chips:focus-within").get("border-color")).toBe("var(--border-focus)");
   });
 
   it("shows a failed preview in the danger color", () => {
-    expect(declarationsOf(".query-preview-error").get("color")).toBe("var(--danger)");
+    expect(declarationsOf(".query-preview-error").get("color")).toBe("var(--danger-text)");
   });
 });
 
@@ -232,35 +233,18 @@ describe("board connection status", () => {
   });
 
   it("marks offline in amber and a lost sign-in in the danger color", () => {
-    expect(declarationsOf(".connection-status.offline").get("background")).toBe("var(--warning-bg)");
-    expect(declarationsOf(".connection-status.expired").get("background")).toBe("var(--danger-bg)");
-    expect(declarationsOf(".connection-status.offline").get("color")).toBe("var(--warning-fg)");
-    expect(declarationsOf(".connection-status.expired").get("color")).toBe("var(--danger-fg)");
+    expect(declarationsOf(".connection-status.offline").get("background")).toBe("var(--warning-tint)");
+    expect(declarationsOf(".connection-status.expired").get("background")).toBe("var(--danger-tint)");
+    expect(declarationsOf(".connection-status.offline").get("color")).toBe("var(--warning-text)");
+    expect(declarationsOf(".connection-status.expired").get("color")).toBe("var(--danger-text)");
   });
 
   it("keeps the amber offline text readable on its background in both themes", () => {
-    // [light, dark] values of a custom property, in the order App.css defines them
-    const token = (name: string) => [...css.matchAll(new RegExp(`${name}:\\s*([^;]+);`, "g"))].map((m) => m[1].trim());
-    const rgba = (value: string): [number, number, number, number] => {
-      const hex = /^#([0-9a-f]{3}|[0-9a-f]{6})$/i.exec(value);
-      if (hex) {
-        const h = hex[1].length === 3 ? [...hex[1]].map((c) => c + c).join("") : hex[1];
-        return [parseInt(h.slice(0, 2), 16), parseInt(h.slice(2, 4), 16), parseInt(h.slice(4, 6), 16), 1];
-      }
-      const [r, g, b, a = "1"] = /rgba?\(([^)]+)\)/.exec(value)![1].split(",").map((p) => p.trim());
-      return [Number(r), Number(g), Number(b), Number(a)];
-    };
-    const luminance = ([r, g, b]: number[]) => {
-      const lin = (c: number) => (c / 255 <= 0.03928 ? c / 255 / 12.92 : ((c / 255 + 0.055) / 1.055) ** 2.4);
-      return 0.2126 * lin(r) + 0.7152 * lin(g) + 0.0722 * lin(b);
-    };
-    const [text, bg, page] = [token("--warning-fg"), token("--warning-bg"), token("--bg-primary")];
-    for (const theme of [0, 1]) {
-      const [br, bgG, bb, alpha] = rgba(bg[theme]);
-      const [pr, pg, pb] = rgba(page[theme]);
-      const under = [br * alpha + pr * (1 - alpha), bgG * alpha + pg * (1 - alpha), bb * alpha + pb * (1 - alpha)];
-      const [l1, l2] = [luminance(rgba(text[theme])), luminance(under)].sort((x, y) => y - x);
-      expect((l1 + 0.05) / (l2 + 0.05)).toBeGreaterThanOrEqual(4.5);
+    for (const theme of ["light", "dark"] as const) {
+      const scope = tokenScope(rules, theme);
+      const color = (name: string) => resolveColor(`var(${name})`, scope);
+      const under = over(color("--warning-tint"), over(color("--surface-card"), color("--surface-app")));
+      expect(contrast(color("--warning-text"), under), theme).toBeGreaterThanOrEqual(4.5);
     }
   });
 
@@ -281,7 +265,7 @@ describe("accounts on the board", () => {
     expect(qualifier.get("min-width")).toBe("0");
     expect(qualifier.get("text-overflow")).toBe("ellipsis");
     expect(declarationsOf(".card-title").get("flex-shrink")).toBe("0");
-    expect(declarationsOf(".card-account-qualifier.problem").get("color")).toBe("var(--danger)");
+    expect(declarationsOf(".card-account-qualifier.problem").get("color")).toBe("var(--danger-text)");
   });
 
   it("widens the account to its full address while the card is hovered or focused", () => {
@@ -317,7 +301,7 @@ describe("card header", () => {
     expect(title.get("background")).toBe("none");
     expect(title.get("font")).toBe("inherit");
     expect(title.get("min-width")).toBe("0");
-    expect(declarationsOf(".card-title-btn:hover").get("background")).toBe("var(--bg-hover)");
+    expect(declarationsOf(".card-title-btn:hover").get("background")).toBe("var(--surface-hover)");
   });
 
   it("hides refresh and edit at rest without taking them out of the tab order", () => {
@@ -340,7 +324,7 @@ describe("card header", () => {
   });
 
   it("turns refresh red while the card can't sync, with no dot", () => {
-    expect(declarationsOf(".card-header.has-problem .card-refresh").get("color")).toBe("var(--danger)");
+    expect(declarationsOf(".card-header.has-problem .card-refresh").get("color")).toBe("var(--danger-text)");
   });
 
   it("stacks the collapsed strip's count above its vertical title and account", () => {

@@ -18,7 +18,7 @@ describe("App.css cascade", () => {
       '<div class="message-body"><pre><code id="block">x</code></pre><p><code id="inline">y</code></p></div>';
     const decl = (id: string) => cascadedDeclarations(rules, document.getElementById(id)!);
     expect(decl("inline").get("padding")).toBe("var(--space-xs) var(--space-md)");
-    expect(decl("inline").get("background")).toBe("var(--bg-hover)");
+    expect(decl("inline").get("background")).toBe("var(--surface-hover)");
     expect(decl("block").get("padding")).toBe("0");
     expect(decl("block").get("background")).toBe("none");
   });
@@ -77,7 +77,7 @@ describe("App.css cascade", () => {
     };
     for (const id of ["collapse", "link", "suggestion", "swatch", "day", "option", "thumb", "email-link", "thread", "event"]) {
       const ring = focusRing(document.getElementById(id)!);
-      expect(ring.get("outline"), id).toMatch(/^2px solid var\(--accent\)$/);
+      expect(ring.get("outline"), id).toMatch(/^2px solid var\(--border-focus\)$/);
     }
     // Rows sit flush in scrolling cards, and a message body scrolls wide
     // content sideways; either would clip an outset ring.
@@ -90,15 +90,15 @@ describe("App.css cascade", () => {
     document.body.innerHTML = '<div class="event-info-row"><button type="button" class="link-btn" id="join">Join</button></div>';
     const decl = cascadedDeclarations(rules, document.getElementById("join")!);
     expect(decl.get("text-decoration")).toBe("none");
-    expect(decl.get("color")).toBe("var(--accent)");
+    expect(decl.get("color")).toBe("var(--text-link)");
   });
 
   it("draws a message's dividers in a border token so they show in dark mode too", () => {
     document.body.innerHTML =
       '<div class="message-card"><div class="message-header" id="header"></div><div class="message-attachments" id="attachments"></div></div>';
     const decl = (id: string) => cascadedDeclarations(rules, document.getElementById(id)!);
-    expect(decl("header").get("border-bottom")).toMatch(/var\(--border-(light|color)\)/);
-    expect(decl("attachments").get("border-top")).toMatch(/var\(--border-(light|color)\)/);
+    expect(decl("header").get("border-bottom")).toMatch(/var\(--border-(subtle|default)\)/);
+    expect(decl("attachments").get("border-top")).toMatch(/var\(--border-(subtle|default)\)/);
   });
 
   it("floats the app's error banner below the window drag strip, on its own surface", () => {
@@ -108,7 +108,7 @@ describe("App.css cascade", () => {
     expect(decl.get("position")).toBe("fixed");
     // The drag strip sits above everything and swallows clicks in its band.
     expect(decl.get("top")).toMatch(/var\(--drag-region-height\)/);
-    expect(decl.get("background")).toMatch(/^var\(--bg-/);
+    expect(decl.get("background")).toMatch(/^var\(--surface-/);
     expect(decl.get("display")).toMatch(/flex/);
     expect(decl.get("gap")).toBeDefined();
   });

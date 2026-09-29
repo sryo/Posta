@@ -6,6 +6,8 @@ import solid from "vite-plugin-solid";
 // defined" and belongs back in the jsdom project.
 const NO_DOM = [
   "src/App.css.test.ts",
+  "src/App.css.color.test.ts",
+  "src/App.css.contrast.test.ts",
   "src/App.css.global.test.ts",
   "src/App.css.postmark.test.ts",
   "src/App.css.type.test.ts",

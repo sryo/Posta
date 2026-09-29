@@ -26,8 +26,8 @@ describe("compose styles", () => {
     expect(button.get("color")).toBe("var(--text-secondary)");
     expect(button.get("flex-shrink")).toBe("0");
     const hover = declarations(".thread-draft-discard:hover");
-    expect(hover.get("color")).toBe("var(--danger)");
-    expect(declarations(".thread-draft-discard:focus-visible").get("color")).toBe("var(--danger)");
+    expect(hover.get("color")).toBe("var(--danger-text)");
+    expect(declarations(".thread-draft-discard:focus-visible").get("color")).toBe("var(--danger-text)");
   });
 
   it("covers the whole compose with the drop target without adding a box around the form", () => {

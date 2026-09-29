@@ -15,7 +15,7 @@ describe("preset picker styles", () => {
   it("keeps the recommended preset's border as wide as the others", () => {
     const recommended = declarations(".preset-option.recommended");
     expect(recommended.has("border")).toBe(false);
-    expect(recommended.get("border-color")).toBe("var(--accent)");
+    expect(recommended.get("border-color")).toBe("var(--border-focus)");
   });
 
   it("draws a bar for cards without a colour, such as calendar cards", () => {
@@ -45,6 +45,6 @@ describe("settings section toggles", () => {
 describe("client file chooser", () => {
   it("shows keyboard focus on its label, since the file input itself is hidden", () => {
     const focused = declarations(".credentials-drop-zone label:has(:focus-visible)");
-    expect(focused.get("outline")).toBe("2px solid var(--accent)");
+    expect(focused.get("outline")).toBe("2px solid var(--border-focus)");
   });
 });

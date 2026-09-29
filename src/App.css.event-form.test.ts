@@ -13,7 +13,8 @@ describe("event form layout", () => {
     const header = decls(".event-form-header");
     expect(header.get("position")).toBe("sticky");
     expect(header.get("top")).toBe("0");
-    expect(header.get("background")).toBe("var(--bg-primary)");
+    // The form's own surface, so the sticky header doesn't show as a band
+    expect(header.get("background")).toBe(decls(".inline-event-form").get("background"));
   });
 
   it("shares the day strip's width among its seven days rather than clipping the last", () => {

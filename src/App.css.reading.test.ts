@@ -44,7 +44,7 @@ describe("thread beside a side panel", () => {
     document.body.innerHTML = '<div class="app side-panel-open"><div class="thread-overlay" id="thread"></div></div>';
     // A border, not padding: the floating toolbar is positioned in the padding box
     const border = cascadedDeclarations(rules, document.getElementById("thread")!).get("border-left");
-    expect(border).toMatch(/^clamp\(0px, .*, 528px\) solid var\(--app-bg, var\(--bg-primary\)\)$/);
+    expect(border).toMatch(/^clamp\(0px, .*, 528px\) solid var\(--app-bg, var\(--surface-card\)\)$/);
   });
 });
 
@@ -70,8 +70,8 @@ describe("attachment lightbox", () => {
   it("draws its close button light on the dark backdrop in either theme", () => {
     document.body.innerHTML = '<div class="lightbox"><button class="close-btn" id="close"></button></div>';
     const decl = cascadedDeclarations(rules, document.getElementById("close")!);
-    expect(decl.get("color")).toBe("#fff");
-    expect(decl.get("background")).toBe("rgba(255, 255, 255, 0.15)");
+    expect(decl.get("color")).toBe("var(--text-on-scrim)");
+    expect(decl.get("background")).toBe("var(--surface-on-scrim)");
   });
 
   it("may show a PDF from a blob: URL in a frame, and nothing else from outside the app", () => {
@@ -99,7 +99,7 @@ describe("message body", () => {
   it("marks the quoted-history toggle as open while the history shows", () => {
     document.body.innerHTML = '<button class="quoted-toggle" id="closed" aria-expanded="false"></button><button class="quoted-toggle" id="open" aria-expanded="true"></button>';
     const background = (id: string) => cascadedDeclarations(rules, document.getElementById(id)!).get("background");
-    expect(background("closed")).toBe("var(--bg-hover)");
-    expect(background("open")).toBe("var(--bg-tertiary)");
+    expect(background("closed")).toBe("var(--surface-hover)");
+    expect(background("open")).toBe("var(--surface-subtle)");
   });
 });
