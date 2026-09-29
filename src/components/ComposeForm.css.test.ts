@@ -25,6 +25,9 @@ describe("compose styles", () => {
 
   it("covers the whole compose with the drop target without adding a box around the form", () => {
     expect(declarations(".compose-drop-zone").get("display")).toBe("contents");
+    // The overlay's inherited radius passes through the zone from the panel
+    expect(declarations(".compose-drop-zone").get("border-radius")).toBe("inherit");
+    expect(declarations(".compose-drop-overlay").get("border-radius")).toBe("inherit");
     const overlay = declarations(".compose-drop-overlay");
     expect(overlay.get("position")).toBe("absolute");
     expect(overlay.get("inset")).toBe("0");

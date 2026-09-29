@@ -2448,9 +2448,9 @@ button:disabled:hover {
     margin-right: auto;
 }
 
-/* Compose autocomplete dropdown */
 .compose-drop-zone {
     display: contents;
+    border-radius: inherit;
 }
 
 .compose-drop-overlay {
@@ -2469,6 +2469,7 @@ button:disabled:hover {
     pointer-events: none;
 }
 
+/* Compose autocomplete dropdown */
 .compose-autocomplete {
     position: absolute;
     left: 0;
