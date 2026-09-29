@@ -1,7 +1,6 @@
 import { batch, createSignal, onMount, onCleanup, Show, For, Index, createMemo, createEffect, createComputed, createSelector, mapArray, on, untrack } from "solid-js";
 import { createStore, produce, reconcile, unwrap } from "solid-js/store";
-import DOMPurify from 'dompurify';
-import { DOMPURIFY_CONFIG } from './components/MessageBody';
+import { MessageBody } from './components/MessageBody';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import { listen } from '@tauri-apps/api/event';
 import { openUrl } from '@tauri-apps/plugin-opener';
@@ -893,6 +892,8 @@ function App() {
   const [batchReplySending, setBatchReplySending] = createSignal<Record<string, boolean>>({});
   const [batchReplyLoading, setBatchReplyLoading] = createSignal(false);
   const [batchReplyAttachments, setBatchReplyAttachments] = createSignal<Record<string, SendAttachment[]>>({});
+  // Inline image data downloaded for each thread's message (thread id -> cid -> data)
+  const [batchReplyCidData, setBatchReplyCidData] = createSignal<Record<string, Record<string, string>>>({});
   // Set when none of the batch's threads could be loaded, with what to retry
   const [batchReplyError, setBatchReplyError] = createSignal<{ message: string; threadIds: string[] } | null>(null);
 
@@ -2659,6 +2660,7 @@ function App() {
     const request = ++batchReplyRequest;
     setBatchReplyLoading(true);
     setBatchReplyError(null);
+    setBatchReplyCidData({});
     setBatchReplyOpen(true);
     setBatchReplyCardId(cardId);
     setBatchReplyMessages({});
@@ -2675,6 +2677,7 @@ function App() {
         .map(r => r.value)
         .filter((t): t is BatchReplyThread => t !== null);
       setBatchReplyThreads(threads);
+      for (const t of threads) fetchBatchReplyCidImages(account.id, t, request);
 
       const failures = results.filter((r): r is PromiseRejectedResult => r.status === 'rejected');
       if (failures.length === 0) return;
@@ -2689,8 +2692,19 @@ function App() {
     }
   }
 
+  async function fetchBatchReplyCidImages(accountId: string, thread: BatchReplyThread, request: number) {
+    const refs = cidImagesToFetch({ id: thread.threadId, messages: [{ id: thread.messageId, threadId: thread.threadId, payload: { mimeType: "", parts: thread.parts } }] });
+    if (refs.length === 0) return;
+    const data = await fetchCidImages(refs, ({ messageId, attachmentId, cid }) =>
+      cidImageCache.getOrLoad(`${accountId}:${messageId}:${cid}`, () => downloadAttachmentApi(accountId, messageId, attachmentId)));
+    if (request === batchReplyRequest && Object.keys(data).length > 0) {
+      setBatchReplyCidData(prev => ({ ...prev, [thread.threadId]: data }));
+    }
+  }
+
   function closeBatchReply() {
     batchReplyRequest++;
+    setBatchReplyCidData({});
     setBatchReplyLoading(false);
     setBatchReplyError(null);
     setBatchReplyOpen(false);
@@ -5132,7 +5146,12 @@ function App() {
                         </div>
                       </div>
                       <div class="batch-reply-subject">{thread.subject}</div>
-                      <div class="message-body" innerHTML={DOMPurify.sanitize(thread.body, DOMPURIFY_CONFIG)}></div>
+                      <MessageBody
+                        body={thread.body}
+                        msgId={thread.messageId}
+                        msgPayloadParts={thread.parts}
+                        cidAttachmentData={batchReplyCidData()[thread.threadId]}
+                      />
                     </div>
                     <div
                       class="inline-resize-handle"

@@ -1725,6 +1725,37 @@ describe("App batch reply", () => {
     await waitFor(() => expect(screen.getAllByPlaceholderText(/^Reply to/)).toHaveLength(1));
   });
 
+  it("shows a message's inline images, downloading those that didn't come with it", async () => {
+    // <img src="cid:logo@x"><img src="cid:chart@x">
+    const html = btoa('<img src="cid:logo@x"><img src="cid:chart@x">').replace(/=+$/, "");
+    handlers.get_thread_details = ({ threadId }) => ({
+      id: threadId,
+      messages: [{
+        ...fullMessage("m1", "Ana <ana@x.com>"),
+        payload: {
+          mimeType: "multipart/related",
+          headers: [{ name: "From", value: "Ana <ana@x.com>" }, { name: "Subject", value: "Hi" }],
+          parts: [
+            { mimeType: "text/html", body: { size: 9, data: html } },
+            { mimeType: "image/png", headers: [{ name: "Content-ID", value: "<logo@x>" }], body: { size: 9, data: "TE9HTw" } },
+            { mimeType: "image/png", headers: [{ name: "Content-ID", value: "<chart@x>" }], body: { size: 9, attachmentId: "att-chart" } },
+          ],
+        },
+      }],
+    });
+    handlers.download_attachment = () => "Q0hBUlQ";
+    render(() => <App />);
+    await screen.findByText("Mail for A");
+    fireEvent.keyDown(document, { key: "l" });
+    fireEvent.keyDown(document, { key: "x" });
+    fireEvent.click(await screen.findByTitle("Batch Reply"));
+
+    await waitFor(() => {
+      const sources = Array.from(document.querySelectorAll(".thread-overlay .message-body img")).map(img => img.getAttribute("src"));
+      expect(sources).toEqual(["data:image/png;base64,TE9HTw", "data:image/png;base64,Q0hBUlQ"]);
+    });
+  });
+
   it("says how many threads could not be loaded when only some fail", async () => {
     handlers.get_thread_details = ({ threadId }) => {
       if (threadId === "t-2") throw "API error 500";

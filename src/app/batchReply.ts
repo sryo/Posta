@@ -1,4 +1,4 @@
-import type { FullMessage } from "../api/tauri";
+import type { FullMessage, MessagePart } from "../api/tauri";
 import { extractEmail, extractMessageHtml, splitEmailList } from "../utils";
 import { findHeader, lastMessageFromOthers } from "./messages";
 
@@ -11,6 +11,7 @@ export interface BatchReplyThread {
   date: string;
   messageId: string; // Gmail id; reply_to_thread threads under it with its full References
   to: string; // Reply-to address
+  parts?: MessagePart[]; // Where the body's inline images are
 }
 
 // What a batch reply to a thread shows and who it goes to: the latest
@@ -43,5 +44,6 @@ export function batchReplyEntry(threadId: string, messages: FullMessage[], accou
     date: msg.internalDate ? new Date(parseInt(msg.internalDate)).toLocaleDateString() : "",
     messageId: msg.id,
     to,
+    parts: msg.payload?.parts,
   };
 }
