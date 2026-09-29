@@ -4709,6 +4709,26 @@ describe("App reading view", () => {
       expect(invoke).not.toHaveBeenCalledWith("get_thread_details", expect.objectContaining({ threadId: "t-2" }));
     });
 
+    it("stays on a thread moved back to the inbox, now offering to archive it", async () => {
+      threeThreads();
+      handlers.get_thread_details = ({ threadId }) => ({
+        id: threadId,
+        messages: [fullMessage(`m-${threadId}`, "Ana <ana@x.com>", {
+          threadId, snippet: `body of ${threadId}`,
+          labelIds: invoke.mock.calls.some(([cmd]) => cmd === "modify_threads") ? ["INBOX"] : [],
+        })],
+      });
+      render(() => <App />);
+      fireEvent.click(await screen.findByText("Two"));
+      await screen.findByText("body of t-1");
+      fireEvent.click(screen.getByRole("button", { name: /Move to Inbox/ }));
+
+      await waitFor(() => expect(invoke).toHaveBeenCalledWith("modify_threads", expect.objectContaining({ threadIds: ["t-1"], addLabels: ["INBOX"] })));
+      expect(await screen.findByRole("button", { name: /Archive/ })).toBeInTheDocument();
+      expect(screen.getByText("body of t-1")).toBeInTheDocument();
+      expect(invoke).not.toHaveBeenCalledWith("get_thread_details", expect.objectContaining({ threadId: "t-2" }));
+    });
+
     it("steps to the neighbouring thread with ] and [", async () => {
       threeThreads();
       render(() => <App />);

@@ -3002,9 +3002,9 @@ function App() {
     const cardId = activeThreadCardId();
     if (!thread || !account) return;
 
-    // Actions that take the thread out of view move on (except for read/unread/important);
-    // the card's order is taken before the optimistic update removes it
-    const leavesView = ['archive', 'inbox', 'trash', 'spam'].includes(action);
+    // Archive, delete and spam move on to another thread; the card's order
+    // is taken before the optimistic update removes this one
+    const leavesView = ['archive', 'trash', 'spam'].includes(action);
     const order = cardId ? cardThreadOrder(cardId) : [];
 
     await handleThreadAction(action, [thread.id], cardId || '');

@@ -463,7 +463,7 @@ export const ThreadView = (props: {
           <div class="thread-floating-bar-row thread-bar-actions">
             <button class="thread-toolbar-btn" onClick={() => props.onAction(props.isInInbox ? 'archive' : 'inbox')} title={props.isInInbox ? 'Archive' : 'Move to Inbox'}>
               {props.isInInbox ? <ArchiveIcon /> : <InboxIcon />}
-              <span class="thread-toolbar-label">{props.isInInbox ? 'Archive' : 'Inbox'}</span>
+              <span class="thread-toolbar-label">{props.isInInbox ? 'Archive' : 'Move to Inbox'}</span>
               <span class="shortcut-hint">A</span>
             </button>
 
