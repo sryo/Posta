@@ -122,3 +122,66 @@ describe("ComposeForm recipients", () => {
     expect(onSend).not.toHaveBeenCalled();
   });
 });
+
+describe("ComposeForm attaching dropped and pasted files", () => {
+  function renderDropTarget() {
+    const onAddFiles = vi.fn();
+    render(() => (
+      <ComposeForm
+        mode="reply"
+        to="a@example.com"
+        setTo={vi.fn()}
+        body=""
+        setBody={vi.fn()}
+        attachments={[]}
+        onRemoveAttachment={vi.fn()}
+        onFileSelect={vi.fn()}
+        onAddFiles={onAddFiles}
+        fileInputId="file"
+        onSend={vi.fn()}
+        onClose={vi.fn()}
+      />
+    ));
+    return { onAddFiles, body: screen.getByPlaceholderText("Write your reply...") };
+  }
+  const file = new File(["x"], "plan.pdf", { type: "application/pdf" });
+  const files = (...list: File[]) => ({ types: ["Files"], files: list, items: [], dropEffect: "none" });
+
+  it("shows a drop target while files are dragged over and attaches what is dropped", () => {
+    const { onAddFiles, body } = renderDropTarget();
+    expect(screen.queryByText("Drop to attach")).toBeNull();
+    fireEvent.dragEnter(body, { dataTransfer: files(file) });
+    expect(screen.getByText("Drop to attach")).toBeInTheDocument();
+    expect(fireEvent.dragOver(body, { dataTransfer: files(file) })).toBe(false);
+    expect(fireEvent.drop(body, { dataTransfer: files(file) })).toBe(false);
+    expect(onAddFiles).toHaveBeenCalledWith([file]);
+    expect(screen.queryByText("Drop to attach")).toBeNull();
+  });
+
+  it("hides the drop target when the drag leaves", () => {
+    const { body } = renderDropTarget();
+    fireEvent.dragEnter(body, { dataTransfer: files(file) });
+    fireEvent.dragEnter(screen.getByText("Drop to attach"), { dataTransfer: files(file) });
+    fireEvent.dragLeave(body, { dataTransfer: files(file) });
+    expect(screen.getByText("Drop to attach")).toBeInTheDocument();
+    fireEvent.dragLeave(screen.getByText("Drop to attach"), { dataTransfer: files(file) });
+    expect(screen.queryByText("Drop to attach")).toBeNull();
+  });
+
+  it("leaves dragged text to the text field", () => {
+    const { body } = renderDropTarget();
+    fireEvent.dragEnter(body, { dataTransfer: { types: ["text/plain"], files: [], items: [] } });
+    expect(screen.queryByText("Drop to attach")).toBeNull();
+  });
+
+  it("attaches a pasted image and leaves pasted text to the text field", () => {
+    const { onAddFiles, body } = renderDropTarget();
+    const image = new File(["png"], "image.png", { type: "image/png" });
+    expect(fireEvent.paste(body, { clipboardData: { types: ["Files"], files: [image], items: [] } })).toBe(false);
+    expect(onAddFiles).toHaveBeenCalledWith([image]);
+
+    onAddFiles.mockClear();
+    expect(fireEvent.paste(body, { clipboardData: { types: ["text/plain"], files: [], items: [], getData: () => "hi" } })).toBe(true);
+    expect(onAddFiles).not.toHaveBeenCalled();
+  });
+});

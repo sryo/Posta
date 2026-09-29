@@ -1,10 +1,11 @@
-import { Show, For, onCleanup, createUniqueId } from "solid-js";
+import { Show, For, onCleanup, createUniqueId, createSignal } from "solid-js";
 import type { SendAttachment } from "../api/tauri";
 import { truncateMiddle } from "../utils";
 import { CloseIcon, AttachmentIcon } from "./Icons";
 import { CloseButton } from "./ComposeAtoms";
 import { isImeComposing } from "../shared/keyboard";
 import { RecipientInput, type RecipientSuggestion } from "./RecipientInput";
+import { carriesFiles, transferredFiles } from "../app/fileDrop";
 
 // Shared Compose Form component
 interface ComposeFormProps {
@@ -32,6 +33,8 @@ interface ComposeFormProps {
   attachments: SendAttachment[];
   onRemoveAttachment: (i: number) => void;
   onFileSelect: (e: Event) => void;
+  // Files dropped on the compose or pasted into it
+  onAddFiles?: (files: File[]) => void;
   fileInputId: string;
   // Status
   error?: string | null;
@@ -61,6 +64,42 @@ export const ComposeForm = (props: ComposeFormProps) => {
   const canSend = () => props.canSend !== undefined ? props.canSend : (props.to || '').trim().length > 0;
 
   const fieldId = createUniqueId();
+
+  // dragenter and dragleave fire for every child crossed; the target is
+  // left once each enter has had its leave
+  const [dragDepth, setDragDepth] = createSignal(0);
+  const acceptsFiles = (e: DragEvent) => !!props.onAddFiles && carriesFiles(e.dataTransfer);
+  const dropHandlers = {
+    onDragEnter: (e: DragEvent) => {
+      if (!acceptsFiles(e)) return;
+      e.preventDefault();
+      setDragDepth(d => d + 1);
+    },
+    onDragOver: (e: DragEvent) => {
+      if (!acceptsFiles(e)) return;
+      e.preventDefault();
+      if (e.dataTransfer) e.dataTransfer.dropEffect = "copy";
+    },
+    onDragLeave: (e: DragEvent) => {
+      if (!acceptsFiles(e)) return;
+      setDragDepth(d => Math.max(0, d - 1));
+    },
+    onDrop: (e: DragEvent) => {
+      if (!acceptsFiles(e)) return;
+      e.preventDefault();
+      setDragDepth(0);
+      const files = transferredFiles(e.dataTransfer);
+      if (files.length > 0) props.onAddFiles!(files);
+    },
+  };
+
+  const handlePaste = (e: ClipboardEvent) => {
+    if (!props.onAddFiles) return;
+    const files = transferredFiles(e.clipboardData);
+    if (files.length === 0) return;
+    e.preventDefault();
+    props.onAddFiles(files);
+  };
 
   const handleKeyDown = (e: KeyboardEvent) => {
     if (isImeComposing(e)) return;
@@ -216,7 +255,10 @@ export const ComposeForm = (props: ComposeFormProps) => {
   );
 
   return (
-    <>
+    <div class="compose-drop-zone" {...dropHandlers} onPaste={handlePaste}>
+      <Show when={dragDepth() > 0}>
+        <div class="compose-drop-overlay">Drop to attach</div>
+      </Show>
       <Show when={props.showHeader !== false}>
         <div class="compose-header">
           <h3>{props.title || defaultTitle}</h3>
@@ -240,6 +282,6 @@ export const ComposeForm = (props: ComposeFormProps) => {
       </div>
       <Attachments />
       <Footer />
-    </>
+    </div>
   );
 };

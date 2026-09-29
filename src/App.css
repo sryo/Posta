@@ -2432,6 +2432,26 @@ button:disabled:hover {
 }
 
 /* Compose autocomplete dropdown */
+.compose-drop-zone {
+    display: contents;
+}
+
+.compose-drop-overlay {
+    position: absolute;
+    inset: 0;
+    z-index: 70;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border: 2px dashed var(--accent);
+    border-radius: inherit;
+    background: color-mix(in srgb, var(--bg-primary) 88%, var(--accent));
+    color: var(--accent);
+    font-size: var(--font-size-md);
+    font-weight: 600;
+    pointer-events: none;
+}
+
 .compose-autocomplete {
     position: absolute;
     left: 0;
@@ -4601,6 +4621,7 @@ button:disabled:hover {
 
 /* Inline Compose (Reply/Forward in Thread) */
 .inline-compose {
+    position: relative;
     margin: 12px 0;
     background: var(--bg-primary);
     border: 1px solid var(--border-color);

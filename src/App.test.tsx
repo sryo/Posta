@@ -1152,6 +1152,27 @@ describe("App compose autocomplete", () => {
     expect(screen.getByText("Bea")).toBeInTheDocument();
   });
 
+  it("attaches files dropped on a new email or pasted into a reply", async () => {
+    handlers.get_thread_details = () => ({ id: "t-a", messages: [fullMessage("m1", "Ana <ana@x.com>")] });
+    render(() => <App />);
+    await screen.findByText("Mail for A");
+    fireEvent.keyDown(document, { key: "c" });
+    const body = await screen.findByPlaceholderText("Write something...");
+    const pdf = new File(["x"], "plan.pdf", { type: "application/pdf" });
+    fireEvent.drop(body, { dataTransfer: { types: ["Files"], files: [pdf], items: [] } });
+    expect(await screen.findByTitle("plan.pdf")).toBeInTheDocument();
+    fireEvent.keyDown(body, { key: "Escape" });
+    await waitFor(() => expect(screen.queryByPlaceholderText("Write something...")).not.toBeInTheDocument());
+
+    fireEvent.click(screen.getByText("Mail for A"));
+    await screen.findByText("body m1");
+    fireEvent.keyDown(document, { key: "r" });
+    const reply = await screen.findByPlaceholderText("Write your reply...");
+    const shot = new File(["png"], "", { type: "image/png" });
+    fireEvent.paste(reply, { clipboardData: { types: ["Files"], files: [shot], items: [] } });
+    expect(await screen.findByTitle("pasted-image.png")).toBeInTheDocument();
+  });
+
   it("waits for a typed character before covering the fields with suggestions", async () => {
     handlers.fetch_contacts = () => [{ resource_name: "people/1", display_name: "Zed", email_addresses: ["zed@y.com"], photo_url: null }];
     render(() => <App />);
@@ -1788,6 +1809,17 @@ describe("App batch reply", () => {
     offline = false;
     fireEvent.click(screen.getByRole("button", { name: "Try again" }));
     await waitFor(() => expect(screen.getAllByPlaceholderText(/^Reply to/)).toHaveLength(2));
+  });
+
+  it("attaches a file dropped on one reply to that reply only", async () => {
+    handlers.get_thread_details = ({ threadId }) => ({ id: threadId, messages: [fullMessage("m1", "Ana <ana@x.com>")] });
+    await openBatchReplyForTwo();
+    await waitFor(() => expect(screen.getAllByPlaceholderText(/^Reply to/)).toHaveLength(2));
+    const [first] = screen.getAllByPlaceholderText(/^Reply to/);
+    const file = new File(["x"], "notes.txt", { type: "text/plain" });
+    fireEvent.drop(first, { dataTransfer: { types: ["Files"], files: [file], items: [] } });
+    expect(await screen.findByTitle("notes.txt")).toBeInTheDocument();
+    expect(screen.getAllByTitle("notes.txt")).toHaveLength(1);
   });
 
   it("says how many replies Send All couldn't send, keeping them in the list", async () => {

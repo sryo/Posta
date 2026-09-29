@@ -627,6 +627,7 @@ export const ThreadView = (props: {
                           attachments={props.inlineCompose!.attachments}
                           onRemoveAttachment={props.inlineCompose!.onRemoveAttachment}
                           onFileSelect={props.inlineCompose!.onFileSelect}
+                          onAddFiles={props.inlineCompose!.onAddFiles}
                           fileInputId={`inline-file-input-${msg.id}`}
                           error={props.inlineCompose!.error}
                           draftSaving={props.inlineCompose!.draftSaving}

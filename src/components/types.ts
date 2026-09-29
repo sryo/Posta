@@ -18,6 +18,7 @@ export interface InlineComposeProps {
   attachments: SendAttachment[];
   onRemoveAttachment: (i: number) => void;
   onFileSelect: (e: Event) => void;
+  onAddFiles?: (files: File[]) => void;
   error: string | null;
   draftSaving: boolean;
   draftSaved: boolean;

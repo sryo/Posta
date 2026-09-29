@@ -13,4 +13,15 @@ describe("compose styles", () => {
     expect(declarations(".compose-autocomplete").get("position")).toBe("absolute");
     expect(declarations(".compose-field").get("position")).toBe("relative");
   });
+
+  it("covers the whole compose with the drop target without adding a box around the form", () => {
+    expect(declarations(".compose-drop-zone").get("display")).toBe("contents");
+    const overlay = declarations(".compose-drop-overlay");
+    expect(overlay.get("position")).toBe("absolute");
+    expect(overlay.get("inset")).toBe("0");
+    // The drop lands on the form under it, inside the zone
+    expect(overlay.get("pointer-events")).toBe("none");
+    expect(declarations(".compose-panel").get("position")).toBe("fixed");
+    expect(declarations(".inline-compose").get("position")).toBe("relative");
+  });
 });

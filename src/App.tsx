@@ -1903,6 +1903,7 @@ function App() {
       get attachments() { return composeAttachments(); },
       onRemoveAttachment: removeAttachment,
       onFileSelect: handleFileSelect,
+      onAddFiles: addComposeFiles,
       get error() { return composeEmailError(); },
       get draftSaving() { return drafts.saving(); },
       get draftSaved() { return drafts.saved(); },
@@ -2093,15 +2094,19 @@ function App() {
   async function handleFileSelect(e: Event) {
     const input = e.target as HTMLInputElement;
     if (!input.files || input.files.length === 0) return;
+    const files = Array.from(input.files);
+    input.value = ''; // Reset input so same file can be selected again
+    await addComposeFiles(files);
+  }
 
-    const { attachments, skipped } = await readFilesAsAttachments(Array.from(input.files));
+  async function addComposeFiles(files: File[]) {
+    const { attachments, skipped } = await readFilesAsAttachments(files);
     if (skipped.length > 0) {
       setComposeEmailError(`Skipped: ${skipped.join(', ')}`);
     }
     if (attachments.length > 0) {
       setComposeAttachments([...composeAttachments(), ...attachments]);
     }
-    input.value = ''; // Reset input so same file can be selected again
   }
 
   function removeAttachment(index: number) {
@@ -2773,8 +2778,13 @@ function App() {
   async function handleBatchReplyFileSelect(threadId: string, e: Event) {
     const input = e.target as HTMLInputElement;
     if (!input.files || input.files.length === 0) return;
+    const files = Array.from(input.files);
+    input.value = '';
+    await addBatchReplyFiles(threadId, files);
+  }
 
-    const { attachments, skipped } = await readFilesAsAttachments(Array.from(input.files));
+  async function addBatchReplyFiles(threadId: string, files: File[]) {
+    const { attachments, skipped } = await readFilesAsAttachments(files);
     if (skipped.length > 0) {
       showToast(`Skipped: ${skipped.join(', ')}`);
     }
@@ -2782,7 +2792,6 @@ function App() {
       const current = batchReplyAttachments()[threadId] || [];
       setBatchReplyAttachments({ ...batchReplyAttachments(), [threadId]: [...current, ...attachments] });
     }
-    input.value = '';
   }
 
   function removeBatchReplyAttachment(threadId: string, index: number) {
@@ -4796,6 +4805,7 @@ function App() {
             attachments={composeAttachments()}
             onRemoveAttachment={removeAttachment}
             onFileSelect={handleFileSelect}
+            onAddFiles={addComposeFiles}
             fileInputId="compose-file-input"
             error={composeEmailError()}
             draftSaving={drafts.saving()}
@@ -5207,6 +5217,7 @@ function App() {
                         attachments={batchReplyAttachments()[thread.threadId] || []}
                         onRemoveAttachment={(i) => removeBatchReplyAttachment(thread.threadId, i)}
                         onFileSelect={(e) => handleBatchReplyFileSelect(thread.threadId, e)}
+                        onAddFiles={(files) => addBatchReplyFiles(thread.threadId, files)}
                         fileInputId={`batch-reply-file-input-${thread.threadId}`}
                         sending={batchReplySending()[thread.threadId]}
                         onSend={() => sendBatchReply(thread.threadId)}
