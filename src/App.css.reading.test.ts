@@ -28,6 +28,17 @@ describe("reading view stacking", () => {
   });
 });
 
+describe("floating emoji picker", () => {
+  it("sits at its viewport position above the open thread and an inline reply", () => {
+    document.body.innerHTML = '<div class="thread-overlay" id="thread"></div><div class="emoji-picker floating" id="picker"></div>';
+    const picker = cascadedDeclarations(rules, document.getElementById("picker")!);
+    expect(picker.get("position")).toBe("fixed");
+    expect(picker.get("margin-top")).toBe("0");
+    const z = (id: string) => zIndex(cascadedDeclarations(rules, document.getElementById(id)!).get("z-index"));
+    expect(z("picker")).toBeGreaterThan(z("thread"));
+  });
+});
+
 describe("attachment lightbox", () => {
   it("covers the thread view and the label drawer", () => {
     document.body.innerHTML = '<div class="thread-overlay" id="thread"></div><div class="label-drawer" id="drawer"></div><div class="lightbox" id="lightbox"></div>';

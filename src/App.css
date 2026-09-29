@@ -5897,6 +5897,12 @@ button.settings-section-title {
     margin-top: 8px;
 }
 
+.emoji-picker.floating {
+    position: fixed;
+    z-index: var(--z-dropdown);
+    margin-top: 0;
+}
+
 .emoji-picker-header {
     padding: var(--space-md);
     border-bottom: 1px solid var(--border-color);
