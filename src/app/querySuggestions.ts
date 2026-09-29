@@ -1,4 +1,5 @@
-import { GMAIL_OPERATORS } from "../shared/constants";
+import { CALENDAR_OPERATORS, CALENDAR_RANGES, GMAIL_OPERATORS } from "../shared/constants";
+import { cardTypeForQuery } from "./cardType";
 import { matchContacts, type RecentContact } from "./contacts";
 
 export interface QuerySuggestion {
@@ -8,7 +9,8 @@ export interface QuerySuggestion {
   replace: { start: number; end: number };
 }
 
-const ADDRESS_OPERATORS = ["from:", "to:", "cc:", "bcc:", "deliveredto:"];
+const EMAIL_ADDRESS_OPERATORS = ["from:", "to:", "cc:", "bcc:", "deliveredto:"];
+const CALENDAR_ADDRESS_OPERATORS = ["with:", "organizer:"];
 const MAX_SUGGESTIONS = 8;
 
 // Gmail searches a label by its name lowercased, with spaces and the "/" of
@@ -17,26 +19,49 @@ export function labelQueryValue(name: string): string {
   return name.toLowerCase().replace(/[\s/]+/g, "-");
 }
 
-// Suggestions for the word being typed at the end of a card query: operators,
-// addresses for address operators, and the account's labels for label:
-export function querySuggestions(query: string, contacts: RecentContact[], labelNames: string[]): QuerySuggestion[] {
-  const tokenStart = query.lastIndexOf(" ") + 1;
-  const token = query.slice(tokenStart).toLowerCase();
-  if (!token) return [];
-  const replace = { start: tokenStart, end: query.length };
+function contactDesc(contact: RecentContact): string {
+  const count = contact.frequency > 0 ? `${contact.frequency} email${contact.frequency === 1 ? "" : "s"}` : "";
+  if (contact.name) return count ? `${contact.name} (${count})` : contact.name;
+  return count;
+}
 
-  const addressOp = ADDRESS_OPERATORS.find(op => token.startsWith(op));
+// The whitespace-delimited word the caret is in
+export function wordAt(query: string, caret: number): { start: number; end: number } {
+  let start = caret;
+  while (start > 0 && !/\s/.test(query[start - 1])) start--;
+  let end = caret;
+  while (end < query.length && !/\s/.test(query[end])) end++;
+  return { start, end };
+}
+
+// Suggestions for the word the caret is in (the end of the query unless
+// given): operators, addresses for address operators, and the account's
+// labels for label:. A query starting with calendar: gets calendar operators.
+export function querySuggestions(
+  query: string,
+  contacts: RecentContact[],
+  labelNames: string[],
+  caret: number = query.length,
+): QuerySuggestion[] {
+  const replace = wordAt(query, caret);
+  const token = query.slice(replace.start, replace.end).toLowerCase();
+  if (!token) return [];
+
+  const isFirstWord = !query.slice(0, replace.start).trim();
+  const calendar = cardTypeForQuery(query) === "calendar";
+
+  const addressOp = (calendar ? CALENDAR_ADDRESS_OPERATORS : EMAIL_ADDRESS_OPERATORS).find(op => token.startsWith(op));
   if (addressOp) {
     const typed = token.slice(addressOp.length);
     if (!typed) return [];
     return matchContacts(contacts, typed, 6).map(contact => ({
       text: addressOp + contact.email,
-      desc: contact.name ? `${contact.name} (${contact.frequency} emails)` : `${contact.frequency} emails`,
+      desc: contactDesc(contact),
       replace,
     }));
   }
 
-  if (token.startsWith("label:")) {
+  if (!calendar && token.startsWith("label:")) {
     const typed = token.slice("label:".length);
     return labelNames
       .filter(name => labelQueryValue(name).startsWith(labelQueryValue(typed)) || name.toLowerCase().includes(typed))
@@ -44,9 +69,14 @@ export function querySuggestions(query: string, contacts: RecentContact[], label
       .map(name => ({ text: `label:${labelQueryValue(name)}`, desc: name, replace }));
   }
 
+  const operators = [
+    ...(isFirstWord ? CALENDAR_RANGES : []),
+    ...(calendar ? (isFirstWord ? [] : CALENDAR_OPERATORS) : GMAIL_OPERATORS),
+  ];
   const suggestions: QuerySuggestion[] = [];
-  for (const { op, desc } of GMAIL_OPERATORS) {
+  for (const { op, desc } of operators) {
     const lower = op.toLowerCase();
+    if (lower === token) continue;
     if (lower.startsWith(token) || (token.length >= 2 && lower.includes(token))) {
       suggestions.push({ text: op, desc, replace });
       if (suggestions.length >= MAX_SUGGESTIONS) break;

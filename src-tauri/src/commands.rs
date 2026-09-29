@@ -2128,10 +2128,10 @@ pub async fn fetch_calendar_events(
     query: String,
     app_handle: tauri::AppHandle, state: State<'_, AppState>,
 ) -> Result<Vec<crate::calendar::CalendarEvent>, String> {
+    let parsed_query = crate::calendar::CalendarQuery::try_parse(&query)?;
     let access_token = account_access_token(&state, &app_handle, &account_id).await?;
     let calendar = crate::calendar::CalendarClient::new(access_token);
 
-    let parsed_query = crate::calendar::CalendarQuery::parse(&query);
     // Cap high enough that a month view on a busy account isn't silently cut off
     evict_token_on_auth_error(&state, &account_id, calendar.search_events(&parsed_query, 500).await)
 }
