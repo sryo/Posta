@@ -289,20 +289,32 @@ function App() {
     },
     onFailed: (pending, e) => {
       console.error("Failed to send email:", e);
-      // Putting the failed email back would replace the one being written
-      // (and drop its attachments); offer it instead
-      if (composing() && !closingCompose() && (hasDraftContent(composeDraftFields()) || composeAttachments().length > 0)) {
-        if (pending.draft) {
-          sendingDraftKeys.delete(pending.draft.key);
-          markDraftSending(pending.draft.key, null);
-        }
-        showToast(`Couldn't send "${pending.subject || "(no subject)"}"`, { label: "Open", run: () => restoreSend(pending) });
-      } else {
-        restoreSend(pending);
-      }
+      putBackSend(pending, `Couldn't send "${pending.subject || "(no subject)"}"`);
       setError(`Failed to send email: ${e}`);
     },
   });
+
+  // Whether an open compose holds something replacing it would lose;
+  // prefilled text alone (a reply's quote) can be had again
+  function composeHasWork(): boolean {
+    if (!composing() || closingCompose()) return false;
+    return (composeEdited && hasDraftContent(composeDraftFields())) || composeAttachments().length > 0;
+  }
+
+  // Opening an email over one being written would replace it (and drop its
+  // attachments); offer it in a toast instead
+  function openComposeUnlessBusy(message: string, open: () => void) {
+    if (composeHasWork()) showToast(message, { label: "Open", run: open });
+    else open();
+  }
+
+  function putBackSend(pending: PendingSend, busyMessage: string) {
+    if (pending.draft) {
+      sendingDraftKeys.delete(pending.draft.key);
+      markDraftSending(pending.draft.key, null);
+    }
+    openComposeUnlessBusy(busyMessage, () => restoreSend(pending));
+  }
 
   // Settings
   const [settingsOpen, setSettingsOpen] = createSignal(false);
@@ -1115,7 +1127,7 @@ function App() {
     // Listen for mailto: deep-link events whether or not startup succeeds
     listen<MailtoData>(
       "mailto-received",
-      (event) => startCompose(event.payload),
+      (event) => openMailto(event.payload),
     ).then(unlisten => {
       if (disposed) unlisten();
       else unlistenMailto = unlisten;
@@ -1163,7 +1175,7 @@ function App() {
     // taken; taking them after startup lets compose pick up the account's
     // signature, and outside the startup try a failed load still opens them
     try {
-      for (const mailto of await takePendingMailtos()) startCompose(mailto);
+      for (const mailto of await takePendingMailtos()) openMailto(mailto);
     } catch (e) {
       console.warn("mailto links unavailable:", e);
     }
@@ -1539,7 +1551,7 @@ function App() {
       const inEmail = !!link.closest('.message-body');
       if (link.protocol === 'mailto:') {
         e.preventDefault();
-        startCompose(parseMailto(link.href));
+        openMailto(parseMailto(link.href));
         return;
       }
       if ((link.protocol === 'http:' || link.protocol === 'https:') && link.origin !== window.location.origin) {
@@ -2146,10 +2158,6 @@ function App() {
   // Compose closed when the send was queued, so an undone or failed send puts
   // the email back, continuing its saved draft
   function restoreSend(pending: PendingSend) {
-    if (pending.draft) {
-      sendingDraftKeys.delete(pending.draft.key);
-      markDraftSending(pending.draft.key, null);
-    }
     startCompose({
       to: pending.to,
       cc: pending.cc,
@@ -2194,7 +2202,11 @@ function App() {
 
   function undoSend() {
     const pending = undoableSend.undo();
-    if (pending) restoreSend(pending);
+    if (pending) putBackSend(pending, `"${pending.subject || "(no subject)"}" wasn't sent`);
+  }
+
+  function openMailto(mailto: MailtoData) {
+    openComposeUnlessBusy(`New email to ${mailto.to || "(no recipient)"}`, () => startCompose(mailto));
   }
 
   async function handleQuickReply() {

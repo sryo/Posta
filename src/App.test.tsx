@@ -285,6 +285,7 @@ describe("App attachments", () => {
     await waitFor(() => expect(document.querySelector(".compose-panel")).toHaveTextContent("report.pdf"));
 
     eventListeners["mailto-received"]({ payload: { to: "bo@y.com", cc: "", bcc: "", subject: "Hi", body: "" } });
+    fireEvent.click(await screen.findByRole("button", { name: "Open" }));
 
     await waitFor(() => expect(screen.getByPlaceholderText("Recipients")).toHaveValue("bo@y.com"));
     expect(document.querySelector(".compose-panel")).not.toHaveTextContent("report.pdf");
@@ -1763,6 +1764,50 @@ describe("App drafts", () => {
     expect(screen.queryByRole("button", { name: "Discard" })).not.toBeInTheDocument();
   });
 
+  async function attachFile(name: string) {
+    const input = document.getElementById("compose-file-input") as HTMLInputElement;
+    Object.defineProperty(input, "files", { value: [new File(["data"], name, { type: "text/plain" })], configurable: true });
+    fireEvent.change(input);
+    await screen.findByTitle(name);
+  }
+
+  it("keeps the email being written, attachments and all, when an undone send would replace it", async () => {
+    render(() => <App />);
+    await screen.findByText("Mail for A");
+    fireEvent.keyDown(document, { key: "c" });
+    fireEvent.input(await screen.findByPlaceholderText("Recipients"), { target: { value: "bo@y.com" } });
+    fireEvent.input(screen.getByPlaceholderText("Subject"), { target: { value: "Sent one" } });
+    fireEvent.click(screen.getByRole("button", { name: /^Send/ }));
+    await waitFor(() => expect(screen.queryByPlaceholderText("Subject")).not.toBeInTheDocument());
+
+    fireEvent.keyDown(document, { key: "c" });
+    fireEvent.input(await screen.findByPlaceholderText("Subject"), { target: { value: "Being written" } });
+    await attachFile("notes.txt");
+    fireEvent.click(await screen.findByRole("button", { name: "Undo" }));
+
+    expect(await screen.findByText(/"Sent one" wasn't sent/)).toBeInTheDocument();
+    expect(screen.getByPlaceholderText("Subject")).toHaveValue("Being written");
+    expect(screen.getByTitle("notes.txt")).toBeInTheDocument();
+    expect(invoke).not.toHaveBeenCalledWith("send_email", expect.anything());
+
+    fireEvent.click(screen.getByRole("button", { name: "Open" }));
+    await waitFor(() => expect(screen.getByPlaceholderText("Subject")).toHaveValue("Sent one"));
+  });
+
+  it("keeps the email being written, attachments and all, when a mailto link arrives", async () => {
+    render(() => <App />);
+    await screen.findByText("Mail for A");
+    fireEvent.keyDown(document, { key: "c" });
+    fireEvent.input(await screen.findByPlaceholderText("Subject"), { target: { value: "Being written" } });
+    await attachFile("notes.txt");
+
+    eventListeners["mailto-received"]({ payload: { to: "bo@y.com", cc: "", bcc: "", subject: "Second", body: "" } });
+
+    expect(await screen.findByText("New email to bo@y.com")).toBeInTheDocument();
+    expect(screen.getByPlaceholderText("Subject")).toHaveValue("Being written");
+    expect(screen.getByTitle("notes.txt")).toBeInTheDocument();
+  });
+
   it("keeps an open compose's text when a mailto link replaces it", async () => {
     render(() => <App />);
     await screen.findByText("Mail for A");
@@ -1770,6 +1815,7 @@ describe("App drafts", () => {
     fireEvent.input(await screen.findByPlaceholderText("Subject"), { target: { value: "First" } });
 
     eventListeners["mailto-received"]({ payload: { to: "bo@y.com", cc: "", bcc: "", subject: "Second", body: "" } });
+    fireEvent.click(await screen.findByRole("button", { name: "Open" }));
     await waitFor(() => expect(screen.getByPlaceholderText("Subject")).toHaveValue("Second"));
     fireEvent.input(screen.getByPlaceholderText("Subject"), { target: { value: "Second!" } });
 
