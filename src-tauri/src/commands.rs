@@ -88,6 +88,8 @@ fn adopt_legacy_data_dir(current: &std::path::Path, legacy: &std::path::Path) {
     }
     match std::fs::rename(legacy, current) {
         Ok(()) => tracing::info!("Moved app data from {:?} to {:?}", legacy, current),
+        // Another caller may have just moved it
+        Err(_) if current.exists() => {}
         Err(e) => tracing::warn!("Couldn't move app data from {:?}: {}", legacy, e),
     }
 }
