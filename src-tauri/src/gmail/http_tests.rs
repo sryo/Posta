@@ -452,7 +452,7 @@ async fn saving_over_a_draft_deleted_elsewhere_creates_a_new_one() {
 }
 
 #[tokio::test]
-async fn a_reply_draft_recreated_after_a_deletion_elsewhere_looks_its_parent_up_once() {
+async fn a_reply_draft_recreated_after_a_deletion_elsewhere_keeps_its_threading_headers() {
     let server = StubServer::start(|request| match (request.method.as_str(), request.target.as_str()) {
         ("PUT", _) => Reply::Json(404, google_error(404, "NOT_FOUND", "notFound", "Requested entity was not found.")),
         ("POST", "/gmail/v1/users/me/drafts") => Reply::Json(200, r#"{"id":"fresh","message":{"id":"m2"}}"#.into()),
@@ -474,6 +474,28 @@ async fn a_reply_draft_recreated_after_a_deletion_elsewhere_looks_its_parent_up_
     let body = serde_json::from_slice::<serde_json::Value>(&created.body).unwrap();
     let raw = decode_base64_body(body["message"]["raw"].as_str().unwrap()).unwrap();
     assert!(raw.contains("In-Reply-To: <parent@example.com>"), "{}", raw);
+    assert_eq!(body["message"]["threadId"], "t1");
+    assert_eq!(requests.iter().filter(|r| r.method == "GET").count(), 1);
+}
+
+#[tokio::test]
+async fn a_reply_draft_recreated_after_a_deletion_elsewhere_looks_its_parent_up_once() {
+    // A failed lookup is not remembered, so only reusing the request body
+    // keeps the new draft from looking the parent up again
+    let server = StubServer::start(|request| match request.method.as_str() {
+        "PUT" => Reply::Json(404, google_error(404, "NOT_FOUND", "notFound", "Requested entity was not found.")),
+        "POST" => Reply::Json(200, r#"{"id":"fresh","message":{"id":"m2"}}"#.into()),
+        _ => Reply::Json(503, "{}".into()),
+    })
+    .await;
+    let message = OutgoingMessage { to: "bob@example.com", body: "still writing", ..Default::default() };
+
+    let draft = within(server.client().update_draft("gone", &message, Some("t1"))).await.unwrap();
+
+    assert_eq!(draft.id, "fresh");
+    let requests = server.requests();
+    let created = requests.iter().find(|r| r.method == "POST").expect("draft recreated");
+    let body = serde_json::from_slice::<serde_json::Value>(&created.body).unwrap();
     assert_eq!(body["message"]["threadId"], "t1");
     assert_eq!(requests.iter().filter(|r| r.method == "GET").count(), 1);
 }
