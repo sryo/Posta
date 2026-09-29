@@ -5,6 +5,25 @@ import { isImeComposing } from "../shared/keyboard";
 
 type Contact = { email: string; name?: string };
 
+// The text split at commas and semicolons outside a quoted name or
+// <address>; the last piece is what follows the last separator
+function splitAtSeparators(text: string): string[] {
+  const pieces = [""];
+  let quoted = false;
+  let angled = false;
+  for (const ch of text) {
+    if (ch === '"' && !angled) quoted = !quoted;
+    else if (ch === "<" && !quoted) angled = true;
+    else if (ch === ">" && !quoted) angled = false;
+    else if ((ch === "," || ch === ";") && !quoted && !angled) {
+      pieces.push("");
+      continue;
+    }
+    pieces[pieces.length - 1] += ch;
+  }
+  return pieces;
+}
+
 const asRecipient = (c: Contact) => (c.name ? `"${c.name.replace(/"/g, "")}" <${c.email}>` : c.email);
 
 // An event's guests as chips, with the compose field's contact suggestions.
@@ -29,10 +48,34 @@ export const GuestChips = (props: {
   });
   const listOpen = () => showList() && suggestions().length > 0;
 
+  const addAll = (recipients: string[]) => {
+    const added: string[] = [];
+    for (const r of recipients) {
+      const email = extractEmail(r).toLowerCase();
+      if (!has(email) && !added.some(a => extractEmail(a).toLowerCase() === email)) added.push(r);
+    }
+    if (added.length) props.onChange([...guests(), ...added].join(", "));
+  };
+
   const add = (recipient: string) => {
-    if (!has(extractEmail(recipient))) props.onChange([...guests(), recipient].join(", "));
+    addAll([recipient]);
     setText("");
     setShowList(false);
+  };
+
+  // A pasted list becomes chips up to its last separator; what follows it
+  // stays in the field to finish typing
+  const handleInput = (input: HTMLInputElement) => {
+    const pieces = splitAtSeparators(input.value);
+    let typed = input.value;
+    if (pieces.length > 1) {
+      addAll(pieces.slice(0, -1).map(p => p.trim()).filter(p => p.includes("@")));
+      typed = pieces[pieces.length - 1].trimStart();
+      input.value = typed;
+    }
+    setText(typed);
+    setActive(0);
+    setShowList(true);
   };
 
   const remove = (index: number) => props.onChange(guests().filter((_, i) => i !== index).join(", "));
@@ -103,7 +146,7 @@ export const GuestChips = (props: {
         autocomplete="off"
         placeholder={guests().length ? "" : "Add guests"}
         value={text()}
-        onInput={(e) => { setText(e.currentTarget.value); setActive(0); setShowList(true); }}
+        onInput={(e) => handleInput(e.currentTarget)}
         onKeyDown={handleKeyDown}
         onBlur={() => { commitTyped(); setShowList(false); }}
       />

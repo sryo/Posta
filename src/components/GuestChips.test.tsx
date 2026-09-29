@@ -35,6 +35,14 @@ describe("GuestChips", () => {
     expect(input.value).toBe("");
   });
 
+  it("turns a pasted list into chips and keeps the unfinished rest to type on", () => {
+    const { input, value } = renderChips("a@y.test");
+    fireEvent.input(input, { target: { value: '"Bo Díaz" <bo@y.test>, cy@y.test; lu' } });
+    expect(value()).toBe('a@y.test, "Bo Díaz" <bo@y.test>, cy@y.test');
+    expect(input.value).toBe("lu");
+    expect(screen.getByRole("option", { name: /Lucas Romero/ })).toBeInTheDocument();
+  });
+
   it("adds what was typed when focus leaves", () => {
     const { input, value } = renderChips("a@y.test");
     fireEvent.input(input, { target: { value: "b@y.test" } });
