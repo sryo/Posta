@@ -12,6 +12,7 @@ export interface InlineComposeProps {
   setBcc: (v: string) => void;
   showCcBcc: boolean;
   setShowCcBcc: (v: boolean) => void;
+  suggestContacts?: (query: string) => { email: string; name?: string }[];
   body: string;
   setBody: (v: string) => void;
   attachments: SendAttachment[];

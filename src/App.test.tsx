@@ -1152,6 +1152,35 @@ describe("App compose autocomplete", () => {
     expect(screen.getByText("Bea")).toBeInTheDocument();
   });
 
+  it("waits for a typed character before covering the fields with suggestions", async () => {
+    handlers.fetch_contacts = () => [{ resource_name: "people/1", display_name: "Zed", email_addresses: ["zed@y.com"], photo_url: null }];
+    render(() => <App />);
+    await screen.findByText("Mail for A");
+    fireEvent.keyDown(document, { key: "c" });
+    const to = await screen.findByPlaceholderText("Recipients");
+    fireEvent.focus(to);
+    await new Promise(r => setTimeout(r, 20));
+    expect(screen.queryByRole("listbox")).not.toBeInTheDocument();
+    fireEvent.input(to, { target: { value: "z" } });
+    expect(await screen.findByRole("option", { name: /zed@y\.com/ })).toBeInTheDocument();
+  });
+
+  it("suggests contacts in a reply's recipient fields", async () => {
+    handlers.fetch_contacts = () => [{ resource_name: "people/1", display_name: "Zed", email_addresses: ["zed@y.com"], photo_url: null }];
+    handlers.get_thread_details = () => ({ id: "t-a", messages: [fullMessage("m1", "Ana <ana@x.com>")] });
+    render(() => <App />);
+    await screen.findByText("Mail for A");
+    fireEvent.click(screen.getByText("Mail for A"));
+    await screen.findByText("body m1");
+    fireEvent.keyDown(document, { key: "r" });
+    await screen.findByPlaceholderText("Write your reply...");
+    const to = screen.getByPlaceholderText("Recipients");
+    fireEvent.focus(to);
+    fireEvent.input(to, { target: { value: "ana@x.com, ze" } });
+    fireEvent.keyDown(to, { key: "Tab" });
+    expect(to).toHaveValue("ana@x.com, zed@y.com");
+  });
+
   it("saves a recipient picked from the suggestions in the draft", async () => {
     handlers.fetch_contacts = () => [{ resource_name: "people/1", display_name: "Zed", email_addresses: ["zed@y.com"], photo_url: null }];
     render(() => <App />);

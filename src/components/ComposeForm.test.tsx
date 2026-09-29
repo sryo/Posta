@@ -3,8 +3,13 @@ import { fireEvent, render, screen } from "@solidjs/testing-library";
 import { createSignal } from "solid-js";
 import { ComposeForm } from "./ComposeForm";
 
-function renderCompose(initialTo = "", sending = false, autocomplete?: Parameters<typeof ComposeForm>[0]["autocomplete"]) {
+const CONTACTS = [{ email: "kenji@example.com", name: "Kenji" }, { email: "kim@example.com" }];
+const suggestContacts = (q: string) => CONTACTS.filter(c => c.email.startsWith(q));
+
+function renderCompose(initialTo = "", sending = false, suggest?: (q: string) => { email: string; name?: string }[]) {
   const [to, setTo] = createSignal(initialTo);
+  const [cc, setCc] = createSignal("");
+  const [bcc, setBcc] = createSignal("");
   const onSend = vi.fn();
   const onClose = vi.fn();
   render(() => (
@@ -12,6 +17,12 @@ function renderCompose(initialTo = "", sending = false, autocomplete?: Parameter
       mode="new"
       to={to()}
       setTo={setTo}
+      cc={cc()}
+      setCc={setCc}
+      bcc={bcc()}
+      setBcc={setBcc}
+      showCcBcc={true}
+      setShowCcBcc={vi.fn()}
       body=""
       setBody={vi.fn()}
       attachments={[]}
@@ -21,34 +32,67 @@ function renderCompose(initialTo = "", sending = false, autocomplete?: Parameter
       onSend={onSend}
       onClose={onClose}
       sending={sending}
-      autocomplete={autocomplete}
+      suggestContacts={suggest}
     />
   ));
-  return { to, onSend, onClose };
+  return { to, cc, bcc, onSend, onClose };
 }
 
 describe("ComposeForm while an input method is composing", () => {
   it("leaves Escape and Enter to the composition", () => {
-    const onSelect = vi.fn();
-    const setShow = vi.fn();
-    const { onClose } = renderCompose("", false, {
-      show: true,
-      candidates: [{ email: "kenji@example.com" }],
-      selectedIndex: 0,
-      setSelectedIndex: vi.fn(),
-      onSelect,
-      setShow,
-    });
-    const to = screen.getByPlaceholderText("Recipients");
-    fireEvent.keyDown(to, { key: "Enter", isComposing: true });
-    fireEvent.keyDown(to, { key: "Escape", isComposing: true });
+    const { to, onClose } = renderCompose("", false, suggestContacts);
+    const input = screen.getByPlaceholderText("Recipients");
+    fireEvent.focus(input);
+    fireEvent.input(input, { target: { value: "ken" } });
+    fireEvent.keyDown(input, { key: "Enter", isComposing: true });
+    fireEvent.keyDown(input, { key: "Escape", isComposing: true });
     fireEvent.keyDown(screen.getByPlaceholderText("Write something..."), { key: "Escape", isComposing: true });
-    expect(onSelect).not.toHaveBeenCalled();
-    expect(setShow).not.toHaveBeenCalled();
+    expect(to()).toBe("ken");
+    expect(screen.getByRole("listbox")).toBeInTheDocument();
     expect(onClose).not.toHaveBeenCalled();
 
-    fireEvent.keyDown(to, { key: "Enter" });
-    expect(onSelect).toHaveBeenCalledWith("kenji@example.com");
+    fireEvent.keyDown(input, { key: "Enter" });
+    expect(to()).toBe("kenji@example.com");
+  });
+});
+
+describe("ComposeForm recipient suggestions", () => {
+  it("labels each recipient field", () => {
+    renderCompose();
+    expect(screen.getByLabelText("To")).toBe(screen.getByPlaceholderText("Recipients"));
+    expect(screen.getByLabelText("Cc")).toBe(screen.getByPlaceholderText("Cc recipients"));
+    expect(screen.getByLabelText("Bcc")).toBe(screen.getByPlaceholderText("Bcc recipients"));
+  });
+
+  it("suggests nothing on an empty To field", () => {
+    renderCompose("", false, suggestContacts);
+    fireEvent.focus(screen.getByLabelText("To"));
+    expect(screen.queryByRole("listbox")).toBeNull();
+  });
+
+  it("suggests contacts in Cc and Bcc as in To", () => {
+    const { cc, bcc } = renderCompose("", false, suggestContacts);
+    for (const [label, value] of [["Cc", cc], ["Bcc", bcc]] as const) {
+      const input = screen.getByLabelText(label);
+      fireEvent.focus(input);
+      fireEvent.input(input, { target: { value: "ki" } });
+      expect(screen.getAllByRole("option")).toHaveLength(1);
+      fireEvent.keyDown(input, { key: "Tab" });
+      expect(value()).toBe("kim@example.com");
+      fireEvent.blur(input);
+    }
+  });
+
+  it("closes the suggestions on Escape and closes the compose on the next one", () => {
+    const { onClose } = renderCompose("", false, suggestContacts);
+    const input = screen.getByLabelText("To");
+    fireEvent.focus(input);
+    fireEvent.input(input, { target: { value: "k" } });
+    fireEvent.keyDown(input, { key: "Escape" });
+    expect(screen.queryByRole("listbox")).toBeNull();
+    expect(onClose).not.toHaveBeenCalled();
+    fireEvent.keyDown(input, { key: "Escape" });
+    expect(onClose).toHaveBeenCalledTimes(1);
   });
 });
 

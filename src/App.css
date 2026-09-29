@@ -2120,6 +2120,7 @@ button:disabled:hover {
 }
 
 .compose-field {
+    position: relative;
     display: flex;
     align-items: center;
     gap: var(--space-md);

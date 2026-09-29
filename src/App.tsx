@@ -123,7 +123,7 @@ import { BG_COLORS, type ActionSettings, type CardColor, type GroupBy } from "./
 import { createUndoableSend } from "./app/undoableSend";
 import { findHeader, lastMessageFromOthers } from "./app/messages";
 import { batchReplyEntry, type BatchReplyThread } from "./app/batchReply";
-import { completeRecipient, currentRecipient, matchContacts, rankContacts, type RecentContact } from "./app/contacts";
+import { matchContacts, rankContacts, type RecentContact } from "./app/contacts";
 import { eventReplyRecipients } from "./app/eventReply";
 import { actionFailureLabel, actionLabel, actionRemovesFromCard, applyThreadAction, labelChangeFor, threadMayJoinCard, undoLabelChanges, type LabelReversal } from "./app/threadActions";
 import { PRESETS } from "./app/presets";
@@ -790,8 +790,6 @@ function App() {
   const [composeSubject, setComposeSubject] = createSignal("");
   const [composeBody, setComposeBody] = createSignal("");
   const [composeIsHtml, setComposeIsHtml] = createSignal(false);
-  const [showAutocomplete, setShowAutocomplete] = createSignal(false);
-  const [autocompleteIndex, setAutocompleteIndex] = createSignal(0);
   const [composeFabHovered, setComposeFabHovered] = createSignal(false);
   const [forwardingThread, setForwardingThread] = createSignal<{ threadId: string; subject: string; body: string } | null>(null);
   const [replyingToThread, setReplyingToThread] = createSignal<{ threadId: string; messageId?: string } | null>(null);
@@ -1899,6 +1897,7 @@ function App() {
       setBcc: setComposeBcc,
       get showCcBcc() { return showCcBcc(); },
       setShowCcBcc: setShowCcBcc,
+      suggestContacts: (query: string) => suggestContacts(query),
       get body() { return composeBody(); },
       setBody: setComposeBody,
       get attachments() { return composeAttachments(); },
@@ -3861,11 +3860,7 @@ function App() {
   // Kept while the suggestions fade out after the pointer leaves
   const fabSuggestions = createMemo<RecentContact[]>(shown => composeFabHovered() ? rankedContacts().slice(0, 5) : shown, []);
 
-  function selectContact(email: string) {
-    setComposeTo(completeRecipient(composeTo(), email));
-    setShowAutocomplete(false);
-    handleComposeInput();
-  }
+  const suggestContacts = (query: string) => matchContacts(rankedContacts(), query, 8);
 
   return (
     <div class="app" onClick={handleAppClick}>
@@ -4787,7 +4782,7 @@ function App() {
             mode="new"
             showSubject={true}
             to={composeTo()}
-            setTo={(v) => { setComposeTo(v); setComposeEmailError(null); setAutocompleteIndex(0); }}
+            setTo={(v) => { setComposeTo(v); setComposeEmailError(null); }}
             cc={composeCc()}
             setCc={(v) => { setComposeCc(v); setComposeEmailError(null); }}
             bcc={composeBcc()}
@@ -4809,14 +4804,7 @@ function App() {
             onClose={closeCompose}
             onInput={handleComposeInput}
             focusBody={focusComposeBody()}
-            autocomplete={{
-              show: showAutocomplete(),
-              candidates: matchContacts(rankedContacts(), currentRecipient(composeTo()), 8),
-              selectedIndex: autocompleteIndex(),
-              setSelectedIndex: setAutocompleteIndex,
-              onSelect: selectContact,
-              setShow: setShowAutocomplete,
-            }}
+            suggestContacts={suggestContacts}
           />
         </div>
       </Show>
