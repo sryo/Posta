@@ -59,6 +59,18 @@ describe("Toasts", () => {
     expect(toasts.current()?.paused).toBe(false);
   });
 
+  it("stays paused when the pointer leaves while keyboard focus is still on it", () => {
+    const { toasts, polite } = setup();
+    toasts.show({ message: "Reply sent", action: { label: "Open", run: () => {} } });
+    const toast = polite.querySelector(".undo-toast")!;
+    const open = within(polite).getByRole("button", { name: "Open" });
+    open.focus();
+    fireEvent.focusIn(open);
+    fireEvent.mouseEnter(toast);
+    fireEvent.mouseLeave(toast);
+    expect(toasts.current()?.paused).toBe(true);
+  });
+
   it("undoes from its Undo button, which shows the z shortcut", () => {
     const { toasts, polite } = setup();
     const undo = vi.fn();

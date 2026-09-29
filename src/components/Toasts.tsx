@@ -10,7 +10,9 @@ function Toast(props: { toast: ShownToast; toasts: ToastStore }) {
     <div
       class={`undo-toast ${t().closing ? "closing" : ""} ${t().paused ? "paused" : ""}`}
       onMouseEnter={() => props.toasts.pause()}
-      onMouseLeave={() => props.toasts.resume()}
+      onMouseLeave={(e) => {
+        if (!e.currentTarget.contains(document.activeElement)) props.toasts.resume();
+      }}
       onFocusIn={() => props.toasts.pause()}
       onFocusOut={(e) => {
         if (!e.currentTarget.contains(e.relatedTarget as Node | null)) props.toasts.resume();
