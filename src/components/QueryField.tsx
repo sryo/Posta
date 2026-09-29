@@ -188,7 +188,7 @@ export const QueryField = (props: {
       if (refocus) chips?.querySelector<HTMLElement>(`.query-chip-label[data-index="${open.index}"]`)?.focus();
     } else if (refocus) {
       focusInput();
-    } else if (document.activeElement !== input) {
+    } else if (!chips?.contains(document.activeElement)) {
       setEditing(false);
     }
   }
@@ -296,7 +296,15 @@ export const QueryField = (props: {
 
   return (
     <>
-      <div class="query-field" classList={{ editing: editing() || headWords().length === 0 }}>
+      <div
+        class="query-field"
+        classList={{ editing: editing() || headWords().length === 0 }}
+        onFocusOut={(e) => {
+          // Tabbing onto a chip keeps the chips where they are, so the focus stays on it
+          if (chips?.contains(e.relatedTarget as Node | null)) return;
+          if (!picker()) setEditing(false);
+        }}
+      >
         <div
           ref={chips}
           class="query-chips"
@@ -340,10 +348,7 @@ export const QueryField = (props: {
               props.onActive?.(insert);
               openMenu();
             }}
-            onBlur={() => {
-              setMenuOpen(false);
-              if (!picker()) setEditing(false);
-            }}
+            onBlur={() => { setMenuOpen(false); }}
             onSelect={() => { readCaret(); }}
             onClick={() => { readCaret(); }}
             onKeyUp={(e) => { if (e.key.startsWith("Arrow") && !suggestions().length) readCaret(); }}

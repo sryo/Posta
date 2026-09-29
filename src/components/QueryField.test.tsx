@@ -191,6 +191,33 @@ describe("QueryField while typing", () => {
     expect(screen.getByRole("button", { name: "Change has:attachment" })).toBeInTheDocument();
   });
 
+  it("keeps a chip focused when Tab moves to it from the text box", () => {
+    const { input } = renderField("is:unread from:ana@x.com");
+    input.focus();
+    fireEvent.input(input, { target: { value: "invo" } });
+    const chip = screen.getByRole("button", { name: "Change from:ana@x.com" });
+    chip.focus();
+    expect(chip.isConnected).toBe(true);
+    expect(document.activeElement).toBe(chip);
+    expect(input).toHaveValue("invo");
+
+    fireEvent.click(chip);
+    const picker = screen.getByRole("dialog", { name: "from" });
+    expect(picker).toBeInTheDocument();
+  });
+
+  it("stops editing once focus leaves the field from one of its chips", () => {
+    const { input } = renderField("is:unread invoice");
+    const outside = document.createElement("button");
+    document.body.append(outside);
+    input.focus();
+    screen.getByRole("button", { name: "Change is:unread" }).focus();
+    outside.focus();
+    expect(input).toHaveValue("is:unread invoice");
+    expect(input.closest(".query-field")).not.toHaveClass("editing");
+    outside.remove();
+  });
+
   it("edits a plain word as text when it is clicked", () => {
     const { input } = renderField("is:unread invoice");
     fireEvent.mouseDown(screen.getByText("invoice"));
