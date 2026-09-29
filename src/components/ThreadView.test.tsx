@@ -784,14 +784,16 @@ describe("ThreadView message header", () => {
       thread: makeThread([
         { from: '"Pérez, Ana" <ana@example.com>', body: "hi" },
         { from: "bob@example.com", body: "hello" },
+        { from: '"Cy@Example.com" <cy@example.com>', body: "hey" },
       ]),
       focusedMessageIndex: 0,
     });
-    const [named, bare] = container.querySelectorAll(".message-sender");
+    const [named, bare, addressAsName] = container.querySelectorAll(".message-sender");
     expect(named.querySelector(".message-sender-name")?.textContent).toBe("Pérez, Ana");
     expect(named.querySelector(".message-sender-address")?.textContent).toBe("ana@example.com");
     expect(bare.querySelector(".message-sender-name")?.textContent).toBe("bob@example.com");
     expect(bare.querySelector(".message-sender-address")).toBeNull();
+    expect(addressAsName.textContent).toBe("Cy@Example.com");
   });
 });
 
