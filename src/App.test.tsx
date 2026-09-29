@@ -2970,6 +2970,22 @@ describe("App card query autocomplete", () => {
   });
 });
 
+describe("App new card preview", () => {
+  it("previews a few of a calendar query's events, like an email query's threads", async () => {
+    handlers.list_labels = () => [];
+    handlers.fetch_calendar_events = () => Array.from({ length: 40 }, (_, i) => calendarEvent(`ev-${i}`, `Meeting ${i}`));
+    render(() => <App />);
+    await screen.findByText("Mail for A");
+    fireEvent.click(screen.getByTitle("New card"));
+    const query = screen.getAllByPlaceholderText("is:inbox, from:boss, newer_than:7d").slice(-1)[0];
+    fireEvent.input(query, { target: { value: "calendar:7d" } });
+
+    expect(await screen.findByText("Meeting 0")).toBeInTheDocument();
+    expect(screen.queryByText("Meeting 5")).not.toBeInTheDocument();
+    expect(screen.getByText("+35 more")).toBeInTheDocument();
+  });
+});
+
 describe("App label drawer", () => {
   it("says the labels could not be loaded and loads them again on retry", async () => {
     handlers.get_thread_details = () => ({ id: "t-a", messages: [fullMessage("m1", "Ana <ana@x.com>")] });

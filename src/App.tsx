@@ -152,6 +152,9 @@ import { moveCard, reuseUnchanged } from "./app/cardOrder";
 
 const SESSION_EXPIRED_MESSAGE = "Session expired - sign in again";
 
+// As many as the backend's preview of an email query returns
+const NEW_CARD_PREVIEW_EVENTS = 5;
+
 // Names for BG_COLORS, in its order, for the colour picker's options
 const BG_COLOR_NAMES = ["Red", "Orange", "Yellow", "Green", "Teal", "Blue", "Purple", "Pink"];
 
@@ -4653,7 +4656,7 @@ function App() {
                       <Show when={queryPreviewCalendarEvents().length === 0}>
                         <div class="empty">No events</div>
                       </Show>
-                      <For each={groupCalendarEvents(queryPreviewCalendarEvents(), newCardGroupBy())}>
+                      <For each={groupCalendarEvents(queryPreviewCalendarEvents().slice(0, NEW_CARD_PREVIEW_EVENTS), newCardGroupBy())}>
                         {(group) => (
                           <>
                             <div class="date-header">{group.label}</div>
@@ -4686,6 +4689,9 @@ function App() {
                           </>
                         )}
                       </For>
+                      <Show when={queryPreviewCalendarEvents().length > NEW_CARD_PREVIEW_EVENTS}>
+                        <div class="empty">+{queryPreviewCalendarEvents().length - NEW_CARD_PREVIEW_EVENTS} more</div>
+                      </Show>
                     </Show>
                     {/* Email threads preview */}
                     <Show when={!queryPreviewLoading() && queryPreviewThreads().length === 0 && newCardQuery().trim() && cardTypeForQuery(newCardQuery()) !== "calendar"}>
