@@ -1,7 +1,6 @@
 import { batch, createSignal, onMount, onCleanup, Show, For, Index, createMemo, createEffect, createComputed, createSelector, mapArray, on, untrack } from "solid-js";
 import { createStore, produce, reconcile, unwrap } from "solid-js/store";
-import DOMPurify from 'dompurify';
-import { DOMPURIFY_CONFIG } from './components/MessageBody';
+import { MessageBody } from './components/MessageBody';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import { listen } from '@tauri-apps/api/event';
 import { openUrl } from '@tauri-apps/plugin-opener';
@@ -122,7 +121,7 @@ import { BG_COLORS, type ActionSettings, type CardColor, type GroupBy } from "./
 import { createUndoableSend } from "./app/undoableSend";
 import { findHeader, lastMessageFromOthers } from "./app/messages";
 import { batchReplyEntry, type BatchReplyThread } from "./app/batchReply";
-import { completeRecipient, currentRecipient, matchContacts, rankContacts } from "./app/contacts";
+import { completeRecipient, currentRecipient, matchContacts, rankContacts, type RecentContact } from "./app/contacts";
 import { eventReplyRecipients } from "./app/eventReply";
 import { actionFailureLabel, actionLabel, actionRemovesFromCard, applyThreadAction, labelChangeFor, threadMayJoinCard, undoLabelChanges, type LabelReversal } from "./app/threadActions";
 import { PRESETS } from "./app/presets";
@@ -137,7 +136,7 @@ import { cidImagesToFetch, createLruCache, fetchCidImages } from "./app/cidImage
 import { sendPending, type PendingSend } from "./app/pendingSend";
 import { parseMailto } from "./app/mailto";
 import { coalesceByKey } from "./app/coalesce";
-import { threadLoadErrorMessage } from "./app/loadErrors";
+import { batchReplyLoadErrorMessage, cardLoadErrorMessage, threadLoadErrorMessage } from "./app/loadErrors";
 import { cardTypeForQuery } from "./app/cardType";
 import { createDraftSync, draftKey, findLatestDraft, findUnsentDrafts, hasDraftContent, markDraftClosed, markDraftSending, pruneDrafts, removeAccountDrafts, sessionDraftKey, type DraftFields } from "./app/drafts";
 import { escapeTarget, nextCardFocus, nextItemFocus } from "./app/keyboardNav";
@@ -145,9 +144,17 @@ import { getSmartEventTime, groupCalendarEvents, isUserLabel, mergeThreadGroups,
 import { pullLayoutWithRetry } from "./app/icloudRestore";
 import { querySuggestions, type QuerySuggestion } from "./app/querySuggestions";
 import { inviteNamesEvent, rsvpSentMessage, type RsvpStatus } from "./app/rsvp";
-import { hasCommandModifier, onActivateKey } from "./shared/keyboard";
+import { createRsvpLookups } from "./app/rsvpLookups";
+import { nextSelection } from "./app/selection";
+import { fingerprint } from "./app/fingerprint";
+import { hasCommandModifier, isTypingTarget, onActivateKey } from "./shared/keyboard";
+import { askConfirm, ConfirmDialog, confirmOpen, dismissConfirm } from "./app/confirm";
+import { moveCard, reuseUnchanged } from "./app/cardOrder";
 
 const SESSION_EXPIRED_MESSAGE = "Session expired - sign in again";
+
+// As many as the backend's preview of an email query returns
+const NEW_CARD_PREVIEW_EVENTS = 5;
 
 // Names for BG_COLORS, in its order, for the colour picker's options
 const BG_COLOR_NAMES = ["Red", "Orange", "Yellow", "Green", "Teal", "Blue", "Purple", "Pink"];
@@ -204,29 +211,26 @@ function App() {
   const [syncErrors, setSyncErrors] = createStore<Record<string, string | null>>({});
   // Ticking clock for relative time displays
   const [currentTime, setCurrentTime] = createSignal(Date.now());
+  // Local midnight of the current day; notifies once a day, so "Today" labels
+  // and today's times move on at midnight without re-rendering every tick
+  const today = createMemo(() => new Date(currentTime()).setHours(0, 0, 0, 0));
+  // formatTime reads the clock itself; reading today() re-runs it at midnight
+  const threadTime = (timestamp: number) => {
+    today();
+    return formatTime(timestamp);
+  };
 
   // Google Contacts from People API
   const [googleContacts, setGoogleContacts] = createSignal<Contact[]>([]);
 
-  // RSVP status tracking (thread ID -> "accepted" | "tentative" | "declined" | "needsAction")
+  // The user's answer to each invite, by rsvpLookups.key(account, event uid):
+  // "accepted" | "tentative" | "declined" | "needsAction"
   const [rsvpStatus, setRsvpStatus] = createStore<Record<string, string>>({});
   const [rsvpLoading, setRsvpLoading] = createStore<Record<string, boolean>>({});
-
-  // Fetch RSVP status for a calendar event (at most once per thread, guarded
-  // against re-fires from re-renders while the request is in flight or failed)
-  const rsvpStatusRequested = new Set<string>();
-  const fetchRsvpStatus = async (threadId: string, eventUid: string) => {
-    if (!selectedAccount() || !eventUid) return;
-    if (rsvpStatusRequested.has(threadId)) return;
-    rsvpStatusRequested.add(threadId);
-    try {
-      const status = await getCalendarRsvpStatus(selectedAccount()!.id, eventUid);
-      if (status) {
-        setRsvpStatus(threadId, status);
-      }
-    } catch (e) {
-      console.error("Failed to fetch RSVP status:", e);
-    }
+  const rsvpLookups = createRsvpLookups({ lookup: getCalendarRsvpStatus, onStatus: setRsvpStatus });
+  const inviteRsvp = (uid: string | null) => {
+    const account = selectedAccount();
+    return account && uid ? rsvpStatus[rsvpLookups.key(account.id, uid)] : undefined;
   };
 
   // Answers an invite from its email; the calendar cards showing the event
@@ -237,7 +241,7 @@ function App() {
     setRsvpLoading(threadId, true);
     try {
       await rsvpCalendarEvent(account.id, eventUid, status);
-      setRsvpStatus(threadId, status);
+      setRsvpStatus(rsvpLookups.key(account.id, eventUid), status);
       const eventIds = new Set(Object.values(cardCalendarEvents).flatMap(events =>
         (events ?? []).filter(ev => inviteNamesEvent(eventUid, ev.id)).map(ev => ev.id)));
       for (const eventId of eventIds) markEventRsvp(eventId, status);
@@ -287,20 +291,32 @@ function App() {
     },
     onFailed: (pending, e) => {
       console.error("Failed to send email:", e);
-      // Putting the failed email back would replace the one being written
-      // (and drop its attachments); offer it instead
-      if (composing() && !closingCompose() && (hasDraftContent(composeDraftFields()) || composeAttachments().length > 0)) {
-        if (pending.draft) {
-          sendingDraftKeys.delete(pending.draft.key);
-          markDraftSending(pending.draft.key, null);
-        }
-        showToast(`Couldn't send "${pending.subject || "(no subject)"}"`, { label: "Open", run: () => restoreSend(pending) });
-      } else {
-        restoreSend(pending);
-      }
+      putBackSend(pending, `Couldn't send "${pending.subject || "(no subject)"}"`);
       setError(`Failed to send email: ${e}`);
     },
   });
+
+  // Whether an open compose holds something replacing it would lose;
+  // prefilled text alone (a reply's quote) can be had again
+  function composeHasWork(): boolean {
+    if (!composing() || closingCompose()) return false;
+    return (composeEdited && hasDraftContent(composeDraftFields())) || composeAttachments().length > 0;
+  }
+
+  // Opening an email over one being written would replace it (and drop its
+  // attachments); offer it in a toast instead
+  function openComposeUnlessBusy(message: string, open: () => void) {
+    if (composeHasWork()) showToast(message, { label: "Open", run: open });
+    else open();
+  }
+
+  function putBackSend(pending: PendingSend, busyMessage: string) {
+    if (pending.draft) {
+      sendingDraftKeys.delete(pending.draft.key);
+      markDraftSending(pending.draft.key, null);
+    }
+    openComposeUnlessBusy(busyMessage, () => restoreSend(pending));
+  }
 
   // Settings
   const [settingsOpen, setSettingsOpen] = createSignal(false);
@@ -382,6 +398,27 @@ function App() {
     return Number.isInteger(idx) && idx >= 0 && idx < BG_COLORS.length ? idx : null;
   }
   const [selectedBgColorIndex, setSelectedBgColorIndex] = createSignal<number | null>(readSavedBgColorIndex());
+  const [prefersDark, setPrefersDark] = createSignal(!!window.matchMedia?.("(prefers-color-scheme: dark)")?.matches);
+  // Derived rather than written onto the deck, which is rebuilt whenever the
+  // signed-in account goes away and comes back
+  const deckBackground = createMemo(() => {
+    const index = selectedBgColorIndex();
+    const color = index === null ? undefined : BG_COLORS[index];
+    if (!color) return undefined;
+    return prefersDark() ? color.dark : color.light;
+  });
+  createEffect(() => {
+    const index = selectedBgColorIndex();
+    const root = document.documentElement.style;
+    const background = deckBackground();
+    if (index === null || !background) {
+      root.removeProperty("--accent");
+      root.removeProperty("--app-bg");
+    } else {
+      root.setProperty("--accent", BG_COLORS[index].hex);
+      root.setProperty("--app-bg", background);
+    }
+  });
 
   // Add card form
   const [addingCard, setAddingCard] = createSignal(false);
@@ -409,6 +446,10 @@ function App() {
   const [editCardColor, setEditCardColor] = createSignal<CardColor>(null);
   const [editCardGroupBy, setEditCardGroupBy] = createSignal<GroupBy>("date");
   const [editColorPickerOpen, setEditColorPickerOpen] = createSignal(false);
+  // What the editor's fields held before the user touched them; a change
+  // pulled from iCloud replaces only fields still holding it, so saving
+  // doesn't write the pulled change back over
+  let editCardStart: Pick<Card, "name" | "query" | "color" | "group_by"> | null = null;
 
   // While editing, the card body doubles as a live preview: it keeps showing
   // the card's real content until the draft query diverges from the saved one
@@ -431,28 +472,32 @@ function App() {
   const [focusedThreadIndex, setFocusedThreadIndex] = createSignal<number>(-1);
   const [focusedEventIndex, setFocusedEventIndex] = createSignal<number>(-1);
 
-  // Native context menu for attachments
-  async function showAttachmentContextMenu(
-    att: { messageId: string; attachmentId: string; filename: string; mimeType: string; inlineData: string | null }
-  ) {
-    const openItem = await MenuItem.new({
-      text: "Open",
-      action: () => openAttachment(att.messageId, att.attachmentId, att.filename, att.mimeType, att.inlineData),
-    });
-    const downloadItem = await MenuItem.new({
-      text: "Download",
-      action: () => downloadAttachment(att.messageId, att.attachmentId, att.filename, att.mimeType, att.inlineData),
-    });
-    const separator = await PredefinedMenuItem.new({ item: "Separator" });
-    const forwardItem = await MenuItem.new({
-      text: "Forward",
-      action: () => forwardAttachment(att),
-    });
-
-    const menu = await Menu.new({
-      items: [openItem, downloadItem, separator, forwardItem],
-    });
-    await menu.popup();
+  // Native context menu for attachments. Its items live in the backend until
+  // closed, so one menu serves every right-click, acting on the attachment
+  // clicked last.
+  type MenuAttachment = { messageId: string; attachmentId: string; filename: string; mimeType: string; inlineData: string | null };
+  let menuAttachment: MenuAttachment | null = null;
+  let attachmentMenu: Promise<Menu> | null = null;
+  function createAttachmentMenu(): Promise<Menu> {
+    const withAttachment = (run: (att: MenuAttachment) => void) => () => { if (menuAttachment) run(menuAttachment); };
+    return (async () => Menu.new({
+      items: [
+        await MenuItem.new({ text: "Open", action: withAttachment(att => openAttachment(att.messageId, att.attachmentId, att.filename, att.mimeType, att.inlineData)) }),
+        await MenuItem.new({ text: "Download", action: withAttachment(att => downloadAttachment(att.messageId, att.attachmentId, att.filename, att.mimeType, att.inlineData)) }),
+        await PredefinedMenuItem.new({ item: "Separator" }),
+        await MenuItem.new({ text: "Forward", action: withAttachment(forwardAttachment) }),
+      ],
+    }))();
+  }
+  async function showAttachmentContextMenu(att: MenuAttachment) {
+    menuAttachment = att;
+    try {
+      attachmentMenu ??= createAttachmentMenu();
+      await (await attachmentMenu).popup();
+    } catch (e) {
+      attachmentMenu = null;
+      console.error("Failed to show the attachment menu:", e);
+    }
   }
 
   // Attach to the open compose, or start a new email with it
@@ -716,9 +761,21 @@ function App() {
 
   const [eventForm, setEventForm] = createSignal<EventFormState>(defaultEventForm());
 
-  const resetEventFormToNow = () => {
+  // A new event starts now; what was typed into a closed new-event form stays,
+  // but an event's edit never carries into a new one
+  const openNewEventForm = () => {
     const defaults = smartEventDefaults();
-    setEventForm(f => ({ ...f, startDate: defaults.date, startTime: defaults.startTime, endDate: defaults.date, endTime: defaults.endTime }));
+    setEventForm(f => f.editing
+      ? defaultEventForm()
+      : { ...f, startDate: defaults.date, startTime: defaults.startTime, endDate: defaults.date, endTime: defaults.endTime });
+    setCreatingEvent(true);
+  };
+  // The form is kept nowhere once closed, so typed details need a yes first
+  const dismissEventForm = async () => {
+    const f = eventForm();
+    const typed = [f.summary, f.description, f.location, f.attendees].some(v => v.trim());
+    if (f.closing || (typed && !(await askConfirm("Discard this event?", "Discard")))) return;
+    if (creatingEvent()) closeEventForm();
   };
   const closeEventForm = () => {
     setEventForm(f => ({ ...f, closing: true }));
@@ -766,6 +823,7 @@ function App() {
   const sendingDraftKeys = new Set<string>();
 
   function composeDraftFields(): DraftFields {
+    const attachmentNames = composeAttachments().map(a => a.filename);
     return {
       to: composeTo(),
       cc: composeCc(),
@@ -773,6 +831,9 @@ function App() {
       subject: composeSubject(),
       body: composeBody(),
       threadId: replyingToThread()?.threadId,
+      replyMessageId: replyingToThread()?.messageId,
+      forwardThreadId: forwardingThread()?.threadId,
+      attachmentNames: attachmentNames.length > 0 ? attachmentNames : undefined,
     };
   }
 
@@ -833,6 +894,10 @@ function App() {
   const [batchReplySending, setBatchReplySending] = createSignal<Record<string, boolean>>({});
   const [batchReplyLoading, setBatchReplyLoading] = createSignal(false);
   const [batchReplyAttachments, setBatchReplyAttachments] = createSignal<Record<string, SendAttachment[]>>({});
+  // Inline image data downloaded for each thread's message (thread id -> cid -> data)
+  const [batchReplyCidData, setBatchReplyCidData] = createSignal<Record<string, Record<string, string>>>({});
+  // Set when none of the batch's threads could be loaded, with what to retry
+  const [batchReplyError, setBatchReplyError] = createSignal<{ message: string; threadIds: string[] } | null>(null);
 
   // Settings form
   const [clientId, setClientId] = createSignal("");
@@ -915,33 +980,37 @@ function App() {
     const matchedThreadIds = new Set<string>();
     const cardsWithModified = new Set<string>();
     const cardsWithDeleted = new Set<string>();
+    const deleted = new Set(deletedThreadIds);
+    const modifiedById = new Map(modifiedThreads.map(t => [t.gmail_thread_id, t]));
 
     for (const cardId of Object.keys(cardThreads)) {
       const groups = cardThreads[cardId];
       if (!groups) continue;
 
       const updatedGroups = groups.map(group => {
-        let threads = group.threads.filter(t => !deletedThreadIds.includes(t.gmail_thread_id));
+        const threads = group.threads.filter(t => !deleted.has(t.gmail_thread_id)).map(t => {
+          const modified = modifiedById.get(t.gmail_thread_id);
+          if (!modified) return t;
+          matchedThreadIds.add(t.gmail_thread_id);
+          cardsWithModified.add(cardId);
+          return modified;
+        });
         if (threads.length !== group.threads.length) cardsWithDeleted.add(cardId);
-
-        // Update modified threads
-        for (const modifiedThread of modifiedThreads) {
-          const existingIndex = threads.findIndex(t => t.gmail_thread_id === modifiedThread.gmail_thread_id);
-          if (existingIndex >= 0) {
-            threads[existingIndex] = modifiedThread;
-            matchedThreadIds.add(modifiedThread.gmail_thread_id);
-            cardsWithModified.add(cardId);
-          }
-        }
-
         return { ...group, threads };
       });
 
-      // Filter out empty groups
-      updatedCardThreads[cardId] = updatedGroups.filter(g => g.threads.length > 0);
+      if (cardsWithModified.has(cardId) || cardsWithDeleted.has(cardId)) {
+        updatedCardThreads[cardId] = updatedGroups.filter(g => g.threads.length > 0);
+      }
     }
 
-    setCardThreads(produce(s => { Object.assign(s, updatedCardThreads); }));
+    // Reconciled so a changed thread's row updates in place, and only the
+    // cards holding a change are touched
+    batch(() => {
+      for (const [cardId, groups] of Object.entries(updatedCardThreads)) {
+        setCardThreads(cardId, reconcile(groups, { key: "gmail_thread_id" }));
+      }
+    });
 
     // A modified thread may no longer match its card's query (archived or
     // read elsewhere), and a thread in no card may be new to some card; only
@@ -986,7 +1055,8 @@ function App() {
       if (selectedAccount()?.id !== account.id) return;
       const before = new Map(cards().map(c => [c.id, c.query]));
       const kept = new Set(cardList.map(c => c.id));
-      setCards(cardList);
+      setCards(reuseUnchanged(cards(), cardList));
+      followPulledCardInEditor();
       forgetCardState([...before.keys()].filter(id => !kept.has(id)));
       for (const card of cardList) {
         if (before.get(card.id) === card.query || collapsedCards[card.id]) continue;
@@ -998,12 +1068,38 @@ function App() {
     }
   }
 
+  // Set while the stored OAuth client couldn't be read (a locked keychain);
+  // the next window focus tries again
+  let credentialsError: string | null = null;
+  async function loadStoredCredentials() {
+    const storedCreds = await getStoredCredentials();
+    if (storedCreds) {
+      await configureAuth({
+        client_id: storedCreds.client_id,
+        client_secret: storedCreds.client_secret,
+      });
+    }
+  }
+  async function retryStoredCredentials() {
+    const failed = credentialsError;
+    if (!failed) return;
+    try {
+      await loadStoredCredentials();
+      credentialsError = null;
+      if (error() === failed) setError(null);
+    } catch (e) {
+      console.warn("Stored credentials still unavailable:", e);
+    }
+  }
+
   // Handle window focus - reset to fast polling and sync immediately
-  function handleWindowFocus() {
+  async function handleWindowFocus() {
+    await retryStoredCredentials();
     setPollInterval(BASE_POLL_INTERVAL);
     setCurrentTime(Date.now());
     performIncrementalSync();
     pullCardsFromICloud();
+    rsvpLookups.retryFailed();
     // Re-arm the timer so the fast interval applies now, not after the
     // previously scheduled (possibly backed-off) timeout fires
     schedulePoll();
@@ -1035,32 +1131,17 @@ function App() {
     const { draggable, droppable } = event;
     // Reset drag flag after a short delay to prevent click from firing
     setTimeout(() => { wasDragging = false; }, 100);
-    if (draggable && droppable) {
-      const currentIds = cardIds();
-      const fromIndex = currentIds.indexOf(String(draggable.id));
-      const toIndex = currentIds.indexOf(String(droppable.id));
-      if (fromIndex !== toIndex) {
-        const previousCards = cards();
-        const currentCards = [...previousCards];
-        const [movedCard] = currentCards.splice(fromIndex, 1);
-        currentCards.splice(toIndex, 0, movedCard);
-
-        const reorderedCards = currentCards.map((card, index) => ({
-          ...card,
-          position: index
-        }));
-
-        setCards(reorderedCards);
-
-        try {
-          const orders: [string, number][] = reorderedCards.map(c => [c.id, c.position]);
-          await reorderCards(orders);
-        } catch (err) {
-          console.error("Failed to persist card order:", err);
-          setCards(previousCards);
-          showToast(`Couldn't save the card order: ${err}`);
-        }
-      }
+    if (!draggable || !droppable) return;
+    const previousCards = cards();
+    const reorderedCards = moveCard(previousCards, String(draggable.id), String(droppable.id));
+    if (!reorderedCards) return;
+    setCards(reorderedCards);
+    try {
+      await reorderCards(reorderedCards.map((c, index): [string, number] => [c.id, index]));
+    } catch (err) {
+      console.error("Failed to persist card order:", err);
+      setCards(previousCards);
+      showToast(`Couldn't save the card order: ${err}`);
     }
   };
 
@@ -1109,14 +1190,7 @@ function App() {
 
     // Listen for color scheme changes
     colorSchemeQuery = window.matchMedia?.("(prefers-color-scheme: dark)");
-    handleColorSchemeChange = (e: MediaQueryListEvent) => {
-      const deck = document.querySelector(".deck") as HTMLElement;
-      if (deck?.dataset.bgLight || deck?.dataset.bgDark) {
-        const bgColor = e.matches ? deck.dataset.bgDark! : deck.dataset.bgLight!;
-        deck.style.background = bgColor;
-        document.documentElement.style.setProperty("--app-bg", bgColor);
-      }
-    };
+    handleColorSchemeChange = (e: MediaQueryListEvent) => setPrefersDark(e.matches);
     colorSchemeQuery?.addEventListener("change", handleColorSchemeChange);
 
     // Set snippet lines CSS variable
@@ -1128,7 +1202,7 @@ function App() {
     // Listen for mailto: deep-link events whether or not startup succeeds
     listen<MailtoData>(
       "mailto-received",
-      (event) => startCompose(event.payload),
+      (event) => openMailto(event.payload),
     ).then(unlisten => {
       if (disposed) unlisten();
       else unlistenMailto = unlisten;
@@ -1137,13 +1211,13 @@ function App() {
     try {
       await initApp();
 
-      // Configure auth from stored credentials if available
-      const storedCreds = await getStoredCredentials();
-      if (storedCreds) {
-        await configureAuth({
-          client_id: storedCreds.client_id,
-          client_secret: storedCreds.client_secret,
-        });
+      // A locked keychain must not keep the cached cards from showing
+      try {
+        await loadStoredCredentials();
+      } catch (e) {
+        console.warn("Stored credentials unavailable:", e);
+        credentialsError = String(e);
+        setError(credentialsError);
       }
 
       // Pull cards/accounts from iCloud if available (restores layout after re-login)
@@ -1165,18 +1239,13 @@ function App() {
       setError(String(e));
     } finally {
       setLoading(false);
-      // Apply saved background color after UI is rendered
-      const savedBgColorIndex = readSavedBgColorIndex();
-      if (savedBgColorIndex !== null) {
-        setTimeout(() => applyBgColor(savedBgColorIndex), 0);
-      }
     }
 
     // The backend holds links, including the launch link, until they are
     // taken; taking them after startup lets compose pick up the account's
     // signature, and outside the startup try a failed load still opens them
     try {
-      for (const mailto of await takePendingMailtos()) startCompose(mailto);
+      for (const mailto of await takePendingMailtos()) openMailto(mailto);
     } catch (e) {
       console.warn("mailto links unavailable:", e);
     }
@@ -1193,6 +1262,7 @@ function App() {
       clearTimeout(queryPreviewTimeout);
     }
     clearInterval(timeUpdateInterval);
+    dismissConfirm();
     window.removeEventListener("focus", handleWindowFocus);
     if (handleResize) window.removeEventListener("resize", handleResize);
     if (handleColorSchemeChange) colorSchemeQuery?.removeEventListener("change", handleColorSchemeChange);
@@ -1275,8 +1345,9 @@ function App() {
 
   // Global keyboard shortcuts
   const handleGlobalKeyDown = (e: KeyboardEvent) => {
-    const target = e.target as HTMLElement;
-    const isTyping = target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable;
+    // The dialog answers its own keys; nothing may act behind it
+    if (confirmOpen()) return;
+    const isTyping = isTypingTarget(e.target);
 
     // Cmd/Ctrl+F to open filter (works even when typing)
     if (e.key === 'f' && (e.metaKey || e.ctrlKey)) {
@@ -1333,7 +1404,7 @@ function App() {
     }
 
     // Same for modals and panels over the cards; Escape still closes them
-    const overlayOpen = settingsOpen() || shortcutsHelpOpen() || queryHelpOpen() || creatingEvent() || showPresetSelection() || showRestorePrompt();
+    const overlayOpen = settingsOpen() || shortcutsHelpOpen() || queryHelpOpen() || creatingEvent() || batchReplyOpen() || showPresetSelection() || showRestorePrompt();
     if (overlayOpen && e.key !== 'Escape') {
       return;
     }
@@ -1356,8 +1427,7 @@ function App() {
     // e to create event
     if (e.key === 'e') {
       e.preventDefault();
-      resetEventFormToNow();
-      setCreatingEvent(true);
+      openNewEventForm();
       return;
     }
 
@@ -1393,7 +1463,7 @@ function App() {
         case "batchReply": dismissBatchReply(); break;
         case "compose": closeCompose(); break;
         case "queryHelp": setQueryHelpOpen(false); break;
-        case "eventForm": closeEventForm(); break;
+        case "eventForm": dismissEventForm(); break;
         case "cardEditor": setEditingCardId(null); break;
         case "settings": setSettingsOpen(false); break;
         case "actionConfigMenu": setActionConfigMenu(null); break;
@@ -1525,6 +1595,11 @@ function App() {
         openEventQuickReply(event.id);
         return;
       }
+      if (e.key === 'x') {
+        e.preventDefault();
+        toggleEventSelection(cardId, event.id);
+        return;
+      }
     }
   };
 
@@ -1549,7 +1624,7 @@ function App() {
       const inEmail = !!link.closest('.message-body');
       if (link.protocol === 'mailto:') {
         e.preventDefault();
-        startCompose(parseMailto(link.href));
+        openMailto(parseMailto(link.href));
         return;
       }
       if ((link.protocol === 'http:' || link.protocol === 'https:') && link.origin !== window.location.origin) {
@@ -1697,7 +1772,7 @@ function App() {
   async function handleStartFresh() {
     const currentCards = cards();
     const count = `${currentCards.length} card${currentCards.length === 1 ? "" : "s"}`;
-    if (currentCards.length > 0 && !confirm(`Delete the restored layout's ${count}? They're also removed from your other Macs that sync through iCloud. This can't be undone.`)) return;
+    if (currentCards.length > 0 && !(await askConfirm(`Delete the restored layout's ${count}? They're also removed from your other Macs that sync through iCloud. This can't be undone.`, "Delete"))) return;
     const results = await Promise.allSettled(currentCards.map(card => deleteCard(card.id)));
     // Cards that failed to delete still exist; keep showing them rather than
     // letting a preset pile new cards on top
@@ -1746,7 +1821,8 @@ function App() {
   async function handleSignOut() {
     const account = selectedAccount();
     if (!account) return;
-    if (!confirm(`Sign out of ${account.email}? Its cards and the drafts saved on this computer are removed.`)) return;
+    if (!(await askConfirm(`Sign out of ${account.email}? Its cards and the drafts saved on this computer are removed.`, "Sign out"))) return;
+    if (selectedAccount()?.id !== account.id) return;
 
     const signedOutCards = cards();
     try {
@@ -1756,11 +1832,8 @@ function App() {
       setAccounts(remaining);
       setSelectedAccount(null);
       setCards([]);
-      setCardThreads(reconcile({}));
+      forgetCardState(signedOutCards.map(c => c.id));
       setAccountLabels([]);
-      const collapsed = safeGetJSON<Record<string, boolean>>("collapsedCards", {});
-      for (const card of signedOutCards) delete collapsed[card.id];
-      safeSetJSON("collapsedCards", collapsed);
       removeAccountDrafts(account.id);
       // Fall through to the next account instead of a blank screen
       if (remaining.length > 0) {
@@ -1867,13 +1940,21 @@ function App() {
     } else {
       flushDraftSave();
     }
+    // Drafts keep text only; attachments stay one Reopen away
+    const attachmentNames = fields.attachmentNames?.join(", ");
+    const reopen = reopenComposeAction(key, fields);
     setClosingCompose(true);
     if (!keep) {
       drafts.clear(key, accountId);
+      if (attachmentNames) showToast(`Closed an email with ${attachmentNames}`, reopen);
     } else {
       markDraftClosed(key);
       drafts.detach();
       const offerDiscard = (message: string) => {
+        if (attachmentNames) {
+          showToast(`${message} without ${attachmentNames}`, reopen);
+          return;
+        }
         showToast(message, {
           label: "Discard",
           run: () => {
@@ -1887,7 +1968,6 @@ function App() {
       if (storedHere) {
         offerDiscard("Draft saved");
       } else {
-        const reopen = reopenComposeAction(key, fields);
         (synced ?? Promise.resolve(false)).then(inGmail => {
           if (inGmail) offerDiscard("Draft saved in Gmail");
           else showToast("Couldn't save the draft", reopen);
@@ -1897,7 +1977,7 @@ function App() {
     closeComposeTimeout = window.setTimeout(resetCompose, 200);
   }
 
-  // Puts a closed compose back as it was, for when its draft could not be saved
+  // Puts a closed compose back as it was, attachments included
   function reopenComposeAction(key: string, fields: DraftFields) {
     const init = {
       ...fields,
@@ -1909,15 +1989,9 @@ function App() {
       signature: false,
       accountId: composeAccount()?.id,
       draftKey: key,
+      attachments: composeAttachments(),
     };
-    const attachments = composeAttachments();
-    return {
-      label: "Reopen",
-      run: () => {
-        startCompose(init);
-        setComposeAttachments(attachments);
-      },
-    };
+    return { label: "Reopen", run: () => startCompose(init) };
   }
 
   // A sent email's draft stays saved until the send goes out
@@ -1947,6 +2021,7 @@ function App() {
     accountId?: string;
     // Continue this saved draft instead of looking for one
     draftKey?: string;
+    attachments?: SendAttachment[];
   }) {
     if (composing() || closingCompose()) resetCompose();
     const accountId = init.accountId ?? selectedAccount()?.id;
@@ -1962,10 +2037,13 @@ function App() {
     composeDraftKey = init.draftKey ?? saved?.key ?? sessionDraftKey(group);
     // A draft being continued is the user's own text
     composeEdited = !!(init.draftKey || saved);
-    if (init.draftKey || saved) drafts.load(composeDraftKey);
+    const continued = init.draftKey || saved ? drafts.load(composeDraftKey) : null;
     if (composeDraftKey === discardToastDraftKey && toast()?.visible) hideToast();
+    const lostAttachments = init.attachments ? [] : continued?.attachmentNames ?? [];
+    if (lostAttachments.length > 0) showToast(`Attach again: ${lostAttachments.join(", ")}`);
     const fields = saved?.draft ?? init;
     batch(() => {
+      setComposeAttachments(init.attachments ?? []);
       setReplyingToEvent(init.replyEvent ?? null);
       setForwardingEvent(init.forwardEvent ?? null);
       setReplyingToThread(init.reply ?? null);
@@ -2138,6 +2216,7 @@ function App() {
       body: composeBody(),
       attachments: [...composeAttachments()],
       reply: replyingToThread() ? { ...replyingToThread()! } : undefined,
+      forward: forwardingThread() ? { ...forwardingThread()! } : undefined,
       isHtml: composeIsHtml(),
     };
 
@@ -2155,10 +2234,6 @@ function App() {
   // Compose closed when the send was queued, so an undone or failed send puts
   // the email back, continuing its saved draft
   function restoreSend(pending: PendingSend) {
-    if (pending.draft) {
-      sendingDraftKeys.delete(pending.draft.key);
-      markDraftSending(pending.draft.key, null);
-    }
     startCompose({
       to: pending.to,
       cc: pending.cc,
@@ -2167,11 +2242,12 @@ function App() {
       body: pending.body,
       isHtml: pending.isHtml,
       reply: pending.reply,
+      forward: pending.forward,
       signature: false,
       accountId: pending.accountId,
       draftKey: pending.draft?.key,
+      attachments: pending.attachments,
     });
-    setComposeAttachments(pending.attachments);
     setComposeAccount(accounts().find(a => a.id === pending.accountId) ?? null);
   }
 
@@ -2191,7 +2267,8 @@ function App() {
           bcc: draft.bcc,
           subject: draft.subject,
           body: draft.body,
-          reply: draft.threadId ? { threadId: draft.threadId } : undefined,
+          reply: draft.threadId ? { threadId: draft.threadId, messageId: draft.replyMessageId } : undefined,
+          forward: draft.forwardThreadId ? { threadId: draft.forwardThreadId, subject: draft.subject, body: draft.body } : undefined,
           signature: false,
           accountId: draft.accountId,
           draftKey: key,
@@ -2203,7 +2280,11 @@ function App() {
 
   function undoSend() {
     const pending = undoableSend.undo();
-    if (pending) restoreSend(pending);
+    if (pending) putBackSend(pending, `"${pending.subject || "(no subject)"}" wasn't sent`);
+  }
+
+  function openMailto(mailto: MailtoData) {
+    openComposeUnlessBusy(`New email to ${mailto.to || "(no recipient)"}`, () => startCompose(mailto));
   }
 
   async function handleQuickReply() {
@@ -2318,6 +2399,7 @@ function App() {
     let to = '';
     let cc = '';
     let body = thread.snippet;
+    let previewOnly = false;
     const account = selectedAccount();
     if (account) {
       try {
@@ -2332,6 +2414,8 @@ function App() {
         }
       } catch (e) {
         console.error("Failed to fetch thread for forward:", e);
+        previewOnly = true;
+        noteBackgroundError(account.id, e);
       }
     }
     const quotedBody = buildForwardBody({ from, date, subject: thread.subject, to, cc, body });
@@ -2341,6 +2425,7 @@ function App() {
       body: quotedBody,
       forward: { threadId, subject: fwdSubject, body: quotedBody },
     });
+    if (previewOnly) showToast("Couldn't load the whole email, so only its preview is quoted");
   }
 
   function handleReplyFromThread(to: string, cc: string, subject: string, quotedBody: string, messageId: string | undefined, isHtml: boolean) {
@@ -2406,6 +2491,10 @@ function App() {
   }
 
   const labelNames = createMemo(() => Object.fromEntries(accountLabels().map(l => [l.id, l.name])));
+  const filteredLabels = createMemo(() => {
+    const query = labelSearchQuery().toLowerCase();
+    return query ? accountLabels().filter(l => l.name.toLowerCase().includes(query)) : accountLabels();
+  });
 
   // "Group by label" shows label names, and a card query completes label:
   // from them; only the label list carries them
@@ -2456,7 +2545,7 @@ function App() {
     for (const [cId, events] of Object.entries(cardCalendarEvents)) {
       if (!events?.some(e => e.id === eventId)) continue;
       const next = events.flatMap(e => (e.id === eventId ? update(e) ?? [] : [e]));
-      setCardCalendarEvents(cId, next);
+      setCardCalendarEvents(cId, reconcile(next, { key: "id" }));
       saveCachedCardEvents(cId, next).catch(e => console.warn("Failed to update event cache:", e));
     }
   }
@@ -2601,6 +2690,8 @@ function App() {
 
     const request = ++batchReplyRequest;
     setBatchReplyLoading(true);
+    setBatchReplyError(null);
+    setBatchReplyCidData({});
     setBatchReplyOpen(true);
     setBatchReplyCardId(cardId);
     setBatchReplyMessages({});
@@ -2610,21 +2701,43 @@ function App() {
       const results = await Promise.allSettled(threadIds.map(async threadId =>
         batchReplyEntry(threadId, (await getThreadDetails(account.id, threadId)).messages ?? [], account.email)
       ));
+      if (request !== batchReplyRequest) return;
 
       const threads = results
         .filter((r): r is PromiseFulfilledResult<BatchReplyThread | null> => r.status === 'fulfilled')
         .map(r => r.value)
         .filter((t): t is BatchReplyThread => t !== null);
+      setBatchReplyThreads(threads);
+      for (const t of threads) fetchBatchReplyCidImages(account.id, t, request);
 
-      if (request === batchReplyRequest) setBatchReplyThreads(threads);
+      const failures = results.filter((r): r is PromiseRejectedResult => r.status === 'rejected');
+      if (failures.length === 0) return;
+      noteBackgroundError(account.id, failures[0].reason);
+      if (failures.length === results.length) {
+        setBatchReplyError({ message: batchReplyLoadErrorMessage(failures[0].reason), threadIds });
+      } else {
+        showToast(`Couldn't load ${failures.length} of ${results.length} emails`);
+      }
     } finally {
       if (request === batchReplyRequest) setBatchReplyLoading(false);
     }
   }
 
+  async function fetchBatchReplyCidImages(accountId: string, thread: BatchReplyThread, request: number) {
+    const refs = cidImagesToFetch({ id: thread.threadId, messages: [{ id: thread.messageId, threadId: thread.threadId, payload: { mimeType: "", parts: thread.parts } }] });
+    if (refs.length === 0) return;
+    const data = await fetchCidImages(refs, ({ messageId, attachmentId, cid }) =>
+      cidImageCache.getOrLoad(`${accountId}:${messageId}:${cid}`, () => downloadAttachmentApi(accountId, messageId, attachmentId)));
+    if (request === batchReplyRequest && Object.keys(data).length > 0) {
+      setBatchReplyCidData(prev => ({ ...prev, [thread.threadId]: data }));
+    }
+  }
+
   function closeBatchReply() {
     batchReplyRequest++;
+    setBatchReplyCidData({});
     setBatchReplyLoading(false);
+    setBatchReplyError(null);
     setBatchReplyOpen(false);
     setBatchReplyCardId(null);
     setBatchReplyThreads([]);
@@ -2633,14 +2746,20 @@ function App() {
     setBatchReplyAttachments({});
   }
 
-  // Closing by hand throws away typed replies, so ask first
-  function confirmDiscardBatchReplies(): boolean {
+  function unsentBatchReplies(): string | null {
     const unsent = Object.values(batchReplyMessages()).filter(m => m.trim()).length;
-    return unsent === 0 || confirm(`Discard ${unsent} unsent repl${unsent === 1 ? "y" : "ies"}?`);
+    return unsent === 0 ? null : `${unsent} unsent repl${unsent === 1 ? "y" : "ies"}`;
   }
 
-  function dismissBatchReply() {
-    if (confirmDiscardBatchReplies()) closeBatchReply();
+  // Closing by hand throws away typed replies, so ask first
+  async function confirmDiscardBatchReplies(): Promise<boolean> {
+    const unsent = unsentBatchReplies();
+    return !unsent || askConfirm(`Discard ${unsent}?`, "Discard");
+  }
+
+  async function dismissBatchReply() {
+    const request = batchReplyRequest;
+    if (await confirmDiscardBatchReplies() && request === batchReplyRequest) closeBatchReply();
   }
 
   function updateBatchReplyMessage(threadId: string, message: string) {
@@ -2670,31 +2789,37 @@ function App() {
     });
   }
 
-  function discardBatchReplyThread(threadId: string) {
-    setBatchReplyThreads(batchReplyThreads().filter(t => t.threadId !== threadId));
-    const newMessages = { ...batchReplyMessages() };
-    delete newMessages[threadId];
-    setBatchReplyMessages(newMessages);
-    const newAttachments = { ...batchReplyAttachments() };
-    delete newAttachments[threadId];
-    setBatchReplyAttachments(newAttachments);
-
-    // Close if no more threads (the list above was already filtered)
-    if (batchReplyThreads().length === 0) {
-      closeBatchReply();
-    }
+  // Drops a thread from the panel; returns whether any are left
+  function removeBatchReplyThread(threadId: string): boolean {
+    const without = <T,>(record: Record<string, T>) => {
+      const rest = { ...record };
+      delete rest[threadId];
+      return rest;
+    };
+    batch(() => {
+      setBatchReplyThreads(batchReplyThreads().filter(t => t.threadId !== threadId));
+      setBatchReplyMessages(without(batchReplyMessages()));
+      setBatchReplyAttachments(without(batchReplyAttachments()));
+    });
+    return batchReplyThreads().length > 0;
   }
 
-  async function sendBatchReply(threadId: string) {
+  function discardBatchReplyThread(threadId: string) {
+    if (!removeBatchReplyThread(threadId)) closeBatchReply();
+  }
+
+  // Resolves false if the reply couldn't be sent. `quiet` leaves saying so
+  // to Send All, which reports every failure at once.
+  async function sendBatchReply(threadId: string, { quiet = false } = {}): Promise<boolean> {
     const account = selectedAccount();
     const thread = batchReplyThreads().find(t => t.threadId === threadId);
     const message = batchReplyMessages()[threadId];
     const attachments = batchReplyAttachments()[threadId] || [];
 
-    if (!account || !thread || !message?.trim()) return;
+    if (!account || !thread || !message?.trim()) return true;
     if (!thread.to) {
-      showToast(`No one to reply to in "${thread.subject}"`);
-      return;
+      if (!quiet) showToast(`No one to reply to in "${thread.subject}"`);
+      return false;
     }
 
     setBatchReplySending({ ...batchReplySending(), [threadId]: true });
@@ -2703,45 +2828,28 @@ function App() {
       const replySubject = addReplyPrefix(thread.subject);
       await replyToThread(account.id, threadId, thread.to, "", "", replySubject, message + signatureBlock(account.signature), thread.messageId, attachments, false);
 
-      // Remove from batch reply list
-      setBatchReplyThreads(batchReplyThreads().filter(t => t.threadId !== threadId));
-      const newMessages = { ...batchReplyMessages() };
-      delete newMessages[threadId];
-      setBatchReplyMessages(newMessages);
-      const newAttachments = { ...batchReplyAttachments() };
-      delete newAttachments[threadId];
-      setBatchReplyAttachments(newAttachments);
-
-      // Refresh the card
       const cardId = batchReplyCardId();
-      if (cardId) {
-        fetchAndCacheThreads(account.id, cardId);
-      }
-
-      // Close if no more threads (the list above was already filtered)
-      if (batchReplyThreads().length === 0) {
+      if (cardId) fetchAndCacheThreads(account.id, cardId);
+      if (!removeBatchReplyThread(threadId)) {
         closeBatchReply();
-        // Clear selection
-        if (cardId) {
-          setSelectedThreads({ ...selectedThreads(), [cardId]: new Set() });
-        }
+        if (cardId) setSelectedThreads({ ...selectedThreads(), [cardId]: new Set() });
       }
+      return true;
     } catch (e) {
       console.error('Failed to send reply:', e);
-      showToast(`Failed to send: ${e}`);
+      if (!quiet) showToast(`Failed to send: ${e}`);
+      return false;
     } finally {
       setBatchReplySending({ ...batchReplySending(), [threadId]: false });
     }
   }
 
   async function sendAllBatchReplies() {
-    const threads = batchReplyThreads();
     const messages = batchReplyMessages();
-
-    // Only send threads that have messages
-    const toSend = threads.filter(t => messages[t.threadId]?.trim());
-
-    await Promise.allSettled(toSend.map(thread => sendBatchReply(thread.threadId)));
+    const toSend = batchReplyThreads().filter(t => messages[t.threadId]?.trim());
+    const sent = await Promise.all(toSend.map(thread => sendBatchReply(thread.threadId, { quiet: true })));
+    const failed = sent.filter(ok => !ok).length;
+    if (failed > 0) showToast(`Couldn't send ${failed} of ${toSend.length} replies; they're still here to try again`);
   }
 
   function saveCollapsedState(collapsed: Record<string, boolean>) {
@@ -2768,6 +2876,7 @@ function App() {
     setQueryPreviewCalendarEvents([]);
     setQueryPreviewLoading(false);
     setEditingCardId(card.id);
+    editCardStart = { name: card.name, query: card.query, color: card.color || null, group_by: card.group_by || "date" };
     setEditCardName(card.name);
     setEditCardQuery(card.query);
     setEditCardColor((card.color as CardColor) || null);
@@ -2782,18 +2891,18 @@ function App() {
     const card = cards().find(c => c.id === cardId);
     if (!card) return;
 
-    const queryChanged = card.query !== editCardQuery();
+    // The editor's fields already follow pulled changes the user hasn't
+    // overridden (followPulledCardInEditor)
+    const newQuery = editCardQuery();
+    const queryChanged = card.query !== newQuery;
 
     try {
-      // Detect card type from query
-      const newQuery = editCardQuery();
-      const cardType = cardTypeForQuery(newQuery);
       const updatedCard: Card = {
         ...card,
         name: editCardName(),
         query: newQuery,
         color: editCardColor() || null,
-        card_type: cardType,
+        card_type: cardTypeForQuery(newQuery),
         group_by: editCardGroupBy(),
       };
       await updateCard(updatedCard);
@@ -2813,6 +2922,20 @@ function App() {
     } catch (e) {
       setError(`Couldn't save the card: ${e}`);
     }
+  }
+
+  // The open editor shows a pulled change to any field the user hasn't touched
+  function followPulledCardInEditor() {
+    const card = cards().find(c => c.id === editingCardId());
+    const start = editCardStart;
+    if (!card || !start) return;
+    batch(() => {
+      if (editCardName() === start.name) setEditCardName(card.name);
+      if (editCardQuery() === start.query) setEditCardQuery(card.query);
+      if ((editCardColor() || null) === (start.color || null)) setEditCardColor((card.color as CardColor) || null);
+      if (editCardGroupBy() === start.group_by) setEditCardGroupBy(card.group_by || "date");
+    });
+    editCardStart = { name: card.name, query: card.query, color: card.color || null, group_by: card.group_by || "date" };
   }
 
   function cancelEditCard() {
@@ -2847,7 +2970,7 @@ function App() {
 
   async function handleDeleteCard(cardId: string) {
     const name = cards().find(c => c.id === cardId)?.name || "Untitled";
-    if (!confirm(`Delete the card "${name}"? This can't be undone.`)) return;
+    if (!(await askConfirm(`Delete the card "${name}"? This can't be undone.`, "Delete"))) return;
     try {
       await deleteCard(cardId);
       setCards(cards().filter(c => c.id !== cardId));
@@ -2925,7 +3048,13 @@ function App() {
 
   async function switchAccount(account: Account) {
     if (selectedAccount()?.id === account.id) return;
-    if (batchReplyOpen() && !confirmDiscardBatchReplies()) return;
+    // Leaving the account closes its views; typed text in them is kept nowhere
+    const lost = [
+      batchReplyOpen() ? unsentBatchReplies() : null,
+      quickReply().text.trim() ? "your quick reply" : null,
+    ].filter((what): what is string => !!what);
+    if (lost.length > 0 && !(await askConfirm(`Discard ${lost.join(" and ")}?`, "Discard"))) return;
+    if (selectedAccount()?.id === account.id) return;
 
     closeAccountViews();
     // The banner speaks for the account being left; an expired session
@@ -2942,10 +3071,11 @@ function App() {
   // What each card's thread cache was last read or written as, and when. A
   // refresh that brings back the same groups (inline images and all) skips
   // sending them across again, but not for long: the cache's time is what
-  // "Last synced" shows at the next start.
+  // "Last synced" shows at the next start. Kept as a fingerprint: a card's
+  // groups carry inline thumbnails and can run to megabytes.
   const knownCardCache: Record<string, { snapshot: string; at: number }> = {};
   const CACHE_REWRITE_MS = 5 * 60 * 1000;
-  const cacheSnapshot = (groups: ThreadGroup[], pageToken: string | null) => JSON.stringify([groups, pageToken]);
+  const cacheSnapshot = (groups: ThreadGroup[], pageToken: string | null) => fingerprint(JSON.stringify([groups, pageToken]));
 
   function saveCardCache(cardId: string, groups: ThreadGroup[], pageToken: string | null): Promise<void> {
     const snapshot = cacheSnapshot(groups, pageToken);
@@ -3071,7 +3201,7 @@ function App() {
         if (stale()) return;
         if (cached && cached.events.length > 0) {
           // Show cached data immediately
-          setCardCalendarEvents(cardId, cached.events);
+          setCardCalendarEvents(cardId, reconcile(cached.events, { key: "id" }));
           // cached_at is in seconds
           setLastSyncTimes(cardId, cached.cached_at * 1000);
           setLoadingThreads(cardId, false);
@@ -3096,7 +3226,7 @@ function App() {
   function handleCardLoadError(cardId: string, e: unknown) {
     const errorMsg = String(e);
     if (!isSessionExpiredError(errorMsg)) {
-      setCardErrors(cardId, errorMsg);
+      setCardErrors(cardId, cardLoadErrorMessage(errorMsg, isCalendarCard(cardId)));
       setSyncErrors(cardId, errorMsg);
       return;
     }
@@ -3133,7 +3263,7 @@ function App() {
     try {
       const events = await fetchCalendarEvents(accountId, query);
       if (selectedAccount()?.id !== accountId || cardQueryChanged(cardId, query)) return;
-      setCardCalendarEvents(cardId, events);
+      setCardCalendarEvents(cardId, reconcile(events, { key: "id" }));
       await saveCachedCardEvents(cardId, events);
       setLastSyncTimes(cardId, Date.now());
       setSyncErrors(cardId, null);
@@ -3249,34 +3379,10 @@ function App() {
   function selectBgColor(colorIndex: number | null) {
     setSelectedBgColorIndex(colorIndex);
     setBgColorPickerOpen(false);
-    applyBgColor(colorIndex);
     if (colorIndex !== null) {
       safeSetItem("bgColorIndex", String(colorIndex));
     } else {
       safeRemoveItem("bgColorIndex");
-    }
-  }
-
-  function applyBgColor(colorIndex: number | null) {
-    const deck = document.querySelector(".deck") as HTMLElement;
-    if (!deck) return;
-
-    if (colorIndex === null) {
-      deck.style.background = "";
-      delete deck.dataset.bgLight;
-      delete deck.dataset.bgDark;
-      document.documentElement.style.setProperty("--accent", "#4285f4");
-      document.documentElement.style.removeProperty("--app-bg");
-    } else {
-      const color = BG_COLORS[colorIndex];
-      if (!color) return;
-      const isDark = window.matchMedia?.("(prefers-color-scheme: dark)").matches;
-      const bgColor = isDark ? color.dark : color.light;
-      deck.style.background = bgColor;
-      deck.dataset.bgLight = color.light;
-      deck.dataset.bgDark = color.dark;
-      document.documentElement.style.setProperty("--accent", color.hex);
-      document.documentElement.style.setProperty("--app-bg", bgColor);
     }
   }
 
@@ -3324,7 +3430,7 @@ function App() {
     const events = isPreviewingQuery(cardId) ? queryPreviewCalendarEvents() : cardCalendarEvents[cardId];
     if (!events) return [];
     const groupBy = getGroupByForCard(cardId);
-    let groups = groupCalendarEvents(events, groupBy);
+    let groups = groupCalendarEvents(events, groupBy, new Date(today()));
 
     // Apply global filter
     const filter = globalFilter().toLowerCase().trim();
@@ -3514,8 +3620,10 @@ function App() {
   async function fetchCidAttachments(accountId: string, thread: FullThread) {
     const refs = cidImagesToFetch(thread);
     if (refs.length === 0) return;
-    const data = await fetchCidImages(refs, (messageId, attachmentId) =>
-      cidImageCache.getOrLoad(`${accountId}:${messageId}:${attachmentId}`, () => downloadAttachmentApi(accountId, messageId, attachmentId)));
+    // Keyed by content id: Gmail may give the same part a new attachment id
+    // on every fetch
+    const data = await fetchCidImages(refs, ({ messageId, attachmentId, cid }) =>
+      cidImageCache.getOrLoad(`${accountId}:${messageId}:${cid}`, () => downloadAttachmentApi(accountId, messageId, attachmentId)));
     if (Object.keys(data).length > 0 && activeThreadId() === thread.id) {
       setCidAttachmentData(prev => ({ ...prev, ...data }));
     }
@@ -3533,6 +3641,7 @@ function App() {
     setReplyingToEvent(null);
     setForwardingEvent(null);
     setCalendarDrawerOpen(false);
+    if (eventForm().editing && !creatingEvent()) setEventForm(defaultEventForm());
     if (wasComposing) {
       closeCompose();
     }
@@ -3625,9 +3734,11 @@ function App() {
     // Confirm destructive bulk actions
     if (threadIds.length > 1 && (action === 'archive' || action === 'trash' || action === 'spam')) {
       const actionText = action === 'trash' ? 'delete' : action === 'spam' ? 'move to spam' : 'archive';
-      if (!confirm(`${actionText.charAt(0).toUpperCase() + actionText.slice(1)} ${threadIds.length} threads?`)) {
+      const verb = actionText.charAt(0).toUpperCase() + actionText.slice(1);
+      if (!(await askConfirm(`${verb} ${threadIds.length} threads?`, verb))) {
         return;
       }
+      if (selectedAccount()?.id !== account.id) return;
     }
 
     const { add: addLabels, remove: removeLabels } = labelChangeFor(action);
@@ -3699,92 +3810,33 @@ function App() {
     // Show actions on the selected thread
     setHoveredThread(threadId);
     setActionsWheelOpen(true);
-
-    const currentMap = new Set(selectedThreads()[cardId] || []);
-    const isSelected = currentMap.has(threadId);
-
-    // Shift+Click Logic for range selection
-    if (e?.shiftKey && lastSelectedThread()[cardId]) {
-      const lastId = lastSelectedThread()[cardId]!;
-      const displayGroups = getDisplayGroups(cardId);
-      const allThreads = displayGroups.flatMap(g => g.threads);
-
-      const currentIndex = allThreads.findIndex(t => t.gmail_thread_id === threadId);
-      const lastIndex = allThreads.findIndex(t => t.gmail_thread_id === lastId);
-
-      if (currentIndex !== -1 && lastIndex !== -1) {
-        const start = Math.min(currentIndex, lastIndex);
-        const end = Math.max(currentIndex, lastIndex);
-
-        // Add all threads in range to selection
-        const threadsInRange = allThreads.slice(start, end + 1);
-        threadsInRange.forEach(t => currentMap.add(t.gmail_thread_id));
-
-        setSelectedThreads({ ...selectedThreads(), [cardId]: currentMap });
-        // Don't update lastSelectedThread during shift-click to rely on pivot
-        return;
-      }
-    }
-
-    // Toggle selection
-    if (isSelected) {
-      currentMap.delete(threadId);
-    } else {
-      currentMap.add(threadId);
-      setLastSelectedThread({ ...lastSelectedThread(), [cardId]: threadId });
-    }
-
-    setSelectedThreads({ ...selectedThreads(), [cardId]: currentMap });
+    const ids = getDisplayGroups(cardId).flatMap(g => g.threads.map(t => t.gmail_thread_id));
+    const next = nextSelection(ids, selectedThreads()[cardId] ?? new Set(), lastSelectedThread()[cardId] ?? null, threadId, !!e?.shiftKey);
+    setSelectedThreads({ ...selectedThreads(), [cardId]: next.selected });
+    setLastSelectedThread({ ...lastSelectedThread(), [cardId]: next.pivot });
   }
 
   function toggleEventSelection(cardId: string, eventId: string, e?: MouseEvent) {
     // Show actions on the selected event
     setHoveredEvent(eventId);
     setEventActionsWheelOpen(true);
-
-    const currentMap = new Set(selectedEvents()[cardId] || []);
-    const isSelected = currentMap.has(eventId);
-
-    // Shift+Click Logic for range selection
-    if (e?.shiftKey && lastSelectedEvent()[cardId]) {
-      const lastId = lastSelectedEvent()[cardId]!;
-      const eventGroups = getCalendarEventGroups(cardId);
-      const allEvents = eventGroups.flatMap(g => g.events);
-
-      const currentIndex = allEvents.findIndex(ev => ev.id === eventId);
-      const lastIndex = allEvents.findIndex(ev => ev.id === lastId);
-
-      if (currentIndex !== -1 && lastIndex !== -1) {
-        const start = Math.min(currentIndex, lastIndex);
-        const end = Math.max(currentIndex, lastIndex);
-
-        // Add all events in range to selection
-        const eventsInRange = allEvents.slice(start, end + 1);
-        eventsInRange.forEach(ev => currentMap.add(ev.id));
-
-        setSelectedEvents({ ...selectedEvents(), [cardId]: currentMap });
-        return;
-      }
-    }
-
-    // Toggle selection
-    if (isSelected) {
-      currentMap.delete(eventId);
-    } else {
-      currentMap.add(eventId);
-      setLastSelectedEvent({ ...lastSelectedEvent(), [cardId]: eventId });
-    }
-
-    setSelectedEvents({ ...selectedEvents(), [cardId]: currentMap });
+    const ids = getCalendarEventGroups(cardId).flatMap(g => g.events.map(ev => ev.id));
+    const next = nextSelection(ids, selectedEvents()[cardId] ?? new Set(), lastSelectedEvent()[cardId] ?? null, eventId, !!e?.shiftKey);
+    setSelectedEvents({ ...selectedEvents(), [cardId]: next.selected });
+    setLastSelectedEvent({ ...lastSelectedEvent(), [cardId]: next.pivot });
   }
 
-  const rankedContacts = createMemo(() => rankContacts(
+  // Ranking reads every loaded thread; only rank while something shows
+  // contacts, so mail changes don't re-sort them in the background
+  const contactsWanted = () => composeFabHovered() || (composing() && !closingCompose()) || addingCard() || editingCardId() !== null;
+  const rankedContacts = createMemo(() => contactsWanted() ? rankContacts(
     googleContacts(),
     Object.values(cardThreads).flatMap(groups => groups.flatMap(g => g.threads)),
     selectedAccount()?.email,
     Date.now(),
-  ));
-  const contactCandidates = () => rankedContacts().slice(0, 8);
+  ) : []);
+  // Kept while the suggestions fade out after the pointer leaves
+  const fabSuggestions = createMemo<RecentContact[]>(shown => composeFabHovered() ? rankedContacts().slice(0, 5) : shown, []);
 
   function selectContact(email: string) {
     setComposeTo(completeRecipient(composeTo(), email));
@@ -3855,9 +3907,9 @@ function App() {
                 >
                   <ComposeIcon />
                 </button>
-                <Show when={contactCandidates().length > 0}>
+                <Show when={fabSuggestions().length > 0}>
                   <div class={`compose-suggestions ${composeFabHovered() ? 'visible' : ''}`}>
-                    <For each={contactCandidates().slice(0, 5)}>
+                    <For each={fabSuggestions()}>
                       {(contact) => {
                         const writeTo = () => {
                           startCompose({ to: contact.email, focusBody: true });
@@ -3885,7 +3937,7 @@ function App() {
               </div>
               <button
                 class="new-event-btn"
-                onClick={() => { resetEventFormToNow(); setCreatingEvent(true); }}
+                onClick={openNewEventForm}
                 title="New event (E)"
                 aria-label="Create new calendar event"
               >
@@ -4051,7 +4103,7 @@ function App() {
       <Show when={!loading() && selectedAccount()}>
         <DragDropProvider onDragStart={onDragStart} onDragEnd={onDragEnd as any} collisionDetector={mostIntersecting}>
           <DragDropSensors />
-          <div class={`deck ${resizing() ? 'resizing' : ''}`}>
+          <div class={`deck ${resizing() ? 'resizing' : ''}`} style={{ background: deckBackground() }}>
             <SortableProvider ids={cardIds()}>
               <For each={cards()}>
                 {(card) => {
@@ -4189,11 +4241,11 @@ function App() {
                             <Show when={getCalendarEventGroups(card.id).length === 0 && !(isPreviewingQuery(card.id) && queryPreviewLoading())}>
                               <div class="empty">No events</div>
                             </Show>
-                            <For each={getCalendarEventGroups(card.id)}>
+                            <Index each={getCalendarEventGroups(card.id)}>
                               {(group) => (
                                 <>
-                                  <div class="date-header">{group.label}</div>
-                                  <For each={group.events}>
+                                  <div class="date-header">{group().label}</div>
+                                  <For each={group().events}>
                                     {(event) => (
                                       <>
                                       <div
@@ -4305,7 +4357,7 @@ function App() {
                                   </For>
                                 </>
                               )}
-                            </For>
+                            </Index>
                           </Show>
 
                           {/* Email card: show threads */}
@@ -4319,12 +4371,13 @@ function App() {
                                   <div class="date-header">{group().label}</div>
                                   <For each={group().threads}>
                                     {(thread) => {
-                                      // Load RSVP status once per invite row (guarded inside fetchRsvpStatus)
+                                      // An event that is over needs no answer
                                       createEffect(() => {
-                                        const uid = thread.calendar_event?.uid;
-                                        if (thread.calendar_event?.method === "REQUEST" && uid) {
-                                          fetchRsvpStatus(thread.gmail_thread_id, uid);
-                                        }
+                                        const invite = thread.calendar_event;
+                                        const account = selectedAccount();
+                                        if (!account || invite?.method !== "REQUEST" || !invite.uid) return;
+                                        if ((invite.end_time ?? invite.start_time) < Date.now()) return;
+                                        rsvpLookups.request(account.id, invite.uid);
                                       });
                                       return (
                                       <>
@@ -4352,7 +4405,7 @@ function App() {
                                                 <AttachmentIcon />
                                               </span>
                                             </Show>
-                                            <span class="thread-time">{formatTime(thread.last_message_date)}</span>
+                                            <span class="thread-time">{threadTime(thread.last_message_date)}</span>
                                           </div>
                                           {/* Calendar event preview */}
                                           <Show when={thread.calendar_event}>
@@ -4370,17 +4423,17 @@ function App() {
                                               <Show when={thread.calendar_event!.method === "REQUEST" && thread.calendar_event!.uid}>
                                                 <div class="calendar-rsvp" onClick={(e) => e.stopPropagation()}>
                                                   <button
-                                                    class={rsvpStatus[thread.gmail_thread_id] === "accepted" ? "selected" : ""}
+                                                    class={inviteRsvp(thread.calendar_event!.uid) === "accepted" ? "selected" : ""}
                                                     disabled={rsvpLoading[thread.gmail_thread_id]}
                                                     onClick={() => handleRsvp(thread.gmail_thread_id, thread.calendar_event!.uid, "accepted")}
                                                   >Yes</button>
                                                   <button
-                                                    class={rsvpStatus[thread.gmail_thread_id] === "tentative" ? "selected" : ""}
+                                                    class={inviteRsvp(thread.calendar_event!.uid) === "tentative" ? "selected" : ""}
                                                     disabled={rsvpLoading[thread.gmail_thread_id]}
                                                     onClick={() => handleRsvp(thread.gmail_thread_id, thread.calendar_event!.uid, "tentative")}
                                                   >Maybe</button>
                                                   <button
-                                                    class={rsvpStatus[thread.gmail_thread_id] === "declined" ? "selected" : ""}
+                                                    class={inviteRsvp(thread.calendar_event!.uid) === "declined" ? "selected" : ""}
                                                     disabled={rsvpLoading[thread.gmail_thread_id]}
                                                     onClick={() => handleRsvp(thread.gmail_thread_id, thread.calendar_event!.uid, "declined")}
                                                   >No</button>
@@ -4598,7 +4651,7 @@ function App() {
                       <Show when={queryPreviewCalendarEvents().length === 0}>
                         <div class="empty">No events</div>
                       </Show>
-                      <For each={groupCalendarEvents(queryPreviewCalendarEvents(), newCardGroupBy())}>
+                      <For each={groupCalendarEvents(queryPreviewCalendarEvents().slice(0, NEW_CARD_PREVIEW_EVENTS), newCardGroupBy())}>
                         {(group) => (
                           <>
                             <div class="date-header">{group.label}</div>
@@ -4631,6 +4684,9 @@ function App() {
                           </>
                         )}
                       </For>
+                      <Show when={queryPreviewCalendarEvents().length > NEW_CARD_PREVIEW_EVENTS}>
+                        <div class="empty">+{queryPreviewCalendarEvents().length - NEW_CARD_PREVIEW_EVENTS} more</div>
+                      </Show>
                     </Show>
                     {/* Email threads preview */}
                     <Show when={!queryPreviewLoading() && queryPreviewThreads().length === 0 && newCardQuery().trim() && cardTypeForQuery(newCardQuery()) !== "calendar"}>
@@ -4654,7 +4710,7 @@ function App() {
                                         <AttachmentIcon />
                                       </span>
                                     </Show>
-                                    <span class="thread-time">{formatTime(thread.last_message_date)}</span>
+                                    <span class="thread-time">{threadTime(thread.last_message_date)}</span>
                                   </div>
                                   <div class="thread-snippet">{decodeHtmlEntities(thread.snippet)}</div>
                                   <Show when={thread.attachments?.length > 0}>
@@ -4746,7 +4802,7 @@ function App() {
       <Show when={creatingEvent()}>
         <CreateEventForm
           closing={eventForm().closing}
-          onClose={closeEventForm}
+          onClose={dismissEventForm}
           summary={eventForm().summary}
           setSummary={(v: string) => setEventForm(f => ({ ...f, summary: v }))}
           description={eventForm().description}
@@ -4902,9 +4958,7 @@ function App() {
               </Show>
 
               <Show when={!labelsLoading()}>
-                <For each={accountLabels().filter(l =>
-                  !labelSearchQuery() || l.name.toLowerCase().includes(labelSearchQuery().toLowerCase())
-                )}>
+                <For each={filteredLabels()}>
                   {(label) => {
                     const isApplied = () => getCurrentThreadLabels().includes(label.id);
                     const isSystem = () => label.label_type !== 'user';
@@ -4931,9 +4985,7 @@ function App() {
                     <button class="retry-btn" onClick={() => fetchAccountLabels()}>Try again</button>
                   </div>
                 </Show>
-                <Show when={!labelsLoading() && !labelsFailed() && accountLabels().filter(l =>
-                  !labelSearchQuery() || l.name.toLowerCase().includes(labelSearchQuery().toLowerCase())
-                ).length === 0}>
+                <Show when={!labelsLoading() && !labelsFailed() && filteredLabels().length === 0}>
                   <div class="label-drawer-empty">No labels found</div>
                 </Show>
               </Show>
@@ -5060,7 +5112,7 @@ function App() {
             occurrenceOnly: !!activeEvent()!.recurring_event_id,
             saving: eventForm().saving,
             onSave: handleCreateEvent,
-            onClose: () => setEventForm(f => ({ ...f, editing: null })),
+            onClose: () => setEventForm(defaultEventForm()),
             error: eventForm().error,
             resizing: inlineResizing(),
             onResizeStart: handleInlineResizeStart,
@@ -5099,7 +5151,15 @@ function App() {
                 Loading threads...
               </div>
             </Show>
-            <Show when={!batchReplyLoading() && batchReplyThreads().length === 0}>
+            <Show when={!batchReplyLoading() && batchReplyError()}>
+              {(failed) => (
+                <div class="batch-reply-empty" role="alert">
+                  {failed().message}{" "}
+                  <button class="retry-btn" onClick={() => startBatchReply(batchReplyCardId() ?? "", failed().threadIds)}>Try again</button>
+                </div>
+              )}
+            </Show>
+            <Show when={!batchReplyLoading() && !batchReplyError() && batchReplyThreads().length === 0}>
               <div class="batch-reply-empty">No threads to reply to</div>
             </Show>
             <div class="messages-list">
@@ -5114,7 +5174,12 @@ function App() {
                         </div>
                       </div>
                       <div class="batch-reply-subject">{thread.subject}</div>
-                      <div class="message-body" innerHTML={DOMPurify.sanitize(thread.body, DOMPURIFY_CONFIG)}></div>
+                      <MessageBody
+                        body={thread.body}
+                        msgId={thread.messageId}
+                        msgPayloadParts={thread.parts}
+                        cidAttachmentData={batchReplyCidData()[thread.threadId]}
+                      />
                     </div>
                     <div
                       class="inline-resize-handle"
@@ -5434,7 +5499,7 @@ function App() {
             </div>
             <div class="shortcuts-section">
               <h3>Selection</h3>
-              <div class="shortcut-row"><kbd>x</kbd> <span>Select thread</span></div>
+              <div class="shortcut-row"><kbd>x</kbd> <span>Select thread or event</span></div>
               <div class="shortcut-row"><kbd>Escape</kbd> <span>Clear selection</span></div>
             </div>
             <div class="shortcuts-section">
@@ -5554,6 +5619,8 @@ function App() {
           </div>
         </div>
       </Show>
+
+      <ConfirmDialog />
     </div >
   );
 }

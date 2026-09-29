@@ -1,4 +1,4 @@
-import { createSignal } from "solid-js";
+import { createSignal, onCleanup } from "solid-js";
 
 const TOAST_EXIT_MS = 200;
 
@@ -71,6 +71,13 @@ export function createUndoableSend<T>(opts: {
       progressIntervalId = window.setInterval(tickProgress, opts.delayMs / 50);
     }
   }
+
+  // Going away is like quitting: nothing queued goes out
+  onCleanup(() => {
+    for (const entry of queued()) clearTimeout(entry.timeoutId);
+    clearInterval(progressIntervalId);
+    clearTimeout(hideTimeoutId);
+  });
 
   function undo(): T | null {
     const entry = latest();

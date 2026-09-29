@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { threadLoadErrorMessage } from "./loadErrors";
+import { batchReplyLoadErrorMessage, cardLoadErrorMessage, threadLoadErrorMessage } from "./loadErrors";
 
 describe("threadLoadErrorMessage", () => {
   it("says a thread that is gone was deleted", () => {
@@ -23,5 +23,38 @@ describe("threadLoadErrorMessage", () => {
 
   it("keeps the reason for anything else", () => {
     expect(threadLoadErrorMessage(new Error("API error 500 Internal Server Error"))).toBe("Couldn't load this email: Error: API error 500 Internal Server Error");
+  });
+});
+
+describe("cardLoadErrorMessage", () => {
+  it("says Gmail or the calendar could not be reached when offline", () => {
+    expect(cardLoadErrorMessage("Search failed: Request failed: could not reach Gmail. Check your connection.", false))
+      .toBe("Couldn't reach Gmail. Check your connection and try again.");
+    expect(cardLoadErrorMessage("Search failed: Request timed out: Gmail did not respond. Check your connection and try again.", false))
+      .toBe("Couldn't reach Gmail. Check your connection and try again.");
+    expect(cardLoadErrorMessage("Couldn't reach Google Calendar. Check your connection and try again.", true))
+      .toBe("Couldn't reach Google Calendar. Check your connection and try again.");
+    expect(cardLoadErrorMessage("Google Calendar didn't respond. Check your connection and try again.", true))
+      .toBe("Couldn't reach Google Calendar. Check your connection and try again.");
+  });
+
+  it("keeps a message that tells the user to sign in again word for word", () => {
+    const message = "Calendar permission denied. Please re-login to grant calendar access.";
+    expect(cardLoadErrorMessage(message, true)).toBe(message);
+  });
+
+  it("keeps the reason for anything else, without the backend's prefixes", () => {
+    expect(cardLoadErrorMessage("Search failed: API error 400 Bad Request: Invalid query", false))
+      .toBe("Couldn't load this card: API error 400 Bad Request: Invalid query");
+    expect(cardLoadErrorMessage("Calendar error (500)", true)).toBe("Couldn't load this card: Calendar error (500)");
+  });
+});
+
+describe("batchReplyLoadErrorMessage", () => {
+  it("says what went wrong in words for the batch reply panel", () => {
+    expect(batchReplyLoadErrorMessage("Failed to fetch thread: Request failed: could not reach Gmail. Check your connection."))
+      .toBe("Couldn't reach Gmail. Check your connection and try again.");
+    expect(batchReplyLoadErrorMessage('Token refresh failed: {"error": "invalid_grant"}')).toMatch(/Sign in again/);
+    expect(batchReplyLoadErrorMessage("API error 500")).toBe("Couldn't load the emails: API error 500");
   });
 });
