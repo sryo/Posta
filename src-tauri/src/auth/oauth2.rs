@@ -290,6 +290,54 @@ impl SecretStore for Keychain {
     }
 }
 
+/// Remembers what the keychain returned, so each secret is read once per
+/// launch: macOS may ask for the login password on every read by an app it
+/// hasn't been told to always allow. Failed reads and writes aren't
+/// remembered, so a locked keychain is retried.
+struct CachedSecrets<S> {
+    inner: S,
+    known: std::sync::Mutex<std::collections::HashMap<String, Option<String>>>,
+}
+
+impl<S: SecretStore> CachedSecrets<S> {
+    fn new(inner: S) -> Self {
+        Self { inner, known: Default::default() }
+    }
+
+    fn known(&self) -> std::sync::MutexGuard<'_, std::collections::HashMap<String, Option<String>>> {
+        self.known.lock().unwrap_or_else(|e| e.into_inner())
+    }
+}
+
+impl<S: SecretStore> SecretStore for CachedSecrets<S> {
+    fn get(&self, key: &str) -> Result<Option<String>, String> {
+        if let Some(secret) = self.known().get(key) {
+            return Ok(secret.clone());
+        }
+        let secret = self.inner.get(key)?;
+        self.known().insert(key.to_string(), secret.clone());
+        Ok(secret)
+    }
+
+    fn set(&self, key: &str, secret: &str) -> bool {
+        let stored = self.inner.set(key, secret);
+        if stored {
+            self.known().insert(key.to_string(), Some(secret.to_string()));
+        } else {
+            self.known().remove(key);
+        }
+        stored
+    }
+
+    fn delete(&self, key: &str) {
+        self.inner.delete(key);
+        self.known().insert(key.to_string(), None);
+    }
+}
+
+static KEYCHAIN: std::sync::LazyLock<CachedSecrets<Keychain>> =
+    std::sync::LazyLock::new(|| CachedSecrets::new(Keychain));
+
 use std::path::{Path, PathBuf};
 
 fn get_token_file_path(app_data_dir: &Path, account_id: &str) -> PathBuf {
@@ -403,11 +451,11 @@ fn delete_secret(keychain: &dyn SecretStore, key: &str, path: &Path) {
 pub fn store_refresh_token(account_id: &str, token: &str, app_data_dir: &Path) -> Result<(), AuthError> {
     tracing::info!("Storing refresh token for account: {}", account_id);
     let path = get_token_file_path(app_data_dir, account_id);
-    store_secret(&Keychain, &token_keychain_key(account_id), token, &path, "token")
+    store_secret(&*KEYCHAIN, &token_keychain_key(account_id), token, &path, "token")
 }
 
 pub fn get_refresh_token(account_id: &str, app_data_dir: &Path) -> Result<String, AuthError> {
-    refresh_token_from(&Keychain, account_id, app_data_dir)
+    refresh_token_from(&*KEYCHAIN, account_id, app_data_dir)
 }
 
 fn refresh_token_from(keychain: &dyn SecretStore, account_id: &str, app_data_dir: &Path) -> Result<String, AuthError> {
@@ -421,7 +469,7 @@ fn refresh_token_from(keychain: &dyn SecretStore, account_id: &str, app_data_dir
 }
 
 pub fn delete_refresh_token(account_id: &str, app_data_dir: &Path) -> Result<(), AuthError> {
-    delete_secret(&Keychain, &token_keychain_key(account_id), &get_token_file_path(app_data_dir, account_id));
+    delete_secret(&*KEYCHAIN, &token_keychain_key(account_id), &get_token_file_path(app_data_dir, account_id));
     Ok(())
 }
 
@@ -443,13 +491,13 @@ pub fn store_oauth_credentials(client_id: &str, client_secret: &str, app_data_di
         .map_err(|e| AuthError::Keyring(format!("Failed to serialize credentials: {}", e)))?;
 
     let path = get_credentials_file_path(app_data_dir);
-    store_secret(&Keychain, CREDENTIALS_KEYCHAIN_KEY, &json, &path, "credentials")
+    store_secret(&*KEYCHAIN, CREDENTIALS_KEYCHAIN_KEY, &json, &path, "credentials")
 }
 
 /// `NoCredentials` only when none are stored; a locked or denied keychain
 /// with no fallback file is `KeychainUnavailable`
 pub fn load_oauth_credentials(app_data_dir: &Path) -> Result<OAuthCredentials, AuthError> {
-    oauth_credentials_from(&Keychain, app_data_dir)
+    oauth_credentials_from(&*KEYCHAIN, app_data_dir)
 }
 
 fn oauth_credentials_from(keychain: &dyn SecretStore, app_data_dir: &Path) -> Result<OAuthCredentials, AuthError> {
@@ -467,16 +515,16 @@ pub fn store_gemini_api_key(api_key: &str, app_data_dir: &Path) -> Result<(), Au
     let api_key = api_key.trim();
 
     if api_key.is_empty() {
-        delete_secret(&Keychain, GEMINI_KEYCHAIN_KEY, &path);
+        delete_secret(&*KEYCHAIN, GEMINI_KEYCHAIN_KEY, &path);
         return Ok(());
     }
 
-    store_secret(&Keychain, GEMINI_KEYCHAIN_KEY, api_key, &path, "Gemini API key")
+    store_secret(&*KEYCHAIN, GEMINI_KEYCHAIN_KEY, api_key, &path, "Gemini API key")
 }
 
 /// `Ok(None)` only when no key is stored
 pub fn load_gemini_api_key(app_data_dir: &Path) -> Result<Option<String>, AuthError> {
-    gemini_api_key_from(&Keychain, app_data_dir)
+    gemini_api_key_from(&*KEYCHAIN, app_data_dir)
 }
 
 fn gemini_api_key_from(keychain: &dyn SecretStore, app_data_dir: &Path) -> Result<Option<String>, AuthError> {
@@ -555,6 +603,63 @@ mod tests {
                 self.entries.lock().unwrap().remove(key);
             }
         }
+    }
+
+    /// Counts reads that reach the keychain
+    struct Counting {
+        inner: FakeKeychain,
+        reads: std::sync::atomic::AtomicUsize,
+    }
+
+    impl SecretStore for Counting {
+        fn get(&self, key: &str) -> Result<Option<String>, String> {
+            self.reads.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            self.inner.get(key)
+        }
+        fn set(&self, key: &str, secret: &str) -> bool {
+            self.inner.set(key, secret)
+        }
+        fn delete(&self, key: &str) {
+            self.inner.delete(key)
+        }
+    }
+
+    fn counting(inner: FakeKeychain) -> CachedSecrets<Counting> {
+        CachedSecrets::new(Counting { inner, reads: Default::default() })
+    }
+
+    fn reads(store: &CachedSecrets<Counting>) -> usize {
+        store.inner.reads.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    #[test]
+    fn each_secret_reaches_the_keychain_once_so_macos_asks_once() {
+        let store = counting(FakeKeychain::new(true, &[("creds", "old")]));
+        for _ in 0..3 {
+            assert_eq!(store.get("creds"), Ok(Some("old".into())));
+            assert_eq!(store.get("gemini"), Ok(None));
+        }
+        assert_eq!(reads(&store), 2);
+
+        assert!(store.set("creds", "new"));
+        assert_eq!(store.get("creds"), Ok(Some("new".into())));
+        store.delete("creds");
+        assert_eq!(store.get("creds"), Ok(None));
+        assert_eq!(reads(&store), 2);
+    }
+
+    #[test]
+    fn failed_keychain_reads_and_writes_are_retried() {
+        let locked = counting(FakeKeychain::locked(&[("creds", "old")]));
+        assert!(locked.get("creds").is_err());
+        assert!(locked.get("creds").is_err());
+        assert_eq!(reads(&locked), 2);
+
+        let read_only = counting(FakeKeychain::new(false, &[("creds", "old")]));
+        assert_eq!(read_only.get("creds"), Ok(Some("old".into())));
+        assert!(!read_only.set("creds", "new"));
+        assert_eq!(read_only.get("creds"), Ok(Some("old".into())));
+        assert_eq!(reads(&read_only), 2);
     }
 
     #[test]
