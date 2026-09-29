@@ -143,6 +143,10 @@ pub struct CalendarEvent {
     /// Set on one occurrence of a repeating event: the series' id
     #[serde(default)]
     pub recurring_event_id: Option<String>,
+    /// The local account the event was listed from; empty in events cached
+    /// before events named it
+    #[serde(default)]
+    pub account_id: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1268,6 +1272,7 @@ fn api_event_to_calendar_event(event: ApiEvent, calendar_id: &str, calendar_name
         response_status,
         can_edit,
         recurring_event_id: event.recurring_event_id,
+        account_id: String::new(),
     })
 }
 
@@ -1431,6 +1436,12 @@ fn start_of_day<Z: TimeZone>(tz: &Z, date: NaiveDate) -> DateTime<Utc> {
 /// When an event starts, counting an all-day event from its date's midnight
 /// in `timezone` (else the system's) rather than the UTC midnight its
 /// timestamp holds
+/// Where an event goes in a list shown in this Mac's time zone: by day, the
+/// day's all-day events first
+pub(crate) fn local_display_order(event: &CalendarEvent) -> (i64, bool) {
+    (day_start_millis(event, None), !event.all_day)
+}
+
 fn day_start_millis(event: &CalendarEvent, timezone: Option<&str>) -> i64 {
     let date = match DateTime::<Utc>::from_timestamp_millis(event.start_time) {
         Some(start) if event.all_day => start.date_naive(),
@@ -1728,6 +1739,18 @@ mod tests {
     }
 
     #[test]
+    fn events_cached_before_they_named_their_account_still_load() {
+        let ev = api_event(serde_json::json!({ "id": "e1", "start": { "dateTime": "2024-12-23T10:00:00Z" } }));
+        let ev = CalendarEvent { account_id: "a2".into(), ..api_event_to_calendar_event(ev, "cal", "", "owner").unwrap() };
+        assert_eq!(serde_json::to_value(&ev).unwrap()["account_id"], "a2");
+
+        let mut cached = serde_json::to_value(&ev).unwrap();
+        cached.as_object_mut().unwrap().remove("account_id");
+        let cached: CalendarEvent = serde_json::from_value(cached).unwrap();
+        assert_eq!(cached.account_id, "");
+    }
+
+    #[test]
     fn event_response_status_and_attendees() {
         let ev = api_event(serde_json::json!({
             "id": "e1",
@@ -1800,6 +1823,7 @@ mod tests {
             response_status: Some("accepted".into()),
             can_edit: false,
             recurring_event_id: None,
+            account_id: String::new(),
         }
     }
 

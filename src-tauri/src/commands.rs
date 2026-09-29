@@ -8,7 +8,7 @@ use crate::ai::GeminiClient;
 use crate::cache::CacheDb;
 use crate::gmail::{GmailClient, GmailDraft, GmailLabel, OutgoingMessage, SearchResult};
 use crate::icloud::ICloudKVStore;
-use crate::models::{Account, Card, SendAttachment, ThreadGroup};
+use crate::models::{Account, Card, SendAttachment, ThreadGroup, ALL_ACCOUNTS};
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -428,14 +428,29 @@ fn plan_push(
 
     let tombstones = merged_tombstones(&record.tombstones, &backup.tombstones, now_ms);
     let (mut remote, mut foreign) = split_backup_cards(backup.cards, &backup.emails, &tombstones, accounts);
-    // The backup copy of a local card whose owner mapping is missing
-    foreign.retain(|f| !local_cards.iter().any(|c| c.id == f.id));
+    // Moved to such an account elsewhere while unchanged in scope here: the
+    // move stands, and the next pull takes the card away here
+    let moved_away: std::collections::HashSet<String> = local_cards
+        .iter()
+        .filter(|c| {
+            moved_to_foreign_account(&foreign, &backup.emails, &c.id)
+                && record.base.get(&c.id).is_some_and(|base| base.account_id == c.account_id)
+        })
+        .map(|c| c.id.clone())
+        .collect();
+    // Otherwise the backup copy is of a local card whose owner mapping is
+    // missing, or one this device moved since
+    foreign.retain(|f| moved_away.contains(&f.id) || !local_cards.iter().any(|c| c.id == f.id));
     let mut new_record = SyncRecord { base: HashMap::new(), tombstones: tombstones.clone(), seen_backup: record.seen_backup };
 
     let mut cards = Vec::new();
     for local in local_cards {
         // Deleted on another device; the next pull removes it here
         if tombstones.contains_key(&local.id) {
+            continue;
+        }
+        if moved_away.contains(&local.id) {
+            new_record.base.insert(local.id.clone(), local);
             continue;
         }
         let card = match take_card(&mut remote, &local.id) {
@@ -452,11 +467,24 @@ fn plan_push(
 
     let mut emails = backup.emails;
     emails.extend(accounts.iter().map(|a| (a.id.clone(), a.email.clone())));
+    // A Mac that knows no all-inboxes cards finds no account with this email,
+    // so it carries the cards over instead of adopting them
+    emails.insert(ALL_ACCOUNTS.to_string(), NO_EMAIL.to_string());
     let owners: std::collections::HashSet<&str> = cards.iter().map(|c| c.account_id.as_str()).collect();
     emails.retain(|id, _| owners.contains(id.as_str()));
 
     Some((Backup { cards, emails, tombstones }, new_record))
 }
+
+/// Whether the backup holds card `id` under an account this device lacks,
+/// named in the mappings. A card of an owner with no mapping may be a torn
+/// read of this device's own.
+fn moved_to_foreign_account(foreign: &[Card], emails: &HashMap<String, String>, id: &str) -> bool {
+    foreign.iter().any(|f| f.id == id && emails.contains_key(&f.account_id))
+}
+
+/// The email the all-inboxes owner maps to in the backup; never an address
+const NO_EMAIL: &str = "*";
 
 /// Push every card to iCloud after a local card change. The caller holds the
 /// iCloud lock from before its database write, so a pull can't merge in
@@ -485,14 +513,8 @@ fn write_cards_to_icloud(icloud: &ICloudSync, state: &AppState, deleted_card: Op
         let Ok(db_guard) = state.db.lock() else { return Ok(false) };
         let Some(db) = db_guard.as_ref() else { return Ok(false) };
         let Ok(accounts) = db.get_accounts() else { return Ok(false) };
-        let mut cards = Vec::new();
-        for account in &accounts {
-            match db.get_cards(&account.id) {
-                Ok(c) => cards.extend(c),
-                // A partial list would drop the missing cards from iCloud
-                Err(_) => return Ok(false),
-            }
-        }
+        // A partial list would drop the missing cards from iCloud
+        let Ok(cards) = db.get_board_cards() else { return Ok(false) };
         (accounts, cards)
     };
 
@@ -936,9 +958,10 @@ pub async fn update_account_signature(account_id: String, signature: Option<Stri
     .await
 }
 
+/// The board: every signed-in account's cards and the all-inboxes cards
 #[tauri::command]
-pub async fn get_cards(account_id: String, state: State<'_, AppState>) -> Result<Vec<Card>, String> {
-    blocking(&state, move |state| with_db(state, |db| db.get_cards(&account_id).map_err(|e| e.to_string()))).await
+pub async fn get_cards(state: State<'_, AppState>) -> Result<Vec<Card>, String> {
+    blocking(&state, |state| with_db(state, |db| db.get_board_cards().map_err(|e| e.to_string()))).await
 }
 
 #[tauri::command]
@@ -951,27 +974,54 @@ pub async fn create_card(
     card_type: Option<String>,
     state: State<'_, AppState>,
 ) -> Result<Card, String> {
-    blocking(&state, move |state| change_cards(state, None, |db| {
-        let cards = db.get_cards(&account_id).map_err(|e| e.to_string())?;
-        let position = next_card_position(&cards);
-
-        let card_type_value = card_type.unwrap_or_else(|| "email".to_string());
-        let mut card = if card_type_value == "calendar" {
-            Card::new_calendar(account_id, name, query, position)
-        } else {
-            Card::new(account_id, name, query, position)
-        };
-        card.color = color;
-        card.group_by = group_by.unwrap_or_else(|| "date".to_string());
-        db.insert_card(&card).map_err(|e| e.to_string())?;
-        Ok(card)
-    }))
+    blocking(&state, move |state| {
+        change_cards(state, None, |db| insert_new_card(db, account_id, name, query, color, group_by, card_type))
+    })
     .await
+}
+
+/// A new card of `account_id` (a signed-in account, or `ALL_ACCOUNTS`) at the
+/// end of the board
+fn insert_new_card(
+    db: &CacheDb,
+    account_id: String,
+    name: String,
+    query: String,
+    color: Option<String>,
+    group_by: Option<String>,
+    card_type: Option<String>,
+) -> Result<Card, String> {
+    check_card_scope(db, &account_id)?;
+    let position = next_card_position(&db.get_board_cards().map_err(|e| e.to_string())?);
+    let mut card = if card_type.as_deref() == Some("calendar") {
+        Card::new_calendar(account_id, name, query, position)
+    } else {
+        Card::new(account_id, name, query, position)
+    };
+    card.color = color;
+    card.group_by = group_by.unwrap_or_else(|| "date".to_string());
+    db.insert_card(&card).map_err(|e| e.to_string())?;
+    Ok(card)
+}
+
+/// Ok for a signed-in account's id or `ALL_ACCOUNTS`
+fn check_card_scope(db: &CacheDb, account_id: &str) -> Result<(), String> {
+    if account_id == ALL_ACCOUNTS || db.get_accounts().map_err(|e| e.to_string())?.iter().any(|a| a.id == account_id) {
+        Ok(())
+    } else {
+        Err("Account not found".to_string())
+    }
 }
 
 #[tauri::command]
 pub async fn update_card(card: Card, state: State<'_, AppState>) -> Result<(), String> {
-    blocking(&state, move |state| change_cards(state, None, |db| db.update_card(&card).map_err(|e| e.to_string()))).await
+    blocking(&state, move |state| {
+        change_cards(state, None, |db| {
+            check_card_scope(db, &card.account_id)?;
+            db.update_card(&card).map_err(|e| e.to_string())
+        })
+    })
+    .await
 }
 
 #[tauri::command]
@@ -992,20 +1042,24 @@ fn next_card_position(cards: &[Card]) -> i32 {
     cards.iter().map(|c| c.position + 1).max().unwrap_or(0)
 }
 
-/// A card of a local account, or "Account not found" / "Card not found"
-async fn find_card(state: &AppState, account_id: &str, card_id: &str) -> Result<Card, String> {
-    let (account_id, card_id) = (account_id.to_string(), card_id.to_string());
-    blocking(state, move |state| {
-        with_db(state, |db| {
-            if !db.get_accounts().map_err(|e| e.to_string())?.iter().any(|a| a.id == account_id) {
-                return Err("Account not found".to_string());
-            }
-            db.get_card(&account_id, &card_id)
-                .map_err(|e| e.to_string())?
-                .ok_or_else(|| "Card not found".to_string())
-        })
-    })
-    .await
+/// A card on the board, or "Card not found"
+async fn find_card(state: &AppState, card_id: &str) -> Result<Card, String> {
+    let card_id = card_id.to_string();
+    blocking(state, move |state| with_db(state, |db| board_card(db, &card_id))).await
+}
+
+fn board_card(db: &CacheDb, card_id: &str) -> Result<Card, String> {
+    db.get_card(card_id)
+        .map_err(|e| e.to_string())?
+        .filter(|card| check_card_scope(db, &card.account_id).is_ok())
+        .ok_or_else(|| "Card not found".to_string())
+}
+
+/// Search results don't say whose mailbox they came from
+fn tag_thread_groups(groups: &mut [ThreadGroup], account_id: &str) {
+    for thread in groups.iter_mut().flat_map(|g| g.threads.iter_mut()) {
+        thread.account_id = account_id.to_string();
+    }
 }
 
 /// The cached token, if it is good for at least another minute
@@ -1124,20 +1178,32 @@ fn evict_token_on_auth_error<T>(
     result
 }
 
+/// A page of a card's threads. The card's account is read from the card, so
+/// a fetch in flight while the card is moved still lists one mailbox.
 #[tauri::command]
 pub async fn fetch_threads_paginated(
-    account_id: String,
     card_id: String,
     page_token: Option<String>,
     app_handle: tauri::AppHandle, state: State<'_, AppState>,
 ) -> Result<SearchResult, String> {
     tracing::info!("fetch_threads_paginated for card: {}, page_token: {:?}", card_id, page_token);
 
-    let card = find_card(&state, &account_id, &card_id).await?;
-    let access_token = get_access_token(&state, &app_handle, &account_id).await?;
+    let card = find_card(&state, &card_id).await?;
+    if card.account_id == ALL_ACCOUNTS {
+        let accounts = blocking(&state, |state| with_db(state, |db| db.get_accounts().map_err(|e| e.to_string()))).await?;
+        let open = |account: &Account| {
+            let (state, app_handle, account_id) = (state.inner().clone(), app_handle.clone(), account.id.clone());
+            async move { get_access_token(&state, &app_handle, &account_id).await.map(GmailClient::new) }
+        };
+        return all_inboxes_page(&accounts, &card.query, page_token.as_deref(), open)
+            .await
+            .map_err(|(account_id, e)| evict_token_on_auth_error::<()>(&state, &account_id, Err(e)).unwrap_err());
+    }
+    let account_id = card.account_id.clone();
+    let access_token = account_access_token(&state, &app_handle, &account_id).await?;
 
     let gmail = GmailClient::new(access_token);
-    let result = evict_token_on_auth_error(
+    let mut result = evict_token_on_auth_error(
         &state,
         &account_id,
         gmail
@@ -1145,10 +1211,75 @@ pub async fn fetch_threads_paginated(
             .await,
     )
     .map_err(|e| format!("Search failed: {}", e))?;
+    tag_thread_groups(&mut result.groups, &account_id);
 
     tracing::info!("Found {} groups, has_more: {}", result.groups.len(), result.has_more);
 
     Ok(result)
+}
+
+/// Lists one account's threads for an all-inboxes card
+trait MailboxLister {
+    async fn list_ids(&self, query: &str, page: Option<&str>) -> Result<(Vec<String>, Option<String>), String>;
+    async fn details(&self, ids: &[String]) -> Result<Vec<crate::models::Thread>, String>;
+}
+
+impl MailboxLister for GmailClient {
+    async fn list_ids(&self, query: &str, page: Option<&str>) -> Result<(Vec<String>, Option<String>), String> {
+        self.list_thread_ids(query, page, crate::gmail::PAGE_SIZE).await
+    }
+
+    async fn details(&self, ids: &[String]) -> Result<Vec<crate::models::Thread>, String> {
+        self.batch_get_thread_details(ids).await
+    }
+}
+
+/// A page of an all-inboxes card: every account's next threads merged (see
+/// `unified::merge_account_pages`). `page_token` is the cursor the previous
+/// page returned. Fails whole when any account fails, with that account's
+/// id and the error named after its email.
+async fn all_inboxes_page<M, F, Fut>(
+    accounts: &[Account],
+    query: &str,
+    page_token: Option<&str>,
+    open: F,
+) -> Result<SearchResult, (String, String)>
+where
+    M: MailboxLister,
+    F: Fn(&Account) -> Fut,
+    Fut: std::future::Future<Output = Result<M, String>>,
+{
+    use crate::unified::{account_error, listed_accounts, merge_account_pages, AccountPage, Cursor};
+    let cursor = match page_token {
+        Some(token) => Cursor::parse(token).map_err(|e| (String::new(), e))?,
+        None => Cursor::start(accounts.iter().map(|a| a.id.as_str())),
+    };
+    let signed_in: std::collections::HashSet<&str> = accounts.iter().map(|a| a.id.as_str()).collect();
+    let requests = listed_accounts(&cursor, &signed_in).into_iter().map(|(account_id, at)| {
+        let account = accounts.iter().find(|a| &a.id == account_id).expect("signed in");
+        let open = &open;
+        async move {
+            let fail = |e: String| (account.id.clone(), account_error(&account.email, &e));
+            let mailbox = open(account).await.map_err(fail)?;
+            let search_failed = |e: String| fail(format!("Search failed: {}", e));
+            let (ids, next_page_token) = mailbox.list_ids(query, at.page.as_deref()).await.map_err(search_failed)?;
+            let skip = at.skip.min(ids.len());
+            let mut threads =
+                if skip < ids.len() { mailbox.details(&ids[skip..]).await.map_err(search_failed)? } else { Vec::new() };
+            for thread in &mut threads {
+                thread.account_id = account.id.clone();
+            }
+            Ok::<_, (String, String)>(AccountPage { account_id: account.id.clone(), ids, skip, threads, page: at.page.clone(), next_page_token })
+        }
+    });
+    let pages = futures::future::try_join_all(requests).await?;
+    let (threads, cursor) = merge_account_pages(pages);
+    let next_page_token = cursor.token();
+    Ok(SearchResult {
+        groups: crate::gmail::group_threads_by_date(threads, &chrono::Local::now()),
+        has_more: next_page_token.is_some(),
+        next_page_token,
+    })
 }
 
 /// Result of incremental sync
@@ -1388,12 +1519,45 @@ pub async fn search_threads_preview(
     query: String,
     app_handle: tauri::AppHandle, state: State<'_, AppState>,
 ) -> Result<Vec<ThreadGroup>, String> {
-    let access_token = account_access_token(&state, &app_handle, &account_id).await?;
-    let gmail = GmailClient::new(access_token);
+    const PREVIEW_THREADS: usize = 5;
+    let accounts = scope_accounts(&state, &account_id).await?;
+    let searches = accounts.iter().map(|account| {
+        let (state, app_handle, query) = (&state, &app_handle, &query);
+        async move {
+            let access_token = get_access_token(state, app_handle, &account.id).await?;
+            let result = GmailClient::new(access_token).search_threads_limited(query, PREVIEW_THREADS).await;
+            let mut groups = evict_token_on_auth_error(state, &account.id, result).map_err(|e| format!("Search failed: {}", e))?;
+            tag_thread_groups(&mut groups, &account.id);
+            Ok::<_, String>(groups)
+        }
+    });
+    let by_account = in_scope(&account_id, &accounts, futures::future::join_all(searches).await)?;
+    if by_account.len() == 1 && account_id != ALL_ACCOUNTS {
+        return Ok(by_account.into_iter().next().unwrap_or_default());
+    }
+    let threads = by_account.into_iter().flatten().flat_map(|g| g.threads).collect();
+    Ok(crate::gmail::group_threads_by_date(crate::unified::newest_threads(threads, PREVIEW_THREADS), &chrono::Local::now()))
+}
 
-    // Limit to 5 threads for preview
-    evict_token_on_auth_error(&state, &account_id, gmail.search_threads_limited(&query, 5).await)
-        .map_err(|e| format!("Search failed: {}", e))
+/// The accounts a card of `account_id` covers: that one, or every signed-in
+/// account for `ALL_ACCOUNTS`
+async fn scope_accounts(state: &AppState, account_id: &str) -> Result<Vec<Account>, String> {
+    if account_id != ALL_ACCOUNTS {
+        return Ok(vec![find_account(state, account_id).await?]);
+    }
+    blocking(state, |state| with_db(state, |db| db.get_accounts().map_err(|e| e.to_string()))).await
+}
+
+/// Each account's result, or the first failure; for an all-inboxes card the
+/// failure names its account's email
+fn in_scope<T>(account_id: &str, accounts: &[Account], results: Vec<Result<T, String>>) -> Result<Vec<T>, String> {
+    accounts
+        .iter()
+        .zip(results)
+        .map(|(account, result)| {
+            result.map_err(|e| if account_id == ALL_ACCOUNTS { crate::unified::account_error(&account.email, &e) } else { e })
+        })
+        .collect()
 }
 
 #[tauri::command]
@@ -1998,7 +2162,7 @@ fn icloud_card_account(
     mappings: &HashMap<String, String>,
     accounts: &[Account],
 ) -> Option<String> {
-    if accounts.iter().any(|a| a.id == card_account_id) {
+    if card_account_id == ALL_ACCOUNTS || accounts.iter().any(|a| a.id == card_account_id) {
         return Some(card_account_id.to_string());
     }
     match mappings.get(card_account_id) {
@@ -2038,7 +2202,8 @@ fn plan_pull(
 ) -> CardMerge {
     let tombstones = merged_tombstones(&record.tombstones, &backup.tombstones, now_ms);
     let needs_push = tombstones.keys().any(|id| !backup.tombstones.contains_key(id));
-    let (mut remote, foreign) = split_backup_cards(backup.cards, &backup.emails, &tombstones, accounts);
+    let emails = backup.emails;
+    let (mut remote, foreign) = split_backup_cards(backup.cards, &emails, &tombstones, accounts);
     for card in &foreign {
         tracing::info!("Leaving card {} in iCloud - its account is not on this device", card.name);
     }
@@ -2056,6 +2221,12 @@ fn plan_pull(
         }
         let base = record.base.get(&local.id);
         let Some(remote) = take_card(&mut remote, &local.id) else {
+            // Moved elsewhere to an account this device lacks; not deleted,
+            // so no tombstone
+            if moved_to_foreign_account(&foreign, &emails, &local.id) {
+                merge.delete.push(local.id.clone());
+                continue;
+            }
             // Added here, or left out by another device's write before this
             // one's reached it
             merge.needs_push = true;
@@ -2124,10 +2295,7 @@ fn merge_cards_from_icloud(icloud: &mut ICloudSync, state: &AppState) -> Result<
         let db = db_guard.as_ref().ok_or("Database not initialized")?;
 
         let accounts = db.get_accounts().map_err(|e| e.to_string())?;
-        let mut local_cards = Vec::new();
-        for account in &accounts {
-            local_cards.extend(db.get_cards(&account.id).map_err(|e| e.to_string())?);
-        }
+        let local_cards = db.get_board_cards().map_err(|e| e.to_string())?;
 
         tracing::info!(
             "pull_from_icloud: {} iCloud cards, {} tombstones, {} local accounts",
@@ -2191,11 +2359,22 @@ pub async fn fetch_calendar_events(
     app_handle: tauri::AppHandle, state: State<'_, AppState>,
 ) -> Result<Vec<crate::calendar::CalendarEvent>, String> {
     let parsed_query = crate::calendar::CalendarQuery::try_parse(&query)?;
-    let access_token = account_access_token(&state, &app_handle, &account_id).await?;
-    let calendar = crate::calendar::CalendarClient::new(access_token);
-
-    // Cap high enough that a month view on a busy account isn't silently cut off
-    evict_token_on_auth_error(&state, &account_id, calendar.search_events(&parsed_query, 500).await)
+    let accounts = scope_accounts(&state, &account_id).await?;
+    let searches = accounts.iter().map(|account| {
+        let (state, app_handle, parsed_query) = (&state, &app_handle, &parsed_query);
+        async move {
+            let access_token = get_access_token(state, app_handle, &account.id).await?;
+            let calendar = crate::calendar::CalendarClient::new(access_token);
+            // Cap high enough that a month view on a busy account isn't silently cut off
+            evict_token_on_auth_error(state, &account.id, calendar.search_events(parsed_query, 500).await)
+        }
+    });
+    let by_account = in_scope(&account_id, &accounts, futures::future::join_all(searches).await)?;
+    if account_id != ALL_ACCOUNTS {
+        let events = by_account.into_iter().flatten();
+        return Ok(events.map(|event| crate::models::GoogleCalendarEvent { account_id: account_id.clone(), ..event }).collect());
+    }
+    Ok(crate::unified::merge_calendar_events(accounts.iter().map(|a| a.id.clone()).zip(by_account).collect()))
 }
 
 #[tauri::command]
@@ -2233,7 +2412,7 @@ pub async fn create_calendar_event(
             },
         )
         .await;
-    evict_token_on_auth_error(&state, &account_id, result)
+    evict_token_on_auth_error(&state, &account_id, result).map(|event| crate::models::GoogleCalendarEvent { account_id: account_id.clone(), ..event })
 }
 
 #[tauri::command]
@@ -2251,7 +2430,7 @@ pub async fn move_calendar_event(
     let result = calendar
         .move_event(&source_calendar_id, &event_id, &destination_calendar_id)
         .await;
-    evict_token_on_auth_error(&state, &account_id, result)
+    evict_token_on_auth_error(&state, &account_id, result).map(|event| crate::models::GoogleCalendarEvent { account_id: account_id.clone(), ..event })
 }
 
 #[tauri::command]
@@ -2312,7 +2491,7 @@ pub async fn update_calendar_event(
             scope,
         )
         .await;
-    evict_token_on_auth_error(&state, &account_id, result)
+    evict_token_on_auth_error(&state, &account_id, result).map(|event| crate::models::GoogleCalendarEvent { account_id: account_id.clone(), ..event })
 }
 
 /// Prompt context for smart replies: the subject and the full bodies of the
@@ -2420,7 +2599,7 @@ mod tests {
         refuse_executable_attachment, Backup, SyncRecord,
         reply_context, sanitize_attachment_filename, vanished_thread_ids, write_unique_file,
     };
-    use crate::models::{Account, Card, Thread};
+    use crate::models::{Account, Card, Thread, ALL_ACCOUNTS};
     use std::collections::HashMap;
 
     #[test]
@@ -3041,6 +3220,63 @@ mod tests {
         assert!(merge.insert.is_empty() && merge.update.is_empty() && merge.delete.is_empty());
         assert!(merge.record.base.is_empty());
         assert!(merge.record.seen_backup);
+    }
+
+    #[test]
+    fn pull_takes_away_a_card_another_device_moved_to_an_account_this_one_lacks() {
+        let accounts = [account("a1", "me@x.com")];
+        let card = owned_card("c", "a1");
+        let b = backup(vec![owned_card("c", "w9")], &[("w9", "work@x.com")], &[]);
+        let merge = plan_pull(&accounts, std::slice::from_ref(&card), b, &synced(std::slice::from_ref(&card)), NOW);
+        assert_eq!(merge.delete, ["c"]);
+        assert!(!merge.needs_push);
+        assert!(!merge.record.base.contains_key("c"));
+        assert!(!merge.record.tombstones.contains_key("c"), "the card lives on in its new account");
+
+        // An owner with no mapping may be a torn read of this device's own
+        // card: kept
+        let b = backup(vec![owned_card("c", "w9")], &[], &[]);
+        let accounts = [account("a1", "me@x.com"), account("a2", "b@x.com")];
+        let merge = plan_pull(&accounts, std::slice::from_ref(&card), b, &synced(std::slice::from_ref(&card)), NOW);
+        assert!(merge.delete.is_empty());
+    }
+
+    #[test]
+    fn push_keeps_a_move_to_an_account_this_device_lacks() {
+        let accounts = [account("a1", "me@x.com")];
+        let card = owned_card("c", "a1");
+        let theirs = owned_card("c", "w9");
+        let b = backup(vec![theirs.clone()], &[("w9", "work@x.com")], &[]);
+        let (pushed, record) = plan_push(&accounts, vec![card.clone()], b, &synced(std::slice::from_ref(&card)), NOW).unwrap();
+        assert_eq!(pushed.cards, [theirs]);
+        assert_eq!(pushed.emails, mappings(&[("w9", "work@x.com")]));
+        // Kept so the next pull takes the card away here
+        assert_eq!(record.base["c"], card);
+
+        // Moved here too since the last sync: this device's move goes out
+        let mine = Card { account_id: ALL_ACCOUNTS.into(), ..card.clone() };
+        let b = backup(vec![owned_card("c", "w9")], &[("w9", "work@x.com")], &[]);
+        let (pushed, _) = plan_push(&accounts, vec![mine.clone()], b, &synced(std::slice::from_ref(&card)), NOW).unwrap();
+        assert_eq!(pushed.cards, [mine]);
+    }
+
+    #[test]
+    fn a_card_moved_to_an_account_this_device_lacks_stays_moved_across_pull_and_push() {
+        let dir = scratch_dir();
+        let card = owned_card("c", "a1");
+        let (state, store) = synced_state(&dir, std::slice::from_ref(&card));
+        {
+            // Moved on a Mac signed in to work@x.com too
+            let mut backup = store.0.lock().unwrap();
+            backup.cards = Some(vec![owned_card("c", "w9")]);
+            backup.mappings.as_mut().unwrap().insert("w9".into(), "work@x.com".into());
+        }
+
+        assert!(super::pull_cards_from_icloud(&state).unwrap());
+        assert!(board_ids(&state).is_empty());
+        super::change_cards(&state, None, |db| db.reorder_cards(&[]).map_err(|e| e.to_string())).unwrap();
+        assert_eq!(store.backup().cards, [owned_card("c", "w9")]);
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]
@@ -3899,5 +4135,209 @@ mod tests {
         assert_eq!(sanitize_attachment_filename("foo/.."), "attachment");
         assert_eq!(sanitize_attachment_filename("/"), "attachment");
         assert_eq!(sanitize_attachment_filename(""), "attachment");
+    }
+
+
+
+    #[test]
+    fn an_all_inboxes_card_from_icloud_stays_one() {
+        let accounts = [account("a1", "me@x.com"), account("a2", "work@x.com")];
+        assert_eq!(icloud_card_account(ALL_ACCOUNTS, &mappings(&[]), &accounts), Some(ALL_ACCOUNTS.into()));
+        assert_eq!(icloud_card_account(ALL_ACCOUNTS, &mappings(&[("all", "*")]), &accounts[..1]), Some(ALL_ACCOUNTS.into()));
+    }
+
+    #[test]
+    fn a_push_maps_the_all_inboxes_owner_to_no_email() {
+        let accounts = [account("a1", "me@x.com")];
+        let cards = vec![owned_card("mine", "a1"), owned_card("everything", ALL_ACCOUNTS)];
+        let (pushed, _) = plan_push(&accounts, cards, Backup::default(), &SyncRecord::default(), NOW).unwrap();
+        assert_eq!(pushed.emails, mappings(&[("a1", "me@x.com"), (ALL_ACCOUNTS, "*")]));
+        assert_eq!(sorted_ids(&pushed.cards), ["everything", "mine"]);
+    }
+
+    #[test]
+    fn an_owner_mapped_to_no_email_is_foreign_even_to_a_lone_account() {
+        // How an older Mac, which knows no all-inboxes cards, reads one: its
+        // lone account must not adopt it and run it as its own
+        let accounts = [account("a1", "me@x.com")];
+        assert_eq!(icloud_card_account("elsewhere", &mappings(&[("elsewhere", "*")]), &accounts), None);
+        let backup = backup(vec![owned_card("everything", "elsewhere")], &[("elsewhere", "*")], &[]);
+        let merge = plan_pull(&accounts, &[], backup, &SyncRecord::default(), NOW);
+        assert!(merge.insert.is_empty());
+    }
+
+    fn board_ids(state: &super::AppState) -> Vec<String> {
+        let guard = state.db.lock().unwrap();
+        let mut ids: Vec<String> = guard.as_ref().unwrap().get_board_cards().unwrap().into_iter().map(|c| c.id).collect();
+        ids.sort();
+        ids
+    }
+
+    #[test]
+    fn an_all_inboxes_card_pulled_from_icloud_is_kept_once_and_pushed_back() {
+        let dir = scratch_dir();
+        let mine = owned_card("mine", "a1");
+        let (state, store) = synced_state(&dir, std::slice::from_ref(&mine));
+        {
+            // Added on another Mac
+            let mut backup = store.0.lock().unwrap();
+            backup.cards.as_mut().unwrap().push(owned_card("everything", ALL_ACCOUNTS));
+            backup.mappings.as_mut().unwrap().insert(ALL_ACCOUNTS.into(), "*".into());
+        }
+
+        assert!(super::pull_cards_from_icloud(&state).unwrap());
+        assert!(!super::pull_cards_from_icloud(&state).unwrap(), "a second pull changes nothing");
+        assert_eq!(board_ids(&state), ["everything", "mine"]);
+
+        super::change_cards(&state, None, |db| db.reorder_cards(&[("everything".into(), 0), ("mine".into(), 1)]).map_err(|e| e.to_string()))
+            .unwrap();
+        let pushed = store.backup();
+        assert_eq!(sorted_ids(&pushed.cards), ["everything", "mine"]);
+        assert_eq!(pushed.emails.get(ALL_ACCOUNTS).map(String::as_str), Some("*"));
+        assert_eq!(icloud_status(&state).last_error, None);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn a_backup_an_older_mac_rewrote_keeps_the_all_inboxes_card() {
+        // An older Mac carries the card over as another account's, with its
+        // mapping, and adds its own cards under its own account ids
+        let dir = scratch_dir();
+        let (state, store) = synced_state(&dir, &[owned_card("mine", "a1")]);
+        {
+            let mut backup = store.0.lock().unwrap();
+            backup.cards = Some(vec![owned_card("mine", "old-a1"), owned_card("everything", ALL_ACCOUNTS), owned_card("added", "old-a1")]);
+            backup.mappings = Some(mappings(&[("old-a1", "me@x.com"), (ALL_ACCOUNTS, "*")]));
+        }
+
+        super::pull_cards_from_icloud(&state).unwrap();
+        assert_eq!(board_ids(&state), ["added", "everything", "mine"]);
+        let pushed = store.backup();
+        assert_eq!(sorted_ids(&pushed.cards), ["added", "everything", "mine"]);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn a_card_is_created_for_a_signed_in_account_or_all_of_them_after_the_last_card() {
+        let dir = scratch_dir();
+        let db = super::open_database(&dir.join("posta.db")).unwrap();
+        db.insert_account(&account("a1", "me@x.com")).unwrap();
+        db.insert_account(&account("a2", "work@x.com")).unwrap();
+        db.insert_card(&Card { position: 3, ..owned_card("work", "a2") }).unwrap();
+
+        let card = super::insert_new_card(&db, "a1".into(), "Mine".into(), "q".into(), None, None, None).unwrap();
+        assert_eq!(card.position, 4, "after every account's cards");
+        let all = super::insert_new_card(&db, ALL_ACCOUNTS.into(), "All".into(), "cal:7d".into(), None, None, Some("calendar".into())).unwrap();
+        assert_eq!((all.position, all.card_type.as_str()), (5, "calendar"));
+
+        let err = super::insert_new_card(&db, "signed-out".into(), "X".into(), "q".into(), None, None, None).unwrap_err();
+        assert_eq!(err, "Account not found");
+        assert!(super::check_card_scope(&db, "a2").is_ok());
+        assert_eq!(super::check_card_scope(&db, "nope"), Err("Account not found".into()));
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn a_card_is_looked_up_by_id_and_needs_a_signed_in_owner() {
+        let dir = scratch_dir();
+        let db = super::open_database(&dir.join("posta.db")).unwrap();
+        db.insert_account(&account("a1", "me@x.com")).unwrap();
+        db.insert_card(&owned_card("mine", "a1")).unwrap();
+        db.insert_card(&owned_card("everything", ALL_ACCOUNTS)).unwrap();
+        db.insert_card(&owned_card("orphan", "gone")).unwrap();
+
+        assert_eq!(super::board_card(&db, "mine").unwrap().id, "mine");
+        assert_eq!(super::board_card(&db, "everything").unwrap().id, "everything");
+        assert_eq!(super::board_card(&db, "orphan").unwrap_err(), "Card not found");
+        assert_eq!(super::board_card(&db, "missing").unwrap_err(), "Card not found");
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// A mailbox listing `threads` (id, minutes ago) two to a page
+    struct FakeMailbox {
+        threads: Vec<(String, i64)>,
+        fails: Option<&'static str>,
+    }
+
+    impl super::MailboxLister for FakeMailbox {
+        async fn list_ids(&self, _query: &str, page: Option<&str>) -> Result<(Vec<String>, Option<String>), String> {
+            if let Some(e) = self.fails {
+                return Err(e.to_string());
+            }
+            let start: usize = page.map_or(0, |p| p.parse().unwrap());
+            let end = (start + 2).min(self.threads.len());
+            let next = (end < self.threads.len()).then(|| end.to_string());
+            Ok((self.threads[start..end].iter().map(|(id, _)| id.clone()).collect(), next))
+        }
+
+        async fn details(&self, ids: &[String]) -> Result<Vec<Thread>, String> {
+            Ok(ids
+                .iter()
+                .map(|id| {
+                    let ago = self.threads.iter().find(|(t, _)| t == id).unwrap().1;
+                    Thread { last_message_date: chrono::DateTime::from_timestamp(1_800_000_000 - ago * 60, 0).unwrap(), ..thread(id) }
+                })
+                .collect())
+        }
+    }
+
+    fn mailbox(threads: &[(&str, i64)]) -> FakeMailbox {
+        FakeMailbox { threads: threads.iter().map(|(id, ago)| (id.to_string(), *ago)).collect(), fails: None }
+    }
+
+    fn listed(result: &crate::gmail::SearchResult) -> Vec<(String, String)> {
+        result.groups.iter().flat_map(|g| &g.threads).map(|t| (t.gmail_thread_id.clone(), t.account_id.clone())).collect()
+    }
+
+    #[tokio::test]
+    async fn an_all_inboxes_card_pages_through_every_mailbox_naming_each_threads_account() {
+        let accounts = vec![account("a1", "me@x.com"), account("a2", "work@x.com")];
+        let open = |a: &Account| {
+            let mailbox = if a.id == "a1" { mailbox(&[("m1", 1), ("m2", 30), ("m3", 90)]) } else { mailbox(&[("w1", 10), ("w2", 20)]) };
+            async move { Ok::<_, String>(mailbox) }
+        };
+
+        let first = super::all_inboxes_page(&accounts, "in:inbox", None, open).await.unwrap();
+        let pairs = |v: &[(&str, &str)]| v.iter().map(|(a, b)| (a.to_string(), b.to_string())).collect::<Vec<_>>();
+        assert_eq!(listed(&first), pairs(&[("m1", "a1"), ("w1", "a2"), ("w2", "a2"), ("m2", "a1")]));
+        assert!(first.has_more);
+
+        let second = super::all_inboxes_page(&accounts, "in:inbox", first.next_page_token.as_deref(), open).await.unwrap();
+        assert_eq!(listed(&second), pairs(&[("m3", "a1")]));
+        assert!(!second.has_more);
+        assert_eq!(second.next_page_token, None);
+
+        // Signed out of a1 meanwhile: the rest of its mail is not listed
+        let only_work = vec![account("a2", "work@x.com")];
+        let after_sign_out = super::all_inboxes_page(&only_work, "in:inbox", first.next_page_token.as_deref(), open).await.unwrap();
+        assert!(listed(&after_sign_out).is_empty());
+    }
+
+    #[tokio::test]
+    async fn an_all_inboxes_page_fails_whole_naming_the_account_that_failed() {
+        let accounts = vec![account("a1", "me@x.com"), account("a2", "work@x.com")];
+        let open = |a: &Account| {
+            let mut mailbox = mailbox(&[("t", 1)]);
+            if a.id == "a2" {
+                mailbox.fails = Some("401 Unauthorized");
+            }
+            async move { Ok::<_, String>(mailbox) }
+        };
+        let (account_id, message) = super::all_inboxes_page(&accounts, "q", None, open).await.unwrap_err();
+        assert_eq!((account_id.as_str(), message.as_str()), ("a2", "work@x.com: Search failed: 401 Unauthorized"));
+
+        let no_token = |a: &Account| {
+            let failed = a.id == "a1";
+            async move { if failed { Err("invalid_grant".to_string()) } else { Ok(mailbox(&[])) } }
+        };
+        let (account_id, message) = super::all_inboxes_page(&accounts, "q", None, no_token).await.unwrap_err();
+        assert_eq!((account_id.as_str(), message.as_str()), ("a1", "me@x.com: invalid_grant"));
+    }
+
+    #[test]
+    fn fetched_threads_carry_their_account() {
+        let mut groups = vec![crate::models::ThreadGroup { label: "Today".into(), threads: vec![thread("t1"), thread("t2")] }];
+        super::tag_thread_groups(&mut groups, "a2");
+        assert!(groups[0].threads.iter().all(|t| t.account_id == "a2"));
     }
 }

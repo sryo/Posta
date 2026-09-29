@@ -124,3 +124,55 @@ describe("CardForm footer", () => {
     expect(footer.querySelector(".form-footer-actions")!.contains(save)).toBe(true);
   });
 });
+
+describe("CardForm account", () => {
+  const accounts = [
+    { id: "a", email: "a@x.com", picture: null, signature: null },
+    { id: "b", email: "b@x.com", picture: null, signature: null },
+  ];
+  function renderWithAccounts(list: typeof accounts, setAccountId = vi.fn()) {
+    render(() => (
+      <CardForm
+        mode="edit"
+        name="Inbox"
+        setName={vi.fn()}
+        query="is:inbox"
+        setQuery={vi.fn()}
+        color={null}
+        setColor={vi.fn()}
+        groupBy="date"
+        setGroupBy={vi.fn()}
+        colorPickerOpen={false}
+        setColorPickerOpen={vi.fn()}
+        onSave={vi.fn()}
+        onCancel={vi.fn()}
+        saveDisabled={false}
+        setQueryHelpOpen={vi.fn()}
+        suggestQuery={() => []}
+        contacts={[]}
+        labelNames={[]}
+        debounceQueryPreview={vi.fn()}
+        onQueryFieldActive={vi.fn()}
+        accounts={list}
+        accountId="b"
+        setAccountId={setAccountId}
+      />
+    ));
+    return setAccountId;
+  }
+
+  it("offers every account and all of them once there is more than one", () => {
+    const setAccountId = renderWithAccounts(accounts);
+    const select = screen.getByRole("combobox", { name: "Account" }) as HTMLSelectElement;
+    expect([...select.options].map(o => [o.value, o.textContent])).toEqual([["all", "All inboxes"], ["a", "a@x.com"], ["b", "b@x.com"]]);
+    expect(select.value).toBe("b");
+
+    fireEvent.change(select, { target: { value: "all" } });
+    expect(setAccountId).toHaveBeenCalledWith("all");
+  });
+
+  it("asks nothing with one account", () => {
+    renderWithAccounts(accounts.slice(0, 1));
+    expect(screen.queryByRole("combobox", { name: "Account" })).not.toBeInTheDocument();
+  });
+});

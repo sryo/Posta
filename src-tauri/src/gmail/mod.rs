@@ -12,7 +12,7 @@ const BATCH_API_ENDPOINT: &str = "https://www.googleapis.com/batch/gmail/v1";
 const GMAIL_UPLOAD_BASE: &str = "https://gmail.googleapis.com/upload/gmail/v1";
 /// The most messages.send accepts through the upload endpoint (35MB)
 const MAX_UPLOAD_BYTES: usize = 35 * 1024 * 1024;
-const PAGE_SIZE: usize = 20;
+pub(crate) const PAGE_SIZE: usize = 20;
 /// The API's maximum; its default of 100 takes five times the requests
 const HISTORY_PAGE_SIZE: usize = 500;
 const MAX_BATCH_SIZE: usize = 50; // Gmail allows up to 100, but 50 is safer
@@ -375,6 +375,30 @@ impl GmailClient {
         max_results: usize,
         page_token: Option<&str>,
     ) -> Result<SearchResult, String> {
+        let (thread_ids, next_page_token) = self.list_thread_ids(query, page_token, max_results).await?;
+        if thread_ids.is_empty() {
+            return Ok(SearchResult {
+                groups: Vec::new(),
+                next_page_token: None,
+                has_more: false,
+            });
+        }
+
+        let threads = self.batch_get_thread_details(&thread_ids).await?;
+        Ok(SearchResult {
+            groups: group_threads_by_date(threads, &Local::now()),
+            has_more: next_page_token.is_some(),
+            next_page_token,
+        })
+    }
+
+    /// One page of the ids of threads matching `query`, and the next page's token
+    pub(crate) async fn list_thread_ids(
+        &self,
+        query: &str,
+        page_token: Option<&str>,
+        max_results: usize,
+    ) -> Result<(Vec<String>, Option<String>), String> {
         let mut url = format!(
             "{}/users/me/threads?q={}&maxResults={}",
             self.api_base,
@@ -401,20 +425,7 @@ impl GmailClient {
             .map_err(|e| body_error("response", e))?;
 
         let thread_ids: Vec<String> = list.threads.unwrap_or_default().into_iter().map(|t| t.id).collect();
-        if thread_ids.is_empty() {
-            return Ok(SearchResult {
-                groups: Vec::new(),
-                next_page_token: None,
-                has_more: false,
-            });
-        }
-
-        let threads = self.batch_get_thread_details(&thread_ids).await?;
-        Ok(SearchResult {
-            groups: group_threads_by_date(threads, &Local::now()),
-            has_more: list.next_page_token.is_some(),
-            next_page_token: list.next_page_token,
-        })
+        Ok((thread_ids, list.next_page_token))
     }
 
     pub async fn get_thread(&self, thread_id: &str) -> Result<FullThread, String> {
@@ -2308,7 +2319,7 @@ fn classify_date<Tz: TimeZone>(date: DateTime<Utc>, now: &DateTime<Tz>) -> DateB
     DateBucket::Older
 }
 
-fn group_threads_by_date<Tz: TimeZone>(threads: Vec<Thread>, now: &DateTime<Tz>) -> Vec<ThreadGroup> {
+pub(crate) fn group_threads_by_date<Tz: TimeZone>(threads: Vec<Thread>, now: &DateTime<Tz>) -> Vec<ThreadGroup> {
     let mut groups: HashMap<&'static str, Vec<Thread>> = HashMap::new();
     for thread in threads {
         let label = classify_date(thread.last_message_date, now).as_str();

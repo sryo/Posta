@@ -1,5 +1,5 @@
 import { Show, For, onCleanup, createUniqueId, createSignal, createEffect } from "solid-js";
-import type { SendAttachment } from "../api/tauri";
+import type { Account, SendAttachment } from "../api/tauri";
 import { truncateMiddle } from "../utils";
 import { CloseIcon, AttachmentIcon } from "./Icons";
 import { CloseButton } from "./ComposeAtoms";
@@ -54,6 +54,12 @@ interface ComposeFormProps {
   focusTo?: boolean;
   // Contacts to suggest for the recipient being typed in To, Cc and Bcc
   suggestContacts?: (query: string) => RecipientSuggestion[];
+  // The accounts a new email can be sent from, asked for with more than one
+  fromAccounts?: Account[];
+  fromAccountId?: string;
+  setFromAccountId?: (id: string) => void;
+  // The account a reply goes out from, shown when set
+  fromEmail?: string;
 }
 
 export const ComposeForm = (props: ComposeFormProps) => {
@@ -114,6 +120,29 @@ export const ComposeForm = (props: ComposeFormProps) => {
   };
 
   // Shared field components (only rendered when showFields !== false)
+  const FromField = () => (
+    <>
+      <Show when={(props.fromAccounts?.length ?? 0) > 1 && props.setFromAccountId}>
+        <FieldRow label="From" for={`${fieldId}-from`} class="compose-from">
+          <select
+            id={`${fieldId}-from`}
+            value={props.fromAccountId}
+            onChange={(e) => props.setFromAccountId!(e.currentTarget.value)}
+          >
+            <For each={props.fromAccounts}>
+              {(account) => <option value={account.id}>{account.email}</option>}
+            </For>
+          </select>
+        </FieldRow>
+      </Show>
+      <Show when={props.fromEmail}>
+        <FieldRow label="From" class="compose-from">
+          <span class="compose-from-email">{props.fromEmail}</span>
+        </FieldRow>
+      </Show>
+    </>
+  );
+
   const ToField = () => (
     <FieldRow label="To" for={`${fieldId}-to`}>
       <div class="compose-to-row">
@@ -309,6 +338,7 @@ export const ComposeForm = (props: ComposeFormProps) => {
       </Show>
       <div class="compose-body">
         <Show when={props.showFields !== false}>
+          <FromField />
           <ToField />
           <CcBccFields />
           <SubjectField />

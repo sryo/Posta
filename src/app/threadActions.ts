@@ -22,6 +22,8 @@ export function labelChangeFor(action: string): LabelChange {
 }
 
 export interface LabelReversal {
+  // The account the change was made in
+  accountId: string;
   threadIds: string[];
   add: string[];
   remove: string[];
@@ -32,6 +34,7 @@ export interface LabelReversal {
 // A thread whose labels before the change aren't known gets the whole change
 // reversed.
 export function undoLabelChanges(
+  accountId: string,
   threadIds: string[],
   change: LabelChange,
   before: Map<string, Pick<Thread, "labels" | "unread_count">>,
@@ -45,7 +48,7 @@ export function undoLabelChanges(
     const add = change.remove.filter(had);
     if (add.length === 0 && remove.length === 0) continue;
     const key = `${add.join(",")}|${remove.join(",")}`;
-    const reversal = reversals.get(key) ?? { threadIds: [], add, remove };
+    const reversal = reversals.get(key) ?? { accountId, threadIds: [], add, remove };
     reversal.threadIds.push(id);
     reversals.set(key, reversal);
   }

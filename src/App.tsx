@@ -118,7 +118,8 @@ import { AuthScreen } from "./components/AuthScreen";
 import { PresetPicker } from "./components/PresetPicker";
 import { EmptyBoard } from "./components/EmptyBoard";
 import { SmartRepliesSettings } from "./components/SmartRepliesSettings";
-import { cardSpecs, loadLayoutSnapshot, saveLayoutSnapshot, type CardSpec } from "./app/layoutSnapshot";
+import { cardSpecs, loadLayoutSnapshot, saveLayoutSnapshot, specAccountId, type CardSpec } from "./app/layoutSnapshot";
+import { ALL_ACCOUNTS, accountFromError, accountsToPoll, cardAccountIds, cardCoversAccount, eventAccountId, inAccount, threadAccountId, threadIdsByAccount, threadKey } from "./app/accountScope";
 import { GoogleCredentialsForm } from "./components/GoogleCredentialsForm";
 import { credentialsValid, shortClientId } from "./app/googleCredentials";
 import { ComposeForm } from "./components/ComposeForm";
@@ -131,6 +132,7 @@ import { ThreadView } from "./components/ThreadView";
 import { EventView } from "./components/EventView";
 import { ActionsWheel } from "./components/ActionsWheel";
 import { CardForm } from "./components/CardForm";
+import { CardAccountBadge } from "./components/CardAccountBadge";
 import { Dialog } from "./components/Dialog";
 import { Toasts } from "./components/Toasts";
 import { createToasts, type ToastAction, type ToastTone } from "./app/toasts";
@@ -154,7 +156,7 @@ import { PRESETS } from "./app/presets";
 import { normalizeActionOrder } from "./app/actionOrder";
 import { parseStoredWidth } from "./app/storedWidth";
 import { isSessionExpiredError, needsSignInAgain } from "./app/authErrors";
-import { signatureBlock, withSignature } from "./app/signature";
+import { signatureBlock, swapSignature, withSignature } from "./app/signature";
 import { isCalendarAttachment, isPreviewable, readFilesAsAttachments } from "./app/attachments";
 import { AttachmentLightbox, type PreviewAttachment } from "./components/AttachmentLightbox";
 import { MessageSender } from "./components/MessageSender";
@@ -199,6 +201,8 @@ function App() {
   const [activeThreadId, setActiveThreadId] = createSignal<string | null>(null);
   const [activeThreadCardId, setActiveThreadCardId] = createSignal<string | null>(null);
   const [activeThread, setActiveThread] = createSignal<FullThread | null>(null);
+  // The open thread's account, kept while an action takes it out of its card
+  const [activeThreadAccountId, setActiveThreadAccountId] = createSignal<string | null>(null);
   // CID attachment data fetched on-demand for inline images (cid -> base64 data)
   const [cidAttachmentData, setCidAttachmentData] = createSignal<Record<string, string>>({});
   const [threadLoading, setThreadLoading] = createSignal(false);
@@ -208,18 +212,19 @@ function App() {
   // Event View State
   const [activeEvent, setActiveEvent] = createSignal<GoogleCalendarEvent | null>(null);
   const [activeEventCardId, setActiveEventCardId] = createSignal<string | null>(null);
+  const [activeEventAccountId, setActiveEventAccountId] = createSignal<string | null>(null);
 
   // Calendar drawer state (for events)
   const [calendarDrawerOpen, setCalendarDrawerOpen] = createSignal(false);
-  const [availableCalendars, setAvailableCalendars] = createSignal<CalendarInfo[]>([]);
-  const [calendarsLoading, setCalendarsLoading] = createSignal(false);
-  // The account availableCalendars was loaded for
-  let calendarsAccountId: string | null = null;
-  let calendarsFetchingFor: string | null = null;
+  // Each account's calendars, loaded when first needed
+  const [calendarsByAccount, setCalendarsByAccount] = createStore<Record<string, CalendarInfo[]>>({});
+  const [calendarsLoading, setCalendarsLoading] = createStore<Record<string, boolean>>({});
+  const calendarsFor = (accountId: string | undefined) => (accountId && calendarsByAccount[accountId]) || [];
 
   // Label drawer state
   const [labelDrawerOpen, setLabelDrawerOpen] = createSignal(false);
-  const [accountLabels, setAccountLabels] = createSignal<GmailLabel[]>([]);
+  // Each account's labels; label ids repeat across mailboxes
+  const [labelsByAccount, setLabelsByAccount] = createStore<Record<string, GmailLabel[]>>({});
   const [labelsLoading, setLabelsLoading] = createSignal(false);
   const [labelsFailed, setLabelsFailed] = createSignal(false);
   const [labelSearchQuery, setLabelSearchQuery] = createSignal("");
@@ -242,9 +247,14 @@ function App() {
   // a request gets through
   const [offline, setOffline] = createSignal(typeof navigator !== "undefined" && navigator.onLine === false);
   const [reconnecting, setReconnecting] = createSignal(false);
-  const sessionExpired = () => !!expiredAccountId() && expiredAccountId() === selectedAccount()?.id;
   const [accounts, setAccounts] = createSignal<Account[]>([]);
+  // The default account: new emails, new cards and new events are its, and
+  // Settings' account section is about it. Cards show every account.
   const [selectedAccount, setSelectedAccount] = createSignal<Account | null>(null);
+  const accountById = (id: string | null | undefined) => (id ? accounts().find(a => a.id === id) ?? null : null);
+  const cardById = (id: string | null | undefined) => (id ? cards().find(c => c.id === id) : undefined);
+  // Whether this card shows mail of an account that needs signing in again
+  const cardExpired = (card: Card) => { const expired = expiredAccountId(); return !!expired && cardCoversAccount(card, expired); };
   const [cards, setCards] = createSignal<Card[]>([]);
   const [authLoading, setAuthLoading] = createSignal(false);
   const [cardThreads, setCardThreads] = createStore<Record<string, ThreadGroup[]>>({});
@@ -252,6 +262,21 @@ function App() {
   const [loadingThreads, setLoadingThreads] = createStore<Record<string, boolean>>({});
   const [cardErrors, setCardErrors] = createStore<Record<string, string | null>>({});
   const [collapsedCards, setCollapsedCards] = createStore<Record<string, boolean>>({});
+
+  // The account a card's thread came from
+  function threadOwner(threadId: string | null, cardId: string | null | undefined): Account | null {
+    const card = cardById(cardId);
+    const listed = (cardThreads[cardId ?? ""] ?? []).flatMap(g => g.threads).find(t => t.gmail_thread_id === threadId);
+    return accountById(threadAccountId(listed ?? { account_id: "" }, card));
+  }
+  // The account whose calendar an event is on
+  function eventOwner(event: GoogleCalendarEvent, cardId?: string | null): Account | null {
+    const card = cardById(cardId)
+      ?? cards().find(c => c.account_id !== ALL_ACCOUNTS && cardCalendarEvents[c.id]?.some(e => e.id === event.id));
+    return accountById(eventAccountId(event, card));
+  }
+  const activeThreadAccount = () => accountById(activeThreadAccountId());
+  const activeEventAccount = () => accountById(activeEventAccountId());
   const [cardPageTokens, setCardPageTokens] = createStore<Record<string, string | null>>({});
   const [cardHasMore, setCardHasMore] = createStore<Record<string, boolean>>({});
   const [loadingMore, setLoadingMore] = createStore<Record<string, boolean>>({});
@@ -270,27 +295,26 @@ function App() {
     return formatTime(timestamp);
   };
 
-  // Google Contacts from People API
-  const [googleContacts, setGoogleContacts] = createSignal<Contact[]>([]);
+  // Each account's Google Contacts from the People API
+  const [contactsByAccount, setContactsByAccount] = createStore<Record<string, Contact[]>>({});
+  const googleContacts = () => Object.values(contactsByAccount).flat();
 
   // The user's answer to each invite, by rsvpLookups.key(account, event uid):
   // "accepted" | "tentative" | "declined" | "needsAction"
   const [rsvpStatus, setRsvpStatus] = createStore<Record<string, string>>({});
   const [rsvpLoading, setRsvpLoading] = createStore<Record<string, boolean>>({});
   const rsvpLookups = createRsvpLookups({ lookup: getCalendarRsvpStatus, onStatus: setRsvpStatus });
-  const inviteRsvp = (uid: string | null) => {
-    const account = selectedAccount();
-    return account && uid ? rsvpStatus[rsvpLookups.key(account.id, uid)] : undefined;
-  };
+  const inviteRsvp = (account: Account | null, uid: string | null) =>
+    account && uid ? rsvpStatus[rsvpLookups.key(account.id, uid)] : undefined;
 
   // Answers an event listed in a calendar card or open in the event view
-  const answerListedEvent = async (event: GoogleCalendarEvent, status: RsvpStatus) => {
-    const account = selectedAccount();
+  const answerListedEvent = async (event: GoogleCalendarEvent, status: RsvpStatus, cardId?: string | null) => {
+    const account = eventOwner(event, cardId);
     if (!account || rsvpLoading[event.id]) return;
     setRsvpLoading(event.id, true);
     try {
       await rsvpListedCalendarEvent(account.id, event.calendar_id, event.id, status);
-      markEventRsvp(event.id, status);
+      markEventRsvp(event.id, status, account);
       showToast(rsvpSentMessage(status));
     } catch (e) {
       showFailure("Couldn't send your RSVP", e);
@@ -301,16 +325,15 @@ function App() {
 
   // Answers an invite from its email; the calendar cards showing the event
   // pick up the answer too
-  const handleRsvp = async (threadId: string, eventUid: string | null, status: RsvpStatus) => {
-    const account = selectedAccount();
+  const handleRsvp = async (account: Account | null, threadId: string, eventUid: string | null, status: RsvpStatus) => {
     if (!eventUid || !account || rsvpLoading[threadId]) return;
     setRsvpLoading(threadId, true);
     try {
       await rsvpCalendarEvent(account.id, eventUid, status);
       setRsvpStatus(rsvpLookups.key(account.id, eventUid), status);
       const eventIds = new Set(Object.values(cardCalendarEvents).flatMap(events =>
-        (events ?? []).filter(ev => inviteNamesEvent(eventUid, ev.id)).map(ev => ev.id)));
-      for (const eventId of eventIds) markEventRsvp(eventId, status);
+        (events ?? []).filter(ev => inviteNamesEvent(eventUid, ev.id) && (!ev.account_id || ev.account_id === account.id)).map(ev => ev.id)));
+      for (const eventId of eventIds) markEventRsvp(eventId, status, account);
       showToast(rsvpSentMessage(status));
     } catch (e) {
       showFailure("Couldn't send your RSVP", e);
@@ -321,7 +344,6 @@ function App() {
 
   // Undo/toast state
   interface UndoableAction {
-    accountId: string;
     action: string;
     threadIds: string[];
     cardId: string;
@@ -341,7 +363,7 @@ function App() {
     send: async pending => {
       await sendPending(pending);
       const fromBatch = batchReplyOrigins.get(pending);
-      if (fromBatch?.cardId && selectedAccount()?.id === pending.accountId) fetchAndCacheThreads(pending.accountId, fromBatch.cardId);
+      if (fromBatch?.cardId) fetchAndCacheThreads(fromBatch.cardId);
       const draft = pending.draft;
       if (draft) {
         markDraftSending(draft.key, null);
@@ -372,7 +394,7 @@ function App() {
   // A failed send says so even when its email opens again by itself
   function putBackSend(pending: PendingSend, message: string, tone: ToastTone = "info") {
     const fromBatch = batchReplyOrigins.get(pending);
-    if (fromBatch && selectedAccount()?.id === pending.accountId) {
+    if (fromBatch && accountById(pending.accountId)) {
       restoreBatchReply(fromBatch);
       if (tone === "error") toasts.show({ message, tone });
       return;
@@ -498,6 +520,8 @@ function App() {
   const [newCardQuery, setNewCardQuery] = createSignal("");
   const [newCardColor, setNewCardColor] = createSignal<CardColor>(null);
   const [newCardGroupBy, setNewCardGroupBy] = createSignal<GroupBy>("date");
+  // The new card's account, or ALL_ACCOUNTS; null is the default account
+  const [newCardAccountId, setNewCardAccountId] = createSignal<string | null>(null);
   const [colorPickerOpen, setColorPickerOpen] = createSignal(false);
   let addCardFormRef: HTMLDivElement | undefined;
 
@@ -516,11 +540,17 @@ function App() {
   const [editCardQuery, setEditCardQuery] = createSignal("");
   const [editCardColor, setEditCardColor] = createSignal<CardColor>(null);
   const [editCardGroupBy, setEditCardGroupBy] = createSignal<GroupBy>("date");
+  const [editCardAccountId, setEditCardAccountId] = createSignal<string>("");
   const [editColorPickerOpen, setEditColorPickerOpen] = createSignal(false);
   // What the editor's fields held before the user touched them; a change
   // pulled from iCloud replaces only fields still holding it, so saving
   // doesn't write the pulled change back over
-  let editCardStart: Pick<Card, "name" | "query" | "color" | "group_by"> | null = null;
+  let editCardStart: Pick<Card, "account_id" | "name" | "query" | "color" | "group_by"> | null = null;
+  const editStartOf = (card: Card) => ({ account_id: card.account_id, name: card.name, query: card.query, color: card.color || null, group_by: card.group_by || "date" });
+
+  // The account (or ALL_ACCOUNTS) of the card being edited or added, which
+  // its query preview searches
+  const formScope = () => editingCardId() ? editCardAccountId() : newCardAccountId() ?? selectedAccount()?.id ?? null;
 
   // While editing, the card body doubles as a live preview: it keeps showing
   // the card's real content until the draft query diverges from the saved one
@@ -528,7 +558,7 @@ function App() {
     if (editingCardId() !== cardId) return false;
     const card = cards().find(c => c.id === cardId);
     if (!card) return false;
-    return editCardQuery().trim() !== card.query.trim();
+    return editCardQuery().trim() !== card.query.trim() || editCardAccountId() !== card.account_id;
   }
 
   function effectiveCardType(card: Card): Card["card_type"] {
@@ -546,15 +576,15 @@ function App() {
   // Native context menu for attachments. Its items live in the backend until
   // closed, so one menu serves every right-click, acting on the attachment
   // clicked last.
-  type MenuAttachment = { messageId: string; attachmentId: string; filename: string; mimeType: string; inlineData: string | null };
+  type MenuAttachment = { accountId: string; messageId: string; attachmentId: string; filename: string; mimeType: string; inlineData: string | null };
   let menuAttachment: MenuAttachment | null = null;
   let attachmentMenu: Promise<Menu> | null = null;
   function createAttachmentMenu(): Promise<Menu> {
     const withAttachment = (run: (att: MenuAttachment) => void) => () => { if (menuAttachment) run(menuAttachment); };
     return (async () => Menu.new({
       items: [
-        await MenuItem.new({ text: "Open", action: withAttachment(att => openAttachment(att.messageId, att.attachmentId, att.filename, att.mimeType, att.inlineData)) }),
-        await MenuItem.new({ text: "Download", action: withAttachment(att => downloadAttachment(att.messageId, att.attachmentId, att.filename, att.mimeType, att.inlineData)) }),
+        await MenuItem.new({ text: "Open", action: withAttachment(att => openAttachment(att.accountId, att.messageId, att.attachmentId, att.filename, att.mimeType, att.inlineData)) }),
+        await MenuItem.new({ text: "Download", action: withAttachment(att => downloadAttachment(att.accountId, att.messageId, att.attachmentId, att.filename, att.mimeType, att.inlineData)) }),
         await PredefinedMenuItem.new({ item: "Separator" }),
         await MenuItem.new({ text: "Forward", action: withAttachment(forwardAttachment) }),
       ],
@@ -572,15 +602,11 @@ function App() {
   }
 
   // Attach to the open compose, or start a new email with it
-  async function forwardAttachment(
-    att: { messageId: string; attachmentId: string; filename: string; mimeType: string; inlineData: string | null }
-  ) {
-    const account = selectedAccount();
-    if (!account) return;
+  async function forwardAttachment(att: MenuAttachment) {
     try {
-      const data = att.inlineData || await downloadAttachmentApi(account.id, att.messageId, att.attachmentId);
+      const data = att.inlineData || await downloadAttachmentApi(att.accountId, att.messageId, att.attachmentId);
       // The compose that is animating out is done; start a new one
-      if (!composing() || closingCompose()) startCompose({});
+      if (!composing() || closingCompose()) startCompose({ accountId: att.accountId });
       setComposeAttachments([...composeAttachments(), { filename: att.filename, mime_type: att.mimeType, data }]);
     } catch (e) {
       console.error("Failed to forward attachment:", e);
@@ -617,8 +643,8 @@ function App() {
       return;
     }
 
-    const account = selectedAccount();
-    if (!account) {
+    const scope = formScope();
+    if (!scope) {
       setQueryPreviewLoading(false);
       return;
     }
@@ -629,7 +655,7 @@ function App() {
     if (cardTypeForQuery(query) === "calendar") {
       setQueryPreviewThreads([]);
       try {
-        const events = await fetchCalendarEvents(account.id, query);
+        const events = await fetchCalendarEvents(scope, query);
         if (seq !== queryPreviewSeq) return;
         setQueryPreviewCalendarEvents(events);
       } catch (e) {
@@ -646,7 +672,7 @@ function App() {
     // Fetch threads for email queries
     setQueryPreviewCalendarEvents([]);
     try {
-      const groups = await searchThreadsPreview(account.id, query);
+      const groups = await searchThreadsPreview(scope, query);
       if (seq !== queryPreviewSeq) return;
       setQueryPreviewThreads(groups);
     } catch (e) {
@@ -768,14 +794,16 @@ function App() {
 
   // Compose
   const [composing, setComposing] = createSignal(false);
-  // The account a compose was opened in: switching accounts mid-compose must
-  // not change the sender or where its draft is saved. A compose opened
-  // before any account was signed in adopts the first one.
+  // The account a compose sends from, set when it opens: the thread's or
+  // event's for a reply, else the default account. Changing the default
+  // mid-compose changes neither the sender nor where its draft is saved. A
+  // compose opened before any account was signed in adopts the first one.
   const [composeAccount, setComposeAccount] = createSignal<Account | null>(null);
+  let composeOpeningAccountId: string | undefined;
   createComputed(on([composing, selectedAccount], ([open, account], prev) => {
     if (!open || (prev?.[0] && untrack(composeAccount))) return;
     const adopting = !!prev?.[0] && !!account;
-    setComposeAccount(account);
+    setComposeAccount(untrack(() => accountById(composeOpeningAccountId)) ?? account);
     if (adopting) untrack(() => moveComposeDraftTo(account.id));
   }));
   // Event creation state
@@ -797,7 +825,7 @@ function App() {
     addMeet: boolean;
     saving: boolean;
     error: string | null;
-    editing: { id: string; calendarId: string } | null;
+    editing: { id: string; calendarId: string; accountId: string } | null;
     closing: boolean;
   }
 
@@ -825,11 +853,16 @@ function App() {
       ? defaultEventForm()
       : { ...f, startDate: defaults.date, startTime: defaults.startTime, endDate: defaults.endDate, endTime: defaults.endTime });
     setCreatingEvent(true);
-    fetchAvailableCalendars();
+    fetchAvailableCalendars(eventFormAccount()?.id);
+  };
+  // An edited event's account; a new event is the default account's
+  const eventFormAccount = () => {
+    const editing = eventForm().editing;
+    return editing ? accountById(editing.accountId) : selectedAccount();
   };
   const newEventCalendarId = () => {
-    const account = selectedAccount();
-    return eventForm().calendarId ?? (account ? defaultCalendarId(availableCalendars(), lastUsedCalendar(account.id)) : null);
+    const account = eventFormAccount();
+    return eventForm().calendarId ?? (account ? defaultCalendarId(calendarsFor(account.id), lastUsedCalendar(account.id)) : null);
   };
   // The form is kept nowhere once closed, so typed details need a yes first
   const dismissEventForm = async () => {
@@ -914,6 +947,30 @@ function App() {
     composeDraftKey = key;
   }
 
+  // Named in a reply with more than one account signed in
+  const composeFromEmail = () => (accounts().length > 1 ? composeAccount()?.email : undefined);
+  // A new email can go out from any account; a reply from its thread's
+  const composeIsReply = () => !!replyingToThread() || !!replyingToEvent();
+
+  // Sends the open compose from another account: its draft moves to that
+  // account, and its signature takes the old one's place
+  function changeComposeAccount(accountId: string) {
+    const next = accountById(accountId);
+    const previous = composeAccount();
+    if (!next || next.id === previous?.id || !composing() || closingCompose()) return;
+    // The Gmail draft saved so far is in the old account's Drafts
+    const oldDraftId = drafts.gmailDraftId();
+    cancelDraftSave();
+    drafts.detach();
+    if (previous && oldDraftId) {
+      deleteDraft(previous.id, oldDraftId).catch(e => console.warn("Failed to delete the old account's draft:", e));
+    }
+    setComposeAccount(next);
+    moveComposeDraftTo(next.id);
+    setComposeBody(swapSignature(composeBody(), previous?.signature, next.signature));
+    handleComposeInput();
+  }
+
   function saveDraft() {
     cancelDraftSave();
     const account = composeAccount();
@@ -974,8 +1031,6 @@ function App() {
 
   // Preset selection for new accounts
   const [showPresetSelection, setShowPresetSelection] = createSignal(false);
-  // Other accounts' layouts the picker offers to copy
-  const [copySources, setCopySources] = createSignal<{ email: string; cards: Card[] }[]>([]);
   // Bumped when a replaced layout is kept, so Settings offers it back
   const [layoutSnapshotVersion, setLayoutSnapshotVersion] = createSignal(0);
 
@@ -986,24 +1041,43 @@ function App() {
   let pollTimeoutId: number | undefined;
   let isPolling = false;
 
-  // Perform incremental sync and update UI
+  // Ask Gmail what changed in every account a card shows, and update the
+  // cards showing each account's mail
   async function performIncrementalSync() {
-    const account = selectedAccount();
-    if (!account || isPolling) return;
+    if (isPolling) return;
+    const polled = accountsToPoll(cards(), accounts());
+    if (polled.length === 0) return;
 
     isPolling = true;
-    refreshCalendarCards(account.id);
+    refreshCalendarCards();
+    try {
+      const changed = await Promise.all(polled.map(syncAccount));
+      if (changed.some(c => c === null)) {
+        // On error, backoff but don't stop polling
+        setPollInterval(prev => Math.min(prev * 2, MAX_POLL_INTERVAL));
+      } else if (changed.some(Boolean)) {
+        setPollInterval(BASE_POLL_INTERVAL);
+      } else {
+        // Backoff when idle (multiply by 1.5, max 5 minutes)
+        setPollInterval(prev => Math.min(Math.floor(prev * 1.5), MAX_POLL_INTERVAL));
+      }
+    } finally {
+      isPolling = false;
+    }
+  }
+
+  // Whether the account's mail changed; null when the sync failed
+  async function syncAccount(account: Account): Promise<boolean | null> {
     try {
       const result = await syncThreadsIncremental(account.id);
-      if (selectedAccount()?.id !== account.id) return;
+      if (!accountById(account.id)) return false;
       setOffline(false);
+      const covering = cards().filter(c => c.card_type !== "calendar" && cardCoversAccount(c, account.id));
 
       // Update sync times for non-collapsed email cards; calendar cards are
       // not touched by Gmail history sync and must not be stamped as synced
       const now = Date.now();
-      const nonCollapsedCardIds = cards()
-        .filter(c => !collapsedCards[c.id] && c.account_id === account.id && c.card_type !== "calendar")
-        .map(c => c.id);
+      const nonCollapsedCardIds = covering.filter(c => !collapsedCards[c.id]).map(c => c.id);
       if (nonCollapsedCardIds.length > 0) {
         setLastSyncTimes(produce(s => {
           for (const cardId of nonCollapsedCardIds) {
@@ -1012,40 +1086,26 @@ function App() {
         }));
       }
 
-      // Check if there were any changes
-      const hasChanges = result.modified_threads.length > 0 || result.deleted_thread_ids.length > 0;
-
       if (result.is_full_sync) {
-        // History ID was reset; incremental results are unusable.
-        // Refetch all non-collapsed email cards and go back to fast polling.
-        setPollInterval(BASE_POLL_INTERVAL);
-        for (const card of cards()) {
-          if (card.account_id !== account.id || card.card_type === "calendar") continue;
+        // History ID was reset; incremental results are unusable. Refetch
+        // the account's non-collapsed email cards.
+        for (const card of covering) {
           if (collapsedCards[card.id]) cardsMissingFullSync.add(card.id);
-          else fetchAndCacheThreads(account.id, card.id);
+          else fetchAndCacheThreads(card.id);
         }
-      } else if (hasChanges) {
-        // Reset to fast polling when changes detected
-        setPollInterval(BASE_POLL_INTERVAL);
-
-        // Apply changes to card threads
-        applyIncrementalChanges(result.modified_threads, result.deleted_thread_ids);
-      } else {
-        // Backoff when idle (multiply by 1.5, max 5 minutes)
-        setPollInterval(prev => Math.min(Math.floor(prev * 1.5), MAX_POLL_INTERVAL));
+        return true;
       }
+      applyIncrementalChanges(account.id, result.modified_threads, result.deleted_thread_ids);
+      return result.modified_threads.length > 0 || result.deleted_thread_ids.length > 0;
     } catch (e) {
       console.error("Incremental sync failed:", e);
       noteBackgroundError(account.id, e);
-      // On error, backoff but don't stop polling
-      setPollInterval(prev => Math.min(prev * 2, MAX_POLL_INTERVAL));
-    } finally {
-      isPolling = false;
+      return null;
     }
   }
 
-  // Apply incremental changes to all cards
-  function applyIncrementalChanges(modifiedThreads: Thread[], deletedThreadIds: string[]) {
+  // Apply one account's changes to the cards showing its mail
+  function applyIncrementalChanges(accountId: string, modifiedThreads: Thread[], deletedThreadIds: string[]) {
     if (modifiedThreads.length === 0 && deletedThreadIds.length === 0) return;
 
     const updatedCardThreads: Record<string, ThreadGroup[]> = {};
@@ -1054,18 +1114,21 @@ function App() {
     const cardsWithDeleted = new Set<string>();
     const deleted = new Set(deletedThreadIds);
     const modifiedById = new Map(modifiedThreads.map(t => [t.gmail_thread_id, t]));
+    const covering = cards().filter(c => c.card_type !== "calendar" && cardCoversAccount(c, accountId));
 
-    for (const cardId of Object.keys(cardThreads)) {
+    for (const card of covering) {
+      const cardId = card.id;
       const groups = cardThreads[cardId];
       if (!groups) continue;
+      const ours = (t: Thread) => threadAccountId(t, card) === accountId;
 
       const updatedGroups = groups.map(group => {
-        const threads = group.threads.filter(t => !deleted.has(t.gmail_thread_id)).map(t => {
-          const modified = modifiedById.get(t.gmail_thread_id);
+        const threads = group.threads.filter(t => !(ours(t) && deleted.has(t.gmail_thread_id))).map(t => {
+          const modified = ours(t) ? modifiedById.get(t.gmail_thread_id) : undefined;
           if (!modified) return t;
           matchedThreadIds.add(t.gmail_thread_id);
           cardsWithModified.add(cardId);
-          return modified;
+          return { ...modified, account_id: accountId };
         });
         if (threads.length !== group.threads.length) cardsWithDeleted.add(cardId);
         return { ...group, threads };
@@ -1087,14 +1150,11 @@ function App() {
     // A modified thread may no longer match its card's query (archived or
     // read elsewhere), and a thread in no card may be new to some card; only
     // the server can tell, so refetch the affected cards in the background
-    const account = selectedAccount();
-    if (!account) return;
     const unmatched = modifiedThreads.filter(t => !matchedThreadIds.has(t.gmail_thread_id));
-    for (const card of cards()) {
-      if (card.card_type === "calendar") continue;
+    for (const card of covering) {
       const mayGainThread = unmatched.some(t => threadMayJoinCard(t, card.query));
       if (!collapsedCards[card.id] && (mayGainThread || cardsWithModified.has(card.id))) {
-        fetchAndCacheThreads(account.id, card.id);
+        fetchAndCacheThreads(card.id);
       } else if (cardsWithDeleted.has(card.id)) {
         saveCardCache(card.id, updatedCardThreads[card.id], cardPageTokens[card.id] || null)
           .catch(e => console.warn("Failed to update thread cache:", e));
@@ -1118,21 +1178,20 @@ function App() {
   // Card changes made on another Mac, merged in without clearing what the
   // existing cards show
   async function pullCardsFromICloud() {
-    const account = selectedAccount();
-    if (!account) return;
+    if (!selectedAccount()) return;
     try {
       if (!(await pullFromICloud())) return;
-      if (selectedAccount()?.id !== account.id) return;
-      const cardList = (await getCards(account.id)).filter(c => !heldCardDeletes.has(c.id));
-      if (selectedAccount()?.id !== account.id) return;
-      const before = new Map(cards().map(c => [c.id, c.query]));
+      const cardList = (await getCards()).filter(c => !heldCardDeletes.has(c.id));
+      if (!selectedAccount()) return;
+      const fetchedAs = (c: Card) => `${c.account_id}\n${c.query}`;
+      const before = new Map(cards().map(c => [c.id, fetchedAs(c)]));
       const kept = new Set(cardList.map(c => c.id));
       setCards(reuseUnchanged(cards(), cardList));
       followPulledCardInEditor();
       forgetCardState([...before.keys()].filter(id => !kept.has(id)));
       for (const card of cardList) {
-        if (before.get(card.id) === card.query || collapsedCards[card.id]) continue;
-        // A changed card's cache holds its old query's threads
+        if (before.get(card.id) === fetchedAs(card) || collapsedCards[card.id]) continue;
+        // A changed card's cache holds its old query's or account's threads
         loadCardThreads(card.id, false, before.has(card.id));
       }
     } catch (e) {
@@ -1190,7 +1249,7 @@ function App() {
       window.addEventListener("offline", goOffline);
     }
     fetchContacts(accountId)
-      .then(contacts => { if (selectedAccount()?.id === accountId) setGoogleContacts(contacts); })
+      .then(contacts => { if (accountById(accountId)) setContactsByAccount(accountId, contacts); })
       .catch(e => console.warn("Failed to fetch contacts (user may need to re-auth):", e));
   }
 
@@ -1223,16 +1282,16 @@ function App() {
   // Dock badge: unread threads across cards. The memo only notifies when the
   // total changes, so refreshes that change nothing don't touch the badge.
   const totalUnread = createMemo(() => {
-    // A thread can match several cards; count it once
-    const unreadThreadIds = new Set<string>();
-    for (const groups of Object.values(cardThreads)) {
-      for (const group of groups) {
+    // A thread can match several cards; count it once in each account
+    const unreadThreads = new Set<string>();
+    for (const card of cards()) {
+      for (const group of cardThreads[card.id] ?? []) {
         for (const thread of group.threads) {
-          if (thread.unread_count > 0) unreadThreadIds.add(thread.gmail_thread_id);
+          if (thread.unread_count > 0) unreadThreads.add(threadKey(thread, card));
         }
       }
     }
-    return unreadThreadIds.size;
+    return unreadThreads.size;
   });
   createEffect(() => {
     const total = totalUnread();
@@ -1305,9 +1364,9 @@ function App() {
       const accts = await getAccounts();
       setAccounts(accts);
       if (accts.length > 0) {
-        setSelectedAccount(accts[0]);
-        await loadAccountCards(accts[0]);
-        startBackgroundSync(accts[0].id);
+        setSelectedAccount(accts.find(a => a.id === safeGetItem("defaultAccountId")) ?? accts[0]);
+        await loadBoard();
+        for (const account of accts) startBackgroundSync(account.id);
       }
       offerUnsentDraft(accts);
     } catch (e) {
@@ -1625,6 +1684,7 @@ function App() {
       if (!move) return;
       if (move.addingCard && !addingCard()) {
         setNewCardColor(null);
+        setNewCardAccountId(null);
         setQueryPreviewThreads([]);
         setQueryPreviewCalendarEvents([]);
         setQueryPreviewLoading(false);
@@ -1723,7 +1783,8 @@ function App() {
       const answer = invite?.method === "REQUEST" && invite.uid ? rsvpForKey(e) : null;
       if (answer) {
         e.preventDefault();
-        if (inviteRsvp(invite!.uid) !== answer) handleRsvp(thread.gmail_thread_id, invite!.uid, answer);
+        const owner = threadOwner(thread.gmail_thread_id, cardId);
+        if (inviteRsvp(owner, invite!.uid) !== answer) handleRsvp(owner, thread.gmail_thread_id, invite!.uid, answer);
         return;
       }
       if (e.key === 'a') {
@@ -1780,11 +1841,11 @@ function App() {
     // Quick actions on focused event
     const event = getFocusedEvent();
     if (event && cardId) {
-      const can = eventActions(event, selectedAccount()?.email ?? '');
+      const can = eventActions(event, eventOwner(event, cardId)?.email ?? '');
       const answer = can.rsvp ? rsvpForKey(e) : null;
       if (answer) {
         e.preventDefault();
-        if (event.response_status !== answer) answerListedEvent(event, answer);
+        if (event.response_status !== answer) answerListedEvent(event, answer, cardId);
         return;
       }
       if (e.key === 'r' && (can.reply || can.emailGuests)) {
@@ -1856,11 +1917,20 @@ function App() {
     }
   }
 
-  // Post-OAuth, for every new sign-in: restore the account's layout from
-  // iCloud, and only offer the preset picker when it has no cards
-  async function restoreLayoutAfterAuth(account: Account) {
-    upsertAccount(account);
+  // The account new emails, cards and events are made in. Every account's
+  // cards stay on the board.
+  function chooseDefaultAccount(account: Account) {
     setSelectedAccount(account);
+    safeSetItem("defaultAccountId", account.id);
+  }
+
+  // Post-OAuth, for every new sign-in: restore the account's cards from
+  // iCloud. A board still empty after that offers the preset picker; one
+  // with other accounts' cards says what the new account brought.
+  async function restoreLayoutAfterAuth(account: Account) {
+    const first = !selectedAccount();
+    upsertAccount(account);
+    if (first) chooseDefaultAccount(account);
 
     let synced = false;
     try {
@@ -1869,33 +1939,29 @@ function App() {
       console.warn("iCloud pull failed:", e);
     }
 
-    const cardList = await loadAccountCards(account);
-    if (!cardList) return;
+    const board = await loadBoard();
+    if (!board) return;
     startBackgroundSync(account.id);
 
-    if (cardList.length === 0) {
+    const count = (n: number) => `${n} card${n === 1 ? "" : "s"}`;
+    if (board.length === 0) {
       openPresetPicker();
-    } else if (synced) {
-      const count = `${cardList.length} card${cardList.length === 1 ? "" : "s"}`;
-      showToast(`Restored ${count} from iCloud`, { label: "Choose a different layout", run: openPresetPicker });
+    } else if (first) {
+      if (synced) showToast(`Restored ${count(board.length)} from iCloud`, { label: "Choose a different layout", run: openPresetPicker });
+    } else {
+      // loadBoard leaves cards it already shows alone
+      for (const card of board) {
+        if (card.account_id === ALL_ACCOUNTS && !collapsedCards[card.id]) refetchCard(card);
+      }
+      const restored = board.filter(c => c.account_id === account.id).length;
+      if (restored > 0) showToast(`Restored ${count(restored)} for ${account.email}`);
+      else showToast(`Added ${account.email}`, { label: "Add a card", run: () => openAddCard(account.id) });
     }
   }
 
-  async function openPresetPicker() {
-    const account = selectedAccount();
-    if (!account) return;
-    setCopySources([]);
+  function openPresetPicker() {
+    if (!selectedAccount()) return;
     setShowPresetSelection(true);
-    const sources: { email: string; cards: Card[] }[] = [];
-    for (const other of accounts().filter(a => a.id !== account.id)) {
-      try {
-        const otherCards = await getCards(other.id);
-        if (otherCards.length > 0) sources.push({ email: other.email, cards: otherCards });
-      } catch (e) {
-        console.warn("Couldn't read another account's cards:", e);
-      }
-    }
-    if (selectedAccount()?.id === account.id) setCopySources(sources);
   }
 
   // Sign in with Google through the browser, then hand the account to
@@ -1966,14 +2032,14 @@ function App() {
   function handleAddAccount() {
     return signInWithGoogle(async account => {
       setSettingsOpen(false);
-      closeAccountViews();
       await restoreLayoutAfterAuth(account);
     });
   }
 
-  // Swap the selected account's cards for new ones. The replaced layout is
-  // kept on this Mac, so Settings can bring it back. Resolves to whether
-  // the swap went through.
+  // Swap the board's cards for new ones, made in the account each spec
+  // names or else the default account. The replaced layout is kept on this
+  // Mac, so Settings can bring it back. Resolves to whether the swap went
+  // through.
   let replacingLayout = false;
   async function replaceLayout(specs: (CardSpec & { collapsed?: boolean })[]): Promise<boolean> {
     const account = selectedAccount();
@@ -1999,9 +2065,11 @@ function App() {
 
       const newCards: Card[] = [];
       const collapsed: Record<string, boolean> = {};
+      const signedIn = accounts().map(a => a.id);
       try {
         for (const spec of specs) {
-          const created = await createCard(account.id, spec.name, spec.query, spec.color, spec.group_by, spec.card_type);
+          const owner = specAccountId(spec, signedIn, account.id);
+          const created = await createCard(owner, spec.name, spec.query, spec.color, spec.group_by, spec.card_type);
           newCards.push(created);
           collapsed[created.id] = spec.collapsed ?? false;
         }
@@ -2029,11 +2097,6 @@ function App() {
       name: c.name, query: c.query, color: c.color || null, group_by: "date" as const, card_type: cardTypeForQuery(c.query), collapsed: c.collapsed,
     }));
     if (await replaceLayout(specs)) setShowPresetSelection(false);
-  }
-
-  async function copyLayoutFrom(email: string) {
-    const source = copySources().find(s => s.email === email);
-    if (source && await replaceLayout(cardSpecs(source.cards))) setShowPresetSelection(false);
   }
 
   const previousLayout = () => {
@@ -2084,6 +2147,12 @@ function App() {
     }
   }
 
+  // Undo toasts of an action in a single account, which signing out of it
+  // closes
+  const accountToastTag = (accountId: string) => `account:${accountId}`;
+
+  // Signs out of the default account: its cards and drafts go, and its mail
+  // leaves the all-inboxes cards. The next account becomes the default.
   async function handleSignOut() {
     const account = selectedAccount();
     if (!account) return;
@@ -2095,41 +2164,95 @@ function App() {
     }))) return;
     if (selectedAccount()?.id !== account.id) return;
 
-    const signedOutCards = cards();
     try {
       await deleteAccount(account.id);
       closeAccountViews();
       const remaining = accounts().filter(a => a.id !== account.id);
       setAccounts(remaining);
-      setSelectedAccount(null);
-      setCards([]);
-      forgetCardState(signedOutCards.map(c => c.id));
-      setAccountLabels([]);
+      // The backend keeps the all-inboxes cards while another account remains
+      const gone = cards().filter(c => c.account_id === account.id || (remaining.length === 0 && c.account_id === ALL_ACCOUNTS));
+      setCards(cards().filter(c => !gone.includes(c)));
+      forgetCardState(gone.map(c => c.id));
+      dropAccountFromCards(account.id);
+      batch(() => {
+        setLabelsByAccount(produce(s => { delete s[account.id]; }));
+        setCalendarsByAccount(produce(s => { delete s[account.id]; }));
+        setContactsByAccount(produce(s => { delete s[account.id]; }));
+      });
+      if (expiredAccountId() === account.id) setExpiredAccountId(null);
       removeAccountDrafts(account.id);
-      // Fall through to the next account instead of a blank screen
-      if (remaining.length > 0) {
-        await switchAccount(remaining[0]);
+      toasts.dismissTag(accountToastTag(account.id));
+      const next = remaining[0];
+      if (next) {
+        chooseDefaultAccount(next);
+        for (const card of cards()) {
+          if (card.account_id === ALL_ACCOUNTS && !collapsedCards[card.id]) refetchCard(card);
+        }
+      } else {
+        setSelectedAccount(null);
+        safeRemoveItem("defaultAccountId");
       }
     } catch (e) {
       setFailure("Couldn't sign out", e);
     }
   }
 
+  // Takes a signed-out account's threads and events out of the all-inboxes
+  // cards, and out of their saved caches
+  function dropAccountFromCards(accountId: string) {
+    batch(() => {
+      for (const card of cards()) {
+        if (card.account_id !== ALL_ACCOUNTS) continue;
+        const groups = cardThreads[card.id];
+        if (groups) {
+          const kept = groups
+            .map(g => ({ ...g, threads: g.threads.filter(t => threadAccountId(t, card) !== accountId) }))
+            .filter(g => g.threads.length > 0);
+          setCardThreads(card.id, reconcile(kept, { key: "gmail_thread_id" }));
+          saveCardCache(card.id, kept, cardPageTokens[card.id] || null).catch(e => console.warn("Failed to update thread cache:", e));
+        }
+        const events = cardCalendarEvents[card.id];
+        if (events) {
+          const kept = events.filter(ev => eventAccountId(ev, card) !== accountId);
+          setCardCalendarEvents(card.id, reconcile(kept, { key: "id" }));
+          saveCachedCardEvents(card.id, kept).catch(e => console.warn("Failed to update event cache:", e));
+        }
+      }
+    });
+  }
+
+  function refetchCard(card: Card) {
+    if (card.card_type === "calendar") refreshCalendarCard(card.id).catch(() => {});
+    else fetchAndCacheThreads(card.id);
+  }
+
+  // Opens the new-card form, making the card in `accountId` (the default
+  // account when not given)
+  function openAddCard(accountId: string | null = null) {
+    setNewCardColor(null);
+    setNewCardAccountId(accountId);
+    setQueryPreviewThreads([]);
+    setQueryPreviewCalendarEvents([]);
+    setQueryPreviewLoading(false);
+    setAddingCard(true);
+  }
+
   async function handleAddCard() {
-    const account = selectedAccount();
-    if (!account || !newCardName() || !newCardQuery()) return;
+    const accountId = newCardAccountId() ?? selectedAccount()?.id;
+    if (!accountId || !newCardName() || !newCardQuery()) return;
 
     try {
       const query = newCardQuery();
       const cardType = cardTypeForQuery(query);
 
-      const card = await createCard(account.id, newCardName(), query, newCardColor() || null, newCardGroupBy(), cardType);
+      const card = await createCard(accountId, newCardName(), query, newCardColor() || null, newCardGroupBy(), cardType);
       setCards([...cards(), card]);
       setCollapsedCards(card.id, false);
       setNewCardName("");
       setNewCardQuery("");
       setNewCardColor(null);
       setNewCardGroupBy("date");
+      setNewCardAccountId(null);
       setAddingCard(false);
       // Fetch threads/events for the new card
       loadCardThreads(card.id);
@@ -2158,6 +2281,7 @@ function App() {
       setNewCardQuery("");
       setNewCardColor(null);
       setNewCardGroupBy("date");
+      setNewCardAccountId(null);
       setColorPickerOpen(false);
       setAddingCard(false);
       setClosingAddCard(false);
@@ -2192,6 +2316,7 @@ function App() {
       onClose: target.onClose,
       onInput: handleComposeInput,
       get focusBody() { return focusComposeBody(); },
+      get fromEmail() { return composeFromEmail(); },
       get resizing() { return inlineResizing(); },
       onResizeStart: handleInlineResizeStart,
     };
@@ -2306,7 +2431,7 @@ function App() {
     focusBody?: boolean;
     // False when putting back an email that already has its signature
     signature?: boolean;
-    // Defaults to the selected account
+    // Defaults to the default account
     accountId?: string;
     // Continue this saved draft instead of looking for one
     draftKey?: string;
@@ -2314,6 +2439,7 @@ function App() {
   }) {
     if (composing() || closingCompose()) resetCompose();
     const accountId = init.accountId ?? selectedAccount()?.id;
+    composeOpeningAccountId = accountId;
     const group = draftKey(accountId, {
       replyThreadId: init.reply?.threadId,
       forwardThreadId: init.forward?.threadId,
@@ -2343,7 +2469,7 @@ function App() {
       setShowCcBcc(!!(fields.cc || fields.bcc));
       setComposeSubject(fields.subject ?? "");
       const body = fields.body ?? "";
-      setComposeBody(saved || init.signature === false ? body : withSignature(body, selectedAccount()?.signature));
+      setComposeBody(saved || init.signature === false ? body : withSignature(body, accountById(accountId)?.signature));
       setComposeIsHtml(!!init.isHtml);
       setFocusComposeBody(!!init.focusBody);
       setComposing(true);
@@ -2398,7 +2524,7 @@ function App() {
   }
 
   async function handleCreateEvent(scope: RecurrenceScope = "this") {
-    const account = selectedAccount();
+    const account = eventFormAccount();
     if (!account) return;
 
     const form = eventForm();
@@ -2451,10 +2577,10 @@ function App() {
       setCreatingEvent(false);
       setEventForm(defaultEventForm());
 
-      // Refresh calendar cards
+      // Refresh the calendar cards showing the account
       cards().forEach(card => {
-        if (isCalendarCard(card.id)) {
-          fetchAndCacheCalendarEvents(account.id, card.id, card.query);
+        if (isCalendarCard(card.id) && cardCoversAccount(card, account.id)) {
+          fetchAndCacheCalendarEvents(card.id, card.query);
         }
       });
 
@@ -2578,9 +2704,9 @@ function App() {
   }
 
   async function handleQuickReply() {
-    const account = selectedAccount();
     const threadId = quickReply().threadId;
     const cardId = quickReplyCardId();
+    const account = threadOwner(threadId, cardId);
     const text = quickReply().text;
     if (!account || !threadId || !cardId || !text.trim()) return;
 
@@ -2608,7 +2734,7 @@ function App() {
         setQuickReplyCardId(null);
       }
       showToast("Reply sent");
-      fetchAndCacheThreads(account.id, cardId);
+      fetchAndCacheThreads(cardId);
     } catch (e) {
       console.error("Failed to send reply:", e);
       setFailure("Couldn't send the reply", e);
@@ -2618,7 +2744,7 @@ function App() {
   }
 
   async function handleEventQuickReply(event: GoogleCalendarEvent) {
-    const account = selectedAccount();
+    const account = eventOwner(event);
     const text = quickReply().text;
     if (!account || !text.trim()) return;
     const { to } = eventReplyRecipients(event, account.email);
@@ -2647,7 +2773,7 @@ function App() {
   }
 
   async function handleQuickReaction(threadId: string, emoji: string) {
-    const account = selectedAccount();
+    const account = threadOwner(threadId, quickReplyCardId());
     if (!account || quickReactionSending()) return;
 
     setQuickReactionSending(true);
@@ -2690,7 +2816,7 @@ function App() {
     let cc = '';
     let body = thread.snippet;
     let previewOnly = false;
-    const account = selectedAccount();
+    const account = threadOwner(threadId, cardId);
     if (account) {
       try {
         const details = await getThreadDetails(account.id, threadId);
@@ -2714,6 +2840,7 @@ function App() {
       subject: fwdSubject,
       body: quotedBody,
       forward: { threadId, subject: fwdSubject, body: quotedBody },
+      accountId: account?.id,
     });
     if (previewOnly) showToast("Couldn't load the whole email, so only its preview is quoted");
   }
@@ -2722,7 +2849,7 @@ function App() {
     const threadId = activeThreadId();
     if (!threadId) return;
 
-    startCompose({ to, cc, subject, body: quotedBody, isHtml, reply: { threadId, messageId }, focusBody: true });
+    startCompose({ to, cc, subject, body: quotedBody, isHtml, reply: { threadId, messageId }, focusBody: true, accountId: activeThreadAccountId() ?? undefined });
 
     const thread = activeThread();
     if (thread && messageId) {
@@ -2736,11 +2863,11 @@ function App() {
   }
 
   function handleForwardFromThread(subject: string, body: string) {
-    startCompose({ subject, body, forward: { threadId: activeThreadId() || '', subject, body } });
+    startCompose({ subject, body, forward: { threadId: activeThreadId() || '', subject, body }, accountId: activeThreadAccountId() ?? undefined });
   }
 
   async function unsubscribeFromList(method: UnsubscribeMethod, listName: string) {
-    const account = selectedAccount();
+    const account = activeThreadAccount();
     if (!account) return;
     try {
       const outcome = await runUnsubscribe(account.id, method, { sendEmail, postOneClick: unsubscribeOneClick, openUrl });
@@ -2752,91 +2879,87 @@ function App() {
   }
 
   // Label drawer functions
-  let labelsAccountId: string | null = null;
-  let labelsFetchingFor: string | null = null;
+  const labelsFetching = new Set<string>();
   // refresh: reload the list even when it is loaded (labels made in Gmail
   // since), showing the loaded one meanwhile
-  async function fetchAccountLabels({ refresh = false } = {}) {
-    const account = selectedAccount();
-    if (!account) return;
-
-    // Clear cache if account changed
-    if (labelsAccountId !== account.id) {
-      setAccountLabels([]);
-      labelsAccountId = account.id;
-    }
-
-    const loaded = accountLabels().length > 0;
+  async function fetchAccountLabels(accountId: string | undefined, { refresh = false } = {}) {
+    if (!accountId) return;
+    const loaded = !!labelsByAccount[accountId]?.length;
     if (loaded && !refresh) return;
-    if (labelsFetchingFor === account.id) return;
+    if (labelsFetching.has(accountId)) return;
 
-    labelsFetchingFor = account.id;
-    setLabelsLoading(!loaded);
-    setLabelsFailed(false);
+    labelsFetching.add(accountId);
+    const shown = () => activeThreadAccountId() === accountId;
+    if (shown()) {
+      setLabelsLoading(!loaded);
+      setLabelsFailed(false);
+    }
     try {
-      const labels = await listLabels(account.id);
-      if (selectedAccount()?.id !== account.id) return;
+      const labels = await listLabels(accountId);
+      if (!accountById(accountId)) return;
       // Sort: user labels first (alphabetically), then system labels
       const sorted = labels.sort((a, b) => {
         if (a.label_type === 'user' && b.label_type !== 'user') return -1;
         if (a.label_type !== 'user' && b.label_type === 'user') return 1;
         return labelDisplayName(a).localeCompare(labelDisplayName(b));
       });
-      setAccountLabels(sorted);
+      setLabelsByAccount(accountId, sorted);
     } catch (e) {
       console.error("Failed to fetch labels:", e);
-      if (selectedAccount()?.id === account.id && !loaded) setLabelsFailed(true);
+      if (shown() && !loaded) setLabelsFailed(true);
     } finally {
-      if (labelsFetchingFor === account.id) labelsFetchingFor = null;
-      setLabelsLoading(false);
+      labelsFetching.delete(accountId);
+      if (shown()) setLabelsLoading(false);
     }
   }
 
-  const labelNames = createMemo(() => Object.fromEntries(accountLabels().map(l => [l.id, l.name])));
+  // The open thread's account's labels, for the label drawer
+  const accountLabels = () => labelsByAccount[activeThreadAccountId() ?? ""] ?? [];
+  const labelNamesByAccount = createMemo(() =>
+    Object.fromEntries(Object.entries(labelsByAccount).map(([id, labels]) => [id, Object.fromEntries(labels.map(l => [l.id, l.name]))])));
+  // A card's threads' label names, each from its own mailbox
+  const cardLabelNames = (card: Card | undefined) => (thread: Thread, labelId: string) =>
+    labelNamesByAccount()[threadAccountId(thread, card)]?.[labelId];
   const filteredLabels = createMemo(() => {
     const query = labelSearchQuery().toLowerCase();
     return query ? accountLabels().filter(l => labelDisplayName(l).toLowerCase().includes(query)) : accountLabels();
   });
 
   // "Group by label" shows label names, and a card query completes label:
-  // from them; only the label list carries them
+  // from them; only the label lists carry them
   createEffect(() => {
     if (!selectedAccount()) return;
-    const wantsLabels = cards().some(c => c.group_by === "label") || editingCardId() !== null || addingCard();
-    if (wantsLabels) untrack(fetchAccountLabels);
+    const wanted = new Set<string>();
+    for (const card of cards()) {
+      if (card.group_by === "label") cardAccountIds(card, accounts()).forEach(id => wanted.add(id));
+    }
+    const scope = (editingCardId() !== null || addingCard()) ? formScope() : null;
+    if (scope) cardAccountIds({ account_id: scope }, accounts()).forEach(id => wanted.add(id));
+    untrack(() => wanted.forEach(id => fetchAccountLabels(id)));
   });
 
   // Calendar drawer functions (for events)
-  async function fetchAvailableCalendars() {
-    const account = selectedAccount();
-    if (!account) return;
+  async function fetchAvailableCalendars(accountId: string | undefined) {
+    if (!accountId) return;
+    if (calendarsByAccount[accountId]?.length) return; // Already cached
+    if (calendarsLoading[accountId]) return;
 
-    if (calendarsAccountId !== account.id) {
-      setAvailableCalendars([]);
-      calendarsAccountId = account.id;
-    }
-
-    if (availableCalendars().length > 0) return; // Already cached
-    if (calendarsFetchingFor === account.id) return;
-
-    calendarsFetchingFor = account.id;
-    setCalendarsLoading(true);
+    setCalendarsLoading(accountId, true);
     try {
-      const calendars = await listCalendars(account.id);
-      if (selectedAccount()?.id !== account.id) return;
+      const calendars = await listCalendars(accountId);
+      if (!accountById(accountId)) return;
       // Sort: primary first, then alphabetically
       const sorted = calendars.sort((a, b) => {
         if (a.is_primary && !b.is_primary) return -1;
         if (!a.is_primary && b.is_primary) return 1;
         return a.name.localeCompare(b.name);
       });
-      setAvailableCalendars(sorted);
+      setCalendarsByAccount(accountId, sorted);
     } catch (e) {
       console.error("Failed to fetch calendars:", e);
-      if (selectedAccount()?.id === account.id) showFailure("Couldn't load your calendars", e, () => { void fetchAvailableCalendars(); });
+      if (accountById(accountId)) showFailure("Couldn't load your calendars", e, () => { void fetchAvailableCalendars(accountId); });
     } finally {
-      if (calendarsFetchingFor === account.id) calendarsFetchingFor = null;
-      if (selectedAccount()?.id === account.id) setCalendarsLoading(false);
+      setCalendarsLoading(accountId, false);
     }
   }
 
@@ -2852,8 +2975,8 @@ function App() {
     }
   }
 
-  function markEventRsvp(eventId: string, status: string) {
-    const email = selectedAccount()?.email ?? "";
+  function markEventRsvp(eventId: string, status: string, account: Account | null) {
+    const email = account?.email ?? "";
     setActiveEvent(ev => (ev && ev.id === eventId ? withOwnResponse(ev, status, email) : ev));
     updateEventInCards(eventId, ev => withOwnResponse(ev, status, email));
   }
@@ -2878,14 +3001,14 @@ function App() {
   // asks first (unless the scope menu, which says so, already asked) and
   // happens at once, as does deleting several occurrences of a series;
   // deleting one event without guests waits out its toast
-  async function deleteEvent(event: GoogleCalendarEvent, chosenScope?: RecurrenceScope, anchor?: ScopeAnchor) {
-    const account = selectedAccount();
+  async function deleteEvent(event: GoogleCalendarEvent, chosenScope?: RecurrenceScope, anchor?: ScopeAnchor, cardId?: string | null) {
+    const account = eventOwner(event, cardId);
     if (!account) return;
     const actions = eventActions(event, account.email);
     if (!chosenScope && event.recurring_event_id) {
       const title = actions.role === "organizer" ? deletePrompt(actions) : "Delete repeating event";
       const asked = await askScope(title, anchor ?? null);
-      if (!asked || selectedAccount()?.id !== account.id) return;
+      if (!asked || !accountById(account.id)) return;
       chosenScope = asked;
     }
     const scope = chosenScope ?? "this";
@@ -2899,7 +3022,7 @@ function App() {
           confirmLabel: "Delete event",
           tone: "danger",
         });
-        if (!confirmed || selectedAccount()?.id !== account.id) return;
+        if (!confirmed || !accountById(account.id)) return;
       }
       try {
         await deleteCalendarEvent(account.id, event.calendar_id, event.id, scope);
@@ -2919,7 +3042,7 @@ function App() {
       .filter(p => p.index !== -1);
     const putBack = () => {
       heldEventDeletes.delete(event.id);
-      if (selectedAccount()?.id !== account.id) return;
+      if (!accountById(account.id)) return;
       for (const { cardId, index } of places) {
         const events = cardCalendarEvents[cardId];
         if (!events || events.some(e => e.id === event.id)) continue;
@@ -2933,7 +3056,8 @@ function App() {
     updateEventInCards(event.id, () => null);
     if (activeEvent()?.id === event.id) { closeEvent(); restoreOpenedRowFocus(); }
     toasts.show({
-      message: `Deleted “${event.title || "(No title)"}”`,
+      message: inAccount(`Deleted “${event.title || "(No title)"}”`, [account.email], accounts().length),
+      tag: accountToastTag(account.id),
       undo: putBack,
       onExpire: async () => {
         try {
@@ -2950,7 +3074,7 @@ function App() {
 
   async function handleMoveEventToCalendar(destinationCalendarId: string) {
     const event = activeEvent();
-    const account = selectedAccount();
+    const account = activeEventAccount();
     if (!event || !account || event.calendar_id === destinationCalendarId) return;
 
     try {
@@ -2968,13 +3092,13 @@ function App() {
       // delete/edit from a card targets the old calendar and 404s
       updateEventInCards(event.id, () => movedEvent);
       cards().forEach(card => {
-        if (isCalendarCard(card.id)) {
-          fetchAndCacheCalendarEvents(account.id, card.id, card.query);
+        if (isCalendarCard(card.id) && cardCoversAccount(card, account.id)) {
+          fetchAndCacheCalendarEvents(card.id, card.query);
         }
       });
 
       // Find the destination calendar name
-      const destCal = availableCalendars().find(c => c.id === destinationCalendarId);
+      const destCal = calendarsFor(account.id).find(c => c.id === destinationCalendarId);
       const where = destCal?.name || 'calendar';
       showToast(event.recurring_event_id ? `Moved all its events to ${where}` : `Moved to ${where}`);
       setCalendarDrawerOpen(false);
@@ -3015,7 +3139,7 @@ function App() {
 
   async function handleThreadViewAction(action: string) {
     const thread = activeThread();
-    const account = selectedAccount();
+    const account = activeThreadAccount();
     const cardId = activeThreadCardId();
     if (!thread || !account) return;
 
@@ -3024,7 +3148,7 @@ function App() {
     const leavesView = ['archive', 'trash', 'spam'].includes(action);
     const order = cardId ? cardThreadOrder(cardId) : [];
 
-    await handleThreadAction(action, [thread.id], cardId || '');
+    await handleThreadAction(action, [thread.id], cardId || '', { accountId: account.id });
     if (activeThreadId() !== thread.id) return;
 
     if (leavesView) {
@@ -3070,7 +3194,7 @@ function App() {
 
   async function handleToggleLabel(labelId: string, labelName: string, isAdding: boolean) {
     const thread = activeThread();
-    const account = selectedAccount();
+    const account = activeThreadAccount();
     if (!thread || !account) return;
 
     const addLabels = isAdding ? [labelId] : [];
@@ -3080,7 +3204,8 @@ function App() {
       await modifyThreads(account.id, [thread.id], addLabels, removeLabels);
       await refreshActiveThread(account.id, thread.id);
       toasts.show({
-        message: `${isAdding ? 'Added' : 'Removed'} the label “${labelName}”`,
+        message: inAccount(`${isAdding ? 'Added' : 'Removed'} the label “${labelName}”`, [account.email], accounts().length),
+        tag: accountToastTag(account.id),
         undo: async () => {
           try {
             await modifyThreads(account.id, [thread.id], removeLabels, addLabels);
@@ -3101,8 +3226,7 @@ function App() {
   // was closed or reopened for other threads
   let batchReplyRequest = 0;
   async function startBatchReply(cardId: string, threadIds: string[]) {
-    const account = selectedAccount();
-    if (!account || threadIds.length === 0) return;
+    if (threadIds.length === 0) return;
 
     const request = ++batchReplyRequest;
     setBatchReplyLoading(true);
@@ -3113,9 +3237,12 @@ function App() {
     setBatchReplyMessages({});
 
     try {
-      const results = await Promise.allSettled(threadIds.map(async threadId =>
-        batchReplyEntry(threadId, (await getThreadDetails(account.id, threadId)).messages ?? [], account.email)
-      ));
+      const results = await Promise.allSettled(threadIds.map(async (threadId): Promise<BatchReplyThread | null> => {
+        const account = threadOwner(threadId, cardId);
+        if (!account) throw new Error("The account of this email is no longer signed in");
+        const entry = batchReplyEntry(threadId, (await getThreadDetails(account.id, threadId)).messages ?? [], account.email);
+        return entry && { ...entry, accountId: account.id };
+      }));
       if (request !== batchReplyRequest) return;
 
       const threads = results
@@ -3123,12 +3250,13 @@ function App() {
         .map(r => r.value)
         .filter((t): t is BatchReplyThread => t !== null);
       setBatchReplyThreads(threads);
-      for (const t of threads) fetchBatchReplyCidImages(account.id, t, request);
+      for (const t of threads) if (t.accountId) fetchBatchReplyCidImages(t.accountId, t, request);
 
       const failures = results.filter((r): r is PromiseRejectedResult => r.status === 'rejected');
       if (failures.length === 0) return;
       console.error("Batch reply couldn't load threads:", failures.map(f => f.reason));
-      noteBackgroundError(account.id, failures[0].reason);
+      const failedAccount = threadOwner(threadIds[results.indexOf(failures[0])], cardId);
+      if (failedAccount) noteBackgroundError(failedAccount.id, failures[0].reason);
       if (failures.length === results.length) {
         setBatchReplyError({ message: batchReplyLoadErrorMessage(failures[0].reason), threadIds });
       } else {
@@ -3257,8 +3385,8 @@ function App() {
   // false if it can't be sent. `quiet` leaves saying so to Send All, which
   // reports every failure at once.
   async function sendBatchReply(threadId: string, { quiet = false, queue = undoableSend.queue } = {}): Promise<boolean> {
-    const account = selectedAccount();
     const thread = batchReplyThreads().find(t => t.threadId === threadId);
+    const account = accountById(thread?.accountId);
     const message = batchReplyMessages()[threadId];
     const attachments = batchReplyAttachments()[threadId] || [];
 
@@ -3323,7 +3451,8 @@ function App() {
     setQueryPreviewCalendarEvents([]);
     setQueryPreviewLoading(false);
     setEditingCardId(card.id);
-    editCardStart = { name: card.name, query: card.query, color: card.color || null, group_by: card.group_by || "date" };
+    editCardStart = editStartOf(card);
+    setEditCardAccountId(card.account_id);
     setEditCardName(card.name);
     setEditCardQuery(card.query);
     setEditCardColor((card.color as CardColor) || null);
@@ -3341,11 +3470,13 @@ function App() {
     // The editor's fields already follow pulled changes the user hasn't
     // overridden (followPulledCardInEditor)
     const newQuery = editCardQuery();
-    const queryChanged = card.query !== newQuery;
+    // The backend clears the cache of a card moved to another account
+    const queryChanged = card.query !== newQuery || card.account_id !== editCardAccountId();
 
     try {
       const updatedCard: Card = {
         ...card,
+        account_id: editCardAccountId(),
         name: editCardName(),
         query: newQuery,
         color: editCardColor() || null,
@@ -3381,8 +3512,9 @@ function App() {
       if (editCardQuery() === start.query) setEditCardQuery(card.query);
       if ((editCardColor() || null) === (start.color || null)) setEditCardColor((card.color as CardColor) || null);
       if (editCardGroupBy() === start.group_by) setEditCardGroupBy(card.group_by || "date");
+      if (editCardAccountId() === start.account_id) setEditCardAccountId(card.account_id);
     });
-    editCardStart = { name: card.name, query: card.query, color: card.color || null, group_by: card.group_by || "date" };
+    editCardStart = editStartOf(card);
   }
 
   function cancelEditCard() {
@@ -3421,15 +3553,16 @@ function App() {
   // The card goes at once; it is deleted for good (and from iCloud) only
   // once its toast goes without Undo
   function handleDeleteCard(cardId: string) {
-    const account = selectedAccount();
     const index = cards().findIndex(c => c.id === cardId);
-    if (!account || index === -1) return;
+    if (index === -1) return;
     const deleted = cards()[index];
     const name = deleted.name || "Untitled";
     const wasCollapsed = !!collapsedCards[cardId];
     const putBack = () => {
       heldCardDeletes.delete(cardId);
-      if (selectedAccount()?.id !== account.id || cards().some(c => c.id === cardId)) return;
+      // Signing out of its account took it off the board meanwhile
+      const signedOut = deleted.account_id === ALL_ACCOUNTS ? accounts().length === 0 : !accountById(deleted.account_id);
+      if (signedOut || cards().some(c => c.id === cardId)) return;
       const next = [...cards()];
       next.splice(Math.min(index, next.length), 0, deleted);
       setCards(next);
@@ -3462,31 +3595,32 @@ function App() {
     const newCollapsed = { ...collapsedCards, [cardId]: !isCollapsed };
     saveCollapsedState(newCollapsed);
 
-    const account = selectedAccount();
-    if (!isCollapsed || !account) return;
+    if (!isCollapsed) return;
     const missedFullSync = cardsMissingFullSync.delete(cardId);
     if (!cardThreads[cardId]) loadCardThreads(cardId);
-    else if (missedFullSync) fetchAndCacheThreads(account.id, cardId);
+    else if (missedFullSync) fetchAndCacheThreads(cardId);
   }
 
 
-  // Show the selected account's cards: drop the previous account's loaded
-  // content, then load the cards, their collapsed state and every expanded
-  // card's threads/events. Returns null if the account changed meanwhile.
-  async function loadAccountCards(account: Account): Promise<Card[] | null> {
-    setCardThreads(reconcile({}));
-    setCardCalendarEvents(reconcile({}));
-    const cardList = await getCards(account.id);
-    if (selectedAccount()?.id !== account.id) return null;
-    setCards(cardList);
+  // Show the board's cards: every account's, with their collapsed state, and
+  // load what the expanded ones show and don't hold yet. Cards already shown
+  // keep what they show. Returns null when a later load superseded this one.
+  let boardLoad = 0;
+  async function loadBoard(): Promise<Card[] | null> {
+    const load = ++boardLoad;
+    const cardList = (await getCards()).filter(c => !heldCardDeletes.has(c.id));
+    if (load !== boardLoad || !selectedAccount()) return null;
+    const listed = new Set(cardList.map(c => c.id));
+    forgetCardState(cards().map(c => c.id).filter(id => !listed.has(id)));
+    setCards(reuseUnchanged(cards(), cardList));
 
     const savedCollapsed = safeGetJSON<Record<string, boolean>>("collapsedCards", {});
     const collapsed: Record<string, boolean> = {};
-    cardList.forEach(c => { collapsed[c.id] = savedCollapsed[c.id] ?? false; });
+    cardList.forEach(c => { collapsed[c.id] = collapsedCards[c.id] ?? savedCollapsed[c.id] ?? false; });
     setCollapsedCards(reconcile(collapsed));
 
     for (const card of cardList) {
-      if (!collapsed[card.id]) loadCardThreads(card.id);
+      if (!collapsed[card.id] && !cardThreads[card.id] && !cardCalendarEvents[card.id]) loadCardThreads(card.id);
     }
     return cardList;
   }
@@ -3504,8 +3638,8 @@ function App() {
     setCidAttachmentData({});
   }
 
-  // Views bound to the selected account's threads and events. Compose stays
-  // open: it remembers the account it was opened in.
+  // Views of threads and events, which signing out may have taken away.
+  // Compose stays open: it remembers the account it was opened in.
   function closeAccountViews() {
     closeThreadView();
     setActiveThread(null);
@@ -3519,30 +3653,7 @@ function App() {
     setQuickReplyCardId(null);
     setQuickReplyEventId(null);
     setActionsWheelOpen(false);
-    setGoogleContacts([]);
     if (creatingEvent() && eventForm().editing) closeEventForm();
-  }
-
-  async function switchAccount(account: Account) {
-    if (selectedAccount()?.id === account.id) return;
-    // Leaving the account closes its views; typed text in them is kept nowhere
-    const lost = [
-      batchReplyOpen() ? unsentBatchReplies() : null,
-      quickReply().text.trim() ? "your quick reply" : null,
-    ].filter((what): what is string => !!what);
-    if (lost.length > 0 && !(await askConfirm({ title: `Discard ${lost.join(" and ")}?`, message: "What you typed is lost.", confirmLabel: "Discard", cancelLabel: "Keep editing", tone: "danger" }))) return;
-    if (selectedAccount()?.id === account.id) return;
-
-    closeAccountViews();
-    // The banner speaks for the account being left; an expired session
-    // stays with its own account
-    setError(null);
-    setSelectedAccount(account);
-    try {
-      if (await loadAccountCards(account)) startBackgroundSync(account.id);
-    } catch (e) {
-      setFailure(`Couldn't load ${account.email}`, e);
-    }
   }
 
   // What each card's thread cache was last read or written as, and when. A
@@ -3566,22 +3677,24 @@ function App() {
     });
   }
 
-  // The card was edited or deleted since a fetch for `query` started
-  function cardQueryChanged(cardId: string, query: string | undefined): boolean {
-    return cards().find(c => c.id === cardId)?.query !== query;
+  // What a card's fetch was made for: its account (or all of them) and query
+  const fetchedFor = (card: Card | undefined) => card ? `${card.account_id}\n${card.query}` : undefined;
+
+  // The card was edited or deleted since a fetch for `fetched` started
+  function cardQueryChanged(cardId: string, fetched: string | undefined): boolean {
+    return fetchedFor(cardById(cardId)) !== fetched;
   }
 
   async function loadCardThreads(cardId: string, append = false, forceRefresh = false) {
-    const account = selectedAccount();
-    if (!account) return;
+    if (!selectedAccount()) return;
 
     // Check if this is a calendar card
     const card = cards().find(c => c.id === cardId);
 
-    // A response landing after the user switched accounts must not write
-    // the old account's threads into the store (dock badge, autocomplete),
-    // nor one for a query the card no longer has
-    const stale = () => selectedAccount()?.id !== account.id || cardQueryChanged(cardId, card?.query);
+    // A response for a query or account the card no longer has must not
+    // write its threads into the store (dock badge, autocomplete)
+    const fetched = fetchedFor(card);
+    const stale = () => cardQueryChanged(cardId, fetched);
     if (card?.card_type === "calendar") {
       await loadCalendarEvents(cardId, forceRefresh);
       return;
@@ -3616,13 +3729,13 @@ function App() {
           setLoadingThreads(cardId, false);
 
           // Fetch fresh data in background (don't await)
-          fetchAndCacheThreads(account.id, cardId);
+          fetchAndCacheThreads(cardId);
           return;
         }
       }
 
       const pageToken = append ? cardPageTokens[cardId] : null;
-      const result = await fetchThreadsPaginated(account.id, cardId, pageToken);
+      const result = await fetchThreadsPaginated(cardId, pageToken);
       if (stale()) return;
 
       if (append) {
@@ -3658,13 +3771,10 @@ function App() {
 
   // Load calendar events for calendar cards
   async function loadCalendarEvents(cardId: string, forceRefresh = false) {
-    const account = selectedAccount();
-    if (!account) return;
-
-    const stale = () => selectedAccount()?.id !== account.id;
-
     const card = cards().find(c => c.id === cardId);
     if (!card) return;
+    const fetched = fetchedFor(card);
+    const stale = () => cardQueryChanged(cardId, fetched);
 
     // Prevent concurrent loads (unless force refresh)
     if (!forceRefresh && loadingThreads[cardId]) return;
@@ -3685,13 +3795,13 @@ function App() {
           setLoadingThreads(cardId, false);
 
           // Fetch fresh data in background
-          fetchAndCacheCalendarEvents(account.id, cardId, card.query);
+          fetchAndCacheCalendarEvents(cardId, card.query);
           return;
         }
       }
 
       // No cache or forced refresh - fetch and wait
-      await fetchAndCacheCalendarEvents(account.id, cardId, card.query);
+      await fetchAndCacheCalendarEvents(cardId, card.query);
     } catch (e) {
       if (stale()) return;
       console.error("loadCalendarEvents error:", e);
@@ -3699,6 +3809,14 @@ function App() {
     } finally {
       setLoadingThreads(cardId, false);
     }
+  }
+
+  // The account a card's failed fetch was about: the one an all-inboxes
+  // error names, else the card's own
+  function failedAccountId(card: Card | undefined, e: unknown): string | null {
+    const named = accountFromError(e, accounts());
+    if (named) return named.id;
+    return card && card.account_id !== ALL_ACCOUNTS ? card.account_id : null;
   }
 
   function handleCardLoadError(cardId: string, e: unknown) {
@@ -3710,7 +3828,7 @@ function App() {
       return;
     }
     setCardErrors(cardId, "Session expired");
-    const accountId = selectedAccount()?.id;
+    const accountId = failedAccountId(cardById(cardId), e);
     if (accountId) markSessionExpired(accountId);
   }
 
@@ -3722,17 +3840,22 @@ function App() {
 
   // Background syncs keep showing cached mail; an expired session must still
   // surface, or the cards silently go stale
-  function noteBackgroundError(accountId: string, e: unknown) {
+  function noteBackgroundError(accountId: string | null, e: unknown) {
     if (isOfflineError(e)) setOffline(true);
-    if (isSessionExpiredError(String(e)) && selectedAccount()?.id === accountId) markSessionExpired(accountId);
+    if (accountId && isSessionExpiredError(String(e)) && accountById(accountId)) markSessionExpired(accountId);
   }
 
+  // Signed in again: refetch what the account's cards show
   async function resumeAccountAfterAuth(account: Account) {
     setExpiredAccountId(null);
     upsertAccount(account);
-    closeAccountViews();
-    setSelectedAccount(account);
-    if (await loadAccountCards(account)) startBackgroundSync(account.id);
+    if (!selectedAccount()) chooseDefaultAccount(account);
+    const board = await loadBoard();
+    if (!board) return;
+    startBackgroundSync(account.id);
+    for (const card of board) {
+      if (cardCoversAccount(card, account.id) && !collapsedCards[card.id]) loadCardThreads(card.id, false, true);
+    }
   }
 
   // Asks Google again for everything the board couldn't load or refresh
@@ -3749,12 +3872,11 @@ function App() {
   const goOffline = () => setOffline(true);
 
   const boardStatus = createMemo(() => {
-    const account = selectedAccount();
-    if (!account) return null;
+    if (!selectedAccount()) return null;
     const synced = cards().map(c => lastSyncTimes[c.id]).filter((t): t is number => !!t);
     return connectionStatus(
       {
-        expiredEmail: sessionExpired() ? account.email : null,
+        expiredEmail: accountById(expiredAccountId())?.email ?? null,
         offline: offline(),
         reconnecting: reconnecting(),
         lastSyncedAt: synced.length > 0 ? Math.max(...synced) : null,
@@ -3767,10 +3889,13 @@ function App() {
     return signInWithGoogle(resumeAccountAfterAuth);
   }
 
-  async function fetchAndCacheCalendarEvents(accountId: string, cardId: string, query: string) {
+  async function fetchAndCacheCalendarEvents(cardId: string, query: string) {
+    const card = cardById(cardId);
+    if (!card) return;
+    const fetched = fetchedFor(card);
     try {
-      const events = (await fetchCalendarEvents(accountId, query)).filter(ev => !heldEventDeletes.has(ev.id));
-      if (selectedAccount()?.id !== accountId || cardQueryChanged(cardId, query)) return;
+      const events = (await fetchCalendarEvents(card.account_id, query)).filter(ev => !heldEventDeletes.has(ev.id));
+      if (cardQueryChanged(cardId, fetched)) return;
       setCardCalendarEvents(cardId, reconcile(events, { key: "id" }));
       await saveCachedCardEvents(cardId, events);
       setLastSyncTimes(cardId, Date.now());
@@ -3783,46 +3908,53 @@ function App() {
       if (loadingThreads[cardId]) {
         throw e;
       }
-      noteBackgroundError(accountId, e);
+      noteBackgroundError(failedAccountId(card, e), e);
     }
   }
 
   // Calendar cards have no change feed, so every sync tick refetches the
-  // expanded ones
-  const refreshCalendarCard = coalesceByKey((key: string) => {
-    const [accountId, cardId, query] = JSON.parse(key) as [string, string, string];
-    return fetchAndCacheCalendarEvents(accountId, cardId, query);
+  // expanded ones. Overlapping refreshes of a card for the same account and
+  // query share one follow-up fetch.
+  const refreshCalendarCardFor = coalesceByKey((key: string) => {
+    const [cardId, , query] = JSON.parse(key) as [string, string, string];
+    return fetchAndCacheCalendarEvents(cardId, query);
   });
-  function refreshCalendarCards(accountId: string) {
+  function refreshCalendarCard(cardId: string) {
+    const card = cardById(cardId);
+    if (!card) return Promise.resolve();
+    return refreshCalendarCardFor(JSON.stringify([card.id, card.account_id, card.query]));
+  }
+  function refreshCalendarCards() {
     for (const card of cards()) {
-      if (card.account_id !== accountId || card.card_type !== "calendar") continue;
+      if (card.card_type !== "calendar") continue;
       if (collapsedCards[card.id] || loadingThreads[card.id]) continue;
-      refreshCalendarCard(JSON.stringify([accountId, card.id, card.query])).catch(() => {});
+      refreshCalendarCard(card.id).catch(() => {});
     }
   }
 
-  // Background fetch and cache update (no loading state shown)
-  // Background refresh of a card's first page. Overlapping requests for a
-  // card share one follow-up fetch instead of downloading it concurrently.
+  // Background refresh of a card's first page (no loading state shown).
+  // Overlapping requests for a card, for the same account and query, share
+  // one follow-up fetch instead of downloading it concurrently.
   const refreshCardThreads = coalesceByKey((key: string) => {
-    const [accountId, cardId] = JSON.parse(key) as [string, string];
-    return refreshCardThreadsNow(accountId, cardId);
+    const [cardId] = JSON.parse(key) as [string, string];
+    return refreshCardThreadsNow(cardId);
   });
-  function fetchAndCacheThreads(accountId: string, cardId: string) {
+  function fetchAndCacheThreads(cardId: string) {
     // Skip for calendar cards (they don't use thread caching)
     if (isCalendarCard(cardId)) return Promise.resolve();
-    return refreshCardThreads(JSON.stringify([accountId, cardId]));
+    return refreshCardThreads(JSON.stringify([cardId, fetchedFor(cardById(cardId))]));
   }
 
-  async function refreshCardThreadsNow(accountId: string, cardId: string) {
+  async function refreshCardThreadsNow(cardId: string) {
 
     // Capture pagination state so a page-1 fetch that resolves after the
     // user paginated doesn't wipe appended pages or rewind the page token
     const tokenBeforeFetch = cardPageTokens[cardId] ?? null;
-    const query = cards().find(c => c.id === cardId)?.query;
+    const card = cardById(cardId);
+    const fetched = fetchedFor(card);
     try {
-      const result = await fetchThreadsPaginated(accountId, cardId, null);
-      if (selectedAccount()?.id !== accountId || cardQueryChanged(cardId, query)) return;
+      const result = await fetchThreadsPaginated(cardId, null);
+      if (cardQueryChanged(cardId, fetched)) return;
       // Skip update if a recent action happened (prevents overwriting optimistic updates)
       const recent = lastAction();
       if (recent && Date.now() - recent.timestamp < 3000) {
@@ -3849,7 +3981,7 @@ function App() {
     } catch (e) {
       // Background refresh failed - set sync error but keep cached data shown
       setSyncErrors(cardId, String(e));
-      noteBackgroundError(accountId, e);
+      noteBackgroundError(failedAccountId(card, e), e);
     }
   }
 
@@ -3933,7 +4065,7 @@ function App() {
     const threads = isPreviewingQuery(cardId) ? queryPreviewThreads() : cardThreads[cardId];
     if (!threads) return [];
     const groupBy = getGroupByForCard(cardId);
-    let groups = regroupThreads(threads, groupBy, labelNames());
+    let groups = regroupThreads(threads, groupBy, cardLabelNames(cardById(cardId)));
 
     // Apply global filter
     const filter = globalFilter().toLowerCase().trim();
@@ -3987,19 +4119,17 @@ function App() {
   }
 
   async function openAttachment(
+    accountId: string,
     messageId: string,
     attachmentId: string | undefined,
     filename: string,
     mimeType: string,
     inlineData?: string | null
   ) {
-    const account = selectedAccount();
-    if (!account) return;
-
     showToast(`Opening ${filename}...`);
     try {
       await openAttachmentApi(
-        account.id,
+        accountId,
         messageId,
         attachmentId || null,
         filename,
@@ -4013,7 +4143,7 @@ function App() {
       if (String(e).startsWith("EXECUTABLE_ATTACHMENT:")) {
         showToast(`${filename} can run code, so Posta won't open it`, {
           label: "Save instead",
-          run: () => downloadAttachment(messageId, attachmentId, filename, mimeType, inlineData),
+          run: () => downloadAttachment(accountId, messageId, attachmentId, filename, mimeType, inlineData),
         });
         return;
       }
@@ -4021,42 +4151,41 @@ function App() {
     }
   }
 
-  const [attachmentPreview, setAttachmentPreview] = createSignal<{ items: PreviewAttachment[]; index: number } | null>(null);
+  // The attachments the lightbox steps through, all of one account's mail
+  const [attachmentPreview, setAttachmentPreview] = createSignal<{ accountId: string; items: PreviewAttachment[]; index: number } | null>(null);
 
   // Images and PDFs open in the lightbox, with the row's others to step through
-  function openCardAttachment(attachments: Attachment[], attachment: Attachment) {
+  function openCardAttachment(accountId: string, attachments: Attachment[], attachment: Attachment) {
     const previewable = attachments.filter(a => isPreviewable(a.mime_type));
     const index = previewable.indexOf(attachment);
     if (index === -1) {
-      openAttachment(attachment.message_id, attachment.attachment_id, attachment.filename, attachment.mime_type, attachment.inline_data);
+      openAttachment(accountId, attachment.message_id, attachment.attachment_id, attachment.filename, attachment.mime_type, attachment.inline_data);
       return;
     }
     const items = previewable.map(a => ({
       messageId: a.message_id, attachmentId: a.attachment_id, filename: a.filename, mimeType: a.mime_type, size: a.size, inlineData: a.inline_data,
     }));
-    setAttachmentPreview({ items, index });
+    setAttachmentPreview({ accountId, items, index });
   }
 
   async function loadPreviewData(item: PreviewAttachment): Promise<string> {
-    const account = selectedAccount();
-    if (!account) throw new Error("No account selected");
-    return downloadAttachmentApi(account.id, item.messageId, item.attachmentId);
+    const accountId = attachmentPreview()?.accountId;
+    if (!accountId) throw new Error("No account selected");
+    return downloadAttachmentApi(accountId, item.messageId, item.attachmentId);
   }
 
   async function downloadAttachment(
+    accountId: string,
     messageId: string,
     attachmentId: string | undefined,
     filename: string,
     mimeType: string,
     inlineData?: string | null
   ) {
-    const account = selectedAccount();
-    if (!account) return;
-
     showToast(`Downloading ${filename}...`);
     try {
       const savedPath = await saveAttachmentApi(
-        account.id,
+        accountId,
         messageId,
         attachmentId || null,
         filename,
@@ -4091,20 +4220,27 @@ function App() {
     }
   }
 
-  const userLabelNames = createMemo(() => accountLabels().filter(l => l.label_type === "user").map(l => l.name));
+  // The user labels of the accounts the card form's card shows, for its query
+  const userLabelNames = createMemo(() => {
+    const scope = formScope();
+    const ids = scope ? cardAccountIds({ account_id: scope }, accounts()) : [];
+    const names = ids.flatMap(id => (labelsByAccount[id] ?? []).filter(l => l.label_type === "user").map(l => l.name));
+    return [...new Set(names)];
+  });
 
   function suggestQuery(query: string, caret: number): QuerySuggestion[] {
     return querySuggestions(query, rankedContacts(), userLabelNames(), caret);
   }
 
   async function openThread(threadId: string, cardId: string) {
-    const account = selectedAccount();
+    const account = threadOwner(threadId, cardId);
     if (!account) {
-      console.error("No account selected");
+      console.error("The thread's account is not signed in");
       return;
     }
 
     rememberOpenedRow(cardId, threadId);
+    setActiveThreadAccountId(account.id);
     setActiveThreadId(threadId);
     setActiveThreadCardId(cardId);
     setThreadLoading(true);
@@ -4162,15 +4298,15 @@ function App() {
       listThreadDrafts,
       download: (messageId, attachmentId) => downloadAttachmentApi(accountId, messageId, attachmentId),
     }, Date.now());
-    if (activeThreadId() !== (draft.replyTo ? threadId : null) || selectedAccount()?.id !== accountId) return;
+    if (activeThreadId() !== (draft.replyTo ? threadId : null) || !accountById(accountId)) return;
     openComposeUnlessBusy(`Draft: ${init.subject || "(no subject)"}`, () => {
       startCompose({ ...init, accountId, signature: false, focusBody: true });
       if (missingAttachments.length > 0) showToast(`Attach again: ${missingAttachments.join(", ")}`);
     });
   }
 
-  async function discardDraftRow(threadId: string) {
-    const account = selectedAccount();
+  async function discardDraftRow(threadId: string, cardId: string) {
+    const account = threadOwner(threadId, cardId);
     if (!account) return;
     try {
       await discardThreadDrafts(account.id, threadId, { listThreadDrafts, deleteDraft });
@@ -4178,10 +4314,10 @@ function App() {
       showFailure("Couldn't discard the draft", e);
       return;
     }
-    if (selectedAccount()?.id !== account.id) return;
+    if (!accountById(account.id)) return;
     const updated: Record<string, ThreadGroup[]> = { ...cardThreads };
     for (const card of cards()) {
-      if (updated[card.id]) updated[card.id] = withDraftsDiscarded(updated[card.id], threadId, card.query);
+      if (updated[card.id] && cardCoversAccount(card, account.id)) updated[card.id] = withDraftsDiscarded(updated[card.id], threadId, card.query);
     }
     setCardThreads(reconcile(updated, { key: "gmail_thread_id" }));
   }
@@ -4203,6 +4339,7 @@ function App() {
 
   function openEvent(event: GoogleCalendarEvent, cardId: string) {
     rememberOpenedRow(cardId, event.id);
+    setActiveEventAccountId(eventOwner(event, cardId)?.id ?? null);
     setActiveEvent(event);
     setActiveEventCardId(cardId);
   }
@@ -4274,14 +4411,14 @@ function App() {
   async function undoThreadAction(action: UndoableAction) {
     if (lastAction() === action) setLastAction(null);
     try {
-      await Promise.all(action.reversals.map(r => modifyThreads(action.accountId, r.threadIds, r.add, r.remove)));
+      // An account signed out of since has nothing left to undo
+      const reversals = action.reversals.filter(r => accountById(r.accountId));
+      await Promise.all(reversals.map(r => modifyThreads(r.accountId, r.threadIds, r.add, r.remove)));
       // Refresh every card the optimistic update touched, not just the
-      // one the action originated from; they are gone after an account switch
-      if (selectedAccount()?.id === action.accountId) {
-        const cardsToRefresh = action.cardIds.length > 0 ? action.cardIds : [action.cardId];
-        for (const cId of cardsToRefresh) {
-          fetchAndCacheThreads(action.accountId, cId);
-        }
+      // one the action originated from
+      const cardsToRefresh = action.cardIds.length > 0 ? action.cardIds : [action.cardId];
+      for (const cId of cardsToRefresh) {
+        if (cardById(cId)) fetchAndCacheThreads(cId);
       }
     } catch (e) {
       console.error("Failed to undo action", e);
@@ -4290,10 +4427,18 @@ function App() {
   }
 
   // silent: a change the user didn't ask for directly (marking a thread
-  // read on open) gets no undo toast
-  async function handleThreadAction(action: string, threadIds: string[], cardId: string, { silent = false } = {}) {
-    const account = selectedAccount();
-    if (!account) return;
+  // read on open) gets no undo toast. `accountId` names the threads' account
+  // when the card may no longer list them (the open thread).
+  async function handleThreadAction(action: string, threadIds: string[], cardId: string, { silent = false, accountId }: { silent?: boolean; accountId?: string } = {}) {
+    const byAccount = accountId
+      ? new Map([[accountId, threadIds]])
+      : threadIdsByAccount(cardThreads[cardId] ?? [], threadIds, cardById(cardId) ?? { account_id: "" });
+    const owners = [...byAccount.keys()].map(accountById);
+    if (owners.length === 0 || owners.some(a => !a)) return;
+    const ownerOf = new Map([...byAccount].flatMap(([acc, ids]) => ids.map(id => [id, acc] as const)));
+    // Thread ids are only unique within an account: a card's thread is one
+    // of these when it has the id and comes from the account acted in
+    const isTarget = (t: Thread, card: Card) => ownerOf.get(t.gmail_thread_id) === threadAccountId(t, card);
 
     const { add: addLabels, remove: removeLabels } = labelChangeFor(action);
 
@@ -4303,22 +4448,29 @@ function App() {
     const updatedCardThreads: Record<string, ThreadGroup[]> = {};
     const snapshot: Record<string, ThreadGroup[]> = {};
     const affectedCardIds: string[] = [];
-    const labelsBefore = new Map<string, Pick<Thread, "labels" | "unread_count">>();
+    const labelsBefore = new Map<string, Map<string, Pick<Thread, "labels" | "unread_count">>>();
 
-    for (const [cId, groups] of Object.entries(cardThreads)) {
+    for (const card of cards()) {
+      const groups = cardThreads[card.id];
       if (!groups) continue;
-      if (groups.some(g => g.threads.some(t => threadIds.includes(t.gmail_thread_id)))) {
-        snapshot[cId] = structuredClone(unwrap(groups));
-        affectedCardIds.push(cId);
-        for (const t of snapshot[cId].flatMap(g => g.threads)) {
-          if (threadIds.includes(t.gmail_thread_id)) labelsBefore.set(t.gmail_thread_id, t);
-        }
+      const ids = [...new Set(groups.flatMap(g => g.threads).filter(t => isTarget(t, card)).map(t => t.gmail_thread_id))];
+      if (ids.length === 0) continue;
+      snapshot[card.id] = structuredClone(unwrap(groups));
+      affectedCardIds.push(card.id);
+      for (const t of snapshot[card.id].flatMap(g => g.threads)) {
+        if (!isTarget(t, card)) continue;
+        const acc = ownerOf.get(t.gmail_thread_id)!;
+        if (!labelsBefore.has(acc)) labelsBefore.set(acc, new Map());
+        labelsBefore.get(acc)!.set(t.gmail_thread_id, t);
       }
-      const query = cards().find(c => c.id === cId)?.query ?? "";
-      updatedCardThreads[cId] = applyThreadAction(groups, threadIds, action, actionRemovesFromCard(action, query));
+      updatedCardThreads[card.id] = applyThreadAction(groups, ids, action, actionRemovesFromCard(action, card.query));
     }
 
-    setCardThreads(reconcile(updatedCardThreads, { key: "gmail_thread_id" }));
+    batch(() => {
+      for (const [cId, groups] of Object.entries(updatedCardThreads)) {
+        setCardThreads(cId, reconcile(groups, { key: "gmail_thread_id" }));
+      }
+    });
     if (!silent) setActionsWheelOpen(false);
 
     // Clear selection after bulk action
@@ -4326,38 +4478,46 @@ function App() {
       setSelectedThreads({ ...selectedThreads(), [cardId]: new Set() });
     }
 
-    try {
-      await modifyThreads(account.id, threadIds, addLabels, removeLabels);
-      // Persist the optimistic changes only after the server accepted them
-      for (const cId of affectedCardIds) {
-        saveCardCache(cId, updatedCardThreads[cId], cardPageTokens[cId] || null)
-          .catch(e => console.warn("Failed to update thread cache:", e));
+    const results = await Promise.allSettled([...byAccount].map(([acc, ids]) => modifyThreads(acc, ids, addLabels, removeLabels)));
+    const failure = results.find((r): r is PromiseRejectedResult => r.status === "rejected");
+    if (failure) {
+      console.error("Failed to modify threads", failure.reason);
+      // Roll back the optimistic update; the cache was never written. When
+      // some accounts took the change, refetching shows what the server has.
+      setCardThreads(produce(s => {
+        for (const cId of affectedCardIds) {
+          if (cardById(cId)) s[cId] = snapshot[cId];
+        }
+      }));
+      if (results.some(r => r.status === "fulfilled")) {
+        for (const cId of affectedCardIds) if (cardById(cId)) fetchAndCacheThreads(cId);
       }
-      if (silent) return;
-      const done: UndoableAction = {
-        accountId: account.id,
-        action,
-        threadIds,
-        cardId,
-        cardIds: affectedCardIds,
-        reversals: undoLabelChanges(threadIds, { add: addLabels, remove: removeLabels }, labelsBefore),
-        timestamp: Date.now()
-      };
-      setLastAction(done);
-      toasts.show({ message: actionLabel(action, threadIds.length), undo: () => undoThreadAction(done) });
-    } catch (e) {
-      console.error("Failed to modify threads", e);
-      // Roll back the optimistic update; the cache was never written. After
-      // an account switch those cards are no longer loaded.
-      if (selectedAccount()?.id === account.id) {
-        setCardThreads(produce(s => {
-          for (const cId of affectedCardIds) {
-            s[cId] = snapshot[cId];
-          }
-        }));
-      }
-      setFailure(actionFailureLabel(action, threadIds.length), e);
+      setFailure(actionFailureLabel(action, threadIds.length), failure.reason);
+      return;
     }
+
+    // Persist the optimistic changes only after the server accepted them
+    for (const cId of affectedCardIds) {
+      saveCardCache(cId, updatedCardThreads[cId], cardPageTokens[cId] || null)
+        .catch(e => console.warn("Failed to update thread cache:", e));
+    }
+    if (silent) return;
+    const change = { add: addLabels, remove: removeLabels };
+    const done: UndoableAction = {
+      action,
+      threadIds,
+      cardId,
+      cardIds: affectedCardIds,
+      reversals: [...byAccount].flatMap(([acc, ids]) => undoLabelChanges(acc, ids, change, labelsBefore.get(acc) ?? new Map())),
+      timestamp: Date.now()
+    };
+    setLastAction(done);
+    const emails = owners.map(a => a!.email);
+    toasts.show({
+      message: inAccount(actionLabel(action, threadIds.length), emails, accounts().length),
+      tag: owners.length === 1 ? accountToastTag(owners[0]!.id) : undefined,
+      undo: () => undoThreadAction(done),
+    });
   }
 
   function toggleThreadSelection(cardId: string, threadId: string, e?: MouseEvent) {
@@ -4388,7 +4548,7 @@ function App() {
   const rankedContacts = createMemo(() => contactsWanted() ? rankContacts(
     googleContacts(),
     Object.values(cardThreads).flatMap(groups => groups.flatMap(g => g.threads)),
-    selectedAccount()?.email,
+    accounts().map(a => a.email),
     Date.now(),
   ) : []);
   // Kept while the suggestions fade out after the pointer leaves
@@ -4565,9 +4725,11 @@ function App() {
                         {(account) => (
                           <button
                             class={`account-chooser-item ${account.id === selectedAccount()?.id ? 'active' : ''}`}
+                            title="New emails, cards and events use the checked account"
+                            aria-pressed={account.id === selectedAccount()?.id}
                             onClick={() => {
                               setAccountChooserOpen(false);
-                              switchAccount(account);
+                              chooseDefaultAccount(account);
                             }}
                           >
                             {account.picture ? (
@@ -4678,7 +4840,7 @@ function App() {
                       }}
                     >
                       <div
-                        class={`card ${collapsedCards[card.id] ? 'collapsed' : ''} ${editingCardId() === card.id ? 'editing' : ''} ${(offline() || sessionExpired()) && (cardThreads[card.id] || cardCalendarEvents[card.id]) ? 'stale' : ''}`}
+                        class={`card ${collapsedCards[card.id] ? 'collapsed' : ''} ${editingCardId() === card.id ? 'editing' : ''} ${(offline() || cardExpired(card)) && (cardThreads[card.id] || cardCalendarEvents[card.id]) ? 'stale' : ''}`}
                         classList={{ 'dragging': sortable.isActiveDraggable }}
                         data-id={card.id}
                         data-color={editingCardId() === card.id ? (editCardColor() || undefined) : (card.color || undefined)}
@@ -4708,6 +4870,9 @@ function App() {
                             labelNames={userLabelNames()}
                             debounceQueryPreview={debounceQueryPreview}
                             onQueryFieldActive={(insert) => { insertIntoQueryField = insert; }}
+                            accounts={accounts()}
+                            accountId={editCardAccountId()}
+                            setAccountId={(id) => { setEditCardAccountId(id); if (editCardQuery().trim()) debounceQueryPreview(editCardQuery()); }}
                           />
                         </Show>
                         <Show when={editingCardId() !== card.id}>
@@ -4724,7 +4889,8 @@ function App() {
                               <ChevronIcon />
                             </button>
                             <span class="card-title">{card.name}</span>
-                            <Show when={!loadingThreads[card.id] && cardSyncLabel({ lastSyncedAt: lastSyncTimes[card.id], now: currentTime(), syncError: syncErrors[card.id], boardDown: offline() || sessionExpired() })}>
+                            <CardAccountBadge accountId={card.account_id} accounts={accounts()} />
+                            <Show when={!loadingThreads[card.id] && cardSyncLabel({ lastSyncedAt: lastSyncTimes[card.id], now: currentTime(), syncError: syncErrors[card.id], boardDown: offline() || cardExpired(card) })}>
                               {(label) => (
                                 <span
                                   class="sync-status"
@@ -4778,10 +4944,10 @@ function App() {
                           <Show when={isPreviewingQuery(card.id) && !queryPreviewLoading() && queryPreviewError()}>
                             <div class="query-preview-error" aria-live="polite">{queryPreviewError()}</div>
                           </Show>
-                          <Show when={!loadingThreads[card.id] && cardErrors[card.id] && !cardThreads[card.id] && !cardCalendarEvents[card.id] && cardWaitingMessage(cardErrors[card.id]!, syncErrors[card.id], sessionExpired())}>
+                          <Show when={!loadingThreads[card.id] && cardErrors[card.id] && !cardThreads[card.id] && !cardCalendarEvents[card.id] && cardWaitingMessage(cardErrors[card.id]!, syncErrors[card.id], cardExpired(card))}>
                             {(waiting) => <div class="card-waiting">{waiting()}</div>}
                           </Show>
-                          <Show when={!loadingThreads[card.id] && cardErrors[card.id] && !cardThreads[card.id] && !cardCalendarEvents[card.id] && !cardWaitingMessage(cardErrors[card.id]!, syncErrors[card.id], sessionExpired())}>
+                          <Show when={!loadingThreads[card.id] && cardErrors[card.id] && !cardThreads[card.id] && !cardCalendarEvents[card.id] && !cardWaitingMessage(cardErrors[card.id]!, syncErrors[card.id], cardExpired(card))}>
                             <div class="card-error">
                               <span class="error-icon">⚠</span>
                               <span class="error-text">{cardErrors[card.id]}</span>
@@ -4829,7 +4995,7 @@ function App() {
                                             <span>{event.location}</span>
                                           </div>
                                         </Show>
-                                        <Show when={event.response_status && eventActions(event, selectedAccount()?.email ?? '').rsvp}>
+                                        <Show when={event.response_status && eventActions(event, eventOwner(event, card.id)?.email ?? '').rsvp}>
                                           <div class={`calendar-event-response ${event.response_status}`}>
                                             {ownResponseLabel(event.response_status)}
                                           </div>
@@ -4867,7 +5033,7 @@ function App() {
                                               selectedCount={selectedEvents()[card.id]?.has(event.id) ? (selectedEvents()[card.id]?.size || 0) : 0}
                                               open={true}
                                               onClose={() => setEventActionsWheelOpen(false)}
-                                              selectedAccount={selectedAccount}
+                                              selectedAccount={() => eventOwner(event, card.id)}
                                               actionSettings={actionSettings}
                                               actionOrder={actionOrder}
                                               eventActionSettings={eventActionSettings}
@@ -4881,8 +5047,8 @@ function App() {
                                               startBatchReply={startBatchReply}
                                               handleForward={handleForward}
                                               handleThreadAction={handleThreadAction}
-                                              onDeleteEvent={(ev, anchor) => deleteEvent(ev, undefined, anchor)}
-                                              onRsvped={markEventRsvp}
+                                              onDeleteEvent={(ev, anchor) => deleteEvent(ev, undefined, anchor, card.id)}
+                                              onRsvped={(eventId, status) => markEventRsvp(eventId, status, eventOwner(event, card.id))}
                                               showToast={showToast}
                                               showFailure={showFailure}
                                             />
@@ -4894,7 +5060,7 @@ function App() {
                                         <div class="quick-reply-box" onClick={(e) => e.stopPropagation()}>
                                           <ComposeTextarea
                                             class="quick-reply-input"
-                                            placeholder={`Reply to ${eventReplyRecipients(event, selectedAccount()?.email ?? '').to || 'organizer'}...`}
+                                            placeholder={`Reply to ${eventReplyRecipients(event, eventOwner(event, card.id)?.email ?? '').to || 'organizer'}...`}
                                             value={quickReply().text}
                                             onChange={(val: string) => setQuickReply(qr => ({ ...qr, text: val }))}
                                             onSend={() => handleEventQuickReply(event)}
@@ -4932,9 +5098,10 @@ function App() {
                                   <For each={group().threads}>
                                     {(thread) => {
                                       // An event that is over needs no answer
+                                      const owner = () => accountById(threadAccountId(thread, card));
                                       createEffect(() => {
                                         const invite = thread.calendar_event;
-                                        const account = selectedAccount();
+                                        const account = owner();
                                         if (!account || invite?.method !== "REQUEST" || !invite.uid) return;
                                         if ((invite.end_time ?? invite.start_time) < Date.now()) return;
                                         rsvpLookups.request(account.id, invite.uid);
@@ -4970,7 +5137,7 @@ function App() {
                                               <button
                                                 class="thread-draft-discard"
                                                 aria-label="Discard draft"
-                                                onClick={(e) => { e.stopPropagation(); discardDraftRow(thread.gmail_thread_id); }}
+                                                onClick={(e) => { e.stopPropagation(); discardDraftRow(thread.gmail_thread_id, card.id); }}
                                                 on:keydown={(e) => { if (e.key === 'Enter' || e.key === ' ') e.stopPropagation(); }}
                                               >Discard</button>
                                             </Show>
@@ -4980,10 +5147,10 @@ function App() {
                                           <Show when={thread.calendar_event}>
                                             <InviteBlock
                                               invite={thread.calendar_event!}
-                                              rsvp={inviteRsvp(thread.calendar_event!.uid)}
+                                              rsvp={inviteRsvp(owner(), thread.calendar_event!.uid)}
                                               disabled={rsvpLoading[thread.gmail_thread_id]}
                                               showKeys={isThreadFocused(card.id, thread.gmail_thread_id)}
-                                              onAnswer={(status) => handleRsvp(thread.gmail_thread_id, thread.calendar_event!.uid, status)}
+                                              onAnswer={(status) => handleRsvp(owner(), thread.gmail_thread_id, thread.calendar_event!.uid, status)}
                                             />
                                           </Show>
                                           <Show when={!thread.calendar_event}>
@@ -5002,8 +5169,8 @@ function App() {
                                               <Show when={attachments().length > 0}>
                                                 <CardAttachments
                                                   attachments={attachments()}
-                                                  onOpen={(attachment) => openCardAttachment(attachments(), attachment)}
-                                                  onMenu={(attachment) => showAttachmentContextMenu({ messageId: attachment.message_id, attachmentId: attachment.attachment_id, filename: attachment.filename, mimeType: attachment.mime_type, inlineData: attachment.inline_data })}
+                                                  onOpen={(attachment) => openCardAttachment(owner()?.id ?? "", attachments(), attachment)}
+                                                  onMenu={(attachment) => showAttachmentContextMenu({ accountId: owner()?.id ?? "", messageId: attachment.message_id, attachmentId: attachment.attachment_id, filename: attachment.filename, mimeType: attachment.mime_type, inlineData: attachment.inline_data })}
                                                 />
                                               </Show>
                                             );
@@ -5034,7 +5201,7 @@ function App() {
                                                 selectedCount={selectedThreads()[card.id]?.has(thread.gmail_thread_id) ? (selectedThreads()[card.id]?.size || 0) : 0}
                                                 open={true}
                                                 onClose={() => setActionsWheelOpen(false)}
-                                                selectedAccount={selectedAccount}
+                                                selectedAccount={owner}
                                                 actionSettings={actionSettings}
                                                 actionOrder={actionOrder}
                                                 eventActionSettings={eventActionSettings}
@@ -5150,6 +5317,9 @@ function App() {
                     labelNames={userLabelNames()}
                     debounceQueryPreview={debounceQueryPreview}
                     onQueryFieldActive={(insert) => { insertIntoQueryField = insert; }}
+                    accounts={accounts()}
+                    accountId={newCardAccountId() ?? selectedAccount()?.id}
+                    setAccountId={(id) => { setNewCardAccountId(id); if (newCardQuery().trim()) debounceQueryPreview(newCardQuery()); }}
                   />
                   {/* Query preview for new card */}
                   <div class="card-body">
@@ -5206,7 +5376,7 @@ function App() {
                       <div class="empty">No matches</div>
                     </Show>
                     <Show when={!queryPreviewLoading() && queryPreviewThreads().length > 0}>
-                      <For each={regroupThreads(queryPreviewThreads(), newCardGroupBy(), labelNames())}>
+                      <For each={regroupThreads(queryPreviewThreads(), newCardGroupBy(), cardLabelNames(undefined))}>
                         {(group) => (
                           <>
                             <div class="date-header">{group.label}</div>
@@ -5269,7 +5439,7 @@ function App() {
 
             {/* Add card button */}
             <Show when={!addingCard()}>
-              <button class="add-card-btn" onClick={() => { setNewCardColor(null); setQueryPreviewThreads([]); setQueryPreviewCalendarEvents([]); setQueryPreviewLoading(false); setAddingCard(true); }} aria-label="New card" title="New card">
+              <button class="add-card-btn" onClick={() => openAddCard()} aria-label="New card" title="New card">
                 <PlusIcon />
               </button>
             </Show>
@@ -5309,6 +5479,10 @@ function App() {
             onInput={handleComposeInput}
             focusBody={focusComposeBody()}
             suggestContacts={suggestContacts}
+            fromAccounts={composeIsReply() ? undefined : accounts()}
+            fromAccountId={composeAccount()?.id}
+            setFromAccountId={changeComposeAccount}
+            fromEmail={composeIsReply() ? composeFromEmail() : undefined}
           />
         </div>
       </Show>
@@ -5338,7 +5512,7 @@ function App() {
           setAttendees={(v: string) => setEventForm(f => ({ ...f, attendees: v }))}
           recurrence={eventForm().recurrence}
           setRecurrence={(v: string | null) => setEventForm(f => ({ ...f, recurrence: v }))}
-          calendars={availableCalendars()}
+          calendars={calendarsFor(eventFormAccount()?.id)}
           calendarId={newEventCalendarId()}
           guestSuggestions={guestSuggestions}
           addMeet={eventForm().addMeet}
@@ -5354,9 +5528,7 @@ function App() {
       <Show when={showPresetSelection()}>
         <PresetPicker
           presets={PRESETS}
-          copySources={copySources()}
           onPick={applyPreset}
-          onCopy={copyLayoutFrom}
           onDismiss={() => setShowPresetSelection(false)}
         />
       </Show>
@@ -5367,8 +5539,8 @@ function App() {
           thread={activeThread()}
           geminiKeySaved={geminiKeySaved()}
           onOpenSmartReplySettings={() => { setSmartRepliesOpen(true); setSettingsOpen(true); }}
-          accountId={selectedAccount()?.id || ''}
-          currentUserEmail={selectedAccount()?.email}
+          accountId={activeThreadAccountId() || ''}
+          currentUserEmail={activeThreadAccount()?.email}
           onError={showFailure}
           loading={threadLoading()}
           error={threadError()}
@@ -5385,17 +5557,17 @@ function App() {
           onClose={() => { if (composeShownIn() === "thread") closeCompose(); closeThreadView(); restoreOpenedRowFocus(); }}
           focusedMessageIndex={focusedMessageIndex()}
           onFocusChange={setFocusedMessageIndex}
-          onOpenAttachment={(messageId, attachmentId, filename, mimeType, inlineData) => openAttachment(messageId, attachmentId, filename, mimeType, inlineData)}
-          onDownloadAttachment={(messageId, attachmentId, filename, mimeType, inlineData) => downloadAttachment(messageId, attachmentId, filename, mimeType, inlineData)}
-          onShowAttachmentMenu={showAttachmentContextMenu}
-          onPreviewAttachments={(items, index) => setAttachmentPreview({ items, index })}
+          onOpenAttachment={(messageId, attachmentId, filename, mimeType, inlineData) => openAttachment(activeThreadAccountId() ?? "", messageId, attachmentId, filename, mimeType, inlineData)}
+          onDownloadAttachment={(messageId, attachmentId, filename, mimeType, inlineData) => downloadAttachment(activeThreadAccountId() ?? "", messageId, attachmentId, filename, mimeType, inlineData)}
+          onShowAttachmentMenu={(att) => showAttachmentContextMenu({ ...att, accountId: activeThreadAccountId() ?? "" })}
+          onPreviewAttachments={(items, index) => setAttachmentPreview({ accountId: activeThreadAccountId() ?? "", items, index })}
           onReply={handleReplyFromThread}
           onForward={handleForwardFromThread}
           onUnsubscribe={unsubscribeFromList}
           position={activeThreadPosition()}
           onStepThread={stepActiveThread}
           onAction={handleThreadViewAction}
-          onOpenLabels={() => { fetchAccountLabels({ refresh: true }); setLabelDrawerOpen(true); }}
+          onOpenLabels={() => { fetchAccountLabels(activeThreadAccountId() ?? undefined, { refresh: true }); setLabelDrawerOpen(true); }}
           keysPaused={creatingEvent()}
           onCreateEvent={() => {
             const messages = activeThread()?.messages ?? [];
@@ -5404,7 +5576,7 @@ function App() {
               .filter(h => /^(from|to|cc)$/i.test(h.name))
               .flatMap(h => splitEmailList(h.value));
             const subject = activeListedThread()?.subject ?? findHeader(messages[0]?.payload?.headers, 'Subject') ?? '';
-            openNewEventForm(eventFromThread(subject, people, selectedAccount()?.email ?? ''));
+            openNewEventForm(eventFromThread(subject, people, activeThreadAccount()?.email ?? ''));
           }}
           labelDrawerOpen={labelDrawerOpen()}
           onCloseLabelDrawer={closeLabelDrawer}
@@ -5422,8 +5594,8 @@ function App() {
             if (!listed || !event) return null;
             return {
               event,
-              rsvp: inviteRsvp(event.uid),
-              onAnswer: (status: RsvpStatus) => handleRsvp(listed.gmail_thread_id, event.uid, status),
+              rsvp: inviteRsvp(activeThreadAccount(), event.uid),
+              onAnswer: (status: RsvpStatus) => handleRsvp(activeThreadAccount(), listed.gmail_thread_id, event.uid, status),
               disabled: !!rsvpLoading[listed.gmail_thread_id],
             };
           })()}
@@ -5485,7 +5657,7 @@ function App() {
                 <Show when={labelsFailed()}>
                   <div class="label-drawer-empty">
                     Couldn't load labels.{" "}
-                    <button class="retry-btn" onClick={() => fetchAccountLabels()}>Try again</button>
+                    <button class="retry-btn" onClick={() => fetchAccountLabels(activeThreadAccountId() ?? undefined)}>Try again</button>
                   </div>
                 </Show>
                 <Show when={!labelsLoading() && !labelsFailed() && filteredLabels().length === 0}>
@@ -5508,20 +5680,20 @@ function App() {
           })() : null}
           focusColor={selectedBgColorIndex() !== null ? BG_COLORS[selectedBgColorIndex()!].hex : null}
           onClose={() => { closeEvent(); restoreOpenedRowFocus(); }}
-          onRsvp={(status) => { const event = activeEvent(); if (event) answerListedEvent(event, status); }}
+          onRsvp={(status) => { const event = activeEvent(); if (event) answerListedEvent(event, status, activeEventCardId()); }}
           onReplyOrganizer={() => {
             const event = activeEvent();
             if (!event) return;
             const subject = addReplyPrefix(event.title);
-            const { to } = eventReplyRecipients(event, selectedAccount()?.email ?? '');
-            startCompose({ to, subject, focusBody: true, replyEvent: { eventId: event.id } });
+            const { to } = eventReplyRecipients(event, activeEventAccount()?.email ?? '');
+            startCompose({ to, subject, focusBody: true, replyEvent: { eventId: event.id }, accountId: activeEventAccountId() ?? undefined });
           }}
           onReplyAll={() => {
             const event = activeEvent();
             if (!event) return;
             const subject = addReplyPrefix(event.title);
-            const { to, cc } = eventReplyRecipients(event, selectedAccount()?.email ?? '', true);
-            startCompose({ to, cc, subject, focusBody: true, replyEvent: { eventId: event.id } });
+            const { to, cc } = eventReplyRecipients(event, activeEventAccount()?.email ?? '', true);
+            startCompose({ to, cc, subject, focusBody: true, replyEvent: { eventId: event.id }, accountId: activeEventAccountId() ?? undefined });
           }}
           onForward={() => {
             const event = activeEvent();
@@ -5533,7 +5705,7 @@ function App() {
               (event.location ? `Where: ${event.location}\n` : '') +
               (event.organizer ? `Organizer: ${event.organizer}\n` : '') +
               (event.description ? `\n${event.description}` : '');
-            startCompose({ subject, body, focusBody: true, forwardEvent: { eventId: event.id } });
+            startCompose({ subject, body, focusBody: true, forwardEvent: { eventId: event.id }, accountId: activeEventAccountId() ?? undefined });
           }}
           onEdit={() => {
             const event = activeEvent();
@@ -5565,16 +5737,16 @@ function App() {
               // Cards list single occurrences; a null rule leaves a series' recurrence alone
               recurrence: null,
               addMeet: false,
-              editing: { id: event.id, calendarId: event.calendar_id },
+              editing: { id: event.id, calendarId: event.calendar_id, accountId: activeEventAccountId() ?? "" },
             }));
           }}
-          onDelete={(scope) => { const event = activeEvent(); if (event) deleteEvent(event, scope); }}
-          onOpenCalendars={() => { fetchAvailableCalendars(); setCalendarDrawerOpen(true); }}
+          onDelete={(scope) => { const event = activeEvent(); if (event) deleteEvent(event, scope, undefined, activeEventCardId()); }}
+          onOpenCalendars={() => { fetchAvailableCalendars(activeEventAccountId() ?? undefined); setCalendarDrawerOpen(true); }}
           calendarDrawerOpen={calendarDrawerOpen()}
           onCloseCalendarDrawer={() => setCalendarDrawerOpen(false)}
-          accountEmail={selectedAccount()?.email ?? ""}
-          calendars={availableCalendars()}
-          calendarsLoading={calendarsLoading()}
+          accountEmail={activeEventAccount()?.email ?? ""}
+          calendars={calendarsFor(activeEventAccountId() ?? undefined)}
+          calendarsLoading={!!calendarsLoading[activeEventAccountId() ?? ""]}
           onMoveToCalendar={handleMoveEventToCalendar}
           rsvpLoading={!!(activeEvent() && rsvpLoading[activeEvent()!.id])}
           inlineCompose={composeShownIn() === "event" ? eventInlineCompose : null}
@@ -5968,7 +6140,7 @@ function App() {
           <div class={`undo-toast send-toast ${undoableSend.toastClosing() ? 'closing' : ''}`}>
             <div class="toast-progress send-progress" style={{ width: `${undoableSend.progress()}%` }}></div>
             <div class="toast-content">
-              <span class="toast-message">Sending message...</span>
+              <span class="toast-message">{inAccount("Sending message", [accountById(undoableSend.pending()?.accountId)?.email ?? ""].filter(Boolean), accounts().length, "from")}...</span>
               <Show when={undoableSend.pending()}>
                 <button class="toast-undo-btn" onClick={undoSend}>Undo</button>
               </Show>
@@ -5987,8 +6159,8 @@ function App() {
             onIndexChange={(index) => setAttachmentPreview({ ...preview(), index })}
             onClose={() => setAttachmentPreview(null)}
             loadData={loadPreviewData}
-            onDownload={(item) => downloadAttachment(item.messageId, item.attachmentId, item.filename, item.mimeType, item.inlineData)}
-            onOpenExternally={(item) => openAttachment(item.messageId, item.attachmentId, item.filename, item.mimeType, item.inlineData)}
+            onDownload={(item) => downloadAttachment(preview().accountId, item.messageId, item.attachmentId, item.filename, item.mimeType, item.inlineData)}
+            onOpenExternally={(item) => openAttachment(preview().accountId, item.messageId, item.attachmentId, item.filename, item.mimeType, item.inlineData)}
           />
         )}
       </Show>

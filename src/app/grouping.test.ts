@@ -84,6 +84,16 @@ describe("regroupThreads", () => {
     ]);
   });
 
+  it("names each thread's label in its own mailbox, where label ids can repeat", () => {
+    const groups = [{ label: "Today", threads: [
+      thread("a", { labels: ["Label_1"], account_id: "home" }),
+      thread("b", { labels: ["Label_1"], account_id: "work" }),
+    ] }];
+    const names: Record<string, Record<string, string>> = { home: { Label_1: "Family" }, work: { Label_1: "Clients" } };
+    const nameOf = (t: { account_id: string }, id: string) => names[t.account_id]?.[id];
+    expect(ids(regroupThreads(groups, "label", nameOf))).toEqual([["Clients", ["b"]], ["Family", ["a"]]]);
+  });
+
   it("falls back to the label id when its name is unknown", () => {
     const groups = [{ label: "Today", threads: [thread("a", { labels: ["Label_9"] })] }];
     expect(ids(regroupThreads(groups, "label", {}))).toEqual([["Label_9", ["a"]]]);

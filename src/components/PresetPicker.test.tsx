@@ -7,9 +7,7 @@ import { layerCount } from "../app/layers";
 function renderPicker(extra: Partial<Parameters<typeof PresetPicker>[0]> = {}) {
   const props = {
     presets: PRESETS,
-    copySources: [],
     onPick: vi.fn(),
-    onCopy: vi.fn(),
     onDismiss: vi.fn(),
     ...extra,
   };
@@ -51,14 +49,6 @@ describe("PresetPicker", () => {
     const props = renderPicker();
     fireEvent.click(option("Classic"));
     expect(props.onPick).toHaveBeenCalledWith("traditional");
-  });
-
-  it("offers to copy another account's layout", () => {
-    const props = renderPicker({ copySources: [{ email: "a@x.com", cards: [{ name: "Alpha", color: "blue" }, { name: "Beta", color: null }] }] });
-    const copy = screen.getByRole("button", { name: /^Copy layout from a@x\.com/ });
-    expect(within(copy).getByText("Alpha · Beta")).toBeInTheDocument();
-    fireEvent.click(copy);
-    expect(props.onCopy).toHaveBeenCalledWith("a@x.com");
   });
 
   it("closes on Escape without picking anything", () => {

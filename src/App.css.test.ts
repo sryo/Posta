@@ -274,6 +274,27 @@ describe("board connection status", () => {
   });
 });
 
+describe("accounts on the board", () => {
+  const declarationsOf = (selector: string) =>
+    new Map(rules.filter((rule) => rule.selectors.includes(selector)).flatMap((rule) => [...rule.declarations]));
+
+  it("marks a card's account with a small round badge that the title never squeezes", () => {
+    const badge = declarationsOf(".card-account-badge");
+    expect(badge.get("flex-shrink")).toBe("0");
+    expect(badge.get("border-radius")).toBeDefined();
+    expect(badge.get("height")).toBe(badge.get("min-width"));
+    // An all-inboxes badge has no account color to sit on
+    expect(declarationsOf(".card-account-badge.all").get("background")).toMatch(/^var\(--/);
+  });
+
+  it("shows a compose's sender like the fields below it", () => {
+    const from = declarationsOf(".compose-from select");
+    const field = declarationsOf(".compose-field input");
+    for (const prop of ["flex", "border", "background", "font-size", "color"]) expect(from.get(prop)).toBe(field.get(prop));
+    expect(declarationsOf(".compose-from-email").get("font-size")).toBe(field.get("font-size"));
+  });
+});
+
 describe("snippet previews", () => {
   it("clamp to five lines from the stylesheet, not from a property the app sets", () => {
     const root = rules.filter((rule) => rule.selectors.includes(":root")).flatMap((rule) => [...rule.declarations]);

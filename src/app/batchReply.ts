@@ -12,6 +12,7 @@ export interface BatchReplyThread {
   messageId: string; // Gmail id; reply_to_thread threads under it with its full References
   to: string; // Reply-to address
   parts?: MessagePart[]; // Where the body's inline images are
+  accountId?: string; // The account the thread is in, which the reply is sent from
 }
 
 // What a batch reply to a thread shows and who it goes to: the latest

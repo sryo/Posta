@@ -140,7 +140,10 @@ export function isUserLabel(labelId: string): boolean {
   return !SYSTEM_LABEL_IDS.has(labelId) && !labelId.startsWith("CATEGORY_");
 }
 
-export function regroupThreads(threads: ThreadGroup[], groupBy: GroupBy, labelNames: Record<string, string> = {}): ThreadGroup[] {
+// A label's name: by id, or for a thread, as label ids repeat across mailboxes
+export type LabelNames = Record<string, string> | ((thread: Thread, labelId: string) => string | undefined);
+
+export function regroupThreads(threads: ThreadGroup[], groupBy: GroupBy, labelNames: LabelNames = {}): ThreadGroup[] {
   // The backend already groups by date
   if (groupBy === "date") return threads;
 
@@ -157,7 +160,7 @@ export function regroupThreads(threads: ThreadGroup[], groupBy: GroupBy, labelNa
   if (groupBy === "label") {
     const labelOf = (t: Thread) => {
       const userLabel = t.labels.find(isUserLabel);
-      if (userLabel) return labelNames[userLabel] || userLabel;
+      if (userLabel) return (typeof labelNames === "function" ? labelNames(t, userLabel) : labelNames[userLabel]) || userLabel;
       return t.labels.includes("INBOX") ? "Inbox" : "No label";
     };
     return groupByKey(allThreads, labelOf, newestFirst)

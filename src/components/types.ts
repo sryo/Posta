@@ -28,6 +28,8 @@ export interface InlineComposeProps {
   onClose: () => void;
   onInput: () => void;
   focusBody: boolean;
+  // The account the reply goes out from, named with more than one signed in
+  fromEmail?: string;
   // Resize props
   resizing: boolean;
   onResizeStart: (e: MouseEvent) => void;
