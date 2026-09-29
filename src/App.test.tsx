@@ -2471,7 +2471,7 @@ describe("App calendar", () => {
 
     fireEvent.keyDown(document, { key: "l" });
     const row = screen.getByText("Invitation: Planning").closest(".thread") as HTMLElement;
-    expect(within(row).getByRole("button", { name: "Maybe" })).toHaveAttribute("aria-keyshortcuts", "Shift+M");
+    expect(within(row).getByRole("button", { name: /^Your response/ })).toHaveTextContent("Y ⇧M N");
     fireEvent.keyDown(document, { key: "M", shiftKey: true });
     await waitFor(() => expect(invoke).toHaveBeenCalledWith("rsvp_calendar_event", { accountId: "a", eventUid: "ev-1@google.com", status: "tentative" }));
   });
@@ -2489,7 +2489,7 @@ describe("App calendar", () => {
     render(() => <App />);
     await screen.findByText("Invitation: Planning");
     const row = screen.getByText("Invitation: Planning").closest(".thread") as HTMLElement;
-    await waitFor(() => expect(within(row).getByRole("button", { name: "Maybe" })).toHaveAttribute("aria-pressed", "true"));
+    await waitFor(() => expect(within(row).getByRole("button", { name: "Your response: Maybe" })).toBeInTheDocument());
 
     fireEvent.keyDown(document, { key: "l" });
     fireEvent.keyDown(document, { key: "M", shiftKey: true });
@@ -2512,10 +2512,11 @@ describe("App calendar", () => {
     handlers.rsvp_calendar_event = () => null;
     render(() => <App />);
     await screen.findByText("Invitation: Planning");
-    await screen.findByText("Going?");
+    await screen.findByText("Going?", { selector: ".calendar-event-response" });
 
     const invite = screen.getByText("Invitation: Planning").closest(".thread") as HTMLElement;
-    fireEvent.click(within(invite).getByRole("button", { name: "Going" }));
+    fireEvent.click(within(invite).getByRole("button", { name: "Your response: not answered" }));
+    fireEvent.click(screen.getByRole("menuitemradio", { name: /Going/ }));
 
     expect(await screen.findByText("You're going")).toBeInTheDocument();
     await waitFor(() => expect(invoke).toHaveBeenCalledWith("save_cached_card_events", {
@@ -2550,8 +2551,110 @@ describe("App calendar", () => {
     await waitFor(() => expect(lookups()).toHaveLength(2));
     for (const id of ["t-1", "t-2"]) {
       const row = screen.getByText(`Invite ${id}`).closest(".thread") as HTMLElement;
-      await waitFor(() => expect(within(row).getByRole("button", { name: "Going" })).toHaveAttribute("aria-pressed", "true"));
+      await waitFor(() => expect(within(row).getByRole("button", { name: "Your response: Going" })).toBeInTheDocument());
     }
+  });
+
+  describe("invite rows", () => {
+    const inviteMail = (id: string, subject: string, event: Partial<Thread["calendar_event"] & object> = {}): Thread => ({
+      ...thread(id, subject),
+      participants: ["Jules Martin <jules@x.com>"],
+      calendar_event: {
+        uid: `${id}@google.com`, title: subject, start_time: tomorrowAt(15), end_time: tomorrowAt(16), all_day: false,
+        location: "Studio 2", description: null, organizer: "jules@x.com", attendees: [], method: "REQUEST", status: null,
+        response_status: null, conference_url: null, ...event,
+      },
+    });
+    const rowOf = (subject: string) => screen.getByText(subject).closest(".thread") as HTMLElement;
+
+    it("puts the event's time where the arrival time goes, its length and place under it, and the answer by the sender", async () => {
+      threadsByCard["card-a"] = [inviteMail("t-inv", "Design review")];
+      handlers.get_calendar_rsvp_status = () => null;
+      handlers.rsvp_calendar_event = () => null;
+      render(() => <App />);
+      await screen.findByText("Design review");
+      const row = rowOf("Design review");
+      expect(row.querySelector(".thread-row .invite-when")).toHaveTextContent(/^Tomorrow/);
+      expect(row.querySelector(".thread-time")).toBeNull();
+      expect(row.querySelector(".invite-meta")).toHaveTextContent("1 h·Studio 2");
+      expect(row.querySelector(".invite-foot")).toHaveTextContent("Jules Martin");
+      expect(row.querySelector(".calendar-event-preview")).toBeNull();
+      expect(row.getAttribute("aria-label")).toMatch(/^Design review from Jules Martin\. .*, tomorrow\. You have not answered\.$/);
+
+      fireEvent.click(within(row).getByRole("button", { name: "Your response: not answered" }));
+      fireEvent.click(screen.getByRole("menuitemradio", { name: /Going/ }));
+      await waitFor(() => expect(invoke).toHaveBeenCalledWith("rsvp_calendar_event", { accountId: "a", eventUid: "t-inv@google.com", status: "accepted" }));
+      await waitFor(() => expect(within(row).getByRole("button", { name: "Your response: Going" })).toBeInTheDocument());
+    });
+
+    it("offers no answer on an invite whose event is over", async () => {
+      threadsByCard["card-a"] = [inviteMail("t-old", "Old review", { start_time: Date.now() - 3 * 86400_000, end_time: Date.now() - 3 * 86400_000 + 3600_000 })];
+      render(() => <App />);
+      await screen.findByText("Old review");
+      expect(within(rowOf("Old review")).queryByRole("button", { name: /Your response/ })).toBeNull();
+      expect(rowOf("Old review").querySelector(".invite-when")).toHaveClass("past");
+    });
+
+    it("lays an unanswered invite on the user's day, naming what it overlaps", async () => {
+      threadsByCard["card-a"] = [inviteMail("t-q4", "Q4 kickoff", { start_time: tomorrowAt(10) + 1800_000, end_time: tomorrowAt(11) + 1800_000 })];
+      handlers.get_calendar_rsvp_status = () => null;
+      handlers.fetch_calendar_events = () => [
+        { ...calendarEvent("dentist", "Dentist"), start_time: tomorrowAt(11), end_time: tomorrowAt(12) },
+        { ...calendarEvent("t-q4", "Q4 kickoff"), start_time: tomorrowAt(10) + 1800_000, end_time: tomorrowAt(11) + 1800_000 },
+        { ...calendarEvent("skipped", "Skipped"), start_time: tomorrowAt(14), end_time: tomorrowAt(15), response_status: "declined" },
+      ];
+      render(() => <App />);
+      await screen.findByText("Q4 kickoff");
+      const row = rowOf("Q4 kickoff");
+      await waitFor(() => expect(row.querySelector(".invite-strip")).not.toBeNull());
+      expect(invoke).toHaveBeenCalledWith("fetch_calendar_events", { accountId: "a", query: "calendar:7d" });
+      expect(row.querySelector(".invite-strip")).toHaveAttribute("aria-hidden", "true");
+      expect(row.querySelectorAll(".invite-strip-busy")).toHaveLength(1);
+      expect(row.querySelector(".invite-strip-busy.overlap")).not.toBeNull();
+      expect(row.querySelector(".invite-clash")).toHaveTextContent("Dentist");
+      expect(row.getAttribute("aria-label")).toMatch(/Overlaps Dentist, .*\. You have not answered\.$/);
+    });
+
+    it("shows no strip when the calendar can't be read, or once the invite is answered", async () => {
+      threadsByCard["card-a"] = [inviteMail("t-1", "Planning"), inviteMail("t-2", "Retro")];
+      handlers.get_calendar_rsvp_status = ({ eventUid }) => (eventUid === "t-2@google.com" ? "accepted" : null);
+      handlers.fetch_calendar_events = () => { throw "Calendar permission denied"; };
+      render(() => <App />);
+      await screen.findByText("Planning");
+      await waitFor(() => expect(invoke).toHaveBeenCalledWith("fetch_calendar_events", expect.anything()));
+      await new Promise(r => setTimeout(r, 20));
+      expect(document.querySelector(".invite-strip")).toBeNull();
+      expect(screen.queryByText("Posta lost access to a@x.com")).toBeNull();
+    });
+
+    it("pulls a meeting about to start into a Now section at the top, with its progress and Join", async () => {
+      const soon = Date.now() + 5 * 60_000;
+      threadsByCard["card-a"] = [
+        thread("t-mail", "Plain mail"),
+        inviteMail("t-live", "Daily standup", { start_time: soon, end_time: soon + 15 * 60_000, conference_url: "https://meet.google.com/abc" }),
+        inviteMail("t-room", "Room sync", { start_time: soon, end_time: soon + 15 * 60_000 }),
+      ];
+      handlers.get_calendar_rsvp_status = () => "accepted";
+      render(() => <App />);
+      await screen.findByText("Daily standup");
+      const card = screen.getByRole("region", { name: "Alpha email card" });
+      const headers = [...card.querySelectorAll(".date-header")].map(h => h.textContent);
+      expect(headers).toEqual(["Now", "Today"]);
+      const live = rowOf("Daily standup");
+      expect(within(live).getByRole("progressbar", { name: "Meeting progress" })).toHaveAttribute("aria-valuetext", "Starts in 5 minutes");
+      fireEvent.click(within(live).getByRole("button", { name: "Join Google Meet" }));
+      expect(openUrl).toHaveBeenCalledWith("https://meet.google.com/abc");
+      expect(within(rowOf("Room sync")).queryByRole("button", { name: /^Join/ })).toBeNull();
+      const order = [...card.querySelectorAll(".thread-subject")].map(s => s.textContent);
+      expect(order).toEqual(["Daily standup", "Room sync", "Plain mail"]);
+    });
+
+    it("keeps an invite starting later out of the Now section", async () => {
+      threadsByCard["card-a"] = [inviteMail("t-later", "Later sync", { start_time: Date.now() + 60 * 60_000, end_time: Date.now() + 90 * 60_000 })];
+      render(() => <App />);
+      await screen.findByText("Later sync");
+      expect([...document.querySelectorAll(".date-header")].map(h => h.textContent)).not.toContain("Now");
+    });
   });
 
   it("offers the calendars of the account whose event is open", async () => {

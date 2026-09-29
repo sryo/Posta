@@ -123,7 +123,11 @@ import { GoogleCredentialsForm } from "./components/GoogleCredentialsForm";
 import { credentialsValid, shortClientId } from "./app/googleCredentials";
 import { ComposeForm } from "./components/ComposeForm";
 import { CreateEventForm } from "./components/CreateEventForm";
-import { InviteBlock } from "./components/InviteBlock";
+import { InviteRowLines, InviteWhen } from "./components/InviteRow";
+import { inviteEnd, inviteState, inviteSummary } from "./app/inviteRow";
+import { dayOtherEvents, stripLayout } from "./app/dayStrip";
+import { createInviteDayLookups, type DayEvents } from "./app/inviteDays";
+import { isHappeningNow, isNowGroup, withNowSection } from "./app/nowSection";
 import { deletePrompt, eventActions } from "./app/eventActions";
 import { defaultCalendarId, lastUsedCalendar, rememberCalendar } from "./app/eventCalendars";
 import { deletedByScope, type RecurrenceScope } from "./app/recurrence";
@@ -306,6 +310,12 @@ function App() {
   const rsvpLookups = createRsvpLookups({ lookup: getCalendarRsvpStatus, onStatus: setRsvpStatus });
   const inviteRsvp = (account: Account | null, uid: string | null) =>
     account && uid ? rsvpStatus[rsvpLookups.key(account.id, uid)] : undefined;
+
+  // Invite rows move on by the minute: the Now section, progress, now-lines
+  const minuteNow = createMemo(() => currentTime(), undefined, { equals: (a, b) => Math.floor(a / 60_000) === Math.floor(b / 60_000) });
+  // Each account's calendar around its unanswered invites, for day strips
+  const [inviteDays, setInviteDays] = createStore<Record<string, DayEvents>>({});
+  const inviteDayLookups = createInviteDayLookups({ fetch: fetchCalendarEvents, onEvents: (accountId, entry) => setInviteDays(accountId, entry) });
 
   // Answers an event listed in a calendar card or open in the event view
   const answerListedEvent = async (event: GoogleCalendarEvent, status: RsvpStatus, cardId?: string | null) => {
@@ -4073,15 +4083,26 @@ function App() {
   // Each card's grouped and filtered threads and events, recomputed only
   // when what they are built from changes. Rows ask for their card's groups
   // on every focus, hover and keystroke.
-  const cardGroupMemos = createMemo(mapArray(() => cards().map(c => c.id), cardId => ({
-    cardId,
-    threads: createMemo(() => computeDisplayGroups(cardId)),
-    events: createMemo(() => computeCalendarEventGroups(cardId)),
-  })));
+  const cardGroupMemos = createMemo(mapArray(() => cards().map(c => c.id), cardId => {
+    const groups = createMemo(() => computeDisplayGroups(cardId));
+    return {
+      cardId,
+      threads: createMemo(() => withNowFor(cardId, groups())),
+      events: createMemo(() => computeCalendarEventGroups(cardId)),
+    };
+  }));
   const cardGroupsById = createMemo(() => new Map(cardGroupMemos().map(m => [m.cardId, m])));
 
   function getDisplayGroups(cardId: string): ThreadGroup[] {
-    return cardGroupsById().get(cardId)?.threads() ?? computeDisplayGroups(cardId);
+    return cardGroupsById().get(cardId)?.threads() ?? withNowFor(cardId, computeDisplayGroups(cardId));
+  }
+
+  // Meetings about to start or running, pulled above the card's groups
+  function withNowFor(cardId: string, groups: ThreadGroup[]): ThreadGroup[] {
+    const card = cardById(cardId);
+    const now = minuteNow();
+    return withNowSection(groups, (t: Thread) =>
+      isHappeningNow(t.calendar_event, inviteRsvp(accountById(threadAccountId(t, card)), t.calendar_event?.uid ?? null), now));
   }
 
   function getCalendarEventGroups(cardId: string): CalendarEventGroup[] {
@@ -5136,7 +5157,9 @@ function App() {
                             <Index each={getDisplayGroups(card.id)}>
                               {(group) => (
                                 <>
-                                  <div class="date-header">{threadGroupLabel(group().label)}</div>
+                                  <Show when={isNowGroup(group())} fallback={<div class="date-header">{threadGroupLabel(group().label)}</div>}>
+                                    <div class="date-header invite-now-header"><span class="invite-live-dot" aria-hidden="true" />Now</div>
+                                  </Show>
                                   <For each={group().threads}>
                                     {(thread) => {
                                       // An event that is over needs no answer
@@ -5147,16 +5170,33 @@ function App() {
                                         if (!account || invite?.method !== "REQUEST" || !invite.uid) return;
                                         if ((invite.end_time ?? invite.start_time) < Date.now()) return;
                                         rsvpLookups.request(account.id, invite.uid);
+                                        if (invite.all_day || inviteState(invite, inviteRsvp(account, invite.uid), minuteNow()) !== "unanswered") return;
+                                        inviteDayLookups.request(account.id, inviteEnd(invite));
                                       });
+                                      const live = () => isNowGroup(group());
+                                      const inviteStrip = createMemo(() => {
+                                        const invite = thread.calendar_event;
+                                        const known = inviteDays[owner()?.id ?? ""];
+                                        if (!invite || invite.all_day || !known || known.until < inviteEnd(invite)) return null;
+                                        const slot = { start: invite.start_time, end: inviteEnd(invite) };
+                                        return stripLayout(slot, dayOtherEvents(known.events, { ...slot, uid: invite.uid }), minuteNow());
+                                      });
+                                      const inviteLabel = () => {
+                                        const invite = thread.calendar_event;
+                                        if (!invite) return "";
+                                        const rsvp = inviteRsvp(owner(), invite.uid);
+                                        const clashes = inviteState(invite, rsvp, minuteNow()) === "unanswered" ? inviteStrip()?.clashes : undefined;
+                                        return `. ${inviteSummary(invite, new Date(minuteNow()), { rsvp, clashes })}`;
+                                      };
                                       return (
                                       <>
                                         <div
-                                          class={`thread ${thread.unread_count > 0 ? 'unread' : ''} ${selectedThreads()[card.id]?.has(thread.gmail_thread_id) ? 'selected' : ''} ${isThreadFocused(card.id, thread.gmail_thread_id) ? 'focused' : ''} ${isQuickReplyThread(thread.gmail_thread_id) ? 'replying' : ''}`}
+                                          class={`thread ${thread.unread_count > 0 ? 'unread' : ''} ${selectedThreads()[card.id]?.has(thread.gmail_thread_id) ? 'selected' : ''} ${isThreadFocused(card.id, thread.gmail_thread_id) ? 'focused' : ''} ${isQuickReplyThread(thread.gmail_thread_id) ? 'replying' : ''}${thread.calendar_event ? ' invite' : ''}${live() ? ' live' : ''}`}
                                           onMouseEnter={() => showThreadHoverActions(thread.gmail_thread_id)}
                                           onMouseLeave={() => hideThreadHoverActions()}
                                           onClick={() => openThread(thread.gmail_thread_id, card.id)}
                                           role="article"
-                                          aria-label={`${thread.unread_count > 0 ? 'Unread: ' : ''}${thread.subject} from ${thread.participants.slice(0, 2).map(personName).join(', ')}`}
+                                          aria-label={`${thread.unread_count > 0 ? 'Unread: ' : ''}${thread.subject} from ${thread.participants.slice(0, 2).map(personName).join(', ')}${inviteLabel()}`}
                                           tabindex={rowTabIndex(card.id, thread.gmail_thread_id)}
                                           onFocus={() => onRowFocus(card.id, thread.gmail_thread_id)}
                                         >
@@ -5165,11 +5205,6 @@ function App() {
                                               <div class="unread-dot"></div>
                                             </Show>
                                             <span class="thread-subject">{thread.subject}</span>
-                                            <Show when={thread.calendar_event}>
-                                              <span class="thread-indicator" title="Calendar invite">
-                                                <CalendarIcon />
-                                              </span>
-                                            </Show>
                                             <Show when={thread.has_attachment && !thread.calendar_event}>
                                               <span class="thread-indicator" title="Has attachment">
                                                 <AttachmentIcon />
@@ -5183,24 +5218,40 @@ function App() {
                                                 on:keydown={(e) => { if (e.key === 'Enter' || e.key === ' ') e.stopPropagation(); }}
                                               >Discard</button>
                                             </Show>
-                                            <span class="thread-time">{threadTime(thread.last_message_date)}</span>
+                                            <Show when={thread.calendar_event} fallback={<span class="thread-time">{threadTime(thread.last_message_date)}</span>}>
+                                              {(invite) => (
+                                                <InviteWhen
+                                                  invite={invite()}
+                                                  state={inviteState(invite(), inviteRsvp(owner(), invite().uid), minuteNow())}
+                                                  now={minuteNow()}
+                                                  live={live()}
+                                                />
+                                              )}
+                                            </Show>
                                           </div>
-                                          {/* Calendar event preview */}
-                                          <Show when={thread.calendar_event}>
-                                            <InviteBlock
-                                              invite={thread.calendar_event!}
-                                              rsvp={inviteRsvp(owner(), thread.calendar_event!.uid)}
-                                              disabled={rsvpLoading[thread.gmail_thread_id]}
-                                              showKeys={isThreadFocused(card.id, thread.gmail_thread_id)}
-                                              onAnswer={(status) => handleRsvp(owner(), thread.gmail_thread_id, thread.calendar_event!.uid, status)}
-                                            />
+                                          <Show
+                                            when={thread.calendar_event}
+                                            fallback={<>
+                                              <div class="thread-snippet">{decodeHtmlEntities(thread.snippet)}</div>
+                                              <div class="thread-participants">
+                                                {participantNames(thread.participants, accounts().map(a => a.email))}
+                                              </div>
+                                            </>}
+                                          >
+                                            {(invite) => (
+                                              <InviteRowLines
+                                                invite={invite()}
+                                                rsvp={inviteRsvp(owner(), invite().uid)}
+                                                now={minuteNow()}
+                                                participants={participantNames(thread.participants, accounts().map(a => a.email))}
+                                                disabled={rsvpLoading[thread.gmail_thread_id]}
+                                                showKeys={isThreadFocused(card.id, thread.gmail_thread_id)}
+                                                strip={inviteStrip()}
+                                                live={live()}
+                                                onAnswer={(status) => handleRsvp(owner(), thread.gmail_thread_id, invite().uid, status)}
+                                              />
+                                            )}
                                           </Show>
-                                          <Show when={!thread.calendar_event}>
-                                            <div class="thread-snippet">{decodeHtmlEntities(thread.snippet)}</div>
-                                          </Show>
-                                          <div class="thread-participants">
-                                            {participantNames(thread.participants, accounts().map(a => a.email))}
-                                          </div>
                                           {/* Attachment previews (filter out .ics when calendar event is shown) */}
                                           {(() => {
                                             const attachments = () => thread.calendar_event
