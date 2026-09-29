@@ -2330,12 +2330,30 @@ describe("App drafts", () => {
       handlers.delete_draft = () => null;
       render(() => <App />);
       const row = (await screen.findByText("Plans")).closest(".thread") as HTMLElement;
-      expect(within(screen.getByText("Mail for A").closest(".thread") as HTMLElement).queryByRole("button", { name: "Discard" })).toBeNull();
+      expect(within(screen.getByText("Mail for A").closest(".thread") as HTMLElement).queryByRole("button", { name: "Discard draft" })).toBeNull();
 
-      fireEvent.click(within(row).getByRole("button", { name: "Discard" }));
+      fireEvent.click(within(row).getByRole("button", { name: "Discard draft" }));
 
       await waitFor(() => expect(invoke).toHaveBeenCalledWith("delete_draft", { accountId: "a", draftId: "g1" }));
       await waitFor(() => expect(screen.queryByText("Plans")).not.toBeInTheDocument());
+      expect(invoke).not.toHaveBeenCalledWith("get_thread_details", expect.anything());
+    });
+
+    it("leaves Enter on a draft row's Discard to the button, not to the keyboard-focused thread", async () => {
+      threadsByCard["card-a"] = [{ ...thread("t-d", "Plans"), labels: ["DRAFT"] }];
+      handlers.list_thread_drafts = () => [{ id: "g1", message: { id: "dm", threadId: "t-d" } }];
+      handlers.delete_draft = () => null;
+      render(() => <App />);
+      const row = (await screen.findByText("Plans")).closest(".thread") as HTMLElement;
+      fireEvent.keyDown(document, { key: "j" });
+      await waitFor(() => expect(row).toHaveClass("focused"));
+
+      const discard = within(row).getByRole("button", { name: "Discard draft" });
+      discard.focus();
+      fireEvent.keyDown(discard, { key: "Enter" });
+      fireEvent.click(discard);
+
+      await waitFor(() => expect(invoke).toHaveBeenCalledWith("delete_draft", { accountId: "a", draftId: "g1" }));
       expect(invoke).not.toHaveBeenCalledWith("get_thread_details", expect.anything());
     });
   });

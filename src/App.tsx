@@ -4481,7 +4481,9 @@ function App() {
                                             <Show when={isDraftThread(thread)}>
                                               <button
                                                 class="thread-draft-discard"
+                                                aria-label="Discard draft"
                                                 onClick={(e) => { e.stopPropagation(); discardDraftRow(thread.gmail_thread_id); }}
+                                                on:keydown={(e) => { if (e.key === 'Enter' || e.key === ' ') e.stopPropagation(); }}
                                               >Discard</button>
                                             </Show>
                                             <span class="thread-time">{threadTime(thread.last_message_date)}</span>
