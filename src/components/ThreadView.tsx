@@ -347,13 +347,13 @@ export const ThreadView = (props: {
 
             <button class="thread-toolbar-btn" onClick={() => props.onAction(props.isRead ? 'unread' : 'read')} title={props.isRead ? "Mark unread" : "Mark read"}>
               {props.isRead ? <EyeClosedIcon /> : <EyeOpenIcon />}
-              <span class="thread-toolbar-label">{props.isRead ? 'Unread' : 'Read'}</span>
+              <span class="thread-toolbar-label">{props.isRead ? 'Mark unread' : 'Mark read'}</span>
               <span class="shortcut-hint">U</span>
             </button>
 
-            <button class="thread-toolbar-btn" onClick={() => props.onAction(props.isImportant ? 'notImportant' : 'important')} title={props.isImportant ? "Unmark important" : "Mark important"}>
+            <button class="thread-toolbar-btn" onClick={() => props.onAction(props.isImportant ? 'notImportant' : 'important')} title={props.isImportant ? "Mark not important" : "Mark important"}>
               {props.isImportant ? <ThumbsUpFilledIcon /> : <ThumbsUpIcon />}
-              <span class="thread-toolbar-label">{props.isImportant ? 'Unmark' : 'Important'}</span>
+              <span class="thread-toolbar-label">{props.isImportant ? 'Not important' : 'Important'}</span>
               <span class="shortcut-hint">I</span>
             </button>
 

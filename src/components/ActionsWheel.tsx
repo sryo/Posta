@@ -219,7 +219,7 @@ export const ActionsWheel = (props: {
         bulkTitle: 'Mark read', bulkIcon: EyeOpenIcon, bulkOnClick: (e) => { e.stopPropagation(); props.handleThreadAction('read', getSelection(), cId); }
       };
       actionDefs.markImportant = {
-        cls: 'bulk-important', title: isImportant ? 'Unmark important' : 'Mark important', keyHint: 'i', icon: isImportant ? ThumbsUpFilledIcon : ThumbsUpIcon,
+        cls: 'bulk-important', title: isImportant ? 'Mark not important' : 'Mark important', keyHint: 'i', icon: isImportant ? ThumbsUpFilledIcon : ThumbsUpIcon,
         onClick: (e) => { e.stopPropagation(); props.handleThreadAction(isImportant ? 'notImportant' : 'important', [tId], cId); },
         bulkTitle: 'Mark important', bulkIcon: ThumbsUpIcon, bulkOnClick: (e) => { e.stopPropagation(); props.handleThreadAction('important', getSelection(), cId); }
       };

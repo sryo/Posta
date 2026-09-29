@@ -125,7 +125,7 @@ import { findHeader, lastMessageFromOthers } from "./app/messages";
 import { batchReplyEntry, type BatchReplyThread } from "./app/batchReply";
 import { completeRecipient, currentRecipient, matchContacts, rankContacts, type RecentContact } from "./app/contacts";
 import { eventReplyRecipients } from "./app/eventReply";
-import { actionFailureLabel, actionLabel, actionRemovesFromCard, applyThreadAction, labelChangeFor, threadMayJoinCard, undoLabelChanges, type LabelReversal } from "./app/threadActions";
+import { actionFailureLabel, actionLabel, actionRemovesFromCard, applyThreadAction, bulkActionConfirm, labelChangeFor, threadMayJoinCard, undoLabelChanges, type LabelReversal } from "./app/threadActions";
 import { PRESETS } from "./app/presets";
 import { normalizeActionOrder } from "./app/actionOrder";
 import { parseStoredWidth } from "./app/storedWidth";
@@ -3755,10 +3755,9 @@ function App() {
     if (!account) return;
 
     // Confirm destructive bulk actions
-    if (threadIds.length > 1 && (action === 'archive' || action === 'trash' || action === 'spam')) {
-      const actionText = action === 'trash' ? 'delete' : action === 'spam' ? 'move to spam' : 'archive';
-      const verb = actionText.charAt(0).toUpperCase() + actionText.slice(1);
-      if (!(await askConfirm(`${verb} ${threadIds.length} threads?`, verb))) {
+    const confirmation = bulkActionConfirm(action, threadIds.length);
+    if (confirmation) {
+      if (!(await askConfirm(confirmation.message, confirmation.confirmLabel))) {
         return;
       }
       if (selectedAccount()?.id !== account.id) return;

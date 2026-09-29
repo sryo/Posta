@@ -60,13 +60,26 @@ export function actionLabel(action: string, count: number): string {
     case "inbox": return `Moved ${threads} to inbox`;
     case "star": return `Starred ${threads}`;
     case "unstar": return `Removed star from ${threads}`;
-    case "trash": return `Deleted ${threads}`;
+    case "trash": return `Moved ${threads} to Trash`;
     case "read": return `Marked ${threads} as read`;
     case "unread": return `Marked ${threads} as unread`;
     case "important": return `Marked ${threads} as important`;
     case "notImportant": return `Marked ${threads} as not important`;
     case "spam": return `Moved ${threads} to spam`;
     default: return `Modified ${threads}`;
+  }
+}
+
+// The question asked before an action moves several threads out of view;
+// null when the action needs no confirmation
+export function bulkActionConfirm(action: string, count: number): { message: string; confirmLabel: string } | null {
+  if (count < 2) return null;
+  const threads = `${count} threads`;
+  switch (action) {
+    case "archive": return { message: `Archive ${threads}?`, confirmLabel: "Archive" };
+    case "trash": return { message: `Move ${threads} to Trash?`, confirmLabel: "Move to Trash" };
+    case "spam": return { message: `Move ${threads} to Spam?`, confirmLabel: "Move to Spam" };
+    default: return null;
   }
 }
 

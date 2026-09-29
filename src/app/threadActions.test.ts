@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { Thread, ThreadGroup } from "../api/tauri";
-import { actionFailureLabel, actionLabel, actionRemovesFromCard, applyThreadAction, labelChangeFor, threadMayJoinCard, undoLabelChanges } from "./threadActions";
+import { actionFailureLabel, actionLabel, actionRemovesFromCard, bulkActionConfirm, applyThreadAction, labelChangeFor, threadMayJoinCard, undoLabelChanges } from "./threadActions";
 
 const thread = (id: string, labels: string[], unread = 0): Thread => ({
   gmail_thread_id: id, account_id: "a", subject: id, snippet: "", last_message_date: 0,
@@ -32,6 +32,24 @@ describe("actionLabel", () => {
     expect(actionLabel("archive", 1)).toBe("Archived 1 thread");
     expect(actionLabel("spam", 3)).toBe("Moved 3 threads to spam");
     expect(actionLabel("bogus", 2)).toBe("Modified 2 threads");
+  });
+
+  it("says deleted threads went to Trash, where they can still be recovered", () => {
+    expect(actionLabel("trash", 1)).toBe("Moved 1 thread to Trash");
+    expect(actionLabel("trash", 2)).toBe("Moved 2 threads to Trash");
+  });
+});
+
+describe("bulkActionConfirm", () => {
+  it("asks before moving several threads out of view, naming where they go", () => {
+    expect(bulkActionConfirm("trash", 3)).toEqual({ message: "Move 3 threads to Trash?", confirmLabel: "Move to Trash" });
+    expect(bulkActionConfirm("spam", 2)).toEqual({ message: "Move 2 threads to Spam?", confirmLabel: "Move to Spam" });
+    expect(bulkActionConfirm("archive", 4)).toEqual({ message: "Archive 4 threads?", confirmLabel: "Archive" });
+  });
+
+  it("does not ask for a single thread or for actions that keep threads in place", () => {
+    expect(bulkActionConfirm("trash", 1)).toBeNull();
+    expect(bulkActionConfirm("star", 5)).toBeNull();
   });
 });
 
