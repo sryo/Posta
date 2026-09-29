@@ -2,7 +2,7 @@
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "Posta",
   "version": "2026.7.4",
-  "identifier": "com.posta.app",
+  "identifier": "com.sryo.posta",
   "build": {
     "beforeDevCommand": "npm run dev",
     "devUrl": "http://localhost:1420",

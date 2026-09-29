@@ -3,10 +3,10 @@
 <plist version="1.0">
 <dict>
 	<key>com.apple.application-identifier</key>
-	<string>CL6XWJCS9R.com.posta.app</string>
+	<string>CL6XWJCS9R.com.sryo.posta</string>
 	<key>com.apple.developer.team-identifier</key>
 	<string>CL6XWJCS9R</string>
 	<key>com.apple.developer.ubiquity-kvstore-identifier</key>
-	<string>CL6XWJCS9R.com.posta.app</string>
+	<string>CL6XWJCS9R.com.sryo.posta</string>
 </dict>
 </plist>

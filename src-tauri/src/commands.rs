@@ -70,7 +70,26 @@ fn get_app_data_dir(app_handle: &tauri::AppHandle) -> Result<std::path::PathBuf,
         .path()
         .app_data_dir()
         .map_err(|e| format!("Failed to get app data dir: {}", e))?;
+    if let Some(parent) = dir.parent() {
+        adopt_legacy_data_dir(&dir, &parent.join(LEGACY_BUNDLE_IDENTIFIER));
+    }
     Ok(if cfg!(debug_assertions) { dir.join("dev") } else { dir })
+}
+
+/// The bundle identifier Posta shipped with, which is registered to another
+/// developer; older installs keep their data in a directory named after it
+const LEGACY_BUNDLE_IDENTIFIER: &str = "com.posta.app";
+
+/// Moves the old data directory into place the first time the app runs under
+/// its current identifier; never touches an existing current directory
+fn adopt_legacy_data_dir(current: &std::path::Path, legacy: &std::path::Path) {
+    if current.exists() || !legacy.is_dir() {
+        return;
+    }
+    match std::fs::rename(legacy, current) {
+        Ok(()) => tracing::info!("Moved app data from {:?} to {:?}", legacy, current),
+        Err(e) => tracing::warn!("Couldn't move app data from {:?}: {}", legacy, e),
+    }
 }
 
 /// Run database, keychain, iCloud or file work on the blocking thread pool
@@ -2321,13 +2340,34 @@ pub async fn suggest_replies(
 #[cfg(test)]
 mod tests {
     use super::{
-        attachment_filename, attachment_temp_dir, cached_access_token, icloud_card_account, is_auth_error,
+        adopt_legacy_data_dir, attachment_filename, attachment_temp_dir, cached_access_token, icloud_card_account, is_auth_error,
         is_executable_attachment, mark_quarantined, merged_tombstones, next_card_position, plan_pull, plan_push,
         refuse_executable_attachment, Backup, SyncRecord,
         reply_context, sanitize_attachment_filename, vanished_thread_ids, write_unique_file,
     };
     use crate::models::{Account, Card, Thread};
     use std::collections::HashMap;
+
+    #[test]
+    fn data_from_the_old_bundle_identifier_is_adopted_once() {
+        let root = std::env::temp_dir().join(format!("posta-adopt-{}", uuid::Uuid::new_v4()));
+        let legacy = root.join("com.posta.app");
+        let current = root.join("com.sryo.posta");
+        std::fs::create_dir_all(legacy.join("dev")).unwrap();
+        std::fs::write(legacy.join("posta.db"), "layout").unwrap();
+
+        adopt_legacy_data_dir(&current, &legacy);
+        assert_eq!(std::fs::read_to_string(current.join("posta.db")).unwrap(), "layout");
+        assert!(current.join("dev").is_dir());
+        assert!(!legacy.exists());
+
+        // Data written by the old app later never overwrites the adopted copy
+        std::fs::create_dir_all(&legacy).unwrap();
+        std::fs::write(legacy.join("posta.db"), "stale").unwrap();
+        adopt_legacy_data_dir(&current, &legacy);
+        assert_eq!(std::fs::read_to_string(current.join("posta.db")).unwrap(), "layout");
+        std::fs::remove_dir_all(&root).unwrap();
+    }
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::Arc;
 

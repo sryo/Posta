@@ -26,7 +26,7 @@ declare const process: { env: Record<string, string | undefined>; cwd(): string 
 
 const SCRIPT = resolve(process.cwd(), "scripts/verify-macos-bundle.sh");
 const TEAM = "CL6XWJCS9R";
-const APP_ID = `${TEAM}.com.posta.app`;
+const APP_ID = `${TEAM}.com.sryo.posta`;
 const KVSTORE = "com.apple.developer.ubiquity-kvstore-identifier";
 
 const canRun = platform() === "darwin" && fs.existsSync("/usr/libexec/PlistBuddy");
@@ -109,20 +109,20 @@ describe.skipIf(!canRun)("verify-macos-bundle.sh", { timeout: 60_000 }, () => {
   });
 
   it("fails when a signed entitlement differs from Entitlements.plist", () => {
-    fs.writeFileSync(join(dir, "signed.plist"), plist(dict({ ...ENTITLEMENTS, [KVSTORE]: "OTHER.com.posta.app" })));
+    fs.writeFileSync(join(dir, "signed.plist"), plist(dict({ ...ENTITLEMENTS, [KVSTORE]: "OTHER.com.sryo.posta" })));
     const { status, output } = verify();
     expect(status).not.toBe(0);
-    expect(output).toContain("OTHER.com.posta.app");
+    expect(output).toContain("OTHER.com.sryo.posta");
   });
 
   it("checks every entitlement Entitlements.plist lists, not just the last", () => {
     fs.writeFileSync(
       join(dir, "signed.plist"),
-      plist(dict({ ...ENTITLEMENTS, "com.apple.application-identifier": "OTHER.com.posta.app" })),
+      plist(dict({ ...ENTITLEMENTS, "com.apple.application-identifier": "OTHER.com.sryo.posta" })),
     );
     const { status, output } = verify();
     expect(status).not.toBe(0);
-    expect(output).toContain("com.apple.application-identifier='OTHER.com.posta.app'");
+    expect(output).toContain("com.apple.application-identifier='OTHER.com.sryo.posta'");
   });
 
   it("reads the repo's Entitlements.plist when none is given", () => {
