@@ -2575,6 +2575,28 @@ describe("App batch reply", () => {
     expect(screen.getByText("Batch Reply")).toBeInTheDocument();
   });
 
+  it("names each thread's sender the way the reader does", async () => {
+    handlers.get_thread_details = ({ threadId }) => ({ id: threadId, messages: [fullMessage("m1", "Ana Pérez <ana@x.com>")] });
+    await openBatchReplyForTwo();
+    await waitFor(() => expect(screen.getAllByPlaceholderText(/^Reply to/)).toHaveLength(2));
+    const sender = document.querySelector(".batch-reply-overlay .message-sender, .message-row .message-sender")!;
+    expect(sender.querySelector(".message-sender-name")?.textContent).toBe("Ana Pérez");
+    expect(sender.querySelector(".message-sender-address")?.textContent).toBe("ana@x.com");
+  });
+
+  it("keeps a forwarded message's history in view, as the reader does", async () => {
+    const html = '<p>FYI</p><hr><div id="divRplyFwdMsg"><b>From:</b> Ana<br><b>Subject:</b> Plan</div><div>The plan itself</div>';
+    const data = btoa(html).replace(/\+/g, "-").replace(/\//g, "_");
+    handlers.get_thread_details = ({ threadId }) => ({ id: threadId, messages: [fullMessage("m1", "Ana <ana@x.com>", {
+      payload: { mimeType: "text/html", headers: [{ name: "From", value: "Ana <ana@x.com>" }, { name: "Subject", value: "FW: Plan" }, { name: "Message-ID", value: "<m1@x>" }], body: { size: html.length, data } },
+    })] });
+    await openBatchReplyForTwo();
+    await waitFor(() => expect(screen.getAllByPlaceholderText(/^Reply to/)).toHaveLength(2));
+    const body = document.querySelector(".message-row .message-body")!;
+    expect(body.textContent).toContain("The plan itself");
+    expect(body.querySelector(".quoted-toggle")).toBeNull();
+  });
+
   it("attaches a file dropped on one reply to that reply only", async () => {
     handlers.get_thread_details = ({ threadId }) => ({ id: threadId, messages: [fullMessage("m1", "Ana <ana@x.com>")] });
     await openBatchReplyForTwo();
@@ -4738,6 +4760,26 @@ describe("App reading view", () => {
       await screen.findByText("body of t-1");
       fireEvent.keyDown(document, { key: "#" });
       await waitFor(() => expect(document.querySelector(".thread-overlay")).toBeNull());
+      expect(invoke).not.toHaveBeenCalledWith("get_thread_details", expect.objectContaining({ threadId: "t-2" }));
+    });
+
+    it("stays on a thread moved back to the inbox, now offering to archive it", async () => {
+      threeThreads();
+      handlers.get_thread_details = ({ threadId }) => ({
+        id: threadId,
+        messages: [fullMessage(`m-${threadId}`, "Ana <ana@x.com>", {
+          threadId, snippet: `body of ${threadId}`,
+          labelIds: invoke.mock.calls.some(([cmd]) => cmd === "modify_threads") ? ["INBOX"] : [],
+        })],
+      });
+      render(() => <App />);
+      fireEvent.click(await screen.findByText("Two"));
+      await screen.findByText("body of t-1");
+      fireEvent.click(screen.getByRole("button", { name: /Move to Inbox/ }));
+
+      await waitFor(() => expect(invoke).toHaveBeenCalledWith("modify_threads", expect.objectContaining({ threadIds: ["t-1"], addLabels: ["INBOX"] })));
+      expect(await screen.findByRole("button", { name: /Archive/ })).toBeInTheDocument();
+      expect(screen.getByText("body of t-1")).toBeInTheDocument();
       expect(invoke).not.toHaveBeenCalledWith("get_thread_details", expect.objectContaining({ threadId: "t-2" }));
     });
 

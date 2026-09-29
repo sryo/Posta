@@ -15,7 +15,7 @@ vi.mock("./SmartReplies", () => ({
 const b64 = (s: string) =>
   btoa(String.fromCharCode(...new TextEncoder().encode(s))).replace(/\+/g, "-").replace(/\//g, "_");
 
-const makeThread = (messages: { from: string; to?: string; cc?: string; replyTo?: string; body: string; mimeType?: string }[]): FullThread => ({
+const makeThread = (messages: { from: string; to?: string; cc?: string; replyTo?: string; subject?: string; body: string; mimeType?: string }[]): FullThread => ({
   id: "t1",
   messages: messages.map((m, i) => ({
     id: `m${i}`,
@@ -27,7 +27,7 @@ const makeThread = (messages: { from: string; to?: string; cc?: string; replyTo?
         { name: "To", value: m.to ?? "me@example.com" },
         ...(m.cc ? [{ name: "Cc", value: m.cc }] : []),
         ...(m.replyTo ? [{ name: "Reply-To", value: m.replyTo }] : []),
-        { name: "Subject", value: "Lunch" },
+        { name: "Subject", value: m.subject ?? "Lunch" },
         { name: "Date", value: "Mon, 1 Jan 2024 10:00:00 +0000" },
         { name: "Message-ID", value: `<msg${i}@example.com>` },
       ],
@@ -776,8 +776,24 @@ describe("ThreadView message header", () => {
       focusedMessageIndex: 0,
     });
     const header = container.querySelector(".message-header")!;
-    expect(header.querySelector(".message-sender")?.textContent).toBe("Alice <alice@example.com>");
     expect(header.querySelector(".message-recipients-toggle")?.textContent).toBe("to me, Bob +1");
+  });
+
+  it("names the sender, with the address beside the name in quieter type", () => {
+    const { container } = renderThread({
+      thread: makeThread([
+        { from: '"Pérez, Ana" <ana@example.com>', body: "hi" },
+        { from: "bob@example.com", body: "hello" },
+        { from: '"Cy@Example.com" <cy@example.com>', body: "hey" },
+      ]),
+      focusedMessageIndex: 0,
+    });
+    const [named, bare, addressAsName] = container.querySelectorAll(".message-sender");
+    expect(named.querySelector(".message-sender-name")?.textContent).toBe("Pérez, Ana");
+    expect(named.querySelector(".message-sender-address")?.textContent).toBe("ana@example.com");
+    expect(bare.querySelector(".message-sender-name")?.textContent).toBe("bob@example.com");
+    expect(bare.querySelector(".message-sender-address")).toBeNull();
+    expect(addressAsName.textContent).toBe("Cy@Example.com");
   });
 });
 
@@ -825,5 +841,24 @@ describe("ThreadView toolbar", () => {
     const button = Array.from(container.querySelectorAll(".thread-toolbar-btn"))
       .find(b => b.textContent?.includes("important"))!;
     expect(button.querySelector("path")?.getAttribute("d")).toMatch(/^M14 9V5/);
+  });
+});
+
+describe("ThreadView quoted history", () => {
+  const outlook = (text: string) =>
+    `<p>${text}</p><hr><div id="divRplyFwdMsg"><b>From:</b> Ana<br><b>Subject:</b> Plan</div><div>The plan itself</div>`;
+
+  it("keeps an Outlook forward's message in view but folds an Outlook reply's history", () => {
+    const { container } = renderThread({
+      thread: makeThread([
+        { from: "Bob <bob@example.com>", subject: "FW: Plan", body: outlook("FYI"), mimeType: "text/html" },
+        { from: "Bob <bob@example.com>", subject: "RE: Plan", body: outlook("Agreed"), mimeType: "text/html" },
+      ]),
+    });
+    const [forward, reply] = container.querySelectorAll(".message-body");
+    expect(forward.textContent).toContain("The plan itself");
+    expect(forward.querySelector(".quoted-toggle")).toBeNull();
+    expect(reply.textContent).not.toContain("The plan itself");
+    expect(reply.querySelector(".quoted-toggle")).not.toBeNull();
   });
 });

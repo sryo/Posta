@@ -157,6 +157,8 @@ import { isSessionExpiredError, needsSignInAgain } from "./app/authErrors";
 import { signatureBlock, withSignature } from "./app/signature";
 import { isCalendarAttachment, isPreviewable, readFilesAsAttachments } from "./app/attachments";
 import { AttachmentLightbox, type PreviewAttachment } from "./components/AttachmentLightbox";
+import { MessageSender } from "./components/MessageSender";
+import { isForwardSubject } from "./app/quotedHistory";
 import { eventAttendees, eventFromThread, eventTimesFromForm, smartEventDefaults } from "./app/eventForm";
 import { composePlacement } from "./app/composePlacement";
 import { cidImagesToFetch, createLruCache, fetchCidImages } from "./app/cidImages";
@@ -3001,9 +3003,9 @@ function App() {
     const cardId = activeThreadCardId();
     if (!thread || !account) return;
 
-    // Actions that take the thread out of view move on (except for read/unread/important);
-    // the card's order is taken before the optimistic update removes it
-    const leavesView = ['archive', 'inbox', 'trash', 'spam'].includes(action);
+    // Archive, delete and spam move on to another thread; the card's order
+    // is taken before the optimistic update removes this one
+    const leavesView = ['archive', 'trash', 'spam'].includes(action);
     const order = cardId ? cardThreadOrder(cardId) : [];
 
     await handleThreadAction(action, [thread.id], cardId || '');
@@ -5618,7 +5620,7 @@ function App() {
                   <div class={`message-row with-compose ${inlineResizing() ? 'resizing' : ''}`}>
                     <div class="message-card">
                       <div class="message-header">
-                        <div class="message-sender">{thread.from}</div>
+                        <MessageSender from={thread.from} />
                         <div class="message-header-actions">
                           <div class="message-date">{thread.date}</div>
                         </div>
@@ -5629,6 +5631,7 @@ function App() {
                         msgId={thread.messageId}
                         msgPayloadParts={thread.parts}
                         cidAttachmentData={batchReplyCidData()[thread.threadId]}
+                        forward={isForwardSubject(thread.subject)}
                       />
                     </div>
                     <div

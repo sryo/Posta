@@ -46,8 +46,10 @@ import { CloseButton } from "./ComposeAtoms";
 import { ComposeForm } from "./ComposeForm";
 import { MessageActionsWheel } from "./MessageActionsWheel";
 import { MessageRecipients } from "./MessageRecipients";
+import { MessageSender } from "./MessageSender";
 import type { PreviewAttachment } from "./AttachmentLightbox";
 import { isPreviewable } from "../app/attachments";
+import { isForwardSubject } from "../app/quotedHistory";
 import { isMailingList, unsubscribeMethod, type UnsubscribeMethod } from "../app/unsubscribe";
 import { personName } from "../app/people";
 import { COLOR_HEX } from "../shared/constants";
@@ -462,7 +464,7 @@ export const ThreadView = (props: {
           <div class="thread-floating-bar-row thread-bar-actions">
             <button class="thread-toolbar-btn" onClick={() => props.onAction(props.isInInbox ? 'archive' : 'inbox')} title={props.isInInbox ? 'Archive' : 'Move to Inbox'}>
               {props.isInInbox ? <ArchiveIcon /> : <InboxIcon />}
-              <span class="thread-toolbar-label">{props.isInInbox ? 'Archive' : 'Inbox'}</span>
+              <span class="thread-toolbar-label">{props.isInInbox ? 'Archive' : 'Move to Inbox'}</span>
               <span class="shortcut-hint">A</span>
             </button>
 
@@ -623,7 +625,7 @@ export const ThreadView = (props: {
                     >
                       <div class="message-header">
                         <div class="message-from">
-                          <div class="message-sender">{from}</div>
+                          <MessageSender from={from} />
                           <MessageRecipients to={findHeader(headers, 'To')} cc={findHeader(headers, 'Cc')} currentUserEmail={props.currentUserEmail} />
                         </div>
                         <div class="message-header-actions">
@@ -666,6 +668,7 @@ export const ThreadView = (props: {
                             cidAttachmentData={props.cidAttachmentData}
                             msgPayloadParts={msg.payload?.parts}
                             msgId={msg.id}
+                            forward={isForwardSubject(findHeader(headers, 'Subject') || '')}
                             threadAttachments={props.threadAttachments}
                           />
                         }

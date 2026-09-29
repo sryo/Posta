@@ -28,6 +28,14 @@ export function splitQuotedText(text: string): { head: string; quoted: string } 
 const FORWARD_START = /^\s*-+\s*Forwarded message/i;
 const FORWARD_INTRO = /Begin forwarded message:\s*$/i;
 
+// Fwd: and FW: in English, TR: in French, WG: in German, RV: in Spanish,
+// ENC: in Portuguese
+const FORWARD_SUBJECT = /^\s*(fwd?|tr|wg|rv|enc)\s*:/i;
+
+export function isForwardSubject(subject: string): boolean {
+  return FORWARD_SUBJECT.test(subject);
+}
+
 // Where mail clients start the history they quote
 const QUOTE_MARKERS = [
   ".gmail_quote",
@@ -57,8 +65,11 @@ function quoteStart(body: HTMLElement): { node: Node; offset?: number } | null {
 }
 
 // HTML: `main` is the reply, `quoted` the history it ends with; null when
-// there is no such history, or nothing but it
-export function splitQuotedHtml(html: string): { main: string; quoted: string } | null {
+// there is no such history, or nothing but it. `forward` says the message is
+// a forward, whose history is what it is about: Outlook marks a forwarded
+// message just like a quoted one.
+export function splitQuotedHtml(html: string, { forward = false } = {}): { main: string; quoted: string } | null {
+  if (forward) return null;
   const doc = new DOMParser().parseFromString(html, "text/html");
   const body = doc.body;
   const start = quoteStart(body);
