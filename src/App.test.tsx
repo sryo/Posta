@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from "vitest";
-import { configure, fireEvent, render, screen, waitFor, within } from "@solidjs/testing-library";
+import { cleanup, configure, fireEvent, render, screen, waitFor, within } from "@solidjs/testing-library";
 
 // Every test renders the whole app; on a loaded machine the defaults (5s per
 // test, 1s per waitFor) fail tests that are only slow
@@ -1629,6 +1629,89 @@ describe("App drafts", () => {
     expect(screen.getByText("An email wasn't sent before Posta quit")).toBeInTheDocument();
     await waitFor(() => expect(screen.getByDisplayValue("unsent reply")).toBeInTheDocument());
     expect(storedDrafts("draft_reply_a_t-a")).toEqual([expect.not.objectContaining({ sending: true })]);
+  });
+
+  // Posta quitting during the undo window: the local draft is all that's left
+  async function quitAndRestart() {
+    const saved = { ...localStorage };
+    cleanup();
+    localStorage.clear();
+    for (const [key, value] of Object.entries(saved)) localStorage.setItem(key, value);
+    invoke.mockClear();
+    render(() => <App />);
+    fireEvent.click(await screen.findByRole("button", { name: "Open" }));
+  }
+
+  it("sends an unsent reply again as a reply to the same message", async () => {
+    handlers.get_thread_details = () => ({ id: "t-a", messages: [fullMessage("m1", "Ana <ana@x.com>"), fullMessage("m2", "Bo <bo@x.com>")] });
+    handlers.reply_to_thread = () => null;
+    render(() => <App />);
+    fireEvent.click(await screen.findByText("Mail for A"));
+    await screen.findByText("body m1");
+    fireEvent.keyDown(document, { key: "r" });
+    fireEvent.input(await screen.findByPlaceholderText("Write your reply..."), { target: { value: "unsent reply" } });
+    fireEvent.click(screen.getByRole("button", { name: /^Send/ }));
+    await quitAndRestart();
+
+    fireEvent.click(await screen.findByRole("button", { name: /^Send/ }));
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith("reply_to_thread", expect.objectContaining({ threadId: "t-a", messageId: "<m2@x>" })), { timeout: 8000 });
+  });
+
+  it("reopens an unsent forward as a forward of its thread", async () => {
+    handlers.get_thread_details = () => ({ id: "t-a", messages: [fullMessage("m1", "Ana <ana@x.com>")] });
+    render(() => <App />);
+    await screen.findByText("Mail for A");
+    fireEvent.keyDown(document, { key: "l" });
+    fireEvent.keyDown(document, { key: "f" });
+    fireEvent.input(await screen.findByPlaceholderText("Recipients"), { target: { value: "bo@y.com" } });
+    fireEvent.click(screen.getByRole("button", { name: /^Send/ }));
+    await quitAndRestart();
+
+    await waitFor(() => expect(document.querySelector(".compose-panel")).not.toBeNull());
+    fireEvent.click(await screen.findByText("Mail for A"));
+    await screen.findByText("body m1");
+    // A forward of the open thread is written inside it, not in the panel
+    await waitFor(() => expect(document.querySelector(".compose-panel")).toBeNull());
+    expect(screen.getByDisplayValue("bo@y.com")).toBeInTheDocument();
+  });
+
+  it("names the attachments an unsent email lost when Posta quit", async () => {
+    render(() => <App />);
+    await screen.findByText("Mail for A");
+    fireEvent.keyDown(document, { key: "c" });
+    fireEvent.input(await screen.findByPlaceholderText("Recipients"), { target: { value: "bo@y.com" } });
+    await attachFile("notes.txt");
+    fireEvent.click(screen.getByRole("button", { name: /^Send/ }));
+    await quitAndRestart();
+
+    expect(await screen.findByText(/Attach again: notes\.txt/)).toBeInTheDocument();
+  });
+
+  it("offers to reopen a closed email with its attachments, which drafts can't keep", async () => {
+    render(() => <App />);
+    await screen.findByText("Mail for A");
+    fireEvent.keyDown(document, { key: "c" });
+    fireEvent.input(await screen.findByPlaceholderText("Subject"), { target: { value: "With a file" } });
+    await attachFile("notes.txt");
+    fireEvent.keyDown(document, { key: "Escape" });
+
+    expect(await screen.findByText(/Draft saved without notes\.txt/)).toBeInTheDocument();
+    await waitFor(() => expect(screen.queryByPlaceholderText("Subject")).not.toBeInTheDocument());
+    fireEvent.click(screen.getByRole("button", { name: "Reopen" }));
+    expect(await screen.findByTitle("notes.txt")).toBeInTheDocument();
+    expect(screen.getByPlaceholderText("Subject")).toHaveValue("With a file");
+  });
+
+  it("keeps a closed email that holds only attachments one toast away", async () => {
+    render(() => <App />);
+    await screen.findByText("Mail for A");
+    fireEvent.keyDown(document, { key: "c" });
+    await screen.findByPlaceholderText("Subject");
+    await attachFile("notes.txt");
+    fireEvent.keyDown(document, { key: "Escape" });
+
+    fireEvent.click(await screen.findByRole("button", { name: "Reopen" }));
+    expect(await screen.findByTitle("notes.txt")).toBeInTheDocument();
   });
 
   it("does not reopen an email that is being sent as a draft", async () => {

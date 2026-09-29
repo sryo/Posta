@@ -780,6 +780,7 @@ function App() {
   const sendingDraftKeys = new Set<string>();
 
   function composeDraftFields(): DraftFields {
+    const attachmentNames = composeAttachments().map(a => a.filename);
     return {
       to: composeTo(),
       cc: composeCc(),
@@ -787,6 +788,9 @@ function App() {
       subject: composeSubject(),
       body: composeBody(),
       threadId: replyingToThread()?.threadId,
+      replyMessageId: replyingToThread()?.messageId,
+      forwardThreadId: forwardingThread()?.threadId,
+      attachmentNames: attachmentNames.length > 0 ? attachmentNames : undefined,
     };
   }
 
@@ -1870,13 +1874,21 @@ function App() {
     } else {
       flushDraftSave();
     }
+    // Drafts keep text only; attachments stay one Reopen away
+    const attachmentNames = fields.attachmentNames?.join(", ");
+    const reopen = reopenComposeAction(key, fields);
     setClosingCompose(true);
     if (!keep) {
       drafts.clear(key, accountId);
+      if (attachmentNames) showToast(`Closed an email with ${attachmentNames}`, reopen);
     } else {
       markDraftClosed(key);
       drafts.detach();
       const offerDiscard = (message: string) => {
+        if (attachmentNames) {
+          showToast(`${message} without ${attachmentNames}`, reopen);
+          return;
+        }
         showToast(message, {
           label: "Discard",
           run: () => {
@@ -1890,7 +1902,6 @@ function App() {
       if (storedHere) {
         offerDiscard("Draft saved");
       } else {
-        const reopen = reopenComposeAction(key, fields);
         (synced ?? Promise.resolve(false)).then(inGmail => {
           if (inGmail) offerDiscard("Draft saved in Gmail");
           else showToast("Couldn't save the draft", reopen);
@@ -1900,7 +1911,7 @@ function App() {
     closeComposeTimeout = window.setTimeout(resetCompose, 200);
   }
 
-  // Puts a closed compose back as it was, for when its draft could not be saved
+  // Puts a closed compose back as it was, attachments included
   function reopenComposeAction(key: string, fields: DraftFields) {
     const init = {
       ...fields,
@@ -1912,15 +1923,9 @@ function App() {
       signature: false,
       accountId: composeAccount()?.id,
       draftKey: key,
+      attachments: composeAttachments(),
     };
-    const attachments = composeAttachments();
-    return {
-      label: "Reopen",
-      run: () => {
-        startCompose(init);
-        setComposeAttachments(attachments);
-      },
-    };
+    return { label: "Reopen", run: () => startCompose(init) };
   }
 
   // A sent email's draft stays saved until the send goes out
@@ -1950,6 +1955,7 @@ function App() {
     accountId?: string;
     // Continue this saved draft instead of looking for one
     draftKey?: string;
+    attachments?: SendAttachment[];
   }) {
     if (composing() || closingCompose()) resetCompose();
     const accountId = init.accountId ?? selectedAccount()?.id;
@@ -1965,10 +1971,13 @@ function App() {
     composeDraftKey = init.draftKey ?? saved?.key ?? sessionDraftKey(group);
     // A draft being continued is the user's own text
     composeEdited = !!(init.draftKey || saved);
-    if (init.draftKey || saved) drafts.load(composeDraftKey);
+    const continued = init.draftKey || saved ? drafts.load(composeDraftKey) : null;
     if (composeDraftKey === discardToastDraftKey && toast()?.visible) hideToast();
+    const lostAttachments = init.attachments ? [] : continued?.attachmentNames ?? [];
+    if (lostAttachments.length > 0) showToast(`Attach again: ${lostAttachments.join(", ")}`);
     const fields = saved?.draft ?? init;
     batch(() => {
+      setComposeAttachments(init.attachments ?? []);
       setReplyingToEvent(init.replyEvent ?? null);
       setForwardingEvent(init.forwardEvent ?? null);
       setReplyingToThread(init.reply ?? null);
@@ -2141,6 +2150,7 @@ function App() {
       body: composeBody(),
       attachments: [...composeAttachments()],
       reply: replyingToThread() ? { ...replyingToThread()! } : undefined,
+      forward: forwardingThread() ? { ...forwardingThread()! } : undefined,
       isHtml: composeIsHtml(),
     };
 
@@ -2166,11 +2176,12 @@ function App() {
       body: pending.body,
       isHtml: pending.isHtml,
       reply: pending.reply,
+      forward: pending.forward,
       signature: false,
       accountId: pending.accountId,
       draftKey: pending.draft?.key,
+      attachments: pending.attachments,
     });
-    setComposeAttachments(pending.attachments);
     setComposeAccount(accounts().find(a => a.id === pending.accountId) ?? null);
   }
 
@@ -2190,7 +2201,8 @@ function App() {
           bcc: draft.bcc,
           subject: draft.subject,
           body: draft.body,
-          reply: draft.threadId ? { threadId: draft.threadId } : undefined,
+          reply: draft.threadId ? { threadId: draft.threadId, messageId: draft.replyMessageId } : undefined,
+          forward: draft.forwardThreadId ? { threadId: draft.forwardThreadId, subject: draft.subject, body: draft.body } : undefined,
           signature: false,
           accountId: draft.accountId,
           draftKey: key,

@@ -11,6 +11,8 @@ export interface PendingSend {
   body: string;
   attachments: SendAttachment[];
   reply?: { threadId: string; messageId?: string };
+  // Goes out as a new email; kept so an undone forward reopens as one
+  forward?: { threadId: string; subject: string; body: string };
   isHtml?: boolean;
   // The compose's saved draft, kept until the send goes out
   draft?: { key: string; gmailDraftId?: string };

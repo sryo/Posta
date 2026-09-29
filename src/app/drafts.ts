@@ -9,6 +9,11 @@ export interface DraftFields {
   subject: string;
   body: string;
   threadId?: string;
+  // The message a reply answers, so a reopened reply threads under it
+  replyMessageId?: string;
+  forwardThreadId?: string;
+  // Attachments aren't stored with the text; their names say what to attach again
+  attachmentNames?: string[];
 }
 
 export interface Draft extends DraftFields {
