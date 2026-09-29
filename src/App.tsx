@@ -774,7 +774,7 @@ function App() {
   const dismissEventForm = async () => {
     const f = eventForm();
     const typed = [f.summary, f.description, f.location, f.attendees].some(v => v.trim());
-    if (f.closing || (typed && !(await askConfirm("Discard this event?", "Discard")))) return;
+    if (f.closing || (typed && !(await askConfirm({ title: "Discard this event?", message: "What you typed in it is lost.", confirmLabel: "Discard", cancelLabel: "Keep editing", tone: "danger" })))) return;
     if (creatingEvent()) closeEventForm();
   };
   const closeEventForm = () => {
@@ -1876,7 +1876,12 @@ function App() {
   async function handleStartFresh() {
     const currentCards = cards();
     const count = `${currentCards.length} card${currentCards.length === 1 ? "" : "s"}`;
-    if (currentCards.length > 0 && !(await askConfirm(`Delete the restored layout's ${count}? They're also removed from your other Macs that sync through iCloud. This can't be undone.`, "Delete"))) return;
+    if (currentCards.length > 0 && !(await askConfirm({
+      title: `Delete the restored layout's ${count}?`,
+      message: "They're also removed from your other Macs that sync through iCloud. This can't be undone.",
+      confirmLabel: currentCards.length === 1 ? "Delete card" : "Delete cards",
+      tone: "danger",
+    }))) return;
     const results = await Promise.allSettled(currentCards.map(card => deleteCard(card.id)));
     // Cards that failed to delete still exist; keep showing them rather than
     // letting a preset pile new cards on top
@@ -1925,7 +1930,12 @@ function App() {
   async function handleSignOut() {
     const account = selectedAccount();
     if (!account) return;
-    if (!(await askConfirm(`Sign out of ${account.email}? Its cards and the drafts saved on this computer are removed.`, "Sign out"))) return;
+    if (!(await askConfirm({
+      title: `Sign out of ${account.email}?`,
+      message: "Its cards and the drafts saved on this computer are removed. Your email stays in Gmail.",
+      confirmLabel: "Sign out",
+      tone: "danger",
+    }))) return;
     if (selectedAccount()?.id !== account.id) return;
 
     const signedOutCards = cards();
@@ -2859,7 +2869,7 @@ function App() {
   // Closing by hand throws away typed replies, so ask first
   async function confirmDiscardBatchReplies(): Promise<boolean> {
     const unsent = unsentBatchReplies();
-    return !unsent || askConfirm(`Discard ${unsent}?`, "Discard");
+    return !unsent || askConfirm({ title: `Discard ${unsent}?`, message: "What you typed is lost.", confirmLabel: "Discard", cancelLabel: "Keep editing", tone: "danger" });
   }
 
   async function dismissBatchReply() {
@@ -3161,7 +3171,7 @@ function App() {
       batchReplyOpen() ? unsentBatchReplies() : null,
       quickReply().text.trim() ? "your quick reply" : null,
     ].filter((what): what is string => !!what);
-    if (lost.length > 0 && !(await askConfirm(`Discard ${lost.join(" and ")}?`, "Discard"))) return;
+    if (lost.length > 0 && !(await askConfirm({ title: `Discard ${lost.join(" and ")}?`, message: "What you typed is lost.", confirmLabel: "Discard", cancelLabel: "Keep editing", tone: "danger" }))) return;
     if (selectedAccount()?.id === account.id) return;
 
     closeAccountViews();

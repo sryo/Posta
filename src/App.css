@@ -1654,6 +1654,17 @@ a:focus-visible,
     background: var(--danger-bg);
 }
 
+/* The destructive answer of a confirm dialog */
+.confirm-dialog .btn-danger {
+    background: var(--danger);
+    color: #fff;
+}
+
+.confirm-dialog .btn-danger:hover {
+    background: var(--danger);
+    filter: brightness(1.08);
+}
+
 .btn-ghost {
     background: transparent;
     border-color: transparent;

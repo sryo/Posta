@@ -25,6 +25,8 @@ export interface DialogOptions {
   initialFocus?: (dialog: HTMLElement) => HTMLElement | null | undefined;
   // Escape in the dialog's text fields closes it too
   closesFromInputs?: boolean;
+  // "alertdialog" for a question that needs an answer
+  role?: "dialog" | "alertdialog";
 }
 
 // Makes the element given to the returned ref a modal dialog: named, focused
@@ -79,7 +81,7 @@ export function useDialog(options: DialogOptions): (el: HTMLElement) => void {
 
   return (el: HTMLElement) => {
     dialog = el;
-    el.setAttribute("role", "dialog");
+    el.setAttribute("role", options.role ?? "dialog");
     el.setAttribute("aria-modal", "true");
     if (options.labelledBy) el.setAttribute("aria-labelledby", options.labelledBy);
     if (!el.hasAttribute("tabindex")) el.setAttribute("tabindex", "-1");

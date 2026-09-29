@@ -128,7 +128,7 @@ async function answerConfirm(yes: boolean, message?: RegExp | string): Promise<H
   const dialog = await screen.findByRole("alertdialog");
   if (message !== undefined) expect(dialog).toHaveTextContent(message);
   const buttons = within(dialog).getAllByRole("button");
-  fireEvent.click(yes ? buttons[buttons.length - 1] : within(dialog).getByRole("button", { name: "Cancel" }));
+  fireEvent.click(yes ? buttons[buttons.length - 1] : buttons[0]);
   return dialog;
 }
 
@@ -2598,6 +2598,26 @@ describe("App layout removal", () => {
     fireEvent.click(await screen.findByTitle("Archive"));
     await answerConfirm(true);
     await waitFor(() => expect(invoke).toHaveBeenCalledWith("modify_threads", expect.objectContaining({ threadIds: ["t-1", "t-2"] })));
+  });
+
+  it("asks to sign out as a destructive question, focused on keeping the account", async () => {
+    render(() => <App />);
+    await screen.findByText("Mail for A");
+    fireEvent.click(screen.getByText("Sign out"));
+    const dialog = await screen.findByRole("alertdialog", { name: "Sign out of a@x.com?" });
+    expect(within(dialog).getByRole("button", { name: "Sign out" })).toHaveClass("btn-danger");
+    await waitFor(() => expect(document.activeElement).toBe(within(dialog).getByRole("button", { name: "Cancel" })));
+  });
+
+  it("asks before throwing away a new event's details, offering to keep editing", async () => {
+    render(() => <App />);
+    await screen.findByText("Mail for A");
+    fireEvent.keyDown(document, { key: "e" });
+    fireEvent.input(await screen.findByPlaceholderText("Event title"), { target: { value: "Lunch" } });
+    fireEvent.keyDown(screen.getByPlaceholderText("Event title"), { key: "Escape" });
+    const dialog = await screen.findByRole("alertdialog", { name: "Discard this event?" });
+    expect(within(dialog).getByRole("button", { name: "Discard" })).toHaveClass("btn-danger");
+    expect(within(dialog).getByRole("button", { name: "Keep editing" })).toBeInTheDocument();
   });
 
   it("signs out once confirmed in the app's own dialog", async () => {

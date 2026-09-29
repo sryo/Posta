@@ -25,3 +25,11 @@ describe("dialogs", () => {
     expect(declarationsOf('[role="dialog"][tabindex="-1"]:focus').get("outline")).toBe("none");
   });
 });
+
+describe("confirm dialog", () => {
+  it("fills a destructive answer's button red", () => {
+    const decl = declarationsOf(".confirm-dialog .btn-danger");
+    expect(decl.get("background")).toBe("var(--danger)");
+    expect(decl.get("color")).toBe("#fff");
+  });
+});
