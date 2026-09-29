@@ -24,9 +24,9 @@ describe("invite row styles", () => {
   it("colours the answer by its status token", () => {
     expect(declarations(".invite-answer.accepted").get("color")).toBe("var(--success-fg)");
     expect(declarations(".invite-answer.tentative").get("color")).toBe("var(--warning-fg)");
-    expect(declarations(".invite-answer-item.accepted .invite-answer-dot").get("background")).toBe("var(--success)");
-    expect(declarations(".invite-answer-item.tentative .invite-answer-dot").get("background")).toBe("var(--warning)");
-    expect(declarations(".invite-answer-item.declined .invite-answer-dot").get("background")).toBe("var(--danger)");
+    expect(declarations(".invite-answer-item.accepted .invite-answer-icon").get("color")).toBe("var(--success-fg)");
+    expect(declarations(".invite-answer-item.tentative .invite-answer-icon").get("color")).toBe("var(--warning-fg)");
+    expect(declarations(".invite-answer-item.declined .invite-answer-icon").get("color")).toBe("var(--danger-fg)");
   });
 
   it("keeps the event's time clear of the row's checkbox on hover and focus", () => {

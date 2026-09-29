@@ -1,5 +1,5 @@
 import { createMemo, createSignal, For, type JSX, onCleanup, Show } from "solid-js";
-import { Portal } from "solid-js/web";
+import { Dynamic, Portal } from "solid-js/web";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import type { CalendarEvent } from "../api/tauri";
 import { formatClock } from "../app/dateFormat";
@@ -8,11 +8,17 @@ import { inviteDuration, invitePlace, inviteState, inviteWhen, type InviteState 
 import { useLayer } from "../app/layers";
 import { joinLabel, meetingProgress } from "../app/nowSection";
 import { RSVP_ANSWERS, rsvpForKey, type RsvpStatus } from "../app/rsvp";
-import { CalendarIcon, CheckIcon, ChevronIcon, LocationIcon, VideoIcon } from "./Icons";
+import { CalendarIcon, CheckCircleIcon, CheckIcon, ChevronIcon, CrossCircleIcon, LocationIcon, QuestionCircleIcon, VideoIcon } from "./Icons";
 
 // An invite email's row on a card keeps a mail row's three lines: the event's
 // time where the arrival time goes, its length and place where the snippet
 // goes, and the sender with the user's answer at the end
+
+const ANSWER_ICONS: Record<RsvpStatus, { name: string; icon: () => JSX.Element }> = {
+  accepted: { name: "going", icon: CheckCircleIcon },
+  tentative: { name: "maybe", icon: QuestionCircleIcon },
+  declined: { name: "not-going", icon: CrossCircleIcon },
+};
 
 const MENU_GAP = 4;
 const MENU_HEIGHT = 96;
@@ -148,7 +154,9 @@ export const InviteAnswerMenu = (props: {
                     tabindex="-1"
                     onClick={() => choose(option.status)}
                   >
-                    <span class="invite-answer-dot" aria-hidden="true" />
+                    <span class="invite-answer-icon" data-icon={ANSWER_ICONS[option.status].name} aria-hidden="true">
+                      <Dynamic component={ANSWER_ICONS[option.status].icon} />
+                    </span>
                     <span class="invite-answer-label">{option.label}</span>
                     <Show when={props.value === option.status}>
                       <span class="invite-answer-tick" aria-hidden="true"><CheckIcon /></span>

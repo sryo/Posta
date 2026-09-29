@@ -1715,23 +1715,21 @@ a:focus-visible,
     outline: none;
 }
 
-.invite-answer-dot {
-    width: 8px;
-    height: 8px;
+.invite-answer-icon {
+    display: inline-flex;
     flex-shrink: 0;
-    border-radius: var(--radius-full);
 }
 
-.invite-answer-item.accepted .invite-answer-dot {
-    background: var(--success);
+.invite-answer-item.accepted .invite-answer-icon {
+    color: var(--success-fg);
 }
 
-.invite-answer-item.tentative .invite-answer-dot {
-    background: var(--warning);
+.invite-answer-item.tentative .invite-answer-icon {
+    color: var(--warning-fg);
 }
 
-.invite-answer-item.declined .invite-answer-dot {
-    background: var(--danger);
+.invite-answer-item.declined .invite-answer-icon {
+    color: var(--danger-fg);
 }
 
 .invite-answer-label {

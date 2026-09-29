@@ -58,6 +58,14 @@ describe("InviteAnswerMenu", () => {
       .toEqual([[true, "true", "y"], [false, "false", "Shift+M"], [false, "false", "n"]]);
   });
 
+  it("marks each answer with its own icon rather than a coloured dot", () => {
+    render(() => <InviteAnswerMenu value={undefined} onAnswer={() => {}} />);
+    fireEvent.click(menuButton());
+    expect(items().map(i => i.querySelector(".invite-answer-icon")?.getAttribute("data-icon"))).toEqual(["going", "maybe", "not-going"]);
+    expect(items().every(i => i.querySelector(".invite-answer-icon svg"))).toBe(true);
+    expect(items().some(i => i.querySelector(".invite-answer-dot"))).toBe(false);
+  });
+
   it("answers from the menu and closes it, handing focus back", () => {
     const onAnswer = vi.fn();
     render(() => <InviteAnswerMenu value={undefined} onAnswer={onAnswer} />);
