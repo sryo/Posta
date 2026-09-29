@@ -114,6 +114,7 @@ import { ComposeForm } from "./components/ComposeForm";
 import { CreateEventForm } from "./components/CreateEventForm";
 import { InviteBlock } from "./components/InviteBlock";
 import { eventActions } from "./app/eventActions";
+import { defaultCalendarId, lastUsedCalendar, rememberCalendar } from "./app/eventCalendars";
 import { ThreadView } from "./components/ThreadView";
 import { EventView } from "./components/EventView";
 import { ActionsWheel } from "./components/ActionsWheel";
@@ -757,6 +758,8 @@ function App() {
     allDay: boolean;
     attendees: string;
     recurrence: string | null;
+    // Chosen in the form; null goes to the default calendar
+    calendarId: string | null;
     saving: boolean;
     error: string | null;
     editing: { id: string; calendarId: string } | null;
@@ -769,7 +772,7 @@ function App() {
       summary: "", description: "", location: "",
       startDate: defaults.date, startTime: defaults.startTime,
       endDate: defaults.endDate, endTime: defaults.endTime,
-      allDay: false, attendees: "", recurrence: null,
+      allDay: false, attendees: "", recurrence: null, calendarId: null,
       saving: false, error: null, editing: null, closing: false,
     };
   };
@@ -784,6 +787,11 @@ function App() {
       ? defaultEventForm()
       : { ...f, startDate: defaults.date, startTime: defaults.startTime, endDate: defaults.endDate, endTime: defaults.endTime });
     setCreatingEvent(true);
+    fetchAvailableCalendars();
+  };
+  const newEventCalendarId = () => {
+    const account = selectedAccount();
+    return eventForm().calendarId ?? (account ? defaultCalendarId(availableCalendars(), lastUsedCalendar(account.id)) : null);
   };
   // The form is kept nowhere once closed, so typed details need a yes first
   const dismissEventForm = async () => {
@@ -2201,12 +2209,9 @@ function App() {
         setActiveEvent(ev => (ev && ev.id === updated.id ? updated : ev));
         updateEventInCards(updated.id, () => updated);
       } else {
-        // Create new event
-        await createCalendarEvent(
-          account.id,
-          null,
-          eventInput
-        );
+        const calendarId = newEventCalendarId();
+        await createCalendarEvent(account.id, calendarId, eventInput);
+        if (calendarId) rememberCalendar(account.id, calendarId);
       }
 
       setCreatingEvent(false);
@@ -4866,6 +4871,9 @@ function App() {
           setAttendees={(v: string) => setEventForm(f => ({ ...f, attendees: v }))}
           recurrence={eventForm().recurrence}
           setRecurrence={(v: string | null) => setEventForm(f => ({ ...f, recurrence: v }))}
+          calendars={availableCalendars()}
+          calendarId={newEventCalendarId()}
+          setCalendarId={(id: string) => setEventForm(f => ({ ...f, calendarId: id }))}
           saving={eventForm().saving}
           onSave={handleCreateEvent}
           error={eventForm().error}

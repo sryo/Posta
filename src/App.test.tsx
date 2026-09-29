@@ -1477,6 +1477,31 @@ describe("App calendar", () => {
     expect(invoke).not.toHaveBeenCalledWith("update_calendar_event", expect.anything());
   });
 
+  it("creates an event in the calendar used last, and remembers a new choice", async () => {
+    localStorage.setItem("event_calendar_a", "team");
+    handlers.list_calendars = () => [
+      { id: "a@x.com", name: "a@x.com", is_primary: true, access_role: "owner", timezone: null },
+      { id: "birthdays", name: "Birthdays", is_primary: false, access_role: "reader", timezone: null },
+      { id: "team", name: "Team", is_primary: false, access_role: "writer", timezone: null },
+      { id: "side", name: "Side", is_primary: false, access_role: "owner", timezone: null },
+    ];
+    handlers.create_calendar_event = () => calendarEvent("ev-2", "Lunch");
+    render(() => <App />);
+    await screen.findByText("Mail for A");
+    fireEvent.keyDown(document, { key: "e" });
+    const select = await screen.findByRole("combobox", { name: "Calendar" }) as HTMLSelectElement;
+    await waitFor(() => expect(select.value).toBe("team"));
+    expect(Array.from(select.options).map(o => o.value)).toEqual(["a@x.com", "side", "team"]);
+
+    fireEvent.change(select, { target: { value: "side" } });
+    const title = screen.getByPlaceholderText("Event title");
+    fireEvent.input(title, { target: { value: "Lunch" } });
+    fireEvent.keyDown(title, { key: "Enter", metaKey: true });
+
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith("create_calendar_event", expect.objectContaining({ accountId: "a", calendarId: "side" })));
+    await waitFor(() => expect(localStorage.getItem("event_calendar_a")).toBe("side"));
+  });
+
   it("asks before Escape throws away a new event's typed details", async () => {
     render(() => <App />);
     await screen.findByText("Mail for A");

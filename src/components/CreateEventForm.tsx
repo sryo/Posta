@@ -2,6 +2,7 @@ import { createSignal, onCleanup, onMount, Show, For } from "solid-js";
 import { ChevronLeftIcon, ChevronRightIcon } from "./Icons";
 import { CloseButton } from "./ComposeAtoms";
 import { isImeComposing, isTypingTarget, onActivateKey } from "../shared/keyboard";
+import { isWritableCalendar } from "../app/eventActions";
 
 // One labelled, scrollable single-choice list of the scheduler
 function SchedulerColumn<T>(props: {
@@ -64,6 +65,10 @@ export const CreateEventForm = (props: {
   inline?: boolean;
   isEditing?: boolean;
   occurrenceOnly?: boolean;
+  // The calendar a new event goes to; an edited event moves with Move instead
+  calendars?: { id: string; name: string; is_primary: boolean; access_role: string }[];
+  calendarId?: string | null;
+  setCalendarId?: (id: string) => void;
 }) => {
   // Snapshot is safe: both call sites mount this inside a <Show>, so a fresh
   // instance is created each time the form opens.
@@ -267,18 +272,37 @@ export const CreateEventForm = (props: {
     };
   };
 
+  const writableCalendars = () => (props.calendars ?? []).filter(isWritableCalendar);
+
   const formContent = () => (
     <>
+      <div class="event-form-header">
+        <input
+          type="text"
+          class="event-title-input"
+          value={props.summary}
+          onInput={(e) => props.setSummary(e.currentTarget.value)}
+          placeholder="Event title"
+          aria-label="Event title"
+          ref={(el) => setTimeout(() => el.focus(), 0)}
+        />
+        <Show when={!props.isEditing && props.setCalendarId && writableCalendars().length > 0}>
+          <select
+            class="event-calendar-select"
+            aria-label="Calendar"
+            value={props.calendarId ?? ""}
+            onChange={(e) => props.setCalendarId!(e.currentTarget.value)}
+          >
+            <For each={writableCalendars()}>
+              {(cal) => <option value={cal.id} selected={cal.id === props.calendarId}>{cal.name}</option>}
+            </For>
+          </select>
+        </Show>
+        <Show when={!props.inline}>
+          <CloseButton onClick={props.onClose} />
+        </Show>
+      </div>
       <div class={props.inline ? "inline-event-body" : "compose-body"} style={{ flex: 1, "overflow-y": "auto" }}>
-        <div class="compose-field">
-          <input
-            type="text"
-            value={props.summary}
-            onInput={(e) => props.setSummary(e.currentTarget.value)}
-            placeholder="Event title"
-            ref={(el) => setTimeout(() => el.focus(), 0)}
-          />
-        </div>
 
         {/* Custom Scheduler UI */}
         <div class="scheduler-ui">
@@ -399,7 +423,7 @@ export const CreateEventForm = (props: {
           />
         </div>
       </div>
-      <div class={props.inline ? "inline-event-footer" : "compose-footer"}>
+      <div class={`event-form-footer ${props.inline ? "inline-event-footer" : "compose-footer"}`}>
         <Show when={props.error}><div class="compose-error">{props.error}</div></Show>
         <div class="compose-spacer" />
         <button class="btn" onClick={props.onClose} style={{ "margin-right": "8px" }}>
@@ -421,11 +445,13 @@ export const CreateEventForm = (props: {
   }
 
   return (
-    <div class={`compose-panel event-compose ${props.closing ? 'closing' : ''}`} onKeyDown={handleKeyDown} style={{ height: "auto", display: "flex", "flex-direction": "column" }}>
-      <div class="compose-header">
-        <h3>{props.isEditing ? "Edit event" : "New event"}</h3>
-        <CloseButton onClick={props.onClose} />
-      </div>
+    <div
+      class={`compose-panel event-compose ${props.closing ? 'closing' : ''}`}
+      role="dialog"
+      aria-label={props.isEditing ? "Edit event" : "New event"}
+      onKeyDown={handleKeyDown}
+      style={{ height: "auto", display: "flex", "flex-direction": "column" }}
+    >
       {formContent()}
     </div>
   );

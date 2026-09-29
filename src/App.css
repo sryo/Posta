@@ -4707,6 +4707,52 @@ button:disabled:hover {
     flex: 1;
 }
 
+/* Event form: title and calendar above the scrolling body, actions below */
+.event-form-header {
+    position: sticky;
+    top: 0;
+    z-index: 1;
+    display: flex;
+    align-items: center;
+    gap: var(--space-md);
+    padding: var(--space-lg) var(--space-lg) var(--space-lg) var(--space-xl);
+    border-bottom: 1px solid var(--border-color);
+    background: var(--bg-primary);
+}
+
+.event-title-input {
+    flex: 1;
+    min-width: 0;
+    padding: var(--space-xs) 0;
+    border: none;
+    background: transparent;
+    color: var(--text-primary);
+    font-family: inherit;
+    font-size: 17px;
+    font-weight: 600;
+    outline: none;
+}
+
+.event-title-input::placeholder {
+    color: var(--text-muted);
+    font-weight: 500;
+}
+
+.event-calendar-select {
+    max-width: 40%;
+    padding: var(--space-sm) var(--space-md);
+    border: 1px solid var(--border-color);
+    border-radius: var(--radius-md);
+    background: var(--bg-primary);
+    color: var(--text-primary);
+    font-size: var(--font-size-base);
+}
+
+.event-form-footer {
+    position: sticky;
+    bottom: 0;
+}
+
 /* Smart Replies */
 .smart-replies-container {
     padding: var(--space-lg);

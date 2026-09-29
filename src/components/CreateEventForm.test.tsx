@@ -3,7 +3,7 @@ import { fireEvent, render } from "@solidjs/testing-library";
 import { createSignal } from "solid-js";
 import { CreateEventForm } from "./CreateEventForm";
 
-function renderForm(init: { startDate: string; endDate?: string; startTime?: string; endTime?: string; isEditing?: boolean; allDay?: boolean; setRecurrence?: (v: string | null) => void; summary?: string; onSave?: () => void; onClose?: () => void }) {
+function renderForm(init: { startDate: string; endDate?: string; startTime?: string; endTime?: string; isEditing?: boolean; allDay?: boolean; setRecurrence?: (v: string | null) => void; summary?: string; onSave?: () => void; onClose?: () => void; extra?: Partial<Parameters<typeof CreateEventForm>[0]> }) {
   const [startDate, setStartDate] = createSignal(init.startDate);
   const [endDate, setEndDate] = createSignal(init.endDate ?? init.startDate);
   const [startTime, setStartTime] = createSignal(init.startTime ?? "10:00");
@@ -35,6 +35,7 @@ function renderForm(init: { startDate: string; endDate?: string; startTime?: str
       onSave={init.onSave ?? vi.fn()}
       error={null}
       isEditing={init.isEditing}
+      {...(init.extra ?? {})}
     />
   ));
   return { ...result, startDate, endDate, startTime, endTime };
@@ -199,6 +200,42 @@ describe("CreateEventForm time pickers", () => {
   });
 });
 
+
+describe("CreateEventForm header", () => {
+  const calendars = [
+    { id: "me@x.test", name: "me@x.test", is_primary: true, access_role: "owner" },
+    { id: "birthdays", name: "Birthdays", is_primary: false, access_role: "reader" },
+    { id: "team", name: "Team", is_primary: false, access_role: "writer" },
+  ];
+
+  it("keeps the title and the calendar together in a header that stays in view", () => {
+    const { container, getByRole } = renderForm({ startDate: "2031-03-03", extra: { calendars, calendarId: "team", setCalendarId: vi.fn() } });
+    const header = container.querySelector(".event-form-header")!;
+    expect(header.querySelector('input[placeholder="Event title"]')).toHaveClass("event-title-input");
+    const select = getByRole("combobox", { name: "Calendar" }) as HTMLSelectElement;
+    expect(header.contains(select)).toBe(true);
+    expect(select.value).toBe("team");
+  });
+
+  it("offers only calendars the user can write to", () => {
+    const setCalendarId = vi.fn();
+    const { getByRole } = renderForm({ startDate: "2031-03-03", extra: { calendars, calendarId: "me@x.test", setCalendarId } });
+    const select = getByRole("combobox", { name: "Calendar" }) as HTMLSelectElement;
+    expect(Array.from(select.options).map(o => o.textContent)).toEqual(["me@x.test", "Team"]);
+    fireEvent.change(select, { target: { value: "team" } });
+    expect(setCalendarId).toHaveBeenCalledWith("team");
+  });
+
+  it("leaves the calendar of an event being edited to Move", () => {
+    const { queryByRole } = renderForm({ startDate: "2031-03-03", isEditing: true, extra: { calendars, calendarId: "team", setCalendarId: vi.fn() } });
+    expect(queryByRole("combobox", { name: "Calendar" })).toBeNull();
+  });
+
+  it("keeps Cancel and Save in a footer that stays in view", () => {
+    const { container } = renderForm({ startDate: "2031-03-03" });
+    expect(container.querySelector(".event-form-footer .btn-primary")).not.toBeNull();
+  });
+});
 
 describe("CreateEventForm repeat", () => {
   it("offers repeat options for all-day events and hides the time pickers", () => {
