@@ -267,6 +267,22 @@ describe("CreateEventForm guests", () => {
   });
 });
 
+describe("CreateEventForm Google Meet", () => {
+  it("adds a Meet link with a toggle", () => {
+    const setAddMeet = vi.fn();
+    const { getByRole } = renderForm({ startDate: "2031-03-03", extra: { addMeet: false, setAddMeet } });
+    const toggle = getByRole("checkbox", { name: "Add Google Meet" });
+    fireEvent.click(toggle);
+    expect(setAddMeet).toHaveBeenCalledWith(true);
+  });
+
+  it("says an event already has a Meet link instead of offering another", () => {
+    const { queryByRole, getByText } = renderForm({ startDate: "2031-03-03", isEditing: true, extra: { addMeet: false, setAddMeet: vi.fn(), hasMeet: true } });
+    expect(queryByRole("checkbox", { name: "Add Google Meet" })).toBeNull();
+    expect(getByText("Has a Google Meet link")).toBeInTheDocument();
+  });
+});
+
 describe("CreateEventForm repeat", () => {
   it("offers repeat options for all-day events and hides the time pickers", () => {
     const setRecurrence = vi.fn();

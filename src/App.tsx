@@ -760,6 +760,7 @@ function App() {
     recurrence: string | null;
     // Chosen in the form; null goes to the default calendar
     calendarId: string | null;
+    addMeet: boolean;
     saving: boolean;
     error: string | null;
     editing: { id: string; calendarId: string } | null;
@@ -772,7 +773,7 @@ function App() {
       summary: "", description: "", location: "",
       startDate: defaults.date, startTime: defaults.startTime,
       endDate: defaults.endDate, endTime: defaults.endTime,
-      allDay: false, attendees: "", recurrence: null, calendarId: null,
+      allDay: false, attendees: "", recurrence: null, calendarId: null, addMeet: false,
       saving: false, error: null, editing: null, closing: false,
     };
   };
@@ -2194,6 +2195,7 @@ function App() {
         allDay: form.allDay,
         attendees: attendeesList.length > 0 ? attendeesList : null,
         recurrence: form.recurrence ? [form.recurrence] : null,
+        addMeet: form.addMeet,
       };
 
       if (editing) {
@@ -4876,6 +4878,8 @@ function App() {
           calendars={availableCalendars()}
           calendarId={newEventCalendarId()}
           guestSuggestions={guestSuggestions}
+          addMeet={eventForm().addMeet}
+          setAddMeet={(v: boolean) => setEventForm(f => ({ ...f, addMeet: v }))}
           setCalendarId={(id: string) => setEventForm(f => ({ ...f, calendarId: id }))}
           saving={eventForm().saving}
           onSave={handleCreateEvent}
@@ -5117,6 +5121,7 @@ function App() {
               attendees: event.attendees.map(a => a.email).join(', '),
               // Cards list single occurrences; a null rule leaves a series' recurrence alone
               recurrence: null,
+              addMeet: false,
               editing: { id: event.id, calendarId: event.calendar_id },
             }));
           }}
@@ -5153,6 +5158,9 @@ function App() {
             setRecurrence: (v: string | null) => setEventForm(f => ({ ...f, recurrence: v })),
             occurrenceOnly: !!activeEvent()!.recurring_event_id,
             guestSuggestions,
+            addMeet: eventForm().addMeet,
+            setAddMeet: (v: boolean) => setEventForm(f => ({ ...f, addMeet: v })),
+            hasMeet: !!activeEvent()!.hangout_link,
             saving: eventForm().saving,
             onSave: handleCreateEvent,
             onClose: () => setEventForm(defaultEventForm()),

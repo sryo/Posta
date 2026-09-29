@@ -2148,6 +2148,7 @@ pub async fn create_calendar_event(
     all_day: bool,
     attendees: Option<Vec<String>>,
     recurrence: Option<Vec<String>>,
+    add_meet: Option<bool>,
     app_handle: tauri::AppHandle,
     state: State<'_, AppState>,
 ) -> Result<crate::models::GoogleCalendarEvent, String> {
@@ -2166,6 +2167,7 @@ pub async fn create_calendar_event(
                 all_day,
                 attendees,
                 recurrence,
+                add_meet: add_meet.unwrap_or(false),
             },
         )
         .await;
@@ -2217,6 +2219,7 @@ pub async fn update_calendar_event(
     all_day: bool,
     attendees: Option<Vec<String>>,
     recurrence: Option<Vec<String>>,
+    add_meet: Option<bool>,
     app_handle: tauri::AppHandle,
     state: State<'_, AppState>,
 ) -> Result<crate::models::GoogleCalendarEvent, String> {
@@ -2236,6 +2239,7 @@ pub async fn update_calendar_event(
                 all_day,
                 attendees,
                 recurrence,
+                add_meet: add_meet.unwrap_or(false),
             },
         )
         .await;

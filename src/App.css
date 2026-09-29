@@ -4753,6 +4753,23 @@ button:disabled:hover {
     bottom: 0;
 }
 
+.event-meet-field {
+    color: var(--text-secondary);
+    font-size: var(--font-size-md);
+}
+
+.event-meet-field svg {
+    flex-shrink: 0;
+    color: var(--text-muted);
+}
+
+.event-meet-toggle {
+    display: flex;
+    align-items: center;
+    gap: var(--space-sm);
+    cursor: pointer;
+}
+
 /* GuestChips */
 .guest-chips {
     position: relative;

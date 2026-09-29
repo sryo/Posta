@@ -54,6 +54,9 @@ export interface InlineEditEventProps {
   // Editing one occurrence of a repeating event, which can't take a rule of its own
   occurrenceOnly: boolean;
   guestSuggestions?: (query: string) => { email: string; name?: string }[];
+  addMeet?: boolean;
+  setAddMeet?: (v: boolean) => void;
+  hasMeet?: boolean;
   saving: boolean;
   onSave: () => void;
   onClose: () => void;

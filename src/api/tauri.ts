@@ -35,6 +35,8 @@ export interface EventInput {
   allDay: boolean;
   attendees: string[] | null;
   recurrence: string[] | null;
+  // Ask Google to attach a new Meet link
+  addMeet?: boolean;
 }
 
 export interface Attachment {
@@ -511,6 +513,7 @@ export async function createCalendarEvent(
     allDay: event.allDay,
     attendees: event.attendees,
     recurrence: event.recurrence,
+    addMeet: event.addMeet ?? false,
   });
 }
 
@@ -558,6 +561,7 @@ export async function updateCalendarEvent(
     allDay: event.allDay,
     attendees: event.attendees,
     recurrence: event.recurrence,
+    addMeet: event.addMeet ?? false,
   });
 }
 

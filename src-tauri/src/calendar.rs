@@ -259,6 +259,16 @@ struct CreateEventRequest {
     attendees: Option<Vec<CalEventAttendee>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     recurrence: Option<Vec<String>>,
+    #[serde(rename = "conferenceData", skip_serializing_if = "Option::is_none")]
+    conference_data: Option<serde_json::Value>,
+}
+
+impl CreateEventRequest {
+    /// The query the write needs besides sendUpdates: Google ignores
+    /// conferenceData unless asked for version 1
+    fn conference_query(&self) -> &'static str {
+        if self.conference_data.is_some() { "&conferenceDataVersion=1" } else { "" }
+    }
 }
 
 #[derive(Debug, Serialize)]
@@ -359,6 +369,8 @@ pub struct EventFields {
     pub all_day: bool,
     pub attendees: Option<Vec<String>>,
     pub recurrence: Option<Vec<String>>,
+    /// Ask Google to attach a new Meet link
+    pub add_meet: bool,
 }
 
 /// The guest list to write, or None to leave the event's guests as they are.
@@ -420,7 +432,17 @@ fn build_event_request(
         (date_time(start_dt), date_time(end_dt))
     };
 
+    let conference_data = fields.add_meet.then(|| {
+        serde_json::json!({
+            "createRequest": {
+                "requestId": uuid::Uuid::new_v4().to_string(),
+                "conferenceSolutionKey": { "type": "hangoutsMeet" },
+            }
+        })
+    });
+
     Ok(CreateEventRequest {
+        conference_data,
         summary: fields.summary,
         description: fields.description,
         location: fields.location,
@@ -643,16 +665,16 @@ impl CalendarClient {
         calendar_id: &str,
         fields: EventFields,
     ) -> Result<CalendarEvent, String> {
-        let url = format!(
-            "{}/calendars/{}/events?sendUpdates={}",
-            self.api_base,
-            urlencoding::encode(calendar_id),
-            send_updates(true)
-        );
-
         let calendar = self.calendar_info(calendar_id).await;
         let time_zone = recurrence_time_zone(&fields, calendar.as_ref());
         let body = build_event_request(fields, time_zone, &[])?;
+        let url = format!(
+            "{}/calendars/{}/events?sendUpdates={}{}",
+            self.api_base,
+            urlencoding::encode(calendar_id),
+            send_updates(true),
+            body.conference_query()
+        );
         let api_event: ApiEvent = self.send_json(self.http_client.post(&url).json(&body)).await?;
 
         written_event(api_event, calendar_id, calendar.as_ref())
@@ -722,15 +744,16 @@ impl CalendarClient {
             Err(e) if fields.attendees.as_ref().is_some_and(|a| !a.is_empty()) => return Err(e),
             Err(_) => (Vec::new(), false),
         };
+        let time_zone = recurrence_time_zone(&fields, calendar.as_ref());
+        let body = build_event_request(fields, time_zone, &existing_attendees)?;
         let url = format!(
-            "{}/calendars/{}/events/{}?sendUpdates={}",
+            "{}/calendars/{}/events/{}?sendUpdates={}{}",
             self.api_base,
             urlencoding::encode(calendar_id),
             urlencoding::encode(event_id),
-            send_updates(is_self_creator)
+            send_updates(is_self_creator),
+            body.conference_query()
         );
-        let time_zone = recurrence_time_zone(&fields, calendar.as_ref());
-        let body = build_event_request(fields, time_zone, &existing_attendees)?;
         let api_event: ApiEvent = self.send_json(self.http_client.patch(&url).json(&body)).await?;
 
         written_event(api_event, calendar_id, calendar.as_ref())
@@ -1594,6 +1617,7 @@ mod tests {
             all_day,
             attendees: None,
             recurrence: None,
+            add_meet: false,
         }
     }
 
@@ -2297,6 +2321,28 @@ mod tests {
         let server = StubServer::start(creator_stub(true)).await;
         server.client().create_event("cal", fields(0, 3_600_000, false)).await.unwrap();
         assert_eq!(mutation_targets(&server), vec!["/calendars/cal/events?sendUpdates=all"]);
+    }
+
+    #[tokio::test]
+    async fn an_event_can_ask_google_for_a_meet_link() {
+        let server = StubServer::start(creator_stub(true)).await;
+        let client = server.client();
+        client.create_event("cal", EventFields { add_meet: true, ..fields(0, 3_600_000, false) }).await.unwrap();
+        client.update_event("cal", "e1", EventFields { add_meet: true, ..fields(0, 3_600_000, false) }).await.unwrap();
+        client.create_event("cal", fields(0, 3_600_000, false)).await.unwrap();
+
+        let writes: Vec<(String, String, String)> = server.requests().into_iter().filter(|(m, _, _)| m != "GET").collect();
+        assert_eq!(writes[0].1, "/calendars/cal/events?sendUpdates=all&conferenceDataVersion=1");
+        assert_eq!(writes[1].1, "/calendars/cal/events/e1?sendUpdates=all&conferenceDataVersion=1");
+        for (_, _, body) in &writes[..2] {
+            let body: serde_json::Value = serde_json::from_str(body).unwrap();
+            let request = &body["conferenceData"]["createRequest"];
+            assert_eq!(request["conferenceSolutionKey"]["type"], "hangoutsMeet");
+            assert!(request["requestId"].as_str().is_some_and(|id| !id.is_empty()), "{body}");
+        }
+        let plain: serde_json::Value = serde_json::from_str(&writes[2].2).unwrap();
+        assert_eq!(writes[2].1, "/calendars/cal/events?sendUpdates=all");
+        assert!(plain.get("conferenceData").is_none(), "{plain}");
     }
 
     #[tokio::test]

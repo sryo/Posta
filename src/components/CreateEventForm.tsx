@@ -1,5 +1,5 @@
 import { createSignal, Show, For } from "solid-js";
-import { ChevronLeftIcon, ChevronRightIcon } from "./Icons";
+import { ChevronLeftIcon, ChevronRightIcon, VideoIcon } from "./Icons";
 import { CloseButton } from "./ComposeAtoms";
 import { isImeComposing, isTypingTarget, onActivateKey } from "../shared/keyboard";
 import { isWritableCalendar } from "../app/eventActions";
@@ -41,6 +41,10 @@ export const CreateEventForm = (props: {
   calendarId?: string | null;
   setCalendarId?: (id: string) => void;
   guestSuggestions?: (query: string) => { email: string; name?: string }[];
+  addMeet?: boolean;
+  setAddMeet?: (v: boolean) => void;
+  // The event being edited already has a Meet link
+  hasMeet?: boolean;
 }) => {
   // Snapshot is safe: both call sites mount this inside a <Show>, so a fresh
   // instance is created each time the form opens.
@@ -314,6 +318,17 @@ export const CreateEventForm = (props: {
             placeholder="Location"
           />
         </div>
+        <Show when={props.setAddMeet}>
+          <div class="compose-field event-meet-field">
+            <VideoIcon />
+            <Show when={!props.hasMeet} fallback={<span>Has a Google Meet link</span>}>
+              <label class="event-meet-toggle">
+                <input type="checkbox" checked={!!props.addMeet} onChange={(e) => props.setAddMeet!(e.currentTarget.checked)} />
+                Add Google Meet
+              </label>
+            </Show>
+          </div>
+        </Show>
         <div class="compose-field">
           <GuestChips value={props.attendees} onChange={props.setAttendees} suggest={props.guestSuggestions} />
         </div>

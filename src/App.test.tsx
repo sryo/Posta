@@ -1519,6 +1519,18 @@ describe("App calendar", () => {
     await waitFor(() => expect(invoke).toHaveBeenCalledWith("create_calendar_event", expect.objectContaining({ attendees: ["ana@y.com"] })));
   });
 
+  it("asks Google for a Meet link when the toggle is on", async () => {
+    handlers.create_calendar_event = () => calendarEvent("ev-2", "Lunch");
+    render(() => <App />);
+    await screen.findByText("Mail for A");
+    fireEvent.keyDown(document, { key: "e" });
+    fireEvent.click(await screen.findByRole("checkbox", { name: "Add Google Meet" }));
+    const title = screen.getByPlaceholderText("Event title");
+    fireEvent.input(title, { target: { value: "Lunch" } });
+    fireEvent.keyDown(title, { key: "Enter", metaKey: true });
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith("create_calendar_event", expect.objectContaining({ addMeet: true })));
+  });
+
   it("asks before Escape throws away a new event's typed details", async () => {
     render(() => <App />);
     await screen.findByText("Mail for A");
