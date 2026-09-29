@@ -146,6 +146,7 @@ import { pullLayoutWithRetry } from "./app/icloudRestore";
 import { querySuggestions, type QuerySuggestion } from "./app/querySuggestions";
 import { inviteNamesEvent, rsvpSentMessage, type RsvpStatus } from "./app/rsvp";
 import { createRsvpLookups } from "./app/rsvpLookups";
+import { nextSelection } from "./app/selection";
 import { hasCommandModifier, isTypingTarget, onActivateKey } from "./shared/keyboard";
 import { askConfirm, ConfirmDialog, confirmOpen, dismissConfirm } from "./app/confirm";
 import { moveCard, reuseUnchanged } from "./app/cardOrder";
@@ -3773,83 +3774,20 @@ function App() {
     // Show actions on the selected thread
     setHoveredThread(threadId);
     setActionsWheelOpen(true);
-
-    const currentMap = new Set(selectedThreads()[cardId] || []);
-    const isSelected = currentMap.has(threadId);
-
-    // Shift+Click Logic for range selection
-    if (e?.shiftKey && lastSelectedThread()[cardId]) {
-      const lastId = lastSelectedThread()[cardId]!;
-      const displayGroups = getDisplayGroups(cardId);
-      const allThreads = displayGroups.flatMap(g => g.threads);
-
-      const currentIndex = allThreads.findIndex(t => t.gmail_thread_id === threadId);
-      const lastIndex = allThreads.findIndex(t => t.gmail_thread_id === lastId);
-
-      if (currentIndex !== -1 && lastIndex !== -1) {
-        const start = Math.min(currentIndex, lastIndex);
-        const end = Math.max(currentIndex, lastIndex);
-
-        // Add all threads in range to selection
-        const threadsInRange = allThreads.slice(start, end + 1);
-        threadsInRange.forEach(t => currentMap.add(t.gmail_thread_id));
-
-        setSelectedThreads({ ...selectedThreads(), [cardId]: currentMap });
-        // Don't update lastSelectedThread during shift-click to rely on pivot
-        return;
-      }
-    }
-
-    // Toggle selection
-    if (isSelected) {
-      currentMap.delete(threadId);
-    } else {
-      currentMap.add(threadId);
-      setLastSelectedThread({ ...lastSelectedThread(), [cardId]: threadId });
-    }
-
-    setSelectedThreads({ ...selectedThreads(), [cardId]: currentMap });
+    const ids = getDisplayGroups(cardId).flatMap(g => g.threads.map(t => t.gmail_thread_id));
+    const next = nextSelection(ids, selectedThreads()[cardId] ?? new Set(), lastSelectedThread()[cardId] ?? null, threadId, !!e?.shiftKey);
+    setSelectedThreads({ ...selectedThreads(), [cardId]: next.selected });
+    setLastSelectedThread({ ...lastSelectedThread(), [cardId]: next.pivot });
   }
 
   function toggleEventSelection(cardId: string, eventId: string, e?: MouseEvent) {
     // Show actions on the selected event
     setHoveredEvent(eventId);
     setEventActionsWheelOpen(true);
-
-    const currentMap = new Set(selectedEvents()[cardId] || []);
-    const isSelected = currentMap.has(eventId);
-
-    // Shift+Click Logic for range selection
-    if (e?.shiftKey && lastSelectedEvent()[cardId]) {
-      const lastId = lastSelectedEvent()[cardId]!;
-      const eventGroups = getCalendarEventGroups(cardId);
-      const allEvents = eventGroups.flatMap(g => g.events);
-
-      const currentIndex = allEvents.findIndex(ev => ev.id === eventId);
-      const lastIndex = allEvents.findIndex(ev => ev.id === lastId);
-
-      if (currentIndex !== -1 && lastIndex !== -1) {
-        const start = Math.min(currentIndex, lastIndex);
-        const end = Math.max(currentIndex, lastIndex);
-
-        // Add all events in range to selection
-        const eventsInRange = allEvents.slice(start, end + 1);
-        eventsInRange.forEach(ev => currentMap.add(ev.id));
-
-        setSelectedEvents({ ...selectedEvents(), [cardId]: currentMap });
-        return;
-      }
-    }
-
-    // Toggle selection
-    if (isSelected) {
-      currentMap.delete(eventId);
-    } else {
-      currentMap.add(eventId);
-      setLastSelectedEvent({ ...lastSelectedEvent(), [cardId]: eventId });
-    }
-
-    setSelectedEvents({ ...selectedEvents(), [cardId]: currentMap });
+    const ids = getCalendarEventGroups(cardId).flatMap(g => g.events.map(ev => ev.id));
+    const next = nextSelection(ids, selectedEvents()[cardId] ?? new Set(), lastSelectedEvent()[cardId] ?? null, eventId, !!e?.shiftKey);
+    setSelectedEvents({ ...selectedEvents(), [cardId]: next.selected });
+    setLastSelectedEvent({ ...lastSelectedEvent(), [cardId]: next.pivot });
   }
 
   // Ranking reads every loaded thread; only rank while something shows

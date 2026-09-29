@@ -1309,6 +1309,20 @@ describe("App calendar", () => {
     await waitFor(() => expect(screen.queryAllByText("Planning")).toHaveLength(0));
   });
 
+  it("selects a range of events with shift-click", async () => {
+    calendarCards();
+    handlers.fetch_calendar_events = () => ["One", "Two", "Three"].map((title, i) => ({ ...calendarEvent(`ev-${i}`, title), start_time: tomorrowAt(9 + i), end_time: tomorrowAt(10 + i) }));
+    render(() => <App />);
+    const box = (title: string) => within((screen.getByText(title)).closest(".calendar-event-item") as HTMLElement).getByRole("checkbox");
+    await screen.findByText("Three");
+    fireEvent.click(box("One"));
+    fireEvent.click(box("Three"), { shiftKey: true });
+
+    expect(box("One")).toBeChecked();
+    expect(box("Two")).toBeChecked();
+    expect(box("Three")).toBeChecked();
+  });
+
   it("selects the focused event with x", async () => {
     calendarCards();
     render(() => <App />);
