@@ -60,7 +60,7 @@ beforeEach(() => {
     configure_auth: () => null,
     pull_from_icloud: () => false,
     get_accounts: () => [account("a", "a@x.com")],
-    get_cards: ({ accountId }) => cardsByAccount[accountId as string] ?? [],
+    get_cards: ({ accountId }) => [...(cardsByAccount[accountId as string] ?? [])],
     create_card: ({ accountId, name, query }) => {
       const created = { ...card(`new-${nextCardId++}`, accountId as string, name as string, query as string), position: nextCardId };
       (cardsByAccount[accountId as string] ??= []).push(created);
@@ -271,6 +271,28 @@ describe("Layout after sign-in", () => {
 
     expect(await screen.findByRole("region", { name: "Alpha email card" })).toBeInTheDocument();
     expect(createdCards()).toEqual([expect.objectContaining({ accountId: "b", name: "Alpha", query: "is:inbox" })]);
+  });
+});
+
+describe("Blank board", () => {
+  it("guides an account without cards and adds a starter card in one click", async () => {
+    cardsByAccount.a = [];
+    render(() => <App />);
+    expect(await screen.findByRole("heading", { name: "Cards are saved searches" })).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Unread" }));
+    expect(await screen.findByRole("region", { name: "Unread email card" })).toBeInTheDocument();
+    expect(createdCards()).toEqual([expect.objectContaining({ accountId: "a", name: "Unread", query: "is:unread" })]);
+    expect(screen.queryByRole("heading", { name: "Cards are saved searches" })).not.toBeInTheDocument();
+  });
+
+  it("opens the presets and the search operators from the blank board", async () => {
+    cardsByAccount.a = [];
+    render(() => <App />);
+    fireEvent.click(await screen.findByRole("button", { name: "Search operators" }));
+    expect(await screen.findByText("Query Operators")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Browse presets" }));
+    expect(await screen.findByRole("dialog", { name: "Pick a starting layout" })).toBeInTheDocument();
   });
 });
 

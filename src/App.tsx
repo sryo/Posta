@@ -114,6 +114,7 @@ import { ReactionButton } from "./components/ReactionButton";
 import { ComposeTextarea, ComposeSendButton, CloseButton } from "./components/ComposeAtoms";
 import { AuthScreen } from "./components/AuthScreen";
 import { PresetPicker } from "./components/PresetPicker";
+import { EmptyBoard } from "./components/EmptyBoard";
 import { cardSpecs, loadLayoutSnapshot, saveLayoutSnapshot, type CardSpec } from "./app/layoutSnapshot";
 import { GoogleCredentialsForm } from "./components/GoogleCredentialsForm";
 import { credentialsValid, shortClientId } from "./app/googleCredentials";
@@ -1945,6 +1946,19 @@ function App() {
       setNewCardGroupBy("date");
       setAddingCard(false);
       // Fetch threads/events for the new card
+      loadCardThreads(card.id);
+    } catch (e) {
+      setError(`Couldn't add the card: ${e}`);
+    }
+  }
+
+  async function addStarterCard(starter: { name: string; query: string }) {
+    const account = selectedAccount();
+    if (!account) return;
+    try {
+      const card = await createCard(account.id, starter.name, starter.query, null, "date", cardTypeForQuery(starter.query));
+      setCards([...cards(), card]);
+      setCollapsedCards(card.id, false);
       loadCardThreads(card.id);
     } catch (e) {
       setError(`Couldn't add the card: ${e}`);
@@ -4857,6 +4871,14 @@ function App() {
                   </div>
                 </div>
               </div>
+            </Show>
+
+            <Show when={cards().length === 0 && !addingCard() && !authLoading() && !showPresetSelection()}>
+              <EmptyBoard
+                onAddCard={addStarterCard}
+                onBrowsePresets={openPresetPicker}
+                onSearchOperators={() => setQueryHelpOpen(true)}
+              />
             </Show>
 
             {/* Add card button */}
