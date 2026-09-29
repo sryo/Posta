@@ -100,7 +100,6 @@ import {
 } from "./utils";
 import "./App.css";
 import {
-  ChevronIcon,
   RefreshIcon,
   PlusIcon,
   SettingsIcon,
@@ -119,7 +118,7 @@ import { PresetPicker } from "./components/PresetPicker";
 import { EmptyBoard } from "./components/EmptyBoard";
 import { SmartRepliesSettings } from "./components/SmartRepliesSettings";
 import { cardSpecs, copyableCards, loadLayoutSnapshot, saveLayoutSnapshot, specAccountId, type CardSpec } from "./app/layoutSnapshot";
-import { ALL_ACCOUNTS, accountFromError, accountsToPoll, cardAccountIds, cardCoversAccount, eventAccountId, inAccount, threadAccountId, threadIdsByAccount, threadKey } from "./app/accountScope";
+import { ALL_ACCOUNTS, accountFromError, accountsToPoll, boardMixesScopes, cardAccountIds, cardCoversAccount, eventAccountId, inAccount, threadAccountId, threadIdsByAccount, threadKey } from "./app/accountScope";
 import { GoogleCredentialsForm } from "./components/GoogleCredentialsForm";
 import { credentialsValid, shortClientId } from "./app/googleCredentials";
 import { ComposeForm } from "./components/ComposeForm";
@@ -132,7 +131,7 @@ import { ThreadView } from "./components/ThreadView";
 import { EventView } from "./components/EventView";
 import { ActionsWheel } from "./components/ActionsWheel";
 import { CardForm } from "./components/CardForm";
-import { CardAccountBadge } from "./components/CardAccountBadge";
+import { CardAccountQualifier, cardTitleLabel } from "./components/CardAccountQualifier";
 import { Dialog } from "./components/Dialog";
 import { Toasts } from "./components/Toasts";
 import { createToasts, type ToastAction, type ToastTone } from "./app/toasts";
@@ -168,7 +167,7 @@ import { sendPending, type PendingSend } from "./app/pendingSend";
 import { parseMailto } from "./app/mailto";
 import { coalesceByKey } from "./app/coalesce";
 import { batchReplyLoadErrorMessage, cardLoadErrorMessage, isOfflineError, queryPreviewErrorMessage, threadLoadErrorMessage } from "./app/loadErrors";
-import { cardSyncLabel, cardWaitingMessage, connectionStatus } from "./app/connectionStatus";
+import { cardSyncStatus, cardWaitingMessage, connectionStatus } from "./app/connectionStatus";
 import { CardEmpty, CardSkeleton, ConnectionStatusBar } from "./components/CardStates";
 import { cardTypeForQuery } from "./app/cardType";
 import { discardThreadDrafts, draftToOpen, isDraftThread, prepareDraftCompose, withDraftsDiscarded, type DraftToOpen } from "./app/draftThreads";
@@ -4865,6 +4864,9 @@ function App() {
               <For each={cards()}>
                 {(card) => {
                   const sortable = createSortable(card.id);
+                  const syncStatus = () => cardSyncStatus({ lastSyncedAt: lastSyncTimes[card.id], now: currentTime(), syncError: syncErrors[card.id], offline: offline(), expired: cardExpired(card) });
+                  const namesAccount = () => boardMixesScopes(cards(), accounts());
+                  const refreshLabel = () => [`Refresh ${card.name}`, syncStatus().summary].filter(Boolean).join(", ");
                   return (
                     <div
                       ref={sortable.ref}
@@ -4912,38 +4914,31 @@ function App() {
                         <Show when={editingCardId() !== card.id}>
                           <div
                             class="card-header"
+                            classList={{ "has-problem": !!syncStatus().problem }}
                             onClick={() => { if (!wasDragging) toggleCardCollapse(card.id); }}
                             {...sortable.dragActivators}
                           >
                             <button
-                              class="collapse-btn"
-                              aria-label={`${collapsedCards[card.id] ? "Expand" : "Collapse"} ${card.name}`}
+                              class="card-title-btn"
+                              aria-label={cardTitleLabel({ name: card.name, accountId: card.account_id, accounts: accounts(), shown: namesAccount(), problem: syncStatus().problem, collapsed: !!collapsedCards[card.id], unread: getCardUnreadCount(card.id) })}
                               aria-expanded={!collapsedCards[card.id]}
                             >
-                              <ChevronIcon />
+                              <Show when={collapsedCards[card.id] && getCardUnreadCount(card.id) > 0}>
+                                <span class="card-unread-badge" aria-hidden="true">{getCardUnreadCount(card.id)}</span>
+                              </Show>
+                              <span class="card-title">{card.name}</span>
+                              <CardAccountQualifier accountId={card.account_id} accounts={accounts()} shown={namesAccount()} problem={syncStatus().problem} />
                             </button>
-                            <span class="card-title">{card.name}</span>
-                            <CardAccountBadge accountId={card.account_id} accounts={accounts()} />
-                            <Show when={!loadingThreads[card.id] && cardSyncLabel({ lastSyncedAt: lastSyncTimes[card.id], now: currentTime(), syncError: syncErrors[card.id], boardDown: offline() || cardExpired(card) })}>
-                              {(label) => (
-                                <span
-                                  class="sync-status"
-                                  classList={{ "sync-fresh": label().tone === "fresh", "sync-stale": label().tone === "stale", "sync-error": label().tone === "error", "sync-waiting": label().tone === "waiting" }}
-                                  title={label().title}
-                                >
-                                  {label().text}
-                                </span>
-                              )}
-                            </Show>
-                            <Show when={getCardUnreadCount(card.id) > 0}>
+                            <Show when={!collapsedCards[card.id] && getCardUnreadCount(card.id) > 0}>
                               <span class="card-unread-badge">{getCardUnreadCount(card.id)}</span>
                             </Show>
                             <div class="card-actions">
                               <button
-                                class={`icon-btn ${loadingThreads[card.id] || loadingMore[card.id] ? 'spinning' : ''} `}
+                                class={`icon-btn card-refresh ${loadingThreads[card.id] || loadingMore[card.id] ? 'spinning' : ''} `}
                                 onClick={(e) => refreshCard(card.id, e)}
                                 disabled={loadingThreads[card.id]}
-                                title="Refresh"
+                                title={refreshLabel()}
+                                aria-label={refreshLabel()}
                               >
                                 <RefreshIcon />
                               </button>
@@ -4951,6 +4946,7 @@ function App() {
                                 class="icon-btn"
                                 onClick={(e) => startEditCard(card, e)}
                                 title="Edit query"
+                                aria-label={`Edit ${card.name}`}
                               >
                                 <SearchIcon />
                               </button>

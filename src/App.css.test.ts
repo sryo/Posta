@@ -155,7 +155,7 @@ describe("App.css", () => {
       if (new Map(rule.declarations).get("opacity") !== "1") continue;
       for (const sel of rule.selectors) {
         if (!/:hover\s+\S/.test(sel)) continue;
-        const keyboard = [sel.replace(":hover", ":focus-visible"), sel.replace(":hover", ".focused")];
+        const keyboard = [":focus-visible", ".focused", ":focus-within"].map((state) => sel.replace(":hover", state));
         if (!keyboard.some((k) => rule.selectors.includes(k))) hoverOnly.push(sel);
       }
     }
@@ -268,25 +268,29 @@ describe("board connection status", () => {
     expect(declarationsOf(".card.stale .card-body").get("opacity")).toBeDefined();
   });
 
-  it("keeps the age of a card that can't update in view", () => {
-    expect(declarationsOf(".sync-status").get("opacity")).toBe("0");
-    expect(Number(declarationsOf(".sync-status.sync-waiting").get("opacity"))).toBeGreaterThan(0);
-  });
 });
 
 describe("accounts on the board", () => {
   const declarationsOf = (selector: string) =>
     new Map(rules.filter((rule) => rule.selectors.includes(selector)).flatMap((rule) => [...rule.declarations]));
 
-  it("marks a card's account with a small round badge that the title never squeezes", () => {
-    const badge = declarationsOf(".card-account-badge");
-    expect(badge.get("flex-shrink")).toBe("0");
-    expect(badge.get("border-radius")).toBeDefined();
-    expect(badge.get("height")).toBe(badge.get("min-width"));
-    // An all-inboxes badge has no account color to sit on
-    expect(declarationsOf(".card-account-badge.all").get("background")).toMatch(/^var\(--/);
+  it("follows a card's title with its account in small muted text that gives way before the title does", () => {
+    const qualifier = declarationsOf(".card-account-qualifier");
+    expect(qualifier.get("font-size")).toBe("var(--font-size-base)");
+    expect(qualifier.get("color")).toBe("var(--text-muted)");
+    expect(qualifier.get("min-width")).toBe("0");
+    expect(qualifier.get("text-overflow")).toBe("ellipsis");
+    expect(declarationsOf(".card-title").get("flex-shrink")).toBe("0");
+    expect(declarationsOf(".card-account-qualifier.problem").get("color")).toBe("var(--danger)");
   });
 
+  it("widens the account to its full address while the card is hovered or focused", () => {
+    expect(declarationsOf(".card-account-qualifier-full").get("display")).toBe("none");
+    for (const state of [":hover", ":focus-within"]) {
+      expect(declarationsOf(`.card${state} .card-account-qualifier-short`).get("display")).toBe("none");
+      expect(declarationsOf(`.card${state} .card-account-qualifier-full`).get("display")).toBe("inline");
+    }
+  });
   it("shows a compose's sender like the fields below it", () => {
     const from = declarationsOf(".compose-from select");
     const field = declarationsOf(".compose-field input");
@@ -300,5 +304,51 @@ describe("snippet previews", () => {
     const root = rules.filter((rule) => rule.selectors.includes(":root")).flatMap((rule) => [...rule.declarations]);
     expect(new Map(root).get("--snippet-lines")).toBe("5");
     for (const [, source] of sources) expect(source).not.toContain("--snippet-lines");
+  });
+});
+
+describe("card header", () => {
+  const declarationsOf = (selector: string, context = "") =>
+    new Map(rules.filter((rule) => rule.context === context && rule.selectors.includes(selector)).flatMap((rule) => [...rule.declarations]));
+
+  it("makes the title a borderless button with a hover pill, since it collapses the card", () => {
+    const title = declarationsOf(".card-title-btn");
+    expect(title.get("background")).toBe("none");
+    expect(title.get("font")).toBe("inherit");
+    expect(title.get("min-width")).toBe("0");
+    expect(declarationsOf(".card-title-btn:hover").get("background")).toBe("var(--bg-hover)");
+  });
+
+  it("hides refresh and edit at rest without taking them out of the tab order", () => {
+    const tools = declarationsOf(".card-actions");
+    expect(tools.get("max-width")).toBe("0");
+    expect(tools.get("opacity")).toBe("0");
+    expect(tools.get("overflow")).toBe("hidden");
+    expect(tools.get("display")).not.toBe("none");
+    expect(tools.get("transition")).toMatch(/max-width/);
+    for (const shown of [".card:hover .card-actions", ".card:focus-within .card-actions", ".card-header.has-problem .card-actions"]) {
+      expect(declarationsOf(shown).get("opacity"), shown).toBe("1");
+      expect(declarationsOf(shown).get("max-width"), shown).not.toBe("0");
+    }
+  });
+
+  it("always shows the tools where nothing can hover", () => {
+    const tools = declarationsOf(".card-actions", "@media (hover: none)");
+    expect(tools.get("opacity")).toBe("1");
+    expect(tools.get("max-width")).not.toBe("0");
+  });
+
+  it("turns refresh red while the card can't sync, with no dot", () => {
+    expect(declarationsOf(".card-header.has-problem .card-refresh").get("color")).toBe("var(--danger)");
+  });
+
+  it("stacks the collapsed strip's count above its vertical title and account", () => {
+    expect(declarationsOf(".card.collapsed .card-title-btn").get("flex-direction")).toBe("column");
+    for (const part of [".card.collapsed .card-title", ".card.collapsed .card-account-qualifier"]) {
+      expect(declarationsOf(part).get("writing-mode"), part).toBe("vertical-rl");
+    }
+    const order = (sel: string) => Number(declarationsOf(sel).get("order") ?? 0);
+    expect(order(".card.collapsed .card-unread-badge")).toBeLessThan(order(".card.collapsed .card-title"));
+    expect(order(".card.collapsed .card-title")).toBeLessThan(order(".card.collapsed .card-account-qualifier"));
   });
 });

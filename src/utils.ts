@@ -200,20 +200,8 @@ export function formatTime(timestamp: number): string {
   return formatShortDate(date);
 }
 
-// Sync status thresholds (in milliseconds)
-const SYNC_FRESH_MS = 3000;      // "just now" duration
-const SYNC_STALE_MS = 15 * 60 * 1000;  // 15 minutes
-
-/**
- * Get sync status state: 'fresh' | 'stale' | 'normal'
- */
-export function getSyncState(timestamp: number | undefined, now?: number): 'fresh' | 'stale' | 'normal' {
-  if (!timestamp) return 'normal';
-  const diff = (now ?? Date.now()) - timestamp;
-  if (diff < SYNC_FRESH_MS) return 'fresh';
-  if (diff > SYNC_STALE_MS) return 'stale';
-  return 'normal';
-}
+// How long a sync still reads as "just now"
+const SYNC_FRESH_MS = 3000;
 
 /**
  * Format sync time as relative time (e.g., "2m ago")
