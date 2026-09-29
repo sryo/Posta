@@ -125,6 +125,9 @@ pub struct CalendarEvent {
     pub status: Option<String>,
     /// User's response status: accepted, tentative, declined, needsAction
     pub response_status: Option<String>,
+    /// Video call link (X-GOOGLE-CONFERENCE)
+    #[serde(default)]
+    pub conference_url: Option<String>,
 }
 
 /// Attachment for outgoing emails (compose/reply)

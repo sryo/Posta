@@ -1,6 +1,9 @@
 import { createSignal, createEffect, createMemo, onMount, onCleanup, Show, For } from "solid-js";
 import { MessageBody } from './MessageBody';
-import { sendReaction, type FullThread, type FullMessage, type Attachment } from "../api/tauri";
+import { sendReaction, type FullThread, type FullMessage, type Attachment, type CalendarEvent } from "../api/tauri";
+import type { RsvpStatus } from "../app/rsvp";
+import { isCalendarAttachment } from "../app/attachments";
+import { InviteBlock } from "./InviteBlock";
 import { createCloseAfterAnimation } from "../shared/closeAfterAnimation";
 import { isTypingTarget, hasCommandModifier, onActivateKey } from "../shared/keyboard";
 import {
@@ -83,6 +86,8 @@ export const ThreadView = (props: {
   onError?: (message: string) => void,
   // Whether a Gemini key is saved; smart replies ask the keychain when unknown
   geminiKeySaved?: boolean,
+  // The event of an invite email, shown above the body of the message carrying it
+  invite?: { event: CalendarEvent; rsvp: string | null | undefined; onAnswer: (status: RsvpStatus) => void; disabled: boolean } | null,
 }) => {
   let messageRefs: (HTMLDivElement | undefined)[] = [];
   let contentRef: HTMLDivElement | undefined;
@@ -128,6 +133,15 @@ export const ThreadView = (props: {
   // a new id), so a reloaded thread reuses the loaded message objects and
   // <For> keeps their rendered rows instead of rebuilding every body
   let loadedById = new Map<string, FullMessage>();
+  // The message whose parts include the calendar file, else the first
+  const inviteMessageId = createMemo(() => {
+    if (!props.invite) return null;
+    const list = props.thread?.messages ?? [];
+    const hasCalendarPart = (parts: any[] | undefined): boolean => !!parts?.some(p =>
+      isCalendarAttachment({ filename: p.filename ?? "", mime_type: p.mimeType ?? "" }) || hasCalendarPart(p.parts));
+    return (list.find(m => hasCalendarPart(m.payload?.parts)) ?? list[0])?.id ?? null;
+  });
+
   const messages = createMemo(() => {
     const next = new Map<string, FullMessage>();
     const list = (props.thread?.messages ?? []).map(m => {
@@ -533,6 +547,16 @@ export const ThreadView = (props: {
                           showHints={props.focusedMessageIndex === index()}
                           onMouseEnter={() => showMessageWheel(msg.id)}
                           onMouseLeave={hideMessageWheel}
+                        />
+                      </Show>
+                      <Show when={props.invite && inviteMessageId() === msg.id}>
+                        <InviteBlock
+                          invite={props.invite!.event}
+                          rsvp={props.invite!.rsvp}
+                          onAnswer={props.invite!.onAnswer}
+                          disabled={props.invite!.disabled}
+                          showTitle
+                          size="md"
                         />
                       </Show>
                       <Show

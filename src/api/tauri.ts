@@ -47,7 +47,7 @@ export interface Attachment {
   content_id: string | null; // Content-ID for inline images (cid: references)
 }
 
-interface CalendarEvent {
+export interface CalendarEvent {
   uid: string | null;
   title: string;
   start_time: number; // Unix timestamp in milliseconds
@@ -60,6 +60,7 @@ interface CalendarEvent {
   method: string | null; // REQUEST, REPLY, CANCEL
   status: string | null; // CONFIRMED, TENTATIVE, CANCELLED
   response_status: string | null; // accepted, tentative, declined, needsAction
+  conference_url?: string | null; // video call link
 }
 
 export interface Thread {

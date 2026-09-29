@@ -1597,6 +1597,31 @@ describe("App calendar", () => {
     }
   });
 
+  it("shows an opened invite email's event above the message and answers it there", async () => {
+    threadsByCard["card-a"] = [{
+      ...thread("t-inv", "Invitation: Planning"),
+      calendar_event: {
+        uid: "ev-1@google.com", title: "Planning", start_time: Date.now() + 3600_000, end_time: null, all_day: false,
+        location: "Studio 2", description: null, organizer: "org@x.com", attendees: [], method: "REQUEST", status: null, response_status: null,
+      },
+    }];
+    handlers.get_thread_details = ({ threadId }) => ({ id: threadId, messages: [fullMessage("m1", "Org <org@x.com>")] });
+    handlers.get_calendar_rsvp_status = () => null;
+    handlers.rsvp_calendar_event = () => null;
+    render(() => <App />);
+    fireEvent.click(await screen.findByText("Invitation: Planning"));
+
+    const block = await waitFor(() => {
+      const el = document.querySelector(".thread-overlay .message-card .calendar-event-preview");
+      expect(el).not.toBeNull();
+      return el as HTMLElement;
+    });
+    expect(block).toHaveTextContent("Planning");
+    expect(block).toHaveTextContent("Studio 2");
+    fireEvent.click(within(block).getByRole("button", { name: "Going" }));
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith("rsvp_calendar_event", { accountId: "a", eventUid: "ev-1@google.com", status: "accepted" }));
+  });
+
   it("answers a focused invite email with ⇧M and shows the keys on its row", async () => {
     threadsByCard["card-a"] = [{
       ...thread("t-inv", "Invitation: Planning"),

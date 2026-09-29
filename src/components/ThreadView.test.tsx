@@ -566,6 +566,42 @@ describe("ThreadView closing", () => {
   });
 });
 
+describe("ThreadView invite", () => {
+  const invite = {
+    uid: "ev-1@google.com", title: "Design review", start_time: Date.UTC(2030, 0, 1, 15), end_time: Date.UTC(2030, 0, 1, 16),
+    all_day: false, location: "Studio 2", description: null, organizer: "jules@x.test", attendees: [],
+    method: "REQUEST", status: null, response_status: null, conference_url: null,
+  };
+
+  it("shows the invite's event above the body of the message that carries it", () => {
+    const thread = makeThread([
+      { from: "Jules <jules@x.test>", body: "invite text" },
+      { from: "Me <me@example.com>", body: "see you" },
+    ]);
+    const onAnswer = vi.fn();
+    const { container, getByRole } = renderThread({ thread, invite: { event: invite, rsvp: undefined, onAnswer, disabled: false } });
+    const cards = container.querySelectorAll(".message-card");
+    const block = cards[0].querySelector(".calendar-event-preview")!;
+    expect(block).toHaveTextContent("Design review");
+    expect(block.compareDocumentPosition(cards[0].querySelector(".message-body")!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(cards[1].querySelector(".calendar-event-preview")).toBeNull();
+    fireEvent.click(getByRole("button", { name: "Maybe" }));
+    expect(onAnswer).toHaveBeenCalledWith("tentative");
+  });
+
+  it("puts the block on the message with the calendar file when a later one has it", () => {
+    const thread = makeThread([
+      { from: "Jules <jules@x.test>", body: "heads up" },
+      { from: "Jules <jules@x.test>", body: "invite text" },
+    ]);
+    thread.messages[1].payload!.parts = [{ mimeType: "text/calendar", filename: "invite.ics", body: { size: 10 } } as any];
+    const { container } = renderThread({ thread, invite: { event: invite, rsvp: undefined, onAnswer: vi.fn(), disabled: false } });
+    const cards = container.querySelectorAll(".message-card");
+    expect(cards[0].querySelector(".calendar-event-preview")).toBeNull();
+    expect(cards[1].querySelector(".calendar-event-preview")).not.toBeNull();
+  });
+});
+
 describe("ThreadView load errors", () => {
   it("offers to try loading the thread again", () => {
     const onRetry = vi.fn();

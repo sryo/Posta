@@ -85,7 +85,6 @@ import {
   extractMessageText,
   getAvatarColor,
   validateEmailList,
-  formatCalendarEventDate,
   decodeHtmlEntities,
   normalizeBase64Url,
   addReplyPrefix,
@@ -108,13 +107,12 @@ import {
   PaletteIcon,
   CalendarIcon,
   LocationIcon,
-  ClockIcon,
 } from "./components/Icons";
 import { ReactionButton } from "./components/ReactionButton";
 import { ComposeTextarea, ComposeSendButton, CloseButton } from "./components/ComposeAtoms";
 import { ComposeForm } from "./components/ComposeForm";
 import { CreateEventForm } from "./components/CreateEventForm";
-import { RsvpControl } from "./components/RsvpControl";
+import { InviteBlock } from "./components/InviteBlock";
 import { eventActions } from "./app/eventActions";
 import { ThreadView } from "./components/ThreadView";
 import { EventView } from "./components/EventView";
@@ -1288,6 +1286,19 @@ function App() {
   // Helper to get all threads from a card as a flat array
   function getCardThreadsFlat(cardId: string): Thread[] {
     return getDisplayGroups(cardId).flatMap(g => g.threads);
+  }
+
+  // The open thread as its card lists it, with the attachments and invite
+  // the listing parsed
+  function activeListedThread(): Thread | undefined {
+    const cardId = activeThreadCardId();
+    const threadId = activeThreadId();
+    if (!cardId || !threadId) return undefined;
+    for (const group of cardThreads[cardId] || []) {
+      const thread = group.threads.find(t => t.gmail_thread_id === threadId);
+      if (thread) return thread;
+    }
+    return undefined;
   }
 
   // Get the focused thread
@@ -4465,27 +4476,13 @@ function App() {
                                           </div>
                                           {/* Calendar event preview */}
                                           <Show when={thread.calendar_event}>
-                                            <div class="calendar-event-preview">
-                                              <div class="calendar-event-time">
-                                                <ClockIcon />
-                                                <span>{formatCalendarEventDate(thread.calendar_event!.start_time, thread.calendar_event!.end_time, thread.calendar_event!.all_day)}</span>
-                                              </div>
-                                              <Show when={thread.calendar_event!.location}>
-                                                <div class="calendar-event-location">
-                                                  <LocationIcon />
-                                                  <span>{thread.calendar_event!.location}</span>
-                                                </div>
-                                              </Show>
-                                              <Show when={thread.calendar_event!.method === "REQUEST" && thread.calendar_event!.uid}>
-                                                <RsvpControl
-                                                  size="sm"
-                                                  value={inviteRsvp(thread.calendar_event!.uid)}
-                                                  disabled={rsvpLoading[thread.gmail_thread_id]}
-                                                  showKeys={isThreadFocused(card.id, thread.gmail_thread_id)}
-                                                  onAnswer={(status) => handleRsvp(thread.gmail_thread_id, thread.calendar_event!.uid, status)}
-                                                />
-                                              </Show>
-                                            </div>
+                                            <InviteBlock
+                                              invite={thread.calendar_event!}
+                                              rsvp={inviteRsvp(thread.calendar_event!.uid)}
+                                              disabled={rsvpLoading[thread.gmail_thread_id]}
+                                              showKeys={isThreadFocused(card.id, thread.gmail_thread_id)}
+                                              onAnswer={(status) => handleRsvp(thread.gmail_thread_id, thread.calendar_event!.uid, status)}
+                                            />
                                           </Show>
                                           <Show when={!thread.calendar_event}>
                                             <div class="thread-snippet">{decodeHtmlEntities(thread.snippet)}</div>
@@ -4965,16 +4962,17 @@ function App() {
           labelCount={getThreadUserLabelCount()}
           // Inline compose props
           inlineCompose={composeShownIn() === "thread" ? threadInlineCompose : null}
-          threadAttachments={(() => {
-            const cardId = activeThreadCardId();
-            const threadId = activeThreadId();
-            if (!cardId || !threadId) return undefined;
-            const groups = cardThreads[cardId] || [];
-            for (const group of groups) {
-              const thread = group.threads.find(t => t.gmail_thread_id === threadId);
-              if (thread) return thread.attachments;
-            }
-            return undefined;
+          threadAttachments={activeListedThread()?.attachments}
+          invite={(() => {
+            const listed = activeListedThread();
+            const event = listed?.calendar_event;
+            if (!listed || !event) return null;
+            return {
+              event,
+              rsvp: inviteRsvp(event.uid),
+              onAnswer: (status: RsvpStatus) => handleRsvp(listed.gmail_thread_id, event.uid, status),
+              disabled: !!rsvpLoading[listed.gmail_thread_id],
+            };
           })()}
           cidAttachmentData={cidAttachmentData()}
         />

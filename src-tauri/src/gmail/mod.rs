@@ -1719,6 +1719,7 @@ fn parse_ics_content(ics_data: &str) -> Option<CalendarEvent> {
         method,
         status,
         response_status: None, // Will be fetched from Calendar API
+        conference_url: find_ics_value(&event_lines, "X-GOOGLE-CONFERENCE"),
     })
 }
 
@@ -3236,6 +3237,21 @@ mod tests {
     fn invite_start_utc(ics: &str) -> String {
         let event = parse_ics_content(ics).expect("invite parses");
         DateTime::from_timestamp_millis(event.start_time).unwrap().to_rfc3339()
+    }
+
+    #[test]
+    fn parse_ics_reads_the_video_call_link() {
+        let google = invite_with_zone(&[], "DTSTART:20240715T100000Z\r\nX-GOOGLE-CONFERENCE:https://meet.google.com/abc-defg-hij");
+        assert_eq!(parse_ics_content(&google).unwrap().conference_url.as_deref(), Some("https://meet.google.com/abc-defg-hij"));
+        let plain = invite_with_zone(&[], "DTSTART:20240715T100000Z");
+        assert_eq!(parse_ics_content(&plain).unwrap().conference_url, None);
+        // A cached thread from before the field existed still loads
+        let cached: CalendarEvent = serde_json::from_value(serde_json::json!({
+            "uid": null, "title": "Sync", "start_time": 0, "end_time": null, "all_day": false, "location": null,
+            "description": null, "organizer": null, "attendees": [], "method": null, "status": null, "response_status": null
+        }))
+        .unwrap();
+        assert_eq!(cached.conference_url, None);
     }
 
     #[test]

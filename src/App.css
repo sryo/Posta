@@ -1334,6 +1334,46 @@ a:focus-visible,
     opacity: 0.9;
 }
 
+/* InviteBlock: Join and the RSVP control share a row */
+.invite-actions {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--space-md);
+    margin-top: 6px;
+}
+
+.invite-actions .calendar-join-btn,
+.invite-actions .rsvp-control-sm {
+    margin-top: 0;
+}
+
+.invite-actions .calendar-join-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--space-sm);
+}
+
+.invite-actions .calendar-join-btn svg {
+    width: 14px;
+    height: 14px;
+}
+
+.invite-block-md {
+    margin: 0 0 var(--space-xl);
+    padding: var(--space-lg) var(--space-xl);
+}
+
+.invite-block-md .calendar-event-title {
+    font-size: var(--font-size-lg);
+    font-weight: 600;
+}
+
+.invite-block-md .invite-actions .rsvp-control-md {
+    flex: 1;
+    min-width: 240px;
+}
+
 .thread-participants {
     font-size: var(--font-size-sm);
     color: var(--text-muted);
