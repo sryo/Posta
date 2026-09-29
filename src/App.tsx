@@ -753,7 +753,7 @@ function App() {
     return {
       summary: "", description: "", location: "",
       startDate: defaults.date, startTime: defaults.startTime,
-      endDate: defaults.date, endTime: defaults.endTime,
+      endDate: defaults.endDate, endTime: defaults.endTime,
       allDay: false, attendees: "", recurrence: null,
       saving: false, error: null, editing: null, closing: false,
     };
@@ -767,7 +767,7 @@ function App() {
     const defaults = smartEventDefaults();
     setEventForm(f => f.editing
       ? defaultEventForm()
-      : { ...f, startDate: defaults.date, startTime: defaults.startTime, endDate: defaults.date, endTime: defaults.endTime });
+      : { ...f, startDate: defaults.date, startTime: defaults.startTime, endDate: defaults.endDate, endTime: defaults.endTime });
     setCreatingEvent(true);
   };
   // The form is kept nowhere once closed, so typed details need a yes first

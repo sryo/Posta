@@ -44,12 +44,16 @@ describe("eventTimesFromForm", () => {
 
 describe("smartEventDefaults", () => {
   it("rounds up to the next half hour and lasts 30 minutes", () => {
-    expect(smartEventDefaults(new Date(2026, 2, 11, 9, 10))).toEqual({ date: "2026-03-11", startTime: "09:30", endTime: "10:00" });
-    expect(smartEventDefaults(new Date(2026, 2, 11, 9, 45))).toEqual({ date: "2026-03-11", startTime: "10:00", endTime: "10:30" });
+    expect(smartEventDefaults(new Date(2026, 2, 11, 9, 10))).toEqual({ date: "2026-03-11", startTime: "09:30", endDate: "2026-03-11", endTime: "10:00" });
+    expect(smartEventDefaults(new Date(2026, 2, 11, 9, 45))).toEqual({ date: "2026-03-11", startTime: "10:00", endDate: "2026-03-11", endTime: "10:30" });
   });
 
   it("moves to the next day when rounding passes midnight", () => {
-    expect(smartEventDefaults(new Date(2026, 2, 11, 23, 40))).toEqual({ date: "2026-03-12", startTime: "00:00", endTime: "00:30" });
+    expect(smartEventDefaults(new Date(2026, 2, 11, 23, 40))).toEqual({ date: "2026-03-12", startTime: "00:00", endDate: "2026-03-12", endTime: "00:30" });
+  });
+
+  it("ends the next day when an event starting at half past eleven runs past midnight", () => {
+    expect(smartEventDefaults(new Date(2026, 2, 11, 23, 10))).toEqual({ date: "2026-03-11", startTime: "23:30", endDate: "2026-03-12", endTime: "00:00" });
   });
 });
 

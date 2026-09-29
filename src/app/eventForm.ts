@@ -19,8 +19,8 @@ export function smartEventDefaults(now: Date = new Date()) {
     startTime.setHours(startTime.getHours() + 1, 0, 0, 0);
   }
   const endTime = new Date(startTime.getTime() + 30 * 60 * 1000);
-  // Derive the date from startTime so rounding past midnight advances the day
-  return { date: toDateInputString(startTime), startTime: hhmm(startTime), endTime: hhmm(endTime) };
+  // Dates come from the times themselves, so rounding or lasting past midnight advances the day
+  return { date: toDateInputString(startTime), startTime: hhmm(startTime), endDate: toDateInputString(endTime), endTime: hhmm(endTime) };
 }
 
 // All-day dates are anchored at UTC noon: the backend formats the UTC date,
