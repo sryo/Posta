@@ -20,6 +20,9 @@
     --shadow: rgba(0, 0, 0, 0.1);
     --danger: #e53935;
     --danger-bg: rgba(229, 57, 53, 0.1);
+    /* A button filled red, and its label */
+    --danger-fill: #d32f2f;
+    --on-danger: #fff;
     /* Controls floating over the page: wheels, pickers, dropdowns */
     --bg-elevated: #fff;
     --elevated-ring: var(--border-color);
@@ -99,6 +102,8 @@
         --shadow: rgba(0, 0, 0, 0.3);
         --danger: #ff6b6b;
         --danger-bg: rgba(255, 107, 107, 0.15);
+        --danger-fill: #ff6b6b;
+        --on-danger: #1e1e1e;
         --bg-elevated: #2c2c2c;
         --elevated-ring: rgba(255, 255, 255, 0.14);
         /* A light toast stands out from the dark page */
@@ -1674,12 +1679,13 @@ a:focus-visible,
 
 /* The destructive answer of a confirm dialog */
 .confirm-dialog .btn-danger {
-    background: var(--danger);
-    color: #fff;
+    background: var(--danger-fill);
+    border-color: var(--danger-fill);
+    color: var(--on-danger);
 }
 
 .confirm-dialog .btn-danger:hover {
-    background: var(--danger);
+    background: var(--danger-fill);
     filter: brightness(1.08);
 }
 

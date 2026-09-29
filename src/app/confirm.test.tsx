@@ -77,6 +77,7 @@ describe("askConfirm", () => {
     const dialog = await screen.findByRole("alertdialog", { name: "Delete and notify 2 guests?" });
     expect(dialog.querySelector("strong")).toHaveTextContent("Delete and notify 2 guests?");
     expect(dialog).toHaveTextContent("They get an email saying the event was cancelled.");
+    expect(dialog).toHaveAccessibleDescription("They get an email saying the event was cancelled.");
     const confirm = screen.getByRole("button", { name: "Delete event" });
     expect(confirm).toHaveClass("btn-danger");
     const keep = screen.getByRole("button", { name: "Keep event" });

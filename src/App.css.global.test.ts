@@ -35,11 +35,32 @@ describe("buttons", () => {
   });
 });
 
+// WCAG contrast ratio of two #rgb or #rrggbb colours
+function contrast(a: string, b: string): number {
+  const luminance = (color: string) => {
+    const hex = color.length === 4 ? `#${[...color.slice(1)].map(c => c + c).join("")}` : color;
+    const [r, g, b] = [1, 3, 5].map(i => {
+      const c = parseInt(hex.slice(i, i + 2), 16) / 255;
+      return c <= 0.03928 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4;
+    });
+    return 0.2126 * r + 0.7152 * g + 0.0722 * b;
+  };
+  const [hi, lo] = [luminance(a), luminance(b)].sort((x, y) => y - x);
+  return (hi + 0.05) / (lo + 0.05);
+}
+
 describe("confirm dialog", () => {
   it("fills a destructive answer's button red", () => {
     const decl = declarationsOf(".confirm-dialog .btn-danger");
-    expect(decl.get("background")).toBe("var(--danger)");
-    expect(decl.get("color")).toBe("#fff");
+    expect(decl.get("background")).toBe("var(--danger-fill)");
+    expect(decl.get("color")).toBe("var(--on-danger)");
+  });
+
+  it("keeps the red button's label readable in light and dark mode", () => {
+    for (const context of ["", "@media (prefers-color-scheme: dark)"]) {
+      const root = declarationsOf(":root", context);
+      expect(contrast(root.get("--danger-fill")!, root.get("--on-danger")!)).toBeGreaterThanOrEqual(4.5);
+    }
   });
 });
 

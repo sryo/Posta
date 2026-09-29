@@ -57,6 +57,7 @@ function ConfirmBox(props: { request: ConfirmRequest }) {
       style={{ "max-width": "420px" }}
       ref={ref}
       aria-label={props.request.title ?? props.request.message}
+      aria-describedby={props.request.title ? "confirm-message" : undefined}
       // Native listener so the app's document-level shortcuts never
       // see keys meant for the dialog
       on:keydown={(e) => e.stopPropagation()}
@@ -64,7 +65,7 @@ function ConfirmBox(props: { request: ConfirmRequest }) {
       <Show when={props.request.title}>
         <p><strong>{props.request.title}</strong></p>
       </Show>
-      <p>{props.request.message}</p>
+      <p id="confirm-message">{props.request.message}</p>
       <div class="restore-actions">
         <button class="btn btn-ghost" onClick={() => answer(false)}>
           {props.request.cancelLabel ?? "Cancel"}
