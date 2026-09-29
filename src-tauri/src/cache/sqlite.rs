@@ -14,6 +14,8 @@ pub enum CacheError {
     Lock,
     #[error("This card no longer exists. It may have been deleted on another device.")]
     CardNotFound,
+    #[error("{0} is already signed in to Posta.")]
+    AccountEmailTaken(String),
 }
 
 /// Cached thread groups, next page token, and cache time in Unix seconds
@@ -26,6 +28,11 @@ pub struct CacheDb {
 impl CacheDb {
     pub fn new(db_path: &Path) -> Result<Self, CacheError> {
         let conn = Connection::open(db_path)?;
+        // A cache refresh rewrites whole JSON rows; the log turns each commit
+        // into one appended write instead of a rollback journal's several
+        // syncs. FULL keeps every commit durable: cards live in this file.
+        conn.query_row("PRAGMA journal_mode = WAL", [], |_| Ok(()))?;
+        conn.pragma_update(None, "synchronous", "FULL")?;
         let db = Self {
             conn: Mutex::new(conn),
         };
@@ -130,12 +137,19 @@ impl CacheDb {
     /// replacing that row would orphan its cards.
     pub fn insert_account(&self, account: &Account) -> Result<(), CacheError> {
         let conn = self.conn.lock().map_err(|_| CacheError::Lock)?;
-        conn.execute(
+        let result = conn.execute(
             "INSERT INTO accounts (id, email, picture, signature) VALUES (?1, ?2, ?3, ?4)
              ON CONFLICT(id) DO UPDATE SET email = excluded.email, picture = excluded.picture, signature = excluded.signature",
             params![account.id, account.email, account.picture, account.signature],
-        )?;
-        Ok(())
+        );
+        match result {
+            Err(rusqlite::Error::SqliteFailure(e, Some(message)))
+                if e.extended_code == rusqlite::ffi::SQLITE_CONSTRAINT_UNIQUE && message.contains("accounts.email") =>
+            {
+                Err(CacheError::AccountEmailTaken(account.email.clone()))
+            }
+            result => result.map(|_| ()).map_err(Into::into),
+        }
     }
 
     pub fn update_account_signature(&self, account_id: &str, signature: Option<&str>) -> Result<(), CacheError> {
@@ -170,7 +184,7 @@ impl CacheDb {
 
     pub fn get_cards(&self, account_id: &str) -> Result<Vec<Card>, CacheError> {
         let conn = self.conn.lock().map_err(|_| CacheError::Lock)?;
-        let mut stmt = conn.prepare(&format!("SELECT {CARD_COLUMNS} FROM cards WHERE account_id = ?1 ORDER BY position"))?;
+        let mut stmt = conn.prepare(&format!("SELECT {CARD_COLUMNS} FROM cards WHERE account_id = ?1 ORDER BY position, id"))?;
         let rows = stmt.query_map(params![account_id], card_from_row)?;
         rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
     }
@@ -522,6 +536,36 @@ mod tests {
     }
 
     #[test]
+    fn database_file_uses_a_write_ahead_log_and_keeps_every_write_through_a_reopen() {
+        let dir = std::env::temp_dir().join(format!("posta-test-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("wal.db");
+        let a = account("me@x.com");
+        let card = Card::new(a.id.clone(), "Inbox".into(), "in:inbox".into(), 0);
+        {
+            let db = CacheDb::new(&path).unwrap();
+            {
+                let conn = db.conn.lock().unwrap();
+                let mode: String = conn.query_row("PRAGMA journal_mode", [], |r| r.get(0)).unwrap();
+                assert_eq!(mode, "wal");
+                // Cards are the only local copy of the layout: commits stay durable
+                let synchronous: i64 = conn.query_row("PRAGMA synchronous", [], |r| r.get(0)).unwrap();
+                assert_eq!(synchronous, 2, "FULL");
+            }
+            db.insert_account(&a).unwrap();
+            db.insert_card(&card).unwrap();
+            db.save_card_threads(&card.id, &[], Some("next")).unwrap();
+        }
+
+        let db = CacheDb::new(&path).unwrap();
+        assert_eq!(db.get_accounts().unwrap()[0].id, a.id);
+        assert_eq!(db.get_cards(&a.id).unwrap()[0].id, card.id);
+        assert_eq!(db.get_card_threads(&card.id).unwrap().unwrap().1.as_deref(), Some("next"));
+        drop(db);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn failed_column_migration_is_reported() {
         let dir = std::env::temp_dir().join(format!("posta-test-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
@@ -600,11 +644,23 @@ mod tests {
         db.insert_account(&first).unwrap();
         db.insert_card(&Card::new(first.id.clone(), "Inbox".into(), "in:inbox".into(), 0)).unwrap();
 
-        assert!(db.insert_account(&account("me@x.com")).is_err());
+        let err = db.insert_account(&account("me@x.com")).unwrap_err().to_string();
+        assert_eq!(err, "me@x.com is already signed in to Posta.");
 
         let accounts = db.get_accounts().unwrap();
         assert_eq!(accounts.len(), 1);
         assert_eq!(accounts[0].id, first.id, "the cards' account must stay");
+    }
+
+    #[test]
+    fn cards_sharing_a_position_are_ordered_by_id_whatever_order_they_arrived_in() {
+        let db = db();
+        for id in ["c", "a", "b"] {
+            let card = Card::new("acct".into(), id.to_uppercase(), "q".into(), 0);
+            db.insert_card(&Card { id: id.into(), ..card }).unwrap();
+        }
+        let ids: Vec<_> = db.get_cards("acct").unwrap().into_iter().map(|c| c.id).collect();
+        assert_eq!(ids, ["a", "b", "c"]);
     }
 
     #[test]

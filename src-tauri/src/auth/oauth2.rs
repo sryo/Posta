@@ -8,6 +8,7 @@ use tokio::sync::Mutex;
 
 const GOOGLE_AUTH_URL: &str = "https://accounts.google.com/o/oauth2/v2/auth";
 const GOOGLE_TOKEN_URL: &str = "https://oauth2.googleapis.com/token";
+const GMAIL_SCOPE: &str = "https://mail.google.com/";
 const SCOPES: &str = "https://mail.google.com/ https://www.googleapis.com/auth/calendar.readonly https://www.googleapis.com/auth/calendar.events https://www.googleapis.com/auth/contacts.readonly email profile";
 const REDIRECT_URI: &str = "http://localhost:8420/callback";
 
@@ -24,6 +25,8 @@ pub enum AuthError {
     KeychainUnavailable(String),
     #[error("No credentials configured")]
     NoCredentials,
+    #[error("Posta can't work without Gmail access. Sign in again and, on Google's consent screen, allow Posta to read, compose and send your email.")]
+    GmailAccessNotGranted,
     #[error("HTTP error: {0}")]
     Http(#[from] reqwest::Error),
 }
@@ -33,6 +36,9 @@ struct TokenResponse {
     access_token: String,
     refresh_token: Option<String>,
     expires_in: Option<u64>,
+    /// Space-separated scopes the user actually granted: Google's consent
+    /// screen lets each requested one be unticked
+    scope: Option<String>,
 }
 
 pub struct GmailAuth {
@@ -160,6 +166,18 @@ impl GmailAuth {
         let refresh_token = token_resp
             .refresh_token
             .ok_or_else(|| AuthError::OAuth2("No refresh token received. Make sure to use 'prompt=consent' and 'access_type=offline'.".to_string()))?;
+
+        if let Some(granted) = &token_resp.scope {
+            let granted: Vec<&str> = granted.split_whitespace().collect();
+            if !granted.contains(&GMAIL_SCOPE) {
+                return Err(AuthError::GmailAccessNotGranted);
+            }
+            for scope in SCOPES.split_whitespace().filter(|s| s.starts_with("https://")) {
+                if !granted.contains(&scope) {
+                    tracing::warn!("Sign-in did not grant {}; what needs it will fail", scope);
+                }
+            }
+        }
 
         Ok((token_resp.access_token, refresh_token, token_resp.expires_in))
     }
@@ -428,13 +446,26 @@ pub fn store_oauth_credentials(client_id: &str, client_secret: &str, app_data_di
     store_secret(&Keychain, CREDENTIALS_KEYCHAIN_KEY, &json, &path, "credentials")
 }
 
+/// Counts an unreadable keychain as no credentials, for callers that treat
+/// any other error as fatal
 pub fn get_oauth_credentials(app_data_dir: &Path) -> Result<OAuthCredentials, AuthError> {
+    match load_oauth_credentials(app_data_dir) {
+        Err(AuthError::KeychainUnavailable(_)) => Err(AuthError::NoCredentials),
+        result => result,
+    }
+}
+
+/// `NoCredentials` only when none are stored; a locked or denied keychain
+/// with no fallback file is `KeychainUnavailable`
+pub fn load_oauth_credentials(app_data_dir: &Path) -> Result<OAuthCredentials, AuthError> {
+    oauth_credentials_from(&Keychain, app_data_dir)
+}
+
+fn oauth_credentials_from(keychain: &dyn SecretStore, app_data_dir: &Path) -> Result<OAuthCredentials, AuthError> {
     let parse = |json: &str| serde_json::from_str::<OAuthCredentials>(json).ok();
     let path = get_credentials_file_path(app_data_dir);
-    // An unreadable keychain counts as no credentials: the caller fails
-    // startup on any other error
-    load_secret(&Keychain, CREDENTIALS_KEYCHAIN_KEY, &path, |json| parse(json).is_some())
-        .unwrap_or_default()
+    load_secret(keychain, CREDENTIALS_KEYCHAIN_KEY, &path, |json| parse(json).is_some())
+        .map_err(AuthError::KeychainUnavailable)?
         .and_then(|json| parse(&json))
         .ok_or(AuthError::NoCredentials)
 }
@@ -453,8 +484,17 @@ pub fn store_gemini_api_key(api_key: &str, app_data_dir: &Path) -> Result<(), Au
 }
 
 pub fn get_gemini_api_key(app_data_dir: &Path) -> Option<String> {
-    load_secret(&Keychain, GEMINI_KEYCHAIN_KEY, &get_gemini_key_file_path(app_data_dir), |key| !key.is_empty())
-        .unwrap_or_default()
+    load_gemini_api_key(app_data_dir).unwrap_or_default()
+}
+
+/// `Ok(None)` only when no key is stored
+pub fn load_gemini_api_key(app_data_dir: &Path) -> Result<Option<String>, AuthError> {
+    gemini_api_key_from(&Keychain, app_data_dir)
+}
+
+fn gemini_api_key_from(keychain: &dyn SecretStore, app_data_dir: &Path) -> Result<Option<String>, AuthError> {
+    load_secret(keychain, GEMINI_KEYCHAIN_KEY, &get_gemini_key_file_path(app_data_dir), |key| !key.is_empty())
+        .map_err(AuthError::KeychainUnavailable)
 }
 
 #[cfg(test)]
@@ -474,6 +514,8 @@ mod tests {
         assert_eq!(get_refresh_token("acct", &dir).unwrap(), "refresh-1");
         assert_eq!(get_oauth_credentials(&dir).unwrap().client_secret, "secret");
         assert_eq!(get_gemini_api_key(&dir).as_deref(), Some("gem"));
+        assert_eq!(load_oauth_credentials(&dir).unwrap().client_id, "id");
+        assert_eq!(load_gemini_api_key(&dir).unwrap().as_deref(), Some("gem"));
         for path in [
             get_token_file_path(&dir, "acct"),
             get_credentials_file_path(&dir),
@@ -560,6 +602,47 @@ mod tests {
         let dir = temp_dir("missing");
         let err = refresh_token_from(&FakeKeychain::new(true, &[]), "acct", &dir).unwrap_err();
         assert!(err.to_string().contains("Keyring error"), "{}", err);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn locked_keychain_is_not_reported_as_missing_oauth_credentials() {
+        let dir = temp_dir("locked-creds");
+        let keychain = FakeKeychain::locked(&[(CREDENTIALS_KEYCHAIN_KEY, r#"{"client_id":"id","client_secret":"s"}"#)]);
+
+        let err = oauth_credentials_from(&keychain, &dir).unwrap_err();
+
+        assert!(matches!(err, AuthError::KeychainUnavailable(_)), "{}", err);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn oauth_credentials_come_from_the_file_while_the_keychain_is_locked() {
+        let dir = temp_dir("locked-creds-file");
+        write_secret_file(&get_credentials_file_path(&dir), r#"{"client_id":"id","client_secret":"s"}"#, "credentials").unwrap();
+        let creds = oauth_credentials_from(&FakeKeychain::locked(&[]), &dir).unwrap();
+        assert_eq!((creds.client_id.as_str(), creds.client_secret.as_str()), ("id", "s"));
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn missing_oauth_credentials_are_no_credentials() {
+        let dir = temp_dir("no-creds");
+        let keychain = FakeKeychain::new(true, &[(CREDENTIALS_KEYCHAIN_KEY, "not json")]);
+        assert!(matches!(oauth_credentials_from(&keychain, &dir), Err(AuthError::NoCredentials)));
+        assert!(matches!(oauth_credentials_from(&FakeKeychain::new(true, &[]), &dir), Err(AuthError::NoCredentials)));
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn locked_keychain_is_not_reported_as_a_missing_gemini_key() {
+        let dir = temp_dir("locked-gemini");
+        let err = gemini_api_key_from(&FakeKeychain::locked(&[(GEMINI_KEYCHAIN_KEY, "gem")]), &dir).unwrap_err();
+        assert!(err.to_string().starts_with("Keychain unavailable"), "{}", err);
+
+        assert_eq!(gemini_api_key_from(&FakeKeychain::new(true, &[]), &dir).unwrap(), None);
+        let stored = FakeKeychain::new(true, &[(GEMINI_KEYCHAIN_KEY, "gem")]);
+        assert_eq!(gemini_api_key_from(&stored, &dir).unwrap().as_deref(), Some("gem"));
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
@@ -803,6 +886,28 @@ mod tests {
     fn token_error_without_json_keeps_the_body() {
         assert_eq!(token_error_text(" bad gateway \n"), "bad gateway");
         assert_eq!(token_error_text(r#"{"error": "invalid_grant"}"#), "invalid_grant");
+    }
+
+    #[tokio::test]
+    async fn sign_in_without_the_gmail_scope_is_refused() {
+        let auth = auth_at(
+            token_stub(Some(r#"{"access_token": "at", "refresh_token": "rt", "expires_in": 3599, "scope": "https://www.googleapis.com/auth/calendar.readonly https://www.googleapis.com/auth/userinfo.email openid"}"#)),
+            Duration::from_secs(5),
+        );
+        let (_, state) = auth.start_auth_flow().await.unwrap();
+        let err = auth.exchange_code("code".into(), Some(&state)).await.unwrap_err().to_string();
+        assert!(err.contains("Gmail"), "{}", err);
+        assert!(err.contains("Sign in again"), "{}", err);
+    }
+
+    #[tokio::test]
+    async fn sign_in_with_the_gmail_scope_but_not_calendar_or_contacts_succeeds() {
+        let auth = auth_at(
+            token_stub(Some(r#"{"access_token": "at", "refresh_token": "rt", "expires_in": 3599, "scope": "https://www.googleapis.com/auth/userinfo.email https://mail.google.com/ openid"}"#)),
+            Duration::from_secs(5),
+        );
+        let (_, state) = auth.start_auth_flow().await.unwrap();
+        assert_eq!(auth.exchange_code("code".into(), Some(&state)).await.unwrap().1, "rt");
     }
 
     #[tokio::test]
