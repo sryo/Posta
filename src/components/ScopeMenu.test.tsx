@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import { createSignal, Show } from "solid-js";
 import { fireEvent, render, screen } from "@solidjs/testing-library";
 import { ScopeMenu } from "./ScopeMenu";
 
@@ -41,5 +42,24 @@ describe("ScopeMenu", () => {
     fireEvent.keyDown(screen.getByRole("menu"), { key: "Escape" });
     expect(onCancel).toHaveBeenCalledTimes(1);
     expect(outer).not.toHaveBeenCalled();
+  });
+
+  it("gives focus back to the button that opened it once it closes", async () => {
+    const [open, setOpen] = createSignal(false);
+    render(() => (
+      <>
+        <button onClick={() => setOpen(true)}>Delete</button>
+        <Show when={open()}>
+          <ScopeMenu title="Delete" onChoose={vi.fn()} onCancel={() => setOpen(false)} />
+        </Show>
+      </>
+    ));
+    const opener = screen.getByRole("button", { name: "Delete" });
+    opener.focus();
+    fireEvent.click(opener);
+    await new Promise(r => setTimeout(r, 0));
+    expect(document.activeElement).toBe(screen.getByRole("menuitem", { name: "This event" }));
+    fireEvent.keyDown(document.activeElement!, { key: "Escape" });
+    expect(document.activeElement).toBe(opener);
   });
 });

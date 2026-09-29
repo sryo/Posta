@@ -39,11 +39,13 @@ export const ScopeMenu = (props: {
   };
 
   onMount(() => {
+    const opener = document.activeElement instanceof HTMLElement ? document.activeElement : null;
     const focusTimer = setTimeout(() => items()[0]?.focus(), 0);
     document.addEventListener("mousedown", dismissOutside);
     onCleanup(() => {
       clearTimeout(focusTimer);
       document.removeEventListener("mousedown", dismissOutside);
+      if (opener?.isConnected && menu?.contains(document.activeElement)) opener.focus();
     });
   });
 
