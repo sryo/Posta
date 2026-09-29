@@ -26,7 +26,7 @@ describe("askConfirm", () => {
 
     const outside = askConfirm("Third?");
     await screen.findByText("Third?");
-    fireEvent.click(document.querySelector(".confirm-overlay")!);
+    fireEvent.click(document.querySelector(".preset-overlay")!);
     expect(await outside).toBe(false);
   });
 

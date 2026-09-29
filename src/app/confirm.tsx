@@ -34,12 +34,12 @@ export function ConfirmDialog() {
     <Show when={request()}>
       {(open) => (
         <div
-          class="confirm-overlay preset-overlay"
+          class="preset-overlay"
           style={{ "z-index": "var(--z-modal)" }}
           onClick={(e) => { if (e.target === e.currentTarget) answer(false); }}
         >
           <div
-            class="confirm-dialog preset-modal"
+            class="preset-modal"
             style={{ "max-width": "420px" }}
             role="alertdialog"
             aria-modal="true"
