@@ -1707,7 +1707,9 @@ button:disabled:hover {
 }
 
 .btn-primary:disabled {
-    background: var(--text-muted);
+    background: var(--accent);
+    border-color: var(--accent);
+    opacity: 0.4;
 }
 
 /* Auth Screen */

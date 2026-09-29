@@ -26,6 +26,15 @@ describe("dialogs", () => {
   });
 });
 
+describe("buttons", () => {
+  it("fade a disabled primary button in its own colour, so it can't pass for an enabled grey one", () => {
+    const decl = declarationsOf(".btn-primary:disabled");
+    expect(decl.get("background")).toBe("var(--accent)");
+    expect(decl.get("border-color")).toBe("var(--accent)");
+    expect(decl.get("opacity")).toBe("0.4");
+  });
+});
+
 describe("confirm dialog", () => {
   it("fills a destructive answer's button red", () => {
     const decl = declarationsOf(".confirm-dialog .btn-danger");
