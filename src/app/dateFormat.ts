@@ -20,7 +20,7 @@ export function appLocale(system: string): string {
 
 let cachedSystem: string | undefined;
 let cachedLocale = "";
-function localeOrApp(locale?: string): string {
+export function localeOrApp(locale?: string): string {
   if (locale) return locale;
   const system = navigator.language;
   if (system !== cachedSystem) {
@@ -35,11 +35,11 @@ function startOfDay(d: Date): number {
 }
 
 // Whole calendar days from `now` to `day`; rounding absorbs DST's 23/25h days
-function dayOffset(day: Date, now: Date): number {
+export function dayOffset(day: Date, now: Date): number {
   return Math.round((startOfDay(day) - startOfDay(now)) / DAY_MS);
 }
 
-function capitalise(text: string, locale?: string): string {
+export function capitalise(text: string, locale?: string): string {
   return text.charAt(0).toLocaleUpperCase(localeOrApp(locale)) + text.slice(1);
 }
 

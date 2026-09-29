@@ -22,6 +22,7 @@ const NO_DOM = [
   "src/app/errorText.test.ts",
   "src/app/eventReply.test.ts",
   "src/app/grouping.test.ts",
+  "src/app/inviteRow.test.ts",
   "src/app/keyboardNav.test.ts",
   "src/app/loadErrors.test.ts",
   "src/app/mailto.test.ts",
