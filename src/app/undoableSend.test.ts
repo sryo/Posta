@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { createRoot } from "solid-js";
 import { createUndoableSend } from "./undoableSend";
 
 const DELAY = 5000;
@@ -108,5 +109,18 @@ describe("createUndoableSend", () => {
     expect(sent).toEqual([]);
     expect(failed).toEqual(["A"]);
     expect(sender.toastVisible()).toBe(false);
+  });
+
+  // Like a quit: the email's draft stays marked as being sent for the next start
+  it("sends nothing queued once its owner is disposed", async () => {
+    const sent: string[] = [];
+    const dispose = createRoot(dispose => {
+      const sender = createUndoableSend<string>({ delayMs: DELAY, send: async item => { sent.push(item); }, onFailed: () => {} });
+      sender.queue("A");
+      return dispose;
+    });
+    dispose();
+    await vi.advanceTimersByTimeAsync(DELAY * 2);
+    expect(sent).toEqual([]);
   });
 });
