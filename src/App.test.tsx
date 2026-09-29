@@ -4586,6 +4586,19 @@ describe("App accessibility", () => {
     await waitFor(() => expect(screen.getByPlaceholderText("Recipients")).toHaveValue("bo@y.com"));
   });
 
+  it("starts an event from a thread that asks to meet, suggested under New Event", async () => {
+    threadsByCard["card-a"] = [{ ...thread("t-a", "Re: Sync next week?"), last_message_date: Date.now() - 60_000, participants: ["Ana <ana@x.com>", "a@x.com"] }];
+    render(() => <App />);
+    await screen.findByText("Re: Sync next week?");
+    fireEvent.focusIn(screen.getByRole("button", { name: "Create new calendar event" }));
+    const suggestion = await screen.findByRole("button", { name: "New event: Sync next week?, with Ana" });
+    expect(suggestion.closest(".compose-suggestions")).toHaveClass("visible");
+    fireEvent.keyDown(suggestion, { key: "Enter" });
+
+    expect(await screen.findByPlaceholderText("Event title")).toHaveValue("Sync next week?");
+    expect(Array.from(document.querySelectorAll(".guest-chip-label")).map(el => el.textContent)).toEqual(["Ana"]);
+  });
+
   it("ranks contacts only when suggestions are wanted, not on every mail change", async () => {
     threadsByCard["card-a"] = [{ ...thread("t-a", "Mail for A"), participants: ["Ana <ana@x.com>"], unread_count: 1, labels: ["INBOX", "UNREAD"] }];
     handlers.modify_threads = () => null;
