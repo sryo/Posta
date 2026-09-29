@@ -146,6 +146,7 @@ import { querySuggestions, type QuerySuggestion } from "./app/querySuggestions";
 import { inviteNamesEvent, rsvpSentMessage, type RsvpStatus } from "./app/rsvp";
 import { createRsvpLookups } from "./app/rsvpLookups";
 import { nextSelection } from "./app/selection";
+import { fingerprint } from "./app/fingerprint";
 import { hasCommandModifier, isTypingTarget, onActivateKey } from "./shared/keyboard";
 import { askConfirm, ConfirmDialog, confirmOpen, dismissConfirm } from "./app/confirm";
 import { moveCard, reuseUnchanged } from "./app/cardOrder";
@@ -3069,10 +3070,11 @@ function App() {
   // What each card's thread cache was last read or written as, and when. A
   // refresh that brings back the same groups (inline images and all) skips
   // sending them across again, but not for long: the cache's time is what
-  // "Last synced" shows at the next start.
+  // "Last synced" shows at the next start. Kept as a fingerprint: a card's
+  // groups carry inline thumbnails and can run to megabytes.
   const knownCardCache: Record<string, { snapshot: string; at: number }> = {};
   const CACHE_REWRITE_MS = 5 * 60 * 1000;
-  const cacheSnapshot = (groups: ThreadGroup[], pageToken: string | null) => JSON.stringify([groups, pageToken]);
+  const cacheSnapshot = (groups: ThreadGroup[], pageToken: string | null) => fingerprint(JSON.stringify([groups, pageToken]));
 
   function saveCardCache(cardId: string, groups: ThreadGroup[], pageToken: string | null): Promise<void> {
     const snapshot = cacheSnapshot(groups, pageToken);
