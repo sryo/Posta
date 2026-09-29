@@ -6,10 +6,14 @@ configure({ asyncUtilTimeout: 4000 });
 
 type Handler = (args: Record<string, unknown>) => unknown;
 const handlers: Record<string, Handler> = {};
+// Accounts signed in during the test, which the backend would list from then on
+const signedInDuringTest = new Set<string>();
 const invoke = vi.fn(async (cmd: string, args: Record<string, unknown> = {}) => {
   const handler = handlers[cmd];
   if (!handler) throw new Error(`unmocked command ${cmd}`);
-  return handler(args);
+  const result = await handler(args);
+  if (cmd === "run_oauth_flow") signedInDuringTest.add((result as { id: string }).id);
+  return result;
 });
 
 vi.mock("@tauri-apps/api/core", () => ({ invoke: (cmd: string, args?: Record<string, unknown>) => invoke(cmd, args) }));
@@ -47,6 +51,7 @@ const threadsByCard: Record<string, Thread[]> = {};
 let nextCardId = 0;
 
 beforeEach(() => {
+  signedInDuringTest.clear();
   localStorage.clear();
   invoke.mockClear();
   openUrl.mockClear();
@@ -60,7 +65,9 @@ beforeEach(() => {
     configure_auth: () => null,
     pull_from_icloud: () => false,
     get_accounts: () => [account("a", "a@x.com")],
-    get_cards: () => Object.values(cardsByAccount).flat(),
+    // The board: the cards of the accounts signed in
+    get_cards: () => [...new Set([...(handlers.get_accounts({}) as Account[]).map(a => a.id), ...signedInDuringTest])]
+      .flatMap(id => cardsByAccount[id] ?? []),
     create_card: ({ accountId, name, query }) => {
       const created = { ...card(`new-${nextCardId++}`, accountId as string, name as string, query as string), position: nextCardId };
       (cardsByAccount[accountId as string] ??= []).push(created);
@@ -256,21 +263,27 @@ describe("Layout after sign-in", () => {
     expect(createdCards()).toHaveLength(0);
   });
 
-  it("opens the picker for an added account without cards, offering the other account's layout", async () => {
-    handlers.run_oauth_flow = () => account("b", "b@x.com");
-    cardsByAccount.b = [];
+  it("replaces the whole board with a preset, and puts each card back in its account on restore", async () => {
+    handlers.get_accounts = () => [account("a", "a@x.com"), account("b", "b@x.com")];
+    cardsByAccount.b = [{ ...card("card-b", "b", "Beta"), position: 1 }];
     render(() => <App />);
-    await screen.findByText("Mail for A");
-    fireEvent.click(screen.getByTitle("a@x.com"));
-    fireEvent.click(await screen.findByText("Add account"));
+    await screen.findByRole("region", { name: "Beta email card" });
+    let sidebar = await openSettingsFromChooser();
+    fireEvent.click(within(sidebar).getByRole("button", { name: "Choose a different layout" }));
+    fireEvent.click(within(await screen.findByRole("dialog", { name: "Pick a starting layout" })).getByRole("button", { name: /^Classic/ }));
 
-    const picker = await screen.findByRole("dialog", { name: "Pick a starting layout" });
-    const copy = await within(picker).findByRole("button", { name: /^Copy layout from a@x\.com/ });
-    expect(copy).toHaveTextContent("Alpha");
-    fireEvent.click(copy);
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "Pick a starting layout" })).not.toBeInTheDocument());
+    expect(screen.queryByRole("region", { name: "Beta email card" })).not.toBeInTheDocument();
+    expect(invoke).toHaveBeenCalledWith("delete_card", { id: "card-b" });
+    expect(createdCards().every(c => c.accountId === "a")).toBe(true);
 
-    expect(await screen.findByRole("region", { name: "Alpha email card" })).toBeInTheDocument();
-    expect(createdCards()).toEqual([expect.objectContaining({ accountId: "b", name: "Alpha", query: "is:inbox" })]);
+    sidebar = await openSettingsFromChooser();
+    fireEvent.click(within(sidebar).getByRole("button", { name: /Restore previous layout/ }));
+    expect(await screen.findByRole("region", { name: "Beta email card" })).toBeInTheDocument();
+    expect(createdCards().slice(-2)).toEqual([
+      expect.objectContaining({ accountId: "a", name: "Alpha" }),
+      expect.objectContaining({ accountId: "b", name: "Beta" }),
+    ]);
   });
 });
 

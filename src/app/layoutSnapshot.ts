@@ -1,11 +1,13 @@
 import type { Card } from "../api/tauri";
+import { ALL_ACCOUNTS } from "./accountScope";
 
 // A card layout replaced by a preset or a copied layout, kept on this Mac so
 // the replacement can be undone from Settings for a while
 
 export const SNAPSHOT_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 
-export type CardSpec = Pick<Card, "name" | "query" | "color" | "group_by" | "card_type">;
+// Snapshots kept before cards named their account have no account_id
+export type CardSpec = Pick<Card, "name" | "query" | "color" | "group_by" | "card_type"> & Partial<Pick<Card, "account_id">>;
 
 export interface LayoutSnapshot {
   savedAt: number;
@@ -15,7 +17,14 @@ export interface LayoutSnapshot {
 const key = (email: string) => `layoutSnapshot:${email}`;
 
 export function cardSpecs(cards: Card[]): CardSpec[] {
-  return cards.map(({ name, query, color, group_by, card_type }) => ({ name, query, color, group_by, card_type }));
+  return cards.map(({ account_id, name, query, color, group_by, card_type }) => ({ account_id, name, query, color, group_by, card_type }));
+}
+
+// The account to put a card back in: its own while signed in (or all of
+// them), else `fallback`
+export function specAccountId(spec: Pick<CardSpec, "account_id">, signedIn: string[], fallback: string): string {
+  const id = spec.account_id;
+  return id && (id === ALL_ACCOUNTS || signedIn.includes(id)) ? id : fallback;
 }
 
 export function saveLayoutSnapshot(email: string, cards: CardSpec[], now: number) {

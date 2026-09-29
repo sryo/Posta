@@ -111,16 +111,20 @@ beforeEach(() => {
     get_cards: () => boardCards(),
     get_cached_card_threads: () => null,
     save_cached_card_threads: () => null,
-    fetch_threads_paginated: ({ cardId }) => ({
-      groups: [{ label: "Today", threads: threadsByCard[cardId as string] ?? [] }],
-      next_page_token: null,
-      has_more: false,
-    }),
+    // Like the backend, names each thread's account
+    fetch_threads_paginated: ({ cardId }) => {
+      const scope = Object.values(cardsByAccount).flat().find(c => c.id === cardId)?.account_id;
+      const threads = (threadsByCard[cardId as string] ?? [])
+        .map(t => ({ ...t, account_id: t.account_id || (scope !== "all" && scope) || "" }));
+      return { groups: [{ label: "Today", threads }], next_page_token: null, has_more: false };
+    },
     sync_threads_incremental: () => ({ modified_threads: [], deleted_thread_ids: [], is_full_sync: false }),
     fetch_contacts: () => [],
     take_pending_mailtos: () => [],
     has_gemini_api_key: () => false,
   } satisfies Record<string, Handler>);
+  for (const k of Object.keys(cardsByAccount)) delete cardsByAccount[k];
+  for (const k of Object.keys(threadsByCard)) delete threadsByCard[k];
   cardsByAccount.a = [card("card-a", "a", "Alpha")];
   cardsByAccount.b = [card("card-b", "b", "Beta")];
   threadsByCard["card-a"] = [thread("t-a", "Mail for A")];
@@ -249,30 +253,34 @@ describe("App background sync while the first page is being cached", () => {
   });
 });
 
-describe("App background sync after an account switch", () => {
-  it("ignores a sync result for the account that is no longer selected", async () => {
+describe("App background sync after signing out", () => {
+  it("ignores a sync result for an account signed out while it synced", async () => {
     handlers.get_accounts = () => [account("a", "a@x.com"), account("b", "b@x.com")];
+    handlers.delete_account = () => null;
+    localStorage.setItem("defaultAccountId", "b");
+    cardsByAccount.all = [card("card-all", "all", "Everything")];
     render(() => <App />);
-    await screen.findByText("Mail for A");
+    await screen.findByText("Mail for B");
 
     let releaseSync!: () => void;
     const slowSync = new Promise<void>(r => { releaseSync = r; });
-    handlers.sync_threads_incremental = async () => {
-      await slowSync;
-      return { modified_threads: [thread("t-new", "New for A")], deleted_thread_ids: [], is_full_sync: false };
+    handlers.sync_threads_incremental = async ({ accountId }) => {
+      if (accountId === "b") await slowSync;
+      return { modified_threads: accountId === "b" ? [{ ...thread("t-new", "New for B"), account_id: "b" }] : [], deleted_thread_ids: [], is_full_sync: false };
     };
     window.dispatchEvent(new Event("focus"));
-    await waitFor(() => expect(invoke).toHaveBeenCalledWith("sync_threads_incremental", { accountId: "a" }));
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith("sync_threads_incremental", { accountId: "b" }));
 
-    fireEvent.click(screen.getByTitle("a@x.com"));
-    fireEvent.click(await screen.findByText("b@x.com"));
-    await screen.findByText("Mail for B");
-    const fetchesForB = () => invoke.mock.calls.filter(([cmd, args]) => cmd === "fetch_threads_paginated" && args?.cardId === "card-b").length;
-    const before = fetchesForB();
+    handlers.get_accounts = () => [account("a", "a@x.com")];
+    fireEvent.click(screen.getByText("Sign out"));
+    await answerConfirm(true, /b@x\.com/);
+    await waitFor(() => expect(screen.queryByText("Mail for B")).not.toBeInTheDocument());
+    const fetchesOfAll = () => invoke.mock.calls.filter(([cmd, args]) => cmd === "fetch_threads_paginated" && args?.cardId === "card-all").length;
+    const before = fetchesOfAll();
 
     releaseSync();
     await new Promise(r => setTimeout(r, 30));
-    expect(fetchesForB()).toBe(before);
+    expect(fetchesOfAll()).toBe(before);
   });
 });
 
@@ -483,9 +491,10 @@ describe("App card deletion", () => {
   });
 });
 
-describe("App failed thread action after an account switch", () => {
-  it("does not roll the previous account's threads back into view", async () => {
+describe("App failed thread action after signing out", () => {
+  it("does not roll the signed-out account's threads back into view", async () => {
     handlers.get_accounts = () => [account("a", "a@x.com"), account("b", "b@x.com")];
+    handlers.delete_account = () => null;
     threadsByCard["card-a"] = [{ ...thread("t-a", "Mail for A"), unread_count: 1, labels: ["INBOX", "UNREAD"] }];
     let failModify!: () => void;
     handlers.modify_threads = () => new Promise((_, reject) => { failModify = () => reject(new Error("offline")); });
@@ -495,12 +504,13 @@ describe("App failed thread action after an account switch", () => {
     fireEvent.keyDown(document, { key: "l" });
     fireEvent.keyDown(document, { key: "a" });
     await waitFor(() => expect(invoke).toHaveBeenCalledWith("modify_threads", expect.anything()));
-    fireEvent.click(screen.getByTitle("a@x.com"));
-    fireEvent.click(await screen.findByText("b@x.com"));
-    await screen.findByText("Mail for B");
+    fireEvent.click(screen.getByText("Sign out"));
+    await answerConfirm(true, /a@x\.com/);
+    await waitFor(() => expect(screen.queryByRole("region", { name: "Alpha email card" })).not.toBeInTheDocument());
 
     failModify();
     await new Promise(r => setTimeout(r, 20));
+    expect(screen.queryByText("Mail for A")).not.toBeInTheDocument();
     expect(setBadgeCount).toHaveBeenLastCalledWith(undefined);
   });
 });
@@ -630,10 +640,11 @@ describe("App accounts", () => {
     fireEvent.click(await screen.findByText("Add account"));
 
     expect(await screen.findByText("Mail for B")).toBeInTheDocument();
-    await waitFor(() => expect(screen.queryByText("Mail for A")).not.toBeInTheDocument());
+    expect(screen.getByText("Mail for A")).toBeInTheDocument();
+    expect(screen.getByTitle("a@x.com")).toBeInTheDocument();
   });
 
-  it("closes the previous account's open thread when switching accounts", async () => {
+  it("keeps the open thread open when the default account changes", async () => {
     handlers.get_accounts = () => [account("a", "a@x.com"), account("b", "b@x.com")];
     handlers.get_thread_details = () => ({ id: "t-a", messages: [fullMessage("m1", "Ana <ana@x.com>")] });
     render(() => <App />);
@@ -643,8 +654,8 @@ describe("App accounts", () => {
     fireEvent.click(screen.getByTitle("a@x.com"));
     fireEvent.click(await screen.findByText("b@x.com"));
 
-    await screen.findByText("Mail for B");
-    expect(screen.queryByText("body m1")).not.toBeInTheDocument();
+    await screen.findByTitle("b@x.com");
+    expect(screen.getByText("body m1")).toBeInTheDocument();
   });
 
   it("collapsing a card keeps other accounts' collapsed cards", async () => {
@@ -667,7 +678,8 @@ describe("App accounts", () => {
     fireEvent.click(screen.getByText("Sign out"));
     await answerConfirm(true);
 
-    const betaCard = await screen.findByRole("region", { name: "Beta email card" });
+    await waitFor(() => expect(screen.queryByRole("region", { name: "Alpha email card" })).not.toBeInTheDocument());
+    const betaCard = screen.getByRole("region", { name: "Beta email card" });
     expect(betaCard).toHaveClass("collapsed");
     expect(JSON.parse(localStorage.getItem("collapsedCards")!)).toEqual({ "card-b": true });
     expect(invoke).not.toHaveBeenCalledWith("fetch_threads_paginated", expect.objectContaining({ cardId: "card-b" }));
@@ -782,23 +794,21 @@ describe("App error banner", () => {
     expect(screen.getByRole("alert").querySelector("details")).toHaveTextContent("disk full");
   });
 
-  it("leaves an expired session's banner with its account when switching accounts", async () => {
+  it("keeps an expired session's banner, naming its account, whichever account is the default", async () => {
     handlers.get_accounts = () => [account("a", "a@x.com"), account("b", "b@x.com")];
     render(() => <App />);
     await screen.findByText("Mail for A");
-    handlers.sync_threads_incremental = () => { throw 'Token refresh failed: {"error": "invalid_grant"}'; };
+    handlers.sync_threads_incremental = ({ accountId }) => {
+      if (accountId === "a") throw 'Token refresh failed: {"error": "invalid_grant"}';
+      return { modified_threads: [], deleted_thread_ids: [], is_full_sync: false };
+    };
     window.dispatchEvent(new Event("focus"));
     await screen.findByText("Posta lost access to a@x.com");
 
-    handlers.sync_threads_incremental = () => ({ modified_threads: [], deleted_thread_ids: [], is_full_sync: false });
     fireEvent.click(screen.getByTitle("a@x.com"));
     fireEvent.click(await screen.findByText("b@x.com"));
-    await screen.findByText("Mail for B");
-    expect(screen.queryByText("Posta lost access to a@x.com")).not.toBeInTheDocument();
-
-    fireEvent.click(screen.getByTitle("b@x.com"));
-    fireEvent.click(await screen.findByText("a@x.com"));
-    const banner = (await screen.findByText("Posta lost access to a@x.com")).closest(".connection-status") as HTMLElement;
+    await screen.findByTitle("b@x.com");
+    const banner = screen.getByText("Posta lost access to a@x.com").closest(".connection-status") as HTMLElement;
     expect(within(banner).getByRole("button", { name: "Sign in again" })).toBeInTheDocument();
   });
 });
@@ -1093,7 +1103,7 @@ describe("App thread list shortcuts", () => {
     expect(scrolled).toContain(screen.getByRole("region", { name: "Alpha email card" }).closest(".card-wrapper"));
   });
 
-  it("undoes an action on the account it was taken in after switching accounts", async () => {
+  it("undoes an action in the account it was taken in after the default account changed", async () => {
     handlers.get_accounts = () => [account("a", "a@x.com"), account("b", "b@x.com")];
     handlers.modify_threads = () => null;
     threadsByCard["card-a"] = [{ ...thread("t-a", "Mail for A"), labels: ["INBOX"] }];
@@ -1101,18 +1111,17 @@ describe("App thread list shortcuts", () => {
     await screen.findByText("Mail for A");
     fireEvent.keyDown(document, { key: "l" });
     fireEvent.keyDown(document, { key: "a" });
-    await screen.findByText("Archived 1 thread");
+    await screen.findByText("Archived 1 thread in a@x.com");
 
     fireEvent.click(screen.getByTitle("a@x.com"));
     fireEvent.click(await screen.findByText("b@x.com"));
-    await screen.findByText("Mail for B");
+    await screen.findByTitle("b@x.com");
     invoke.mockClear();
     fireEvent.click(screen.getByText("Undo"));
 
     await waitFor(() => expect(invoke).toHaveBeenCalledWith("modify_threads", {
       accountId: "a", threadIds: ["t-a"], addLabels: ["INBOX"], removeLabels: [],
     }));
-    expect(invoke).not.toHaveBeenCalledWith("fetch_threads_paginated", expect.objectContaining({ accountId: "b", cardId: "card-a" }));
   });
 
   it("clears the selection on Escape before dropping card focus", async () => {
@@ -1542,46 +1551,18 @@ describe("App compose autocomplete", () => {
     expect(to).toHaveValue("ana@x.com, c11@y.com");
   });
 
-  it("suggests only the selected account's contacts after switching accounts", async () => {
+  it("suggests every signed-in account's contacts, but never the accounts themselves", async () => {
     handlers.get_accounts = () => [account("a", "a@x.com"), account("b", "b@x.com")];
-    let releaseA!: () => void;
-    const slowA = new Promise<void>(r => { releaseA = r; });
-    let releaseB!: () => void;
-    const slowB = new Promise<void>(r => { releaseB = r; });
-    const contact = (name: string) => ({ resource_name: `people/${name}`, display_name: name, email_addresses: [`${name.toLowerCase()}@y.com`], photo_url: null });
-    let callsForA = 0;
-    handlers.fetch_contacts = async ({ accountId }) => {
-      if (accountId === "a") {
-        if (callsForA++ > 0) await slowA;
-        return [contact(callsForA > 1 ? "Late" : "Ann")];
-      }
-      await slowB;
-      return [contact("Bea")];
-    };
+    const contact = (name: string, email = `${name.toLowerCase()}@y.com`) => ({ resource_name: `people/${name}`, display_name: name, email_addresses: [email], photo_url: null });
+    handlers.fetch_contacts = ({ accountId }) => accountId === "a" ? [contact("Ann"), contact("Me at work", "b@x.com")] : [contact("Bea")];
     render(() => <App />);
-    await screen.findByText("Mail for A");
+    await screen.findByText("Mail for B");
     // The suggestions show while the pointer is over the compose button
     fireEvent.mouseEnter(document.querySelector(".compose-btn-wrapper")!);
-    await screen.findByText("Ann");
 
-    fireEvent.click(screen.getByTitle("a@x.com"));
-    fireEvent.click(await screen.findByText("b@x.com"));
-    await screen.findByText("Mail for B");
-    expect(screen.queryByText("Ann")).not.toBeInTheDocument();
-
-    // Back to A and at once to B: A's slow reply lands after B's
-    fireEvent.click(screen.getByTitle("b@x.com"));
-    fireEvent.click(await screen.findByText("a@x.com"));
-    await screen.findByText("Mail for A");
-    fireEvent.click(screen.getByTitle("a@x.com"));
-    fireEvent.click(await screen.findByText("b@x.com"));
-    await screen.findByText("Mail for B");
-    releaseB();
-    await screen.findByText("Bea");
-    releaseA();
-    await new Promise(r => setTimeout(r, 20));
-    expect(screen.queryByText("Late")).not.toBeInTheDocument();
-    expect(screen.getByText("Bea")).toBeInTheDocument();
+    expect(await screen.findByText("Ann")).toBeInTheDocument();
+    expect(await screen.findByText("Bea")).toBeInTheDocument();
+    expect(screen.queryByText("Me at work")).not.toBeInTheDocument();
   });
 
   it("attaches files dropped on a new email or pasted into a reply", async () => {
@@ -1698,7 +1679,7 @@ describe("App compose", () => {
     expect(invoke).not.toHaveBeenCalledWith("reply_to_thread", expect.anything());
   });
 
-  it("sends from the account compose was opened in after switching accounts", async () => {
+  it("sends from the account compose was opened in after the default account changed", async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
     handlers.get_accounts = () => [account("a", "a@x.com"), account("b", "b@x.com")];
     handlers.send_email = () => null;
@@ -1713,7 +1694,7 @@ describe("App compose", () => {
 
     fireEvent.click(screen.getByTitle("a@x.com"));
     fireEvent.click(await screen.findByText("b@x.com"));
-    await screen.findByText("Mail for B");
+    await screen.findByTitle("b@x.com");
 
     fireEvent.click(screen.getByRole("button", { name: /^Send/ }));
     await vi.advanceTimersByTimeAsync(6000);
@@ -1744,7 +1725,7 @@ describe("App calendar", () => {
     });
     handlers.get_accounts = () => [account("a", "a@x.com"), account("b", "b@x.com")];
     cardsByAccount.a = [calCard("cal-a", "a", "Agenda A")];
-    cardsByAccount.b = [calCard("cal-b", "b", "Agenda B")];
+    cardsByAccount.b = [];
     handlers.get_cached_card_events = () => null;
     handlers.save_cached_card_events = () => null;
     handlers.fetch_calendar_events = ({ accountId }) =>
@@ -2213,15 +2194,17 @@ describe("App calendar", () => {
     expect(await screen.findByPlaceholderText("Event title")).toHaveValue("");
   });
 
-  it("starts a new event empty after an account switch left an event mid-edit", async () => {
+  it("starts a new event empty after signing out left an event mid-edit", async () => {
     calendarCards();
+    handlers.delete_account = () => null;
     render(() => <App />);
     fireEvent.click(await screen.findByText("Event of a"));
     fireEvent.keyDown(document, { key: "e" });
     expect(await screen.findByDisplayValue("Event of a")).toBeInTheDocument();
-    fireEvent.click(screen.getByTitle("a@x.com"));
-    fireEvent.click(await screen.findByText("b@x.com"));
-    expect(await screen.findByText("Event of b")).toBeInTheDocument();
+    fireEvent.click(screen.getByText("Sign out"));
+    await answerConfirm(true, /a@x\.com/);
+    await waitFor(() => expect(screen.queryByDisplayValue("Event of a")).not.toBeInTheDocument());
+    await new Promise(r => setTimeout(r, 300));
 
     fireEvent.keyDown(document, { key: "e" });
     expect(await screen.findByPlaceholderText("Event title")).toHaveValue("");
@@ -2526,28 +2509,18 @@ describe("App calendar", () => {
     }
   });
 
-  it("does not show an account's calendars once another account is selected", async () => {
+  it("offers the calendars of the account whose event is open", async () => {
     calendarCards();
-    let releaseA!: () => void;
-    const slowA = new Promise<void>(r => { releaseA = r; });
-    handlers.list_calendars = async ({ accountId }) => {
-      if (accountId === "a") await slowA;
-      return [{ id: `cal-${accountId}`, name: `Calendar of ${accountId}`, is_primary: false, access_role: "owner", timezone: null }];
-    };
+    cardsByAccount.b = [{ ...card("cal-b", "b", "Agenda B"), query: "calendar:7d", card_type: "calendar" }];
+    handlers.list_calendars = ({ accountId }) =>
+      [{ id: `cal-${accountId}`, name: `Calendar of ${accountId}`, is_primary: false, access_role: "owner", timezone: null }];
     render(() => <App />);
 
-    fireEvent.click(await screen.findByText("Event of a"));
-    fireEvent.click(await screen.findByTitle("Move to calendar"));
-
-    fireEvent.click(screen.getByTitle("a@x.com"));
-    fireEvent.click(await screen.findByText("b@x.com"));
     fireEvent.click(await screen.findByText("Event of b"));
     fireEvent.click(await screen.findByTitle("Move to calendar"));
     expect(await screen.findByText("Calendar of b")).toBeInTheDocument();
-
-    releaseA();
-    await new Promise(r => setTimeout(r, 20));
     expect(screen.queryByText("Calendar of a")).not.toBeInTheDocument();
+    expect(invoke).not.toHaveBeenCalledWith("list_calendars", { accountId: "a" });
   });
 });
 
@@ -3650,7 +3623,7 @@ describe("App layout removal", () => {
     fireEvent.click(screen.getByText("Sign out"));
     await answerConfirm(true);
 
-    await screen.findByText("Mail for B");
+    await waitFor(() => expect(screen.queryByText("Mail for A")).not.toBeInTheDocument());
     expect(localStorage.getItem("draft_new_a#1")).toBeNull();
     expect(localStorage.getItem("draft_new_b#1")).not.toBeNull();
   });
@@ -4746,16 +4719,15 @@ describe("App batch reply closing", () => {
     await waitFor(() => expect(screen.queryByPlaceholderText(/^Reply to/)).not.toBeInTheDocument());
   });
 
-  it("asks before an account switch discards typed replies, and stays when cancelled", async () => {
+  it("keeps typed replies when the default account changes", async () => {
     handlers.get_accounts = () => [account("a", "a@x.com"), account("b", "b@x.com")];
     await openBatchReplyWithText();
     fireEvent.click(screen.getByTitle("a@x.com"));
     fireEvent.click(await screen.findByText("b@x.com"));
-    await answerConfirm(false, /1 unsent reply/);
-    await new Promise(r => setTimeout(r, 20));
+    await screen.findByTitle("b@x.com");
 
+    expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument();
     expect(screen.getByPlaceholderText(/^Reply to/)).toHaveValue("A long answer");
-    expect(invoke).not.toHaveBeenCalledWith("get_cards", { accountId: "b" });
   });
 
   it("does not act on the threads behind the panel", async () => {
@@ -4768,7 +4740,7 @@ describe("App batch reply closing", () => {
     expect(screen.getByPlaceholderText(/^Reply to/)).toHaveValue("A long answer");
   });
 
-  it("asks before an account switch throws away a typed quick reply", async () => {
+  it("keeps a typed quick reply when the default account changes", async () => {
     handlers.get_accounts = () => [account("a", "a@x.com"), account("b", "b@x.com")];
     render(() => <App />);
     await screen.findByText("Mail for A");
@@ -4778,16 +4750,10 @@ describe("App batch reply closing", () => {
     fireEvent.input(input, { target: { value: "Quick answer" } });
     fireEvent.click(screen.getByTitle("a@x.com"));
     fireEvent.click(await screen.findByText("b@x.com"));
-    await answerConfirm(false, /quick reply/);
-    await new Promise(r => setTimeout(r, 20));
+    await screen.findByTitle("b@x.com");
 
+    expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument();
     expect(screen.getByPlaceholderText("Write a reply...")).toHaveValue("Quick answer");
-    expect(invoke).not.toHaveBeenCalledWith("get_cards", { accountId: "b" });
-
-    fireEvent.click(screen.getByTitle("a@x.com"));
-    fireEvent.click(await screen.findByText("b@x.com"));
-    await answerConfirm(true);
-    expect(await screen.findByText("Mail for B")).toBeInTheDocument();
   });
 });
 
@@ -4966,5 +4932,266 @@ describe("App reading view", () => {
       fireEvent.keyDown(document, { key: "[" });
       expect(await screen.findByText("body of t-0")).toBeInTheDocument();
     });
+  });
+});
+
+describe("App one board for every account", () => {
+  const signedIn = () => [account("a", "a@x.com"), { ...account("b", "b@x.com"), signature: "B sig" }];
+  function twoAccounts() {
+    handlers.get_accounts = signedIn;
+    handlers.modify_threads = () => null;
+  }
+  // Focus the n-th card from the left (1-based) and its first row
+  function focusCard(n: number) {
+    for (let i = 0; i < n; i++) fireEvent.keyDown(document, { key: "l" });
+  }
+  function allInboxesCard(threads: Thread[]) {
+    cardsByAccount.all = [card("card-all", "all", "Everything")];
+    threadsByCard["card-all"] = threads;
+  }
+
+  it("shows every signed-in account's cards at once", async () => {
+    twoAccounts();
+    render(() => <App />);
+    expect(await screen.findByText("Mail for A")).toBeInTheDocument();
+    expect(await screen.findByText("Mail for B")).toBeInTheDocument();
+    expect(invoke.mock.calls.filter(([cmd]) => cmd === "get_cards")).toEqual([["get_cards", undefined]]);
+  });
+
+  it("acts on a thread in the account it came from and says which one", async () => {
+    twoAccounts();
+    threadsByCard["card-b"] = [{ ...thread("t-b", "Mail for B"), labels: ["INBOX"] }];
+    render(() => <App />);
+    await screen.findByText("Mail for B");
+    focusCard(2);
+    fireEvent.keyDown(document, { key: "a" });
+
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith("modify_threads", {
+      accountId: "b", threadIds: ["t-b"], addLabels: [], removeLabels: ["INBOX"],
+    }));
+    expect(await screen.findByText("Archived 1 thread in b@x.com")).toBeInTheDocument();
+  });
+
+  it("acts on an all-inboxes selection once per account, and undoes it per account", async () => {
+    twoAccounts();
+    allInboxesCard([
+      { ...thread("x1", "From A"), account_id: "a", labels: ["INBOX"] },
+      { ...thread("x2", "From B"), account_id: "b", labels: ["INBOX"] },
+    ]);
+    render(() => <App />);
+    await screen.findByText("From B");
+    focusCard(3);
+    fireEvent.keyDown(document, { key: "*" });
+    fireEvent.keyDown(document, { key: "a" });
+    fireEvent.keyDown(document, { key: "a" });
+
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith("modify_threads", { accountId: "a", threadIds: ["x1"], addLabels: [], removeLabels: ["INBOX"] }));
+    expect(invoke).toHaveBeenCalledWith("modify_threads", { accountId: "b", threadIds: ["x2"], addLabels: [], removeLabels: ["INBOX"] });
+    expect(await screen.findByText("Archived 2 threads in 2 accounts")).toBeInTheDocument();
+
+    invoke.mockClear();
+    fireEvent.click(screen.getByText("Undo"));
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith("modify_threads", { accountId: "a", threadIds: ["x1"], addLabels: ["INBOX"], removeLabels: [] }));
+    expect(invoke).toHaveBeenCalledWith("modify_threads", { accountId: "b", threadIds: ["x2"], addLabels: ["INBOX"], removeLabels: [] });
+  });
+
+  it("puts every account's threads back when one account refuses a bulk action", async () => {
+    twoAccounts();
+    allInboxesCard([
+      { ...thread("x1", "From A"), account_id: "a", labels: ["INBOX"] },
+      { ...thread("x2", "From B"), account_id: "b", labels: ["INBOX"] },
+    ]);
+    handlers.modify_threads = ({ accountId }) => { if (accountId === "b") throw new Error("offline"); return null; };
+    render(() => <App />);
+    await screen.findByText("From B");
+    focusCard(3);
+    fireEvent.keyDown(document, { key: "*" });
+    fireEvent.keyDown(document, { key: "a" });
+    fireEvent.keyDown(document, { key: "a" });
+
+    expect(await screen.findByRole("alert")).toHaveTextContent("Couldn't archive");
+    expect(screen.getByText("From A")).toBeInTheDocument();
+    expect(screen.getByText("From B")).toBeInTheDocument();
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith("fetch_threads_paginated", { cardId: "card-all", pageToken: null }));
+  });
+
+  it("opens and quick-replies to a thread as its own account, with that account's signature", async () => {
+    twoAccounts();
+    handlers.get_thread_details = ({ threadId }) => ({ id: threadId, messages: [fullMessage("m1", "Ana <ana@x.com>", { threadId })] });
+    handlers.reply_to_thread = () => null;
+    render(() => <App />);
+    await screen.findByText("Mail for B");
+    focusCard(2);
+    fireEvent.keyDown(document, { key: "r" });
+    const input = await screen.findByPlaceholderText("Write a reply...");
+    fireEvent.input(input, { target: { value: "Thanks" } });
+    fireEvent.keyDown(input, { key: "Enter", metaKey: true });
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith("reply_to_thread", expect.objectContaining({
+      accountId: "b", threadId: "t-b", body: "Thanks\n\n-- \nB sig",
+    })));
+
+    fireEvent.click(screen.getByText("Mail for B"));
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith("get_thread_details", { accountId: "b", threadId: "t-b" }));
+  });
+
+  it("syncs every account a card shows, changing only that account's threads", async () => {
+    twoAccounts();
+    threadsByCard["card-a"] = [{ ...thread("same", "A's own"), account_id: "a" }];
+    threadsByCard["card-b"] = [{ ...thread("same", "B's own"), account_id: "b" }];
+    render(() => <App />);
+    await screen.findByText("B's own");
+    handlers.sync_threads_incremental = ({ accountId }) => ({
+      modified_threads: accountId === "b" ? [{ ...thread("same", "B changed"), account_id: "b" }] : [],
+      deleted_thread_ids: [],
+      is_full_sync: false,
+    });
+    threadsByCard["card-b"] = [{ ...thread("same", "B changed"), account_id: "b" }];
+    invoke.mockClear();
+    window.dispatchEvent(new Event("focus"));
+
+    expect(await screen.findByText("B changed")).toBeInTheDocument();
+    expect(screen.getByText("A's own")).toBeInTheDocument();
+    expect(invoke).toHaveBeenCalledWith("sync_threads_incremental", { accountId: "a" });
+    expect(invoke).toHaveBeenCalledWith("sync_threads_incremental", { accountId: "b" });
+    expect(invoke).not.toHaveBeenCalledWith("fetch_threads_paginated", expect.objectContaining({ cardId: "card-a" }));
+  });
+
+  it("counts unread threads of every account in the Dock badge", async () => {
+    twoAccounts();
+    threadsByCard["card-a"] = [{ ...thread("same", "Unread A"), unread_count: 1 }];
+    threadsByCard["card-b"] = [{ ...thread("same", "Unread B"), unread_count: 1 }];
+    render(() => <App />);
+    await screen.findByText("Unread B");
+    await waitFor(() => expect(setBadgeCount).toHaveBeenLastCalledWith(2));
+  });
+
+  it("answers an event as the account whose calendar it is on", async () => {
+    twoAccounts();
+    const invite = (accountId: string) => ({
+      ...calendarEvent(`ev-${accountId}`, `Invite to ${accountId}`), account_id: accountId, response_status: "needsAction", can_edit: false,
+      attendees: [{ email: `${accountId}@x.com`, display_name: null, response_status: "needsAction", is_self: true, is_organizer: false }],
+    });
+    cardsByAccount.a = [];
+    cardsByAccount.all = [{ ...card("cal-all", "all", "Agenda"), query: "calendar:7d", card_type: "calendar" }];
+    handlers.get_cached_card_events = () => null;
+    handlers.save_cached_card_events = () => null;
+    handlers.fetch_calendar_events = () => [invite("b")];
+    handlers.rsvp_listed_calendar_event = () => null;
+    render(() => <App />);
+    await screen.findByText("Invite to b");
+    focusCard(2);
+    fireEvent.keyDown(document, { key: "y" });
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith("rsvp_listed_calendar_event", expect.objectContaining({ accountId: "b", eventId: "ev-b" })));
+  });
+
+  it("marks only the cards of an account whose session expired", async () => {
+    twoAccounts();
+    render(() => <App />);
+    await screen.findByText("Mail for B");
+    handlers.sync_threads_incremental = ({ accountId }) => {
+      if (accountId === "b") throw 'Token refresh failed: {"error": "invalid_grant"}';
+      return { modified_threads: [], deleted_thread_ids: [], is_full_sync: false };
+    };
+    window.dispatchEvent(new Event("focus"));
+
+    expect(await screen.findByText("Posta lost access to b@x.com")).toBeInTheDocument();
+    expect(screen.getByRole("region", { name: "Beta email card" })).toHaveClass("stale");
+    expect(screen.getByRole("region", { name: "Alpha email card" })).not.toHaveClass("stale");
+  });
+
+  it("finds whose session expired from an all-inboxes card's error", async () => {
+    twoAccounts();
+    cardsByAccount.a = [];
+    cardsByAccount.b = [];
+    allInboxesCard([]);
+    handlers.fetch_threads_paginated = () => { throw 'b@x.com: Token refresh failed: {"error": "invalid_grant"}'; };
+    render(() => <App />);
+    expect(await screen.findByText("Posta lost access to b@x.com")).toBeInTheDocument();
+  });
+
+  it("chooses the default account without reloading the board, and new emails come from it", async () => {
+    twoAccounts();
+    render(() => <App />);
+    await screen.findByText("Mail for B");
+    invoke.mockClear();
+    fireEvent.click(screen.getByTitle("a@x.com"));
+    fireEvent.click(await screen.findByText("b@x.com"));
+
+    expect(screen.getByTitle("b@x.com")).toBeInTheDocument();
+    expect(invoke).not.toHaveBeenCalledWith("get_cards", undefined);
+    expect(screen.getByText("Mail for A")).toBeInTheDocument();
+    fireEvent.keyDown(document, { key: "c" });
+    expect(await screen.findByPlaceholderText("Write something...")).toHaveValue("\n\n-- \nB sig");
+    expect(localStorage.getItem("defaultAccountId")).toBe("b");
+  });
+
+  it("says which account an email is being sent from", async () => {
+    twoAccounts();
+    handlers.save_draft = () => ({ id: "d1" });
+    render(() => <App />);
+    await screen.findByText("Mail for A");
+    fireEvent.keyDown(document, { key: "c" });
+    fireEvent.input(await screen.findByPlaceholderText("Recipients"), { target: { value: "bo@y.com" } });
+    fireEvent.click(screen.getByRole("button", { name: /^Send/ }));
+    expect(await screen.findByText("Sending message from a@x.com...")).toBeInTheDocument();
+  });
+
+  it("starts with the default account chosen last time", async () => {
+    twoAccounts();
+    localStorage.setItem("defaultAccountId", "b");
+    render(() => <App />);
+    await screen.findByText("Mail for A");
+    expect(screen.getByTitle("b@x.com")).toBeInTheDocument();
+  });
+
+  it("signing out of an account takes its cards, its threads in all-inboxes cards and its drafts", async () => {
+    twoAccounts();
+    handlers.delete_account = () => null;
+    allInboxesCard([{ ...thread("x1", "From A"), account_id: "a" }, { ...thread("x2", "From B"), account_id: "b" }]);
+    localStorage.setItem("defaultAccountId", "b");
+    localStorage.setItem("draft_new_b#1", JSON.stringify({ to: "", cc: "", bcc: "", subject: "secret", body: "", savedAt: 1 }));
+    localStorage.setItem("draft_new_a#1", JSON.stringify({ to: "", cc: "", bcc: "", subject: "keep", body: "", savedAt: 1 }));
+    render(() => <App />);
+    await screen.findByText("From B");
+    handlers.get_accounts = () => [account("a", "a@x.com")];
+    threadsByCard["card-all"] = [{ ...thread("x1", "From A"), account_id: "a" }];
+
+    fireEvent.click(screen.getByText("Sign out"));
+    await answerConfirm(true, /b@x\.com/);
+
+    await waitFor(() => expect(screen.queryByText("Mail for B")).not.toBeInTheDocument());
+    expect(screen.queryByText("From B")).not.toBeInTheDocument();
+    expect(screen.getByText("Mail for A")).toBeInTheDocument();
+    expect(screen.getByText("From A")).toBeInTheDocument();
+    expect(screen.getByTitle("a@x.com")).toBeInTheDocument();
+    expect(localStorage.getItem("draft_new_b#1")).toBeNull();
+    expect(localStorage.getItem("draft_new_a#1")).not.toBeNull();
+  });
+
+  it("adds an account to a board that has cards without offering presets", async () => {
+    handlers.run_oauth_flow = () => account("b", "b@x.com");
+    cardsByAccount.b = [];
+    render(() => <App />);
+    await screen.findByText("Mail for A");
+    fireEvent.click(screen.getByTitle("a@x.com"));
+    fireEvent.click(await screen.findByText("Add account"));
+
+    expect(await screen.findByText("Added b@x.com")).toBeInTheDocument();
+    expect(screen.queryByText("Pick a starting layout")).not.toBeInTheDocument();
+    expect(screen.getByText("Mail for A")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Add a card" }));
+    expect(await screen.findByPlaceholderText("e.g. Clients")).toBeInTheDocument();
+  });
+
+  it("names the cards iCloud brought back for an added account", async () => {
+    handlers.run_oauth_flow = () => account("b", "b@x.com");
+    render(() => <App />);
+    await screen.findByText("Mail for A");
+    fireEvent.click(screen.getByTitle("a@x.com"));
+    fireEvent.click(await screen.findByText("Add account"));
+
+    expect(await screen.findByText("Restored 1 card for b@x.com")).toBeInTheDocument();
+    expect(await screen.findByText("Mail for B")).toBeInTheDocument();
+    expect(screen.getByText("Mail for A")).toBeInTheDocument();
   });
 });

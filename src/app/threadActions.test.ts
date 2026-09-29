@@ -90,30 +90,34 @@ describe("undoLabelChanges", () => {
   const before = (...threads: Thread[]) => new Map(threads.map(t => [t.gmail_thread_id, t]));
 
   it("only unstars the threads the star action starred", () => {
-    const undo = undoLabelChanges(["t1", "t2"], labelChangeFor("star"), before(thread("t1", ["STARRED"]), thread("t2", [])));
-    expect(undo).toEqual([{ threadIds: ["t2"], add: [], remove: ["STARRED"] }]);
+    const undo = undoLabelChanges("a", ["t1", "t2"], labelChangeFor("star"), before(thread("t1", ["STARRED"]), thread("t2", [])));
+    expect(undo).toEqual([{ accountId: "a", threadIds: ["t2"], add: [], remove: ["STARRED"] }]);
   });
 
   it("does not move a thread into the inbox that archive never took out of it", () => {
-    const undo = undoLabelChanges(["t1", "t2"], labelChangeFor("archive"), before(thread("t1", ["STARRED"]), thread("t2", ["INBOX"])));
-    expect(undo).toEqual([{ threadIds: ["t2"], add: ["INBOX"], remove: [] }]);
+    const undo = undoLabelChanges("a", ["t1", "t2"], labelChangeFor("archive"), before(thread("t1", ["STARRED"]), thread("t2", ["INBOX"])));
+    expect(undo).toEqual([{ accountId: "a", threadIds: ["t2"], add: ["INBOX"], remove: [] }]);
   });
 
   it("marks unread again only the threads that were unread", () => {
-    const undo = undoLabelChanges(["t1", "t2"], labelChangeFor("read"), before(thread("t1", ["INBOX"], 2), thread("t2", ["INBOX"])));
-    expect(undo).toEqual([{ threadIds: ["t1"], add: ["UNREAD"], remove: [] }]);
+    const undo = undoLabelChanges("a", ["t1", "t2"], labelChangeFor("read"), before(thread("t1", ["INBOX"], 2), thread("t2", ["INBOX"])));
+    expect(undo).toEqual([{ accountId: "a", threadIds: ["t1"], add: ["UNREAD"], remove: [] }]);
   });
 
   it("groups threads by the change that reverses them", () => {
-    const undo = undoLabelChanges(["t1", "t2", "t3"], labelChangeFor("spam"), before(thread("t1", ["INBOX"]), thread("t2", []), thread("t3", ["INBOX"])));
+    const undo = undoLabelChanges("a", ["t1", "t2", "t3"], labelChangeFor("spam"), before(thread("t1", ["INBOX"]), thread("t2", []), thread("t3", ["INBOX"])));
     expect(undo).toEqual([
-      { threadIds: ["t1", "t3"], add: ["INBOX"], remove: ["SPAM"] },
-      { threadIds: ["t2"], add: [], remove: ["SPAM"] },
+      { accountId: "a", threadIds: ["t1", "t3"], add: ["INBOX"], remove: ["SPAM"] },
+      { accountId: "a", threadIds: ["t2"], add: [], remove: ["SPAM"] },
     ]);
   });
 
+  it("reverses the change in the account it was made in", () => {
+    expect(undoLabelChanges("b", ["t1"], labelChangeFor("trash"), before(thread("t1", ["INBOX"])))[0].accountId).toBe("b");
+  });
+
   it("reverses the whole change for a thread whose labels were not known", () => {
-    expect(undoLabelChanges(["t9"], labelChangeFor("archive"), before())).toEqual([{ threadIds: ["t9"], add: ["INBOX"], remove: [] }]);
+    expect(undoLabelChanges("a", ["t9"], labelChangeFor("archive"), before())).toEqual([{ accountId: "a", threadIds: ["t9"], add: ["INBOX"], remove: [] }]);
   });
 });
 

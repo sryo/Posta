@@ -5,11 +5,6 @@ import { PlusIcon } from "./Icons";
 
 type PreviewCard = { name: string; color?: string | null };
 
-export interface CopySource {
-  email: string;
-  cards: PreviewCard[];
-}
-
 function PresetPreview(props: { cards: PreviewCard[] }) {
   return (
     <Show when={props.cards.length > 0} fallback={<div class="preset-preview empty"><PlusIcon /></div>}>
@@ -26,9 +21,7 @@ const cardNames = (cards: PreviewCard[]) => (cards.length ? cards.map(c => c.nam
 
 export function PresetPicker(props: {
   presets: Record<string, { label: string; description: string; cards: CardPreset[] }>;
-  copySources: CopySource[];
   onPick: (key: string) => void;
-  onCopy: (email: string) => void;
   onDismiss: () => void;
 }) {
   let recommended: HTMLButtonElement | undefined;
@@ -58,15 +51,6 @@ export function PresetPicker(props: {
                 </span>
                 <span class="preset-desc">{preset.description}</span>
                 <span class="preset-cards">{cardNames(preset.cards)}</span>
-              </button>
-            )}
-          </For>
-          <For each={props.copySources}>
-            {(source) => (
-              <button class="preset-option" onClick={() => props.onCopy(source.email)}>
-                <PresetPreview cards={source.cards} />
-                <span class="preset-label">Copy layout from {source.email}</span>
-                <span class="preset-cards">{cardNames(source.cards)}</span>
               </button>
             )}
           </For>

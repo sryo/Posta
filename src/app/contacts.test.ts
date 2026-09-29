@@ -16,7 +16,7 @@ describe("rankContacts", () => {
         { participants: ["ana@x.com", "Me <me@x.com>"], last_message_date: NOW - DAY },
         { participants: ["Ana <ana@x.com>"], last_message_date: NOW - 2 * DAY },
       ],
-      "ME@x.com",
+      ["ME@x.com"],
       NOW,
     );
     expect(ranked.map(c => [c.email, c.frequency])).toEqual([["ana@x.com", 2], ["zed@x.com", 0]]);
@@ -24,19 +24,29 @@ describe("rankContacts", () => {
     expect(ranked[0].lastContacted).toBe(NOW - DAY);
   });
 
+  it("leaves out every signed-in account's own address", () => {
+    const ranked = rankContacts(
+      [google("Work me", "b@x.com")],
+      [{ participants: ["A <a@x.com>", "B <B@x.com>", "Bo <bo@x.com>"], last_message_date: NOW }],
+      ["a@x.com", "b@x.com"],
+      NOW,
+    );
+    expect(ranked.map(c => c.email)).toEqual(["bo@x.com"]);
+  });
+
   it("keeps every contact, not just the top few", () => {
     const contacts = Array.from({ length: 20 }, (_, i) => google(null, `c${i}@x.com`));
-    expect(rankContacts(contacts, [], "me@x.com", NOW)).toHaveLength(20);
+    expect(rankContacts(contacts, [], ["me@x.com"], NOW)).toHaveLength(20);
   });
 
   it("takes a name from a thread when the address book has none", () => {
-    const [c] = rankContacts([google(null, "bo@x.com")], [{ participants: ["Bo Diaz <BO@x.com>"], last_message_date: NOW }], undefined, NOW);
+    const [c] = rankContacts([google(null, "bo@x.com")], [{ participants: ["Bo Diaz <BO@x.com>"], last_message_date: NOW }], [], NOW);
     expect(c).toMatchObject({ email: "bo@x.com", name: "Bo Diaz", frequency: 1 });
   });
 });
 
 describe("matchContacts", () => {
-  const contacts = rankContacts([google("Zed Alpha", "zed@x.com"), google(null, "bo@y.com")], [], undefined, NOW);
+  const contacts = rankContacts([google("Zed Alpha", "zed@x.com"), google(null, "bo@y.com")], [], [], NOW);
 
   it("matches on address or name, case-insensitively", () => {
     expect(matchContacts(contacts, "ALPHA", 5).map(c => c.email)).toEqual(["zed@x.com"]);
@@ -52,7 +62,7 @@ describe("matchContacts", () => {
       { participants: ["Maria Soto <msoto@x.com>"], last_message_date: NOW },
       { participants: ["Tomas <tomas@x.com>"], last_message_date: NOW - DAY },
       { participants: ["Ana Tomasini <ana@x.com>"], last_message_date: NOW - 2 * DAY },
-    ], undefined, NOW);
+    ], [], NOW);
     expect(matchContacts(ranked, "to", 5).map(c => c.email)).toEqual(["tomas@x.com", "ana@x.com", "msoto@x.com"]);
   });
 
@@ -60,7 +70,7 @@ describe("matchContacts", () => {
     const ranked = rankContacts([], [
       { participants: ["Juana Soto <jsoto@x.com>"], last_message_date: NOW },
       { participants: ["Ana Sosa <asosa@x.com>"], last_message_date: NOW - DAY },
-    ], undefined, NOW);
+    ], [], NOW);
     expect(matchContacts(ranked, "ana so", 5).map(c => c.email)).toEqual(["asosa@x.com", "jsoto@x.com"]);
   });
 
@@ -69,7 +79,7 @@ describe("matchContacts", () => {
       { participants: ["Acme <no-reply@acme.com>"], last_message_date: NOW },
       { participants: ["noreply@alerts.acme.com"], last_message_date: NOW },
       { participants: ["Ada <ada@acme.com>"], last_message_date: NOW - 5 * DAY },
-    ], undefined, NOW);
+    ], [], NOW);
     expect(matchContacts(ranked, "a", 5).map(c => c.email)).toEqual(["ada@acme.com", "no-reply@acme.com", "noreply@alerts.acme.com"]);
     expect(matchContacts(ranked, "", 1).map(c => c.email)).toEqual(["ada@acme.com"]);
   });

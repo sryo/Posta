@@ -12,21 +12,21 @@ export interface RecentContact {
 const DAY_MS = 1000 * 60 * 60 * 24;
 
 // Everyone the user could write to: Google contacts plus the participants of
-// loaded threads, best first. Frequent and recent correspondents rank high;
+// loaded threads, best first, leaving out the user's own accounts. Frequent and recent correspondents rank high;
 // a Google contact never seen in a thread gets a small boost over nothing.
 export function rankContacts(
   googleContacts: Contact[],
   threads: { participants: string[]; last_message_date: number }[],
-  accountEmail: string | undefined,
+  ownEmails: string[],
   now: number,
 ): RecentContact[] {
-  const self = accountEmail?.toLowerCase();
+  const own = new Set(ownEmails.map(e => e.toLowerCase()));
   const byEmail = new Map<string, RecentContact>();
 
   for (const contact of googleContacts) {
     for (const email of contact.email_addresses) {
       const key = email.toLowerCase();
-      if (key === self || byEmail.has(key)) continue;
+      if (own.has(key) || byEmail.has(key)) continue;
       byEmail.set(key, { email, name: contact.display_name || undefined, lastContacted: 0, frequency: 0, fromGoogle: true });
     }
   }
@@ -35,7 +35,7 @@ export function rankContacts(
     for (const participant of thread.participants) {
       const { email, name } = parseContact(participant);
       const key = email.toLowerCase();
-      if (!key || key === self) continue;
+      if (!key || own.has(key)) continue;
       const existing = byEmail.get(key);
       if (!existing) {
         byEmail.set(key, { email, name, lastContacted: thread.last_message_date, frequency: 1, fromGoogle: false });
