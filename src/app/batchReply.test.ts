@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { FullMessage } from "../api/tauri";
 import { batchReplyEntry } from "./batchReply";
+import { formatEmailDate } from "../utils";
 
 const msg = (id: string, headers: Record<string, string>): FullMessage => ({
   id, threadId: "t", snippet: `snippet ${id}`, internalDate: "0",
@@ -24,6 +25,13 @@ describe("batchReplyEntry", () => {
   it("writes back to the recipients when the user sent every message", () => {
     const entry = batchReplyEntry("t", [msg("1", { From: "me@x.com", To: '"Doe, Jo" <jo@x.com>, me@x.com, bo@x.com' })], "me@x.com");
     expect(entry?.to).toBe("jo@x.com, bo@x.com");
+  });
+
+  it("dates the message as the thread view does, in words rather than digits", () => {
+    const sent = Date.UTC(2025, 2, 14, 15, 30);
+    const entry = batchReplyEntry("t", [{ ...msg("1", { From: "ana@x.com" }), internalDate: String(sent) }], "me@x.com");
+    expect(entry?.date).toBe(formatEmailDate(new Date(sent).toISOString()));
+    expect(entry?.date).not.toMatch(/\d+\/\d+\/\d+/);
   });
 
   it("has nothing to answer in an empty thread", () => {
