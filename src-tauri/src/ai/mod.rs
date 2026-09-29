@@ -4,6 +4,15 @@ use serde_json::json;
 
 const API_ENDPOINT: &str = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent";
 
+// One connection pool for every suggestion request; without a timeout a hung
+// Gemini request blocks suggest_replies forever
+static HTTP_CLIENT: std::sync::LazyLock<reqwest::Client> = std::sync::LazyLock::new(|| {
+    reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(30))
+        .build()
+        .unwrap_or_else(|_| reqwest::Client::new())
+});
+
 pub struct GeminiClient {
     client: reqwest::Client,
     api_key: String,
@@ -36,13 +45,8 @@ struct Part {
 
 impl GeminiClient {
     pub fn new(api_key: String) -> Self {
-        // Without a timeout a hung Gemini request blocks suggest_replies forever
-        let client = reqwest::Client::builder()
-            .timeout(std::time::Duration::from_secs(30))
-            .build()
-            .unwrap_or_else(|_| reqwest::Client::new());
         Self {
-            client,
+            client: HTTP_CLIENT.clone(),
             api_key,
             endpoint: API_ENDPOINT.to_string(),
         }
@@ -179,6 +183,18 @@ mod tests {
             api_key: "SECRET-KEY-123".into(),
             endpoint: endpoint.into(),
         }
+    }
+
+    #[tokio::test]
+    async fn suggestions_reuse_one_connection() {
+        let reply = serde_json::json!({ "candidates": [{ "content": { "parts": [{ "text": "[\"Sure\"]" }] } }] }).to_string();
+        let server = crate::calendar::stub_server::StubServer::start(move |_, _| (200, reply.clone())).await;
+        for _ in 0..3 {
+            let client = GeminiClient { endpoint: format!("{}/generate", server.base), ..GeminiClient::new("key".into()) };
+            assert_eq!(client.suggest_replies("ctx", "me@x.com").await.unwrap(), vec!["Sure"]);
+        }
+        assert_eq!(server.requests().len(), 3);
+        assert_eq!(server.connections(), 1);
     }
 
     #[tokio::test]
