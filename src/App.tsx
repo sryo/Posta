@@ -119,6 +119,8 @@ import { EventView } from "./components/EventView";
 import { ActionsWheel } from "./components/ActionsWheel";
 import { CardForm } from "./components/CardForm";
 import { Dialog } from "./components/Dialog";
+import { Toasts } from "./components/Toasts";
+import { createToasts, type ToastAction } from "./app/toasts";
 import { safeGetItem, safeSetItem, safeRemoveItem, safeGetJSON, safeSetJSON } from "./shared/storage";
 import { BG_COLORS, type ActionSettings, type CardColor, type GroupBy } from "./shared/constants";
 import { createUndoableSend } from "./app/undoableSend";
@@ -265,18 +267,11 @@ function App() {
     reversals: LabelReversal[];
     timestamp: number;
   }
+  // The latest thread action, which a refresh landing just after it must not undo
   const [lastAction, setLastAction] = createSignal<UndoableAction | null>(null);
-  const [toast, setToast] = createSignal<{
-    message: string | null;
-    action?: { label: string; run: () => void };
-    visible: boolean;
-    closing: boolean;
-    key: number;
-  } | null>(null);
-  let toastTimeoutId: number | undefined;
-  let toastHideTimeoutId: number | undefined;
-  // The closed draft the toast's Discard would delete
-  let discardToastDraftKey: string | null = null;
+  const toasts = createToasts();
+  // Tags the toast offering to discard a closed draft
+  const discardDraftTag = (key: string) => `discard-draft:${key}`;
 
   // Undo send state
   const undoableSend = createUndoableSend<PendingSend>({
@@ -1444,10 +1439,10 @@ function App() {
       return;
     }
 
-    // z to undo last action (when toast is visible) — works even with overlays open
-    if (e.key === 'z' && toast()?.visible && lastAction()) {
+    // z undoes what the toast offers to undo, even with overlays open
+    if (e.key === 'z' && toasts.hasUndo()) {
       e.preventDefault();
-      undoLastAction();
+      toasts.undo();
       return;
     }
 
@@ -2069,15 +2064,18 @@ function App() {
           showToast(`${message} without ${attachmentNames}`, reopen);
           return;
         }
-        showToast(message, {
-          label: "Discard",
-          run: () => {
-            // A reply opened again since continues this draft
-            if (composing() && !closingCompose() && composeDraftKey === key) return;
-            if (accountId) drafts.discard(key, accountId);
+        toasts.show({
+          message,
+          action: {
+            label: "Discard",
+            run: () => {
+              // A reply opened again since continues this draft
+              if (composing() && !closingCompose() && composeDraftKey === key) return;
+              if (accountId) drafts.discard(key, accountId);
+            },
           },
+          tag: discardDraftTag(key),
         });
-        discardToastDraftKey = key;
       };
       if (storedHere) {
         offerDiscard("Draft saved");
@@ -2152,7 +2150,7 @@ function App() {
     // A draft being continued is the user's own text
     composeEdited = !!(init.draftKey || saved);
     const continued = init.draftKey || saved ? drafts.load(composeDraftKey) : null;
-    if (composeDraftKey === discardToastDraftKey && toast()?.visible) hideToast();
+    toasts.dismissTag(discardDraftTag(composeDraftKey));
     const lostAttachments = init.attachments ? [] : continued?.attachmentNames ?? [];
     if (lostAttachments.length > 0) showToast(`Attach again: ${lostAttachments.join(", ")}`);
     const fields = saved?.draft ?? init;
@@ -3806,43 +3804,12 @@ function App() {
     }
   }
 
-  function showToast(message?: string, action?: { label: string; run: () => void }) {
-    discardToastDraftKey = null;
-    clearTimeout(toastTimeoutId);
-    // Cancel a pending hide so it can't null out this newer toast
-    clearTimeout(toastHideTimeoutId);
-    if (message) {
-      // Plain message toast: drop any pending undo so `z` (or the Undo
-      // button) can't replay an older, unrelated action. The action-undo
-      // toast path calls showToast() with no message after setLastAction.
-      setLastAction(null);
-    }
-    setToast(prev => ({
-      message: message || null,
-      action,
-      visible: true,
-      closing: false,
-      key: (prev?.key ?? 0) + 1, // Increment key to force remount and restart animation
-    }));
-    toastTimeoutId = window.setTimeout(() => {
-      hideToast();
-    }, 5000);
+  function showToast(message: string, action?: ToastAction) {
+    toasts.show({ message, action });
   }
 
-  function hideToast() {
-    setToast(t => t ? { ...t, closing: true } : null);
-    toastHideTimeoutId = window.setTimeout(() => {
-      setToast(null);
-      setLastAction(null); // Expire undo when toast closes
-    }, 200);
-  }
-
-  async function undoLastAction() {
-    const action = lastAction();
-    if (!action) return;
-
-    hideToast();
-
+  async function undoThreadAction(action: UndoableAction) {
+    if (lastAction() === action) setLastAction(null);
     try {
       await Promise.all(action.reversals.map(r => modifyThreads(action.accountId, r.threadIds, r.add, r.remove)));
       // Refresh every card the optimistic update touched, not just the
@@ -3857,7 +3824,6 @@ function App() {
       console.error("Failed to undo action", e);
       setError(`Couldn't undo: ${e}`);
     }
-    setLastAction(null);
   }
 
   // silent: a change the user didn't ask for directly (marking a thread
@@ -3865,16 +3831,6 @@ function App() {
   async function handleThreadAction(action: string, threadIds: string[], cardId: string, { silent = false } = {}) {
     const account = selectedAccount();
     if (!account) return;
-
-    // Confirm destructive bulk actions
-    if (threadIds.length > 1 && (action === 'archive' || action === 'trash' || action === 'spam')) {
-      const actionText = action === 'trash' ? 'delete' : action === 'spam' ? 'move to spam' : 'archive';
-      const verb = actionText.charAt(0).toUpperCase() + actionText.slice(1);
-      if (!(await askConfirm(`${verb} ${threadIds.length} threads?`, verb))) {
-        return;
-      }
-      if (selectedAccount()?.id !== account.id) return;
-    }
 
     const { add: addLabels, remove: removeLabels } = labelChangeFor(action);
 
@@ -3915,8 +3871,7 @@ function App() {
           .catch(e => console.warn("Failed to update thread cache:", e));
       }
       if (silent) return;
-      // Store undo state and show toast
-      setLastAction({
+      const done: UndoableAction = {
         accountId: account.id,
         action,
         threadIds,
@@ -3924,8 +3879,9 @@ function App() {
         cardIds: affectedCardIds,
         reversals: undoLabelChanges(threadIds, { add: addLabels, remove: removeLabels }, labelsBefore),
         timestamp: Date.now()
-      });
-      showToast();
+      };
+      setLastAction(done);
+      toasts.show({ message: actionLabel(action, threadIds.length), undo: () => undoThreadAction(done) });
     } catch (e) {
       console.error("Failed to modify threads", e);
       // Roll back the optimistic update; the cache was never written. After
@@ -5751,41 +5707,20 @@ function App() {
         })()}
       </Show>
 
-      {/* Undo Toast - For with key forces remount to restart progress bar animation */}
-      <For each={toast()?.visible ? [toast()!.key] : []}>
-        {() => (
-          <div class={`undo-toast ${toast()?.closing ? 'closing' : ''}`} role="status">
-            <div class="toast-progress"></div>
+      <Toasts toasts={toasts}>
+        {/* Send Toast with Undo */}
+        <Show when={undoableSend.toastVisible()}>
+          <div class={`undo-toast send-toast ${undoableSend.toastClosing() ? 'closing' : ''}`}>
+            <div class="toast-progress send-progress" style={{ width: `${undoableSend.progress()}%` }}></div>
             <div class="toast-content">
-              <span class="toast-message">{toast()?.message || (lastAction() ? actionLabel(lastAction()!.action, lastAction()!.threadIds.length) : '')}</span>
-              <Show when={!toast()?.message && lastAction()}>
-                <button class="toast-undo-btn" onClick={undoLastAction}>Undo <span class="shortcut-hint">z</span></button>
+              <span class="toast-message">Sending message...</span>
+              <Show when={undoableSend.pending()}>
+                <button class="toast-undo-btn" onClick={undoSend}>Undo</button>
               </Show>
-              <Show when={toast()?.action}>
-                {(action) => (
-                  <button class="toast-undo-btn" onClick={() => { hideToast(); action().run(); }}>{action().label}</button>
-                )}
-              </Show>
-              <button class="toast-close-btn" onClick={hideToast} title="Dismiss">
-                <CloseIcon />
-              </button>
             </div>
           </div>
-        )}
-      </For>
-
-      {/* Send Toast with Undo */}
-      <Show when={undoableSend.toastVisible()}>
-        <div class={`undo-toast send-toast ${undoableSend.toastClosing() ? 'closing' : ''}`} role="status">
-          <div class="toast-progress send-progress" style={{ width: `${undoableSend.progress()}%` }}></div>
-          <div class="toast-content">
-            <span class="toast-message">Sending message...</span>
-            <Show when={undoableSend.pending()}>
-              <button class="toast-undo-btn" onClick={undoSend}>Undo</button>
-            </Show>
-          </div>
-        </div>
-      </Show>
+        </Show>
+      </Toasts>
 
       <ConfirmDialog />
     </div >

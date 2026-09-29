@@ -56,7 +56,7 @@ export const ActionsWheel = (props: {
   // Deletes an event the user can edit; without it the wheel offers no delete
   onDeleteEvent?: (event: GoogleCalendarEvent) => void;
   onRsvped?: (eventId: string, status: string) => void;
-  showToast: (message?: string) => void;
+  showToast: (message: string) => void;
 }) => {
   const containerRef = (el: HTMLDivElement) => {
     // Simple animation trigger

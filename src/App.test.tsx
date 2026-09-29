@@ -2579,7 +2579,7 @@ describe("App layout removal", () => {
     expect(screen.getByText("Mail for A")).toBeInTheDocument();
   });
 
-  it("archives several threads once confirmed, and none when cancelled", async () => {
+  it("archives several threads without asking, offering Undo instead", async () => {
     localStorage.setItem("actionSettings", JSON.stringify({ archive: true }));
     threadsByCard["card-a"] = [{ ...thread("t-1", "One"), labels: ["INBOX"] }, { ...thread("t-2", "Two"), labels: ["INBOX"] }];
     handlers.modify_threads = () => null;
@@ -2591,13 +2591,33 @@ describe("App layout removal", () => {
     fireEvent.keyDown(document, { key: "x" });
 
     fireEvent.click(await screen.findByTitle("Archive"));
-    await answerConfirm(false, /Archive 2 threads/);
-    await new Promise(r => setTimeout(r, 20));
-    expect(invoke).not.toHaveBeenCalledWith("modify_threads", expect.anything());
-
-    fireEvent.click(await screen.findByTitle("Archive"));
-    await answerConfirm(true);
     await waitFor(() => expect(invoke).toHaveBeenCalledWith("modify_threads", expect.objectContaining({ threadIds: ["t-1", "t-2"] })));
+    expect(screen.queryByRole("alertdialog")).toBeNull();
+    expect(await screen.findByText("Archived 2 threads")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Undo/ })).toBeInTheDocument();
+  });
+
+  it("keeps an action's Undo when a message comes in meanwhile, and shows the message after it", async () => {
+    threadsByCard["card-a"] = [{ ...thread("t-a", "Mail for A"), labels: ["INBOX"] }];
+    handlers.modify_threads = () => null;
+    handlers.save_draft = () => ({ id: "d1" });
+    render(() => <App />);
+    await screen.findByText("Mail for A");
+    fireEvent.keyDown(document, { key: "l" });
+    fireEvent.keyDown(document, { key: "a" });
+    await screen.findByText("Archived 1 thread");
+
+    fireEvent.keyDown(document, { key: "c" });
+    fireEvent.input(await screen.findByPlaceholderText("Subject"), { target: { value: "Draft" } });
+    fireEvent.keyDown(document, { key: "Escape" });
+    await new Promise(r => setTimeout(r, 50));
+    expect(screen.getByText("Archived 1 thread")).toBeInTheDocument();
+    expect(screen.queryByText("Draft saved")).not.toBeInTheDocument();
+
+    invoke.mockClear();
+    fireEvent.keyDown(document, { key: "z" });
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith("modify_threads", expect.objectContaining({ threadIds: ["t-a"], addLabels: ["INBOX"] })));
+    expect(await screen.findByText("Draft saved")).toBeInTheDocument();
   });
 
   it("asks to sign out as a destructive question, focused on keeping the account", async () => {

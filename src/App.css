@@ -21,6 +21,12 @@
     --danger: #e53935;
     --danger-bg: rgba(229, 57, 53, 0.1);
     --toast-bg: #323232;
+    --toast-text: #fff;
+    --toast-progress: #3d3d3d;
+    --toast-action: #8ab4f8;
+    --toast-action-hover: rgba(138, 180, 248, 0.15);
+    --toast-muted: #999;
+    --toast-close-hover: rgba(255, 255, 255, 0.1);
 
     /* Z-index scale - hierarchical layers
        Low (within cards): 10-40
@@ -90,7 +96,14 @@
         --shadow: rgba(0, 0, 0, 0.3);
         --danger: #ff6b6b;
         --danger-bg: rgba(255, 107, 107, 0.15);
-        --toast-bg: #424242;
+        /* A light toast stands out from the dark page */
+        --toast-bg: #ececec;
+        --toast-text: #1e1e1e;
+        --toast-progress: #dcdcdc;
+        --toast-action: #1a5fd0;
+        --toast-action-hover: rgba(26, 95, 208, 0.12);
+        --toast-muted: #666;
+        --toast-close-hover: rgba(0, 0, 0, 0.08);
     }
 }
 
@@ -4191,7 +4204,7 @@ button:disabled:hover {
     left: 50%;
     transform: translateX(-50%);
     background: var(--toast-bg);
-    color: #fff;
+    color: var(--toast-text);
     border-radius: var(--radius-lg);
     box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
     z-index: var(--z-toast);
@@ -4205,7 +4218,7 @@ button:disabled:hover {
     left: 0;
     bottom: 0;
     width: 0%;
-    background: #3d3d3d;
+    background: var(--toast-progress);
     animation: toast-progress-fill 5s linear forwards;
     z-index: 0;
 }
@@ -4235,6 +4248,10 @@ button:disabled:hover {
 
 .undo-toast.closing .toast-progress {
     animation: none;
+}
+
+.undo-toast.paused .toast-progress {
+    animation-play-state: paused;
 }
 
 /* Send toast progress - uses inline width instead of animation */
@@ -4274,7 +4291,7 @@ button:disabled:hover {
 .toast-undo-btn {
     background: transparent;
     border: none;
-    color: #8ab4f8;
+    color: var(--toast-action);
     font-size: var(--font-size-lg);
     font-weight: 600;
     cursor: pointer;
@@ -4284,13 +4301,13 @@ button:disabled:hover {
 }
 
 .toast-undo-btn:hover {
-    background: rgba(138, 180, 248, 0.15);
+    background: var(--toast-action-hover);
 }
 
 .toast-close-btn {
     background: transparent;
     border: none;
-    color: #999;
+    color: var(--toast-muted);
     cursor: pointer;
     padding: var(--space-sm);
     display: flex;
@@ -4301,8 +4318,8 @@ button:disabled:hover {
 }
 
 .toast-close-btn:hover {
-    background: rgba(255, 255, 255, 0.1);
-    color: #fff;
+    background: var(--toast-close-hover);
+    color: var(--toast-text);
 }
 
 /* Batch Reply Panel - Uses thread-overlay and thread-floating-bar */

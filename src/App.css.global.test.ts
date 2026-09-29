@@ -33,3 +33,25 @@ describe("confirm dialog", () => {
     expect(decl.get("color")).toBe("#fff");
   });
 });
+
+describe("toasts", () => {
+  const DARK = "@media (prefers-color-scheme: dark)";
+
+  it("take their colours from toast tokens", () => {
+    expect(declarationsOf(".undo-toast").get("color")).toBe("var(--toast-text)");
+    expect(declarationsOf(".toast-progress").get("background")).toBe("var(--toast-progress)");
+    expect(declarationsOf(".toast-undo-btn").get("color")).toBe("var(--toast-action)");
+    expect(declarationsOf(".toast-close-btn").get("color")).toBe("var(--toast-muted)");
+  });
+
+  it("are light in dark mode, so they stand out from the dark page", () => {
+    const dark = declarationsOf(":root", DARK);
+    const lightness = (hex: string) => parseInt(hex.slice(1, 3), 16);
+    expect(lightness(dark.get("--toast-bg")!)).toBeGreaterThan(0xd0);
+    expect(lightness(dark.get("--toast-text")!)).toBeLessThan(0x40);
+  });
+
+  it("hold their progress fill while paused", () => {
+    expect(declarationsOf(".undo-toast.paused .toast-progress").get("animation-play-state")).toBe("paused");
+  });
+});
