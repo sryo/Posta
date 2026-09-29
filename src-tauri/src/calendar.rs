@@ -225,6 +225,8 @@ struct EventDateTime {
     #[serde(rename = "dateTime")]
     date_time: Option<String>,
     date: Option<String>,
+    #[serde(rename = "timeZone", default)]
+    time_zone: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -812,6 +814,18 @@ impl CalendarClient {
         event_id: &str,
         fields: EventFields,
     ) -> Result<CalendarEvent, String> {
+        self.patch_event(calendar_id, event_id, fields, None).await
+    }
+
+    /// `series_zone` is the zone a whole series expands in, which a new
+    /// start of the series has to name
+    async fn patch_event(
+        &self,
+        calendar_id: &str,
+        event_id: &str,
+        fields: EventFields,
+        series_zone: Option<&str>,
+    ) -> Result<CalendarEvent, String> {
         let (calendar, existing) =
             futures::join!(self.calendar_info(calendar_id), self.event_people(calendar_id, event_id));
         // The current guest list is only needed when the form lists guests,
@@ -821,7 +835,7 @@ impl CalendarClient {
             Err(e) if fields.attendees.as_ref().is_some_and(|a| !a.is_empty()) => return Err(e),
             Err(_) => (Vec::new(), false),
         };
-        let time_zone = recurrence_time_zone(&fields, calendar.as_ref());
+        let time_zone = series_zone.or_else(|| recurrence_time_zone(&fields, calendar.as_ref()));
         let body = build_event_request(fields, time_zone, &existing_attendees)?;
         let url = format!(
             "{}/calendars/{}/events/{}?sendUpdates={}{}",
@@ -861,7 +875,10 @@ impl CalendarClient {
             let length = fields.end_time - fields.start_time;
             fields.start_time = split.series_start.0 + moved;
             fields.end_time = fields.start_time + length;
-            return self.update_event(calendar_id, &split.series.id, fields).await;
+            let calendar = self.calendar_info(calendar_id).await;
+            let zone = split.series.start.as_ref().and_then(|s| s.time_zone.clone());
+            let zone = zone.or_else(|| calendar.and_then(|c| c.timezone));
+            return self.patch_event(calendar_id, &split.series.id, fields, zone.as_deref()).await;
         }
         let rules = split.series.recurrence.clone().unwrap_or_default();
         self.end_series_before(calendar_id, &split.series.id, &rules, split.original_start).await?;
@@ -2503,7 +2520,7 @@ mod tests {
                     "originalStartTime": { "dateTime": "2024-01-10T10:00:00Z" },
                 }),
                 "GET" if target.contains("/events/s1?fields=id,recurringEventId") => serde_json::json!({
-                    "id": "s1", "start": { "dateTime": "2024-01-01T10:00:00Z" }, "recurrence": [rule],
+                    "id": "s1", "start": { "dateTime": "2024-01-01T10:00:00Z", "timeZone": "Europe/Madrid" }, "recurrence": [rule],
                 }),
                 "GET" => serde_json::json!({ "id": "e", "creator": { "self": true } }),
                 "DELETE" => return (204, String::new()),
@@ -2538,6 +2555,9 @@ mod tests {
         assert_eq!((method.as_str(), target.as_str()), ("PATCH", "/calendars/cal/events/s1?sendUpdates=all"));
         assert_eq!(body["start"]["dateTime"], "2024-01-01T11:00:00+00:00");
         assert_eq!(body["end"]["dateTime"], "2024-01-01T11:30:00+00:00");
+        // Google expands a series in its own zone and needs it with a new start
+        assert_eq!(body["start"]["timeZone"], "Europe/Madrid");
+        assert_eq!(body["end"]["timeZone"], "Europe/Madrid");
         assert!(body.get("recurrence").is_none(), "{body}");
     }
 
