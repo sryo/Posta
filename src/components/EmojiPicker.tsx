@@ -114,7 +114,11 @@ const FREQUENT_EMOJIS = [
 interface EmojiPickerProps {
   onSelect: (emoji: string) => void;
   onClose: () => void;
+  // Viewport position; the picker then floats above everything that clips it
+  at?: { top: number; left: number };
 }
+
+export const EMOJI_PICKER_SIZE = { width: 320, height: 360 };
 
 export const EmojiPicker = (props: EmojiPickerProps) => {
   const [search, setSearch] = createSignal("");
@@ -180,7 +184,11 @@ export const EmojiPicker = (props: EmojiPickerProps) => {
   };
 
   return (
-    <div class="emoji-picker" ref={containerRef}>
+    <div
+      class={props.at ? "emoji-picker floating" : "emoji-picker"}
+      style={props.at ? { top: `${props.at.top}px`, left: `${props.at.left}px` } : undefined}
+      ref={containerRef}
+    >
       <div class="emoji-picker-header">
         <input
           type="text"

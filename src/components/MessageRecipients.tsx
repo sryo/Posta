@@ -39,7 +39,19 @@ export const MessageRecipients = (props: { to?: string; cc?: string; currentUser
                 <>
                   <dt>{row.label}</dt>
                   <dd>
-                    <For each={row.addresses}>{(address) => <span>{address}</span>}</For>
+                    <For each={row.addresses}>
+                      {(address) => {
+                        const name = extractName(address);
+                        return (
+                          <span class="message-recipient">
+                            <span class="message-recipient-name">{name ?? extractEmail(address)}</span>
+                            <Show when={name}>
+                              {" "}<span class="message-recipient-address">{extractEmail(address)}</span>
+                            </Show>
+                          </span>
+                        );
+                      }}
+                    </For>
                   </dd>
                 </>
               )}

@@ -22,7 +22,7 @@ import { CloseButton } from "./ComposeAtoms";
 import { ComposeForm } from "./ComposeForm";
 import { CreateEventForm } from "./CreateEventForm";
 import { MessageActionsWheel } from "./MessageActionsWheel";
-import { COLOR_HEX } from "../shared/constants";
+import { CardPill } from "./CardPill";
 import { organizerName } from "../app/people";
 import { createCloseAfterAnimation } from "../shared/closeAfterAnimation";
 import { isTypingTarget, hasCommandModifier } from "../shared/keyboard";
@@ -48,6 +48,8 @@ export const EventView = (props: {
   onCloseCalendarDrawer: () => void;
   // Signed-in account's email; decides whether the user owns, hosts or is invited to the event
   accountEmail: string;
+  // A name the user's mail gives an address, for an organizer the guest list doesn't name
+  nameForEmail?: (email: string) => string | undefined;
   calendars: { id: string; name: string; is_primary: boolean; access_role: string }[];
   calendarsLoading: boolean;
   onMoveToCalendar: (calendarId: string) => void;
@@ -124,18 +126,7 @@ export const EventView = (props: {
             </Show>
           </div>
           <Show when={props.card}>
-            <div
-              class="thread-bar-card"
-              style={props.card?.color ? {
-                background: COLOR_HEX[props.card.color] + '20',
-                color: COLOR_HEX[props.card.color]
-              } : {
-                background: 'var(--bg-tertiary)',
-                color: 'var(--text-secondary)'
-              }}
-            >
-              {props.card?.name}
-            </div>
+            <CardPill color={props.card?.color}>{props.card?.name}</CardPill>
           </Show>
         </div>
 
@@ -246,7 +237,7 @@ export const EventView = (props: {
                 <div class="message-card message-focused">
                   {/* Event Header */}
                   <div class="message-header">
-                    <div class="message-sender" title={props.event!.organizer ?? undefined}>{organizerName(props.event!) || 'Unknown organizer'}</div>
+                    <div class="message-sender" title={props.event!.organizer ?? undefined}>{organizerName(props.event!, props.accountEmail, props.nameForEmail) || 'Unknown organizer'}</div>
                     <div class="message-date">{formatCalendarEventDate(props.event!.start_time, props.event!.end_time, props.event!.all_day)}</div>
                   </div>
 

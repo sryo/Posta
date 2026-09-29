@@ -20,6 +20,15 @@ export function cardSpecs(cards: Card[]): CardSpec[] {
   return cards.map(({ account_id, name, query, color, group_by, card_type }) => ({ account_id, name, query, color, group_by, card_type }));
 }
 
+// A newly added account's copy of another account's mail cards. Calendar
+// cards and label queries name that account's own calendars and labels, so
+// they stay behind.
+export function copyableCards(cards: Card[], fromAccountId: string, toAccountId: string): CardSpec[] {
+  return cards
+    .filter(c => c.account_id === fromAccountId && c.card_type !== "calendar" && !/(^|\s|-)label:/i.test(c.query))
+    .map(({ name, query, color, group_by, card_type }) => ({ account_id: toAccountId, name, query, color, group_by, card_type }));
+}
+
 // The account to put a card back in: its own while signed in (or all of
 // them), else `fallback`
 export function specAccountId(spec: Pick<CardSpec, "account_id">, signedIn: string[], fallback: string): string {

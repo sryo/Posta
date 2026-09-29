@@ -37,6 +37,14 @@ describe("AttachmentLightbox", () => {
     expect(loadData).not.toHaveBeenCalled();
   });
 
+  it("says it couldn't show an image the web view can't decode, such as HEIC outside Safari", () => {
+    renderLightbox();
+    const dialog = screen.getByRole("dialog", { name: "hotel.png" });
+    fireEvent.error(dialog.querySelector("img")!);
+    expect(dialog.querySelector("img")).toBeNull();
+    expect(dialog).toHaveTextContent("Couldn't load a preview");
+  });
+
   it("loads a PDF and shows it in a frame", async () => {
     const { loadData } = renderLightbox(1);
     await waitFor(() => expect(screen.getByTitle("agenda.pdf").getAttribute("src")).toBe("blob:pdf"));

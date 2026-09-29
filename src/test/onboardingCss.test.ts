@@ -21,6 +21,13 @@ describe("preset picker styles", () => {
   it("draws a bar for cards without a colour, such as calendar cards", () => {
     expect(declarations(".preset-card.none").get("background")).toBeTruthy();
   });
+
+  it("narrows the bars to fit a preview with many cards instead of spilling out of the tile", () => {
+    const bar = declarations(".preset-card");
+    expect(bar.get("flex-shrink")).not.toBe("0");
+    expect(bar.get("min-width")).toBe("0");
+    expect(declarations(".preset-preview").get("min-width")).toBe("0");
+  });
 });
 
 describe("settings section toggles", () => {

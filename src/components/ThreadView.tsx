@@ -52,7 +52,7 @@ import { isPreviewable } from "../app/attachments";
 import { isForwardSubject } from "../app/quotedHistory";
 import { isMailingList, unsubscribeMethod, type UnsubscribeMethod } from "../app/unsubscribe";
 import { personName } from "../app/people";
-import { COLOR_HEX } from "../shared/constants";
+import { CardPill } from "./CardPill";
 import type { InlineComposeProps } from "./types";
 import { findHeader, lastMessageFromOthers, nearestShownIndex, normalizeMessageId, reactionsShownAsChips, stepShownIndex } from "../app/messages";
 import { useLayer } from "../app/layers";
@@ -433,19 +433,10 @@ export const ThreadView = (props: {
             </Show>
           </div>
           <Show when={props.card}>
-            <div
-              class="thread-bar-card"
-              style={props.card?.color ? {
-                background: COLOR_HEX[props.card.color] + '20',
-                color: COLOR_HEX[props.card.color]
-              } : {
-                background: 'var(--bg-tertiary)',
-                color: 'var(--text-secondary)'
-              }}
-            >
+            <CardPill color={props.card?.color}>
               {props.card?.name}
               <Show when={props.position}>{(p) => ` · ${p().index} of ${p().total}`}</Show>
-            </div>
+            </CardPill>
           </Show>
           <Show when={props.position && props.onStepThread}>
             <div class="thread-bar-stepper">

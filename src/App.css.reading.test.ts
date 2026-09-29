@@ -28,6 +28,37 @@ describe("reading view stacking", () => {
   });
 });
 
+describe("floating emoji picker", () => {
+  it("sits at its viewport position above the open thread and an inline reply", () => {
+    document.body.innerHTML = '<div class="thread-overlay" id="thread"></div><div class="emoji-picker floating" id="picker"></div>';
+    const picker = cascadedDeclarations(rules, document.getElementById("picker")!);
+    expect(picker.get("position")).toBe("fixed");
+    expect(picker.get("margin-top")).toBe("0");
+    const z = (id: string) => zIndex(cascadedDeclarations(rules, document.getElementById(id)!).get("z-index"));
+    expect(z("picker")).toBeGreaterThan(z("thread"));
+  });
+});
+
+describe("thread beside a side panel", () => {
+  it("moves over to clear the compose or event panel, as far as the window allows", () => {
+    document.body.innerHTML = '<div class="app side-panel-open"><div class="thread-overlay" id="thread"></div></div>';
+    // A border, not padding: the floating toolbar is positioned in the padding box
+    const border = cascadedDeclarations(rules, document.getElementById("thread")!).get("border-left");
+    expect(border).toMatch(/^clamp\(0px, .*, 528px\) solid var\(--app-bg, var\(--bg-primary\)\)$/);
+  });
+});
+
+describe("thread load error", () => {
+  it("sits in the thread's column, as wide as its toolbar, not across the window", () => {
+    document.body.innerHTML = '<div class="thread-overlay"><div class="thread-floating-bar" id="bar"></div><div class="thread-content"><div class="error-message" id="error"></div></div></div>';
+    const error = cascadedDeclarations(rules, document.getElementById("error")!);
+    const bar = cascadedDeclarations(rules, document.getElementById("bar")!);
+    expect(error.get("max-width")).toBe(bar.get("width"));
+    expect(error.get("margin")).toBe("0 auto");
+    expect(error.get("box-sizing")).toBe("border-box");
+  });
+});
+
 describe("attachment lightbox", () => {
   it("covers the thread view and the label drawer", () => {
     document.body.innerHTML = '<div class="thread-overlay" id="thread"></div><div class="label-drawer" id="drawer"></div><div class="lightbox" id="lightbox"></div>';

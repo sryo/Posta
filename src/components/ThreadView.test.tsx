@@ -179,17 +179,17 @@ describe("ThreadView keyboard shortcuts", () => {
   it("closes only the emoji picker on Escape", () => {
     const { container } = renderThread();
     fireEvent.click(container.querySelectorAll<HTMLButtonElement>(".add-reaction-btn")[0]);
-    expect(container.querySelector(".emoji-picker")).not.toBeNull();
-    expect(document.activeElement).toBe(container.querySelector(".emoji-search"));
+    expect(document.querySelector(".emoji-picker")).not.toBeNull();
+    expect(document.activeElement).toBe(document.querySelector(".emoji-search"));
     fireEvent.keyDown(document.activeElement!, { key: "Escape" });
-    expect(container.querySelector(".emoji-picker")).toBeNull();
+    expect(document.querySelector(".emoji-picker")).toBeNull();
     expect(container.querySelector(".thread-overlay.closing")).toBeNull();
 
     // Same when focus has left the search box (e.g. after clicking a category)
     fireEvent.click(container.querySelectorAll<HTMLButtonElement>(".add-reaction-btn")[0]);
     (document.activeElement as HTMLElement | null)?.blur();
     fireEvent.keyDown(document, { key: "Escape" });
-    expect(container.querySelector(".emoji-picker")).toBeNull();
+    expect(document.querySelector(".emoji-picker")).toBeNull();
     expect(container.querySelector(".thread-overlay.closing")).toBeNull();
   });
 

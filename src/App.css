@@ -872,6 +872,14 @@ a:focus-visible,
     color: #fff;
 }
 
+.card-account-badge-photo {
+    width: 18px;
+    height: 18px;
+    margin: 0 -4px;
+    border-radius: 50%;
+    object-fit: cover;
+}
+
 .card-account-badge.all {
     background: var(--bg-tertiary);
     color: var(--text-secondary);
@@ -1068,7 +1076,7 @@ a:focus-visible,
     border-radius: var(--radius-sm);
     background: none;
     font-size: var(--font-size-sm);
-    color: var(--text-muted);
+    color: var(--text-secondary);
     cursor: pointer;
 }
 
@@ -1493,7 +1501,7 @@ a:focus-visible,
 .empty {
     padding: var(--space-2xl);
     text-align: center;
-    color: var(--text-muted);
+    color: var(--text-secondary);
     font-size: var(--font-size-base);
 }
 
@@ -1837,17 +1845,28 @@ a:focus-visible,
     background: var(--bg-hover);
 }
 
+.query-autocomplete-op,
+.query-autocomplete-desc {
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    min-width: 0;
+}
+
 .query-autocomplete-op {
     font-family: ui-monospace, monospace;
     font-size: var(--font-size-base);
     color: var(--accent);
     font-weight: 500;
+    flex: 0 1 auto;
 }
 
 .query-autocomplete-desc {
     font-size: var(--font-size-sm);
     color: var(--text-muted);
     margin-left: auto;
+    flex-shrink: 0;
+    max-width: 45%;
 }
 
 /* Card query field: chips for the finished words, with the text box among
@@ -3282,6 +3301,7 @@ button:disabled:hover {
 
 .preset-preview {
     height: 80px;
+    min-width: 0;
     display: flex;
     align-items: center;
     justify-content: center;
@@ -3305,7 +3325,8 @@ button:disabled:hover {
     width: 24px;
     height: 50px;
     border-radius: var(--radius-xs);
-    flex-shrink: 0;
+    flex-shrink: 1;
+    min-width: 0;
 }
 
 .preset-card.blue {
@@ -4039,6 +4060,12 @@ button.settings-section-title {
     animation: threadSlideOut 0.2s ease-in forwards;
 }
 
+/* Clears the 480px compose or event panel at the left edge while leaving the
+   thread at least 640px */
+.app.side-panel-open .thread-overlay {
+    border-left: clamp(0px, 100vw - 640px, 528px) solid var(--app-bg, var(--bg-primary));
+}
+
 /* Event View specific styles (uses thread-overlay base) */
 .event-info-row {
     display: flex;
@@ -4303,6 +4330,15 @@ button.settings-section-title {
     font-size: 0.75rem;
     font-weight: 600;
     white-space: nowrap;
+    background: var(--bg-tertiary);
+    color: var(--text-secondary);
+}
+
+/* The card colour pulled toward the text colour: darker in light mode,
+   lighter in dark, so every card colour reads on its own tint */
+.thread-bar-card.tinted {
+    background: color-mix(in srgb, var(--pill-color) 12.5%, transparent);
+    color: color-mix(in srgb, var(--pill-color) 40%, var(--text-primary));
 }
 
 .thread-bar-actions {
@@ -4543,6 +4579,9 @@ button.settings-section-title {
     flex-direction: column;
     gap: var(--space-sm);
     color: var(--danger);
+    box-sizing: border-box;
+    max-width: 800px;
+    margin: 0 auto;
 }
 
 /* Thread loading skeleton */
@@ -4707,8 +4746,20 @@ button.settings-section-title {
     margin: 0;
     display: flex;
     flex-wrap: wrap;
-    gap: 0 var(--space-md);
+    gap: 0 var(--space-lg);
     word-break: break-word;
+}
+
+.message-recipient {
+    max-width: 100%;
+}
+
+.message-recipient-name {
+    color: var(--text-primary);
+}
+
+.message-recipient-address {
+    color: var(--text-secondary);
 }
 
 .message-date {
@@ -5897,6 +5948,12 @@ button.settings-section-title {
     margin-top: 8px;
 }
 
+.emoji-picker.floating {
+    position: fixed;
+    z-index: var(--z-dropdown);
+    margin-top: 0;
+}
+
 .emoji-picker-header {
     padding: var(--space-md);
     border-bottom: 1px solid var(--border-color);
@@ -6065,13 +6122,14 @@ button.settings-section-title {
     flex-direction: column;
     align-items: center;
     justify-content: center;
-    width: 60px;
+    flex: 1 1 0;
+    min-width: 0;
+    max-width: 60px;
     height: 70px;
     border: 1px solid var(--border-color);
     border-radius: 8px;
     background-color: var(--bg-primary);
     cursor: pointer;
-    flex-shrink: 0;
 }
 
 .scheduler-day-card.selected {

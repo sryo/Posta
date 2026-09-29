@@ -1,5 +1,6 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
+  appLocale,
   formatClock,
   formatDayLabel,
   formatShortDate,
@@ -83,5 +84,31 @@ describe("threadGroupLabel", () => {
     expect(threadGroupLabel("Today", "es-AR")).toBe("Hoy");
     expect(threadGroupLabel("Yesterday", "en-US")).toBe("Yesterday");
     expect(threadGroupLabel("This week", "es-AR")).toBe("This week");
+  });
+});
+
+describe("appLocale", () => {
+  const aug20 = new Date(2026, 7, 20, 6, 27);
+
+  it("keeps an English system locale as it is", () => {
+    expect(appLocale("en-GB")).toBe("en-GB");
+    expect(appLocale("en-US")).toBe("en-US");
+  });
+
+  it("writes dates in English, the app's language, in the system region's order and clock", () => {
+    expect(formatShortDate(aug20, appLocale("es-ES"))).toBe("20 Aug");
+    expect(formatClock(aug20, appLocale("es-ES"))).toBe("06:27");
+    expect(formatShortDate(aug20, appLocale("es-419"))).toBe("20 Aug");
+    expect(uses12HourClock(appLocale("es-419"))).toBe(true);
+    expect(formatClock(aug20, appLocale("de-DE"))).toBe("06:27");
+    expect(relativeDayName(aug20, aug20, appLocale("es-419"))).toBe("Today");
+  });
+
+  it("is what every formatter uses when no locale is given", () => {
+    const language = vi.spyOn(navigator, "language", "get").mockReturnValue("es-419");
+    expect(formatShortDate(aug20)).toBe("20 Aug");
+    expect(formatDayLabel(aug20, aug20)).toBe("Today");
+    expect(threadGroupLabel("Today")).toBe("Today");
+    language.mockRestore();
   });
 });

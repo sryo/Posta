@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { parseRules } from "./test/css";
 import { readRepoFile } from "./test/files";
+import { COLOR_HEX } from "./shared/constants";
 
 const css = readRepoFile("src/App.css").replace(/\/\*[\s\S]*?\*\//g, "");
 const rules = parseRules(css);
@@ -51,6 +52,58 @@ function contrast(a: Rgba, b: Rgba): number {
   const [hi, lo] = [luminance(a), luminance(b)].sort((x, y) => y - x);
   return (hi + 0.05) / (lo + 0.05);
 }
+
+describe("card pill over a thread or event", () => {
+  const decls = (selector: string) => new Map(rules.filter(r => !r.context && r.selectors.includes(selector)).flatMap(r => r.declarations));
+  const pill = decls(".thread-bar-card.tinted");
+  // color-mix(in srgb, var(--pill-color) N%, <other>)
+  const share = (value: string | undefined) => Number(value?.match(/var\(--pill-color\) ([\d.]+)%/)?.[1]) / 100;
+  const mix = (a: Rgba, b: Rgba, p: number): Rgba => [0, 1, 2].map(i => a[i] * p + b[i] * (1 - p)).concat(1) as Rgba;
+
+  it("mixes the card colour into the text colour so it reads on its own tint", () => {
+    expect(pill.get("background")).toMatch(/^color-mix\(in srgb, var\(--pill-color\) [\d.]+%, transparent\)$/);
+    expect(pill.get("color")).toMatch(/^color-mix\(in srgb, var\(--pill-color\) [\d.]+%, var\(--text-primary\)\)$/);
+  });
+
+  for (const dark of [false, true]) {
+    it(`keeps every card colour's pill at 4.5:1 in ${dark ? "dark" : "light"} mode`, () => {
+      const tokens = rootTokens(dark);
+      const text = parseColor(tokens.get("--text-primary")!);
+      // The floating bar: translucent white in light mode, elevated grey in dark
+      const bar = dark ? parseColor("#2b2b2b") : parseColor("#ffffff");
+      for (const [name, hex] of Object.entries(COLOR_HEX)) {
+        const card = parseColor(hex);
+        const fg = mix(card, text, share(pill.get("color")));
+        const bg = mix(card, bar, share(pill.get("background")));
+        expect(contrast(fg, bg), name).toBeGreaterThanOrEqual(4.5);
+      }
+    });
+  }
+});
+
+describe("quiet text on a coloured card", () => {
+  const colorOf = (selector: string) =>
+    new Map(rules.filter(r => !r.context && r.selectors.includes(selector)).flatMap(r => r.declarations)).get("color");
+  const cardTints = (dark: boolean) => rules
+    .filter(r => r.selectors.some(s => /^\.card\[data-color="\w+"\]$/.test(s)) && dark === r.context.includes("prefers-color-scheme: dark"))
+    .map(r => [r.selectors[0], new Map(r.declarations).get("background")!] as const);
+
+  for (const selector of [".empty", ".thread-draft-discard"]) {
+    for (const dark of [false, true]) {
+      it(`keeps ${selector} at 4.5:1 on every card colour in ${dark ? "dark" : "light"} mode`, () => {
+        const tokens = rootTokens(dark);
+        const token = (value: string) => parseColor(tokens.get(value.match(/^var\((--[\w-]+)\)$/)![1])!);
+        const board = token("var(--bg-secondary)");
+        const tints = cardTints(dark);
+        expect(tints.length).toBe(8);
+        for (const [card, tint] of tints) {
+          const bg = over(parseColor(tint), board);
+          expect(contrast(over(token(colorOf(selector)!), bg), bg), card).toBeGreaterThanOrEqual(4.5);
+        }
+      });
+    }
+  }
+});
 
 describe("status colour tokens", () => {
   for (const dark of [false, true]) {

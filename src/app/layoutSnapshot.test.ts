@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import type { Card } from "../api/tauri";
-import { cardSpecs, clearLayoutSnapshot, loadLayoutSnapshot, saveLayoutSnapshot, SNAPSHOT_TTL_MS, specAccountId } from "./layoutSnapshot";
+import { cardSpecs, clearLayoutSnapshot, copyableCards, loadLayoutSnapshot, saveLayoutSnapshot, SNAPSHOT_TTL_MS, specAccountId } from "./layoutSnapshot";
 
 const card = (id: string, name: string, query: string, color: string | null = null): Card => ({
   id, account_id: "a", name, query, position: 0, collapsed: false, color, group_by: "sender",
@@ -54,5 +54,22 @@ describe("layout snapshots", () => {
   it("ignores a damaged entry", () => {
     localStorage.setItem("layoutSnapshot:a@x.com", "{nope");
     expect(loadLayoutSnapshot("a@x.com", 0)).toBeNull();
+  });
+});
+
+describe("copyableCards", () => {
+  it("copies an account's own mail cards into another account, in order", () => {
+    const board = [
+      card("1", "Hot", "is:important in:inbox", "red"),
+      { ...card("2", "Everywhere", "in:inbox"), account_id: "all" },
+      card("3", "Today", "calendar:today"),
+      card("4", "Receipts", "label:receipts"),
+      { ...card("5", "Theirs", "in:inbox"), account_id: "c" },
+      card("6", "Unread", "is:unread"),
+    ];
+    expect(copyableCards(board, "a", "b")).toEqual([
+      { account_id: "b", name: "Hot", query: "is:important in:inbox", color: "red", group_by: "sender", card_type: "email" },
+      { account_id: "b", name: "Unread", query: "is:unread", color: null, group_by: "sender", card_type: "email" },
+    ]);
   });
 });

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { composePlacement } from "./composePlacement";
+import { composePlacement, panelBesideView } from "./composePlacement";
 
 describe("composePlacement", () => {
   it("renders nothing when not composing", () => {
@@ -25,5 +25,17 @@ describe("composePlacement", () => {
     expect(composePlacement({ composing: true, activeThreadId: null, activeEventId: "e1", forwardEventId: "e1" })).toBe("event");
     expect(composePlacement({ composing: true, activeThreadId: null, activeEventId: "e2", replyEventId: "e1" })).toBe("panel");
     expect(composePlacement({ composing: true, activeThreadId: null, activeEventId: "e1" })).toBe("panel");
+  });
+});
+
+describe("panelBesideView", () => {
+  it("makes room beside an open thread or event for the standalone panel", () => {
+    expect(panelBesideView({ placement: "panel", creatingEvent: false, viewOpen: true })).toBe(true);
+    expect(panelBesideView({ placement: null, creatingEvent: true, viewOpen: true })).toBe(true);
+  });
+
+  it("leaves the view alone when nothing floats beside it", () => {
+    expect(panelBesideView({ placement: "thread", creatingEvent: false, viewOpen: true })).toBe(false);
+    expect(panelBesideView({ placement: "panel", creatingEvent: true, viewOpen: false })).toBe(false);
   });
 });

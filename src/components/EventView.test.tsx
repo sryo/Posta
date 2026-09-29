@@ -40,6 +40,7 @@ function baseProps() {
     calendarDrawerOpen: false,
     onCloseCalendarDrawer: vi.fn(),
     accountEmail: "me@example.com",
+    nameForEmail: undefined as ((email: string) => string | undefined) | undefined,
     calendars: [] as { id: string; name: string; is_primary: boolean; access_role: string }[],
     calendarsLoading: false,
     onMoveToCalendar: vi.fn(),
@@ -298,6 +299,16 @@ describe("EventView organizer", () => {
     const sender = container.querySelector(".message-header .message-sender")!;
     expect(sender.textContent).toBe("Jules Martin");
     expect(sender.getAttribute("title")).toBe("boss@example.com");
+  });
+
+  it("calls the user's own event theirs instead of repeating their address", () => {
+    const { container } = renderEvent({ organizer: "ME@example.com" });
+    expect(container.querySelector(".message-header .message-sender")!.textContent).toBe("You");
+  });
+
+  it("names an organizer missing from the guest list by what the user's mail calls them", () => {
+    const { container } = renderEvent({ organizer: "lucas@acme.test" }, { nameForEmail: (email: string) => (email === "lucas@acme.test" ? "Lucas Romero" : undefined) });
+    expect(container.querySelector(".message-header .message-sender")!.textContent).toBe("Lucas Romero");
   });
 });
 

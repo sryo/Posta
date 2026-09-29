@@ -138,6 +138,16 @@ describe("floating controls", () => {
     }
   });
 
+  it("keep each query suggestion on one line, cutting a long address or name short", () => {
+    for (const selector of [".query-autocomplete-op", ".query-autocomplete-desc"]) {
+      const decl = declarationsOf(selector);
+      expect(decl.get("white-space"), selector).toBe("nowrap");
+      expect(decl.get("overflow"), selector).toBe("hidden");
+      expect(decl.get("text-overflow"), selector).toBe("ellipsis");
+      expect(decl.get("min-width"), selector).toBe("0");
+    }
+  });
+
   it("raise the thread's floating bar in dark mode too", () => {
     const bar = declarationsOf(".thread-floating-bar", DARK);
     expect(bar.get("background")).toContain("var(--bg-elevated)");

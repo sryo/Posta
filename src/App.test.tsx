@@ -907,6 +907,20 @@ describe("App card load errors", () => {
     expect(screen.getByRole("region", { name: "Alpha email card" })).toHaveClass("stale");
   });
 
+  it("writes the offline cache time on the same clock as the rest of the app", async () => {
+    const language = vi.spyOn(navigator, "language", "get").mockReturnValue("es-ES");
+    handlers.get_cached_card_threads = () => ({ groups: [{ label: "Today", threads: [thread("t-a", "Cached mail")] }], next_page_token: null, cached_at: 1 });
+    handlers.fetch_threads_paginated = () => { throw "Search failed: Request failed: could not reach Gmail. Check your connection."; };
+    render(() => <App />);
+    const strip = await waitFor(() => {
+      const el = document.querySelector(".connection-status");
+      expect(el).not.toBeNull();
+      return el as HTMLElement;
+    });
+    expect(strip).toHaveTextContent(/showing mail from \d\d:\d\d(?!\s*[AP]M)/i);
+    language.mockRestore();
+  });
+
   it("shows each cached card's age instead of a sync failure while offline", async () => {
     const cachedAt = Date.now() - 5 * 60_000;
     handlers.get_cached_card_threads = () => ({ groups: [{ label: "Today", threads: [thread("t-a", "Cached mail")] }], next_page_token: null, cached_at: Math.floor(cachedAt / 1000) });
@@ -1218,6 +1232,16 @@ describe("App selection keys", () => {
     expect(row("Second")).not.toHaveClass("selected");
   });
 
+  it("acts on a selection made only with the mouse", async () => {
+    handlers.modify_threads = () => null;
+    render(() => <App />);
+    await screen.findByText("Third");
+    fireEvent.click(row("First").querySelector(".thread-checkbox")!);
+    fireEvent.click(row("Third").querySelector(".thread-checkbox")!);
+    fireEvent.keyDown(document, { key: "a" });
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith("modify_threads", expect.objectContaining({ threadIds: ["t-1", "t-3"] })));
+  });
+
   it("clears a selection of one thread once a key acts on it", async () => {
     handlers.modify_threads = () => null;
     render(() => <App />);
@@ -1375,6 +1399,8 @@ describe("App thread view", () => {
 
     expect(await screen.findByPlaceholderText("Event title")).toHaveValue("Lunch on Thursday");
     expect(Array.from(document.querySelectorAll(".guest-chip-label")).map(el => el.textContent)).toEqual(["Ana", "bo@y.com"]);
+    // The thread moves over to keep its toolbar clear of the form
+    expect(document.querySelector(".app")).toHaveClass("side-panel-open");
   });
 
   it("keeps the thread's keys off it while the event form is open over it", async () => {
@@ -4794,6 +4820,13 @@ describe("App reading view", () => {
     expect(row.getAttribute("aria-label")).toContain("from Ana Pérez, bob@x.com");
   });
 
+  it("names the signed-in user among a row's participants as me", async () => {
+    threadsByCard["card-a"] = [{ ...thread("t-a", "Mail for A"), participants: ["a@x.com", "Ana Pérez <ana@x.com>"] }];
+    render(() => <App />);
+    const row = (await screen.findByText("Mail for A")).closest(".thread") as HTMLElement;
+    expect(row.querySelector(".thread-participants")?.textContent?.trim()).toBe("me, Ana Pérez");
+  });
+
   it("moves several threads to Trash without asking, saying where they went", async () => {
     localStorage.setItem("actionSettings", JSON.stringify({ trash: true }));
     threadsByCard["card-a"] = [{ ...thread("t-1", "One"), labels: ["INBOX"] }, { ...thread("t-2", "Two"), labels: ["INBOX"] }];
@@ -5213,6 +5246,21 @@ describe("App one board for every account", () => {
     expect(screen.getByText("Mail for A")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Add a card" }));
     expect(await screen.findByPlaceholderText("e.g. Clients")).toBeInTheDocument();
+  });
+
+  it("offers to copy the default account's cards into an added account that has none", async () => {
+    handlers.run_oauth_flow = () => account("b", "b@x.com");
+    cardsByAccount.b = [];
+    handlers.create_card = ({ accountId, name, query }) => ({ ...card("card-copy", accountId as string, name as string), query: query as string });
+    render(() => <App />);
+    await screen.findByText("Mail for A");
+    fireEvent.click(avatar("a@x.com"));
+    fireEvent.click(await screen.findByText("Add account"));
+
+    await screen.findByText("Added b@x.com");
+    fireEvent.click(screen.getByRole("button", { name: "Copy a@x.com's cards" }));
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith("create_card", expect.objectContaining({ accountId: "b", name: "Alpha", query: "is:inbox" })));
+    await waitFor(() => expect(screen.getAllByRole("region", { name: "Alpha email card" })).toHaveLength(2));
   });
 
   it("brings an added account's mail into the all-inboxes cards at once", async () => {

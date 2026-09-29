@@ -131,7 +131,9 @@ export const AttachmentLightbox = (props: {
             </Show>
             {(() => {
               const s = shown();
-              if (s.kind === "image") return <img class="lightbox-image" src={s.src} alt={item().filename} />;
+              if (s.kind === "image") {
+                return <img class="lightbox-image" src={s.src} alt={item().filename} onError={() => { if (shown() === s) setShown({ kind: "error" }); }} />;
+              }
               if (s.kind === "pdf") return <iframe class="lightbox-pdf" src={s.src} title={item().filename} />;
               if (s.kind === "error") return <div class="lightbox-status">Couldn't load a preview. Open it in another app instead.</div>;
               return <div class="lightbox-status">Loading…</div>;

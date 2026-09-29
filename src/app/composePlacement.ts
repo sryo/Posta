@@ -23,3 +23,9 @@ export function composePlacement(t: ComposeTargets): ComposePlacement {
   }
   return "panel";
 }
+
+// The standalone compose panel and the new-event panel float at the left
+// edge; an open thread or event moves over to keep its toolbar clear of them
+export function panelBesideView(s: { placement: ComposePlacement; creatingEvent: boolean; viewOpen: boolean }): boolean {
+  return s.viewOpen && (s.placement === "panel" || s.creatingEvent);
+}

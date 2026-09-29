@@ -118,7 +118,7 @@ import { AuthScreen } from "./components/AuthScreen";
 import { PresetPicker } from "./components/PresetPicker";
 import { EmptyBoard } from "./components/EmptyBoard";
 import { SmartRepliesSettings } from "./components/SmartRepliesSettings";
-import { cardSpecs, loadLayoutSnapshot, saveLayoutSnapshot, specAccountId, type CardSpec } from "./app/layoutSnapshot";
+import { cardSpecs, copyableCards, loadLayoutSnapshot, saveLayoutSnapshot, specAccountId, type CardSpec } from "./app/layoutSnapshot";
 import { ALL_ACCOUNTS, accountFromError, accountsToPoll, cardAccountIds, cardCoversAccount, eventAccountId, inAccount, threadAccountId, threadIdsByAccount, threadKey } from "./app/accountScope";
 import { GoogleCredentialsForm } from "./components/GoogleCredentialsForm";
 import { credentialsValid, shortClientId } from "./app/googleCredentials";
@@ -137,7 +137,7 @@ import { Dialog } from "./components/Dialog";
 import { Toasts } from "./components/Toasts";
 import { createToasts, type ToastAction, type ToastTone } from "./app/toasts";
 import { failureMessage, storedCredentialsFailure } from "./app/errorText";
-import { formatWhen, threadGroupLabel } from "./app/dateFormat";
+import { formatClock, formatWhen, threadGroupLabel } from "./app/dateFormat";
 import { safeGetItem, safeSetItem, safeRemoveItem, safeGetJSON, safeSetJSON } from "./shared/storage";
 import { BG_COLORS, type ActionSettings, type CardColor, type GroupBy } from "./shared/constants";
 import { createUndoableSend } from "./app/undoableSend";
@@ -146,7 +146,7 @@ import { batchReplyEntry, type BatchReplyThread } from "./app/batchReply";
 import { matchContacts, rankContacts, type RecentContact } from "./app/contacts";
 import { eventReplyRecipients } from "./app/eventReply";
 import { labelDisplayName } from "./app/labels";
-import { personName } from "./app/people";
+import { nameInThreads, participantNames, personName } from "./app/people";
 import { afterRemoval, loadAfterArchive, stepThread, threadPosition } from "./app/threadNavigation";
 import { CardAttachments } from "./components/CardAttachments";
 import { AfterArchiveSetting } from "./components/AfterArchiveSetting";
@@ -162,7 +162,7 @@ import { AttachmentLightbox, type PreviewAttachment } from "./components/Attachm
 import { MessageSender } from "./components/MessageSender";
 import { isForwardSubject } from "./app/quotedHistory";
 import { eventAttendees, eventFromThread, eventTimesFromForm, smartEventDefaults } from "./app/eventForm";
-import { composePlacement } from "./app/composePlacement";
+import { composePlacement, panelBesideView } from "./app/composePlacement";
 import { cidImagesToFetch, createLruCache, fetchCidImages } from "./app/cidImages";
 import { sendPending, type PendingSend } from "./app/pendingSend";
 import { parseMailto } from "./app/mailto";
@@ -1954,9 +1954,31 @@ function App() {
         if (card.account_id === ALL_ACCOUNTS && !collapsedCards[card.id]) refetchCard(card);
       }
       const restored = board.filter(c => c.account_id === account.id).length;
-      if (restored > 0) showToast(`Restored ${count(restored)} for ${account.email}`);
-      else showToast(`Added ${account.email}`, { label: "Add a card", run: () => openAddCard(account.id) });
+      if (restored > 0) {
+        showToast(`Restored ${count(restored)} for ${account.email}`);
+        return;
+      }
+      const from = selectedAccount();
+      const copies = from && from.id !== account.id ? copyableCards(board, from.id, account.id) : [];
+      showToast(`Added ${account.email}`, [
+        ...(copies.length > 0 ? [{ label: `Copy ${from!.email}'s cards`, run: () => addCards(copies) }] : []),
+        { label: "Add a card", run: () => openAddCard(account.id) },
+      ]);
     }
+  }
+
+  // Appends cards made from specs, each in the account it names
+  async function addCards(specs: CardSpec[]) {
+    const created: Card[] = [];
+    try {
+      for (const spec of specs) {
+        created.push(await createCard(spec.account_id!, spec.name, spec.query, spec.color, spec.group_by, spec.card_type));
+      }
+    } catch (e) {
+      setFailure("Couldn't create the cards", e);
+    }
+    setCards([...cards(), ...created]);
+    created.forEach(card => loadCardThreads(card.id));
   }
 
   function openPresetPicker() {
@@ -3881,7 +3903,7 @@ function App() {
         reconnecting: reconnecting(),
         lastSyncedAt: synced.length > 0 ? Math.max(...synced) : null,
       },
-      t => new Date(t).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }),
+      t => formatClock(new Date(t)),
     );
   });
 
@@ -4528,6 +4550,8 @@ function App() {
     const next = nextSelection(ids, selectedThreads()[cardId] ?? new Set(), lastSelectedThread()[cardId] ?? null, threadId, !!e?.shiftKey);
     setSelectedThreads({ ...selectedThreads(), [cardId]: next.selected });
     setLastSelectedThread({ ...lastSelectedThread(), [cardId]: next.pivot });
+    // The selection keys act on the focused card's selection
+    onRowFocus(cardId, threadId);
   }
 
   function toggleEventSelection(cardId: string, eventId: string, e?: MouseEvent) {
@@ -4538,6 +4562,7 @@ function App() {
     const next = nextSelection(ids, selectedEvents()[cardId] ?? new Set(), lastSelectedEvent()[cardId] ?? null, eventId, !!e?.shiftKey);
     setSelectedEvents({ ...selectedEvents(), [cardId]: next.selected });
     setLastSelectedEvent({ ...lastSelectedEvent(), [cardId]: next.pivot });
+    onRowFocus(cardId, eventId);
   }
 
   // Ranking reads every loaded thread; only rank while something shows
@@ -4555,9 +4580,18 @@ function App() {
   const fabSuggestions = createMemo<RecentContact[]>(shown => composeFabHovered() ? rankedContacts().slice(0, 5) : shown, []);
 
   const suggestContacts = (query: string) => matchContacts(rankedContacts(), query, 8);
+  const sidePanelBesideView = () => panelBesideView({
+    placement: composeShownIn(),
+    creatingEvent: creatingEvent(),
+    viewOpen: !!activeThreadId() || !!activeEvent(),
+  });
 
   return (
-    <div class="app" onClick={handleAppClick}>
+    <div
+      class="app"
+      classList={{ "side-panel-open": sidePanelBesideView() }}
+      onClick={handleAppClick}
+    >
       {/* Drag region for frameless window */}
       <div class="drag-region" data-tauri-drag-region></div>
 
@@ -5157,8 +5191,7 @@ function App() {
                                             <div class="thread-snippet">{decodeHtmlEntities(thread.snippet)}</div>
                                           </Show>
                                           <div class="thread-participants">
-                                            {thread.participants.slice(0, 3).map(personName).join(", ")}
-                                            {thread.participants.length > 3 && ` + ${thread.participants.length - 3} `}
+                                            {participantNames(thread.participants, accounts().map(a => a.email))}
                                           </div>
                                           {/* Attachment previews (filter out .ics when calendar event is shown) */}
                                           {(() => {
@@ -5745,6 +5778,7 @@ function App() {
           calendarDrawerOpen={calendarDrawerOpen()}
           onCloseCalendarDrawer={() => setCalendarDrawerOpen(false)}
           accountEmail={activeEventAccount()?.email ?? ""}
+          nameForEmail={(email) => nameInThreads(email, Object.values(cardThreads).flatMap(groups => groups.flatMap(g => g.threads)))}
           calendars={calendarsFor(activeEventAccountId() ?? undefined)}
           calendarsLoading={!!calendarsLoading[activeEventAccountId() ?? ""]}
           onMoveToCalendar={handleMoveEventToCalendar}
