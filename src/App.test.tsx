@@ -1399,6 +1399,8 @@ describe("App thread view", () => {
 
     expect(await screen.findByPlaceholderText("Event title")).toHaveValue("Lunch on Thursday");
     expect(Array.from(document.querySelectorAll(".guest-chip-label")).map(el => el.textContent)).toEqual(["Ana", "bo@y.com"]);
+    // The thread moves over to keep its toolbar clear of the form
+    expect(document.querySelector(".app")).toHaveClass("side-panel-open");
   });
 
   it("keeps the thread's keys off it while the event form is open over it", async () => {

@@ -162,7 +162,7 @@ import { AttachmentLightbox, type PreviewAttachment } from "./components/Attachm
 import { MessageSender } from "./components/MessageSender";
 import { isForwardSubject } from "./app/quotedHistory";
 import { eventAttendees, eventFromThread, eventTimesFromForm, smartEventDefaults } from "./app/eventForm";
-import { composePlacement } from "./app/composePlacement";
+import { composePlacement, panelBesideView } from "./app/composePlacement";
 import { cidImagesToFetch, createLruCache, fetchCidImages } from "./app/cidImages";
 import { sendPending, type PendingSend } from "./app/pendingSend";
 import { parseMailto } from "./app/mailto";
@@ -4558,9 +4558,18 @@ function App() {
   const fabSuggestions = createMemo<RecentContact[]>(shown => composeFabHovered() ? rankedContacts().slice(0, 5) : shown, []);
 
   const suggestContacts = (query: string) => matchContacts(rankedContacts(), query, 8);
+  const sidePanelBesideView = () => panelBesideView({
+    placement: composeShownIn(),
+    creatingEvent: creatingEvent(),
+    viewOpen: !!activeThreadId() || !!activeEvent(),
+  });
 
   return (
-    <div class="app" onClick={handleAppClick}>
+    <div
+      class="app"
+      classList={{ "side-panel-open": sidePanelBesideView() }}
+      onClick={handleAppClick}
+    >
       {/* Drag region for frameless window */}
       <div class="drag-region" data-tauri-drag-region></div>
 

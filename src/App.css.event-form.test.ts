@@ -16,6 +16,13 @@ describe("event form layout", () => {
     expect(header.get("background")).toBe("var(--bg-primary)");
   });
 
+  it("shares the day strip's width among its seven days rather than clipping the last", () => {
+    const day = decls(".scheduler-day-card");
+    expect(day.get("flex")).toBe("1 1 0");
+    expect(day.get("min-width")).toBe("0");
+    expect(day.has("width")).toBe(false);
+  });
+
   it("sets the title at 17px semibold", () => {
     const title = decls(".form-title-field");
     expect(title.get("font-size")).toBe("17px");

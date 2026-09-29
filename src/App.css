@@ -4041,6 +4041,12 @@ button.settings-section-title {
     animation: threadSlideOut 0.2s ease-in forwards;
 }
 
+/* Clears the 480px compose or event panel at the left edge while leaving the
+   thread at least 640px */
+.app.side-panel-open .thread-overlay {
+    border-left: clamp(0px, 100vw - 640px, 528px) solid var(--app-bg, var(--bg-primary));
+}
+
 /* Event View specific styles (uses thread-overlay base) */
 .event-info-row {
     display: flex;
@@ -6073,13 +6079,14 @@ button.settings-section-title {
     flex-direction: column;
     align-items: center;
     justify-content: center;
-    width: 60px;
+    flex: 1 1 0;
+    min-width: 0;
+    max-width: 60px;
     height: 70px;
     border: 1px solid var(--border-color);
     border-radius: 8px;
     background-color: var(--bg-primary);
     cursor: pointer;
-    flex-shrink: 0;
 }
 
 .scheduler-day-card.selected {

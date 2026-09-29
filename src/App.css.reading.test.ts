@@ -39,6 +39,15 @@ describe("floating emoji picker", () => {
   });
 });
 
+describe("thread beside a side panel", () => {
+  it("moves over to clear the compose or event panel, as far as the window allows", () => {
+    document.body.innerHTML = '<div class="app side-panel-open"><div class="thread-overlay" id="thread"></div></div>';
+    // A border, not padding: the floating toolbar is positioned in the padding box
+    const border = cascadedDeclarations(rules, document.getElementById("thread")!).get("border-left");
+    expect(border).toMatch(/^clamp\(0px, .*, 528px\) solid var\(--app-bg, var\(--bg-primary\)\)$/);
+  });
+});
+
 describe("attachment lightbox", () => {
   it("covers the thread view and the label drawer", () => {
     document.body.innerHTML = '<div class="thread-overlay" id="thread"></div><div class="label-drawer" id="drawer"></div><div class="lightbox" id="lightbox"></div>';
