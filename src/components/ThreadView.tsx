@@ -46,6 +46,7 @@ import { CloseButton } from "./ComposeAtoms";
 import { ComposeForm } from "./ComposeForm";
 import { MessageActionsWheel } from "./MessageActionsWheel";
 import { MessageRecipients } from "./MessageRecipients";
+import { MessageSender } from "./MessageSender";
 import type { PreviewAttachment } from "./AttachmentLightbox";
 import { isPreviewable } from "../app/attachments";
 import { isForwardSubject } from "../app/quotedHistory";
@@ -624,12 +625,7 @@ export const ThreadView = (props: {
                     >
                       <div class="message-header">
                         <div class="message-from">
-                          <div class="message-sender">
-                            <span class="message-sender-name">{personName(from)}</span>
-                            <Show when={extractName(from)}>
-                              {' '}<span class="message-sender-address">{extractEmail(from)}</span>
-                            </Show>
-                          </div>
+                          <MessageSender from={from} />
                           <MessageRecipients to={findHeader(headers, 'To')} cc={findHeader(headers, 'Cc')} currentUserEmail={props.currentUserEmail} />
                         </div>
                         <div class="message-header-actions">

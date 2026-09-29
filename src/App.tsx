@@ -158,6 +158,7 @@ import { isSessionExpiredError, needsSignInAgain } from "./app/authErrors";
 import { signatureBlock, withSignature } from "./app/signature";
 import { isCalendarAttachment, isPreviewable, readFilesAsAttachments } from "./app/attachments";
 import { AttachmentLightbox, type PreviewAttachment } from "./components/AttachmentLightbox";
+import { MessageSender } from "./components/MessageSender";
 import { eventAttendees, eventFromThread, eventTimesFromForm, smartEventDefaults } from "./app/eventForm";
 import { composePlacement } from "./app/composePlacement";
 import { cidImagesToFetch, createLruCache, fetchCidImages } from "./app/cidImages";
@@ -5624,7 +5625,7 @@ function App() {
                   <div class={`message-row with-compose ${inlineResizing() ? 'resizing' : ''}`}>
                     <div class="message-card">
                       <div class="message-header">
-                        <div class="message-sender">{thread.from}</div>
+                        <MessageSender from={thread.from} />
                         <div class="message-header-actions">
                           <div class="message-date">{thread.date}</div>
                         </div>

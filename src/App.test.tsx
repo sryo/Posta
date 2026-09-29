@@ -2543,6 +2543,15 @@ describe("App batch reply", () => {
     expect(screen.getByText("Batch Reply")).toBeInTheDocument();
   });
 
+  it("names each thread's sender the way the reader does", async () => {
+    handlers.get_thread_details = ({ threadId }) => ({ id: threadId, messages: [fullMessage("m1", "Ana Pérez <ana@x.com>")] });
+    await openBatchReplyForTwo();
+    await waitFor(() => expect(screen.getAllByPlaceholderText(/^Reply to/)).toHaveLength(2));
+    const sender = document.querySelector(".batch-reply-overlay .message-sender, .message-row .message-sender")!;
+    expect(sender.querySelector(".message-sender-name")?.textContent).toBe("Ana Pérez");
+    expect(sender.querySelector(".message-sender-address")?.textContent).toBe("ana@x.com");
+  });
+
   it("attaches a file dropped on one reply to that reply only", async () => {
     handlers.get_thread_details = ({ threadId }) => ({ id: threadId, messages: [fullMessage("m1", "Ana <ana@x.com>")] });
     await openBatchReplyForTwo();
