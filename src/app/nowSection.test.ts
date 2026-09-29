@@ -71,7 +71,7 @@ describe("meetingProgress", () => {
 
   it("says how soon a meeting that has not started begins", () => {
     expect(meetingProgress(invite(), at(9, 56))).toEqual({ started: false, elapsed: 0, total: 15, percent: 0, text: "Starts in 4 minutes" });
-    expect(meetingProgress(invite(), at(9, 59, 30)).text).toBe("Starts in 1 minute");
+    expect(meetingProgress(invite(), at(9, 59) + 30_000).text).toBe("Starts in 1 minute");
   });
 });
 
