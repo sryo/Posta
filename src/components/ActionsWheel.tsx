@@ -142,7 +142,7 @@ export const ActionsWheel = (props: {
           cls: 'bulk-danger',
           title: !deleteConfirm.armed() ? 'Delete'
             : can.role === 'organizer' ? deletePrompt(can)
-            : `Click again to delete ${evt.title || '(No title)'}`,
+            : `Click again to delete ${evt.recurring_event_id ? 'this occurrence of ' : ''}${evt.title || '(No title)'}`,
           icon: deleteConfirm.armed() ? CheckIcon : TrashIcon,
           onClick: (e) => {
             e.stopPropagation();

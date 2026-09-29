@@ -2197,13 +2197,16 @@ pub async fn delete_calendar_event(
     account_id: String,
     calendar_id: String,
     event_id: String,
+    // "this" (the default), "following" or "all" occurrences of a repeating event
+    scope: Option<String>,
     app_handle: tauri::AppHandle,
     state: State<'_, AppState>,
 ) -> Result<(), String> {
+    let scope = crate::calendar::RecurrenceScope::parse(scope.as_deref())?;
     let access_token = account_access_token(&state, &app_handle, &account_id).await?;
     let calendar = crate::calendar::CalendarClient::new(access_token);
 
-    evict_token_on_auth_error(&state, &account_id, calendar.delete_event(&calendar_id, &event_id).await)
+    evict_token_on_auth_error(&state, &account_id, calendar.delete_event_in_series(&calendar_id, &event_id, scope).await)
 }
 
 #[tauri::command]
@@ -2220,14 +2223,17 @@ pub async fn update_calendar_event(
     attendees: Option<Vec<String>>,
     recurrence: Option<Vec<String>>,
     add_meet: Option<bool>,
+    // "this" (the default), "following" or "all" occurrences of a repeating event
+    scope: Option<String>,
     app_handle: tauri::AppHandle,
     state: State<'_, AppState>,
 ) -> Result<crate::models::GoogleCalendarEvent, String> {
+    let scope = crate::calendar::RecurrenceScope::parse(scope.as_deref())?;
     let access_token = account_access_token(&state, &app_handle, &account_id).await?;
     let calendar = crate::calendar::CalendarClient::new(access_token);
 
     let result = calendar
-        .update_event(
+        .update_event_in_series(
             &calendar_id,
             &event_id,
             crate::calendar::EventFields {
@@ -2241,6 +2247,7 @@ pub async fn update_calendar_event(
                 recurrence,
                 add_meet: add_meet.unwrap_or(false),
             },
+            scope,
         )
         .await;
     evict_token_on_auth_error(&state, &account_id, result)

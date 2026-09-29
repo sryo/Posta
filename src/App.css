@@ -4753,6 +4753,57 @@ button:disabled:hover {
     bottom: 0;
 }
 
+/* ScopeMenu: anchored above the Save or Delete button that opened it */
+.scope-menu-anchor {
+    position: relative;
+    display: inline-flex;
+}
+
+.scope-menu {
+    position: absolute;
+    right: 0;
+    bottom: calc(100% + 6px);
+    z-index: var(--z-dropdown);
+    display: flex;
+    flex-direction: column;
+    min-width: 200px;
+    padding: var(--space-sm);
+    border: 1px solid var(--border-color);
+    border-radius: var(--radius-lg);
+    background: var(--bg-primary);
+    box-shadow: 0 4px 16px var(--shadow);
+}
+
+.thread-bar-actions .scope-menu {
+    top: calc(100% + 6px);
+    bottom: auto;
+    left: 0;
+    right: auto;
+}
+
+.scope-menu-title {
+    padding: var(--space-sm) var(--space-md);
+    font-size: var(--font-size-sm);
+    font-weight: 600;
+    color: var(--text-secondary);
+}
+
+.scope-menu-item {
+    padding: var(--space-md);
+    border: none;
+    border-radius: var(--radius-md);
+    background: transparent;
+    color: var(--text-primary);
+    font-size: var(--font-size-md);
+    text-align: left;
+    cursor: pointer;
+}
+
+.scope-menu-item:hover,
+.scope-menu-item:focus-visible {
+    background: var(--bg-hover);
+}
+
 .event-meet-field {
     color: var(--text-secondary);
     font-size: var(--font-size-md);

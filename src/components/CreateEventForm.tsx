@@ -6,6 +6,7 @@ import { isWritableCalendar } from "../app/eventActions";
 import { minutesToTime, timeToMinutes } from "../app/timeInput";
 import { TimeCombobox } from "./TimeCombobox";
 import { GuestChips } from "./GuestChips";
+import { ScopeMenu, type RecurrenceScope } from "./ScopeMenu";
 
 export const CreateEventForm = (props: {
   closing?: boolean;
@@ -31,11 +32,14 @@ export const CreateEventForm = (props: {
   recurrence: string | null;
   setRecurrence: (v: string | null) => void;
   saving: boolean;
-  onSave: () => void;
+  // A repeating event's occurrence passes the scope the user chose
+  onSave: (scope?: RecurrenceScope) => void;
   error: string | null;
   inline?: boolean;
   isEditing?: boolean;
   occurrenceOnly?: boolean;
+  // Saving an occurrence of a repeating event asks which events to change
+  askScope?: boolean;
   // The calendar a new event goes to; an edited event moves with Move instead
   calendars?: { id: string; name: string; is_primary: boolean; access_role: string }[];
   calendarId?: string | null;
@@ -85,6 +89,11 @@ export const CreateEventForm = (props: {
   // creatingEvent) never reaches. Double-saves in panel mode are prevented
   // by the saving flag, set synchronously by onSave.
   const hasTitle = () => props.summary.trim().length > 0;
+  const [choosingScope, setChoosingScope] = createSignal(false);
+  const save = () => {
+    if (props.askScope) setChoosingScope(true);
+    else props.onSave();
+  };
   const handleKeyDown = (e: KeyboardEvent) => {
     // The title field has focus from the start, and the app-level Escape
     // skips text fields; elsewhere the hosting view's Escape closes the form.
@@ -95,7 +104,7 @@ export const CreateEventForm = (props: {
     }
     if (e.key === 'Enter' && (e.metaKey || e.ctrlKey) && !props.saving && hasTitle()) {
       e.preventDefault();
-      props.onSave();
+      save();
     }
   };
 
@@ -294,7 +303,7 @@ export const CreateEventForm = (props: {
             </Show>
             <Show
               when={!props.occurrenceOnly}
-              fallback={<p class="scheduler-occurrence-note">Repeats (editing this occurrence only)</p>}
+              fallback={<p class="scheduler-occurrence-note">Repeats</p>}
             >
               <select
                 class="scheduler-repeat"
@@ -347,9 +356,18 @@ export const CreateEventForm = (props: {
         <button class="btn" onClick={props.onClose} style={{ "margin-right": "8px" }}>
           Cancel
         </button>
-        <button class="btn btn-primary" disabled={props.saving || !hasTitle()} onClick={props.onSave} title="Save event (⌘Enter)">
-          {props.saving ? "Saving..." : <>{props.isEditing ? "Update" : "Save"} <span class="shortcut-hint">⌘↵</span></>}
-        </button>
+        <div class="scope-menu-anchor">
+          <button class="btn btn-primary" disabled={props.saving || !hasTitle()} onClick={save} title="Save event (⌘Enter)">
+            {props.saving ? "Saving..." : <>{props.isEditing ? "Update" : "Save"} <span class="shortcut-hint">⌘↵</span></>}
+          </button>
+          <Show when={choosingScope()}>
+            <ScopeMenu
+              title="Change repeating event"
+              onChoose={(scope) => { setChoosingScope(false); props.onSave(scope); }}
+              onCancel={() => setChoosingScope(false)}
+            />
+          </Show>
+        </div>
       </div>
     </>
   );

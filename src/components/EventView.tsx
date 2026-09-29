@@ -1,4 +1,4 @@
-import { createEffect, createMemo, on, onMount, onCleanup, Show, For } from "solid-js";
+import { createEffect, createMemo, createSignal, on, onMount, onCleanup, Show, For } from "solid-js";
 import DOMPurify from 'dompurify';
 import { DOMPURIFY_CONFIG } from './MessageBody';
 import { openUrl } from '@tauri-apps/plugin-opener';
@@ -6,6 +6,7 @@ import type { GoogleCalendarEvent } from "../api/tauri";
 import { formatCalendarEventDate, textOrHtmlToHtml } from "../utils";
 import { guestResponseLabel, isRsvpAnswer, ownResponseLabel, rsvpForKey } from "../app/rsvp";
 import { RsvpControl } from "./RsvpControl";
+import { ScopeMenu, type RecurrenceScope } from "./ScopeMenu";
 import { deletePrompt, eventActions, isWritableCalendar } from "../app/eventActions";
 import {
   ReplyIcon,
@@ -37,7 +38,8 @@ export const EventView = (props: {
   onReplyAll: () => void;
   onForward: () => void;
   onEdit: () => void;
-  onDelete: () => void;
+  // An occurrence of a repeating event passes the scope the user chose
+  onDelete: (scope?: RecurrenceScope) => void;
   onOpenCalendars: () => void;
   calendarDrawerOpen: boolean;
   onCloseCalendarDrawer: () => void;
@@ -57,8 +59,13 @@ export const EventView = (props: {
   const moveTargets = () => props.calendars.filter(isWritableCalendar);
 
   const deleteConfirm = createTwoStepConfirm();
-  const handleDelete = () => deleteConfirm.press(() => props.onDelete());
-  createEffect(on(() => props.event?.id, () => deleteConfirm.disarm(), { defer: true }));
+  // Choosing which occurrences to delete is itself the confirmation
+  const [choosingDeleteScope, setChoosingDeleteScope] = createSignal(false);
+  const handleDelete = () => {
+    if (props.event?.recurring_event_id) setChoosingDeleteScope(true);
+    else deleteConfirm.press(() => props.onDelete());
+  };
+  createEffect(on(() => props.event?.id, () => { deleteConfirm.disarm(); setChoosingDeleteScope(false); }, { defer: true }));
 
   // Shortcuts advertised by the toolbar badges (R/V/O/M/E/#), the RSVP control (Y/⇧M/N)
   // and the actions wheel (R/⇧R/F)
@@ -214,6 +221,7 @@ export const EventView = (props: {
             </Show>
 
             <Show when={actions()!.delete}>
+              <div class="scope-menu-anchor">
               <button
                 class="thread-toolbar-btn thread-toolbar-btn-danger"
                 onClick={(e) => { if (e.detail <= 1) handleDelete(); }}
@@ -227,6 +235,14 @@ export const EventView = (props: {
                 </span>
                 <span class="shortcut-hint">#</span>
               </button>
+              <Show when={choosingDeleteScope()}>
+                <ScopeMenu
+                  title={actions()!.role === 'organizer' ? deletePrompt(actions()!) : "Delete repeating event"}
+                  onChoose={(scope) => { setChoosingDeleteScope(false); props.onDelete(scope); }}
+                  onCancel={() => setChoosingDeleteScope(false)}
+                />
+              </Show>
+              </div>
             </Show>
           </div>
         </Show>
@@ -391,6 +407,7 @@ export const EventView = (props: {
                     recurrence={props.inlineEdit!.recurrence}
                     setRecurrence={props.inlineEdit!.setRecurrence}
                     occurrenceOnly={props.inlineEdit!.occurrenceOnly}
+                    askScope={props.inlineEdit!.askScope}
                     guestSuggestions={props.inlineEdit!.guestSuggestions}
                     addMeet={props.inlineEdit!.addMeet}
                     setAddMeet={props.inlineEdit!.setAddMeet}

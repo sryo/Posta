@@ -120,6 +120,12 @@ describe("ActionsWheel event actions follow the user's role", () => {
     expect(screen.getByTitle("Delete")).toBeInTheDocument();
   });
 
+  it("says a delete from the wheel takes only this occurrence of a repeating event", () => {
+    render(() => <ActionsWheel {...baseProps} event={{ ...event, recurring_event_id: "s1" }} onDeleteEvent={vi.fn()} />);
+    fireEvent.click(screen.getByTitle("Delete"));
+    expect(screen.getByTitle("Click again to delete this occurrence of Sync")).toBeInTheDocument();
+  });
+
   it("asks an organizer to confirm that deleting notifies the guests", () => {
     render(() => <ActionsWheel {...baseProps} event={{ ...event, attendees: [person("a@example.com"), person("b@example.com")] }} onDeleteEvent={vi.fn()} />);
     fireEvent.click(screen.getByTitle("Delete"));

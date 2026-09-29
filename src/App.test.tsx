@@ -1600,7 +1600,7 @@ describe("App calendar", () => {
     render(() => <App />);
     fireEvent.click(await screen.findByText("Standup"));
     fireEvent.keyDown(document, { key: "e" });
-    expect(await screen.findByText("Repeats (editing this occurrence only)")).toBeInTheDocument();
+    expect(await screen.findByText("Repeats")).toBeInTheDocument();
     expect(screen.queryByText("Weekly")).toBeNull();
 
     fireEvent.keyDown(document, { key: "Escape" });
@@ -1608,6 +1608,45 @@ describe("App calendar", () => {
     fireEvent.click(await screen.findByText("Planning"));
     fireEvent.keyDown(document, { key: "e" });
     expect(await screen.findByText("Weekly")).toBeInTheDocument();
+  });
+
+  it("asks which occurrences a change to a repeating event applies to", async () => {
+    calendarCards();
+    cardsByAccount.a = [{ ...card("cal-1", "a", "Week"), query: "calendar:7d", card_type: "calendar" }];
+    handlers.fetch_calendar_events = () => [{ ...calendarEvent("ev-1_20260101", "Standup"), recurring_event_id: "ev-1" }];
+    handlers.update_calendar_event = () => ({ ...calendarEvent("ev-1", "Daily"), recurring_event_id: null });
+    render(() => <App />);
+    fireEvent.click(await screen.findByText("Standup"));
+    fireEvent.keyDown(document, { key: "e" });
+    const title = await screen.findByDisplayValue("Standup");
+    fireEvent.input(title, { target: { value: "Daily" } });
+    fireEvent.click(screen.getByRole("button", { name: /^Update/ }));
+    fireEvent.click(await screen.findByRole("menuitem", { name: "All events" }));
+
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith("update_calendar_event", expect.objectContaining({
+      eventId: "ev-1_20260101", summary: "Daily", scope: "all",
+    })));
+  });
+
+  it("deletes an occurrence and the ones after it", async () => {
+    calendarCards();
+    cardsByAccount.a = [{ ...card("cal-1", "a", "Week"), query: "calendar:7d", card_type: "calendar" }];
+    const occurrence = (n: number) => ({ ...calendarEvent(`ev-1_${n}`, `Standup ${n}`), recurring_event_id: "ev-1", start_time: tomorrowAt(8 + n) });
+    let listed = [occurrence(1), occurrence(2), occurrence(3), calendarEvent("ev-2", "Planning")];
+    handlers.fetch_calendar_events = () => listed;
+    handlers.delete_calendar_event = () => { listed = [occurrence(1), calendarEvent("ev-2", "Planning")]; return null; };
+    render(() => <App />);
+    fireEvent.click(await screen.findByText("Standup 2"));
+    fireEvent.keyDown(document, { key: "d" });
+    fireEvent.click(await screen.findByRole("menuitem", { name: "This and following" }));
+
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith("delete_calendar_event", {
+      accountId: "a", calendarId: "primary", eventId: "ev-1_2", scope: "following",
+    }));
+    await waitFor(() => expect(screen.queryByText("Standup 3")).not.toBeInTheDocument());
+    expect(screen.queryByText("Standup 2")).not.toBeInTheDocument();
+    expect(screen.getByText("Standup 1")).toBeInTheDocument();
+    expect(screen.getByText("Planning")).toBeInTheDocument();
   });
 
   it("drops a deleted event from the calendar cards' saved cache", async () => {

@@ -1,6 +1,7 @@
 // Tauri command bindings
 
 import { invoke } from "@tauri-apps/api/core";
+import type { RecurrenceScope } from "../app/recurrence";
 
 export interface Account {
   id: string;
@@ -531,15 +532,18 @@ export async function moveCalendarEvent(
   });
 }
 
+// `scope` picks the occurrences of a repeating event; one-off events ignore it
 export async function deleteCalendarEvent(
   accountId: string,
   calendarId: string,
-  eventId: string
+  eventId: string,
+  scope: RecurrenceScope = "this"
 ): Promise<void> {
   return invoke("delete_calendar_event", {
     accountId,
     calendarId,
     eventId,
+    scope,
   });
 }
 
@@ -547,7 +551,8 @@ export async function updateCalendarEvent(
   accountId: string,
   calendarId: string,
   eventId: string,
-  event: EventInput
+  event: EventInput,
+  scope: RecurrenceScope = "this"
 ): Promise<GoogleCalendarEvent> {
   return invoke("update_calendar_event", {
     accountId,
@@ -562,6 +567,7 @@ export async function updateCalendarEvent(
     attendees: event.attendees,
     recurrence: event.recurrence,
     addMeet: event.addMeet ?? false,
+    scope,
   });
 }
 

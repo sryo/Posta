@@ -283,6 +283,36 @@ describe("CreateEventForm Google Meet", () => {
   });
 });
 
+describe("CreateEventForm repeating event", () => {
+  it("asks which events to change before saving an occurrence", () => {
+    const onSave = vi.fn();
+    const { container, getByRole } = renderForm({ startDate: "2031-03-03", isEditing: true, onSave, extra: { askScope: true } });
+    fireEvent.click(container.querySelector<HTMLButtonElement>(".event-form-footer .btn-primary")!);
+    expect(onSave).not.toHaveBeenCalled();
+    fireEvent.click(getByRole("menuitem", { name: "All events" }));
+    expect(onSave).toHaveBeenCalledWith("all");
+  });
+
+  it("asks on ⌘Enter too, and Escape goes back to the form", () => {
+    const onSave = vi.fn();
+    const onClose = vi.fn();
+    const { container, getByRole, queryByRole } = renderForm({ startDate: "2031-03-03", isEditing: true, onSave, onClose, extra: { askScope: true } });
+    fireEvent.keyDown(container.querySelector("textarea")!, { key: "Enter", metaKey: true });
+    const menu = getByRole("menu");
+    fireEvent.keyDown(menu, { key: "Escape" });
+    expect(queryByRole("menu")).toBeNull();
+    expect(onClose).not.toHaveBeenCalled();
+    expect(onSave).not.toHaveBeenCalled();
+  });
+
+  it("saves a one-off event straight away", () => {
+    const onSave = vi.fn();
+    const { container } = renderForm({ startDate: "2031-03-03", isEditing: true, onSave });
+    fireEvent.click(container.querySelector<HTMLButtonElement>(".event-form-footer .btn-primary")!);
+    expect(onSave).toHaveBeenCalledTimes(1);
+  });
+});
+
 describe("CreateEventForm repeat", () => {
   it("offers repeat options for all-day events and hides the time pickers", () => {
     const setRecurrence = vi.fn();

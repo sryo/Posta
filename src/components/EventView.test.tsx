@@ -322,6 +322,34 @@ describe("EventView video call", () => {
 const attendee = (email: string, response_status: string | null, extra: Partial<GoogleCalendarEvent["attendees"][number]> = {}) =>
   ({ email, display_name: null, response_status, is_organizer: false, is_self: false, ...extra });
 
+describe("EventView deleting a repeating event", () => {
+  const occurrence = { id: "s1_20240110", recurring_event_id: "s1" };
+
+  it("asks which events to delete instead of a second press", () => {
+    const props = renderEvent(occurrence);
+    fireEvent.click(screen.getByTitle("Delete event"));
+    expect(props.onDelete).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("menuitem", { name: "This and following" }));
+    expect(props.onDelete).toHaveBeenCalledWith("following");
+  });
+
+  it("asks from the keyboard too, and Escape keeps the event", () => {
+    const props = renderEvent(occurrence);
+    fireEvent.keyDown(document, { key: "d" });
+    const menu = screen.getByRole("menu");
+    fireEvent.keyDown(menu, { key: "Escape" });
+    expect(screen.queryByRole("menu")).toBeNull();
+    expect(props.onDelete).not.toHaveBeenCalled();
+    expect(props.container.querySelector(".thread-overlay.closing")).toBeNull();
+  });
+
+  it("tells an organizer the guests hear about it", () => {
+    renderEvent({ ...occurrence, ...hosting });
+    fireEvent.click(screen.getByTitle("Delete event"));
+    expect(screen.getByRole("menu", { name: "Delete and notify 2 guests?" })).toBeInTheDocument();
+  });
+});
+
 describe("EventView guest list", () => {
   it("words each guest's answer, and says so when they haven't answered", () => {
     renderEvent({ attendees: [attendee("a@x.test", "declined"), attendee("b@x.test", "needsAction")] });

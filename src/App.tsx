@@ -115,6 +115,7 @@ import { CreateEventForm } from "./components/CreateEventForm";
 import { InviteBlock } from "./components/InviteBlock";
 import { eventActions } from "./app/eventActions";
 import { defaultCalendarId, lastUsedCalendar, rememberCalendar } from "./app/eventCalendars";
+import { deletedByScope, type RecurrenceScope } from "./app/recurrence";
 import { ThreadView } from "./components/ThreadView";
 import { EventView } from "./components/EventView";
 import { ActionsWheel } from "./components/ActionsWheel";
@@ -2162,7 +2163,7 @@ function App() {
     setComposeAttachments(composeAttachments().filter((_, i) => i !== index));
   }
 
-  async function handleCreateEvent() {
+  async function handleCreateEvent(scope: RecurrenceScope = "this") {
     const account = selectedAccount();
     if (!account) return;
 
@@ -2200,12 +2201,9 @@ function App() {
 
       if (editing) {
         // Update existing event
-        const updated = await updateCalendarEvent(
-          account.id,
-          editing.calendarId,
-          editing.id,
-          eventInput
-        );
+        const updated = await updateCalendarEvent(account.id, editing.calendarId, editing.id, eventInput, scope);
+        // The occurrence shown may no longer exist once its series changed
+        if (scope !== "this" && activeEvent()?.id === editing.id) closeEvent();
         // Sync the open EventView and the card's copy immediately; the
         // background refetch below lands later
         setActiveEvent(ev => (ev && ev.id === updated.id ? updated : ev));
@@ -2611,12 +2609,21 @@ function App() {
     updateEventInCards(eventId, ev => ({ ...ev, response_status: status }));
   }
 
-  async function deleteEvent(event: GoogleCalendarEvent) {
+  async function deleteEvent(event: GoogleCalendarEvent, scope: RecurrenceScope = "this") {
     const account = selectedAccount();
     if (!account) return;
     try {
-      await deleteCalendarEvent(account.id, event.calendar_id, event.id);
-      updateEventInCards(event.id, () => null);
+      await deleteCalendarEvent(account.id, event.calendar_id, event.id, scope);
+      if (scope === "this") {
+        updateEventInCards(event.id, () => null);
+      } else {
+        for (const [cardId, events] of Object.entries(cardCalendarEvents)) {
+          const kept = (events ?? []).filter(ev => !deletedByScope(ev, event, scope));
+          if (kept.length === events?.length) continue;
+          setCardCalendarEvents(cardId, reconcile(kept, { key: "id" }));
+          saveCachedCardEvents(cardId, kept).catch(e => console.warn("Failed to update event cache:", e));
+        }
+      }
       showToast('Event deleted');
       if (activeEvent()?.id === event.id) closeEvent();
     } catch (e) {
@@ -5125,7 +5132,7 @@ function App() {
               editing: { id: event.id, calendarId: event.calendar_id },
             }));
           }}
-          onDelete={() => { const event = activeEvent(); if (event) deleteEvent(event); }}
+          onDelete={(scope) => { const event = activeEvent(); if (event) deleteEvent(event, scope); }}
           onOpenCalendars={() => { fetchAvailableCalendars(); setCalendarDrawerOpen(true); }}
           calendarDrawerOpen={calendarDrawerOpen()}
           onCloseCalendarDrawer={() => setCalendarDrawerOpen(false)}
@@ -5157,6 +5164,7 @@ function App() {
             recurrence: eventForm().recurrence,
             setRecurrence: (v: string | null) => setEventForm(f => ({ ...f, recurrence: v })),
             occurrenceOnly: !!activeEvent()!.recurring_event_id,
+            askScope: !!activeEvent()!.recurring_event_id,
             guestSuggestions,
             addMeet: eventForm().addMeet,
             setAddMeet: (v: boolean) => setEventForm(f => ({ ...f, addMeet: v })),
