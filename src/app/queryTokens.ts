@@ -42,6 +42,18 @@ function splitWords(query: string): string[] {
   return words;
 }
 
+// Whether text closes every quote and parenthesis it opens
+export function isBalanced(text: string): boolean {
+  let inQuotes = false;
+  let depth = 0;
+  for (const ch of text) {
+    if (ch === '"') inQuotes = !inQuotes;
+    else if (!inQuotes && ch === "(") depth++;
+    else if (!inQuotes && ch === ")") depth = Math.max(0, depth - 1);
+  }
+  return !inQuotes && depth === 0;
+}
+
 function parseOperator(word: string): QueryOperator | null {
   const match = /^(-?)([a-z_]+):(.+)$/i.exec(word);
   if (!match) return null;

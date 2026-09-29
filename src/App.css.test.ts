@@ -208,6 +208,14 @@ describe("card query field", () => {
     expect(hidden.get("display")).toBeUndefined();
   });
 
+  it("draws the text box borderless inside the chip box while typing, the box taking the focus colour", () => {
+    const box = declarationsOf(".query-chips input");
+    expect(box.get("border")).toBe("none");
+    expect(box.get("flex")).toBe("0 1 auto");
+    expect(declarationsOf(".query-chips input:last-child").get("flex-grow")).toBe("1");
+    expect(declarationsOf(".query-chips:focus-within").get("border-color")).toBe("var(--accent)");
+  });
+
   it("shows a failed preview in the danger color", () => {
     expect(declarationsOf(".query-preview-error").get("color")).toBe("var(--danger)");
   });
