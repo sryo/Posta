@@ -287,24 +287,6 @@ export function getAvatarColor(str: string): string {
   return AVATAR_COLORS[Math.abs(hash) % AVATAR_COLORS.length];
 }
 
-// Avatar colours for keys shown side by side, such as the signed-in
-// accounts: each its own colour unless an earlier key took it, then the
-// next free one
-export function distinctAvatarColors(keys: readonly string[]): string[] {
-  const taken = new Set<string>();
-  return keys.map(key => {
-    const start = AVATAR_COLORS.indexOf(getAvatarColor(key));
-    for (let i = 0; i < AVATAR_COLORS.length; i++) {
-      const color = AVATAR_COLORS[(start + i) % AVATAR_COLORS.length];
-      if (!taken.has(color)) {
-        taken.add(color);
-        return color;
-      }
-    }
-    return AVATAR_COLORS[start];
-  });
-}
-
 /**
  * Validate a single email address
  */

@@ -1,8 +1,6 @@
 import { afterEach, describe, expect, it } from "vitest";
 import {
   addForwardPrefix,
-  distinctAvatarColors,
-  getAvatarColor,
   addReplyPrefix,
   buildForwardBody,
   extractEmail,
@@ -314,17 +312,5 @@ describe("smoothScroll", () => {
   it("jumps instead when the system asks for reduced motion", () => {
     stubMotion(true);
     expect(smoothScroll()).toBe("auto");
-  });
-});
-
-describe("distinctAvatarColors", () => {
-  it("keeps each key's own colour while it is free", () => {
-    expect(distinctAvatarColors(["ana@x.com"])).toEqual([getAvatarColor("ana@x.com")]);
-  });
-
-  it("moves a key whose colour is taken to the next free one", () => {
-    const [a, b] = distinctAvatarColors(["mateo@posta.test", "mateo.work@acme.test"]);
-    expect(a).toBe(getAvatarColor("mateo@posta.test"));
-    expect(b).not.toBe(a);
   });
 });
