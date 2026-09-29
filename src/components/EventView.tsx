@@ -22,7 +22,7 @@ import { CloseButton } from "./ComposeAtoms";
 import { ComposeForm } from "./ComposeForm";
 import { CreateEventForm } from "./CreateEventForm";
 import { MessageActionsWheel } from "./MessageActionsWheel";
-import { COLOR_HEX } from "../shared/constants";
+import { CardPill } from "./CardPill";
 import { organizerName } from "../app/people";
 import { createCloseAfterAnimation } from "../shared/closeAfterAnimation";
 import { isTypingTarget, hasCommandModifier } from "../shared/keyboard";
@@ -124,18 +124,7 @@ export const EventView = (props: {
             </Show>
           </div>
           <Show when={props.card}>
-            <div
-              class="thread-bar-card"
-              style={props.card?.color ? {
-                background: COLOR_HEX[props.card.color] + '20',
-                color: COLOR_HEX[props.card.color]
-              } : {
-                background: 'var(--bg-tertiary)',
-                color: 'var(--text-secondary)'
-              }}
-            >
-              {props.card?.name}
-            </div>
+            <CardPill color={props.card?.color}>{props.card?.name}</CardPill>
           </Show>
         </div>
 

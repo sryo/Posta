@@ -4311,6 +4311,15 @@ button.settings-section-title {
     font-size: 0.75rem;
     font-weight: 600;
     white-space: nowrap;
+    background: var(--bg-tertiary);
+    color: var(--text-secondary);
+}
+
+/* The card colour pulled toward the text colour: darker in light mode,
+   lighter in dark, so every card colour reads on its own tint */
+.thread-bar-card.tinted {
+    background: color-mix(in srgb, var(--pill-color) 12.5%, transparent);
+    color: color-mix(in srgb, var(--pill-color) 40%, var(--text-primary));
 }
 
 .thread-bar-actions {
