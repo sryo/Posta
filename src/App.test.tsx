@@ -970,6 +970,22 @@ describe("App thread view", () => {
   });
 });
 
+describe("App smart replies", () => {
+  it("asks the keychain whether a Gemini key is saved once, not on every thread open", async () => {
+    handlers.has_gemini_api_key = () => true;
+    handlers.suggest_replies = () => ["Sure"];
+    handlers.get_thread_details = () => ({ id: "t-a", messages: [fullMessage("m1", "Ana <ana@x.com>")] });
+    render(() => <App />);
+    for (let i = 0; i < 2; i++) {
+      fireEvent.click(await screen.findByText("Mail for A"));
+      await waitFor(() => expect(invoke.mock.calls.filter(([cmd]) => cmd === "suggest_replies")).toHaveLength(i + 1));
+      fireEvent.keyDown(document, { key: "Escape" });
+      await waitFor(() => expect(document.querySelector(".thread-overlay")).toBeNull());
+    }
+    expect(invoke.mock.calls.filter(([cmd]) => cmd === "has_gemini_api_key")).toHaveLength(1);
+  });
+});
+
 describe("App inline images", () => {
   // Gmail can hand out a new attachment id for the same part on every fetch
   it("downloads a thread's inline images once, not again on reopening it", async () => {

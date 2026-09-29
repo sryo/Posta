@@ -903,7 +903,8 @@ function App() {
   const [clientId, setClientId] = createSignal("");
   const [clientSecret, setClientSecret] = createSignal("");
   const [geminiKeyDraft, setGeminiKeyDraft] = createSignal("");
-  const [geminiKeySaved, setGeminiKeySaved] = createSignal(false);
+  // undefined until the keychain has answered, so views ask it themselves
+  const [geminiKeySaved, setGeminiKeySaved] = createSignal<boolean | undefined>(undefined);
   const [smartRepliesOpen, setSmartRepliesOpen] = createSignal(false);
 
   // Preset selection for new accounts
@@ -4892,6 +4893,7 @@ function App() {
       <Show when={activeThreadId()}>
         <ThreadView
           thread={activeThread()}
+          geminiKeySaved={geminiKeySaved()}
           accountId={selectedAccount()?.id || ''}
           currentUserEmail={selectedAccount()?.email}
           onError={showToast}
