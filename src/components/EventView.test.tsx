@@ -75,6 +75,65 @@ const hosting: Partial<GoogleCalendarEvent> = {
 const toolbarLabels = (container: HTMLElement) =>
   Array.from(container.querySelectorAll(".thread-bar-actions .thread-toolbar-label")).map(el => el.textContent);
 
+describe("EventView keys match the rest of the app", () => {
+  afterEach(() => vi.clearAllMocks());
+
+  it("joins the call with v, leaving j alone", async () => {
+    const { openUrl } = await import("@tauri-apps/plugin-opener");
+    renderEvent({ hangout_link: "https://meet.google.com/abc" });
+    fireEvent.keyDown(document, { key: "j" });
+    expect(openUrl).not.toHaveBeenCalled();
+    fireEvent.keyDown(document, { key: "v" });
+    expect(openUrl).toHaveBeenCalledWith("https://meet.google.com/abc");
+    expect(screen.getByTitle("Join video call")).toHaveTextContent("V");
+  });
+
+  it("moves the event with m, leaving c alone", () => {
+    const props = renderEvent();
+    fireEvent.keyDown(document, { key: "c" });
+    expect(props.onOpenCalendars).not.toHaveBeenCalled();
+    fireEvent.keyDown(document, { key: "m" });
+    expect(props.onOpenCalendars).toHaveBeenCalledTimes(1);
+    const move = screen.getByTitle("Move to calendar");
+    expect(move.querySelector(".thread-toolbar-label")).toHaveTextContent("Move to…");
+    expect(move.querySelector(".shortcut-hint")).toHaveTextContent("M");
+  });
+
+  it("closes the calendar drawer with m, as its footer says", () => {
+    const props = renderEvent({}, { calendarDrawerOpen: true });
+    expect(document.querySelector(".label-drawer-footer")).toHaveTextContent("M to close");
+    fireEvent.keyDown(document, { key: "m" });
+    expect(props.onCloseCalendarDrawer).toHaveBeenCalledTimes(1);
+  });
+
+  it("names the Google Calendar link for where it goes", () => {
+    renderEvent();
+    expect(screen.getByTitle("Open in Google Calendar").querySelector(".thread-toolbar-label")).toHaveTextContent("Google Calendar ↗");
+  });
+
+  it("answers an invite with y, ⇧M and n, and shows those keys", () => {
+    const props = renderEvent(invited);
+    fireEvent.keyDown(document, { key: "y" });
+    fireEvent.keyDown(document, { key: "M", shiftKey: true });
+    fireEvent.keyDown(document, { key: "n" });
+    expect(props.onRsvp.mock.calls).toEqual([["accepted"], ["tentative"], ["declined"]]);
+    expect(screen.getByRole("button", { name: "Going" })).toHaveAttribute("aria-keyshortcuts", "y");
+  });
+
+  it("does not answer for the user on an event they own", () => {
+    const props = renderEvent();
+    fireEvent.keyDown(document, { key: "y" });
+    fireEvent.keyDown(document, { key: "n" });
+    expect(props.onRsvp).not.toHaveBeenCalled();
+  });
+
+  it("does not repeat an answer the user already gave", () => {
+    const props = renderEvent({ ...invited, response_status: "accepted" });
+    fireEvent.keyDown(document, { key: "y" });
+    expect(props.onRsvp).not.toHaveBeenCalled();
+  });
+});
+
 describe("EventView actions follow the user's role", () => {
   it("lets the owner of a solo event edit, delete and move it, with no reply or RSVP", () => {
     const { container } = renderEvent();
@@ -132,7 +191,7 @@ describe("EventView actions follow the user's role", () => {
 describe("EventView keyboard shortcuts", () => {
   it("ignores Cmd/Ctrl combos such as Cmd+C copy and Cmd+D", () => {
     const props = renderEvent();
-    fireEvent.keyDown(document, { key: "c", metaKey: true });
+    fireEvent.keyDown(document, { key: "m", metaKey: true });
     fireEvent.keyDown(document, { key: "d", ctrlKey: true });
     fireEvent.keyDown(document, { key: "r", metaKey: true });
     expect(props.onOpenCalendars).not.toHaveBeenCalled();
@@ -142,7 +201,7 @@ describe("EventView keyboard shortcuts", () => {
 
   it("handles the bare-key shortcuts", () => {
     const props = renderEvent();
-    fireEvent.keyDown(document, { key: "c" });
+    fireEvent.keyDown(document, { key: "m" });
     fireEvent.keyDown(document, { key: "e" });
     expect(props.onOpenCalendars).toHaveBeenCalledTimes(1);
     expect(props.onEdit).toHaveBeenCalledTimes(1);

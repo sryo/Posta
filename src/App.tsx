@@ -147,7 +147,7 @@ import { escapeTarget, nextCardFocus, nextItemFocus } from "./app/keyboardNav";
 import { getSmartEventTime, groupCalendarEvents, isUserLabel, mergeThreadGroups, regroupThreads, type CalendarEventGroup } from "./app/grouping";
 import { pullLayoutWithRetry } from "./app/icloudRestore";
 import { querySuggestions, type QuerySuggestion } from "./app/querySuggestions";
-import { inviteNamesEvent, ownResponseLabel, rsvpSentMessage, type RsvpStatus } from "./app/rsvp";
+import { inviteNamesEvent, ownResponseLabel, rsvpForKey, rsvpSentMessage, type RsvpStatus } from "./app/rsvp";
 import { createRsvpLookups } from "./app/rsvpLookups";
 import { nextSelection } from "./app/selection";
 import { fingerprint } from "./app/fingerprint";
@@ -232,6 +232,23 @@ function App() {
   const inviteRsvp = (uid: string | null) => {
     const account = selectedAccount();
     return account && uid ? rsvpStatus[rsvpLookups.key(account.id, uid)] : undefined;
+  };
+
+  // Answers an event listed in a calendar card or open in the event view
+  const answerListedEvent = async (event: GoogleCalendarEvent, status: RsvpStatus) => {
+    const account = selectedAccount();
+    if (!account || rsvpLoading[event.id]) return;
+    setRsvpLoading(event.id, true);
+    try {
+      await rsvpListedCalendarEvent(account.id, event.calendar_id, event.id, status);
+      markEventRsvp(event.id, status);
+      showToast(rsvpSentMessage(status));
+    } catch (e) {
+      console.error("Failed to update RSVP", e);
+      showToast(`Couldn't RSVP: ${e}`);
+    } finally {
+      setRsvpLoading(event.id, false);
+    }
   };
 
   // Answers an invite from its email; the calendar cards showing the event
@@ -1535,6 +1552,13 @@ function App() {
     const thread = getFocusedThread();
     const cardId = focusedCardId();
     if (thread && cardId) {
+      const invite = thread.calendar_event;
+      const answer = invite?.method === "REQUEST" && invite.uid ? rsvpForKey(e) : null;
+      if (answer) {
+        e.preventDefault();
+        if (inviteRsvp(invite!.uid) !== answer) handleRsvp(thread.gmail_thread_id, invite!.uid, answer);
+        return;
+      }
       if (e.key === 'a') {
         e.preventDefault();
         const isInInbox = thread.labels?.includes('INBOX') ?? true;
@@ -1590,6 +1614,12 @@ function App() {
     const event = getFocusedEvent();
     if (event && cardId) {
       const can = eventActions(event, selectedAccount()?.email ?? '');
+      const answer = can.rsvp ? rsvpForKey(e) : null;
+      if (answer) {
+        e.preventDefault();
+        if (event.response_status !== answer) answerListedEvent(event, answer);
+        return;
+      }
       if (e.key === 'r' && (can.reply || can.emailGuests)) {
         e.preventDefault();
         openEventQuickReply(event.id);
@@ -4451,6 +4481,7 @@ function App() {
                                                   size="sm"
                                                   value={inviteRsvp(thread.calendar_event!.uid)}
                                                   disabled={rsvpLoading[thread.gmail_thread_id]}
+                                                  showKeys={isThreadFocused(card.id, thread.gmail_thread_id)}
                                                   onAnswer={(status) => handleRsvp(thread.gmail_thread_id, thread.calendar_event!.uid, status)}
                                                 />
                                               </Show>
@@ -5021,22 +5052,7 @@ function App() {
           })() : null}
           focusColor={selectedBgColorIndex() !== null ? BG_COLORS[selectedBgColorIndex()!].hex : null}
           onClose={closeEvent}
-          onRsvp={async (status) => {
-            const event = activeEvent();
-            const account = selectedAccount();
-            if (!event || !account || rsvpLoading[event.id]) return;
-            setRsvpLoading(event.id, true);
-            try {
-              await rsvpListedCalendarEvent(account.id, event.calendar_id, event.id, status);
-              markEventRsvp(event.id, status);
-              showToast(rsvpSentMessage(status));
-            } catch (e) {
-              console.error("Failed to update RSVP", e);
-              showToast(`Couldn't RSVP: ${e}`);
-            } finally {
-              setRsvpLoading(event.id, false);
-            }
-          }}
+          onRsvp={(status) => { const event = activeEvent(); if (event) answerListedEvent(event, status); }}
           onReplyOrganizer={() => {
             const event = activeEvent();
             if (!event) return;
@@ -5487,6 +5503,7 @@ function App() {
               <div class="shortcut-row"><kbd>u</kbd> <span>Toggle read</span></div>
               <div class="shortcut-row"><kbd>i</kbd> <span>Toggle important</span></div>
               <div class="shortcut-row"><kbd>!</kbd> <span>Report spam</span></div>
+              <div class="shortcut-row"><kbd>y ⇧M n</kbd> <span>Answer a focused invite: Going, Maybe, Not going</span></div>
               <div class="shortcut-row"><kbd>z</kbd> <span>Undo last action</span></div>
             </div>
             <div class="shortcuts-section">
@@ -5509,9 +5526,12 @@ function App() {
               <div class="shortcut-row"><kbd>r</kbd> <span>Reply to organizer</span></div>
               <div class="shortcut-row"><kbd>⇧R</kbd> <span>Reply all</span></div>
               <div class="shortcut-row"><kbd>f</kbd> <span>Forward</span></div>
-              <div class="shortcut-row"><kbd>j</kbd> <span>Join meeting</span></div>
+              <div class="shortcut-row"><kbd>v</kbd> <span>Join meeting</span></div>
               <div class="shortcut-row"><kbd>o</kbd> <span>Open in Google Calendar</span></div>
-              <div class="shortcut-row"><kbd>c</kbd> <span>Move to calendar</span></div>
+              <div class="shortcut-row"><kbd>m</kbd> <span>Move to calendar</span></div>
+              <div class="shortcut-row"><kbd>y</kbd> <span>Going</span></div>
+              <div class="shortcut-row"><kbd>⇧M</kbd> <span>Maybe</span></div>
+              <div class="shortcut-row"><kbd>n</kbd> <span>Not going</span></div>
               <div class="shortcut-row"><kbd>e</kbd> <span>Edit</span></div>
               <div class="shortcut-row"><kbd>d</kbd> <span>Delete</span></div>
             </div>

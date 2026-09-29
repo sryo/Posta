@@ -4,7 +4,7 @@ import { DOMPURIFY_CONFIG } from './MessageBody';
 import { openUrl } from '@tauri-apps/plugin-opener';
 import type { GoogleCalendarEvent } from "../api/tauri";
 import { formatCalendarEventDate, textOrHtmlToHtml } from "../utils";
-import { guestResponseLabel, isRsvpAnswer, ownResponseLabel } from "../app/rsvp";
+import { guestResponseLabel, isRsvpAnswer, ownResponseLabel, rsvpForKey } from "../app/rsvp";
 import { RsvpControl } from "./RsvpControl";
 import { deletePrompt, eventActions, isWritableCalendar } from "../app/eventActions";
 import {
@@ -60,7 +60,8 @@ export const EventView = (props: {
   const handleDelete = () => deleteConfirm.press(() => props.onDelete());
   createEffect(on(() => props.event?.id, () => deleteConfirm.disarm(), { defer: true }));
 
-  // Shortcuts advertised by the toolbar badges (R/J/O/C/E/#) and the actions wheel (R/⇧R/F)
+  // Shortcuts advertised by the toolbar badges (R/V/O/M/E/#), the RSVP control (Y/⇧M/N)
+  // and the actions wheel (R/⇧R/F)
   const handleKeyDown = (e: KeyboardEvent) => {
     const isTyping = isTypingTarget(e.target);
 
@@ -82,13 +83,19 @@ export const EventView = (props: {
     if (e.key === 'r' && can.emailGuests) { e.preventDefault(); props.onReplyAll(); return; }
     if (e.key === 'R' && can.reply) { e.preventDefault(); props.onReplyAll(); return; }
     if (e.key === 'f') { e.preventDefault(); props.onForward(); return; }
-    if (e.key === 'j' && event.hangout_link) { e.preventDefault(); openUrl(event.hangout_link); return; }
+    if (e.key === 'v' && event.hangout_link) { e.preventDefault(); openUrl(event.hangout_link); return; }
     if (e.key === 'o' && event.html_link) { e.preventDefault(); openUrl(event.html_link); return; }
-    if (e.key === 'c' && can.move) {
+    if (e.key === 'm' && can.move) {
       // The drawer footer promises a toggle, so close when already open
       e.preventDefault();
       if (props.calendarDrawerOpen) props.onCloseCalendarDrawer();
       else props.onOpenCalendars();
+      return;
+    }
+    const answer = can.rsvp ? rsvpForKey(e) : null;
+    if (answer) {
+      e.preventDefault();
+      if (answer !== event.response_status && !props.rsvpLoading) props.onRsvp(answer);
       return;
     }
     if (e.key === 'e' && can.edit) { e.preventDefault(); props.onEdit(); return; }
@@ -166,7 +173,7 @@ export const EventView = (props: {
               >
                 <VideoIcon />
                 <span class="thread-toolbar-label">Join</span>
-                <span class="shortcut-hint">J</span>
+                <span class="shortcut-hint">V</span>
               </button>
             </Show>
 
@@ -177,7 +184,7 @@ export const EventView = (props: {
                 title="Open in Google Calendar"
               >
                 <CalendarIcon />
-                <span class="thread-toolbar-label">Open</span>
+                <span class="thread-toolbar-label">Google Calendar ↗</span>
                 <span class="shortcut-hint">O</span>
               </button>
             </Show>
@@ -185,8 +192,8 @@ export const EventView = (props: {
             <Show when={actions()!.move}>
               <button class="thread-toolbar-btn" onClick={props.onOpenCalendars} title="Move to calendar">
                 <CalendarIcon />
-                <span class="thread-toolbar-label">Move</span>
-                <span class="shortcut-hint">C</span>
+                <span class="thread-toolbar-label">Move to…</span>
+                <span class="shortcut-hint">M</span>
               </button>
             </Show>
 
@@ -289,6 +296,7 @@ export const EventView = (props: {
                         value={props.event!.response_status}
                         onAnswer={props.onRsvp}
                         disabled={props.rsvpLoading}
+                        showKeys
                       />
                     </div>
                   </Show>
@@ -437,7 +445,7 @@ export const EventView = (props: {
           </div>
 
           <div class="label-drawer-footer">
-            <span class="shortcut-hint">Press C to toggle calendars</span>
+            <span class="shortcut-hint">M to close</span>
           </div>
         </div>
       </Show>

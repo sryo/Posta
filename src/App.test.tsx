@@ -1319,6 +1319,37 @@ describe("App calendar", () => {
     await waitFor(() => expect(invoke).toHaveBeenCalledWith("send_email", expect.objectContaining({ to: "bo@y.com", body: "See you there\n\n-- \nAna" })));
   });
 
+  it("answers a focused invite in a calendar card with y, ⇧M and n", async () => {
+    calendarCards();
+    handlers.fetch_calendar_events = () => [{
+      ...calendarEvent("ev-a", "Planning"),
+      can_edit: false,
+      response_status: "needsAction",
+      attendees: [{ email: "a@x.com", display_name: null, response_status: "needsAction", is_self: true, is_organizer: false }],
+    }];
+    handlers.rsvp_listed_calendar_event = () => null;
+    render(() => <App />);
+    await screen.findByText("Planning");
+
+    fireEvent.keyDown(document, { key: "l" });
+    fireEvent.keyDown(document, { key: "n" });
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith("rsvp_listed_calendar_event", {
+      accountId: "a", calendarId: "primary", eventId: "ev-a", status: "declined",
+    }));
+    expect(await screen.findByText("You're not going")).toBeInTheDocument();
+  });
+
+  it("does not answer for the user on a focused event they own", async () => {
+    calendarCards();
+    handlers.fetch_calendar_events = () => [{ ...calendarEvent("ev-a", "Focus"), organizer: "a@x.com" }];
+    render(() => <App />);
+    await screen.findByText("Focus");
+
+    fireEvent.keyDown(document, { key: "l" });
+    fireEvent.keyDown(document, { key: "y" });
+    expect(invoke).not.toHaveBeenCalledWith("rsvp_listed_calendar_event", expect.anything());
+  });
+
   it("opens no reply on the user's own event when no one else is on it", async () => {
     calendarCards();
     handlers.fetch_calendar_events = () => [{ ...calendarEvent("ev-a", "Focus"), organizer: "a@x.com" }];
@@ -1564,6 +1595,26 @@ describe("App calendar", () => {
         cardId, events: [expect.objectContaining({ id: "ev-1_20260928T150000Z", response_status: "accepted" })],
       }));
     }
+  });
+
+  it("answers a focused invite email with ⇧M and shows the keys on its row", async () => {
+    threadsByCard["card-a"] = [{
+      ...thread("t-inv", "Invitation: Planning"),
+      calendar_event: {
+        uid: "ev-1@google.com", title: "Planning", start_time: Date.now() + 3600_000, end_time: null, all_day: false,
+        location: null, description: null, organizer: "org@x.com", attendees: [], method: "REQUEST", status: null, response_status: null,
+      },
+    }];
+    handlers.get_calendar_rsvp_status = () => null;
+    handlers.rsvp_calendar_event = () => null;
+    render(() => <App />);
+    await screen.findByText("Invitation: Planning");
+
+    fireEvent.keyDown(document, { key: "l" });
+    const row = screen.getByText("Invitation: Planning").closest(".thread") as HTMLElement;
+    expect(within(row).getByRole("button", { name: "Maybe" })).toHaveAttribute("aria-keyshortcuts", "Shift+M");
+    fireEvent.keyDown(document, { key: "M", shiftKey: true });
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith("rsvp_calendar_event", { accountId: "a", eventUid: "ev-1@google.com", status: "tentative" }));
   });
 
   it("answers an invite from its email and shows the answer on the event in calendar cards", async () => {
@@ -3136,6 +3187,23 @@ describe("App accessibility", () => {
     for (const text of ["Reply to organizer", "Reply all", "Forward", "Join meeting", "Open in Google Calendar", "Move to calendar", "Edit", "Delete"]) {
       expect(within(section("Open event")).getByText(text)).toBeInTheDocument();
     }
+  });
+
+  it("lists the event keys that the event view and invite rows answer to", async () => {
+    render(() => <App />);
+    await screen.findByText("Mail for A");
+    fireEvent.keyDown(document, { key: "?" });
+    const help = (await screen.findByText("Keyboard Shortcuts")).closest(".shortcuts-modal") as HTMLElement;
+    const section = (title: string) => within(help).getByRole("heading", { name: title }).closest(".shortcuts-section") as HTMLElement;
+    const keyFor = (el: HTMLElement, text: string) => within(el).getByText(text).closest(".shortcut-row")!.querySelector("kbd")!.textContent;
+
+    const event = section("Open event");
+    expect(keyFor(event, "Join meeting")).toBe("v");
+    expect(keyFor(event, "Move to calendar")).toBe("m");
+    expect(keyFor(event, "Going")).toBe("y");
+    expect(keyFor(event, "Maybe")).toBe("⇧M");
+    expect(keyFor(event, "Not going")).toBe("n");
+    expect(keyFor(section("Actions"), "Answer a focused invite: Going, Maybe, Not going")).toBe("y ⇧M n");
   });
 
   it("names the collapse button and says whether the card is expanded", async () => {
