@@ -184,7 +184,7 @@ export const InviteWhen = (props: {
       class="invite-when"
       classList={{
         past: props.state === "past",
-        struck: props.state === "declined" || props.state === "cancelled",
+        "struck": props.state === "declined" || props.state === "cancelled",
         live: !!props.live,
       }}
     >
@@ -208,7 +208,7 @@ const InviteStrip = (props: { layout: StripLayout }) => (
       {(block) => (
         <span
           class="invite-strip-busy"
-          classList={{ overlap: block.overlap }}
+          classList={{ "overlap": block.overlap }}
           style={{ left: `${block.left}%`, width: `${block.width}%` }}
           title={block.title}
         />
