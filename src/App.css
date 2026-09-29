@@ -2700,6 +2700,10 @@ button:disabled:hover {
     text-align: right;
 }
 
+.form-field-row label {
+    min-width: 64px;
+}
+
 .compose-field input {
     flex: 1;
     border: none;
@@ -2757,6 +2761,24 @@ button:disabled:hover {
     outline: none;
     resize: none;
     font-family: inherit;
+}
+
+/* Leading controls, then the error or status, then the buttons */
+.form-footer {
+    display: flex;
+    align-items: center;
+    gap: var(--space-md);
+}
+
+.form-footer-status {
+    flex: 1;
+    min-width: 0;
+}
+
+.form-footer-actions {
+    display: flex;
+    align-items: center;
+    gap: var(--space-md);
 }
 
 .compose-footer {
@@ -5508,10 +5530,6 @@ button.settings-section-title {
     background: var(--bg-secondary);
 }
 
-.compose-spacer {
-    flex: 1;
-}
-
 /* Event form: title and calendar above the scrolling body, actions below */
 .event-form-header {
     position: sticky;
@@ -5525,7 +5543,7 @@ button.settings-section-title {
     background: var(--bg-primary);
 }
 
-.event-title-input {
+.form-title-field {
     flex: 1;
     min-width: 0;
     padding: var(--space-xs) 0;
@@ -5538,7 +5556,7 @@ button.settings-section-title {
     outline: none;
 }
 
-.event-title-input::placeholder {
+.form-title-field::placeholder {
     color: var(--text-muted);
     font-weight: 500;
 }

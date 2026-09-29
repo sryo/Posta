@@ -112,3 +112,15 @@ describe("CardForm query", () => {
     expect(debounceQueryPreview).toHaveBeenCalledWith("invoice");
   });
 });
+
+describe("CardForm footer", () => {
+  it("ends in the shared footer: Delete leading, then Cancel and Save", () => {
+    renderCardForm("edit");
+    const footer = document.querySelector(".form-footer")!;
+    expect(footer).not.toBeNull();
+    const cancel = screen.getByRole("button", { name: /Cancel/ });
+    const save = screen.getByRole("button", { name: /Save/ });
+    expect(footer.querySelector(".form-footer-actions")!.contains(cancel)).toBe(true);
+    expect(footer.querySelector(".form-footer-actions")!.contains(save)).toBe(true);
+  });
+});

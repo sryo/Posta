@@ -13,6 +13,7 @@ import { isImeComposing, onActivateKey } from "../shared/keyboard";
 import type { RecentContact } from "../app/contacts";
 import type { QuerySuggestion } from "../app/querySuggestions";
 import { QueryField } from "./QueryField";
+import { CancelButton, FormFooter, SubmitButton } from "./FormParts";
 
 // Shared card form component for new and edit modes
 export const CardForm = (props: {
@@ -148,29 +149,23 @@ export const CardForm = (props: {
           </For>
         </div>
       </div>
-      <div class="card-form-actions">
-        <Show when={props.onDelete}>
-          <button class="btn btn-danger" onClick={(e) => {
-            e.preventDefault();
-            e.stopPropagation();
-            props.onDelete?.();
-          }}>
-            <TrashIcon /> Delete
-          </button>
-          <div style="flex: 1"></div>
-        </Show>
-        <button class="btn" onClick={props.onCancel} title="Cancel (Esc)">
-          Cancel <span class="shortcut-hint">ESC</span>
-        </button>
-        <button
-          class="btn btn-primary"
-          onClick={props.onSave}
-          disabled={props.saveDisabled}
-          title={`${props.mode === 'new' ? 'Add' : 'Save'} (⌘Enter)`}
-        >
-          {props.mode === 'new' ? 'Add' : 'Save'} <span class="shortcut-hint">⌘↵</span>
-        </button>
-      </div>
+      <FormFooter
+        class="card-form-actions"
+        leading={
+          <Show when={props.onDelete}>
+            <button class="btn btn-danger" onClick={(e) => {
+              e.preventDefault();
+              e.stopPropagation();
+              props.onDelete?.();
+            }}>
+              <TrashIcon /> Delete
+            </button>
+          </Show>
+        }
+      >
+        <CancelButton onClick={props.onCancel} />
+        <SubmitButton label={props.mode === 'new' ? 'Add' : 'Save'} disabled={props.saveDisabled} onClick={props.onSave} />
+      </FormFooter>
     </div>
   );
 };

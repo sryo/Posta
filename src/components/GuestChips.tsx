@@ -12,6 +12,7 @@ const asRecipient = (c: Contact) => (c.name ? `"${c.name.replace(/"/g, "")}" <${
 export const GuestChips = (props: {
   value: string;
   onChange: (value: string) => void;
+  id?: string;
   suggest?: (query: string) => Contact[];
 }) => {
   const listId = createUniqueId();
@@ -94,6 +95,7 @@ export const GuestChips = (props: {
       </For>
       <input
         type="text"
+        id={props.id}
         class="guest-chips-input"
         role="combobox"
         aria-label="Guests"
