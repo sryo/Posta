@@ -1319,6 +1319,17 @@ describe("App calendar", () => {
     await waitFor(() => expect(invoke).toHaveBeenCalledWith("send_email", expect.objectContaining({ to: "bo@y.com", body: "See you there\n\n-- \nAna" })));
   });
 
+  it("opens no reply on the user's own event when no one else is on it", async () => {
+    calendarCards();
+    handlers.fetch_calendar_events = () => [{ ...calendarEvent("ev-a", "Focus"), organizer: "a@x.com" }];
+    render(() => <App />);
+    await screen.findByText("Focus");
+
+    fireEvent.keyDown(document, { key: "l" });
+    fireEvent.keyDown(document, { key: "r" });
+    expect(document.querySelector(".quick-reply-input")).toBeNull();
+  });
+
   it("labels calendar cards as calendar cards", async () => {
     calendarCards();
     render(() => <App />);
@@ -1536,7 +1547,7 @@ describe("App calendar", () => {
       { ...card("cal-1", "a", "Week"), query: "calendar:7d", card_type: "calendar" },
       { ...card("cal-2", "a", "Month"), query: "calendar:30d", card_type: "calendar", position: 1 },
     ];
-    handlers.fetch_calendar_events = () => [{ ...calendarEvent("ev-1_20260928T150000Z", "Planning"), calendar_id: "team@group.calendar.google.com", response_status: "needsAction" }];
+    handlers.fetch_calendar_events = () => [{ ...calendarEvent("ev-1_20260928T150000Z", "Planning"), calendar_id: "team@group.calendar.google.com", response_status: "needsAction", can_edit: false, attendees: [{ email: "a@x.com", display_name: null, response_status: "needsAction", is_self: true, is_organizer: false }] }];
     handlers.rsvp_listed_calendar_event = () => null;
     render(() => <App />);
     await waitFor(() => expect(screen.getAllByText("Planning")).toHaveLength(2));

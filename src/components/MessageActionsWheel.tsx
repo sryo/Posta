@@ -2,23 +2,29 @@ import { Show, For } from "solid-js";
 import { ReplyIcon, ReplyAllIcon, ForwardIcon } from "./Icons";
 
 // Message Actions Wheel Component - shared between ThreadView and EventView
+// A missing handler leaves its action off the wheel
 export const MessageActionsWheel = (props: {
-  onReply: () => void;
-  onReplyAll: () => void;
+  onReply?: () => void;
+  onReplyAll?: () => void;
+  replyAllTitle?: string;
   onForward: () => void;
   open: boolean;
   showHints?: boolean;
   onMouseEnter?: () => void;
   onMouseLeave?: () => void;
 }) => {
-  const actions = [
-    { title: 'Reply', keyHint: 'R', icon: ReplyIcon, onClick: props.onReply },
-    { title: 'Reply All', keyHint: '⇧R', icon: ReplyAllIcon, onClick: props.onReplyAll },
+  const actions = () => [
+    props.onReply && { title: 'Reply', keyHint: 'R', icon: ReplyIcon, onClick: props.onReply },
+    props.onReplyAll && {
+      title: props.replyAllTitle ?? 'Reply All',
+      keyHint: props.onReply ? '⇧R' : 'R',
+      icon: ReplyAllIcon,
+      onClick: props.onReplyAll,
+    },
     { title: 'Forward', keyHint: 'F', icon: ForwardIcon, onClick: props.onForward },
-  ];
+  ].filter(a => !!a);
 
   const innerRadius = 38;
-  const numActions = actions.length;
 
   return (
     <div
@@ -26,10 +32,11 @@ export const MessageActionsWheel = (props: {
       onMouseEnter={props.onMouseEnter}
       onMouseLeave={props.onMouseLeave}
     >
-      <For each={actions}>
+      <For each={actions()}>
         {(action, i) => {
           // Arc on RIGHT side: from -60deg (top-right) to +60deg (bottom-right)
-          const angle = (-Math.PI / 3) + (i() / (numActions - 1)) * (2 * Math.PI / 3);
+          const numActions = actions().length;
+          const angle = numActions > 1 ? (-Math.PI / 3) + (i() / (numActions - 1)) * (2 * Math.PI / 3) : 0;
           const x = innerRadius * Math.cos(angle);
           const y = innerRadius * Math.sin(angle);
 

@@ -475,7 +475,7 @@ export interface GoogleCalendarEvent {
   recurring_event_id?: string | null; // set on one occurrence of a repeating event (the series id)
 }
 
-interface CalendarInfo {
+export interface CalendarInfo {
   id: string;
   name: string;
   is_primary: boolean;

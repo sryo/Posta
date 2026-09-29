@@ -60,6 +60,7 @@ import {
   type Contact,
   fetchCalendarEvents,
   type GoogleCalendarEvent,
+  type CalendarInfo,
   listCalendars,
   moveCalendarEvent,
   deleteCalendarEvent,
@@ -114,6 +115,7 @@ import { ComposeTextarea, ComposeSendButton, CloseButton } from "./components/Co
 import { ComposeForm } from "./components/ComposeForm";
 import { CreateEventForm } from "./components/CreateEventForm";
 import { RsvpControl } from "./components/RsvpControl";
+import { eventActions } from "./app/eventActions";
 import { ThreadView } from "./components/ThreadView";
 import { EventView } from "./components/EventView";
 import { ActionsWheel } from "./components/ActionsWheel";
@@ -177,7 +179,7 @@ function App() {
 
   // Calendar drawer state (for events)
   const [calendarDrawerOpen, setCalendarDrawerOpen] = createSignal(false);
-  const [availableCalendars, setAvailableCalendars] = createSignal<{ id: string; name: string; is_primary: boolean }[]>([]);
+  const [availableCalendars, setAvailableCalendars] = createSignal<CalendarInfo[]>([]);
   const [calendarsLoading, setCalendarsLoading] = createSignal(false);
   // The account availableCalendars was loaded for
   let calendarsAccountId: string | null = null;
@@ -1587,7 +1589,8 @@ function App() {
     // Quick actions on focused event
     const event = getFocusedEvent();
     if (event && cardId) {
-      if (e.key === 'r') {
+      const can = eventActions(event, selectedAccount()?.email ?? '');
+      if (e.key === 'r' && (can.reply || can.emailGuests)) {
         e.preventDefault();
         openEventQuickReply(event.id);
         return;
@@ -5096,6 +5099,7 @@ function App() {
           onOpenCalendars={() => { fetchAvailableCalendars(); setCalendarDrawerOpen(true); }}
           calendarDrawerOpen={calendarDrawerOpen()}
           onCloseCalendarDrawer={() => setCalendarDrawerOpen(false)}
+          accountEmail={selectedAccount()?.email ?? ""}
           calendars={availableCalendars()}
           calendarsLoading={calendarsLoading()}
           onMoveToCalendar={handleMoveEventToCalendar}

@@ -21,6 +21,10 @@ const thread: Thread = {
   calendar_event: null,
 };
 
+const person = (email: string, extra: Partial<GoogleCalendarEvent["attendees"][number]> = {}) =>
+  ({ email, display_name: null, response_status: "needsAction", is_organizer: false, is_self: false, ...extra });
+
+// The user's own event
 const event: GoogleCalendarEvent = {
   id: "e1",
   calendar_id: "primary",
@@ -32,7 +36,7 @@ const event: GoogleCalendarEvent = {
   end_time: null,
   all_day: false,
   status: "confirmed",
-  organizer: "boss@example.com",
+  organizer: "me@example.com",
   attendees: [],
   html_link: "https://calendar.google.com/x",
   hangout_link: "https://meet.google.com/x",
@@ -40,12 +44,21 @@ const event: GoogleCalendarEvent = {
   can_edit: true,
 };
 
+// Someone else's event the user is invited to
+const invite: GoogleCalendarEvent = {
+  ...event,
+  organizer: "boss@example.com",
+  can_edit: false,
+  response_status: "needsAction",
+  attendees: [person("boss@example.com", { is_organizer: true }), person("me@example.com", { is_self: true })],
+};
+
 const baseProps = {
   cardId: "c1",
   selectedCount: 0,
   open: true,
   onClose: vi.fn(),
-  selectedAccount: () => null,
+  selectedAccount: () => ({ id: "acc", email: "me@example.com" } as any),
   actionSettings: () => ({ archive: true, star: true, trash: true, spam: true, markRead: true, markImportant: true }),
   actionOrder: () => ["quickReply", "quickForward", "archive", "star", "markRead", "markImportant", "spam", "trash"],
   eventActionSettings: () => ({ joinMeeting: true, openCalendar: true, rsvpYes: true, rsvpNo: true, delete: true }),
@@ -78,13 +91,39 @@ describe("ActionsWheel key hints", () => {
   });
 
   it("does not advertise unbound keys on event actions", () => {
-    render(() => <ActionsWheel {...baseProps} event={event} onDeleteEvent={vi.fn()} />);
+    render(() => <ActionsWheel {...baseProps} event={invite} onDeleteEvent={vi.fn()} />);
     expect(hint("Reply to organizer")).toBe("r");
     expect(hint("Join meeting")).toBeNull();
     expect(hint("Open in Calendar")).toBeNull();
-    expect(hint("RSVP Yes")).toBeNull();
-    expect(hint("RSVP No")).toBeNull();
+  });
+
+  it("does not advertise a key for deleting an event", () => {
+    render(() => <ActionsWheel {...baseProps} event={event} onDeleteEvent={vi.fn()} />);
     expect(hint("Delete")).toBeNull();
+  });
+});
+
+describe("ActionsWheel event actions follow the user's role", () => {
+  it("offers no RSVP or reply on the user's own solo event", () => {
+    render(() => <ActionsWheel {...baseProps} event={event} onDeleteEvent={vi.fn()} />);
+    expect(screen.queryByTitle("RSVP Yes")).toBeNull();
+    expect(screen.queryByTitle("RSVP No")).toBeNull();
+    expect(screen.queryByTitle("Reply to organizer")).toBeNull();
+    expect(screen.getByTitle("Delete")).toBeInTheDocument();
+  });
+
+  it("offers an organizer a note to the guests instead of a reply", () => {
+    const openEventQuickReply = vi.fn();
+    render(() => <ActionsWheel {...baseProps} openEventQuickReply={openEventQuickReply} event={{ ...event, attendees: [person("a@example.com")] }} onDeleteEvent={vi.fn()} />);
+    fireEvent.click(screen.getByTitle("Email guests"));
+    expect(openEventQuickReply).toHaveBeenCalledWith("e1");
+    expect(screen.getByTitle("Delete")).toBeInTheDocument();
+  });
+
+  it("asks an organizer to confirm that deleting notifies the guests", () => {
+    render(() => <ActionsWheel {...baseProps} event={{ ...event, attendees: [person("a@example.com"), person("b@example.com")] }} onDeleteEvent={vi.fn()} />);
+    fireEvent.click(screen.getByTitle("Delete"));
+    expect(screen.getByTitle("Delete and notify 2 guests?")).toBeInTheDocument();
   });
 });
 
@@ -125,7 +164,7 @@ describe("ActionsWheel event delete", () => {
   });
 
   it("offers no delete on events the user cannot edit, where RSVP No already declines", () => {
-    render(() => <ActionsWheel {...baseProps} event={{ ...event, can_edit: false }} onDeleteEvent={vi.fn()} />);
+    render(() => <ActionsWheel {...baseProps} event={invite} onDeleteEvent={vi.fn()} />);
     expect(screen.queryByTitle("Delete")).toBeNull();
     expect(screen.getByTitle("RSVP No")).toBeInTheDocument();
   });
@@ -136,7 +175,7 @@ describe("ActionsWheel event RSVP", () => {
     rsvpListedCalendarEvent.mockReset().mockResolvedValue(null);
     const onRsvped = vi.fn();
     const showToast = vi.fn();
-    render(() => <ActionsWheel {...baseProps} showToast={showToast} selectedAccount={() => ({ id: "acc" } as any)} event={{ ...event, id: "e1_20260928T150000Z", calendar_id: "team@x.com" }} onRsvped={onRsvped} />);
+    render(() => <ActionsWheel {...baseProps} showToast={showToast} selectedAccount={() => ({ id: "acc" } as any)} event={{ ...invite, id: "e1_20260928T150000Z", calendar_id: "team@x.com" }} onRsvped={onRsvped} />);
     fireEvent.click(screen.getByTitle("RSVP Yes"));
     await vi.waitFor(() => expect(onRsvped).toHaveBeenCalledWith("e1_20260928T150000Z", "accepted"));
     expect(rsvpListedCalendarEvent).toHaveBeenCalledWith("acc", "team@x.com", "e1_20260928T150000Z", "accepted");
@@ -146,18 +185,18 @@ describe("ActionsWheel event RSVP", () => {
   it("reports the new response once the RSVP succeeds", async () => {
     rsvpListedCalendarEvent.mockReset().mockResolvedValue(null);
     const onRsvped = vi.fn();
-    render(() => <ActionsWheel {...baseProps} selectedAccount={() => ({ id: "acc" } as any)} event={event} onRsvped={onRsvped} />);
+    render(() => <ActionsWheel {...baseProps} selectedAccount={() => ({ id: "acc" } as any)} event={invite} onRsvped={onRsvped} />);
     fireEvent.click(screen.getByTitle("RSVP Yes"));
-    await vi.waitFor(() => expect(onRsvped).toHaveBeenCalledWith(event.id, "accepted"));
+    await vi.waitFor(() => expect(onRsvped).toHaveBeenCalledWith(invite.id, "accepted"));
     fireEvent.click(screen.getByTitle("RSVP No"));
-    await vi.waitFor(() => expect(onRsvped).toHaveBeenCalledWith(event.id, "declined"));
+    await vi.waitFor(() => expect(onRsvped).toHaveBeenCalledWith(invite.id, "declined"));
   });
 
   it("does not report a response when the RSVP fails", async () => {
     rsvpListedCalendarEvent.mockReset().mockRejectedValue(new Error("offline"));
     const onRsvped = vi.fn();
     const showToast = vi.fn();
-    render(() => <ActionsWheel {...baseProps} showToast={showToast} selectedAccount={() => ({ id: "acc" } as any)} event={event} onRsvped={onRsvped} />);
+    render(() => <ActionsWheel {...baseProps} showToast={showToast} selectedAccount={() => ({ id: "acc" } as any)} event={invite} onRsvped={onRsvped} />);
     fireEvent.click(screen.getByTitle("RSVP Yes"));
     await vi.waitFor(() => expect(showToast).toHaveBeenCalledWith("Couldn't RSVP: offline"));
     expect(onRsvped).not.toHaveBeenCalled();
@@ -167,7 +206,7 @@ describe("ActionsWheel event RSVP", () => {
     let finish!: () => void;
     rsvpListedCalendarEvent.mockReset().mockReturnValue(new Promise<void>(r => { finish = r; }));
     const onRsvped = vi.fn();
-    render(() => <ActionsWheel {...baseProps} selectedAccount={() => ({ id: "acc" } as any)} event={event} onRsvped={onRsvped} />);
+    render(() => <ActionsWheel {...baseProps} selectedAccount={() => ({ id: "acc" } as any)} event={invite} onRsvped={onRsvped} />);
     fireEvent.click(screen.getByTitle("RSVP Yes"));
     fireEvent.click(screen.getByTitle("RSVP Yes"));
     fireEvent.click(screen.getByTitle("RSVP No"));
@@ -176,6 +215,6 @@ describe("ActionsWheel event RSVP", () => {
     await vi.waitFor(() => expect(onRsvped).toHaveBeenCalledTimes(1));
     rsvpListedCalendarEvent.mockResolvedValue(null);
     fireEvent.click(screen.getByTitle("RSVP No"));
-    await vi.waitFor(() => expect(onRsvped).toHaveBeenLastCalledWith(event.id, "declined"));
+    await vi.waitFor(() => expect(onRsvped).toHaveBeenLastCalledWith(invite.id, "declined"));
   });
 });

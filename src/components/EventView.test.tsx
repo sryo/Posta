@@ -17,7 +17,7 @@ const event: GoogleCalendarEvent = {
   end_time: Date.UTC(2024, 0, 1, 11),
   all_day: false,
   status: "confirmed",
-  organizer: "boss@example.com",
+  organizer: "me@example.com",
   attendees: [],
   html_link: "https://calendar.google.com/x",
   hangout_link: null,
@@ -40,7 +40,8 @@ function baseProps() {
     onOpenCalendars: vi.fn(),
     calendarDrawerOpen: false,
     onCloseCalendarDrawer: vi.fn(),
-    calendars: [],
+    accountEmail: "me@example.com",
+    calendars: [] as { id: string; name: string; is_primary: boolean; access_role: string }[],
     calendarsLoading: false,
     onMoveToCalendar: vi.fn(),
     rsvpLoading: false,
@@ -49,11 +50,84 @@ function baseProps() {
   };
 }
 
-function renderEvent(overrides: Partial<GoogleCalendarEvent> = {}) {
-  const props = { ...baseProps(), event: { ...event, ...overrides } };
+function renderEvent(overrides: Partial<GoogleCalendarEvent> = {}, extraProps: Partial<ReturnType<typeof baseProps>> = {}) {
+  const props = { ...baseProps(), ...extraProps, event: { ...event, ...overrides } };
   const { container } = render(() => <EventView {...props} />);
   return Object.assign(props, { container });
 }
+
+const person = (email: string, extra: Partial<GoogleCalendarEvent["attendees"][number]> = {}) =>
+  ({ email, display_name: null, response_status: "needsAction", is_organizer: false, is_self: false, ...extra });
+
+// Someone else's event the user is invited to
+const invited: Partial<GoogleCalendarEvent> = {
+  organizer: "boss@example.com",
+  can_edit: false,
+  response_status: "needsAction",
+  attendees: [person("boss@example.com", { is_organizer: true, response_status: "accepted" }), person("me@example.com", { is_self: true })],
+};
+
+// The user's event with two guests
+const hosting: Partial<GoogleCalendarEvent> = {
+  attendees: [person("me@example.com", { is_self: true, is_organizer: true }), person("a@example.com"), person("b@example.com")],
+};
+
+const toolbarLabels = (container: HTMLElement) =>
+  Array.from(container.querySelectorAll(".thread-bar-actions .thread-toolbar-label")).map(el => el.textContent);
+
+describe("EventView actions follow the user's role", () => {
+  it("lets the owner of a solo event edit, delete and move it, with no reply or RSVP", () => {
+    const { container } = renderEvent();
+    expect(toolbarLabels(container)).not.toContain("Reply");
+    expect(toolbarLabels(container)).toEqual(expect.arrayContaining(["Edit", "Delete"]));
+    expect(screen.getByTitle("Move to calendar")).toBeInTheDocument();
+    expect(screen.queryByRole("group", { name: "Your response" })).toBeNull();
+    expect(screen.queryByTitle("Reply")).toBeNull();
+    expect(screen.queryByTitle("Reply All")).toBeNull();
+    expect(screen.getByTitle("Forward")).toBeInTheDocument();
+  });
+
+  it("lets a guest answer and reply, but not move, edit or delete someone else's event", () => {
+    const props = renderEvent(invited);
+    expect(toolbarLabels(props.container)).toContain("Reply");
+    expect(toolbarLabels(props.container)).not.toContain("Edit");
+    expect(toolbarLabels(props.container)).not.toContain("Delete");
+    expect(screen.queryByTitle("Move to calendar")).toBeNull();
+    expect(screen.getByRole("group", { name: "Your response" })).toBeInTheDocument();
+    fireEvent.keyDown(document, { key: "m" });
+    fireEvent.keyDown(document, { key: "e" });
+    fireEvent.keyDown(document, { key: "d" });
+    fireEvent.keyDown(document, { key: "d" });
+    expect(props.onOpenCalendars).not.toHaveBeenCalled();
+    expect(props.onEdit).not.toHaveBeenCalled();
+    expect(props.onDelete).not.toHaveBeenCalled();
+  });
+
+  it("lets an organizer email the guests and warns that deleting notifies them", () => {
+    const props = renderEvent(hosting);
+    expect(toolbarLabels(props.container)).not.toContain("Reply");
+    fireEvent.click(props.container.querySelector<HTMLElement>('.thread-bar-actions [title="Email guests"]')!);
+    expect(props.onReplyAll).toHaveBeenCalledTimes(1);
+    fireEvent.keyDown(document, { key: "r" });
+    expect(props.onReplyAll).toHaveBeenCalledTimes(2);
+    expect(props.onReplyOrganizer).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByTitle("Delete event"));
+    expect(screen.getByTitle(/again to delete/)).toHaveTextContent("Delete and notify 2 guests?");
+  });
+
+  it("offers only calendars the user can write to as move targets", () => {
+    renderEvent({}, {
+      calendarDrawerOpen: true,
+      calendars: [
+        { id: "primary", name: "me@example.com", is_primary: true, access_role: "owner" },
+        { id: "birthdays", name: "Birthdays", is_primary: false, access_role: "reader" },
+        { id: "team", name: "Team", is_primary: false, access_role: "writer" },
+      ],
+    });
+    const names = Array.from(document.querySelectorAll(".label-drawer .label-name")).map(el => el.textContent);
+    expect(names).toEqual(["me@example.com", "Team"]);
+  });
+});
 
 describe("EventView keyboard shortcuts", () => {
   it("ignores Cmd/Ctrl combos such as Cmd+C copy and Cmd+D", () => {
@@ -70,14 +144,18 @@ describe("EventView keyboard shortcuts", () => {
     const props = renderEvent();
     fireEvent.keyDown(document, { key: "c" });
     fireEvent.keyDown(document, { key: "e" });
-    fireEvent.keyDown(document, { key: "r" });
     expect(props.onOpenCalendars).toHaveBeenCalledTimes(1);
     expect(props.onEdit).toHaveBeenCalledTimes(1);
+  });
+
+  it("replies to the organizer of an invite with r", () => {
+    const props = renderEvent(invited);
+    fireEvent.keyDown(document, { key: "r" });
     expect(props.onReplyOrganizer).toHaveBeenCalledTimes(1);
   });
 
   it("handles the reply-all and forward shortcuts shown on the actions wheel", () => {
-    const props = renderEvent();
+    const props = renderEvent(invited);
     fireEvent.keyDown(document, { key: "R", shiftKey: true });
     fireEvent.keyDown(document, { key: "f" });
     expect(props.onReplyAll).toHaveBeenCalledTimes(1);
