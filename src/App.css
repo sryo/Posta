@@ -872,6 +872,14 @@ a:focus-visible,
     color: #fff;
 }
 
+.card-account-badge-photo {
+    width: 18px;
+    height: 18px;
+    margin: 0 -4px;
+    border-radius: 50%;
+    object-fit: cover;
+}
+
 .card-account-badge.all {
     background: var(--bg-tertiary);
     color: var(--text-secondary);

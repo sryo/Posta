@@ -18,6 +18,21 @@ describe("CardAccountBadge", () => {
     expect(badge.style.background).toBe(expected.style.background);
   });
 
+  it("gives two accounts whose addresses hash alike different colours", () => {
+    const alike = [account("a", "mateo@posta.test"), account("b", "mateo.work@acme.test")];
+    expect(getAvatarColor(alike[0].email)).toBe(getAvatarColor(alike[1].email));
+    render(() => <><CardAccountBadge accountId="a" accounts={alike} /><CardAccountBadge accountId="b" accounts={alike} /></>);
+    const first = screen.getByTitle("mateo@posta.test").style.background;
+    const second = screen.getByTitle("mateo.work@acme.test").style.background;
+    expect(first).not.toBe(second);
+  });
+
+  it("shows the account's photo when it has one", () => {
+    const withPhoto = [account("a", "ana@x.com"), { ...account("b", "bo@work.com"), picture: "https://example.test/bo.png" }];
+    render(() => <CardAccountBadge accountId="b" accounts={withPhoto} />);
+    expect(screen.getByTitle("bo@work.com").querySelector("img")?.getAttribute("src")).toBe("https://example.test/bo.png");
+  });
+
   it("says All on an all-inboxes card", () => {
     render(() => <CardAccountBadge accountId="all" accounts={accounts} />);
     expect(screen.getByTitle("All inboxes")).toHaveTextContent("All");
