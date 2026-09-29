@@ -40,6 +40,15 @@ describe("SmartReplies", () => {
     expect(container.querySelector(".smart-replies-error")?.getAttribute("title")).toBe(raw);
   });
 
+  it("links a key problem to Settings", async () => {
+    hasGeminiApiKey.mockResolvedValue(true);
+    suggestReplies.mockRejectedValue("Gemini API error 403 Forbidden: {}");
+    const onOpenSettings = vi.fn();
+    render(() => <SmartReplies accountId="acc" threadId="t1" onSelect={vi.fn()} onOpenSettings={onOpenSettings} />);
+    fireEvent.click(await screen.findByRole("button", { name: "Open Settings" }));
+    expect(onOpenSettings).toHaveBeenCalledTimes(1);
+  });
+
   it("names a rate limit and lets the user retry it", async () => {
     hasGeminiApiKey.mockResolvedValue(true);
     suggestReplies.mockRejectedValueOnce("Gemini API error 429 Too Many Requests: {}");

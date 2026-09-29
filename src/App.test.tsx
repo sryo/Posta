@@ -503,12 +503,12 @@ describe("App presets", () => {
   it("creates the preset's cards once even when clicked twice", async () => {
     signInToEmptyLayout();
     fireEvent.click(await screen.findByText("Sign in with Google"));
-    const option = (await screen.findByText("Traditional")).closest(".preset-option")!;
+    const option = await screen.findByRole("button", { name: /^Classic/ });
 
     fireEvent.click(option);
     fireEvent.click(option);
 
-    await waitFor(() => expect(screen.queryByText("How do you email?")).not.toBeInTheDocument());
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "Pick a starting layout" })).not.toBeInTheDocument());
     expect(invoke.mock.calls.filter(([cmd]) => cmd === "create_card")).toHaveLength(4);
   });
 
@@ -521,16 +521,17 @@ describe("App presets", () => {
       return create(args);
     };
     fireEvent.click(await screen.findByText("Sign in with Google"));
-    fireEvent.click((await screen.findByText("Traditional")).closest(".preset-option")!);
+    fireEvent.click(await screen.findByRole("button", { name: /^Classic/ }));
 
     expect(await screen.findByRole("region", { name: "Inbox email card" })).toBeInTheDocument();
     expect(screen.getByRole("region", { name: "Starred email card" })).toBeInTheDocument();
   });
 
-  it("keeps a restored layout whose cards could not be deleted when starting from scratch", async () => {
+  it("keeps a restored layout's cards that could not be deleted when choosing a different layout", async () => {
     handlers.get_accounts = () => [];
     handlers.run_oauth_flow = () => account("a", "a@x.com");
     handlers.pull_from_icloud = () => true;
+    handlers.create_card = () => { throw new Error("must not pile cards on a layout that is still there"); };
     handlers.delete_card = ({ id }) => {
       if (id === "card-a") throw new Error("db locked");
       return null;
@@ -539,24 +540,24 @@ describe("App presets", () => {
     render(() => <App />);
 
     fireEvent.click(await screen.findByText("Sign in with Google"));
-    fireEvent.click(await screen.findByText("Start from scratch"));
-    await answerConfirm(true);
+    fireEvent.click(await screen.findByRole("button", { name: "Choose a different layout" }));
+    fireEvent.click(await screen.findByRole("button", { name: /^Classic/ }));
 
     expect(await screen.findByText(/db locked/)).toBeInTheDocument();
-    expect(screen.queryByText("How do you email?")).not.toBeInTheDocument();
     expect(screen.getByRole("region", { name: "Alpha email card" })).toBeInTheDocument();
     expect(screen.queryByRole("region", { name: "Zeta email card" })).not.toBeInTheDocument();
+    expect(invoke).not.toHaveBeenCalledWith("create_card", expect.anything());
   });
 
   it("stays on the preset picker when no card could be created", async () => {
     signInToEmptyLayout();
     handlers.create_card = () => { throw new Error("db locked"); };
     fireEvent.click(await screen.findByText("Sign in with Google"));
-    fireEvent.click((await screen.findByText("Traditional")).closest(".preset-option")!);
+    fireEvent.click(await screen.findByRole("button", { name: /^Classic/ }));
 
     await waitFor(() => expect(invoke).toHaveBeenCalledWith("create_card", expect.anything()));
     await new Promise(r => setTimeout(r, 50));
-    expect(screen.getByText("How do you email?")).toBeInTheDocument();
+    expect(screen.getByRole("dialog", { name: "Pick a starting layout" })).toBeInTheDocument();
   });
 });
 
@@ -819,8 +820,8 @@ describe("App Gemini API key", () => {
 
     await waitFor(() => expect(invoke).toHaveBeenCalledWith("set_gemini_api_key", { apiKey: "AIza-old" }));
     await waitFor(() => expect(localStorage.getItem("gemini_api_key")).toBeNull());
-    fireEvent.click(screen.getByText("Smart Replies"));
-    expect(await screen.findByPlaceholderText("Saved in the keychain")).toBeInTheDocument();
+    fireEvent.click(screen.getByText("Smart replies"));
+    expect(await screen.findByText(/Saved in Keychain/)).toBeInTheDocument();
   });
 
   it("keeps the old copy when the keychain refuses the key", async () => {
@@ -836,16 +837,18 @@ describe("App Gemini API key", () => {
     handlers.set_gemini_api_key = () => null;
     render(() => <App />);
     await screen.findByText("Mail for A");
-    fireEvent.click(screen.getByText("Smart Replies"));
+    fireEvent.click(screen.getByTitle("a@x.com"));
+    fireEvent.click(within(document.querySelector(".account-chooser-container") as HTMLElement).getByText("Settings"));
+    fireEvent.click(screen.getByText("Smart replies"));
 
     const field = screen.getByLabelText("Gemini API key");
     fireEvent.input(field, { target: { value: "AIza-new" } });
     fireEvent.change(field, { target: { value: "AIza-new" } });
     await waitFor(() => expect(invoke).toHaveBeenCalledWith("set_gemini_api_key", { apiKey: "AIza-new" }));
     expect(localStorage.getItem("gemini_api_key")).toBeNull();
-    expect(await screen.findByPlaceholderText("Saved in the keychain")).toHaveValue("");
+    expect(await screen.findByText(/Saved in Keychain/)).toBeInTheDocument();
 
-    fireEvent.click(screen.getByRole("button", { name: "Remove key" }));
+    fireEvent.click(screen.getByRole("button", { name: "Remove" }));
     await waitFor(() => expect(invoke).toHaveBeenCalledWith("set_gemini_api_key", { apiKey: "" }));
     expect(await screen.findByPlaceholderText("AIza...")).toBeInTheDocument();
   });
@@ -2684,22 +2687,6 @@ describe("App layout removal", () => {
     await waitFor(() => expect(invoke).toHaveBeenCalledWith("delete_card", { id: "card-a" }));
   });
 
-  it("asks before starting from scratch and keeps the restored layout when cancelled", async () => {
-    handlers.get_accounts = () => [];
-    handlers.run_oauth_flow = () => account("a", "a@x.com");
-    handlers.pull_from_icloud = () => true;
-    handlers.delete_card = () => null;
-    render(() => <App />);
-    fireEvent.click(await screen.findByText("Sign in with Google"));
-    fireEvent.click(await screen.findByText("Start from scratch"));
-    // Deleting a card syncs through iCloud; the user must know it isn't local
-    await answerConfirm(false, /1 card.*other Macs/);
-    await new Promise(r => setTimeout(r, 20));
-
-    expect(invoke).not.toHaveBeenCalledWith("delete_card", expect.anything());
-    expect(screen.getByText("Start from scratch")).toBeInTheDocument();
-  });
-
   it("asks before signing out and keeps the account when cancelled", async () => {
     handlers.delete_account = () => null;
     render(() => <App />);
@@ -3233,12 +3220,10 @@ describe("App background sync refetches", () => {
 });
 
 describe("App iCloud sync status", () => {
-  beforeEach(() => {
-    handlers.get_accounts = () => [];
-    handlers.get_stored_credentials = () => null;
-  });
   const openSettings = async () => {
-    fireEvent.click(await screen.findByRole("button", { name: "Settings" }));
+    await screen.findByText("Mail for A");
+    fireEvent.click(screen.getByTitle("a@x.com"));
+    fireEvent.click(within(document.querySelector(".account-chooser-container") as HTMLElement).getByText("Settings"));
     return document.querySelector(".settings-sidebar")!;
   };
 
@@ -3427,37 +3412,6 @@ describe("App title bar", () => {
   });
 });
 
-describe("App Google API settings", () => {
-  it("labels the credential fields and says which client and APIs to set up", async () => {
-    handlers.get_accounts = () => [];
-    handlers.get_stored_credentials = () => null;
-    render(() => <App />);
-    fireEvent.click(await screen.findByText("Settings"));
-
-    expect(screen.getByLabelText("Client ID")).toHaveAttribute("placeholder", "xxxx.apps.googleusercontent.com");
-    expect(screen.getByLabelText("Client Secret")).toHaveAttribute("type", "password");
-    const hints = Array.from(document.querySelectorAll(".settings-hint")).map(el => el.textContent).join(" ");
-    expect(hints).toMatch(/Desktop app/);
-    expect(hints).toMatch(/Gmail API.*Google Calendar API.*People API/);
-    // A Desktop app client has no redirect URI to set
-    expect(hints).not.toMatch(/Redirect URI/);
-    expect(hints).toMatch(/port 8420/);
-  });
-
-  it("links to the Cloud Console's credentials page as a real link", async () => {
-    handlers.get_accounts = () => [];
-    handlers.get_stored_credentials = () => null;
-    render(() => <App />);
-    fireEvent.click(await screen.findByText("Settings"));
-    const link = screen.getByRole("link", { name: "Open Google Cloud Console" });
-
-    expect(link).toHaveAttribute("href", "https://console.cloud.google.com/apis/credentials");
-    fireEvent.click(link);
-    expect(openUrl).toHaveBeenCalledTimes(1);
-    expect(openUrl).toHaveBeenCalledWith("https://console.cloud.google.com/apis/credentials");
-  });
-});
-
 describe("App accessibility", () => {
   it("lists every thread-list shortcut in the help", async () => {
     render(() => <App />);
@@ -3521,7 +3475,6 @@ describe("App accessibility", () => {
     // The user takes a moment; startup is long done
     await new Promise(r => setTimeout(r, 50));
     fireEvent.click(signIn);
-    fireEvent.click(await screen.findByText("Continue"));
 
     await waitFor(() => expect((document.querySelector(".deck") as HTMLElement).style.background).toContain("30, 136, 229"));
     expect(document.documentElement.style.getPropertyValue("--accent")).toBe("#1E88E5");
@@ -3796,7 +3749,7 @@ describe("App sign-in flows", () => {
     expect(await screen.findByText("Sign in with Google")).toBeInTheDocument();
     expect(invoke).toHaveBeenCalledWith("cancel_oauth_flow", undefined);
     expect(screen.queryByText(/cancelled/)).not.toBeInTheDocument();
-    expect(screen.queryByText("Complete sign-in in your browser...")).not.toBeInTheDocument();
+    expect(screen.queryByText("Finish signing in with Google in your browser. Posta will pick up automatically.")).not.toBeInTheDocument();
   });
 
   it("cancels a sign-in waiting on the browser on Escape", async () => {
@@ -3806,59 +3759,18 @@ describe("App sign-in flows", () => {
     handlers.cancel_oauth_flow = () => { rejectFlow("OAuth callback error: OAuth flow cancelled"); return null; };
     render(() => <App />);
     fireEvent.click(await screen.findByText("Sign in with Google"));
-    await screen.findByText("Complete sign-in in your browser...");
+    await screen.findByText("Finish signing in with Google in your browser. Posta will pick up automatically.");
     fireEvent.keyDown(document, { key: "Escape" });
 
     expect(await screen.findByText("Sign in with Google")).toBeInTheDocument();
     expect(invoke).toHaveBeenCalledWith("cancel_oauth_flow", undefined);
   });
 
-  it("connects with credentials entered in Settings", async () => {
-    handlers.get_accounts = () => [];
-    handlers.get_stored_credentials = () => null;
-    handlers.run_oauth_flow = () => account("a", "a@x.com");
-    render(() => <App />);
-    fireEvent.click(await screen.findByText("Settings"));
-    fireEvent.input(screen.getByLabelText("Client ID"), { target: { value: "cid" } });
-    fireEvent.input(screen.getByLabelText("Client Secret"), { target: { value: "csecret" } });
-    fireEvent.click(screen.getByRole("button", { name: /Connect/ }));
-
-    expect(await screen.findByText("Start from scratch")).toBeInTheDocument();
-    expect(invoke).toHaveBeenCalledWith("configure_auth", { config: { client_id: "cid", client_secret: "csecret" } });
-    expect(invoke).not.toHaveBeenCalledWith("get_stored_credentials", expect.anything());
-  });
-
-  it("says why saving credentials failed and runs no sign-in", async () => {
-    handlers.get_accounts = () => [];
-    handlers.get_stored_credentials = () => null;
-    handlers.configure_auth = () => { throw "keychain locked"; };
-    handlers.run_oauth_flow = () => account("a", "a@x.com");
-    render(() => <App />);
-    fireEvent.click(await screen.findByText("Settings"));
-    fireEvent.input(screen.getByLabelText("Client ID"), { target: { value: "cid" } });
-    fireEvent.input(screen.getByLabelText("Client Secret"), { target: { value: "csecret" } });
-    fireEvent.click(screen.getByRole("button", { name: /Connect/ }));
-
-    expect(await screen.findByText("Couldn't save the credentials.")).toBeInTheDocument();
-    expect(invoke).not.toHaveBeenCalledWith("run_oauth_flow", expect.anything());
-  });
-
-  it("sends the user to Settings when signing in without credentials", async () => {
-    handlers.get_accounts = () => [];
-    handlers.get_stored_credentials = () => null;
-    render(() => <App />);
-    fireEvent.click(await screen.findByText("Sign in with Google"));
-
-    expect(await screen.findByText("Connect your Google account in Settings")).toBeInTheDocument();
-    expect(document.querySelector(".settings-sidebar.open")).not.toBeNull();
-    expect(invoke).not.toHaveBeenCalledWith("run_oauth_flow", expect.anything());
-  });
-
   it("says the keychain is locked when signing in, instead of sending the user to Settings", async () => {
     handlers.get_accounts = () => [];
     let reads = 0;
     handlers.get_stored_credentials = () => {
-      if (reads++ === 0) return null;
+      if (reads++ === 0) return { client_id: "id", client_secret: "secret" };
       throw "Keychain unavailable (locked or access denied). Unlock the keychain and try again.";
     };
     render(() => <App />);
@@ -3867,7 +3779,6 @@ describe("App sign-in flows", () => {
     fireEvent.click(signIn);
 
     await waitFor(() => expect(screen.getAllByText(/Keychain unavailable/).length).toBeGreaterThan(0));
-    expect(screen.queryByText("Connect your Google account in Settings")).not.toBeInTheDocument();
     expect(document.querySelector(".settings-sidebar.open")).toBeNull();
     expect(invoke).not.toHaveBeenCalledWith("run_oauth_flow", expect.anything());
   });
@@ -3879,7 +3790,7 @@ describe("App sign-in flows", () => {
     fireEvent.click(await screen.findByText("Sign in with Google"));
 
     expect(await screen.findByText(/Timed out waiting for sign-in in the browser/)).toBeInTheDocument();
-    expect(screen.queryByText("Complete sign-in in your browser...")).not.toBeInTheDocument();
+    expect(screen.queryByText("Finish signing in with Google in your browser. Posta will pick up automatically.")).not.toBeInTheDocument();
   });
 });
 

@@ -28,6 +28,9 @@ pub struct AppState {
     pub icloud: Arc<std::sync::Mutex<ICloudSync>>,
     /// Cancel flag for the in-flight OAuth flow, so a retry can release port 8420
     pub oauth_cancel: Arc<std::sync::Mutex<Option<Arc<AtomicBool>>>>,
+    /// Google's sign-in page for the flow waiting on the browser, so the user
+    /// can open it again after closing the tab
+    pub oauth_url: Arc<std::sync::Mutex<Option<String>>>,
     /// Cached access tokens per account_id; never hold this lock across an await
     pub token_cache: Arc<TokenCache>,
     /// OAuth credentials known to be in secure storage, so configuring auth
@@ -44,6 +47,7 @@ impl AppState {
             auth: Arc::new(Mutex::new(None)),
             icloud: Arc::new(std::sync::Mutex::new(ICloudSync::new())),
             oauth_cancel: Arc::new(std::sync::Mutex::new(None)),
+            oauth_url: Arc::new(std::sync::Mutex::new(None)),
             token_cache: Arc::new(std::sync::Mutex::new(HashMap::new())),
             stored_credentials: Arc::new(std::sync::Mutex::new(None)),
         }
@@ -685,12 +689,14 @@ pub async fn run_oauth_flow(
     use tauri_plugin_opener::open_url;
     open_url(&auth_url, None::<String>)
         .map_err(|e| format!("Failed to open browser: {}", e))?;
+    let waiting_url = WaitingOAuthUrl::publish(&state.oauth_url, auth_url)?;
 
     // Wait for callback in a blocking thread
     let wait_cancel = pending.flag.clone();
     let callback_result = tokio::task::spawn_blocking(move || server.wait_for_callback(OAUTH_CALLBACK_TIMEOUT_SECS, wait_cancel, &expected_state))
         .await
         .map_err(|e| format!("Task error: {}", e))?;
+    drop(waiting_url);
     drop(pending);
 
     let callback_result = callback_result.map_err(|e| format!("OAuth callback error: {}", e))?;
@@ -749,6 +755,43 @@ fn cancel_pending_oauth(slot: &std::sync::Mutex<Option<Arc<AtomicBool>>>) -> Res
         flag.store(true, Ordering::SeqCst);
     }
     Ok(())
+}
+
+/// Open Google's sign-in page again for the flow waiting on the browser
+#[tauri::command]
+pub async fn reopen_oauth_page(state: State<'_, AppState>) -> Result<(), String> {
+    let url = pending_oauth_url(&state.oauth_url)?;
+    tauri_plugin_opener::open_url(&url, None::<String>).map_err(|e| format!("Failed to open browser: {}", e))
+}
+
+fn pending_oauth_url(slot: &std::sync::Mutex<Option<String>>) -> Result<String, String> {
+    slot.lock()
+        .map_err(|_| "Lock error")?
+        .clone()
+        .ok_or_else(|| "No sign-in is waiting on the browser".to_string())
+}
+
+/// The sign-in page of the flow waiting on the browser, published in the
+/// app's slot until that flow stops waiting
+struct WaitingOAuthUrl<'a> {
+    slot: &'a std::sync::Mutex<Option<String>>,
+    url: String,
+}
+
+impl<'a> WaitingOAuthUrl<'a> {
+    fn publish(slot: &'a std::sync::Mutex<Option<String>>, url: String) -> Result<Self, String> {
+        *slot.lock().map_err(|_| "Lock error")? = Some(url.clone());
+        Ok(Self { slot, url })
+    }
+}
+
+impl Drop for WaitingOAuthUrl<'_> {
+    fn drop(&mut self) {
+        let mut current = self.slot.lock().unwrap_or_else(|e| e.into_inner());
+        if current.as_deref() == Some(self.url.as_str()) {
+            *current = None;
+        }
+    }
 }
 
 struct UserInfo {
@@ -3459,6 +3502,20 @@ mod tests {
         // An early return (no browser, no auth config) drops the guard
         drop(second);
         assert!(slot.lock().unwrap().is_none());
+    }
+
+    #[test]
+    fn the_sign_in_page_can_be_reopened_only_while_its_flow_waits() {
+        let slot = std::sync::Mutex::new(None);
+        assert!(super::pending_oauth_url(&slot).is_err());
+        let first = super::WaitingOAuthUrl::publish(&slot, "https://accounts.example/first".into()).unwrap();
+        assert_eq!(super::pending_oauth_url(&slot).unwrap(), "https://accounts.example/first");
+        // A retry's page replaces the earlier one, which must not clear it
+        let second = super::WaitingOAuthUrl::publish(&slot, "https://accounts.example/second".into()).unwrap();
+        drop(first);
+        assert_eq!(super::pending_oauth_url(&slot).unwrap(), "https://accounts.example/second");
+        drop(second);
+        assert!(super::pending_oauth_url(&slot).is_err());
     }
 
     #[test]
