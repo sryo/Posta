@@ -118,7 +118,7 @@ import { AuthScreen } from "./components/AuthScreen";
 import { PresetPicker } from "./components/PresetPicker";
 import { EmptyBoard } from "./components/EmptyBoard";
 import { SmartRepliesSettings } from "./components/SmartRepliesSettings";
-import { cardSpecs, loadLayoutSnapshot, saveLayoutSnapshot, specAccountId, type CardSpec } from "./app/layoutSnapshot";
+import { cardSpecs, copyableCards, loadLayoutSnapshot, saveLayoutSnapshot, specAccountId, type CardSpec } from "./app/layoutSnapshot";
 import { ALL_ACCOUNTS, accountFromError, accountsToPoll, cardAccountIds, cardCoversAccount, eventAccountId, inAccount, threadAccountId, threadIdsByAccount, threadKey } from "./app/accountScope";
 import { GoogleCredentialsForm } from "./components/GoogleCredentialsForm";
 import { credentialsValid, shortClientId } from "./app/googleCredentials";
@@ -1954,9 +1954,31 @@ function App() {
         if (card.account_id === ALL_ACCOUNTS && !collapsedCards[card.id]) refetchCard(card);
       }
       const restored = board.filter(c => c.account_id === account.id).length;
-      if (restored > 0) showToast(`Restored ${count(restored)} for ${account.email}`);
-      else showToast(`Added ${account.email}`, { label: "Add a card", run: () => openAddCard(account.id) });
+      if (restored > 0) {
+        showToast(`Restored ${count(restored)} for ${account.email}`);
+        return;
+      }
+      const from = selectedAccount();
+      const copies = from && from.id !== account.id ? copyableCards(board, from.id, account.id) : [];
+      showToast(`Added ${account.email}`, [
+        ...(copies.length > 0 ? [{ label: `Copy ${from!.email}'s cards`, run: () => addCards(copies) }] : []),
+        { label: "Add a card", run: () => openAddCard(account.id) },
+      ]);
     }
+  }
+
+  // Appends cards made from specs, each in the account it names
+  async function addCards(specs: CardSpec[]) {
+    const created: Card[] = [];
+    try {
+      for (const spec of specs) {
+        created.push(await createCard(spec.account_id!, spec.name, spec.query, spec.color, spec.group_by, spec.card_type));
+      }
+    } catch (e) {
+      setFailure("Couldn't create the cards", e);
+    }
+    setCards([...cards(), ...created]);
+    created.forEach(card => loadCardThreads(card.id));
   }
 
   function openPresetPicker() {

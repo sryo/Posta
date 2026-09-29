@@ -5248,6 +5248,21 @@ describe("App one board for every account", () => {
     expect(await screen.findByPlaceholderText("e.g. Clients")).toBeInTheDocument();
   });
 
+  it("offers to copy the default account's cards into an added account that has none", async () => {
+    handlers.run_oauth_flow = () => account("b", "b@x.com");
+    cardsByAccount.b = [];
+    handlers.create_card = ({ accountId, name, query }) => ({ ...card("card-copy", accountId as string, name as string), query: query as string });
+    render(() => <App />);
+    await screen.findByText("Mail for A");
+    fireEvent.click(avatar("a@x.com"));
+    fireEvent.click(await screen.findByText("Add account"));
+
+    await screen.findByText("Added b@x.com");
+    fireEvent.click(screen.getByRole("button", { name: "Copy a@x.com's cards" }));
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith("create_card", expect.objectContaining({ accountId: "b", name: "Alpha", query: "is:inbox" })));
+    await waitFor(() => expect(screen.getAllByRole("region", { name: "Alpha email card" })).toHaveLength(2));
+  });
+
   it("brings an added account's mail into the all-inboxes cards at once", async () => {
     handlers.run_oauth_flow = () => account("b", "b@x.com");
     cardsByAccount.b = [];
