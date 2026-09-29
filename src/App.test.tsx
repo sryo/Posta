@@ -2552,6 +2552,19 @@ describe("App batch reply", () => {
     expect(sender.querySelector(".message-sender-address")?.textContent).toBe("ana@x.com");
   });
 
+  it("keeps a forwarded message's history in view, as the reader does", async () => {
+    const html = '<p>FYI</p><hr><div id="divRplyFwdMsg"><b>From:</b> Ana<br><b>Subject:</b> Plan</div><div>The plan itself</div>';
+    const data = btoa(html).replace(/\+/g, "-").replace(/\//g, "_");
+    handlers.get_thread_details = ({ threadId }) => ({ id: threadId, messages: [fullMessage("m1", "Ana <ana@x.com>", {
+      payload: { mimeType: "text/html", headers: [{ name: "From", value: "Ana <ana@x.com>" }, { name: "Subject", value: "FW: Plan" }, { name: "Message-ID", value: "<m1@x>" }], body: { size: html.length, data } },
+    })] });
+    await openBatchReplyForTwo();
+    await waitFor(() => expect(screen.getAllByPlaceholderText(/^Reply to/)).toHaveLength(2));
+    const body = document.querySelector(".message-row .message-body")!;
+    expect(body.textContent).toContain("The plan itself");
+    expect(body.querySelector(".quoted-toggle")).toBeNull();
+  });
+
   it("attaches a file dropped on one reply to that reply only", async () => {
     handlers.get_thread_details = ({ threadId }) => ({ id: threadId, messages: [fullMessage("m1", "Ana <ana@x.com>")] });
     await openBatchReplyForTwo();

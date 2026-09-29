@@ -159,6 +159,7 @@ import { signatureBlock, withSignature } from "./app/signature";
 import { isCalendarAttachment, isPreviewable, readFilesAsAttachments } from "./app/attachments";
 import { AttachmentLightbox, type PreviewAttachment } from "./components/AttachmentLightbox";
 import { MessageSender } from "./components/MessageSender";
+import { isForwardSubject } from "./app/quotedHistory";
 import { eventAttendees, eventFromThread, eventTimesFromForm, smartEventDefaults } from "./app/eventForm";
 import { composePlacement } from "./app/composePlacement";
 import { cidImagesToFetch, createLruCache, fetchCidImages } from "./app/cidImages";
@@ -5636,6 +5637,7 @@ function App() {
                         msgId={thread.messageId}
                         msgPayloadParts={thread.parts}
                         cidAttachmentData={batchReplyCidData()[thread.threadId]}
+                        forward={isForwardSubject(thread.subject)}
                       />
                     </div>
                     <div
