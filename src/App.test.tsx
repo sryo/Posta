@@ -1218,6 +1218,16 @@ describe("App selection keys", () => {
     expect(row("Second")).not.toHaveClass("selected");
   });
 
+  it("acts on a selection made only with the mouse", async () => {
+    handlers.modify_threads = () => null;
+    render(() => <App />);
+    await screen.findByText("Third");
+    fireEvent.click(row("First").querySelector(".thread-checkbox")!);
+    fireEvent.click(row("Third").querySelector(".thread-checkbox")!);
+    fireEvent.keyDown(document, { key: "a" });
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith("modify_threads", expect.objectContaining({ threadIds: ["t-1", "t-3"] })));
+  });
+
   it("clears a selection of one thread once a key acts on it", async () => {
     handlers.modify_threads = () => null;
     render(() => <App />);

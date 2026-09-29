@@ -4528,6 +4528,8 @@ function App() {
     const next = nextSelection(ids, selectedThreads()[cardId] ?? new Set(), lastSelectedThread()[cardId] ?? null, threadId, !!e?.shiftKey);
     setSelectedThreads({ ...selectedThreads(), [cardId]: next.selected });
     setLastSelectedThread({ ...lastSelectedThread(), [cardId]: next.pivot });
+    // The selection keys act on the focused card's selection
+    onRowFocus(cardId, threadId);
   }
 
   function toggleEventSelection(cardId: string, eventId: string, e?: MouseEvent) {
@@ -4538,6 +4540,7 @@ function App() {
     const next = nextSelection(ids, selectedEvents()[cardId] ?? new Set(), lastSelectedEvent()[cardId] ?? null, eventId, !!e?.shiftKey);
     setSelectedEvents({ ...selectedEvents(), [cardId]: next.selected });
     setLastSelectedEvent({ ...lastSelectedEvent(), [cardId]: next.pivot });
+    onRowFocus(cardId, eventId);
   }
 
   // Ranking reads every loaded thread; only rank while something shows
