@@ -3900,7 +3900,9 @@ function App() {
 
   // Ranking reads every loaded thread; only rank while something shows
   // contacts, so mail changes don't re-sort them in the background
-  const contactsWanted = () => composeFabHovered() || (composing() && !closingCompose()) || addingCard() || editingCardId() !== null;
+  const contactsWanted = () => composeFabHovered() || (composing() && !closingCompose()) || addingCard() || editingCardId() !== null
+    || creatingEvent() || !!eventForm().editing;
+  const guestSuggestions = (query: string) => matchContacts(rankedContacts(), query, 8);
   const rankedContacts = createMemo(() => contactsWanted() ? rankContacts(
     googleContacts(),
     Object.values(cardThreads).flatMap(groups => groups.flatMap(g => g.threads)),
@@ -4873,6 +4875,7 @@ function App() {
           setRecurrence={(v: string | null) => setEventForm(f => ({ ...f, recurrence: v }))}
           calendars={availableCalendars()}
           calendarId={newEventCalendarId()}
+          guestSuggestions={guestSuggestions}
           setCalendarId={(id: string) => setEventForm(f => ({ ...f, calendarId: id }))}
           saving={eventForm().saving}
           onSave={handleCreateEvent}
@@ -5149,6 +5152,7 @@ function App() {
             recurrence: eventForm().recurrence,
             setRecurrence: (v: string | null) => setEventForm(f => ({ ...f, recurrence: v })),
             occurrenceOnly: !!activeEvent()!.recurring_event_id,
+            guestSuggestions,
             saving: eventForm().saving,
             onSave: handleCreateEvent,
             onClose: () => setEventForm(defaultEventForm()),

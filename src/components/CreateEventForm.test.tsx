@@ -254,6 +254,19 @@ describe("CreateEventForm header", () => {
   });
 });
 
+describe("CreateEventForm guests", () => {
+  it("adds guests as chips from the contact suggestions", () => {
+    const setAttendees = vi.fn();
+    const guestSuggestions = vi.fn(() => [{ email: "ana@x.test", name: "Ana" }]);
+    const { getByRole } = renderForm({ startDate: "2031-03-03", extra: { setAttendees, guestSuggestions } });
+    const input = getByRole("combobox", { name: "Guests" });
+    fireEvent.input(input, { target: { value: "an" } });
+    expect(guestSuggestions).toHaveBeenCalledWith("an");
+    fireEvent.keyDown(input, { key: "Enter" });
+    expect(setAttendees).toHaveBeenCalledWith('"Ana" <ana@x.test>');
+  });
+});
+
 describe("CreateEventForm repeat", () => {
   it("offers repeat options for all-day events and hides the time pickers", () => {
     const setRecurrence = vi.fn();

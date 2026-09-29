@@ -1502,6 +1502,23 @@ describe("App calendar", () => {
     await waitFor(() => expect(localStorage.getItem("event_calendar_a")).toBe("side"));
   });
 
+  it("suggests the people the user writes to as guests of a new event", async () => {
+    threadsByCard["card-a"] = [{ ...thread("t-1", "Hello"), participants: ["Ana Pérez <ana@y.com>"], last_message_date: Date.now() }];
+    handlers.create_calendar_event = () => calendarEvent("ev-2", "Lunch");
+    render(() => <App />);
+    await screen.findByText("Hello");
+    fireEvent.keyDown(document, { key: "e" });
+    const guests = await screen.findByRole("combobox", { name: "Guests" });
+    fireEvent.input(guests, { target: { value: "ana" } });
+    fireEvent.keyDown(guests, { key: "Enter" });
+    expect(document.querySelector(".guest-chip-label")).toHaveTextContent("Ana Pérez");
+
+    const title = screen.getByPlaceholderText("Event title");
+    fireEvent.input(title, { target: { value: "Lunch" } });
+    fireEvent.keyDown(title, { key: "Enter", metaKey: true });
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith("create_calendar_event", expect.objectContaining({ attendees: ["ana@y.com"] })));
+  });
+
   it("asks before Escape throws away a new event's typed details", async () => {
     render(() => <App />);
     await screen.findByText("Mail for A");

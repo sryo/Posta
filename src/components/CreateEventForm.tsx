@@ -5,6 +5,7 @@ import { isImeComposing, isTypingTarget, onActivateKey } from "../shared/keyboar
 import { isWritableCalendar } from "../app/eventActions";
 import { minutesToTime, timeToMinutes } from "../app/timeInput";
 import { TimeCombobox } from "./TimeCombobox";
+import { GuestChips } from "./GuestChips";
 
 export const CreateEventForm = (props: {
   closing?: boolean;
@@ -39,6 +40,7 @@ export const CreateEventForm = (props: {
   calendars?: { id: string; name: string; is_primary: boolean; access_role: string }[];
   calendarId?: string | null;
   setCalendarId?: (id: string) => void;
+  guestSuggestions?: (query: string) => { email: string; name?: string }[];
 }) => {
   // Snapshot is safe: both call sites mount this inside a <Show>, so a fresh
   // instance is created each time the form opens.
@@ -313,12 +315,7 @@ export const CreateEventForm = (props: {
           />
         </div>
         <div class="compose-field">
-          <input
-            type="text"
-            value={props.attendees}
-            onInput={(e) => props.setAttendees(e.currentTarget.value)}
-            placeholder="Guests (comma separated emails)"
-          />
+          <GuestChips value={props.attendees} onChange={props.setAttendees} suggest={props.guestSuggestions} />
         </div>
         <div class="compose-content">
           <textarea

@@ -53,6 +53,7 @@ export interface InlineEditEventProps {
   setRecurrence: (v: string | null) => void;
   // Editing one occurrence of a repeating event, which can't take a rule of its own
   occurrenceOnly: boolean;
+  guestSuggestions?: (query: string) => { email: string; name?: string }[];
   saving: boolean;
   onSave: () => void;
   onClose: () => void;

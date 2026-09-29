@@ -391,6 +391,7 @@ export const EventView = (props: {
                     recurrence={props.inlineEdit!.recurrence}
                     setRecurrence={props.inlineEdit!.setRecurrence}
                     occurrenceOnly={props.inlineEdit!.occurrenceOnly}
+                    guestSuggestions={props.inlineEdit!.guestSuggestions}
                     saving={props.inlineEdit!.saving}
                     onSave={props.inlineEdit!.onSave}
                     error={props.inlineEdit!.error}

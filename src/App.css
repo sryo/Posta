@@ -4753,6 +4753,60 @@ button:disabled:hover {
     bottom: 0;
 }
 
+/* GuestChips */
+.guest-chips {
+    position: relative;
+    flex: 1;
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--space-sm);
+    min-height: 28px;
+}
+
+.guest-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--space-xs);
+    max-width: 220px;
+    padding: var(--space-xs) var(--space-xs) var(--space-xs) var(--space-md);
+    border-radius: var(--radius-lg);
+    background: var(--bg-hover);
+    color: var(--text-primary);
+    font-size: var(--font-size-base);
+}
+
+.guest-chip-label {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.guest-chip-remove {
+    display: inline-flex;
+    padding: 2px;
+    border: none;
+    border-radius: var(--radius-full);
+    background: transparent;
+    color: var(--text-muted);
+    cursor: pointer;
+}
+
+.guest-chip-remove:hover {
+    background: var(--bg-hover);
+    color: var(--text-primary);
+}
+
+.guest-chip-remove svg {
+    width: 10px;
+    height: 10px;
+}
+
+.compose-field .guest-chips-input {
+    flex: 1;
+    min-width: 120px;
+}
+
 /* Smart Replies */
 .smart-replies-container {
     padding: var(--space-lg);
