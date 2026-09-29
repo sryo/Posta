@@ -24,12 +24,12 @@ export const InviteBlock = (props: {
         <div class="calendar-event-title">{props.invite.title}</div>
       </Show>
       <div class="calendar-event-time">
-        <ClockIcon />
+        <ClockIcon size="meta" />
         <span>{formatCalendarEventDate(props.invite.start_time, props.invite.end_time, props.invite.all_day)}</span>
       </div>
       <Show when={props.invite.location}>
         <div class="calendar-event-location">
-          <LocationIcon />
+          <LocationIcon size="meta" />
           <span>{props.invite.location}</span>
         </div>
       </Show>
@@ -41,7 +41,7 @@ export const InviteBlock = (props: {
               class="calendar-join-btn"
               onClick={(e) => { e.stopPropagation(); openUrl(props.invite.conference_url!); }}
             >
-              <VideoIcon />
+              <VideoIcon size="meta" />
               Join
             </button>
           </Show>

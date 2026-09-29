@@ -272,7 +272,7 @@ export const ComposeForm = (props: ComposeFormProps) => {
                 {truncateMiddle(attachment.filename, 20)}
               </span>
               <button class="attachment-remove" onClick={() => props.onRemoveAttachment(i())} title="Remove">
-                <CloseIcon />
+                <CloseIcon size="meta" />
               </button>
             </div>
           )}
@@ -299,7 +299,7 @@ export const ComposeForm = (props: ComposeFormProps) => {
             onClick={() => (document.getElementById(props.fileInputId) as HTMLInputElement)?.click()}
             title="Attach files"
           >
-            <AttachmentIcon />
+            <AttachmentIcon size="tool" />
           </button>
         </>
       }

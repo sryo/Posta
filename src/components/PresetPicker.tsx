@@ -7,7 +7,7 @@ type PreviewCard = { name: string; color?: string | null };
 
 function PresetPreview(props: { cards: PreviewCard[] }) {
   return (
-    <Show when={props.cards.length > 0} fallback={<div class="preset-preview empty"><PlusIcon /></div>}>
+    <Show when={props.cards.length > 0} fallback={<div class="preset-preview empty"><PlusIcon size="tool" /></div>}>
       <div class="preset-preview">
         <For each={props.cards}>
           {(c) => <div class={`preset-card ${c.color || "none"}`}></div>}

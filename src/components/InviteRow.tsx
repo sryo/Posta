@@ -123,13 +123,13 @@ export const InviteAnswerMenu = (props: {
         on:keydown={onButtonKeyDown}
       >
         <Show when={props.value === "accepted"}>
-          <span class="invite-answer-check" aria-hidden="true"><CheckIcon /></span>
+          <span class="invite-answer-check" aria-hidden="true"><CheckIcon size="meta" strong /></span>
         </Show>
         {answer()?.label ?? "Going?"}
         <Show when={props.showKeys}>
           <span class="invite-answer-keys" aria-hidden="true">{RSVP_ANSWERS.map(a => a.keyHint).join(" ")}</span>
         </Show>
-        <span class="invite-answer-caret" aria-hidden="true"><ChevronIcon /></span>
+        <span class="invite-answer-caret" aria-hidden="true"><ChevronIcon size="meta" /></span>
       </button>
       <Show when={at()}>
         {(position) => (
@@ -196,7 +196,7 @@ export const InviteWhen = (props: {
         live: !!props.live,
       }}
     >
-      <Show when={props.live} fallback={<CalendarIcon />}>
+      <Show when={props.live} fallback={<CalendarIcon size="meta" strong />}>
         <span class="invite-live-dot" aria-hidden="true" />
       </Show>
       {text()}
@@ -276,7 +276,7 @@ export const InviteRowLines = (props: {
           <Show when={place()}>
             {(where) => (
               <span class="invite-place" classList={{ "invite-place-call": where().isCall }}>
-                {where().isCall ? <VideoIcon /> : <LocationIcon />}
+                {where().isCall ? <VideoIcon size="meta" /> : <LocationIcon size="meta" />}
                 <span>{where().label}</span>
               </span>
             )}

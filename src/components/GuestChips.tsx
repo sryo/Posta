@@ -132,7 +132,7 @@ export const GuestChips = (props: {
             <span class="guest-chip" title={email}>
               <span class="guest-chip-label">{label}</span>
               <button type="button" class="guest-chip-remove" aria-label={`Remove ${label}`} onClick={() => remove(i())}>
-                <CloseIcon />
+                <CloseIcon size="meta" />
               </button>
             </span>
           );

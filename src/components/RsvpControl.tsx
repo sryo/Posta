@@ -38,7 +38,7 @@ export const RsvpControl = (props: {
             onClick={() => { if (!selected()) props.onAnswer(answer.status); }}
           >
             <Show when={selected()}>
-              <span class="rsvp-check" aria-hidden="true"><CheckIcon /></span>
+              <span class="rsvp-check" aria-hidden="true"><CheckIcon size="meta" strong /></span>
             </Show>
             {answer.label}
             <Show when={props.showKeys}>

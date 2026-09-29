@@ -126,7 +126,7 @@ export const AttachmentLightbox = (props: {
           <div class="lightbox-stage">
             <Show when={props.items.length > 1}>
               <button class="lightbox-nav lightbox-prev" aria-label="Previous attachment" disabled={props.index === 0} onClick={() => step(-1)}>
-                <ChevronLeftIcon />
+                <ChevronLeftIcon size="tool" />
               </button>
             </Show>
             {(() => {
@@ -140,7 +140,7 @@ export const AttachmentLightbox = (props: {
             })()}
             <Show when={props.items.length > 1}>
               <button class="lightbox-nav lightbox-next" aria-label="Next attachment" disabled={props.index === props.items.length - 1} onClick={() => step(1)}>
-                <ChevronRightIcon />
+                <ChevronRightIcon size="tool" />
               </button>
             </Show>
           </div>

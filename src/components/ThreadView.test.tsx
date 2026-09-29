@@ -839,7 +839,7 @@ describe("ThreadView toolbar", () => {
     const { container } = renderThread({ isImportant: true });
     const button = Array.from(container.querySelectorAll(".thread-toolbar-btn"))
       .find(b => b.textContent?.includes("important"))!;
-    expect(button.querySelector("path")?.getAttribute("d")).toMatch(/^M14 9V5/);
+    expect(button.querySelector("svg")?.getAttribute("data-icon")).toMatch(/^thumbs-up/);
   });
 });
 

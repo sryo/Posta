@@ -4,6 +4,7 @@ import { createSignal, onCleanup, Show } from "solid-js";
 import { Portal } from "solid-js/web";
 import { EMOJI_PICKER_SIZE, EmojiPicker } from "./EmojiPicker";
 import { placeBelowAnchor } from "../app/popoverPlacement";
+import { PlusIcon } from "./Icons";
 
 interface ReactionButtonProps {
   onSelect: (emoji: string) => void;
@@ -47,10 +48,7 @@ export const ReactionButton = (props: ReactionButtonProps) => {
         disabled={props.sending}
         title="Add reaction"
       >
-        <svg width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round">
-          <line x1="5" y1="1" x2="5" y2="9"></line>
-          <line x1="1" y1="5" x2="9" y2="5"></line>
-        </svg>
+        <PlusIcon size="meta" />
       </button>
       {/* Out of the message card: a sticky card is its own stacking context
           and, beside an inline reply, narrow and scrolling */}
