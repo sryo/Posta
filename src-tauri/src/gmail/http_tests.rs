@@ -146,6 +146,7 @@ impl StubServer {
             upload_base: format!("{}/upload/gmail/v1", self.base),
             batch_retry_delay: StdDuration::from_millis(10),
             attachment_cache: Arc::new(Mutex::new(AttachmentCache::new(ATTACHMENT_CACHE_BYTES))),
+            draft_parents: Default::default(),
             ..GmailClient::new("token".into())
         }
     }
@@ -475,6 +476,49 @@ async fn a_reply_draft_recreated_after_a_deletion_elsewhere_looks_its_parent_up_
     assert!(raw.contains("In-Reply-To: <parent@example.com>"), "{}", raw);
     assert_eq!(body["message"]["threadId"], "t1");
     assert_eq!(requests.iter().filter(|r| r.method == "GET").count(), 1);
+}
+
+#[tokio::test]
+async fn autosaving_a_reply_draft_looks_its_parent_up_once_per_thread() {
+    let lookups = Arc::new(AtomicUsize::new(0));
+    let server = StubServer::start({
+        let lookups = lookups.clone();
+        move |request| match (request.method.as_str(), request.target.as_str()) {
+            ("PUT", _) | ("POST", _) => Reply::Json(200, r#"{"id":"d1","message":{"id":"m2"}}"#.into()),
+            ("GET", target) => {
+                // The first lookup fails, and a failure is not remembered
+                if lookups.fetch_add(1, Ordering::SeqCst) == 0 {
+                    return Reply::Json(503, "{}".into());
+                }
+                let thread = thread_id_of(target);
+                Reply::Json(
+                    200,
+                    serde_json::json!({ "id": thread, "messages": [{ "id": "m1", "threadId": thread, "payload": {
+                        "headers": [{ "name": "Message-ID", "value": format!("<{}@example.com>", thread) }]
+                    }}]})
+                    .to_string(),
+                )
+            }
+            _ => Reply::Json(500, "{}".into()),
+        }
+    })
+    .await;
+    let gmail = server.client();
+    let message = OutgoingMessage { to: "bob@example.com", body: "typing", ..Default::default() };
+
+    within(gmail.create_draft(&message, Some("t1"))).await.unwrap();
+    for _ in 0..3 {
+        within(gmail.update_draft("d1", &message, Some("t1"))).await.unwrap();
+    }
+    within(gmail.update_draft("d2", &message, Some("t2"))).await.unwrap();
+
+    let requests = server.requests();
+    let gets: Vec<&str> = requests.iter().filter(|r| r.method == "GET").map(|r| thread_id_of(&r.target)).collect();
+    assert_eq!(gets, ["t1", "t1", "t2"]);
+    let last_t1_save = requests.iter().rfind(|r| r.target.ends_with("/drafts/d1")).unwrap();
+    let body = serde_json::from_slice::<serde_json::Value>(&last_t1_save.body).unwrap();
+    let raw = decode_base64_body(body["message"]["raw"].as_str().unwrap()).unwrap();
+    assert!(raw.contains("In-Reply-To: <t1@example.com>"), "{}", raw);
 }
 
 #[tokio::test]

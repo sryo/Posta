@@ -24,6 +24,9 @@ const MAX_INLINE_IMAGE_SIZE: i32 = 100_000; // 100KB max for inline images
 const MAX_INLINE_IMAGES: usize = 3;
 /// Budget of the attachment data kept in memory between thread list fetches
 const ATTACHMENT_CACHE_BYTES: usize = 32 * 1024 * 1024;
+/// How long a reply draft's autosaves reuse the threading headers they looked
+/// up; sending always looks them up afresh
+const DRAFT_PARENT_TTL: std::time::Duration = std::time::Duration::from_secs(10 * 60);
 
 /// Partial-response fields for thread list entries: message headers and the
 /// part tree (with part headers, for Content-ID) three levels deep, without
@@ -51,7 +54,11 @@ pub struct GmailClient {
     upload_base: String,
     batch_retry_delay: std::time::Duration,
     attachment_cache: std::sync::Arc<std::sync::Mutex<AttachmentCache>>,
+    draft_parents: std::sync::Arc<std::sync::Mutex<DraftParents>>,
 }
+
+/// Threading headers of a reply draft's thread, by thread id, with when they were read
+type DraftParents = HashMap<String, (Option<(String, String)>, std::time::Instant)>;
 
 #[derive(Debug, Deserialize)]
 struct ThreadListResponse {
@@ -341,6 +348,7 @@ impl GmailClient {
             upload_base: GMAIL_UPLOAD_BASE.to_string(),
             batch_retry_delay: BATCH_RETRY_DELAY,
             attachment_cache: shared_attachment_cache(),
+            draft_parents: shared_draft_parents(),
         }
     }
 
@@ -764,6 +772,30 @@ impl GmailClient {
         }
     }
 
+    /// resolve_reply_headers for a draft replying to the latest message of
+    /// `thread_id`, reusing a successful lookup for DRAFT_PARENT_TTL
+    async fn draft_reply_headers(&self, thread_id: &str) -> Option<(String, String)> {
+        {
+            let parents = self.draft_parents.lock().unwrap_or_else(|e| e.into_inner());
+            if let Some((headers, _)) = parents.get(thread_id).filter(|(_, at)| at.elapsed() < DRAFT_PARENT_TTL) {
+                return headers.clone();
+            }
+        }
+        match self.get_thread_metadata(&thread_reply_metadata_url(&self.api_base, thread_id)).await {
+            Ok(thread) => {
+                let headers = reply_headers_from_thread(&thread, None);
+                let mut parents = self.draft_parents.lock().unwrap_or_else(|e| e.into_inner());
+                parents.retain(|_, (_, at)| at.elapsed() < DRAFT_PARENT_TTL);
+                parents.insert(thread_id.to_string(), (headers.clone(), std::time::Instant::now()));
+                headers
+            }
+            Err(e) => {
+                tracing::warn!("Failed to fetch reply headers for thread {}: {}", thread_id, e);
+                None
+            }
+        }
+    }
+
     /// A thread fetched with a thread_metadata_url
     async fn get_thread_metadata(&self, url: &str) -> Result<FullThread, String> {
         let resp = self
@@ -835,7 +867,7 @@ impl GmailClient {
         // Gmail only files a draft into a thread when it carries the RFC 2822
         // threading headers, not just the threadId
         let reply_headers = match thread_id {
-            Some(tid) => self.resolve_reply_headers(tid, None).await,
+            Some(tid) => self.draft_reply_headers(tid).await,
             None => None,
         };
 
@@ -1275,6 +1307,11 @@ impl AttachmentCache {
             }
         }
     }
+}
+
+fn shared_draft_parents() -> std::sync::Arc<std::sync::Mutex<DraftParents>> {
+    static PARENTS: std::sync::OnceLock<std::sync::Arc<std::sync::Mutex<DraftParents>>> = std::sync::OnceLock::new();
+    PARENTS.get_or_init(Default::default).clone()
 }
 
 fn shared_attachment_cache() -> std::sync::Arc<std::sync::Mutex<AttachmentCache>> {
