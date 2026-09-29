@@ -1804,11 +1804,8 @@ function App() {
       setAccounts(remaining);
       setSelectedAccount(null);
       setCards([]);
-      setCardThreads(reconcile({}));
+      forgetCardState(signedOutCards.map(c => c.id));
       setAccountLabels([]);
-      const collapsed = safeGetJSON<Record<string, boolean>>("collapsedCards", {});
-      for (const card of signedOutCards) delete collapsed[card.id];
-      safeSetJSON("collapsedCards", collapsed);
       removeAccountDrafts(account.id);
       // Fall through to the next account instead of a blank screen
       if (remaining.length > 0) {

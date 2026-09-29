@@ -600,7 +600,7 @@ describe("App accounts", () => {
   it("signing out keeps the remaining account's collapsed cards collapsed", async () => {
     handlers.get_accounts = () => [account("a", "a@x.com"), account("b", "b@x.com")];
     handlers.delete_account = () => null;
-    localStorage.setItem("collapsedCards", JSON.stringify({ "card-b": true }));
+    localStorage.setItem("collapsedCards", JSON.stringify({ "card-a": false, "card-b": true }));
     render(() => <App />);
     await screen.findByText("Mail for A");
 
@@ -609,6 +609,7 @@ describe("App accounts", () => {
 
     const betaCard = await screen.findByRole("region", { name: "Beta email card" });
     expect(betaCard).toHaveClass("collapsed");
+    expect(JSON.parse(localStorage.getItem("collapsedCards")!)).toEqual({ "card-b": true });
     expect(invoke).not.toHaveBeenCalledWith("fetch_threads_paginated", expect.objectContaining({ cardId: "card-b" }));
   });
 });
