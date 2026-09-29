@@ -4,7 +4,9 @@ import {
   formatDayLabel,
   formatShortDate,
   formatWhen,
+  monthNames,
   relativeDayName,
+  shortWeekday,
   threadGroupLabel,
   uses12HourClock,
 } from "./dateFormat";
@@ -64,6 +66,15 @@ describe("formatWhen", () => {
     expect(formatWhen(at(29, 0, 42), now, "en-US")).toMatch(/^Today, 12:42\sAM$/);
     expect(formatWhen(at(22, 10, 14), now, "en-US")).toMatch(/^Sep 22, 10:14\sAM$/);
     expect(formatWhen(new Date(2025, 11, 1, 9, 0), now, "en-GB")).toBe("1 Dec 2025, 09:00");
+  });
+});
+
+describe("weekday and month names", () => {
+  it("come from the locale", () => {
+    expect(shortWeekday(new Date(2026, 9, 1), "en-US")).toBe("Thu");
+    expect(shortWeekday(new Date(2026, 9, 1), "es-AR")).toMatch(/^jue/);
+    expect(monthNames("en-US")[0]).toBe("January");
+    expect(monthNames("es-AR")[8]).toBe("septiembre");
   });
 });
 

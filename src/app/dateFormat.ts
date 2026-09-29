@@ -46,6 +46,17 @@ export function formatShortDate(date: Date, locale?: string, { weekday = false, 
   }).format(date);
 }
 
+// "Thu", for a day picker
+export function shortWeekday(date: Date, locale?: string): string {
+  return new Intl.DateTimeFormat(locale, { weekday: "short" }).format(date);
+}
+
+// January to December, standalone as a month picker lists them
+export function monthNames(locale?: string): string[] {
+  const format = new Intl.DateTimeFormat(locale, { month: "long" });
+  return Array.from({ length: 12 }, (_, month) => format.format(new Date(2000, month, 1)));
+}
+
 // A day heading: its relative name, else "Thursday, Oct 1"
 export function formatDayLabel(day: Date, now: Date, locale?: string): string {
   return relativeDayName(day, now, locale)

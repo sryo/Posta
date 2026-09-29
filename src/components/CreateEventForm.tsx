@@ -2,6 +2,7 @@ import { createSignal, onCleanup, onMount, Show, For } from "solid-js";
 import { ChevronLeftIcon, ChevronRightIcon } from "./Icons";
 import { CloseButton } from "./ComposeAtoms";
 import { isImeComposing, isTypingTarget, onActivateKey } from "../shared/keyboard";
+import { formatClock, monthNames, shortWeekday } from "../app/dateFormat";
 
 // One labelled, scrollable single-choice list of the scheduler
 function SchedulerColumn<T>(props: {
@@ -184,7 +185,7 @@ export const CreateEventForm = (props: {
     setViewDate(newDate);
   };
 
-  const months = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
+  const months = monthNames();
   const currentYear = new Date().getFullYear();
   // Next five years, widened to include the viewed year (e.g. editing a past event)
   const years = () => {
@@ -226,7 +227,10 @@ export const CreateEventForm = (props: {
   // Stable option objects so <For> keeps the rendered rows when a time changes
   const timeOptions = new Map<string, { label: string; value: string }>();
   const toOptions = (slots: string[]) => slots.map(t => {
-    if (!timeOptions.has(t)) timeOptions.set(t, { label: t, value: t });
+    if (!timeOptions.has(t)) {
+      const [h, m] = t.split(':').map(Number);
+      timeOptions.set(t, { label: formatClock(new Date(2000, 0, 1, h, m)), value: t });
+    }
     return timeOptions.get(t)!;
   });
   const startOptions = () => toOptions(slotsWithValue(props.startTime));
@@ -260,9 +264,8 @@ export const CreateEventForm = (props: {
   };
 
   const formatDateDisplay = (d: Date) => {
-    const days = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
     return {
-      day: days[d.getDay()],
+      day: shortWeekday(d),
       date: d.getDate()
     };
   };

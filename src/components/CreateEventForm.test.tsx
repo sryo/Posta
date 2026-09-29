@@ -2,6 +2,7 @@ import { beforeAll, describe, expect, it, vi } from "vitest";
 import { fireEvent, render } from "@solidjs/testing-library";
 import { createSignal } from "solid-js";
 import { CreateEventForm } from "./CreateEventForm";
+import { formatClock, uses12HourClock } from "../app/dateFormat";
 
 function renderForm(init: { startDate: string; endDate?: string; startTime?: string; endTime?: string; isEditing?: boolean; allDay?: boolean; setRecurrence?: (v: string | null) => void; summary?: string; onSave?: () => void; onClose?: () => void }) {
   const [startDate, setStartDate] = createSignal(init.startDate);
@@ -43,12 +44,26 @@ function renderForm(init: { startDate: string; endDate?: string; startTime?: str
 const selects = (container: HTMLElement) => container.querySelectorAll<HTMLSelectElement>(".scheduler-header select");
 const firstDayCard = (container: HTMLElement) => container.querySelector(".scheduler-day-card")!.textContent;
 
+// A slot's label, as the locale writes the HH:MM time it stands for
+const clock = (time: string) => {
+  const [h, m] = time.split(":").map(Number);
+  return formatClock(new Date(2000, 0, 1, h, m));
+};
 const slot = (container: HTMLElement, picker: "start" | "end", time: string) =>
-  Array.from(container.querySelectorAll<HTMLElement>(`.time-picker-${picker} > div`)).find(el => el.textContent === time)!;
+  Array.from(container.querySelectorAll<HTMLElement>(`.time-picker-${picker} > div`)).find(el => el.textContent === clock(time))!;
 
 // jsdom has no layout; the form scrolls the selected times into view on open
 beforeAll(() => {
   Element.prototype.scrollIntoView = vi.fn();
+});
+
+describe("CreateEventForm time lists", () => {
+  it("write the times as the locale does", () => {
+    const { container } = renderForm({ startDate: "2030-06-10" });
+    const labels = Array.from(container.querySelectorAll<HTMLElement>(".time-picker-start > div")).map(el => el.textContent);
+    expect(labels).toContain(clock("14:30"));
+    if (uses12HourClock()) expect(labels).not.toContain("14:30");
+  });
 });
 
 describe("CreateEventForm closing", () => {
