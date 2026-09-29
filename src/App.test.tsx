@@ -2756,6 +2756,39 @@ describe("App accessibility", () => {
     expect(screen.getByRole("button", { name: "No color", hidden: true })).toBeInTheDocument();
   });
 
+  it("shows the saved background colour on a deck that appears after the first sign-in", async () => {
+    localStorage.setItem("bgColorIndex", "5");
+    handlers.get_accounts = () => [];
+    handlers.run_oauth_flow = () => account("a", "a@x.com");
+    handlers.pull_from_icloud = () => true;
+    render(() => <App />);
+    const signIn = await screen.findByText("Sign in with Google");
+    // The user takes a moment; startup is long done
+    await new Promise(r => setTimeout(r, 50));
+    fireEvent.click(signIn);
+    fireEvent.click(await screen.findByText("Continue"));
+
+    await waitFor(() => expect((document.querySelector(".deck") as HTMLElement).style.background).toContain("30, 136, 229"));
+    expect(document.documentElement.style.getPropertyValue("--accent")).toBe("#1E88E5");
+  });
+
+  it("follows the system's dark mode with the chosen background colour", async () => {
+    const listeners: ((e: { matches: boolean }) => void)[] = [];
+    const media = { matches: false, addEventListener: (_: string, l: (e: { matches: boolean }) => void) => listeners.push(l), removeEventListener: () => {} };
+    const matchMedia = vi.fn(() => media);
+    Object.defineProperty(window, "matchMedia", { value: matchMedia, configurable: true });
+    onTestFinished(() => { delete (window as { matchMedia?: unknown }).matchMedia; });
+    localStorage.setItem("bgColorIndex", "5");
+    render(() => <App />);
+    await screen.findByText("Mail for A");
+    await waitFor(() => expect((document.querySelector(".deck") as HTMLElement).style.background).toContain("0.18"));
+
+    media.matches = true;
+    listeners.forEach(l => l({ matches: true }));
+    await waitFor(() => expect((document.querySelector(".deck") as HTMLElement).style.background).toContain("0.25"));
+    expect(document.documentElement.style.getPropertyValue("--app-bg")).toContain("0.25");
+  });
+
   it("says the account button opens a menu and whether it is open", async () => {
     render(() => <App />);
     await screen.findByText("Mail for A");

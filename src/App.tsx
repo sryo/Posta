@@ -396,6 +396,27 @@ function App() {
     return Number.isInteger(idx) && idx >= 0 && idx < BG_COLORS.length ? idx : null;
   }
   const [selectedBgColorIndex, setSelectedBgColorIndex] = createSignal<number | null>(readSavedBgColorIndex());
+  const [prefersDark, setPrefersDark] = createSignal(!!window.matchMedia?.("(prefers-color-scheme: dark)")?.matches);
+  // Derived rather than written onto the deck, which is rebuilt whenever the
+  // signed-in account goes away and comes back
+  const deckBackground = createMemo(() => {
+    const index = selectedBgColorIndex();
+    const color = index === null ? undefined : BG_COLORS[index];
+    if (!color) return undefined;
+    return prefersDark() ? color.dark : color.light;
+  });
+  createEffect(() => {
+    const index = selectedBgColorIndex();
+    const root = document.documentElement.style;
+    const background = deckBackground();
+    if (index === null || !background) {
+      root.removeProperty("--accent");
+      root.removeProperty("--app-bg");
+    } else {
+      root.setProperty("--accent", BG_COLORS[index].hex);
+      root.setProperty("--app-bg", background);
+    }
+  });
 
   // Add card form
   const [addingCard, setAddingCard] = createSignal(false);
@@ -1128,14 +1149,7 @@ function App() {
 
     // Listen for color scheme changes
     colorSchemeQuery = window.matchMedia?.("(prefers-color-scheme: dark)");
-    handleColorSchemeChange = (e: MediaQueryListEvent) => {
-      const deck = document.querySelector(".deck") as HTMLElement;
-      if (deck?.dataset.bgLight || deck?.dataset.bgDark) {
-        const bgColor = e.matches ? deck.dataset.bgDark! : deck.dataset.bgLight!;
-        deck.style.background = bgColor;
-        document.documentElement.style.setProperty("--app-bg", bgColor);
-      }
-    };
+    handleColorSchemeChange = (e: MediaQueryListEvent) => setPrefersDark(e.matches);
     colorSchemeQuery?.addEventListener("change", handleColorSchemeChange);
 
     // Set snippet lines CSS variable
@@ -1184,11 +1198,6 @@ function App() {
       setError(String(e));
     } finally {
       setLoading(false);
-      // Apply saved background color after UI is rendered
-      const savedBgColorIndex = readSavedBgColorIndex();
-      if (savedBgColorIndex !== null) {
-        setTimeout(() => applyBgColor(savedBgColorIndex), 0);
-      }
     }
 
     // The backend holds links, including the launch link, until they are
@@ -3306,34 +3315,10 @@ function App() {
   function selectBgColor(colorIndex: number | null) {
     setSelectedBgColorIndex(colorIndex);
     setBgColorPickerOpen(false);
-    applyBgColor(colorIndex);
     if (colorIndex !== null) {
       safeSetItem("bgColorIndex", String(colorIndex));
     } else {
       safeRemoveItem("bgColorIndex");
-    }
-  }
-
-  function applyBgColor(colorIndex: number | null) {
-    const deck = document.querySelector(".deck") as HTMLElement;
-    if (!deck) return;
-
-    if (colorIndex === null) {
-      deck.style.background = "";
-      delete deck.dataset.bgLight;
-      delete deck.dataset.bgDark;
-      document.documentElement.style.setProperty("--accent", "#4285f4");
-      document.documentElement.style.removeProperty("--app-bg");
-    } else {
-      const color = BG_COLORS[colorIndex];
-      if (!color) return;
-      const isDark = window.matchMedia?.("(prefers-color-scheme: dark)").matches;
-      const bgColor = isDark ? color.dark : color.light;
-      deck.style.background = bgColor;
-      deck.dataset.bgLight = color.light;
-      deck.dataset.bgDark = color.dark;
-      document.documentElement.style.setProperty("--accent", color.hex);
-      document.documentElement.style.setProperty("--app-bg", bgColor);
     }
   }
 
@@ -4111,7 +4096,7 @@ function App() {
       <Show when={!loading() && selectedAccount()}>
         <DragDropProvider onDragStart={onDragStart} onDragEnd={onDragEnd as any} collisionDetector={mostIntersecting}>
           <DragDropSensors />
-          <div class={`deck ${resizing() ? 'resizing' : ''}`}>
+          <div class={`deck ${resizing() ? 'resizing' : ''}`} style={{ background: deckBackground() }}>
             <SortableProvider ids={cardIds()}>
               <For each={cards()}>
                 {(card) => {
