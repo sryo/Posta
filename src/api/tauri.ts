@@ -132,8 +132,8 @@ export async function updateAccountSignature(accountId: string, signature: strin
   return invoke("update_account_signature", { accountId, signature });
 }
 
-export async function getCards(accountId: string): Promise<Card[]> {
-  return invoke("get_cards", { accountId });
+export async function getCards(): Promise<Card[]> {
+  return invoke("get_cards");
 }
 
 export async function createCard(
@@ -494,6 +494,7 @@ export interface GoogleCalendarEvent {
   response_status: string | null; // accepted, declined, tentative, needsAction
   can_edit: boolean; // whether the current user can edit this event
   recurring_event_id?: string | null; // set on one occurrence of a repeating event (the series id)
+  account_id?: string; // the local account it was listed from; "" or missing when cached before events named it
 }
 
 export interface CalendarInfo {

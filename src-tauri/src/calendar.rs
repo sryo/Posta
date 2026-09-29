@@ -143,6 +143,10 @@ pub struct CalendarEvent {
     /// Set on one occurrence of a repeating event: the series' id
     #[serde(default)]
     pub recurring_event_id: Option<String>,
+    /// The local account the event was listed from; empty in events cached
+    /// before events named it
+    #[serde(default)]
+    pub account_id: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1268,6 +1272,7 @@ fn api_event_to_calendar_event(event: ApiEvent, calendar_id: &str, calendar_name
         response_status,
         can_edit,
         recurring_event_id: event.recurring_event_id,
+        account_id: String::new(),
     })
 }
 
@@ -1728,6 +1733,18 @@ mod tests {
     }
 
     #[test]
+    fn events_cached_before_they_named_their_account_still_load() {
+        let ev = api_event(serde_json::json!({ "id": "e1", "start": { "dateTime": "2024-12-23T10:00:00Z" } }));
+        let ev = CalendarEvent { account_id: "a2".into(), ..api_event_to_calendar_event(ev, "cal", "", "owner").unwrap() };
+        assert_eq!(serde_json::to_value(&ev).unwrap()["account_id"], "a2");
+
+        let mut cached = serde_json::to_value(&ev).unwrap();
+        cached.as_object_mut().unwrap().remove("account_id");
+        let cached: CalendarEvent = serde_json::from_value(cached).unwrap();
+        assert_eq!(cached.account_id, "");
+    }
+
+    #[test]
     fn event_response_status_and_attendees() {
         let ev = api_event(serde_json::json!({
             "id": "e1",
@@ -1800,6 +1817,7 @@ mod tests {
             response_status: Some("accepted".into()),
             can_edit: false,
             recurring_event_id: None,
+            account_id: String::new(),
         }
     }
 

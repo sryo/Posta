@@ -26,6 +26,10 @@ impl Account {
     }
 }
 
+/// `Card::account_id` of a card showing the mail or events of every
+/// signed-in account
+pub const ALL_ACCOUNTS: &str = "all";
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Card {
     pub id: String,

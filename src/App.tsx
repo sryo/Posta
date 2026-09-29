@@ -1123,7 +1123,7 @@ function App() {
     try {
       if (!(await pullFromICloud())) return;
       if (selectedAccount()?.id !== account.id) return;
-      const cardList = (await getCards(account.id)).filter(c => !heldCardDeletes.has(c.id));
+      const cardList = (await getCards()).filter(c => c.account_id === account.id && !heldCardDeletes.has(c.id));
       if (selectedAccount()?.id !== account.id) return;
       const before = new Map(cards().map(c => [c.id, c.query]));
       const kept = new Set(cardList.map(c => c.id));
@@ -1889,7 +1889,7 @@ function App() {
     const sources: { email: string; cards: Card[] }[] = [];
     for (const other of accounts().filter(a => a.id !== account.id)) {
       try {
-        const otherCards = await getCards(other.id);
+        const otherCards = (await getCards()).filter(c => c.account_id === other.id);
         if (otherCards.length > 0) sources.push({ email: other.email, cards: otherCards });
       } catch (e) {
         console.warn("Couldn't read another account's cards:", e);
@@ -3476,7 +3476,7 @@ function App() {
   async function loadAccountCards(account: Account): Promise<Card[] | null> {
     setCardThreads(reconcile({}));
     setCardCalendarEvents(reconcile({}));
-    const cardList = await getCards(account.id);
+    const cardList = (await getCards()).filter(c => c.account_id === account.id);
     if (selectedAccount()?.id !== account.id) return null;
     setCards(cardList);
 

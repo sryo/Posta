@@ -1,6 +1,6 @@
 // SQLite cache for offline access
 
-use crate::models::{Account, Card};
+use crate::models::{Account, Card, ALL_ACCOUNTS};
 use rusqlite::{params, Connection, OptionalExtension};
 use std::path::Path;
 use std::sync::Mutex;
@@ -38,6 +38,7 @@ impl CacheDb {
         };
         db.run_migrations()?;
         db.run_column_migrations()?;
+        db.run_data_migrations()?;
         Ok(db)
     }
 
@@ -114,6 +115,19 @@ impl CacheDb {
         Ok(())
     }
 
+    /// One-time rewrites of existing rows, counted in `PRAGMA user_version`
+    fn run_data_migrations(&self) -> Result<(), CacheError> {
+        let mut conn = self.conn.lock().map_err(|_| CacheError::Lock)?;
+        let version: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
+        if version < 1 {
+            let tx = conn.transaction()?;
+            number_board_positions(&tx)?;
+            tx.pragma_update(None, "user_version", 1)?;
+            tx.commit()?;
+        }
+        Ok(())
+    }
+
     // Account operations
 
     pub fn get_accounts(&self) -> Result<Vec<Account>, CacheError> {
@@ -161,26 +175,42 @@ impl CacheDb {
         Ok(())
     }
 
+    /// The account and its cards. The all-inboxes cards go with the last
+    /// account; iCloud keeps them for the next sign-in.
     pub fn delete_account(&self, id: &str) -> Result<(), CacheError> {
         let mut conn = self.conn.lock().map_err(|_| CacheError::Lock)?;
         let tx = conn.transaction()?;
-        // Delete card caches before the cards rows they are keyed by
-        tx.execute(
-            "DELETE FROM card_thread_cache WHERE card_id IN (SELECT id FROM cards WHERE account_id = ?1)",
-            params![id],
-        )?;
-        tx.execute(
-            "DELETE FROM card_calendar_cache WHERE card_id IN (SELECT id FROM cards WHERE account_id = ?1)",
-            params![id],
-        )?;
-        tx.execute("DELETE FROM cards WHERE account_id = ?1", params![id])?;
         tx.execute("DELETE FROM sync_state WHERE account_id = ?1", params![id])?;
         tx.execute("DELETE FROM accounts WHERE id = ?1", params![id])?;
+        let others: i64 = tx.query_row("SELECT COUNT(*) FROM accounts", [], |r| r.get(0))?;
+        let owners: &[&str] = if others == 0 { &[id, ALL_ACCOUNTS] } else { &[id] };
+        for owner in owners {
+            // Card caches first: they are found through the cards rows
+            tx.execute(
+                "DELETE FROM card_thread_cache WHERE card_id IN (SELECT id FROM cards WHERE account_id = ?1)",
+                params![owner],
+            )?;
+            tx.execute(
+                "DELETE FROM card_calendar_cache WHERE card_id IN (SELECT id FROM cards WHERE account_id = ?1)",
+                params![owner],
+            )?;
+            tx.execute("DELETE FROM cards WHERE account_id = ?1", params![owner])?;
+        }
         tx.commit()?;
         Ok(())
     }
 
     // Card operations
+
+    /// Every card shown: those of signed-in accounts and the all-inboxes ones
+    pub fn get_board_cards(&self) -> Result<Vec<Card>, CacheError> {
+        let conn = self.conn.lock().map_err(|_| CacheError::Lock)?;
+        let mut stmt = conn.prepare(&format!(
+            "SELECT {CARD_COLUMNS} FROM cards WHERE account_id = ?1 OR account_id IN (SELECT id FROM accounts) ORDER BY position, id"
+        ))?;
+        let rows = stmt.query_map(params![ALL_ACCOUNTS], card_from_row)?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+    }
 
     pub fn get_cards(&self, account_id: &str) -> Result<Vec<Card>, CacheError> {
         let conn = self.conn.lock().map_err(|_| CacheError::Lock)?;
@@ -189,12 +219,10 @@ impl CacheDb {
         rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
     }
 
-    pub fn get_card(&self, account_id: &str, card_id: &str) -> Result<Option<Card>, CacheError> {
+    pub fn get_card(&self, card_id: &str) -> Result<Option<Card>, CacheError> {
         let conn = self.conn.lock().map_err(|_| CacheError::Lock)?;
-        let mut stmt = conn.prepare(&format!("SELECT {CARD_COLUMNS} FROM cards WHERE account_id = ?1 AND id = ?2"))?;
-        stmt.query_row(params![account_id, card_id], card_from_row)
-            .optional()
-            .map_err(Into::into)
+        let mut stmt = conn.prepare(&format!("SELECT {CARD_COLUMNS} FROM cards WHERE id = ?1"))?;
+        stmt.query_row(params![card_id], card_from_row).optional().map_err(Into::into)
     }
 
     pub fn card_exists(&self, card_id: &str) -> Result<bool, CacheError> {
@@ -213,14 +241,17 @@ impl CacheDb {
     /// Save a card edit. The position is left alone: `reorder_cards` owns
     /// it, and the edited copy may predate a reorder.
     pub fn update_card(&self, card: &Card) -> Result<(), CacheError> {
-        let conn = self.conn.lock().map_err(|_| CacheError::Lock)?;
-        let updated = conn.execute(
-            "UPDATE cards SET name = ?1, query = ?2, collapsed = ?3, color = ?4, group_by = ?5, card_type = ?6 WHERE id = ?7",
-            params![card.name, card.query, card.collapsed as i32, card.color, card.group_by, card.card_type, card.id],
+        let mut conn = self.conn.lock().map_err(|_| CacheError::Lock)?;
+        let tx = conn.transaction()?;
+        clear_cache_if_moved(&tx, card)?;
+        let updated = tx.execute(
+            "UPDATE cards SET account_id = ?1, name = ?2, query = ?3, collapsed = ?4, color = ?5, group_by = ?6, card_type = ?7 WHERE id = ?8",
+            params![card.account_id, card.name, card.query, card.collapsed as i32, card.color, card.group_by, card.card_type, card.id],
         )?;
         if updated == 0 {
             return Err(CacheError::CardNotFound);
         }
+        tx.commit()?;
         Ok(())
     }
 
@@ -400,10 +431,42 @@ fn insert_card_row(conn: &Connection, card: &Card) -> Result<(), CacheError> {
 }
 
 fn update_card_row(conn: &Connection, card: &Card) -> Result<(), CacheError> {
+    clear_cache_if_moved(conn, card)?;
     conn.execute(
-        "UPDATE cards SET name = ?1, query = ?2, position = ?3, collapsed = ?4, color = ?5, group_by = ?6, card_type = ?7 WHERE id = ?8",
-        params![card.name, card.query, card.position, card.collapsed as i32, card.color, card.group_by, card.card_type, card.id],
+        "UPDATE cards SET account_id = ?1, name = ?2, query = ?3, position = ?4, collapsed = ?5, color = ?6, group_by = ?7, card_type = ?8 WHERE id = ?9",
+        params![card.account_id, card.name, card.query, card.position, card.collapsed as i32, card.color, card.group_by, card.card_type, card.id],
     )?;
+    Ok(())
+}
+
+/// A card moved to another account, or to all of them, no longer shows what
+/// it cached
+fn clear_cache_if_moved(conn: &Connection, card: &Card) -> Result<(), CacheError> {
+    let moved = conn
+        .query_row("SELECT account_id != ?1 FROM cards WHERE id = ?2", params![card.account_id, card.id], |r| r.get::<_, bool>(0))
+        .optional()?
+        .unwrap_or(false);
+    if moved {
+        conn.execute("DELETE FROM card_thread_cache WHERE card_id = ?1", params![card.id])?;
+        conn.execute("DELETE FROM card_calendar_cache WHERE card_id = ?1", params![card.id])?;
+    }
+    Ok(())
+}
+
+/// Numbers the cards 0, 1, 2... across the board. Each account used to
+/// number its own cards from 0; this keeps each account's order and shows
+/// the accounts one after another by email, then the all-inboxes cards,
+/// then cards of accounts no longer signed in.
+fn number_board_positions(conn: &Connection) -> Result<(), CacheError> {
+    let mut stmt = conn.prepare(
+        "SELECT cards.id FROM cards LEFT JOIN accounts ON accounts.id = cards.account_id
+         ORDER BY CASE WHEN accounts.email IS NOT NULL THEN 0 WHEN cards.account_id = ?1 THEN 1 ELSE 2 END,
+                  accounts.email, cards.account_id, cards.position, cards.id",
+    )?;
+    let ids = stmt.query_map(params![ALL_ACCOUNTS], |r| r.get::<_, String>(0))?.collect::<Result<Vec<_>, _>>()?;
+    for (position, id) in ids.iter().enumerate() {
+        conn.execute("UPDATE cards SET position = ?1 WHERE id = ?2", params![position as i64, id])?;
+    }
     Ok(())
 }
 
@@ -689,16 +752,12 @@ mod tests {
     }
 
     #[test]
-    fn a_card_is_found_by_id_only_under_its_own_account() {
+    fn card_existence_is_checked_by_id() {
         let db = db();
         let card = Card::new("a".into(), "One".into(), "q1".into(), 0);
         db.insert_card(&card).unwrap();
         assert!(db.card_exists(&card.id).unwrap());
         assert!(!db.card_exists("missing").unwrap());
-        let found = db.get_card("a", &card.id).unwrap().unwrap();
-        assert_eq!((found.id, found.name, found.query), (card.id.clone(), card.name.clone(), card.query.clone()));
-        assert!(db.get_card("b", &card.id).unwrap().is_none());
-        assert!(db.get_card("a", "missing").unwrap().is_none());
     }
 
     #[test]
@@ -860,6 +919,122 @@ mod tests {
         assert!(db.get_card_events(&card.id).unwrap().is_some());
         assert!(db.get_card_threads("deleted-card").unwrap().is_none());
         assert!(db.get_card_events("deleted-card").unwrap().is_none());
+    }
+
+    fn names(cards: &[Card]) -> Vec<&str> {
+        cards.iter().map(|c| c.name.as_str()).collect()
+    }
+
+    #[test]
+    fn the_board_holds_every_accounts_cards_and_the_all_inboxes_cards_in_order() {
+        let db = db();
+        let (a, b) = (account("a@x.com"), account("b@x.com"));
+        db.insert_account(&a).unwrap();
+        db.insert_account(&b).unwrap();
+        db.insert_card(&Card::new(a.id.clone(), "A0".into(), "q".into(), 0)).unwrap();
+        db.insert_card(&Card::new(b.id.clone(), "B1".into(), "q".into(), 1)).unwrap();
+        db.insert_card(&Card::new(ALL_ACCOUNTS.into(), "All2".into(), "q".into(), 2)).unwrap();
+        db.insert_card(&Card::new("signed-out".into(), "Orphan".into(), "q".into(), 3)).unwrap();
+
+        assert_eq!(names(&db.get_board_cards().unwrap()), ["A0", "B1", "All2"]);
+    }
+
+    fn user_version(db: &CacheDb) -> i64 {
+        db.conn.lock().unwrap().query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap()
+    }
+
+    #[test]
+    fn opening_an_old_database_puts_each_accounts_cards_in_one_block_once() {
+        let dir = std::env::temp_dir().join(format!("posta-test-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("positions.db");
+        {
+            // Before one board, each account numbered its own cards from 0
+            let conn = Connection::open(&path).unwrap();
+            conn.execute_batch(
+                "CREATE TABLE accounts (id TEXT PRIMARY KEY, email TEXT NOT NULL UNIQUE, picture TEXT);
+                 CREATE TABLE cards (id TEXT PRIMARY KEY, account_id TEXT NOT NULL, name TEXT NOT NULL,
+                     query TEXT NOT NULL, position INTEGER NOT NULL DEFAULT 0, collapsed INTEGER NOT NULL DEFAULT 0);
+                 INSERT INTO accounts (id, email) VALUES ('work', 'b@x.com'), ('home', 'a@x.com');
+                 INSERT INTO cards (id, account_id, name, query, position) VALUES
+                     ('w1', 'work', 'Work 1', 'q', 0), ('w2', 'work', 'Work 2', 'q', 5),
+                     ('h1', 'home', 'Home 1', 'q', 0), ('h2', 'home', 'Home 2', 'q', 1),
+                     ('h0', 'home', 'Home 0', 'q', -1);",
+            )
+            .unwrap();
+        }
+
+        let db = CacheDb::new(&path).unwrap();
+        let board = db.get_board_cards().unwrap();
+        assert_eq!(names(&board), ["Home 0", "Home 1", "Home 2", "Work 1", "Work 2"]);
+        assert_eq!(board.iter().map(|c| c.position).collect::<Vec<_>>(), [0, 1, 2, 3, 4]);
+        assert_eq!(user_version(&db), 1);
+
+        // Reordered afterwards: a reopen must not number the cards again
+        db.reorder_cards(&[("w2".into(), 0), ("h0".into(), 1), ("h1".into(), 2), ("h2".into(), 3), ("w1".into(), 4)])
+            .unwrap();
+        drop(db);
+        let db = CacheDb::new(&path).unwrap();
+        assert_eq!(names(&db.get_board_cards().unwrap()), ["Work 2", "Home 0", "Home 1", "Home 2", "Work 1"]);
+        drop(db);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn signing_out_keeps_the_all_inboxes_cards_while_another_account_remains() {
+        let db = db();
+        let (a, b) = (account("a@x.com"), account("b@x.com"));
+        db.insert_account(&a).unwrap();
+        db.insert_account(&b).unwrap();
+        let all = Card::new(ALL_ACCOUNTS.into(), "All".into(), "q".into(), 0);
+        db.insert_card(&all).unwrap();
+        db.save_card_threads(&all.id, &[], None).unwrap();
+        db.save_card_events(&all.id, &[]).unwrap();
+
+        db.delete_account(&a.id).unwrap();
+        assert_eq!(names(&db.get_board_cards().unwrap()), ["All"]);
+        assert!(db.get_card_threads(&all.id).unwrap().is_some());
+
+        db.delete_account(&b.id).unwrap();
+        assert!(db.get_cards(ALL_ACCOUNTS).unwrap().is_empty());
+        assert!(db.get_card_threads(&all.id).unwrap().is_none());
+        assert!(db.get_card_events(&all.id).unwrap().is_none());
+    }
+
+    #[test]
+    fn moving_a_card_to_another_account_clears_what_it_cached() {
+        let db = db();
+        let card = Card::new("a".into(), "Inbox".into(), "q".into(), 0);
+        db.insert_card(&card).unwrap();
+        let save_caches = |db: &CacheDb| {
+            db.save_card_threads(&card.id, &[], Some("tok")).unwrap();
+            db.save_card_events(&card.id, &[]).unwrap();
+        };
+
+        save_caches(&db);
+        db.update_card(&Card { name: "Renamed".into(), ..card.clone() }).unwrap();
+        assert!(db.get_card_threads(&card.id).unwrap().is_some(), "same account keeps its cache");
+
+        db.update_card(&Card { account_id: ALL_ACCOUNTS.into(), ..card.clone() }).unwrap();
+        assert_eq!(db.get_cards(ALL_ACCOUNTS).unwrap()[0].id, card.id);
+        assert!(db.get_card_threads(&card.id).unwrap().is_none());
+        assert!(db.get_card_events(&card.id).unwrap().is_none());
+
+        // The same through a pulled change
+        save_caches(&db);
+        db.apply_card_changes(&[], &[Card { account_id: "b".into(), ..card.clone() }], &[]).unwrap();
+        assert_eq!(db.get_cards("b").unwrap()[0].id, card.id);
+        assert!(db.get_card_threads(&card.id).unwrap().is_none());
+        assert!(db.get_card_events(&card.id).unwrap().is_none());
+    }
+
+    #[test]
+    fn a_card_is_found_by_its_id_alone() {
+        let db = db();
+        let card = Card::new(ALL_ACCOUNTS.into(), "All".into(), "q".into(), 0);
+        db.insert_card(&card).unwrap();
+        assert_eq!(db.get_card(&card.id).unwrap().unwrap().name, "All");
+        assert!(db.get_card("missing").unwrap().is_none());
     }
 
     #[test]

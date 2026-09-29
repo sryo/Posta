@@ -8,10 +8,14 @@ configure({ asyncUtilTimeout: 4000 });
 
 type Handler = (args: Record<string, unknown>) => unknown;
 const handlers: Record<string, Handler> = {};
+// Accounts signed in during the test, which the backend would list from then on
+const signedInDuringTest = new Set<string>();
 const invoke = vi.fn(async (cmd: string, args: Record<string, unknown> = {}) => {
   const handler = handlers[cmd];
   if (!handler) throw new Error(`unmocked command ${cmd}`);
-  return handler(args);
+  const result = await handler(args);
+  if (cmd === "run_oauth_flow") signedInDuringTest.add((result as { id: string }).id);
+  return result;
 });
 
 vi.mock("@tauri-apps/api/core", () => ({ invoke: (cmd: string, args?: Record<string, unknown>) => invoke(cmd, args) }));
@@ -83,8 +87,14 @@ const thread = (id: string, subject: string): Thread => ({
 
 const cardsByAccount: Record<string, Card[]> = {};
 const threadsByCard: Record<string, Thread[]> = {};
+// What get_cards answers: every signed-in account's cards, then the
+// all-inboxes ones
+const boardCards = (): Card[] => [
+  ...new Set([...(handlers.get_accounts({}) as Account[]).map(a => a.id), ...signedInDuringTest]),
+].flatMap(id => cardsByAccount[id] ?? []).concat(cardsByAccount.all ?? []);
 
 beforeEach(() => {
+  signedInDuringTest.clear();
   rankContacts.calls = 0;
   localStorage.clear();
   lastMenu = [];
@@ -98,7 +108,7 @@ beforeEach(() => {
     configure_auth: () => null,
     pull_from_icloud: () => false,
     get_accounts: () => [account("a", "a@x.com")],
-    get_cards: ({ accountId }) => cardsByAccount[accountId as string] ?? [],
+    get_cards: () => boardCards(),
     get_cached_card_threads: () => null,
     save_cached_card_threads: () => null,
     fetch_threads_paginated: ({ cardId }) => ({
@@ -139,6 +149,15 @@ afterEach(() => {
   Element.prototype.scrollIntoView = () => {};
 });
 Element.prototype.scrollIntoView = () => {};
+
+describe("App board", () => {
+  it("loads its cards with one call that names no account", async () => {
+    render(() => <App />);
+    await screen.findByText("Mail for A");
+    expect(invoke).toHaveBeenCalledWith("get_cards", undefined);
+    expect(invoke.mock.calls.filter(([cmd]) => cmd === "get_cards")).toHaveLength(1);
+  });
+});
 
 describe("App background sync", () => {
   it("drops a thread that no longer matches its card after a change elsewhere", async () => {
@@ -3508,7 +3527,7 @@ describe("App layout removal", () => {
     handlers.pull_from_icloud = () => true;
     invoke.mockClear();
     fireEvent.focus(window);
-    await waitFor(() => expect(invoke).toHaveBeenCalledWith("get_cards", { accountId: "a" }));
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith("get_cards", undefined));
     await new Promise(r => setTimeout(r, 20));
     expect(screen.queryByRole("region", { name: "Alpha email card" })).toBeNull();
   });
@@ -3725,7 +3744,7 @@ describe("App iCloud cards", () => {
 
   it("leaves unchanged cards' columns and scroll positions alone when another Mac changes a card", async () => {
     cardsByAccount.a = [card("card-a", "a", "Alpha"), { ...card("card-b", "a", "Beta"), position: 1 }];
-    handlers.get_cards = ({ accountId }) => structuredClone(cardsByAccount[accountId as string] ?? []);
+    handlers.get_cards = () => structuredClone(boardCards());
     render(() => <App />);
     await screen.findByText("Mail for A");
     const alpha = screen.getByRole("region", { name: "Alpha email card" });
@@ -3982,7 +4001,7 @@ describe("App card editor and iCloud", () => {
     handlers.pull_from_icloud = () => true;
     cardsByAccount.a = [{ ...card("card-a", "a", "Alpha"), query: "is:starred" }];
     fireEvent.focus(window);
-    await waitFor(() => expect(invoke).toHaveBeenCalledWith("get_cards", { accountId: "a" }));
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith("get_cards", undefined));
     await waitFor(() => expect(screen.getByPlaceholderText("e.g. from:boss is:unread newer_than:7d")).toHaveValue("is:starred"));
     expect(screen.getByPlaceholderText("e.g. Clients")).toHaveValue("Alpha renamed");
     await new Promise(r => setTimeout(r, 20));
