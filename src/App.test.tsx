@@ -1385,6 +1385,56 @@ describe("App calendar", () => {
     expect(within(row).getByRole("checkbox")).not.toBeChecked();
   });
 
+  it("refreshes calendar cards when the window gains focus", async () => {
+    calendarCards();
+    handlers.get_accounts = () => [account("a", "a@x.com")];
+    let title = "Planning";
+    handlers.fetch_calendar_events = () => [calendarEvent("ev-1", title)];
+    render(() => <App />);
+    await screen.findByText("Planning");
+
+    await new Promise(r => setTimeout(r, 20));
+
+    title = "Moved planning";
+    window.dispatchEvent(new Event("focus"));
+
+    expect(await screen.findByText("Moved planning")).toBeInTheDocument();
+  });
+
+  it("reports an expired session found by a calendar card's background refresh", async () => {
+    calendarCards();
+    handlers.get_accounts = () => [account("a", "a@x.com")];
+    render(() => <App />);
+    await screen.findByText("Event of a");
+    await new Promise(r => setTimeout(r, 20));
+
+    handlers.fetch_calendar_events = () => { throw "Token refresh failed: invalid_grant"; };
+    window.dispatchEvent(new Event("focus"));
+
+    expect(await screen.findByRole("button", { name: "Sign in again" })).toBeInTheDocument();
+  });
+
+  it("refreshes calendar cards on the polling timer, but not collapsed ones", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    calendarCards();
+    handlers.get_accounts = () => [account("a", "a@x.com")];
+    cardsByAccount.a = [
+      { ...card("cal-1", "a", "Week"), query: "calendar:7d", card_type: "calendar" },
+      { ...card("cal-2", "a", "Month"), query: "calendar:month", card_type: "calendar", position: 1 },
+    ];
+    localStorage.setItem("collapsedCards", JSON.stringify({ "cal-2": true }));
+    let title = "Planning";
+    handlers.fetch_calendar_events = () => [calendarEvent("ev-1", title)];
+    render(() => <App />);
+    await screen.findByText("Planning");
+
+    title = "Moved planning";
+    await vi.advanceTimersByTimeAsync(31_000);
+
+    expect(await screen.findByText("Moved planning")).toBeInTheDocument();
+    expect(invoke.mock.calls.some(([cmd, args]) => cmd === "fetch_calendar_events" && args?.query === "calendar:month")).toBe(false);
+  });
+
   it("moves the day labels and thread times on at midnight", async () => {
     const lateEvening = new Date();
     lateEvening.setHours(23, 59, 0, 0);
@@ -1392,7 +1442,8 @@ describe("App calendar", () => {
     calendarCards();
     cardsByAccount.a = [card("card-a", "a", "Alpha"), { ...card("cal-1", "a", "Week"), query: "calendar:7d", card_type: "calendar", position: 1 }];
     threadsByCard["card-a"] = [{ ...thread("t-a", "Mail for A"), last_message_date: lateEvening.getTime() - 60_000 }];
-    handlers.fetch_calendar_events = () => [calendarEvent("ev-1", "Planning")];
+    const planning = calendarEvent("ev-1", "Planning");
+    handlers.fetch_calendar_events = () => [planning];
     render(() => <App />);
     await screen.findByText("Planning");
     const week = screen.getByRole("region", { name: "Week calendar card" });

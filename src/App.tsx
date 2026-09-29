@@ -922,6 +922,7 @@ function App() {
     if (!account || isPolling) return;
 
     isPolling = true;
+    refreshCalendarCards(account.id);
     try {
       const result = await syncThreadsIncremental(account.id);
       if (selectedAccount()?.id !== account.id) return;
@@ -3285,6 +3286,21 @@ function App() {
       if (loadingThreads[cardId]) {
         throw e;
       }
+      noteBackgroundError(accountId, e);
+    }
+  }
+
+  // Calendar cards have no change feed, so every sync tick refetches the
+  // expanded ones
+  const refreshCalendarCard = coalesceByKey((key: string) => {
+    const [accountId, cardId, query] = JSON.parse(key) as [string, string, string];
+    return fetchAndCacheCalendarEvents(accountId, cardId, query);
+  });
+  function refreshCalendarCards(accountId: string) {
+    for (const card of cards()) {
+      if (card.account_id !== accountId || card.card_type !== "calendar") continue;
+      if (collapsedCards[card.id] || loadingThreads[card.id]) continue;
+      refreshCalendarCard(JSON.stringify([accountId, card.id, card.query])).catch(() => {});
     }
   }
 
