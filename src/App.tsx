@@ -625,6 +625,7 @@ function App() {
       } catch (e) {
         if (seq !== queryPreviewSeq) return;
         setQueryPreviewCalendarEvents([]);
+        console.warn("Query preview failed:", e);
         setQueryPreviewError(queryPreviewErrorMessage(e, true));
       } finally {
         if (seq === queryPreviewSeq) setQueryPreviewLoading(false);
@@ -641,6 +642,7 @@ function App() {
     } catch (e) {
       if (seq !== queryPreviewSeq) return;
       setQueryPreviewThreads([]);
+      console.warn("Query preview failed:", e);
       setQueryPreviewError(queryPreviewErrorMessage(e, false));
     } finally {
       if (seq === queryPreviewSeq) setQueryPreviewLoading(false);
@@ -3105,6 +3107,7 @@ function App() {
 
       const failures = results.filter((r): r is PromiseRejectedResult => r.status === 'rejected');
       if (failures.length === 0) return;
+      console.error("Batch reply couldn't load threads:", failures.map(f => f.reason));
       noteBackgroundError(account.id, failures[0].reason);
       if (failures.length === results.length) {
         setBatchReplyError({ message: batchReplyLoadErrorMessage(failures[0].reason), threadIds });

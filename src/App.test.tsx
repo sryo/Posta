@@ -846,7 +846,7 @@ describe("App card load errors", () => {
       expect(el).not.toBeNull();
       return el as HTMLElement;
     });
-    expect(cardError).toHaveTextContent("Invalid query");
+    expect(cardError).toHaveTextContent("Gmail didn't understand its query");
     expect(document.querySelector(".connection-status")).toBeNull();
     bad = false;
     fireEvent.click(within(cardError).getByRole("button", { name: "Try again" }));
