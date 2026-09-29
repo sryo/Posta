@@ -135,6 +135,115 @@ describe("Sign-in wait", () => {
   });
 });
 
+const VALID_ID = `${"1234567890"}-abcdefghijklmnop.apps.googleusercontent.com`;
+const VALID_SECRET = "GOCSPX-AbCdEfGhIjKlMnOpQrStUvWxYz12";
+
+describe("First-run setup", () => {
+  beforeEach(() => {
+    handlers.get_accounts = () => [];
+    handlers.get_stored_credentials = () => null;
+  });
+
+  it("sets Posta up in place: credentials first, then Google sign-in", async () => {
+    handlers.run_oauth_flow = () => account("a", "a@x.com");
+    render(() => <App />);
+
+    expect(await screen.findByRole("heading", { name: "Set up Posta" })).toBeInTheDocument();
+    expect(screen.getByText(/through your own Google Cloud project/)).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: /Add Google credentials/ })).toBeInTheDocument();
+    const signIn = screen.getByRole("button", { name: "Sign in with Google" });
+    expect(signIn).toBeDisabled();
+
+    fireEvent.input(screen.getByLabelText("OAuth client ID"), { target: { value: VALID_ID } });
+    fireEvent.input(screen.getByLabelText("OAuth client secret"), { target: { value: VALID_SECRET } });
+    expect(signIn).toBeEnabled();
+    fireEvent.click(signIn);
+
+    await screen.findByText("Mail for A");
+    expect(invoke).toHaveBeenCalledWith("configure_auth", { config: { client_id: VALID_ID, client_secret: VALID_SECRET } });
+    expect(document.querySelector(".settings-sidebar.open")).toBeNull();
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+  });
+
+  it("says why saving the credentials failed and runs no sign-in", async () => {
+    handlers.configure_auth = () => { throw "keychain locked"; };
+    handlers.run_oauth_flow = () => account("a", "a@x.com");
+    render(() => <App />);
+    fireEvent.input(await screen.findByLabelText("OAuth client ID"), { target: { value: VALID_ID } });
+    fireEvent.input(screen.getByLabelText("OAuth client secret"), { target: { value: VALID_SECRET } });
+    fireEvent.click(screen.getByRole("button", { name: "Sign in with Google" }));
+
+    expect(await screen.findByText("Failed to save credentials: keychain locked")).toBeInTheDocument();
+    expect(invoke).not.toHaveBeenCalledWith("run_oauth_flow", expect.anything());
+  });
+
+  it("mentions the local sign-in port once a sign-in has failed", async () => {
+    handlers.run_oauth_flow = () => { throw "OAuth callback error: Address already in use"; };
+    render(() => <App />);
+    fireEvent.input(await screen.findByLabelText("OAuth client ID"), { target: { value: VALID_ID } });
+    fireEvent.input(screen.getByLabelText("OAuth client secret"), { target: { value: VALID_SECRET } });
+    expect(screen.queryByText(/port 8420/)).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Sign in with Google" }));
+
+    await screen.findByText(/Address already in use/);
+    fireEvent.click(await screen.findByRole("button", { name: "Change credentials" }));
+    expect(await screen.findByText(/port 8420/)).toBeInTheDocument();
+  });
+
+  it("offers a single sign-in once a client is stored, with a way to change it", async () => {
+    handlers.get_stored_credentials = () => ({ client_id: VALID_ID, client_secret: VALID_SECRET });
+    render(() => <App />);
+    const signIn = await screen.findByRole("button", { name: "Sign in with Google" });
+    expect(signIn).toBeEnabled();
+    expect(screen.queryByLabelText("OAuth client ID")).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Change credentials" }));
+    expect(await screen.findByRole("heading", { name: "Set up Posta" })).toBeInTheDocument();
+    expect(screen.getByLabelText("OAuth client ID")).toBeInTheDocument();
+  });
+});
+
+describe("Dropped files", () => {
+  it("never lets a file dropped outside a drop zone replace the app", async () => {
+    render(() => <App />);
+    await screen.findByText("Mail for A");
+    const drop = new Event("drop", { bubbles: true, cancelable: true });
+    document.body.dispatchEvent(drop);
+    expect(drop.defaultPrevented).toBe(true);
+  });
+});
+
+describe("Settings Google connection", () => {
+  it("shows the client in use and re-authorizes the current account after new credentials", async () => {
+    handlers.get_stored_credentials = () => ({ client_id: VALID_ID, client_secret: VALID_SECRET });
+    handlers.run_oauth_flow = () => account("a", "a@x.com");
+    handlers.pull_from_icloud = () => true;
+    const sidebar = await (async () => { render(() => <App />); return openSettingsFromChooser(); })();
+
+    expect(within(sidebar).getByText("Google connection")).toBeInTheDocument();
+    await waitFor(() => expect(sidebar).toHaveTextContent("Using client 1234…apps.googleusercontent.com ✓"));
+    expect(within(sidebar).queryByLabelText("OAuth client ID")).not.toBeInTheDocument();
+    const change = within(sidebar).getByRole("button", { name: "Change credentials" });
+    expect(change).toHaveAttribute("aria-expanded", "false");
+    fireEvent.click(change);
+    expect(change).toHaveAttribute("aria-expanded", "true");
+
+    const save = within(sidebar).getByRole("button", { name: /^Save and sign in/ });
+    expect(save).toBeDisabled();
+    fireEvent.input(within(sidebar).getByLabelText("OAuth client ID"), { target: { value: VALID_ID.replace("1234", "9999") } });
+    fireEvent.input(within(sidebar).getByLabelText("OAuth client secret"), { target: { value: VALID_SECRET } });
+    fireEvent.click(save);
+
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith("run_oauth_flow", undefined));
+    await screen.findByText("Mail for A");
+    await new Promise(r => setTimeout(r, 30));
+    // Only the account is signed in again: no layout prompt or preset picker
+    expect(screen.queryByText("Welcome Back")).not.toBeInTheDocument();
+    expect(document.querySelector(".preset-overlay")).toBeNull();
+    expect(invoke).not.toHaveBeenCalledWith("delete_card", expect.anything());
+  });
+});
+
 describe("Settings panel focus", () => {
   it("keeps the closed panel out of the tab order and moves focus to Close on open", async () => {
     render(() => <App />);

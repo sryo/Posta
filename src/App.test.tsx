@@ -2875,12 +2875,10 @@ describe("App background sync refetches", () => {
 });
 
 describe("App iCloud sync status", () => {
-  beforeEach(() => {
-    handlers.get_accounts = () => [];
-    handlers.get_stored_credentials = () => null;
-  });
   const openSettings = async () => {
-    fireEvent.click(await screen.findByRole("button", { name: "Settings" }));
+    await screen.findByText("Mail for A");
+    fireEvent.click(screen.getByTitle("a@x.com"));
+    fireEvent.click(within(document.querySelector(".account-chooser-container") as HTMLElement).getByText("Settings"));
     return document.querySelector(".settings-sidebar")!;
   };
 
@@ -3066,37 +3064,6 @@ describe("App title bar", () => {
     fireEvent.mouseDown(region, { button: 2 });
     fireEvent.mouseDown(region, { button: 0, detail: 2 });
     expect(startDragging).not.toHaveBeenCalled();
-  });
-});
-
-describe("App Google API settings", () => {
-  it("labels the credential fields and says which client and APIs to set up", async () => {
-    handlers.get_accounts = () => [];
-    handlers.get_stored_credentials = () => null;
-    render(() => <App />);
-    fireEvent.click(await screen.findByRole("button", { name: "Settings" }));
-
-    expect(screen.getByLabelText("Client ID")).toHaveAttribute("placeholder", "xxxx.apps.googleusercontent.com");
-    expect(screen.getByLabelText("Client Secret")).toHaveAttribute("type", "password");
-    const hints = Array.from(document.querySelectorAll(".settings-hint")).map(el => el.textContent).join(" ");
-    expect(hints).toMatch(/Desktop app/);
-    expect(hints).toMatch(/Gmail API.*Google Calendar API.*People API/);
-    // A Desktop app client has no redirect URI to set
-    expect(hints).not.toMatch(/Redirect URI/);
-    expect(hints).toMatch(/port 8420/);
-  });
-
-  it("links to the Cloud Console's credentials page as a real link", async () => {
-    handlers.get_accounts = () => [];
-    handlers.get_stored_credentials = () => null;
-    render(() => <App />);
-    fireEvent.click(await screen.findByRole("button", { name: "Settings" }));
-    const link = screen.getByRole("link", { name: "Open Google Cloud Console" });
-
-    expect(link).toHaveAttribute("href", "https://console.cloud.google.com/apis/credentials");
-    fireEvent.click(link);
-    expect(openUrl).toHaveBeenCalledTimes(1);
-    expect(openUrl).toHaveBeenCalledWith("https://console.cloud.google.com/apis/credentials");
   });
 });
 
@@ -3455,52 +3422,11 @@ describe("App sign-in flows", () => {
     expect(invoke).toHaveBeenCalledWith("cancel_oauth_flow", undefined);
   });
 
-  it("connects with credentials entered in Settings", async () => {
-    handlers.get_accounts = () => [];
-    handlers.get_stored_credentials = () => null;
-    handlers.run_oauth_flow = () => account("a", "a@x.com");
-    render(() => <App />);
-    fireEvent.click(await screen.findByRole("button", { name: "Settings" }));
-    fireEvent.input(screen.getByLabelText("Client ID"), { target: { value: "cid" } });
-    fireEvent.input(screen.getByLabelText("Client Secret"), { target: { value: "csecret" } });
-    fireEvent.click(screen.getByRole("button", { name: /Connect/ }));
-
-    expect(await screen.findByText("Start from scratch")).toBeInTheDocument();
-    expect(invoke).toHaveBeenCalledWith("configure_auth", { config: { client_id: "cid", client_secret: "csecret" } });
-    expect(invoke).not.toHaveBeenCalledWith("get_stored_credentials", expect.anything());
-  });
-
-  it("says why saving credentials failed and runs no sign-in", async () => {
-    handlers.get_accounts = () => [];
-    handlers.get_stored_credentials = () => null;
-    handlers.configure_auth = () => { throw "keychain locked"; };
-    handlers.run_oauth_flow = () => account("a", "a@x.com");
-    render(() => <App />);
-    fireEvent.click(await screen.findByRole("button", { name: "Settings" }));
-    fireEvent.input(screen.getByLabelText("Client ID"), { target: { value: "cid" } });
-    fireEvent.input(screen.getByLabelText("Client Secret"), { target: { value: "csecret" } });
-    fireEvent.click(screen.getByRole("button", { name: /Connect/ }));
-
-    expect(await screen.findByText("Failed to save credentials: keychain locked")).toBeInTheDocument();
-    expect(invoke).not.toHaveBeenCalledWith("run_oauth_flow", expect.anything());
-  });
-
-  it("sends the user to Settings when signing in without credentials", async () => {
-    handlers.get_accounts = () => [];
-    handlers.get_stored_credentials = () => null;
-    render(() => <App />);
-    fireEvent.click(await screen.findByText("Sign in with Google"));
-
-    expect(await screen.findByText("Connect your Google account in Settings")).toBeInTheDocument();
-    expect(document.querySelector(".settings-sidebar.open")).not.toBeNull();
-    expect(invoke).not.toHaveBeenCalledWith("run_oauth_flow", expect.anything());
-  });
-
   it("says the keychain is locked when signing in, instead of sending the user to Settings", async () => {
     handlers.get_accounts = () => [];
     let reads = 0;
     handlers.get_stored_credentials = () => {
-      if (reads++ === 0) return null;
+      if (reads++ === 0) return { client_id: "id", client_secret: "secret" };
       throw "Keychain unavailable (locked or access denied). Unlock the keychain and try again.";
     };
     render(() => <App />);
@@ -3509,7 +3435,6 @@ describe("App sign-in flows", () => {
     fireEvent.click(signIn);
 
     await waitFor(() => expect(screen.getAllByText(/Keychain unavailable/).length).toBeGreaterThan(0));
-    expect(screen.queryByText("Connect your Google account in Settings")).not.toBeInTheDocument();
     expect(document.querySelector(".settings-sidebar.open")).toBeNull();
     expect(invoke).not.toHaveBeenCalledWith("run_oauth_flow", expect.anything());
   });

@@ -100,7 +100,6 @@ import {
   ChevronIcon,
   RefreshIcon,
   PlusIcon,
-  GoogleLogo,
   SettingsIcon,
   ComposeIcon,
   CloseIcon,
@@ -113,6 +112,9 @@ import {
 } from "./components/Icons";
 import { ReactionButton } from "./components/ReactionButton";
 import { ComposeTextarea, ComposeSendButton, CloseButton } from "./components/ComposeAtoms";
+import { AuthScreen } from "./components/AuthScreen";
+import { GoogleCredentialsForm } from "./components/GoogleCredentialsForm";
+import { credentialsValid, shortClientId } from "./app/googleCredentials";
 import { ComposeForm } from "./components/ComposeForm";
 import { CreateEventForm } from "./components/CreateEventForm";
 import { ThreadView } from "./components/ThreadView";
@@ -901,6 +903,11 @@ function App() {
   // Settings form
   const [clientId, setClientId] = createSignal("");
   const [clientSecret, setClientSecret] = createSignal("");
+  // The stored OAuth client's ID: null when none is stored, undefined while
+  // it couldn't be read
+  const [storedClientId, setStoredClientId] = createSignal<string | null | undefined>(undefined);
+  const [googleFormOpen, setGoogleFormOpen] = createSignal(false);
+  const [signInFailed, setSignInFailed] = createSignal(false);
   const [geminiKeyDraft, setGeminiKeyDraft] = createSignal("");
   // undefined until the keychain has answered, so views ask it themselves
   const [geminiKeySaved, setGeminiKeySaved] = createSignal<boolean | undefined>(undefined);
@@ -1074,6 +1081,7 @@ function App() {
   let credentialsError: string | null = null;
   async function loadStoredCredentials() {
     const storedCreds = await getStoredCredentials();
+    setStoredClientId(storedCreds?.client_id ?? null);
     if (storedCreds) {
       await configureAuth({
         client_id: storedCreds.client_id,
@@ -1188,6 +1196,10 @@ function App() {
       }
     };
     window.addEventListener("resize", handleResize);
+    // The webview would open a file dropped anywhere but a drop zone in
+    // place of the app
+    window.addEventListener("dragover", preventFileNavigation);
+    window.addEventListener("drop", preventFileNavigation);
 
     // Listen for color scheme changes
     colorSchemeQuery = window.matchMedia?.("(prefers-color-scheme: dark)");
@@ -1249,6 +1261,8 @@ function App() {
     }
   });
 
+  const preventFileNavigation = (e: Event) => e.preventDefault();
+
   const timeUpdateInterval = setInterval(() => setCurrentTime(Date.now()), 15000);
 
   onCleanup(() => {
@@ -1263,6 +1277,8 @@ function App() {
     dismissConfirm();
     window.removeEventListener("focus", handleWindowFocus);
     if (handleResize) window.removeEventListener("resize", handleResize);
+    window.removeEventListener("dragover", preventFileNavigation);
+    window.removeEventListener("drop", preventFileNavigation);
     if (handleColorSchemeChange) colorSchemeQuery?.removeEventListener("change", handleColorSchemeChange);
     unlistenMailto?.();
   });
@@ -1694,8 +1710,12 @@ function App() {
       }
     }
     if (!configured && !storedCreds) {
-      setSettingsOpen(true);
-      setError("Connect your Google account in Settings");
+      setStoredClientId(null);
+      // Signed out, the auth screen now walks through setup
+      if (accounts().length > 0) {
+        setGoogleFormOpen(true);
+        setSettingsOpen(true);
+      }
       return;
     }
 
@@ -1715,7 +1735,10 @@ function App() {
       setAuthPhase("setup");
       await afterAuth(account);
     } catch (e) {
-      if (!oauthCancelled) setError(String(e));
+      if (!oauthCancelled) {
+        setSignInFailed(true);
+        setError(String(e));
+      }
     } finally {
       setAuthLoading(false);
     }
@@ -1804,21 +1827,26 @@ function App() {
     setShowPresetSelection(true);
   }
 
+  // Save a new OAuth client, then sign in with it: the current account
+  // only, or the first one from the setup screen
   async function handleSaveSettings() {
-    if (!clientId() || !clientSecret()) return;
+    const id = clientId().trim();
+    const secret = clientSecret().trim();
+    if (!credentialsValid(id, secret)) return;
 
     try {
       // configureAuth stores credentials securely on the backend
-      await configureAuth({
-        client_id: clientId(),
-        client_secret: clientSecret(),
-      });
+      await configureAuth({ client_id: id, client_secret: secret });
     } catch (e) {
       setError(`Failed to save credentials: ${e}`);
       return;
     }
+    setStoredClientId(id);
+    setClientId("");
+    setClientSecret("");
+    setGoogleFormOpen(false);
     setSettingsOpen(false);
-    await signInWithGoogle(restoreLayoutAfterAuth, { configured: true });
+    await signInWithGoogle(selectedAccount() ? resumeAccountAfterAuth : restoreLayoutAfterAuth, { configured: true });
   }
 
   async function saveSignature(account: Account, text: string) {
@@ -3267,14 +3295,16 @@ function App() {
     if (isSessionExpiredError(String(e)) && selectedAccount()?.id === accountId) markSessionExpired(accountId);
   }
 
+  async function resumeAccountAfterAuth(account: Account) {
+    setExpiredAccountId(null);
+    upsertAccount(account);
+    closeAccountViews();
+    setSelectedAccount(account);
+    if (await loadAccountCards(account)) startBackgroundSync(account.id);
+  }
+
   function handleReauth() {
-    return signInWithGoogle(async account => {
-      setExpiredAccountId(null);
-      upsertAccount(account);
-      closeAccountViews();
-      setSelectedAccount(account);
-      if (await loadAccountCards(account)) startBackgroundSync(account.id);
-    });
+    return signInWithGoogle(resumeAccountAfterAuth);
   }
 
   async function fetchAndCacheCalendarEvents(accountId: string, cardId: string, query: string) {
@@ -4115,20 +4145,16 @@ function App() {
 
       {/* Auth screen - no account */}
       <Show when={!loading() && accounts().length === 0 && !authLoading()}>
-        <div class="auth-screen">
-          <h1>Posta</h1>
-          <p>Your inbox, organized</p>
-          <button class="auth-btn" onClick={handleSignIn}>
-            <GoogleLogo />
-            Sign in with Google
-          </button>
-          <button
-            class="auth-settings-btn"
-            onClick={() => setSettingsOpen(true)}
-          >
-            Settings
-          </button>
-        </div>
+        <AuthScreen
+          hasClient={storedClientId() === undefined ? undefined : storedClientId() !== null}
+          clientId={clientId()}
+          clientSecret={clientSecret()}
+          onClientId={setClientId}
+          onClientSecret={setClientSecret}
+          onSignIn={handleSignIn}
+          onSaveAndSignIn={handleSaveSettings}
+          showPortHint={signInFailed()}
+        />
       </Show>
 
       {/* Auth loading */}
@@ -5389,50 +5415,36 @@ function App() {
         </div>
         <div class="settings-body">
           <div class="settings-section">
-            <div class="settings-section-title">Google API</div>
-            <p class="settings-hint">
-              <a href="https://console.cloud.google.com/apis/credentials" class="settings-link">
-                Open Google Cloud Console
-              </a>, create an OAuth client of type "Desktop app", and enable the Gmail API, Google Calendar API and People API for its project.
-            </p>
-            <div class="settings-form-group">
-              <label for="settings-client-id">Client ID</label>
-              <input
-                id="settings-client-id"
-                type="text"
-                value={clientId()}
-                onInput={(e) => setClientId(e.currentTarget.value)}
-                onKeyDown={(e) => {
-                  if (e.key === 'Escape') setSettingsOpen(false);
-                  else if (e.key === 'Enter' && clientId() && clientSecret()) handleSaveSettings();
-                }}
-                placeholder="xxxx.apps.googleusercontent.com"
+            <div class="settings-section-title">Google connection</div>
+            <Show when={storedClientId()}>
+              {(id) => (
+                <p class="settings-hint">
+                  Using client {shortClientId(id())} ✓ ·{" "}
+                  <button class="link-btn" aria-expanded={googleFormOpen()} onClick={() => setGoogleFormOpen(!googleFormOpen())}>
+                    Change credentials
+                  </button>
+                </p>
+              )}
+            </Show>
+            <Show when={storedClientId() ? googleFormOpen() : accounts().length > 0}>
+              <GoogleCredentialsForm
+                idPrefix="settings"
+                clientId={clientId()}
+                clientSecret={clientSecret()}
+                onClientId={setClientId}
+                onClientSecret={setClientSecret}
+                onSubmit={handleSaveSettings}
+                onEscape={() => setSettingsOpen(false)}
+                showPortHint={signInFailed()}
               />
-            </div>
-            <div class="settings-form-group">
-              <label for="settings-client-secret">Client Secret</label>
-              <input
-                id="settings-client-secret"
-                type="password"
-                value={clientSecret()}
-                onInput={(e) => setClientSecret(e.currentTarget.value)}
-                onKeyDown={(e) => {
-                  if (e.key === 'Escape') setSettingsOpen(false);
-                  else if (e.key === 'Enter' && clientId() && clientSecret()) handleSaveSettings();
-                }}
-                placeholder="GOCSPX-..."
-              />
-            </div>
-            <p class="settings-hint">
-              Sign-in listens on <code>localhost</code> port 8420; another app using that port keeps it from finishing.
-            </p>
-            <button
-              class="btn btn-primary"
-              onClick={handleSaveSettings}
-              disabled={!clientId() || !clientSecret()}
-            >
-              Connect <span class="shortcut-hint">↵</span>
-            </button>
+              <button
+                class="btn btn-primary"
+                onClick={handleSaveSettings}
+                disabled={!credentialsValid(clientId(), clientSecret())}
+              >
+                Save and sign in <span class="shortcut-hint">↵</span>
+              </button>
+            </Show>
           </div>
           <Show when={selectedAccount()}>
             {(account) => (
