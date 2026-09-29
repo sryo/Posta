@@ -3619,4 +3619,12 @@ describe("App reading view", () => {
     await waitFor(() => expect(within(drawer).queryByText("Inbox")).not.toBeInTheDocument());
     expect(within(drawer).getByText("Important")).toBeInTheDocument();
   });
+
+  it("names a thread's participants in its row, by address when there is no name", async () => {
+    threadsByCard["card-a"] = [{ ...thread("t-a", "Mail for A"), participants: ["Ana Pérez <ana@x.com>", "bob@x.com"] }];
+    render(() => <App />);
+    const row = (await screen.findByText("Mail for A")).closest(".thread") as HTMLElement;
+    expect(row.querySelector(".thread-participants")?.textContent?.trim()).toBe("Ana Pérez, bob@x.com");
+    expect(row.getAttribute("aria-label")).toContain("from Ana Pérez, bob@x.com");
+  });
 });

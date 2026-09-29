@@ -126,6 +126,7 @@ import { batchReplyEntry, type BatchReplyThread } from "./app/batchReply";
 import { completeRecipient, currentRecipient, matchContacts, rankContacts, type RecentContact } from "./app/contacts";
 import { eventReplyRecipients } from "./app/eventReply";
 import { labelDisplayName } from "./app/labels";
+import { personName } from "./app/people";
 import { actionFailureLabel, actionLabel, actionRemovesFromCard, applyThreadAction, bulkActionConfirm, labelChangeFor, threadMayJoinCard, undoLabelChanges, type LabelReversal } from "./app/threadActions";
 import { PRESETS } from "./app/presets";
 import { normalizeActionOrder } from "./app/actionOrder";
@@ -4410,7 +4411,7 @@ function App() {
                                           onMouseLeave={() => hideThreadHoverActions()}
                                           onClick={() => openThread(thread.gmail_thread_id, card.id)}
                                           role="article"
-                                          aria-label={`${thread.unread_count > 0 ? 'Unread: ' : ''}${thread.subject} from ${thread.participants.slice(0, 2).join(', ')}`}
+                                          aria-label={`${thread.unread_count > 0 ? 'Unread: ' : ''}${thread.subject} from ${thread.participants.slice(0, 2).map(personName).join(', ')}`}
                                           tabindex="0"
                                         >
                                           <div class="thread-row">
@@ -4468,7 +4469,7 @@ function App() {
                                             <div class="thread-snippet">{decodeHtmlEntities(thread.snippet)}</div>
                                           </Show>
                                           <div class="thread-participants">
-                                            {thread.participants.slice(0, 3).join(", ")}
+                                            {thread.participants.slice(0, 3).map(personName).join(", ")}
                                             {thread.participants.length > 3 && ` + ${thread.participants.length - 3} `}
                                           </div>
                                           {/* Attachment previews (filter out .ics when calendar event is shown) */}

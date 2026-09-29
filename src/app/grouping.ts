@@ -1,6 +1,7 @@
 import type { GoogleCalendarEvent, Thread, ThreadGroup } from "../api/tauri";
 import type { GroupBy } from "../shared/constants";
-import { formatCalendarEventDate } from "../utils";
+import { extractEmail, extractName, formatCalendarEventDate } from "../utils";
+import { organizerName, personName } from "./people";
 
 export type CalendarEventGroup = { label: string; events: GoogleCalendarEvent[] };
 
@@ -124,7 +125,11 @@ export function groupCalendarEvents(events: GoogleCalendarEvent[], groupBy: Grou
   }
 
   if (groupBy === "organizer") {
-    return groupByKey(events, e => e.organizer || "Unknown", byStartTime)
+    return groupByKey(events, e => e.organizer ? extractEmail(e.organizer).toLowerCase() : "", byStartTime,
+      list => {
+        const names = list.map(organizerName);
+        return names.find(n => n && !n.includes("@")) || names[0] || "Unknown";
+      })
       .map(({ label, items }) => ({ label, events: items }));
   }
 
@@ -154,7 +159,9 @@ export function regroupThreads(threads: ThreadGroup[], groupBy: GroupBy, labelNa
   const newestFirst = (a: Thread, b: Thread) => b.last_message_date - a.last_message_date;
 
   if (groupBy === "sender") {
-    return groupByKey(allThreads, t => t.participants[0] || "Unknown", newestFirst)
+    const sender = (t: Thread) => t.participants[0] ?? "";
+    return groupByKey(allThreads, t => extractEmail(sender(t)).toLowerCase(), newestFirst,
+      list => personName(list.map(sender).find(extractName) ?? sender(list[0])) || "Unknown")
       .map(({ label, items }) => ({ label, threads: items }));
   }
 
@@ -171,16 +178,22 @@ export function regroupThreads(threads: ThreadGroup[], groupBy: GroupBy, labelNa
   return threads;
 }
 
-// Groups sorted alphabetically by label, items sorted within each group
-function groupByKey<T>(items: T[], keyOf: (item: T) => string, compare: (a: T, b: T) => number): { label: string; items: T[] }[] {
+// Groups sorted alphabetically by label, items sorted within each group. The
+// label is the key unless labelOf names the group from its items.
+function groupByKey<T>(
+  items: T[],
+  keyOf: (item: T) => string,
+  compare: (a: T, b: T) => number,
+  labelOf: (group: T[], key: string) => string = (_, key) => key,
+): { label: string; items: T[] }[] {
   const groups: Record<string, T[]> = {};
   for (const item of items) {
     const key = keyOf(item);
     (groups[key] ??= []).push(item);
   }
   return Object.entries(groups)
-    .sort(([a], [b]) => a.localeCompare(b))
-    .map(([label, list]) => ({ label, items: list.sort(compare) }));
+    .map(([key, list]) => ({ label: labelOf(list, key), items: list.sort(compare) }))
+    .sort((a, b) => a.label.localeCompare(b.label));
 }
 
 export function mergeThreadGroups(existing: ThreadGroup[], incoming: ThreadGroup[]): ThreadGroup[] {
