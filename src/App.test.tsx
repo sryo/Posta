@@ -5041,6 +5041,31 @@ describe("App one board for every account", () => {
     await waitFor(() => expect(invoke).toHaveBeenCalledWith("get_thread_details", { accountId: "b", threadId: "t-b" }));
   });
 
+  it("opens, quick-replies to and replies to an all-inboxes thread as the account it came from", async () => {
+    twoAccounts();
+    cardsByAccount.a = [];
+    cardsByAccount.b = [];
+    allInboxesCard([{ ...thread("x2", "From B"), account_id: "b" }]);
+    handlers.get_thread_details = ({ threadId }) => ({ id: threadId, messages: [fullMessage("m1", "Ana <ana@x.com>", { threadId })] });
+    handlers.reply_to_thread = () => null;
+    render(() => <App />);
+    await screen.findByText("From B");
+    focusCard(1);
+    fireEvent.keyDown(document, { key: "r" });
+    const input = await screen.findByPlaceholderText("Write a reply...");
+    fireEvent.input(input, { target: { value: "Thanks" } });
+    fireEvent.keyDown(input, { key: "Enter", metaKey: true });
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith("reply_to_thread", expect.objectContaining({
+      accountId: "b", threadId: "x2", body: "Thanks\n\n-- \nB sig",
+    })));
+
+    fireEvent.click(screen.getByText("From B"));
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith("get_thread_details", { accountId: "b", threadId: "x2" }));
+    await screen.findByText("body m1");
+    fireEvent.keyDown(document, { key: "r" });
+    await waitFor(() => expect(document.querySelector(".inline-compose .compose-from")).toHaveTextContent("b@x.com"));
+  });
+
   it("syncs every account a card shows, changing only that account's threads", async () => {
     twoAccounts();
     threadsByCard["card-a"] = [{ ...thread("same", "A's own"), account_id: "a" }];

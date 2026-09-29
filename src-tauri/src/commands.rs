@@ -428,14 +428,29 @@ fn plan_push(
 
     let tombstones = merged_tombstones(&record.tombstones, &backup.tombstones, now_ms);
     let (mut remote, mut foreign) = split_backup_cards(backup.cards, &backup.emails, &tombstones, accounts);
-    // The backup copy of a local card whose owner mapping is missing
-    foreign.retain(|f| !local_cards.iter().any(|c| c.id == f.id));
+    // Moved to such an account elsewhere while unchanged in scope here: the
+    // move stands, and the next pull takes the card away here
+    let moved_away: std::collections::HashSet<String> = local_cards
+        .iter()
+        .filter(|c| {
+            moved_to_foreign_account(&foreign, &backup.emails, &c.id)
+                && record.base.get(&c.id).is_some_and(|base| base.account_id == c.account_id)
+        })
+        .map(|c| c.id.clone())
+        .collect();
+    // Otherwise the backup copy is of a local card whose owner mapping is
+    // missing, or one this device moved since
+    foreign.retain(|f| moved_away.contains(&f.id) || !local_cards.iter().any(|c| c.id == f.id));
     let mut new_record = SyncRecord { base: HashMap::new(), tombstones: tombstones.clone(), seen_backup: record.seen_backup };
 
     let mut cards = Vec::new();
     for local in local_cards {
         // Deleted on another device; the next pull removes it here
         if tombstones.contains_key(&local.id) {
+            continue;
+        }
+        if moved_away.contains(&local.id) {
+            new_record.base.insert(local.id.clone(), local);
             continue;
         }
         let card = match take_card(&mut remote, &local.id) {
@@ -459,6 +474,13 @@ fn plan_push(
     emails.retain(|id, _| owners.contains(id.as_str()));
 
     Some((Backup { cards, emails, tombstones }, new_record))
+}
+
+/// Whether the backup holds card `id` under an account this device lacks,
+/// named in the mappings. A card of an owner with no mapping may be a torn
+/// read of this device's own.
+fn moved_to_foreign_account(foreign: &[Card], emails: &HashMap<String, String>, id: &str) -> bool {
+    foreign.iter().any(|f| f.id == id && emails.contains_key(&f.account_id))
 }
 
 /// The email the all-inboxes owner maps to in the backup; never an address
@@ -2180,7 +2202,8 @@ fn plan_pull(
 ) -> CardMerge {
     let tombstones = merged_tombstones(&record.tombstones, &backup.tombstones, now_ms);
     let needs_push = tombstones.keys().any(|id| !backup.tombstones.contains_key(id));
-    let (mut remote, foreign) = split_backup_cards(backup.cards, &backup.emails, &tombstones, accounts);
+    let emails = backup.emails;
+    let (mut remote, foreign) = split_backup_cards(backup.cards, &emails, &tombstones, accounts);
     for card in &foreign {
         tracing::info!("Leaving card {} in iCloud - its account is not on this device", card.name);
     }
@@ -2198,6 +2221,12 @@ fn plan_pull(
         }
         let base = record.base.get(&local.id);
         let Some(remote) = take_card(&mut remote, &local.id) else {
+            // Moved elsewhere to an account this device lacks; not deleted,
+            // so no tombstone
+            if moved_to_foreign_account(&foreign, &emails, &local.id) {
+                merge.delete.push(local.id.clone());
+                continue;
+            }
             // Added here, or left out by another device's write before this
             // one's reached it
             merge.needs_push = true;
@@ -3191,6 +3220,63 @@ mod tests {
         assert!(merge.insert.is_empty() && merge.update.is_empty() && merge.delete.is_empty());
         assert!(merge.record.base.is_empty());
         assert!(merge.record.seen_backup);
+    }
+
+    #[test]
+    fn pull_takes_away_a_card_another_device_moved_to_an_account_this_one_lacks() {
+        let accounts = [account("a1", "me@x.com")];
+        let card = owned_card("c", "a1");
+        let b = backup(vec![owned_card("c", "w9")], &[("w9", "work@x.com")], &[]);
+        let merge = plan_pull(&accounts, std::slice::from_ref(&card), b, &synced(std::slice::from_ref(&card)), NOW);
+        assert_eq!(merge.delete, ["c"]);
+        assert!(!merge.needs_push);
+        assert!(!merge.record.base.contains_key("c"));
+        assert!(!merge.record.tombstones.contains_key("c"), "the card lives on in its new account");
+
+        // An owner with no mapping may be a torn read of this device's own
+        // card: kept
+        let b = backup(vec![owned_card("c", "w9")], &[], &[]);
+        let accounts = [account("a1", "me@x.com"), account("a2", "b@x.com")];
+        let merge = plan_pull(&accounts, std::slice::from_ref(&card), b, &synced(std::slice::from_ref(&card)), NOW);
+        assert!(merge.delete.is_empty());
+    }
+
+    #[test]
+    fn push_keeps_a_move_to_an_account_this_device_lacks() {
+        let accounts = [account("a1", "me@x.com")];
+        let card = owned_card("c", "a1");
+        let theirs = owned_card("c", "w9");
+        let b = backup(vec![theirs.clone()], &[("w9", "work@x.com")], &[]);
+        let (pushed, record) = plan_push(&accounts, vec![card.clone()], b, &synced(std::slice::from_ref(&card)), NOW).unwrap();
+        assert_eq!(pushed.cards, [theirs]);
+        assert_eq!(pushed.emails, mappings(&[("w9", "work@x.com")]));
+        // Kept so the next pull takes the card away here
+        assert_eq!(record.base["c"], card);
+
+        // Moved here too since the last sync: this device's move goes out
+        let mine = Card { account_id: ALL_ACCOUNTS.into(), ..card.clone() };
+        let b = backup(vec![owned_card("c", "w9")], &[("w9", "work@x.com")], &[]);
+        let (pushed, _) = plan_push(&accounts, vec![mine.clone()], b, &synced(std::slice::from_ref(&card)), NOW).unwrap();
+        assert_eq!(pushed.cards, [mine]);
+    }
+
+    #[test]
+    fn a_card_moved_to_an_account_this_device_lacks_stays_moved_across_pull_and_push() {
+        let dir = scratch_dir();
+        let card = owned_card("c", "a1");
+        let (state, store) = synced_state(&dir, std::slice::from_ref(&card));
+        {
+            // Moved on a Mac signed in to work@x.com too
+            let mut backup = store.0.lock().unwrap();
+            backup.cards = Some(vec![owned_card("c", "w9")]);
+            backup.mappings.as_mut().unwrap().insert("w9".into(), "work@x.com".into());
+        }
+
+        assert!(super::pull_cards_from_icloud(&state).unwrap());
+        assert!(board_ids(&state).is_empty());
+        super::change_cards(&state, None, |db| db.reorder_cards(&[]).map_err(|e| e.to_string())).unwrap();
+        assert_eq!(store.backup().cards, [owned_card("c", "w9")]);
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]
