@@ -2968,7 +2968,8 @@ function App() {
 
       // Find the destination calendar name
       const destCal = availableCalendars().find(c => c.id === destinationCalendarId);
-      showToast(`Moved to ${destCal?.name || 'calendar'}`);
+      const where = destCal?.name || 'calendar';
+      showToast(event.recurring_event_id ? `Moved all its events to ${where}` : `Moved to ${where}`);
       setCalendarDrawerOpen(false);
     } catch (e) {
       console.error("Failed to move event:", e);

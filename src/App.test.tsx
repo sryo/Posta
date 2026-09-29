@@ -1697,6 +1697,21 @@ describe("App calendar", () => {
       [calendarEvent(`ev-${accountId}`, `Event of ${accountId}`)];
   }
 
+  it("says a repeating event moves with all its events", async () => {
+    calendarCards();
+    handlers.fetch_calendar_events = () => [{ ...calendarEvent("ev-1_1", "Standup"), organizer: "a@x.com", recurring_event_id: "ev-1" }];
+    handlers.list_calendars = () => [
+      { id: "primary", name: "Main", is_primary: true, access_role: "owner" },
+      { id: "work", name: "Work", is_primary: false, access_role: "writer" },
+    ];
+    handlers.move_calendar_event = () => ({ ...calendarEvent("ev-1_1", "Standup"), calendar_id: "work", recurring_event_id: "ev-1" });
+    render(() => <App />);
+    fireEvent.click(await screen.findByText("Standup"));
+    fireEvent.click(await screen.findByTitle("Move to calendar"));
+    fireEvent.click(await screen.findByRole("radio", { name: "Work" }));
+    expect(await screen.findByText("Moved all its events to Work")).toBeInTheDocument();
+  });
+
   it("loads the calendar list once when the calendar picker is opened twice quickly", async () => {
     calendarCards();
     let release!: () => void;

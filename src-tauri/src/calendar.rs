@@ -779,12 +779,15 @@ impl CalendarClient {
         event_id: &str,
         destination_calendar_id: &str,
     ) -> Result<CalendarEvent, String> {
-        let is_self_creator = self.is_self_creator(source_calendar_id, event_id).await;
+        // Google moves only whole events, so an occurrence takes its series along
+        let facts = self.series_facts(source_calendar_id, event_id).await?;
+        let moved_id = facts.recurring_event_id.as_deref().unwrap_or(event_id);
+        let is_self_creator = self.is_self_creator(source_calendar_id, moved_id).await;
         let url = format!(
             "{}/calendars/{}/events/{}/move?destination={}&sendUpdates={}",
             self.api_base,
             urlencoding::encode(source_calendar_id),
-            urlencoding::encode(event_id),
+            urlencoding::encode(moved_id),
             urlencoding::encode(destination_calendar_id),
             send_updates(is_self_creator)
         );
@@ -793,7 +796,16 @@ impl CalendarClient {
             self.send_json::<ApiEvent>(self.http_client.post(&url)),
             self.calendar_info(destination_calendar_id)
         );
-        let api_event = api_event?;
+        let mut api_event = api_event?;
+        if moved_id != event_id {
+            let occurrence = format!(
+                "{}/calendars/{}/events/{}",
+                self.api_base,
+                urlencoding::encode(destination_calendar_id),
+                urlencoding::encode(event_id)
+            );
+            api_event = self.send_json(self.http_client.get(&occurrence)).await?;
+        }
         written_event(api_event, destination_calendar_id, calendar.as_ref())
             .ok_or_else(|| "Failed to convert moved event".to_string())
     }
@@ -2578,6 +2590,9 @@ mod tests {
                     "start": { "dateTime": "2024-01-10T10:00:00Z" },
                     "originalStartTime": { "dateTime": "2024-01-10T10:00:00Z" },
                 }),
+                "GET" if target.ends_with(&format!("/events/{OCCURRENCE}")) => serde_json::json!({
+                    "id": OCCURRENCE, "recurringEventId": "s1", "start": { "dateTime": "2024-01-10T10:00:00Z" },
+                }),
                 "GET" if target.contains("/events/s1/instances?") => serde_json::json!({
                     "items": (1..=12).map(|day| serde_json::json!({
                         "originalStartTime": { "dateTime": format!("2024-01-{day:02}T10:00:00Z") },
@@ -2684,6 +2699,25 @@ mod tests {
             ("PATCH", "/calendars/cal/events/s1?sendUpdates=all"),
         ]);
         assert_eq!(writes[2].2, serde_json::json!({ "recurrence": ["RRULE:FREQ=DAILY;UNTIL=20240110T095959Z"] }));
+    }
+
+    #[tokio::test]
+    async fn moving_an_occurrence_moves_its_series_and_answers_with_the_occurrence() {
+        // Google only moves whole events: an instance can't change calendar alone
+        let server = StubServer::start(series_stub("RRULE:FREQ=DAILY")).await;
+        let moved = server.client().move_event("cal", OCCURRENCE, "other").await.unwrap();
+
+        assert_eq!(mutation_targets(&server), vec!["/calendars/cal/events/s1/move?destination=other&sendUpdates=all"]);
+        assert_eq!(moved.id, OCCURRENCE);
+        let read_back = format!("/calendars/other/events/{OCCURRENCE}");
+        assert!(server.requests().iter().any(|(m, t, _)| m == "GET" && *t == read_back), "{:?}", server.requests());
+    }
+
+    #[tokio::test]
+    async fn moving_a_single_event_moves_just_it() {
+        let server = StubServer::start(creator_stub(true)).await;
+        server.client().move_event("cal", "e1", "other").await.unwrap();
+        assert_eq!(mutation_targets(&server), vec!["/calendars/cal/events/e1/move?destination=other&sendUpdates=all"]);
     }
 
     #[test]
