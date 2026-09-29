@@ -55,3 +55,31 @@ describe("toasts", () => {
     expect(declarationsOf(".undo-toast.paused .toast-progress").get("animation-play-state")).toBe("paused");
   });
 });
+
+describe("floating controls", () => {
+  const DARK = "@media (prefers-color-scheme: dark)";
+
+  it("sit on a raised surface in dark mode, lighter than the page", () => {
+    expect(declarationsOf(":root", DARK).get("--bg-elevated")).toBe("#2c2c2c");
+    expect(declarationsOf(":root").get("--bg-elevated")).toBeDefined();
+    expect(declarationsOf(":root", DARK).get("--elevated-ring")).toBeDefined();
+  });
+
+  it("use it for the wheel buttons, the emoji picker and the autocomplete lists, ringed by a hairline", () => {
+    const wheel = declarationsOf(".bulk-btn");
+    expect(wheel.get("background")).toBe("var(--bg-elevated)");
+    expect(wheel.get("color")).toBe("var(--text-secondary)");
+    expect(wheel.get("box-shadow")).toContain("0 0 0 1px var(--elevated-ring)");
+    for (const selector of [".emoji-picker", ".query-autocomplete", ".compose-autocomplete"]) {
+      const decl = declarationsOf(selector);
+      expect(decl.get("background"), selector).toBe("var(--bg-elevated)");
+      expect(decl.get("border"), selector).toBe("1px solid var(--elevated-ring)");
+    }
+  });
+
+  it("raise the thread's floating bar in dark mode too", () => {
+    const bar = declarationsOf(".thread-floating-bar", DARK);
+    expect(bar.get("background")).toContain("var(--bg-elevated)");
+    expect(bar.get("box-shadow")).toContain("0 0 0 1px var(--elevated-ring)");
+  });
+});
