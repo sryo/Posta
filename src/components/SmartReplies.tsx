@@ -10,6 +10,8 @@ interface SmartRepliesProps {
     // the keychain is asked on mount
     keySaved?: boolean;
     onSelect: (text: string) => void;
+    // Opens Settings where the key is changed
+    onOpenSettings?: () => void;
 }
 
 // A short, visible reason for a failed request; `retryable` is false when
@@ -98,6 +100,9 @@ export const SmartReplies = (props: SmartRepliesProps) => {
                             <span>{described().message}</span>
                             <Show when={described().retryable}>
                                 <button class="link-btn" onClick={fetchSuggestions}>Retry suggestions</button>
+                            </Show>
+                            <Show when={!described().retryable && props.onOpenSettings}>
+                                <button class="link-btn" onClick={() => props.onOpenSettings?.()}>Open Settings</button>
                             </Show>
                         </div>
                     );

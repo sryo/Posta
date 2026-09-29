@@ -296,6 +296,27 @@ describe("Blank board", () => {
   });
 });
 
+describe("Smart replies key", () => {
+  it("opens Settings at Smart replies from a thread whose suggestions need a new key", async () => {
+    handlers.has_gemini_api_key = () => true;
+    handlers.suggest_replies = () => { throw "Gemini API error 403 Forbidden: {}"; };
+    handlers.modify_threads = () => null;
+    handlers.get_thread_details = () => ({
+      id: "t-a",
+      messages: [{
+        id: "m1", threadId: "t-a", labelIds: ["INBOX"], snippet: "body m1", internalDate: "0",
+        payload: { mimeType: "text/plain", headers: [{ name: "From", value: "Ana <ana@x.com>" }, { name: "Subject", value: "Hi" }], body: { size: 0 } },
+      }],
+    });
+    render(() => <App />);
+    fireEvent.click(await screen.findByText("Mail for A"));
+    fireEvent.click(await screen.findByRole("button", { name: "Open Settings" }));
+
+    await waitFor(() => expect(settingsSidebar()).toHaveClass("open"));
+    expect(within(settingsSidebar()).getByRole("button", { name: /Smart replies/ })).toHaveAttribute("aria-expanded", "true");
+  });
+});
+
 describe("Dropped files", () => {
   it("never lets a file dropped outside a drop zone replace the app", async () => {
     render(() => <App />);

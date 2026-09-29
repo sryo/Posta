@@ -815,8 +815,8 @@ describe("App Gemini API key", () => {
 
     await waitFor(() => expect(invoke).toHaveBeenCalledWith("set_gemini_api_key", { apiKey: "AIza-old" }));
     await waitFor(() => expect(localStorage.getItem("gemini_api_key")).toBeNull());
-    fireEvent.click(screen.getByText("Smart Replies"));
-    expect(await screen.findByPlaceholderText("Saved in the keychain")).toBeInTheDocument();
+    fireEvent.click(screen.getByText("Smart replies"));
+    expect(await screen.findByText(/Saved in Keychain/)).toBeInTheDocument();
   });
 
   it("keeps the old copy when the keychain refuses the key", async () => {
@@ -834,16 +834,16 @@ describe("App Gemini API key", () => {
     await screen.findByText("Mail for A");
     fireEvent.click(screen.getByTitle("a@x.com"));
     fireEvent.click(within(document.querySelector(".account-chooser-container") as HTMLElement).getByText("Settings"));
-    fireEvent.click(screen.getByText("Smart Replies"));
+    fireEvent.click(screen.getByText("Smart replies"));
 
     const field = screen.getByLabelText("Gemini API key");
     fireEvent.input(field, { target: { value: "AIza-new" } });
     fireEvent.change(field, { target: { value: "AIza-new" } });
     await waitFor(() => expect(invoke).toHaveBeenCalledWith("set_gemini_api_key", { apiKey: "AIza-new" }));
     expect(localStorage.getItem("gemini_api_key")).toBeNull();
-    expect(await screen.findByPlaceholderText("Saved in the keychain")).toHaveValue("");
+    expect(await screen.findByText(/Saved in Keychain/)).toBeInTheDocument();
 
-    fireEvent.click(screen.getByRole("button", { name: "Remove key" }));
+    fireEvent.click(screen.getByRole("button", { name: "Remove" }));
     await waitFor(() => expect(invoke).toHaveBeenCalledWith("set_gemini_api_key", { apiKey: "" }));
     expect(await screen.findByPlaceholderText("AIza...")).toBeInTheDocument();
   });

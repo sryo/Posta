@@ -3146,6 +3146,14 @@ button:disabled:hover {
     margin-bottom: 10px;
 }
 
+button.settings-section-title {
+    background: none;
+    border: none;
+    width: 100%;
+    font-family: inherit;
+    text-align: left;
+}
+
 .settings-section.collapsible .settings-section-title {
     cursor: pointer;
     display: flex;

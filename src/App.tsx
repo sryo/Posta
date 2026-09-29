@@ -115,6 +115,7 @@ import { ComposeTextarea, ComposeSendButton, CloseButton } from "./components/Co
 import { AuthScreen } from "./components/AuthScreen";
 import { PresetPicker } from "./components/PresetPicker";
 import { EmptyBoard } from "./components/EmptyBoard";
+import { SmartRepliesSettings } from "./components/SmartRepliesSettings";
 import { cardSpecs, loadLayoutSnapshot, saveLayoutSnapshot, type CardSpec } from "./app/layoutSnapshot";
 import { GoogleCredentialsForm } from "./components/GoogleCredentialsForm";
 import { credentialsValid, shortClientId } from "./app/googleCredentials";
@@ -4980,6 +4981,7 @@ function App() {
         <ThreadView
           thread={activeThread()}
           geminiKeySaved={geminiKeySaved()}
+          onOpenSmartReplySettings={() => { setSmartRepliesOpen(true); setSettingsOpen(true); }}
           accountId={selectedAccount()?.id || ''}
           currentUserEmail={selectedAccount()?.email}
           onError={showToast}
@@ -5487,31 +5489,14 @@ function App() {
               </div>
             )}
           </Show>
-          <div class={`settings-section collapsible ${smartRepliesOpen() ? 'open' : ''}`}>
-            <div class="settings-section-title" onClick={() => setSmartRepliesOpen(!smartRepliesOpen())}>
-              <span>Smart Replies</span>
-              <span class="collapse-icon">{smartRepliesOpen() ? '−' : '+'}</span>
-            </div>
-            <Show when={smartRepliesOpen()}>
-              <p class="settings-hint">
-                AI-powered reply suggestions via Gemini.
-              </p>
-              <div class="settings-form-group">
-                <label>API Key</label>
-                <input
-                  type="password"
-                  aria-label="Gemini API key"
-                  value={geminiKeyDraft()}
-                  onInput={(e) => setGeminiKeyDraft(e.currentTarget.value)}
-                  onChange={(e) => { if (e.currentTarget.value.trim()) saveGeminiApiKey(e.currentTarget.value); }}
-                  placeholder={geminiKeySaved() ? "Saved in the keychain" : "AIza..."}
-                />
-              </div>
-              <Show when={geminiKeySaved()}>
-                <button class="link-btn" onClick={() => saveGeminiApiKey("")}>Remove key</button>
-              </Show>
-            </Show>
-          </div>
+          <SmartRepliesSettings
+            open={smartRepliesOpen()}
+            onToggle={() => setSmartRepliesOpen(!smartRepliesOpen())}
+            keySaved={geminiKeySaved()}
+            draft={geminiKeyDraft()}
+            onDraft={setGeminiKeyDraft}
+            onSave={saveGeminiApiKey}
+          />
           <Show when={selectedAccount() || icloudStatus()}>
             <div class="settings-section">
               <div class="settings-section-title">Card layout</div>
