@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { cardSyncLabel, cardWaitingMessage, connectionStatus } from "./connectionStatus";
+import { cardSyncStatus, cardWaitingMessage, connectionStatus } from "./connectionStatus";
 
 const at = (h: number, m: number) => new Date(2026, 8, 29, h, m).getTime();
 const time = (t: number) => new Date(t).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" });
@@ -46,36 +46,35 @@ describe("cardWaitingMessage", () => {
   });
 });
 
-describe("cardSyncLabel", () => {
+describe("cardSyncStatus", () => {
   const now = at(11, 0);
+  const status = (state: Partial<Parameters<typeof cardSyncStatus>[0]>) =>
+    cardSyncStatus({ lastSyncedAt: at(10, 55), now, syncError: null, offline: false, expired: false, ...state });
+
+  it("says when the card last synced, for refresh's name, and shows no problem", () => {
+    expect(status({ lastSyncedAt: now - 1000 })).toEqual({ summary: "synced just now", problem: null });
+    expect(status({})).toEqual({ summary: "synced 5m ago", problem: null });
+  });
 
   it("says nothing for a card that never synced", () => {
-    expect(cardSyncLabel({ lastSyncedAt: null, now, syncError: null, boardDown: true })).toBeNull();
+    expect(status({ lastSyncedAt: null })).toEqual({ summary: null, problem: null });
   });
 
-  it("shows a cached card's age, never a failure, while the board can't reach Google", () => {
-    expect(cardSyncLabel({ lastSyncedAt: at(10, 55), now, syncError: "could not reach Gmail", boardDown: true })).toEqual({
-      text: "5m ago", tone: "waiting", title: "Last synced: 5m ago",
-    });
+  it("names the board being offline, keeping the cached mail's age", () => {
+    expect(status({ offline: true, syncError: "could not reach Gmail" })).toEqual({ summary: "offline, synced 5m ago", problem: "Offline" });
+    expect(status({ offline: true, lastSyncedAt: null })).toEqual({ summary: "offline", problem: "Offline" });
   });
 
-  it("names a failure only this card has", () => {
-    expect(cardSyncLabel({ lastSyncedAt: at(10, 55), now, syncError: "Invalid query", boardDown: false })).toEqual({
-      text: "sync failed", tone: "error", title: "Sync failed: Invalid query",
-    });
+  it("names a lost sign-in before anything else", () => {
+    expect(status({ expired: true, offline: true })).toEqual({ summary: "signed out, synced 5m ago", problem: "Signed out" });
   });
 
-  it("keeps raw backend text out of a failed sync's tooltip", () => {
-    const title = (syncError: string) => cardSyncLabel({ lastSyncedAt: at(10, 55), now, syncError, boardDown: false })?.title;
-    expect(title('Search failed: API error 500: {"error": {"code": 500}}')).toBe("Sync failed");
-    expect(title("Search failed: API error 400: Invalid query")).toBe("Sync failed: Gmail didn't understand this card's query");
+  it("names a failure only this card has, with its reason", () => {
+    expect(status({ syncError: "Invalid query" })).toEqual({ summary: "sync failed: Invalid query, synced 5m ago", problem: "Sync failed" });
   });
 
-  it("marks a fresh or old sync while everything works", () => {
-    expect(cardSyncLabel({ lastSyncedAt: now - 1000, now, syncError: null, boardDown: false })?.tone).toBe("fresh");
-    expect(cardSyncLabel({ lastSyncedAt: at(10, 55), now, syncError: null, boardDown: false })?.tone).toBe("normal");
-    expect(cardSyncLabel({ lastSyncedAt: at(10, 0), now, syncError: null, boardDown: false })).toEqual({
-      text: "1h ago", tone: "stale", title: "Last synced: 1h ago",
-    });
+  it("keeps raw backend text out of a failed sync's summary", () => {
+    expect(status({ syncError: 'Search failed: API error 500: {"error": {"code": 500}}' }).summary).toBe("sync failed, synced 5m ago");
+    expect(status({ syncError: "Search failed: API error 400: Invalid query" }).summary).toBe("sync failed: Gmail didn't understand this card's query, synced 5m ago");
   });
 });

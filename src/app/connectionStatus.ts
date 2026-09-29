@@ -52,3 +52,23 @@ export function cardSyncLabel(state: { lastSyncedAt: number | null | undefined; 
   }
   return { text: age, tone: getSyncState(state.lastSyncedAt, state.now), title };
 }
+
+export interface CardSyncStatus {
+  // How the card's sync stands, after its name in refresh's label:
+  // "synced 5m ago", "offline, synced 5m ago"
+  summary: string | null;
+  // The word a header shows in red while the card can't sync
+  problem: string | null;
+}
+
+export function cardSyncStatus(state: { lastSyncedAt: number | null | undefined; now: number; syncError: string | null | undefined; offline: boolean; expired: boolean }): CardSyncStatus {
+  const age = state.lastSyncedAt ? `synced ${formatSyncTime(state.lastSyncedAt, state.now)}` : null;
+  const withAge = (text: string) => (age ? `${text}, ${age}` : text);
+  if (state.expired) return { summary: withAge("signed out"), problem: "Signed out" };
+  if (state.offline) return { summary: withAge("offline"), problem: "Offline" };
+  if (state.syncError) {
+    const reason = syncFailureReason(state.syncError);
+    return { summary: withAge(reason ? `sync failed: ${reason}` : "sync failed"), problem: "Sync failed" };
+  }
+  return { summary: age, problem: null };
+}
