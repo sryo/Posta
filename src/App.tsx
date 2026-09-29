@@ -169,7 +169,8 @@ import { parseMailto } from "./app/mailto";
 import { coalesceByKey } from "./app/coalesce";
 import { batchReplyLoadErrorMessage, cardLoadErrorMessage, isOfflineError, queryPreviewErrorMessage, threadLoadErrorMessage } from "./app/loadErrors";
 import { cardSyncLabel, cardWaitingMessage, connectionStatus } from "./app/connectionStatus";
-import { CardEmpty, CardSkeleton, ConnectionStatusBar } from "./components/CardStates";
+import { CardEmpty, CardSkeleton, ConnectionStatusBar, PostmarkDefs } from "./components/CardStates";
+import { createPostmarkLedger } from "./app/postmark";
 import { cardTypeForQuery } from "./app/cardType";
 import { discardThreadDrafts, draftToOpen, isDraftThread, prepareDraftCompose, withDraftsDiscarded, type DraftToOpen } from "./app/draftThreads";
 import { createDraftSync, draftKey, findLatestDraft, findUnsentDrafts, hasDraftContent, markDraftClosed, markDraftSending, pruneDrafts, removeAccountDrafts, sessionDraftKey, type DraftFields } from "./app/drafts";
@@ -560,6 +561,11 @@ function App() {
     if (!card) return false;
     return editCardQuery().trim() !== card.query.trim() || editCardAccountId() !== card.account_id;
   }
+
+  // When each card last went from showing rows to empty, for its postmark
+  const postmarks = createPostmarkLedger();
+  // A filtered or previewed card that shows nothing says what matched nothing
+  const emptyMeansNoMatch = (cardId: string) => isPreviewingQuery(cardId) || globalFilter().trim() !== "";
 
   function effectiveCardType(card: Card): Card["card_type"] {
     if (editingCardId() === card.id) {
@@ -4596,6 +4602,7 @@ function App() {
       <div class="drag-region" data-tauri-drag-region></div>
 
       <ConnectionStatusBar status={boardStatus()} onRetry={retryConnection} onSignIn={handleReauth} />
+      <PostmarkDefs />
 
       {/* Global filter bar - keyboard activated */}
       <div class={`global-filter-bar ${showGlobalFilter() ? 'visible' : ''}`}>
@@ -4865,6 +4872,11 @@ function App() {
               <For each={cards()}>
                 {(card) => {
                   const sortable = createSortable(card.id);
+                  createEffect(() => {
+                    if (isPreviewingQuery(card.id)) return;
+                    const rows = effectiveCardType(card) === "calendar" ? getCalendarEventGroups(card.id) : getDisplayGroups(card.id);
+                    if (rows.length > 0) postmarks.sawContent(card.id, card.query);
+                  });
                   return (
                     <div
                       ref={sortable.ref}
@@ -4997,7 +5009,7 @@ function App() {
                           {/* Calendar card: show calendar events */}
                           <Show when={effectiveCardType(card) === "calendar" && (isPreviewingQuery(card.id) || cardCalendarEvents[card.id])}>
                             <Show when={getCalendarEventGroups(card.id).length === 0 && !(isPreviewingQuery(card.id) && (queryPreviewLoading() || queryPreviewError()))}>
-                              <CardEmpty query={isPreviewingQuery(card.id) ? editCardQuery() : card.query} />
+                              <CardEmpty cardId={card.id} name={card.name} query={isPreviewingQuery(card.id) ? editCardQuery() : card.query} kind="calendar" plain={emptyMeansNoMatch(card.id)} ledger={postmarks} />
                             </Show>
                             <Index each={getCalendarEventGroups(card.id)}>
                               {(group) => (
@@ -5123,7 +5135,7 @@ function App() {
                           {/* Email card: show threads */}
                           <Show when={effectiveCardType(card) !== "calendar" && (isPreviewingQuery(card.id) || cardThreads[card.id])}>
                             <Show when={getDisplayGroups(card.id).length === 0 && !(isPreviewingQuery(card.id) && (queryPreviewLoading() || queryPreviewError()))}>
-                              <CardEmpty query={isPreviewingQuery(card.id) ? editCardQuery() : card.query} />
+                              <CardEmpty cardId={card.id} name={card.name} query={isPreviewingQuery(card.id) ? editCardQuery() : card.query} kind="mail" plain={emptyMeansNoMatch(card.id)} ledger={postmarks} />
                             </Show>
                             <Index each={getDisplayGroups(card.id)}>
                               {(group) => (

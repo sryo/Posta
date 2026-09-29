@@ -1512,7 +1512,7 @@ a:focus-visible,
     gap: var(--space-sm);
 }
 
-.empty svg {
+.empty:not(.postmarked) svg {
     width: 20px;
     height: 20px;
     opacity: 0.6;
@@ -1521,6 +1521,96 @@ a:focus-visible,
 .empty-query {
     font-family: ui-monospace, monospace;
     color: var(--text-secondary);
+}
+
+/* An emptied card's postmark: a faint stamp in the card's own colour */
+.empty.postmarked {
+    gap: var(--space-xs);
+    padding: var(--space-xl) var(--space-lg);
+}
+
+.postmark-defs {
+    position: absolute;
+    width: 0;
+    height: 0;
+    overflow: hidden;
+}
+
+.card[data-color="red"] .postmark { --postmark-hue: #E53935; }
+.card[data-color="orange"] .postmark { --postmark-hue: #FB8C00; }
+.card[data-color="yellow"] .postmark { --postmark-hue: #FDD835; }
+.card[data-color="green"] .postmark { --postmark-hue: #43A047; }
+.card[data-color="cyan"] .postmark { --postmark-hue: #00ACC1; }
+.card[data-color="blue"] .postmark { --postmark-hue: #1E88E5; }
+.card[data-color="purple"] .postmark { --postmark-hue: #5E35B1; }
+.card[data-color="pink"] .postmark { --postmark-hue: #D81B60; }
+
+.postmark {
+    width: 168px;
+    height: 76px;
+    color: var(--text-secondary);
+    opacity: 0.62;
+    transform: rotate(var(--tilt, -6deg));
+}
+
+/* Pulled toward the text colour so the ink reads on the tinted card */
+@supports (color: color-mix(in oklab, red 50%, blue)) {
+    .postmark {
+        color: color-mix(in oklab, var(--postmark-hue, var(--text-secondary)) 70%, var(--text-primary));
+    }
+}
+
+@media (prefers-color-scheme: dark) {
+    .postmark {
+        opacity: 0.78;
+    }
+}
+
+.postmark-text {
+    font-weight: 600;
+    letter-spacing: 1.4px;
+}
+
+.postmark-clock {
+    font-variant-numeric: tabular-nums;
+}
+
+.postmark.lands {
+    animation: postmark-land 480ms cubic-bezier(0.2, 0.8, 0.2, 1) both;
+}
+
+@keyframes postmark-land {
+    0% { opacity: 0; transform: rotate(var(--tilt, -6deg)) scale(1.16); }
+    55% { opacity: 0.9; transform: rotate(var(--tilt, -6deg)) scale(0.98); }
+    100% { transform: rotate(var(--tilt, -6deg)) scale(1); }
+}
+
+.empty-line {
+    color: var(--text-secondary);
+    font-size: var(--font-size-base);
+}
+
+.postmarked .empty-query {
+    font-size: var(--font-size-sm);
+    color: var(--text-muted);
+    opacity: 0;
+    transition: opacity 150ms ease;
+}
+
+.card:hover .postmarked .empty-query,
+.card:focus-visible .postmarked .empty-query,
+.card:focus-within .postmarked .empty-query {
+    opacity: 1;
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .postmark.lands {
+        animation: none;
+    }
+
+    .empty-query {
+        transition: none;
+    }
 }
 
 .card-waiting {
