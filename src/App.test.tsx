@@ -1309,6 +1309,18 @@ describe("App calendar", () => {
     await waitFor(() => expect(screen.queryAllByText("Planning")).toHaveLength(0));
   });
 
+  it("selects the focused event with x", async () => {
+    calendarCards();
+    render(() => <App />);
+    const row = (await screen.findByText("Event of a")).closest(".calendar-event-item") as HTMLElement;
+    fireEvent.keyDown(document, { key: "l" });
+    fireEvent.keyDown(document, { key: "x" });
+
+    expect(within(row).getByRole("checkbox")).toBeChecked();
+    fireEvent.keyDown(document, { key: "Escape" });
+    expect(within(row).getByRole("checkbox")).not.toBeChecked();
+  });
+
   it("moves the day labels and thread times on at midnight", async () => {
     const lateEvening = new Date();
     lateEvening.setHours(23, 59, 0, 0);

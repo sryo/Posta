@@ -1567,6 +1567,11 @@ function App() {
         openEventQuickReply(event.id);
         return;
       }
+      if (e.key === 'x') {
+        e.preventDefault();
+        toggleEventSelection(cardId, event.id);
+        return;
+      }
     }
   };
 
@@ -5520,7 +5525,7 @@ function App() {
             </div>
             <div class="shortcuts-section">
               <h3>Selection</h3>
-              <div class="shortcut-row"><kbd>x</kbd> <span>Select thread</span></div>
+              <div class="shortcut-row"><kbd>x</kbd> <span>Select thread or event</span></div>
               <div class="shortcut-row"><kbd>Escape</kbd> <span>Clear selection</span></div>
             </div>
             <div class="shortcuts-section">
