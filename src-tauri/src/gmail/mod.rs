@@ -2251,6 +2251,7 @@ fn strip_html_tags(html: &str) -> String {
     let mut result = String::new();
     let mut tag = String::new();
     let mut in_tag = false;
+    let mut attribute_quote: Option<char> = None;
     let mut in_pre = false;
     // Element whose content is not text (style, script, head) until it closes
     let mut hidden_element: Option<String> = None;
@@ -2266,6 +2267,18 @@ fn strip_html_tags(html: &str) -> String {
     for (i, c) in html.char_indices() {
         if i < skip_to {
             continue;
+        }
+        // A quoted attribute value may hold '<' and '>'
+        if in_tag {
+            match attribute_quote {
+                Some(quote) if c == quote => attribute_quote = None,
+                None if matches!(c, '"' | '\'') && tag.trim_end().ends_with('=') => attribute_quote = Some(c),
+                _ => {}
+            }
+            if attribute_quote.is_some() || !matches!(c, '<' | '>') {
+                tag.push(c);
+                continue;
+            }
         }
         // Style and script end at their closing tag even inside "<!--"
         let raw_text = matches!(hidden_element.as_deref(), Some("style" | "script"));
@@ -2320,7 +2333,6 @@ fn strip_html_tags(html: &str) -> String {
                     _ => {}
                 }
             }
-            _ if in_tag => tag.push(c),
             _ if hidden_element.is_some() => {}
             _ if in_pre => result.push(c),
             c if c.is_ascii_whitespace() => {
@@ -2884,6 +2896,9 @@ mod tests {
     fn strip_html_removes_other_tags() {
         assert_eq!(strip_html_tags("<b>bold</b> and <i>italic</i>"), "bold and italic");
         assert_eq!(strip_html_tags("<a href=\"http://x\">link</a>"), "link");
+        // innerHTML leaves '>' unescaped in attribute values
+        assert_eq!(strip_html_tags("<a title=\"a > b\" href='?x>1'>link</a>"), "link");
+        assert_eq!(strip_html_tags("<img alt=\"it's\">ok"), "ok");
     }
 
     #[test]
