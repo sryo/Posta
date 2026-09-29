@@ -18,6 +18,8 @@ const CALENDAR_LIST_CAP: usize = 1000;
 /// Secondary calendars searched at once per invite lookup; several invite
 /// rows look up at the same time, and Google rate-limits per user
 const INVITE_SEARCH_CONCURRENCY: usize = 4;
+/// Calendars one card's search lists events from at once
+const SEARCH_CONCURRENCY: usize = 6;
 const CALENDAR_LIST_TTL: std::time::Duration = std::time::Duration::from_secs(120);
 const REQUEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 
@@ -82,6 +84,7 @@ fn friendly_calendar_error(status: StatusCode, body: &str) -> String {
             .unwrap_or_else(|| "You don't have permission to change this calendar.".to_string()),
         StatusCode::NOT_FOUND => "Event or calendar not found. It may have been deleted.".to_string(),
         StatusCode::GONE => "This event was already deleted.".to_string(),
+        _ if status.is_server_error() => "Google Calendar is having trouble right now. Try again shortly.".to_string(),
         _ => format!("Calendar error ({})", status),
     }
 }
@@ -272,6 +275,8 @@ struct CalEventSearchItem {
     id: String,
     attendees: Option<Vec<CalEventAttendee>>,
     creator: Option<EventCreator>,
+    #[serde(rename = "recurringEventId")]
+    recurring_event_id: Option<String>,
 }
 
 /// Guests hear about changes only to events the user created; anyone else's
@@ -506,7 +511,21 @@ impl CalendarClient {
 
     /// Look up one calendar (accepts "primary"). Best-effort: used to label
     /// events returned by write calls and to pick a recurrence time zone.
+    /// Read from the cached calendar list, and asked for only when the list
+    /// doesn't have it.
     async fn calendar_info(&self, calendar_id: &str) -> Option<CalendarInfo> {
+        if let Ok(calendars) = self.cached_calendar_list().await {
+            let listed = calendars
+                .iter()
+                .find(|c| c.id == calendar_id || (calendar_id == "primary" && c.is_primary));
+            if let Some(calendar) = listed {
+                return Some(calendar.clone());
+            }
+        }
+        self.fetch_calendar_info(calendar_id).await
+    }
+
+    async fn fetch_calendar_info(&self, calendar_id: &str) -> Option<CalendarInfo> {
         let url = format!(
             "{}/users/me/calendarList/{}",
             self.api_base,
@@ -540,15 +559,15 @@ impl CalendarClient {
         // Determine time range from query using calendar timezone
         let (time_min, time_max) = query.get_time_range(timezone);
 
-        let fetch_futures: Vec<_> = calendars
+        let fetches: Vec<_> = calendars
             .iter()
             .map(|cal| {
                 let url = events_list_url(&self.api_base, &cal.id, time_min, time_max, query);
-                async move { self.get_pages::<ApiEvent>(&url, PER_CALENDAR_EVENT_CAP).await }
+                async move { self.get_pages::<ApiEvent>(&url, PER_CALENDAR_EVENT_CAP).await }.boxed()
             })
             .collect();
-
-        let results = futures::future::join_all(fetch_futures).await;
+        // In calendar order, which the dedupe below relies on
+        let results: Vec<_> = futures::stream::iter(fetches).buffered(SEARCH_CONCURRENCY).collect().await;
 
         let calendar_count = results.len();
         let mut errors: Vec<(String, String)> = Vec::new();
@@ -729,7 +748,9 @@ impl CalendarClient {
         }
     }
 
-    /// Query a single calendar for an event by iCalUID
+    /// Query a single calendar for an event by iCalUID. A series comes back
+    /// with each occurrence that was changed on its own, all sharing the
+    /// iCalUID; the series itself is the one to answer.
     async fn search_calendar_for_ical_uid(
         &self,
         calendar_id: &str,
@@ -743,7 +764,9 @@ impl CalendarClient {
         );
 
         let events_response: CalEventSearchResponse = self.send_json(self.http_client.get(&search_url)).await?;
-        Ok(events_response.items.unwrap_or_default().into_iter().next())
+        let mut items = events_response.items.unwrap_or_default();
+        let series = items.iter().position(|e| e.recurring_event_id.is_none()).unwrap_or(0);
+        Ok((series < items.len()).then(|| items.swap_remove(series)))
     }
 
     /// Locate an event by iCalUID: primary calendar first (common case, no
@@ -794,7 +817,11 @@ impl CalendarClient {
         let asked_at = std::time::Instant::now();
         let slot = {
             let mut lists = CALENDAR_LISTS.lock().unwrap_or_else(|e| e.into_inner());
-            lists.retain(|_, slot| slot.try_lock().map_or(true, |s| s.as_ref().is_some_and(|(at, _)| at.elapsed() < CALENDAR_LIST_TTL)));
+            // A slot another caller holds is in use even while unlocked
+            lists.retain(|_, slot| {
+                Arc::strong_count(slot) > 1
+                    || slot.try_lock().map_or(true, |s| s.as_ref().is_some_and(|(at, _)| at.elapsed() < CALENDAR_LIST_TTL))
+            });
             lists
                 .entry((self.api_base.clone(), self.access_token.clone()))
                 .or_default()
@@ -1356,7 +1383,8 @@ mod tests {
         // 404/410 on an event (deleted elsewhere) is not a missing calendar
         assert!(!err(404, &google_error(404, "notFound", "Not Found")).contains("Calendar not found"));
         assert!(err(410, &google_error(410, "deleted", "Resource has been deleted")).contains("deleted"));
-        assert_eq!(err(500, "<html>oops</html>"), "Calendar error (500 Internal Server Error)");
+        assert_eq!(err(500, "<html>oops</html>"), "Google Calendar is having trouble right now. Try again shortly.");
+        assert_eq!(err(418, "<html>oops</html>"), "Calendar error (418 I'm a teapot)");
     }
 
     #[test]
@@ -1974,6 +2002,37 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn an_invite_to_a_series_is_answered_on_the_series_not_one_moved_occurrence() {
+        // Looking a series up by iCalUID returns the series and each occurrence
+        // that was changed on its own, in no set order
+        for moved_first in [true, false] {
+            let server = StubServer::start(move |method, target| {
+                if method == "PATCH" {
+                    return (200, "{}".to_string());
+                }
+                if !target.starts_with("/calendars/primary/events?iCalUID=") {
+                    return (200, serde_json::json!({ "items": [] }).to_string());
+                }
+                let series = serde_json::json!({ "id": "weekly", "attendees": [
+                    { "email": "me@x.com", "responseStatus": "declined" },
+                ] });
+                let moved = serde_json::json!({ "id": "weekly_20260924T150000Z", "recurringEventId": "weekly", "attendees": [
+                    { "email": "me@x.com", "responseStatus": "accepted" },
+                ] });
+                let items = if moved_first { serde_json::json!([moved, series]) } else { serde_json::json!([series, moved]) };
+                (200, serde_json::json!({ "items": items }).to_string())
+            })
+            .await;
+            let client = server.client();
+            let status = client.get_calendar_event_status("me@x.com", "uid-1").await.unwrap();
+            assert_eq!(status.as_deref(), Some("declined"), "moved_first={moved_first}");
+            client.rsvp_calendar_event("me@x.com", "uid-1", "tentative").await.unwrap();
+            let patch = server.requests().into_iter().find(|(m, _, _)| m == "PATCH").expect("no PATCH sent");
+            assert!(patch.1.starts_with("/calendars/primary/events/weekly?"), "moved_first={moved_first}: {}", patch.1);
+        }
+    }
+
+    #[tokio::test]
     async fn an_invite_status_lookup_reports_an_expired_session() {
         // The caller evicts the cached token on this error; reading it as
         // "no status" would keep reusing the dead token
@@ -2033,6 +2092,19 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_calendar_list_someone_is_about_to_fetch_is_not_pruned() {
+        // A caller that just made its account's slot, but hasn't locked it
+        // yet, must still find it in the map, or a second caller would fetch
+        // the list again
+        let server = StubServer::start(|_, _| (200, serde_json::json!({ "items": [] }).to_string())).await;
+        let key = (server.base.clone(), "about-to-fetch".to_string());
+        let held = CALENDAR_LISTS.lock().unwrap().entry(key.clone()).or_default().clone();
+        server.client().cached_calendar_list().await.unwrap();
+        let kept = CALENDAR_LISTS.lock().unwrap().get(&key).cloned();
+        assert!(kept.is_some_and(|slot| Arc::ptr_eq(&slot, &held)));
+    }
+
+    #[tokio::test]
     async fn a_failed_calendar_list_answers_everyone_waiting_for_it_but_is_not_kept() {
         let server = StubServer::start(|_, target| {
             if target.starts_with("/users/me/calendarList") {
@@ -2045,7 +2117,7 @@ mod tests {
         let query = CalendarQuery::parse("calendar:week");
         let searches: Vec<_> = (0..3).map(|_| client.search_events(&query, 10)).collect();
         for result in futures::future::join_all(searches).await {
-            assert_eq!(result.unwrap_err(), "Calendar error (503 Service Unavailable)");
+            assert_eq!(result.unwrap_err(), "Google Calendar is having trouble right now. Try again shortly.");
         }
         assert_eq!(calendar_list_requests(&server), 1);
 
@@ -2201,6 +2273,43 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn event_writes_label_the_event_from_the_cached_calendar_list() {
+        // Cards have already listed the calendars; each save shouldn't look
+        // its calendar up again
+        let server = StubServer::start(|method, target| match method {
+            "GET" if target.starts_with("/users/me/calendarList?") => (
+                200,
+                serde_json::json!({ "items": [
+                    { "id": "me@x.com", "summary": "Personal", "primary": true, "accessRole": "owner", "timeZone": "UTC" },
+                    { "id": "work", "summary": "Work", "accessRole": "writer", "timeZone": "UTC" },
+                ] })
+                .to_string(),
+            ),
+            "GET" if target.starts_with("/users/me/calendarList/") => (200, calendar_with_role("new", "owner").to_string()),
+            "GET" if target.contains("/events/e1?fields=") => (200, serde_json::json!({ "id": "e1" }).to_string()),
+            "GET" => (200, serde_json::json!({ "items": [] }).to_string()),
+            _ => (200, serde_json::json!({ "id": "e1", "start": { "date": "2024-12-23" } }).to_string()),
+        })
+        .await;
+        let client = server.client();
+        client.search_events(&CalendarQuery::parse("calendar:week"), 10).await.unwrap();
+
+        let recurring = EventFields { recurrence: Some(vec!["FREQ=DAILY".into()]), ..fields(0, 3_600_000, false) };
+        let created = client.create_event("primary", recurring).await.unwrap();
+        assert_eq!((created.calendar_id.as_str(), created.calendar_name.as_str()), ("me@x.com", "Personal"));
+        assert_eq!(client.update_event("work", "e1", fields(0, 3_600_000, false)).await.unwrap().calendar_name, "Work");
+        assert_eq!(client.move_event("work", "e1", "me@x.com").await.unwrap().calendar_name, "Personal");
+        let lookups = || server.requests().iter().filter(|(_, t, _)| t.starts_with("/users/me/calendarList/")).count();
+        assert_eq!(lookups(), 0);
+        let post = server.requests().into_iter().find(|(m, _, _)| m == "POST").unwrap();
+        assert!(post.2.contains(r#""timeZone":"UTC""#), "{}", post.2);
+
+        // A calendar the cached list doesn't know yet is still looked up
+        assert_eq!(client.create_event("new", fields(0, 3_600_000, false)).await.unwrap().calendar_name, "new");
+        assert_eq!(lookups(), 1);
+    }
+
+    #[tokio::test]
     async fn guests_are_not_emailed_when_the_creator_is_unknown() {
         let server = StubServer::start(|method, target| match method {
             "GET" if target.contains("/events/e1?fields=") => (500, "{}".to_string()),
@@ -2249,6 +2358,31 @@ mod tests {
         let titles: Vec<&str> = found.iter().map(|e| e.title.as_str()).collect();
         assert_eq!(titles, vec!["second", "first"]);
         assert!(found.iter().all(|e| e.calendar_id == "mine"));
+    }
+
+    #[tokio::test]
+    async fn a_search_asks_a_few_calendars_at_a_time() {
+        // Accounts subscribe to dozens of team, room and holiday calendars;
+        // asking all at once for every card runs into Google's rate limits,
+        // and the calendars that get refused silently drop out of the card
+        let calendars: Vec<_> = (0..20).map(|i| calendar_entry(&format!("cal{i:02}"))).collect();
+        let server = StubServer::start_slow(
+            move |_, target| {
+                let items = if target.starts_with("/users/me/calendarList") {
+                    serde_json::json!(calendars)
+                } else {
+                    let id = target.trim_start_matches("/calendars/").split('/').next().unwrap();
+                    serde_json::json!([{ "id": id, "summary": id, "start": { "dateTime": "2024-12-23T10:00:00Z" } }])
+                };
+                (200, serde_json::json!({ "items": items }).to_string())
+            },
+            std::time::Duration::from_millis(30),
+        )
+        .await;
+        let found = server.client().search_events(&CalendarQuery::parse("calendar:week"), 100).await.unwrap();
+        assert_eq!(found.len(), 20);
+        assert!(server.most_in_flight() > 1, "calendars were searched one at a time");
+        assert!(server.most_in_flight() <= SEARCH_CONCURRENCY, "{} requests at once", server.most_in_flight());
     }
 
     #[tokio::test]
@@ -2480,11 +2614,21 @@ pub(crate) mod stub_server {
         pub(crate) base: String,
         requests: Requests,
         connections: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+        most_in_flight: std::sync::Arc<std::sync::atomic::AtomicUsize>,
     }
 
     impl StubServer {
         pub(crate) async fn start(handler: impl Fn(&str, &str) -> (u16, String) + Send + Sync + 'static) -> Self {
-            Self::start_inner(std::sync::Arc::new(handler), None).await
+            Self::start_inner(std::sync::Arc::new(handler), None, None).await
+        }
+
+        /// Every request is answered only after `hold`, so requests sent
+        /// together overlap and `most_in_flight` sees them
+        pub(crate) async fn start_slow(
+            handler: impl Fn(&str, &str) -> (u16, String) + Send + Sync + 'static,
+            hold: std::time::Duration,
+        ) -> Self {
+            Self::start_inner(std::sync::Arc::new(handler), None, Some(hold)).await
         }
 
         /// Requests whose target satisfies `gated` are held until `n` of them
@@ -2496,17 +2640,20 @@ pub(crate) mod stub_server {
             n: usize,
         ) -> Self {
             let gate: Gate = std::sync::Arc::new((Box::new(gated), tokio::sync::Barrier::new(n)));
-            Self::start_inner(std::sync::Arc::new(handler), Some(gate)).await
+            Self::start_inner(std::sync::Arc::new(handler), Some(gate), None).await
         }
 
-        async fn start_inner(handler: std::sync::Arc<Handler>, gate: Option<Gate>) -> Self {
+        async fn start_inner(handler: std::sync::Arc<Handler>, gate: Option<Gate>, hold: Option<std::time::Duration>) -> Self {
             use tokio::io::{AsyncReadExt, AsyncWriteExt};
             let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
             let base = format!("http://{}", listener.local_addr().unwrap());
             let requests: Requests = Default::default();
             let connections = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+            let in_flight = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+            let most_in_flight = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
             let log = requests.clone();
             let accepted = connections.clone();
+            let peak = most_in_flight.clone();
             tokio::spawn(async move {
                 loop {
                     let Ok((mut socket, _)) = listener.accept().await else { return };
@@ -2514,6 +2661,8 @@ pub(crate) mod stub_server {
                     let handler = handler.clone();
                     let log = log.clone();
                     let gate = gate.clone();
+                    let in_flight = in_flight.clone();
+                    let peak = peak.clone();
                     tokio::spawn(async move {
                         let mut buf = Vec::new();
                         let mut chunk = [0u8; 4096];
@@ -2551,6 +2700,12 @@ pub(crate) mod stub_server {
                                     gate.1.wait().await;
                                 }
                             }
+                            if let Some(hold) = hold {
+                                use std::sync::atomic::Ordering::SeqCst;
+                                peak.fetch_max(in_flight.fetch_add(1, SeqCst) + 1, SeqCst);
+                                tokio::time::sleep(hold).await;
+                                in_flight.fetch_sub(1, SeqCst);
+                            }
                             let (status, response) = handler(&method, &target);
                             log.lock().unwrap().push((method, target, body));
                             let reply = format!(
@@ -2566,7 +2721,7 @@ pub(crate) mod stub_server {
                     });
                 }
             });
-            StubServer { base, requests, connections }
+            StubServer { base, requests, connections, most_in_flight }
         }
 
         pub(crate) fn requests(&self) -> Vec<(String, String, String)> {
@@ -2575,6 +2730,11 @@ pub(crate) mod stub_server {
 
         pub(crate) fn connections(&self) -> usize {
             self.connections.load(std::sync::atomic::Ordering::SeqCst)
+        }
+
+        /// The most requests held at once by a `start_slow` server
+        pub(crate) fn most_in_flight(&self) -> usize {
+            self.most_in_flight.load(std::sync::atomic::Ordering::SeqCst)
         }
     }
 }

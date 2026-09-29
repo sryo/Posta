@@ -64,7 +64,35 @@ fn people_error(status: reqwest::StatusCode, body: &str) -> String {
     if status == reqwest::StatusCode::FORBIDDEN {
         return "Contacts permission not granted. Please re-authenticate to enable contact suggestions.".to_string();
     }
-    format!("People API error ({}): {}", status, body)
+    if status == reqwest::StatusCode::TOO_MANY_REQUESTS {
+        return "Too many requests to Google Contacts. Please try again later.".to_string();
+    }
+    // The status stays first: token eviction matches on "401 Unauthorized"
+    match serde_json::from_str::<ApiErrorBody>(body).ok().and_then(|b| b.error.message) {
+        Some(message) if !message.trim().is_empty() => format!("People API error ({}): {}", status, message),
+        _ => format!("People API error ({})", status),
+    }
+}
+
+#[derive(Deserialize)]
+struct ApiErrorBody {
+    error: ApiError,
+}
+
+#[derive(Deserialize)]
+struct ApiError {
+    message: Option<String>,
+}
+
+/// A transport failure in words the user can act on, without the request URL
+fn people_request_error(e: reqwest::Error) -> String {
+    if e.is_timeout() {
+        "Google Contacts didn't respond. Check your connection and try again.".to_string()
+    } else if e.is_connect() {
+        "Couldn't reach Google Contacts. Check your connection and try again.".to_string()
+    } else {
+        format!("People API request failed: {}", e.without_url())
+    }
 }
 
 pub struct PeopleClient {
@@ -96,7 +124,7 @@ impl PeopleClient {
             .bearer_auth(&self.access_token)
             .send()
             .await
-            .map_err(|e| format!("People API request failed: {}", e))?;
+            .map_err(people_request_error)?;
 
         if !resp.status().is_success() {
             let status = resp.status();
@@ -107,7 +135,13 @@ impl PeopleClient {
         let data: ConnectionsResponse = resp
             .json()
             .await
-            .map_err(|e| format!("Failed to parse People API response: {}", e))?;
+            .map_err(|e| {
+                if e.is_timeout() {
+                    people_request_error(e)
+                } else {
+                    format!("Failed to parse People API response: {}", e.without_url())
+                }
+            })?;
 
         let contacts = data
             .connections
@@ -235,6 +269,36 @@ mod tests {
         // The token cache is evicted on this exact wording
         let expired = people_error(reqwest::StatusCode::UNAUTHORIZED, "{}");
         assert!(expired.contains("401 Unauthorized"), "{expired}");
+    }
+
+    #[test]
+    fn people_errors_leave_out_the_raw_response_body() {
+        let page = people_error(reqwest::StatusCode::BAD_GATEWAY, "<html><body>Bad gateway, a long page</body></html>");
+        assert_eq!(page, "People API error (502 Bad Gateway)");
+
+        let bad = people_error(
+            reqwest::StatusCode::BAD_REQUEST,
+            r#"{"error":{"code":400,"message":"Invalid personFields mask path.","status":"INVALID_ARGUMENT"}}"#,
+        );
+        assert_eq!(bad, "People API error (400 Bad Request): Invalid personFields mask path.");
+
+        let limited = people_error(reqwest::StatusCode::TOO_MANY_REQUESTS, r#"{"error":{"status":"RESOURCE_EXHAUSTED"}}"#);
+        assert!(limited.contains("Too many requests"), "{limited}");
+
+        let expired = people_error(reqwest::StatusCode::UNAUTHORIZED, r#"{"error":{"message":"Request had invalid authentication credentials."}}"#);
+        assert!(expired.starts_with("People API error (401 Unauthorized)"), "{expired}");
+    }
+
+    #[tokio::test]
+    async fn connection_failures_are_explained_without_the_request_url() {
+        let unreachable = PeopleClient { api_base: "http://127.0.0.1:9".into(), ..PeopleClient::new("token".into()) };
+        let err = unreachable.fetch_all_contacts(10).await.unwrap_err();
+        assert_eq!(err, "Couldn't reach Google Contacts. Check your connection and try again.");
+
+        let server = StubServer::start(|_, _| (200, "not json".to_string())).await;
+        let err = stub_client(&server).fetch_all_contacts(10).await.unwrap_err();
+        assert!(err.starts_with("Failed to parse People API response"), "{err}");
+        assert!(!err.contains("127.0.0.1") && !err.contains("connections"), "{err}");
     }
 
     fn stub_client(server: &StubServer) -> PeopleClient {
