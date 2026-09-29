@@ -523,6 +523,10 @@ describe("App presets", () => {
     expect(screen.getByRole("region", { name: "Hot email card" })).not.toHaveClass("collapsed");
     const restIndex = invoke.mock.calls.findIndex(([cmd, args]) => cmd === "create_card" && args?.name === "Everything else");
     const created = await invoke.mock.results[restIndex].value as Card;
+    const hotIndex = invoke.mock.calls.findIndex(([cmd, args]) => cmd === "create_card" && args?.name === "Hot");
+    const hot = await invoke.mock.results[hotIndex].value as Card;
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith("fetch_threads_paginated", expect.objectContaining({ cardId: hot.id })));
+    await new Promise(r => setTimeout(r, 20));
     expect(invoke.mock.calls.some(([cmd, args]) => cmd === "fetch_threads_paginated" && args?.cardId === created.id)).toBe(false);
     expect(JSON.parse(localStorage.getItem("collapsedCards") ?? "{}")[created.id]).toBe(true);
   });
@@ -878,6 +882,16 @@ describe("App card load errors", () => {
     await screen.findByText("Mail for A");
     window.dispatchEvent(new Event("offline"));
     expect(await screen.findByText(/You're offline/)).toBeInTheDocument();
+  });
+
+  it("stops saying it's offline once a sync gets through", async () => {
+    render(() => <App />);
+    await screen.findByText("Mail for A");
+    window.dispatchEvent(new Event("offline"));
+    await screen.findByText(/You're offline/);
+
+    window.dispatchEvent(new Event("focus"));
+    await waitFor(() => expect(document.querySelector(".connection-status")).toBeNull());
   });
 });
 
