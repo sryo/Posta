@@ -84,6 +84,7 @@ fn friendly_calendar_error(status: StatusCode, body: &str) -> String {
             .unwrap_or_else(|| "You don't have permission to change this calendar.".to_string()),
         StatusCode::NOT_FOUND => "Event or calendar not found. It may have been deleted.".to_string(),
         StatusCode::GONE => "This event was already deleted.".to_string(),
+        _ if status.is_server_error() => "Google Calendar is having trouble right now. Try again shortly.".to_string(),
         _ => format!("Calendar error ({})", status),
     }
 }
@@ -1382,7 +1383,8 @@ mod tests {
         // 404/410 on an event (deleted elsewhere) is not a missing calendar
         assert!(!err(404, &google_error(404, "notFound", "Not Found")).contains("Calendar not found"));
         assert!(err(410, &google_error(410, "deleted", "Resource has been deleted")).contains("deleted"));
-        assert_eq!(err(500, "<html>oops</html>"), "Calendar error (500 Internal Server Error)");
+        assert_eq!(err(500, "<html>oops</html>"), "Google Calendar is having trouble right now. Try again shortly.");
+        assert_eq!(err(418, "<html>oops</html>"), "Calendar error (418 I'm a teapot)");
     }
 
     #[test]
@@ -2115,7 +2117,7 @@ mod tests {
         let query = CalendarQuery::parse("calendar:week");
         let searches: Vec<_> = (0..3).map(|_| client.search_events(&query, 10)).collect();
         for result in futures::future::join_all(searches).await {
-            assert_eq!(result.unwrap_err(), "Calendar error (503 Service Unavailable)");
+            assert_eq!(result.unwrap_err(), "Google Calendar is having trouble right now. Try again shortly.");
         }
         assert_eq!(calendar_list_requests(&server), 1);
 
