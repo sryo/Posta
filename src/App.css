@@ -1837,17 +1837,28 @@ a:focus-visible,
     background: var(--bg-hover);
 }
 
+.query-autocomplete-op,
+.query-autocomplete-desc {
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    min-width: 0;
+}
+
 .query-autocomplete-op {
     font-family: ui-monospace, monospace;
     font-size: var(--font-size-base);
     color: var(--accent);
     font-weight: 500;
+    flex: 0 1 auto;
 }
 
 .query-autocomplete-desc {
     font-size: var(--font-size-sm);
     color: var(--text-muted);
     margin-left: auto;
+    flex-shrink: 0;
+    max-width: 45%;
 }
 
 /* Card query field: chips for the finished words, with the text box among
