@@ -4571,6 +4571,9 @@ button.settings-section-title {
     flex-direction: column;
     gap: var(--space-sm);
     color: var(--danger);
+    box-sizing: border-box;
+    max-width: 800px;
+    margin: 0 auto;
 }
 
 /* Thread loading skeleton */

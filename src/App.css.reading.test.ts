@@ -48,6 +48,17 @@ describe("thread beside a side panel", () => {
   });
 });
 
+describe("thread load error", () => {
+  it("sits in the thread's column, as wide as its toolbar, not across the window", () => {
+    document.body.innerHTML = '<div class="thread-overlay"><div class="thread-floating-bar" id="bar"></div><div class="thread-content"><div class="error-message" id="error"></div></div></div>';
+    const error = cascadedDeclarations(rules, document.getElementById("error")!);
+    const bar = cascadedDeclarations(rules, document.getElementById("bar")!);
+    expect(error.get("max-width")).toBe(bar.get("width"));
+    expect(error.get("margin")).toBe("0 auto");
+    expect(error.get("box-sizing")).toBe("border-box");
+  });
+});
+
 describe("attachment lightbox", () => {
   it("covers the thread view and the label drawer", () => {
     document.body.innerHTML = '<div class="thread-overlay" id="thread"></div><div class="label-drawer" id="drawer"></div><div class="lightbox" id="lightbox"></div>';
