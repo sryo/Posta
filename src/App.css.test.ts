@@ -212,6 +212,25 @@ describe("card query field", () => {
   });
 });
 
+describe("board connection status", () => {
+  const declarationsOf = (selector: string) =>
+    new Map(rules.filter((rule) => rule.selectors.includes(selector)).flatMap((rule) => [...rule.declarations]));
+
+  it("pushes the deck down by the strip's height instead of covering the cards", () => {
+    expect(declarationsOf(".connection-status").get("height")).toBe("var(--status-bar-height)");
+    expect(declarationsOf(".deck.has-status").get("padding-top")).toBe("calc(var(--drag-region-height) + var(--status-bar-height) + var(--space-md))");
+  });
+
+  it("marks offline in amber and a lost sign-in in the danger color", () => {
+    expect(declarationsOf(".connection-status.offline").get("background")).toBe("var(--warning-bg)");
+    expect(declarationsOf(".connection-status.expired").get("background")).toBe("var(--danger-bg)");
+  });
+
+  it("dims the mail of cards that can't update", () => {
+    expect(declarationsOf(".card.stale .card-body").get("opacity")).toBeDefined();
+  });
+});
+
 describe("snippet previews", () => {
   it("clamp to five lines from the stylesheet, not from a property the app sets", () => {
     const root = rules.filter((rule) => rule.selectors.includes(":root")).flatMap((rule) => [...rule.declarations]);

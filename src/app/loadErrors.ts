@@ -2,6 +2,11 @@ import { isSessionExpiredError, needsSignInAgain } from "./authErrors";
 
 const OFFLINE = /error sending request|could not reach|couldn't reach|timed out|didn't respond|did not respond|network/i;
 
+// Errors meaning Google couldn't be reached at all
+export function isOfflineError(error: unknown): boolean {
+  return OFFLINE.test(String(error));
+}
+
 // Shown in the thread view when a thread's messages can't be loaded
 export function threadLoadErrorMessage(error: unknown): string {
   const text = String(error);

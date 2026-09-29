@@ -138,7 +138,9 @@ import { cidImagesToFetch, createLruCache, fetchCidImages } from "./app/cidImage
 import { sendPending, type PendingSend } from "./app/pendingSend";
 import { parseMailto } from "./app/mailto";
 import { coalesceByKey } from "./app/coalesce";
-import { batchReplyLoadErrorMessage, cardLoadErrorMessage, queryPreviewErrorMessage, threadLoadErrorMessage } from "./app/loadErrors";
+import { batchReplyLoadErrorMessage, cardLoadErrorMessage, isOfflineError, queryPreviewErrorMessage, threadLoadErrorMessage } from "./app/loadErrors";
+import { cardWaitingMessage, connectionStatus } from "./app/connectionStatus";
+import { CardEmpty, CardSkeleton, ConnectionStatusBar } from "./components/CardStates";
 import { cardTypeForQuery } from "./app/cardType";
 import { createDraftSync, draftKey, findLatestDraft, findUnsentDrafts, hasDraftContent, markDraftClosed, markDraftSending, pruneDrafts, removeAccountDrafts, sessionDraftKey, type DraftFields } from "./app/drafts";
 import { escapeTarget, nextCardFocus, nextItemFocus } from "./app/keyboardNav";
@@ -155,7 +157,6 @@ import { hasCommandModifier, isTypingTarget, onActivateKey } from "./shared/keyb
 import { askConfirm, ConfirmDialog, confirmOpen, dismissConfirm } from "./app/confirm";
 import { moveCard, reuseUnchanged } from "./app/cardOrder";
 
-const SESSION_EXPIRED_MESSAGE = "Session expired - sign in again";
 
 // As many as the backend's preview of an email query returns
 const NEW_CARD_PREVIEW_EVENTS = 5;
@@ -194,6 +195,11 @@ function App() {
 
   const [error, setError] = createSignal<string | null>(null);
   const [expiredAccountId, setExpiredAccountId] = createSignal<string | null>(null);
+  // Set when Google couldn't be reached or the Mac says it's offline, until
+  // a request gets through
+  const [offline, setOffline] = createSignal(typeof navigator !== "undefined" && navigator.onLine === false);
+  const [reconnecting, setReconnecting] = createSignal(false);
+  const sessionExpired = () => !!expiredAccountId() && expiredAccountId() === selectedAccount()?.id;
   const [accounts, setAccounts] = createSignal<Account[]>([]);
   const [selectedAccount, setSelectedAccount] = createSignal<Account | null>(null);
   const [cards, setCards] = createSignal<Card[]>([]);
@@ -905,6 +911,7 @@ function App() {
     try {
       const result = await syncThreadsIncremental(account.id);
       if (selectedAccount()?.id !== account.id) return;
+      setOffline(false);
 
       // Update sync times for non-collapsed email cards; calendar cards are
       // not touched by Gmail history sync and must not be stamped as synced
@@ -1093,6 +1100,8 @@ function App() {
       backgroundSyncStarted = true;
       schedulePoll();
       window.addEventListener("focus", handleWindowFocus);
+      window.addEventListener("online", retryConnection);
+      window.addEventListener("offline", goOffline);
     }
     fetchContacts(accountId)
       .then(contacts => { if (selectedAccount()?.id === accountId) setGoogleContacts(contacts); })
@@ -1241,6 +1250,8 @@ function App() {
     clearInterval(timeUpdateInterval);
     dismissConfirm();
     window.removeEventListener("focus", handleWindowFocus);
+    window.removeEventListener("online", retryConnection);
+    window.removeEventListener("offline", goOffline);
     if (handleResize) window.removeEventListener("resize", handleResize);
     if (handleColorSchemeChange) colorSchemeQuery?.removeEventListener("change", handleColorSchemeChange);
     unlistenMailto?.();
@@ -3050,7 +3061,7 @@ function App() {
     closeAccountViews();
     // The banner speaks for the account being left; an expired session
     // stays with its own account
-    setError(expiredAccountId() === account.id ? SESSION_EXPIRED_MESSAGE : null);
+    setError(null);
     setSelectedAccount(account);
     try {
       if (await loadAccountCards(account)) startBackgroundSync(account.id);
@@ -3156,6 +3167,7 @@ function App() {
       setCardHasMore(cardId, result.has_more);
       setLastSyncTimes(cardId, Date.now());
       setSyncErrors(cardId, null);
+      setOffline(false);
     } catch (e) {
       if (stale()) return;
       console.error("loadCardThreads error:", e);
@@ -3217,6 +3229,7 @@ function App() {
   function handleCardLoadError(cardId: string, e: unknown) {
     const errorMsg = String(e);
     if (!isSessionExpiredError(errorMsg)) {
+      if (isOfflineError(errorMsg)) setOffline(true);
       setCardErrors(cardId, cardLoadErrorMessage(errorMsg, isCalendarCard(cardId)));
       setSyncErrors(cardId, errorMsg);
       return;
@@ -3229,16 +3242,43 @@ function App() {
   // The account and its cards stay: signing in again with the same email
   // reuses the account id, so the layout comes back as it was
   function markSessionExpired(accountId: string) {
-    if (expiredAccountId() === accountId) return;
     setExpiredAccountId(accountId);
-    setError(SESSION_EXPIRED_MESSAGE);
   }
 
   // Background syncs keep showing cached mail; an expired session must still
   // surface, or the cards silently go stale
   function noteBackgroundError(accountId: string, e: unknown) {
+    if (isOfflineError(e)) setOffline(true);
     if (isSessionExpiredError(String(e)) && selectedAccount()?.id === accountId) markSessionExpired(accountId);
   }
+
+  // Asks Google again for everything the board couldn't load or refresh
+  async function retryConnection() {
+    if (reconnecting()) return;
+    setReconnecting(true);
+    try {
+      const failed = cards().filter(c => !collapsedCards[c.id] && (cardErrors[c.id] || syncErrors[c.id]));
+      await Promise.all([performIncrementalSync(), ...failed.map(c => loadCardThreads(c.id, false, true))]);
+    } finally {
+      setReconnecting(false);
+    }
+  }
+  const goOffline = () => setOffline(true);
+
+  const boardStatus = createMemo(() => {
+    const account = selectedAccount();
+    if (!account) return null;
+    const synced = cards().map(c => lastSyncTimes[c.id]).filter((t): t is number => !!t);
+    return connectionStatus(
+      {
+        expiredEmail: sessionExpired() ? account.email : null,
+        offline: offline(),
+        reconnecting: reconnecting(),
+        lastSyncedAt: synced.length > 0 ? Math.max(...synced) : null,
+      },
+      t => new Date(t).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }),
+    );
+  });
 
   function handleReauth() {
     return signInWithGoogle(async account => {
@@ -3258,6 +3298,7 @@ function App() {
       await saveCachedCardEvents(cardId, events);
       setLastSyncTimes(cardId, Date.now());
       setSyncErrors(cardId, null);
+      setOffline(false);
     } catch (e) {
       console.error("Failed to fetch calendar events:", e);
       setSyncErrors(cardId, String(e));
@@ -3327,6 +3368,7 @@ function App() {
       await saveCardCache(cardId, result.groups, result.next_page_token);
       setLastSyncTimes(cardId, Date.now());
       setSyncErrors(cardId, null);
+      setOffline(false);
     } catch (e) {
       // Background refresh failed - set sync error but keep cached data shown
       setSyncErrors(cardId, String(e));
@@ -3855,6 +3897,10 @@ function App() {
       {/* Drag region for frameless window */}
       <div class="drag-region" data-tauri-drag-region></div>
 
+      <Show when={boardStatus()}>
+        {(status) => <ConnectionStatusBar status={status()} onRetry={retryConnection} onSignIn={handleReauth} />}
+      </Show>
+
       {/* Global filter bar - keyboard activated */}
       <div class={`global-filter-bar ${showGlobalFilter() ? 'visible' : ''}`}>
         <div class="global-filter-container">
@@ -4064,9 +4110,6 @@ function App() {
       <Show when={error()}>
         <div class="auth-error" role="alert">
           {error()}
-          <Show when={expiredAccountId() && expiredAccountId() === selectedAccount()?.id}>
-            <button class="btn btn-primary" onClick={handleReauth}>Sign in again</button>
-          </Show>
           <button class="btn" onClick={() => setError(null)} aria-label="Dismiss error">×</button>
         </div>
       </Show>
@@ -4109,7 +4152,7 @@ function App() {
       <Show when={!loading() && selectedAccount()}>
         <DragDropProvider onDragStart={onDragStart} onDragEnd={onDragEnd as any} collisionDetector={mostIntersecting}>
           <DragDropSensors />
-          <div class={`deck ${resizing() ? 'resizing' : ''}`} style={{ background: deckBackground() }}>
+          <div class={`deck ${resizing() ? 'resizing' : ''} ${boardStatus() ? 'has-status' : ''}`} style={{ background: deckBackground() }}>
             <SortableProvider ids={cardIds()}>
               <For each={cards()}>
                 {(card) => {
@@ -4123,7 +4166,7 @@ function App() {
                       }}
                     >
                       <div
-                        class={`card ${collapsedCards[card.id] ? 'collapsed' : ''} ${editingCardId() === card.id ? 'editing' : ''}`}
+                        class={`card ${collapsedCards[card.id] ? 'collapsed' : ''} ${editingCardId() === card.id ? 'editing' : ''} ${(offline() || sessionExpired()) && (cardThreads[card.id] || cardCalendarEvents[card.id]) ? 'stale' : ''}`}
                         classList={{ 'dragging': sortable.isActiveDraggable }}
                         data-id={card.id}
                         data-color={editingCardId() === card.id ? (editCardColor() || undefined) : (card.color || undefined)}
@@ -4218,7 +4261,7 @@ function App() {
                         >
                           {/* Only show loading if no cached data */}
                           <Show when={loadingThreads[card.id] && !cardThreads[card.id] && !cardCalendarEvents[card.id]}>
-                            <div class="loading">Loading...</div>
+                            <CardSkeleton />
                           </Show>
                           <Show when={isPreviewingQuery(card.id) && queryPreviewLoading()}>
                             <div class="loading">Searching...</div>
@@ -4226,12 +4269,15 @@ function App() {
                           <Show when={isPreviewingQuery(card.id) && !queryPreviewLoading() && queryPreviewError()}>
                             <div class="query-preview-error" aria-live="polite">{queryPreviewError()}</div>
                           </Show>
-                          <Show when={!loadingThreads[card.id] && cardErrors[card.id] && !cardThreads[card.id] && !cardCalendarEvents[card.id]}>
+                          <Show when={!loadingThreads[card.id] && cardErrors[card.id] && !cardThreads[card.id] && !cardCalendarEvents[card.id] && cardWaitingMessage(cardErrors[card.id]!, syncErrors[card.id], sessionExpired())}>
+                            {(waiting) => <div class="card-waiting">{waiting()}</div>}
+                          </Show>
+                          <Show when={!loadingThreads[card.id] && cardErrors[card.id] && !cardThreads[card.id] && !cardCalendarEvents[card.id] && !cardWaitingMessage(cardErrors[card.id]!, syncErrors[card.id], sessionExpired())}>
                             <div class="card-error">
                               <span class="error-icon">⚠</span>
                               <span class="error-text">{cardErrors[card.id]}</span>
                               <Show
-                                when={(expiredAccountId() && expiredAccountId() === selectedAccount()?.id) || needsSignInAgain(cardErrors[card.id] ?? "")}
+                                when={needsSignInAgain(cardErrors[card.id] ?? "")}
                                 fallback={<button class="retry-btn" onClick={(e) => refreshCard(card.id, e)}>Try again</button>}
                               >
                                 <button class="retry-btn" onClick={handleReauth}>Sign in again</button>
@@ -4242,7 +4288,7 @@ function App() {
                           {/* Calendar card: show calendar events */}
                           <Show when={effectiveCardType(card) === "calendar" && (isPreviewingQuery(card.id) || cardCalendarEvents[card.id])}>
                             <Show when={getCalendarEventGroups(card.id).length === 0 && !(isPreviewingQuery(card.id) && (queryPreviewLoading() || queryPreviewError()))}>
-                              <div class="empty">No events</div>
+                              <CardEmpty query={isPreviewingQuery(card.id) ? editCardQuery() : card.query} />
                             </Show>
                             <Index each={getCalendarEventGroups(card.id)}>
                               {(group) => (
@@ -4366,7 +4412,7 @@ function App() {
                           {/* Email card: show threads */}
                           <Show when={effectiveCardType(card) !== "calendar" && (isPreviewingQuery(card.id) || cardThreads[card.id])}>
                             <Show when={getDisplayGroups(card.id).length === 0 && !(isPreviewingQuery(card.id) && (queryPreviewLoading() || queryPreviewError()))}>
-                              <div class="empty">All clear</div>
+                              <CardEmpty query={isPreviewingQuery(card.id) ? editCardQuery() : card.query} />
                             </Show>
                             <Index each={getDisplayGroups(card.id)}>
                               {(group) => (

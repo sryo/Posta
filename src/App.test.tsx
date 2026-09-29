@@ -656,7 +656,7 @@ describe("App expired session", () => {
     window.dispatchEvent(new Event("focus"));
 
     const banner = await waitFor(() => {
-      const el = document.querySelector(".auth-error");
+      const el = document.querySelector(".connection-status");
       expect(el).not.toBeNull();
       return el as HTMLElement;
     });
@@ -671,7 +671,7 @@ describe("App expired session", () => {
     await screen.findByText("Mail for A");
 
     const banner = await waitFor(() => {
-      const el = document.querySelector(".auth-error");
+      const el = document.querySelector(".connection-status");
       expect(el).not.toBeNull();
       return el as HTMLElement;
     });
@@ -690,7 +690,7 @@ describe("App expired session", () => {
     render(() => <App />);
 
     const banner = await waitFor(() => {
-      const el = document.querySelector(".auth-error");
+      const el = document.querySelector(".connection-status");
       expect(el).not.toBeNull();
       return el as HTMLElement;
     });
@@ -756,23 +756,23 @@ describe("App error banner", () => {
     await screen.findByText("Mail for A");
     handlers.sync_threads_incremental = () => { throw 'Token refresh failed: {"error": "invalid_grant"}'; };
     window.dispatchEvent(new Event("focus"));
-    await screen.findByText("Session expired - sign in again");
+    await screen.findByText("Posta lost access to a@x.com");
 
     handlers.sync_threads_incremental = () => ({ modified_threads: [], deleted_thread_ids: [], is_full_sync: false });
     fireEvent.click(screen.getByTitle("a@x.com"));
     fireEvent.click(await screen.findByText("b@x.com"));
     await screen.findByText("Mail for B");
-    expect(screen.queryByText("Session expired - sign in again")).not.toBeInTheDocument();
+    expect(screen.queryByText("Posta lost access to a@x.com")).not.toBeInTheDocument();
 
     fireEvent.click(screen.getByTitle("b@x.com"));
     fireEvent.click(await screen.findByText("a@x.com"));
-    const banner = await screen.findByRole("alert");
+    const banner = (await screen.findByText("Posta lost access to a@x.com")).closest(".connection-status") as HTMLElement;
     expect(within(banner).getByRole("button", { name: "Sign in again" })).toBeInTheDocument();
   });
 });
 
-describe("App expired session after dismissing the banner", () => {
-  it("still offers to sign in again from the card", async () => {
+describe("App expired session in a card", () => {
+  it("leaves signing in again to the status strip, the card only waiting for it", async () => {
     let expired = true;
     const fetchPage = handlers.fetch_threads_paginated;
     handlers.fetch_threads_paginated = (args) => {
@@ -782,25 +782,51 @@ describe("App expired session after dismissing the banner", () => {
     handlers.run_oauth_flow = () => { expired = false; return account("a", "a@x.com"); };
     render(() => <App />);
 
-    await screen.findByRole("button", { name: "Dismiss error" });
-    fireEvent.click(screen.getByRole("button", { name: "Dismiss error" }));
-    const cardError = await waitFor(() => {
-      const el = document.querySelector(".card-error");
-      expect(el).not.toBeNull();
-      return el as HTMLElement;
-    });
-    fireEvent.click(within(cardError).getByRole("button", { name: "Sign in again" }));
+    const alpha = await screen.findByRole("region", { name: "Alpha email card" });
+    expect(await within(alpha).findByText("Waiting for sign-in")).toBeInTheDocument();
+    expect(within(alpha).queryByRole("button", { name: "Sign in again" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
 
+    const strip = document.querySelector(".connection-status") as HTMLElement;
+    fireEvent.click(within(strip).getByRole("button", { name: "Sign in again" }));
     await screen.findByText("Mail for A");
+    expect(document.querySelector(".connection-status")).toBeNull();
   });
 });
 
 describe("App card load errors", () => {
-  it("says in words that Gmail couldn't be reached, keeping the backend's text for the sync tooltip", async () => {
+  it("says once, for the whole board, that Gmail couldn't be reached, and loads the cards on Try now", async () => {
     let offline = true;
     const fetchPage = handlers.fetch_threads_paginated;
     handlers.fetch_threads_paginated = (args) => {
       if (offline) throw "Search failed: Request failed: could not reach Gmail. Check your connection.";
+      return fetchPage(args);
+    };
+    handlers.sync_threads_incremental = () => {
+      if (offline) throw "Request failed: could not reach Gmail. Check your connection.";
+      return { modified_threads: [], deleted_thread_ids: [], is_full_sync: false };
+    };
+    cardsByAccount.a = [card("card-a", "a", "Alpha"), { ...card("card-z", "a", "Zeta"), position: 1 }];
+    render(() => <App />);
+
+    const alpha = await screen.findByRole("region", { name: "Alpha email card" });
+    expect(await within(alpha).findByText("Waiting for connection")).toBeInTheDocument();
+    expect(within(alpha).queryByRole("button", { name: "Try again" })).not.toBeInTheDocument();
+    await waitFor(() => expect(screen.getAllByText("Waiting for connection")).toHaveLength(2));
+    const strip = document.querySelector(".connection-status") as HTMLElement;
+    expect(strip).toHaveTextContent("You're offline");
+
+    offline = false;
+    fireEvent.click(within(strip).getByRole("button", { name: "Try now" }));
+    await screen.findByText("Mail for A");
+    await waitFor(() => expect(document.querySelector(".connection-status")).toBeNull());
+  });
+
+  it("keeps an error only one card has inside that card, with Try again", async () => {
+    let bad = true;
+    const fetchPage = handlers.fetch_threads_paginated;
+    handlers.fetch_threads_paginated = (args) => {
+      if (bad) throw "Search failed: API error 400 Bad Request: Invalid query";
       return fetchPage(args);
     };
     render(() => <App />);
@@ -810,11 +836,78 @@ describe("App card load errors", () => {
       expect(el).not.toBeNull();
       return el as HTMLElement;
     });
-    expect(cardError).toHaveTextContent("Couldn't reach Gmail. Check your connection and try again.");
-    expect(cardError).not.toHaveTextContent("Search failed");
-    offline = false;
+    expect(cardError).toHaveTextContent("Invalid query");
+    expect(document.querySelector(".connection-status")).toBeNull();
+    bad = false;
     fireEvent.click(within(cardError).getByRole("button", { name: "Try again" }));
     await screen.findByText("Mail for A");
+  });
+
+  it("shows cached mail dimmed while offline and says since when it is from", async () => {
+    handlers.get_cached_card_threads = () => ({ groups: [{ label: "Today", threads: [thread("t-a", "Cached mail")] }], next_page_token: null, cached_at: 1 });
+    handlers.fetch_threads_paginated = () => { throw "Search failed: Request failed: could not reach Gmail. Check your connection."; };
+    render(() => <App />);
+
+    await screen.findByText("Cached mail");
+    const strip = await waitFor(() => {
+      const el = document.querySelector(".connection-status");
+      expect(el).not.toBeNull();
+      return el as HTMLElement;
+    });
+    expect(strip).toHaveTextContent(/You're offline — showing mail from/);
+    expect(screen.getByRole("region", { name: "Alpha email card" })).toHaveClass("stale");
+  });
+
+  it("tries again as soon as the Mac is back online", async () => {
+    let offline = true;
+    const fetchPage = handlers.fetch_threads_paginated;
+    handlers.fetch_threads_paginated = (args) => {
+      if (offline) throw "Search failed: Request failed: could not reach Gmail. Check your connection.";
+      return fetchPage(args);
+    };
+    render(() => <App />);
+    await screen.findByText("Waiting for connection");
+
+    offline = false;
+    window.dispatchEvent(new Event("online"));
+    expect(await screen.findByText("Mail for A")).toBeInTheDocument();
+  });
+
+  it("goes offline when the Mac says so", async () => {
+    render(() => <App />);
+    await screen.findByText("Mail for A");
+    window.dispatchEvent(new Event("offline"));
+    expect(await screen.findByText(/You're offline/)).toBeInTheDocument();
+  });
+});
+
+describe("App card loading and empty states", () => {
+  it("shows skeleton rows while a card loads for the first time", async () => {
+    let release!: () => void;
+    const slow = new Promise<void>(r => { release = r; });
+    const fetchPage = handlers.fetch_threads_paginated;
+    handlers.fetch_threads_paginated = async (args) => { await slow; return fetchPage(args); };
+    render(() => <App />);
+
+    const alpha = await screen.findByRole("region", { name: "Alpha email card" });
+    const skeleton = await waitFor(() => {
+      const el = alpha.querySelector("[aria-busy='true']");
+      expect(el).not.toBeNull();
+      return el as HTMLElement;
+    });
+    expect(skeleton.querySelectorAll(".card-skeleton-row")).toHaveLength(3);
+    expect(within(alpha).queryByText("Loading...")).not.toBeInTheDocument();
+    release();
+    await screen.findByText("Mail for A");
+    expect(alpha.querySelector("[aria-busy='true']")).toBeNull();
+  });
+
+  it("says what an empty card's query is", async () => {
+    handlers.fetch_threads_paginated = () => ({ groups: [], next_page_token: null, has_more: false });
+    cardsByAccount.a = [{ ...card("card-a", "a", "Alpha"), query: "is:starred" }];
+    render(() => <App />);
+    const empty = await screen.findByText(/Nothing matches/);
+    expect(empty.closest(".empty")).toHaveTextContent("Nothing matches is:starred");
   });
 });
 
@@ -3111,7 +3204,7 @@ describe("App thread load errors", () => {
     render(() => <App />);
     fireEvent.click(await screen.findByText("Mail for A"));
     expect(await screen.findByText(/Sign in again to load this email/)).toBeInTheDocument();
-    const banner = document.querySelector(".auth-error") as HTMLElement;
+    const banner = document.querySelector(".connection-status") as HTMLElement;
     expect(within(banner).getByRole("button", { name: "Sign in again" })).toBeInTheDocument();
   });
 });
