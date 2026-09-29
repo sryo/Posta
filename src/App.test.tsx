@@ -3597,3 +3597,26 @@ describe("App batch reply closing", () => {
     expect(await screen.findByText("Mail for B")).toBeInTheDocument();
   });
 });
+
+describe("App reading view", () => {
+  it("names system labels in the label drawer as Gmail does and finds them by that name", async () => {
+    handlers.get_thread_details = () => ({ id: "t-a", messages: [fullMessage("m1", "Ana <ana@x.com>")] });
+    handlers.list_labels = () => [
+      { id: "Label_1", name: "Receipts", messageListVisibility: null, labelListVisibility: null, label_type: "user" },
+      { id: "INBOX", name: "INBOX", messageListVisibility: null, labelListVisibility: null, label_type: "system" },
+      { id: "IMPORTANT", name: "IMPORTANT", messageListVisibility: null, labelListVisibility: null, label_type: "system" },
+    ];
+    render(() => <App />);
+    fireEvent.click(await screen.findByText("Mail for A"));
+    await screen.findByText("body m1");
+    fireEvent.keyDown(document, { key: "l" });
+
+    const drawer = (await screen.findByText("Receipts")).closest(".label-drawer") as HTMLElement;
+    expect(within(drawer).getByText("Inbox")).toBeInTheDocument();
+    expect(within(drawer).getByText("Important")).toBeInTheDocument();
+    expect(within(drawer).queryByText("INBOX")).not.toBeInTheDocument();
+    fireEvent.input(screen.getByPlaceholderText("Search labels..."), { target: { value: "impor" } });
+    await waitFor(() => expect(within(drawer).queryByText("Inbox")).not.toBeInTheDocument());
+    expect(within(drawer).getByText("Important")).toBeInTheDocument();
+  });
+});

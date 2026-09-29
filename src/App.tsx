@@ -125,6 +125,7 @@ import { findHeader, lastMessageFromOthers } from "./app/messages";
 import { batchReplyEntry, type BatchReplyThread } from "./app/batchReply";
 import { completeRecipient, currentRecipient, matchContacts, rankContacts, type RecentContact } from "./app/contacts";
 import { eventReplyRecipients } from "./app/eventReply";
+import { labelDisplayName } from "./app/labels";
 import { actionFailureLabel, actionLabel, actionRemovesFromCard, applyThreadAction, bulkActionConfirm, labelChangeFor, threadMayJoinCard, undoLabelChanges, type LabelReversal } from "./app/threadActions";
 import { PRESETS } from "./app/presets";
 import { normalizeActionOrder } from "./app/actionOrder";
@@ -2483,7 +2484,7 @@ function App() {
       const sorted = labels.sort((a, b) => {
         if (a.label_type === 'user' && b.label_type !== 'user') return -1;
         if (a.label_type !== 'user' && b.label_type === 'user') return 1;
-        return a.name.localeCompare(b.name);
+        return labelDisplayName(a).localeCompare(labelDisplayName(b));
       });
       setAccountLabels(sorted);
     } catch (e) {
@@ -2498,7 +2499,7 @@ function App() {
   const labelNames = createMemo(() => Object.fromEntries(accountLabels().map(l => [l.id, l.name])));
   const filteredLabels = createMemo(() => {
     const query = labelSearchQuery().toLowerCase();
-    return query ? accountLabels().filter(l => l.name.toLowerCase().includes(query)) : accountLabels();
+    return query ? accountLabels().filter(l => labelDisplayName(l).toLowerCase().includes(query)) : accountLabels();
   });
 
   // "Group by label" shows label names, and a card query completes label:
@@ -4991,9 +4992,9 @@ function App() {
                         <input
                           type="checkbox"
                           checked={isApplied()}
-                          onChange={() => handleToggleLabel(label.id, label.name, !isApplied())}
+                          onChange={() => handleToggleLabel(label.id, labelDisplayName(label), !isApplied())}
                         />
-                        <span class="label-name">{label.name}</span>
+                        <span class="label-name">{labelDisplayName(label)}</span>
                         <Show when={isSystem()}>
                           <span class="label-badge">System</span>
                         </Show>
