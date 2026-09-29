@@ -72,6 +72,29 @@ describe("EmojiPicker", () => {
     reply.remove();
   });
 
+  it("picks the first match when Enter is pressed in the search box", () => {
+    const onSelect = vi.fn();
+    const onClose = vi.fn();
+    const { container } = render(() => <EmojiPicker onSelect={onSelect} onClose={onClose} />);
+    const input = container.querySelector<HTMLInputElement>(".emoji-search")!;
+    fireEvent.input(input, { target: { value: "heart" } });
+    const first = container.querySelector(".emoji-btn")!.textContent;
+    fireEvent.keyDown(input, { key: "Enter" });
+    expect(onSelect).toHaveBeenCalledWith(first);
+    expect(onClose).toHaveBeenCalled();
+  });
+
+  it("picks nothing on Enter when the search matches nothing or is still composing", () => {
+    const onSelect = vi.fn();
+    const { container } = render(() => <EmojiPicker onSelect={onSelect} onClose={vi.fn()} />);
+    const input = container.querySelector<HTMLInputElement>(".emoji-search")!;
+    fireEvent.input(input, { target: { value: "heart" } });
+    fireEvent.keyDown(input, { key: "Enter", isComposing: true });
+    fireEvent.input(input, { target: { value: "zzz" } });
+    fireEvent.keyDown(input, { key: "Enter" });
+    expect(onSelect).not.toHaveBeenCalled();
+  });
+
   it("says so when no category matches the search", () => {
     const { container } = render(() => <EmojiPicker onSelect={vi.fn()} onClose={vi.fn()} />);
     const input = container.querySelector<HTMLInputElement>(".emoji-search")!;

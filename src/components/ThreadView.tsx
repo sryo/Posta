@@ -1,6 +1,7 @@
 import { createSignal, createEffect, createMemo, onMount, onCleanup, Show, For } from "solid-js";
 import { MessageBody } from './MessageBody';
 import { sendReaction, type FullThread, type FullMessage, type Attachment } from "../api/tauri";
+import { createCloseAfterAnimation } from "../shared/closeAfterAnimation";
 import { isTypingTarget, hasCommandModifier, onActivateKey } from "../shared/keyboard";
 import {
   findContent,
@@ -80,13 +81,14 @@ export const ThreadView = (props: {
   // CID attachment data fetched on-demand (cid -> base64 data)
   cidAttachmentData?: Record<string, string>,
   onError?: (message: string) => void,
+  // Whether a Gemini key is saved; smart replies ask the keychain when unknown
+  geminiKeySaved?: boolean,
 }) => {
   let messageRefs: (HTMLDivElement | undefined)[] = [];
   let contentRef: HTMLDivElement | undefined;
   const [hoveredMessageId, setHoveredMessageId] = createSignal<string | null>(null);
   const [wheelOpen, setWheelOpen] = createSignal(false);
   const [hoveredLinkUrl, setHoveredLinkUrl] = createSignal<string | null>(null);
-  const [closing, setClosing] = createSignal(false);
   const [sendingReaction, setSendingReaction] = createSignal(false);
   // Message a forward was started from in this view; null means the forward
   // came from elsewhere (e.g. the card list) and sits under the last message
@@ -120,10 +122,7 @@ export const ThreadView = (props: {
     }
   };
 
-  const handleClose = () => {
-    setClosing(true);
-    setTimeout(() => props.onClose(), 200); // Match animation duration
-  };
+  const { closing, close: handleClose } = createCloseAfterAnimation(() => props.onClose());
 
   // Gmail messages never change content under the same id (a draft edit gets
   // a new id), so a reloaded thread reuses the loaded message objects and
@@ -146,7 +145,9 @@ export const ThreadView = (props: {
   let scrolledTo: { id: string; count: number } | null = null;
   createEffect(() => {
     const loaded = props.thread;
-    if (!loaded) return;
+    // Opening a thread clears it while it loads, so a reopened thread
+    // starts at its newest message again
+    if (!loaded) { scrolledTo = null; return; }
     const count = loaded.messages.length;
     if (scrolledTo?.id === loaded.id && count <= scrolledTo.count) return;
     scrolledTo = { id: loaded.id, count };
@@ -309,7 +310,7 @@ export const ThreadView = (props: {
         <div class="thread-floating-bar-row">
           <CloseButton onClick={handleClose} />
           <div class="thread-bar-subject">
-            <Show when={props.thread} fallback={<span>Loading...</span>}>
+            <Show when={props.thread} fallback={<Show when={props.loading}><span>Loading...</span></Show>}>
               <h2>{findHeader(props.thread?.messages[0]?.payload?.headers, 'Subject') || '(No Subject)'}</h2>
             </Show>
           </div>
@@ -645,6 +646,8 @@ export const ThreadView = (props: {
           <SmartReplies
             accountId={props.accountId}
             threadId={props.thread!.id}
+            lastMessageId={props.thread!.messages[props.thread!.messages.length - 1]?.id}
+            keySaved={props.geminiKeySaved}
             onSelect={(suggestion) => {
               const target = lastMessageFromOthers(props.thread!.messages, props.currentUserEmail ?? '');
               if (target) messageActions(target).reply(suggestion);

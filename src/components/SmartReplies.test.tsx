@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { fireEvent, render, screen } from "@solidjs/testing-library";
+import { createSignal } from "solid-js";
 import { SmartReplies, describeSuggestionError } from "./SmartReplies";
 
 const hasGeminiApiKey = vi.hoisted(() => vi.fn());
@@ -62,5 +63,51 @@ describe("SmartReplies", () => {
     render(() => <SmartReplies accountId="acc" threadId="t1" onSelect={vi.fn()} />);
     expect(await screen.findByText(/Couldn.t reach Gemini/)).toBeInTheDocument();
     expect(screen.getByText("Retry suggestions")).toBeInTheDocument();
+  });
+
+  it("trusts a known key state instead of asking the keychain on every thread open", async () => {
+    suggestReplies.mockResolvedValue(["Ok"]);
+    render(() => <SmartReplies accountId="acc" threadId="t1" keySaved={true} onSelect={vi.fn()} />);
+    expect(await screen.findByText("Ok")).toBeInTheDocument();
+    expect(hasGeminiApiKey).not.toHaveBeenCalled();
+  });
+
+  it("asks nothing when the known key state says there is no key", async () => {
+    const { container } = render(() => <SmartReplies accountId="acc" threadId="t1" keySaved={false} onSelect={vi.fn()} />);
+    await new Promise(r => setTimeout(r, 0));
+    expect(hasGeminiApiKey).not.toHaveBeenCalled();
+    expect(suggestReplies).not.toHaveBeenCalled();
+    expect(container.querySelector(".smart-replies-container")).toBeNull();
+  });
+
+  it("asks again only when a new message arrives in the open thread", async () => {
+    suggestReplies.mockResolvedValueOnce(["Old reply"]).mockResolvedValueOnce(["New reply"]);
+    // Starring or relabelling reloads the thread as a new object with the same messages
+    const [thread, setThread] = createSignal({ messages: [{ id: "m1" }] });
+    const last = () => thread().messages[thread().messages.length - 1].id;
+    render(() => <SmartReplies accountId="acc" threadId="t1" lastMessageId={last()} keySaved={true} onSelect={vi.fn()} />);
+    expect(await screen.findByText("Old reply")).toBeInTheDocument();
+    setThread({ messages: [{ id: "m1" }] });
+    await new Promise(r => setTimeout(r, 0));
+    expect(suggestReplies).toHaveBeenCalledTimes(1);
+    expect(screen.getByText("Old reply")).toBeInTheDocument();
+    setThread({ messages: [{ id: "m1" }, { id: "m2" }] });
+    expect(await screen.findByText("New reply")).toBeInTheDocument();
+    expect(screen.queryByText("Old reply")).toBeNull();
+    expect(suggestReplies).toHaveBeenCalledTimes(2);
+  });
+
+  it("ignores a slower answer for an earlier message", async () => {
+    let finishOld!: (v: string[]) => void;
+    suggestReplies.mockReturnValueOnce(new Promise<string[]>(r => { finishOld = r; })).mockResolvedValueOnce(["Fresh"]);
+    const [last, setLast] = createSignal("m1");
+    render(() => <SmartReplies accountId="acc" threadId="t1" lastMessageId={last()} keySaved={true} onSelect={vi.fn()} />);
+    await vi.waitFor(() => expect(suggestReplies).toHaveBeenCalledTimes(1));
+    setLast("m2");
+    expect(await screen.findByText("Fresh")).toBeInTheDocument();
+    finishOld(["Stale"]);
+    await new Promise(r => setTimeout(r, 0));
+    expect(screen.queryByText("Stale")).toBeNull();
+    expect(screen.getByText("Fresh")).toBeInTheDocument();
   });
 });

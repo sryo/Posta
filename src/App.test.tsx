@@ -1194,10 +1194,9 @@ describe("App calendar", () => {
     await waitFor(() => expect(screen.getAllByText("Planning")).toHaveLength(2));
 
     fireEvent.click(screen.getAllByText("Planning")[0]);
-    const confirm = vi.spyOn(window, "confirm").mockReturnValue(true);
     fireEvent.keyDown(document, { key: "d" });
-    expect(confirm).toHaveBeenCalledTimes(1);
-    confirm.mockRestore();
+    expect(invoke).not.toHaveBeenCalledWith("delete_calendar_event", expect.anything());
+    fireEvent.keyDown(document, { key: "d" });
 
     await waitFor(() => expect(invoke).toHaveBeenCalledWith("delete_calendar_event", expect.anything()));
     await waitFor(() => expect(screen.queryAllByText("Planning")).toHaveLength(0));
@@ -1231,9 +1230,8 @@ describe("App calendar", () => {
     render(() => <App />);
     fireEvent.click(await screen.findByText("Planning"));
     invoke.mockClear();
-    const confirm = vi.spyOn(window, "confirm").mockReturnValue(true);
     fireEvent.keyDown(document, { key: "d" });
-    confirm.mockRestore();
+    fireEvent.keyDown(document, { key: "d" });
 
     await waitFor(() => expect(invoke).toHaveBeenCalledWith("save_cached_card_events", {
       cardId: "cal-1", events: [expect.objectContaining({ id: "ev-2" })],
