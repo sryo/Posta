@@ -816,7 +816,11 @@ impl CalendarClient {
         let asked_at = std::time::Instant::now();
         let slot = {
             let mut lists = CALENDAR_LISTS.lock().unwrap_or_else(|e| e.into_inner());
-            lists.retain(|_, slot| slot.try_lock().map_or(true, |s| s.as_ref().is_some_and(|(at, _)| at.elapsed() < CALENDAR_LIST_TTL)));
+            // A slot another caller holds is in use even while unlocked
+            lists.retain(|_, slot| {
+                Arc::strong_count(slot) > 1
+                    || slot.try_lock().map_or(true, |s| s.as_ref().is_some_and(|(at, _)| at.elapsed() < CALENDAR_LIST_TTL))
+            });
             lists
                 .entry((self.api_base.clone(), self.access_token.clone()))
                 .or_default()
@@ -2083,6 +2087,19 @@ mod tests {
         // Both calendars were still searched each time
         let event_requests = server.requests().iter().filter(|(_, t, _)| t.starts_with("/calendars/")).count();
         assert_eq!(event_requests, 8);
+    }
+
+    #[tokio::test]
+    async fn a_calendar_list_someone_is_about_to_fetch_is_not_pruned() {
+        // A caller that just made its account's slot, but hasn't locked it
+        // yet, must still find it in the map, or a second caller would fetch
+        // the list again
+        let server = StubServer::start(|_, _| (200, serde_json::json!({ "items": [] }).to_string())).await;
+        let key = (server.base.clone(), "about-to-fetch".to_string());
+        let held = CALENDAR_LISTS.lock().unwrap().entry(key.clone()).or_default().clone();
+        server.client().cached_calendar_list().await.unwrap();
+        let kept = CALENDAR_LISTS.lock().unwrap().get(&key).cloned();
+        assert!(kept.is_some_and(|slot| Arc::ptr_eq(&slot, &held)));
     }
 
     #[tokio::test]
