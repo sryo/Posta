@@ -513,6 +513,20 @@ describe("App presets", () => {
     expect(invoke.mock.calls.filter(([cmd]) => cmd === "create_card")).toHaveLength(4);
   });
 
+  it("starts the Posta preset's catch-all card collapsed and doesn't load it", async () => {
+    signInToEmptyLayout();
+    fireEvent.click(await screen.findByText("Sign in with Google"));
+    fireEvent.click((await screen.findByText("Focus on what matters")).closest(".preset-option")!);
+
+    const rest = await screen.findByRole("region", { name: "Everything else email card" });
+    expect(rest).toHaveClass("collapsed");
+    expect(screen.getByRole("region", { name: "Hot email card" })).not.toHaveClass("collapsed");
+    const restIndex = invoke.mock.calls.findIndex(([cmd, args]) => cmd === "create_card" && args?.name === "Everything else");
+    const created = await invoke.mock.results[restIndex].value as Card;
+    expect(invoke.mock.calls.some(([cmd, args]) => cmd === "fetch_threads_paginated" && args?.cardId === created.id)).toBe(false);
+    expect(JSON.parse(localStorage.getItem("collapsedCards") ?? "{}")[created.id]).toBe(true);
+  });
+
   it("shows the cards that were created when a later one fails", async () => {
     signInToEmptyLayout();
     const create = handlers.create_card;

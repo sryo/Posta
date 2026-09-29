@@ -1753,10 +1753,13 @@ function App() {
 
     applyingPreset = true;
     const newCards: Card[] = [];
+    const collapsed: Record<string, boolean> = {};
     try {
       for (const cardPreset of preset.cards) {
         const cardType = cardTypeForQuery(cardPreset.query);
-        newCards.push(await createCard(account.id, cardPreset.name, cardPreset.query, cardPreset.color || null, "date", cardType));
+        const created = await createCard(account.id, cardPreset.name, cardPreset.query, cardPreset.color || null, "date", cardType);
+        newCards.push(created);
+        collapsed[created.id] = cardPreset.collapsed ?? false;
       }
     } catch (e) {
       setError(`Couldn't create the cards: ${e}`);
@@ -1769,9 +1772,9 @@ function App() {
     // Show whatever was created, even if a later card failed: the created
     // ones are already stored, and hiding them invites duplicates on retry
     setCards(newCards);
-    setCollapsedCards(reconcile(Object.fromEntries(newCards.map(c => [c.id, false]))));
+    saveCollapsedState(collapsed);
     setShowPresetSelection(false);
-    newCards.forEach(card => loadCardThreads(card.id));
+    newCards.forEach(card => { if (!collapsed[card.id]) loadCardThreads(card.id); });
   }
 
   async function handleStartFresh() {
