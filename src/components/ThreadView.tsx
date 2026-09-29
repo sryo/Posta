@@ -40,11 +40,15 @@ import { CloseButton } from "./ComposeAtoms";
 import { ComposeForm } from "./ComposeForm";
 import { MessageActionsWheel } from "./MessageActionsWheel";
 import { MessageRecipients } from "./MessageRecipients";
+import type { PreviewAttachment } from "./AttachmentLightbox";
+import { isPreviewable } from "../app/attachments";
 import { isMailingList, unsubscribeMethod, type UnsubscribeMethod } from "../app/unsubscribe";
 import { personName } from "../app/people";
 import { COLOR_HEX } from "../shared/constants";
 import type { InlineComposeProps } from "./types";
 import { findHeader, lastMessageFromOthers, nearestShownIndex, normalizeMessageId, reactionsShownAsChips, stepShownIndex } from "../app/messages";
+
+type MessageAttachment = { filename: string; mimeType: string; size: number; attachmentId?: string; inlineData?: string };
 
 export const ThreadView = (props: {
   thread: FullThread | null,
@@ -59,6 +63,9 @@ export const ThreadView = (props: {
   onOpenAttachment: (messageId: string, attachmentId: string | undefined, filename: string, mimeType: string, inlineData?: string) => void,
   onDownloadAttachment: (messageId: string, attachmentId: string | undefined, filename: string, mimeType: string, inlineData?: string) => void,
   onShowAttachmentMenu: (att: { messageId: string; attachmentId: string; filename: string; mimeType: string; inlineData: string | null }) => void,
+  // Opens the lightbox on the thread's images and PDFs; without it every
+  // attachment opens in another app
+  onPreviewAttachments?: (items: PreviewAttachment[], index: number) => void,
   // messageId is the RFC 2822 Message-ID header value (undefined when the
   // header is missing; the backend resolves missing ids itself)
   onReply: (to: string, cc: string, subject: string, quotedBody: string, messageId: string | undefined, isHtml: boolean) => void,
@@ -167,6 +174,54 @@ export const ThreadView = (props: {
       setUnsubscribeState('idle');
     }
   };
+
+  // Extract attachments from message parts, enriched with inline_data from threadAttachments
+  const attachmentsOf = (msg: FullMessage): MessageAttachment[] => {
+    const attachments: MessageAttachment[] = [];
+    const payload = msg.payload;
+    const fileParts: any[] = [];
+    const findFileParts = (parts: any[]) => {
+      parts?.forEach(part => {
+        if (part.filename && part.filename.length > 0) fileParts.push(part);
+        if (part.parts) findFileParts(part.parts);
+      });
+    };
+    findFileParts(payload?.parts?.length ? payload.parts : payload?.filename ? [payload] : []);
+
+    // Gmail issues a new attachmentId on every fetch, so the
+    // listing's ids often differ from these; fall back to
+    // pairing same-named files in order, each listing entry once
+    const listed = props.threadAttachments?.filter(a => a.message_id === msg.id) ?? [];
+    const partIds = new Set(fileParts.map(p => p.body?.attachmentId));
+    const unpaired = listed.filter(a => !partIds.has(a.attachment_id));
+    for (const part of fileParts) {
+      const attachmentId = part.body?.attachmentId;
+      let threadAtt = listed.find(a => a.attachment_id === attachmentId);
+      if (!threadAtt) {
+        const i = unpaired.findIndex(a => a.filename === part.filename);
+        if (i !== -1) threadAtt = unpaired.splice(i, 1)[0];
+      }
+      attachments.push({
+        filename: part.filename,
+        mimeType: part.mimeType || 'application/octet-stream',
+        size: part.body?.size || 0,
+        attachmentId,
+        inlineData: threadAtt?.inline_data || part.body?.data,
+      });
+    }
+    return attachments;
+  };
+
+  // Every image and PDF in the thread, in order, for the lightbox
+  const previewItems = createMemo(() => messages().flatMap(msg =>
+    attachmentsOf(msg).filter(a => isPreviewable(a.mimeType)).map(a => ({
+      messageId: msg.id,
+      attachmentId: a.attachmentId || "",
+      filename: a.filename,
+      mimeType: a.mimeType,
+      size: a.size,
+      inlineData: a.inlineData || null,
+    }))));
 
   const chipReactions = createMemo(() => reactionsShownAsChips(props.thread?.messages ?? []));
   const hiddenMessages = () => (props.thread?.messages ?? []).map(m => chipReactions().has(m.id));
@@ -466,48 +521,12 @@ export const ThreadView = (props: {
 
                 const getBody = () => extractMessageHtml(msg.payload, msg.snippet);
 
-                // Extract attachments from message parts, enriched with inline_data from threadAttachments
-                const getAttachments = () => {
-                  const attachments: { filename: string; mimeType: string; size: number; attachmentId?: string; inlineData?: string }[] = [];
-                  const payload = msg.payload;
-                  const fileParts: any[] = [];
-                  const findFileParts = (parts: any[]) => {
-                    parts?.forEach(part => {
-                      if (part.filename && part.filename.length > 0) fileParts.push(part);
-                      if (part.parts) findFileParts(part.parts);
-                    });
-                  };
-                  findFileParts(payload?.parts?.length ? payload.parts : payload?.filename ? [payload] : []);
-
-                  // Gmail issues a new attachmentId on every fetch, so the
-                  // listing's ids often differ from these; fall back to
-                  // pairing same-named files in order, each listing entry once
-                  const listed = props.threadAttachments?.filter(a => a.message_id === msg.id) ?? [];
-                  const partIds = new Set(fileParts.map(p => p.body?.attachmentId));
-                  const unpaired = listed.filter(a => !partIds.has(a.attachment_id));
-                  for (const part of fileParts) {
-                    const attachmentId = part.body?.attachmentId;
-                    let threadAtt = listed.find(a => a.attachment_id === attachmentId);
-                    if (!threadAtt) {
-                      const i = unpaired.findIndex(a => a.filename === part.filename);
-                      if (i !== -1) threadAtt = unpaired.splice(i, 1)[0];
-                    }
-                    attachments.push({
-                      filename: part.filename,
-                      mimeType: part.mimeType || 'application/octet-stream',
-                      size: part.body?.size || 0,
-                      attachmentId,
-                      inlineData: threadAtt?.inline_data || part.body?.data,
-                    });
-                  }
-                  return attachments;
-                };
 
                 // Memo (not snapshot): threadAttachments is a live getter that
                 // re-reads cardThreads, so inline_data arriving after this row
                 // mounts must re-render the thumbnails (same reason MessageBody
                 // wraps its lookup in createMemo)
-                const attachments = createMemo(() => getAttachments());
+                const attachments = createMemo(() => attachmentsOf(msg));
                 const isImage = (mime: string) => mime.startsWith('image/');
                 const isPdf = (mime: string) => mime === 'application/pdf';
 
@@ -619,15 +638,30 @@ export const ThreadView = (props: {
                                 });
                               };
                               const hasThumb = att.inlineData && isImage(att.mimeType);
-                              const open = () => props.onOpenAttachment(msg.id, att.attachmentId, att.filename, att.mimeType, att.inlineData);
+                              const open = () => {
+                                const index = previewItems().findIndex(p =>
+                                  p.messageId === msg.id && p.filename === att.filename && p.attachmentId === (att.attachmentId || ""));
+                                if (props.onPreviewAttachments && index !== -1) props.onPreviewAttachments(previewItems(), index);
+                                else props.onOpenAttachment(msg.id, att.attachmentId, att.filename, att.mimeType, att.inlineData);
+                              };
+                              const activate = onActivateKey(open);
+                              const handleKeyDown = (e: KeyboardEvent) => {
+                                if (e.key === 'F10' && e.shiftKey) {
+                                  e.stopPropagation();
+                                  handleContextMenu(e as unknown as MouseEvent);
+                                  return;
+                                }
+                                activate(e);
+                              };
                               return (
                                 <div
                                   class="attachment-thumb"
                                   role="button"
                                   tabIndex={0}
+                                  aria-label={`${att.filename}, ${formatFileSize(att.size)}`}
                                   title={`${att.filename} (${formatFileSize(att.size)})`}
                                   onClick={open}
-                                  on:keydown={onActivateKey(open)}
+                                  on:keydown={handleKeyDown}
                                   onContextMenu={handleContextMenu}
                                 >
                                   {hasThumb ? (

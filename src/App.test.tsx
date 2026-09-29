@@ -3670,4 +3670,27 @@ describe("App reading view", () => {
     fireEvent.click(await screen.findByRole("button", { name: "Unsubscribe" }));
     expect(await screen.findByText(/Couldn't unsubscribe: The list refused/)).toBeInTheDocument();
   });
+
+  it("previews a card row's images in a lightbox, loading those the listing didn't carry", async () => {
+    const att = (filename: string, mime_type: string, inline_data: string | null) =>
+      ({ message_id: "m1", attachment_id: `id-${filename}`, filename, mime_type, size: 2048, inline_data, content_id: null });
+    threadsByCard["card-a"] = [{ ...thread("t-a", "Mail for A"), has_attachment: true,
+      attachments: [att("hotel.png", "image/png", "aW1n"), att("notes.txt", "text/plain", null), att("big.jpg", "image/jpeg", null)] }];
+    handlers.download_attachment = () => "Ymln";
+    handlers.save_attachment = () => "/Users/me/Downloads/big.jpg";
+    render(() => <App />);
+    fireEvent.click(await screen.findByRole("button", { name: "hotel.png, 2.0 KB" }));
+
+    const dialog = await screen.findByRole("dialog", { name: "hotel.png" });
+    expect(dialog).toHaveTextContent("1 of 2");
+    fireEvent.keyDown(document, { key: "ArrowRight" });
+    await waitFor(() => expect(screen.getByRole("dialog", { name: "big.jpg" }).querySelector("img")?.getAttribute("src")).toBe("data:image/jpeg;base64,Ymln"));
+    expect(invoke).toHaveBeenCalledWith("download_attachment", { accountId: "a", messageId: "m1", attachmentId: "id-big.jpg" });
+
+    fireEvent.click(within(screen.getByRole("dialog", { name: "big.jpg" })).getByRole("button", { name: "Download" }));
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith("save_attachment", expect.objectContaining({ filename: "big.jpg" })));
+    fireEvent.keyDown(document, { key: "Escape" });
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "big.jpg" })).not.toBeInTheDocument());
+    expect(screen.getByText("Mail for A")).toBeInTheDocument();
+  });
 });

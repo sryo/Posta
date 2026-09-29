@@ -43,3 +43,10 @@ export function isCalendarAttachment(a: { filename: string; mime_type: string })
   const mime = a.mime_type.toLowerCase();
   return mime === "text/calendar" || mime === "application/ics" || a.filename.toLowerCase().endsWith(".ics");
 }
+
+// Shown in the lightbox; SVG is left to other apps since it is a document
+// that can carry script, not a plain picture
+export function isPreviewable(mimeType: string): boolean {
+  const mime = mimeType.toLowerCase();
+  return mime === "application/pdf" || (mime.startsWith("image/") && mime !== "image/svg+xml");
+}

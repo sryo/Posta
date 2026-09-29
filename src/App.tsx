@@ -137,7 +137,8 @@ import { normalizeActionOrder } from "./app/actionOrder";
 import { parseStoredWidth } from "./app/storedWidth";
 import { isSessionExpiredError, needsSignInAgain } from "./app/authErrors";
 import { signatureBlock, withSignature } from "./app/signature";
-import { isCalendarAttachment, readFilesAsAttachments } from "./app/attachments";
+import { isCalendarAttachment, isPreviewable, readFilesAsAttachments } from "./app/attachments";
+import { AttachmentLightbox, type PreviewAttachment } from "./components/AttachmentLightbox";
 import { eventAttendees, eventTimesFromForm, smartEventDefaults } from "./app/eventForm";
 import { composePlacement } from "./app/composePlacement";
 import { cidImagesToFetch, createLruCache, fetchCidImages } from "./app/cidImages";
@@ -3522,8 +3523,26 @@ function App() {
     }
   }
 
-  function openCardAttachment(_attachments: Attachment[], attachment: Attachment, _index: number) {
-    openAttachment(attachment.message_id, attachment.attachment_id, attachment.filename, attachment.mime_type, attachment.inline_data);
+  const [attachmentPreview, setAttachmentPreview] = createSignal<{ items: PreviewAttachment[]; index: number } | null>(null);
+
+  // Images and PDFs open in the lightbox, with the row's others to step through
+  function openCardAttachment(attachments: Attachment[], attachment: Attachment) {
+    const previewable = attachments.filter(a => isPreviewable(a.mime_type));
+    const index = previewable.indexOf(attachment);
+    if (index === -1) {
+      openAttachment(attachment.message_id, attachment.attachment_id, attachment.filename, attachment.mime_type, attachment.inline_data);
+      return;
+    }
+    const items = previewable.map(a => ({
+      messageId: a.message_id, attachmentId: a.attachment_id, filename: a.filename, mimeType: a.mime_type, size: a.size, inlineData: a.inline_data,
+    }));
+    setAttachmentPreview({ items, index });
+  }
+
+  async function loadPreviewData(item: PreviewAttachment): Promise<string> {
+    const account = selectedAccount();
+    if (!account) throw new Error("No account selected");
+    return downloadAttachmentApi(account.id, item.messageId, item.attachmentId);
   }
 
   async function downloadAttachment(
@@ -4501,7 +4520,7 @@ function App() {
                                               <Show when={attachments().length > 0}>
                                                 <CardAttachments
                                                   attachments={attachments()}
-                                                  onOpen={(attachment, index) => openCardAttachment(attachments(), attachment, index)}
+                                                  onOpen={(attachment) => openCardAttachment(attachments(), attachment)}
                                                   onMenu={(attachment) => showAttachmentContextMenu({ messageId: attachment.message_id, attachmentId: attachment.attachment_id, filename: attachment.filename, mimeType: attachment.mime_type, inlineData: attachment.inline_data })}
                                                 />
                                               </Show>
@@ -4920,6 +4939,7 @@ function App() {
           onOpenAttachment={(messageId, attachmentId, filename, mimeType, inlineData) => openAttachment(messageId, attachmentId, filename, mimeType, inlineData)}
           onDownloadAttachment={(messageId, attachmentId, filename, mimeType, inlineData) => downloadAttachment(messageId, attachmentId, filename, mimeType, inlineData)}
           onShowAttachmentMenu={showAttachmentContextMenu}
+          onPreviewAttachments={(items, index) => setAttachmentPreview({ items, index })}
           onReply={handleReplyFromThread}
           onForward={handleForwardFromThread}
           onUnsubscribe={unsubscribeFromList}
@@ -5645,6 +5665,19 @@ function App() {
       </Show>
 
       <ConfirmDialog />
+      <Show when={attachmentPreview()}>
+        {(preview) => (
+          <AttachmentLightbox
+            items={preview().items}
+            index={preview().index}
+            onIndexChange={(index) => setAttachmentPreview({ ...preview(), index })}
+            onClose={() => setAttachmentPreview(null)}
+            loadData={loadPreviewData}
+            onDownload={(item) => downloadAttachment(item.messageId, item.attachmentId, item.filename, item.mimeType, item.inlineData)}
+            onOpenExternally={(item) => openAttachment(item.messageId, item.attachmentId, item.filename, item.mimeType, item.inlineData)}
+          />
+        )}
+      </Show>
     </div >
   );
 }

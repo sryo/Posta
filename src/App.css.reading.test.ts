@@ -28,6 +28,21 @@ describe("reading view stacking", () => {
   });
 });
 
+describe("attachment lightbox", () => {
+  it("covers the thread view and the label drawer", () => {
+    document.body.innerHTML = '<div class="thread-overlay" id="thread"></div><div class="label-drawer" id="drawer"></div><div class="lightbox" id="lightbox"></div>';
+    const z = (id: string) => zIndex(cascadedDeclarations(rules, document.getElementById(id)!).get("z-index"));
+    expect(z("lightbox")).toBeGreaterThan(z("thread"));
+    expect(z("lightbox")).toBeGreaterThan(z("drawer"));
+  });
+
+  it("may show a PDF from a blob: URL in a frame, and nothing else from outside the app", () => {
+    const csp: string = JSON.parse(readRepoFile("src-tauri/tauri.conf.json")).app.security.csp;
+    const frameSrc = csp.split(";").map(d => d.trim()).find(d => d.startsWith("frame-src"));
+    expect(frameSrc?.split(/\s+/).slice(1).sort()).toEqual(["'self'", "blob:"]);
+  });
+});
+
 describe("thread toolbar", () => {
   it("shows a disabled button, such as Unsubscribed, as inert", () => {
     document.body.innerHTML = '<button class="thread-toolbar-btn" id="b" disabled></button>';

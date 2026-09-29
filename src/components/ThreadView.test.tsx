@@ -511,6 +511,41 @@ describe("ThreadView attachments", () => {
     fireEvent.keyDown(thumb, { key: "Enter" });
     expect(props.onOpenAttachment).toHaveBeenCalledTimes(1);
   });
+
+  const withFiles = () => {
+    const thread = makeThread([
+      { from: "Alice <alice@example.com>", body: "" },
+      { from: "Bob <bob@example.com>", body: "" },
+    ]);
+    const part = (filename: string, mimeType: string, id: string) => ({ filename, mimeType, body: { attachmentId: id, size: 2048 } });
+    thread.messages[0].payload = { ...thread.messages[0].payload, mimeType: "multipart/mixed",
+      parts: [{ mimeType: "text/plain", body: { data: b64("hi") } }, part("plan.pdf", "application/pdf", "a1"), part("notes.txt", "text/plain", "a2")] };
+    thread.messages[1].payload = { ...thread.messages[1].payload, mimeType: "multipart/mixed",
+      parts: [{ mimeType: "text/plain", body: { data: b64("hi") } }, part("hotel.png", "image/png", "a3")] };
+    return thread;
+  };
+
+  it("previews the thread's images and PDFs together, starting at the one clicked", () => {
+    const onPreviewAttachments = vi.fn();
+    const { container, props } = renderThread({ thread: withFiles(), onPreviewAttachments });
+    const thumbs = container.querySelectorAll<HTMLElement>(".attachment-thumb");
+    fireEvent.click(thumbs[2]);
+    const [items, index] = onPreviewAttachments.mock.calls[0];
+    expect(items.map((i: { filename: string }) => i.filename)).toEqual(["plan.pdf", "hotel.png"]);
+    expect(items[1]).toMatchObject({ messageId: "m1", attachmentId: "a3", mimeType: "image/png", size: 2048 });
+    expect(index).toBe(1);
+
+    fireEvent.click(thumbs[1]);
+    expect(props.onOpenAttachment).toHaveBeenCalledWith("m0", "a2", "notes.txt", "text/plain", undefined);
+  });
+
+  it("names attachments with their size and opens their menu with Shift+F10", () => {
+    const { container, props } = renderThread({ thread: withFiles() });
+    const thumb = container.querySelector<HTMLElement>(".attachment-thumb")!;
+    expect(thumb.getAttribute("aria-label")).toBe("plan.pdf, 2.0 KB");
+    fireEvent.keyDown(thumb, { key: "F10", shiftKey: true });
+    expect(props.onShowAttachmentMenu).toHaveBeenCalledWith(expect.objectContaining({ filename: "plan.pdf", attachmentId: "a1" }));
+  });
 });
 
 describe("ThreadView scrolling", () => {
