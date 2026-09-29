@@ -30,6 +30,7 @@ describe("Toasts", () => {
     expect(polite).toHaveTextContent("Reply sent");
     toasts.show({ message: "Couldn't send the reply.", tone: "error" });
     expect(assertive).toHaveTextContent("Couldn't send the reply.");
+    expect(polite).toHaveTextContent("Reply sent");
   });
 
   it("raises an error over the toast already showing instead of making it wait", () => {
@@ -44,6 +45,21 @@ describe("Toasts", () => {
     expect(toasts.current()?.closing).toBe(false);
     fireEvent.click(within(polite).getByRole("button", { name: /Undo/ }));
     expect(undo).toHaveBeenCalledTimes(1);
+  });
+
+  it("raises an error over the send toast, which the store doesn't hold", () => {
+    let toasts!: ReturnType<typeof createToasts>;
+    const result = render(() => {
+      toasts = createToasts();
+      return (
+        <Toasts toasts={toasts} othersShowing>
+          <div class="undo-toast send-toast">Sending…</div>
+        </Toasts>
+      );
+    });
+    toasts.show({ message: "Couldn't star 1 thread.", tone: "error" });
+    const assertive = result.container.querySelector('[aria-live="assertive"]') as HTMLElement;
+    expect(assertive.querySelector(".undo-toast")).toHaveClass("raised");
   });
 
   it("leaves an error where toasts show when nothing else is showing", () => {
