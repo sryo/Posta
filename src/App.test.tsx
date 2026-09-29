@@ -1713,6 +1713,18 @@ describe("App batch reply", () => {
     await waitFor(() => expect(screen.getAllByPlaceholderText(/^Reply to/)).toHaveLength(2));
   });
 
+  it("says how many replies Send All couldn't send, keeping them in the list", async () => {
+    handlers.get_thread_details = ({ threadId }) => ({ id: threadId, messages: [fullMessage("m1", "Ana <ana@x.com>")] });
+    handlers.reply_to_thread = ({ threadId }) => { if (threadId === "t-2") throw "API error 500"; return null; };
+    await openBatchReplyForTwo();
+    await waitFor(() => expect(screen.getAllByPlaceholderText(/^Reply to/)).toHaveLength(2));
+    for (const field of screen.getAllByPlaceholderText(/^Reply to/)) fireEvent.input(field, { target: { value: "Thanks" } });
+    fireEvent.click(screen.getByRole("button", { name: /^Send All/ }));
+
+    expect(await screen.findByText(/Couldn't send 1 of 2 replies/)).toBeInTheDocument();
+    await waitFor(() => expect(screen.getAllByPlaceholderText(/^Reply to/)).toHaveLength(1));
+  });
+
   it("says how many threads could not be loaded when only some fail", async () => {
     handlers.get_thread_details = ({ threadId }) => {
       if (threadId === "t-2") throw "API error 500";

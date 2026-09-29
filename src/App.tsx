@@ -2740,31 +2740,37 @@ function App() {
     });
   }
 
-  function discardBatchReplyThread(threadId: string) {
-    setBatchReplyThreads(batchReplyThreads().filter(t => t.threadId !== threadId));
-    const newMessages = { ...batchReplyMessages() };
-    delete newMessages[threadId];
-    setBatchReplyMessages(newMessages);
-    const newAttachments = { ...batchReplyAttachments() };
-    delete newAttachments[threadId];
-    setBatchReplyAttachments(newAttachments);
-
-    // Close if no more threads (the list above was already filtered)
-    if (batchReplyThreads().length === 0) {
-      closeBatchReply();
-    }
+  // Drops a thread from the panel; returns whether any are left
+  function removeBatchReplyThread(threadId: string): boolean {
+    const without = <T,>(record: Record<string, T>) => {
+      const rest = { ...record };
+      delete rest[threadId];
+      return rest;
+    };
+    batch(() => {
+      setBatchReplyThreads(batchReplyThreads().filter(t => t.threadId !== threadId));
+      setBatchReplyMessages(without(batchReplyMessages()));
+      setBatchReplyAttachments(without(batchReplyAttachments()));
+    });
+    return batchReplyThreads().length > 0;
   }
 
-  async function sendBatchReply(threadId: string) {
+  function discardBatchReplyThread(threadId: string) {
+    if (!removeBatchReplyThread(threadId)) closeBatchReply();
+  }
+
+  // Resolves false if the reply couldn't be sent. `quiet` leaves saying so
+  // to Send All, which reports every failure at once.
+  async function sendBatchReply(threadId: string, { quiet = false } = {}): Promise<boolean> {
     const account = selectedAccount();
     const thread = batchReplyThreads().find(t => t.threadId === threadId);
     const message = batchReplyMessages()[threadId];
     const attachments = batchReplyAttachments()[threadId] || [];
 
-    if (!account || !thread || !message?.trim()) return;
+    if (!account || !thread || !message?.trim()) return true;
     if (!thread.to) {
-      showToast(`No one to reply to in "${thread.subject}"`);
-      return;
+      if (!quiet) showToast(`No one to reply to in "${thread.subject}"`);
+      return false;
     }
 
     setBatchReplySending({ ...batchReplySending(), [threadId]: true });
@@ -2773,45 +2779,28 @@ function App() {
       const replySubject = addReplyPrefix(thread.subject);
       await replyToThread(account.id, threadId, thread.to, "", "", replySubject, message + signatureBlock(account.signature), thread.messageId, attachments, false);
 
-      // Remove from batch reply list
-      setBatchReplyThreads(batchReplyThreads().filter(t => t.threadId !== threadId));
-      const newMessages = { ...batchReplyMessages() };
-      delete newMessages[threadId];
-      setBatchReplyMessages(newMessages);
-      const newAttachments = { ...batchReplyAttachments() };
-      delete newAttachments[threadId];
-      setBatchReplyAttachments(newAttachments);
-
-      // Refresh the card
       const cardId = batchReplyCardId();
-      if (cardId) {
-        fetchAndCacheThreads(account.id, cardId);
-      }
-
-      // Close if no more threads (the list above was already filtered)
-      if (batchReplyThreads().length === 0) {
+      if (cardId) fetchAndCacheThreads(account.id, cardId);
+      if (!removeBatchReplyThread(threadId)) {
         closeBatchReply();
-        // Clear selection
-        if (cardId) {
-          setSelectedThreads({ ...selectedThreads(), [cardId]: new Set() });
-        }
+        if (cardId) setSelectedThreads({ ...selectedThreads(), [cardId]: new Set() });
       }
+      return true;
     } catch (e) {
       console.error('Failed to send reply:', e);
-      showToast(`Failed to send: ${e}`);
+      if (!quiet) showToast(`Failed to send: ${e}`);
+      return false;
     } finally {
       setBatchReplySending({ ...batchReplySending(), [threadId]: false });
     }
   }
 
   async function sendAllBatchReplies() {
-    const threads = batchReplyThreads();
     const messages = batchReplyMessages();
-
-    // Only send threads that have messages
-    const toSend = threads.filter(t => messages[t.threadId]?.trim());
-
-    await Promise.allSettled(toSend.map(thread => sendBatchReply(thread.threadId)));
+    const toSend = batchReplyThreads().filter(t => messages[t.threadId]?.trim());
+    const sent = await Promise.all(toSend.map(thread => sendBatchReply(thread.threadId, { quiet: true })));
+    const failed = sent.filter(ok => !ok).length;
+    if (failed > 0) showToast(`Couldn't send ${failed} of ${toSend.length} replies; they're still here to try again`);
   }
 
   function saveCollapsedState(collapsed: Record<string, boolean>) {
