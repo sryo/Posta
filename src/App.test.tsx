@@ -3628,6 +3628,24 @@ describe("App reading view", () => {
     expect(row.getAttribute("aria-label")).toContain("from Ana Pérez, bob@x.com");
   });
 
+  it("asks before moving several threads to Trash, saying that is where they go", async () => {
+    localStorage.setItem("actionSettings", JSON.stringify({ trash: true }));
+    threadsByCard["card-a"] = [{ ...thread("t-1", "One"), labels: ["INBOX"] }, { ...thread("t-2", "Two"), labels: ["INBOX"] }];
+    handlers.modify_threads = () => null;
+    render(() => <App />);
+    await screen.findByText("One");
+    fireEvent.keyDown(document, { key: "l" });
+    fireEvent.keyDown(document, { key: "x" });
+    fireEvent.keyDown(document, { key: "j" });
+    fireEvent.keyDown(document, { key: "x" });
+
+    fireEvent.click(await screen.findByTitle("Delete"));
+    const dialog = await screen.findByRole("alertdialog");
+    expect(dialog).toHaveTextContent("Move 2 threads to Trash?");
+    expect(within(dialog).getByRole("button", { name: "Move to Trash" })).toBeInTheDocument();
+    await answerConfirm(false);
+  });
+
   it("unsubscribes from a newsletter with its one-click link and says so", async () => {
     const message = fullMessage("m1", "The Weekly Byte <hello@weeklybyte.test>");
     message.payload.headers.push(
