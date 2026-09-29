@@ -18,3 +18,16 @@ export function failureMessage(failure: string, error: unknown): DescribedFailur
   else if (OFFLINE.test(details)) advice = " Check your connection and try again.";
   return { message: sentence + advice, details };
 }
+
+// The saved OAuth client couldn't be read; a locked keychain is the usual
+// cause, and Posta reads it again when its window is next focused
+export function storedCredentialsFailure(error: unknown): DescribedFailure {
+  const details = String(error);
+  if (details.includes("Keychain unavailable")) {
+    return {
+      message: "Couldn't read the saved Google credentials: the keychain is locked. Unlock it, then come back to Posta.",
+      details,
+    };
+  }
+  return failureMessage("Couldn't read the saved Google credentials", error);
+}

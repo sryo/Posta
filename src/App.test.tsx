@@ -412,13 +412,16 @@ describe("App locked keychain at startup", () => {
     render(() => <App />);
 
     expect(await screen.findByText("Cached mail")).toBeInTheDocument();
-    expect(await screen.findByText(/Keychain unavailable/)).toBeInTheDocument();
+    const banner = (await screen.findByText(/the keychain is locked/)).closest(".auth-error") as HTMLElement;
+    expect(banner).toHaveTextContent("Couldn't read the saved Google credentials: the keychain is locked. Unlock it, then come back to Posta.");
+    expect(banner.querySelector(".error-details")).toHaveTextContent("User interaction is not allowed.");
+    expect(banner.firstChild?.textContent).not.toMatch(/Keychain unavailable/);
     expect(screen.queryByText(/Session expired/)).not.toBeInTheDocument();
 
     locked = false;
     fireEvent.focus(window);
     await waitFor(() => expect(invoke).toHaveBeenCalledWith("configure_auth", { config: { client_id: "id", client_secret: "secret" } }));
-    await waitFor(() => expect(screen.queryByText(/Keychain unavailable/)).not.toBeInTheDocument());
+    await waitFor(() => expect(screen.queryByText(/the keychain is locked/)).not.toBeInTheDocument());
   });
 });
 
@@ -4473,7 +4476,7 @@ describe("App sign-in flows", () => {
     await waitFor(() => expect(reads).toBe(1));
     fireEvent.click(signIn);
 
-    await waitFor(() => expect(screen.getAllByText(/Keychain unavailable/).length).toBeGreaterThan(0));
+    expect(await screen.findByText(/the keychain is locked/)).toBeInTheDocument();
     expect(document.querySelector(".settings-sidebar.open")).toBeNull();
     expect(invoke).not.toHaveBeenCalledWith("run_oauth_flow", expect.anything());
   });

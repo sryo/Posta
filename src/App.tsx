@@ -135,7 +135,7 @@ import { CardForm } from "./components/CardForm";
 import { Dialog } from "./components/Dialog";
 import { Toasts } from "./components/Toasts";
 import { createToasts, type ToastAction, type ToastTone } from "./app/toasts";
-import { failureMessage } from "./app/errorText";
+import { failureMessage, storedCredentialsFailure } from "./app/errorText";
 import { formatWhen, threadGroupLabel } from "./app/dateFormat";
 import { safeGetItem, safeSetItem, safeRemoveItem, safeGetJSON, safeSetJSON } from "./shared/storage";
 import { BG_COLORS, type ActionSettings, type CardColor, type GroupBy } from "./shared/constants";
@@ -1281,8 +1281,9 @@ function App() {
         await loadStoredCredentials();
       } catch (e) {
         console.warn("Stored credentials unavailable:", e);
-        credentialsError = String(e);
-        setError(credentialsError);
+        const failure = storedCredentialsFailure(e);
+        credentialsError = failure.message;
+        setErrorState(failure);
       }
 
       // Pull cards/accounts from iCloud if available (restores layout after re-login)
@@ -1897,7 +1898,8 @@ function App() {
       try {
         storedCreds = await getStoredCredentials();
       } catch (e) {
-        setFailure("Couldn't read the saved Google credentials", e);
+        console.error("Couldn't read the saved Google credentials:", e);
+        setErrorState(storedCredentialsFailure(e));
         return;
       }
     }
