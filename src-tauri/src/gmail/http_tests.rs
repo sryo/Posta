@@ -927,3 +927,16 @@ async fn deletion_checks_a_batch_misses_are_batched_again_before_one_by_one() {
     let batch_sizes: Vec<usize> = requests.iter().map(batch_paths).map(|p| p.len()).collect();
     assert_eq!(batch_sizes, [14, 10]);
 }
+
+#[tokio::test]
+async fn listing_a_page_of_thread_ids_fetches_no_details() {
+    let server = StubServer::start(|_| Reply::Json(200, r#"{"threads":[{"id":"t1"},{"id":"t2"}],"nextPageToken":"p2"}"#.into())).await;
+
+    let (ids, next) = within(server.client().list_thread_ids("in:inbox", Some("p1"), 20)).await.unwrap();
+
+    assert_eq!(ids, ["t1", "t2"]);
+    assert_eq!(next.as_deref(), Some("p2"));
+    let requests = server.requests();
+    assert_eq!(requests.len(), 1);
+    assert!(requests[0].target.contains("q=in%3Ainbox") && requests[0].target.contains("pageToken=p1"), "{}", requests[0].target);
+}

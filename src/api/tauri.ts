@@ -159,12 +159,12 @@ export async function reorderCards(orders: [string, number][]): Promise<void> {
   return invoke("reorder_cards", { orders });
 }
 
+// The card's own account, or every account for an all-inboxes card
 export async function fetchThreadsPaginated(
-  accountId: string,
   cardId: string,
   pageToken?: string | null
 ): Promise<SearchResult> {
-  return invoke("fetch_threads_paginated", { accountId, cardId, pageToken });
+  return invoke("fetch_threads_paginated", { cardId, pageToken });
 }
 
 interface IncrementalSyncResult {

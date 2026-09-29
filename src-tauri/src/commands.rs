@@ -1156,9 +1156,10 @@ fn evict_token_on_auth_error<T>(
     result
 }
 
+/// A page of a card's threads. The card's account is read from the card, so
+/// a fetch in flight while the card is moved still lists one mailbox.
 #[tauri::command]
 pub async fn fetch_threads_paginated(
-    account_id: String,
     card_id: String,
     page_token: Option<String>,
     app_handle: tauri::AppHandle, state: State<'_, AppState>,
@@ -1166,6 +1167,17 @@ pub async fn fetch_threads_paginated(
     tracing::info!("fetch_threads_paginated for card: {}, page_token: {:?}", card_id, page_token);
 
     let card = find_card(&state, &card_id).await?;
+    if card.account_id == ALL_ACCOUNTS {
+        let accounts = blocking(&state, |state| with_db(state, |db| db.get_accounts().map_err(|e| e.to_string()))).await?;
+        let open = |account: &Account| {
+            let (state, app_handle, account_id) = (state.inner().clone(), app_handle.clone(), account.id.clone());
+            async move { get_access_token(&state, &app_handle, &account_id).await.map(GmailClient::new) }
+        };
+        return all_inboxes_page(&accounts, &card.query, page_token.as_deref(), open)
+            .await
+            .map_err(|(account_id, e)| evict_token_on_auth_error::<()>(&state, &account_id, Err(e)).unwrap_err());
+    }
+    let account_id = card.account_id.clone();
     let access_token = account_access_token(&state, &app_handle, &account_id).await?;
 
     let gmail = GmailClient::new(access_token);
@@ -1182,6 +1194,70 @@ pub async fn fetch_threads_paginated(
     tracing::info!("Found {} groups, has_more: {}", result.groups.len(), result.has_more);
 
     Ok(result)
+}
+
+/// Lists one account's threads for an all-inboxes card
+trait MailboxLister {
+    async fn list_ids(&self, query: &str, page: Option<&str>) -> Result<(Vec<String>, Option<String>), String>;
+    async fn details(&self, ids: &[String]) -> Result<Vec<crate::models::Thread>, String>;
+}
+
+impl MailboxLister for GmailClient {
+    async fn list_ids(&self, query: &str, page: Option<&str>) -> Result<(Vec<String>, Option<String>), String> {
+        self.list_thread_ids(query, page, crate::gmail::PAGE_SIZE).await
+    }
+
+    async fn details(&self, ids: &[String]) -> Result<Vec<crate::models::Thread>, String> {
+        self.batch_get_thread_details(ids).await
+    }
+}
+
+/// A page of an all-inboxes card: every account's next threads merged (see
+/// `unified::merge_account_pages`). `page_token` is the cursor the previous
+/// page returned. Fails whole when any account fails, with that account's
+/// id and the error named after its email.
+async fn all_inboxes_page<M, F, Fut>(
+    accounts: &[Account],
+    query: &str,
+    page_token: Option<&str>,
+    open: F,
+) -> Result<SearchResult, (String, String)>
+where
+    M: MailboxLister,
+    F: Fn(&Account) -> Fut,
+    Fut: std::future::Future<Output = Result<M, String>>,
+{
+    use crate::unified::{account_error, listed_accounts, merge_account_pages, AccountPage, Cursor};
+    let cursor = match page_token {
+        Some(token) => Cursor::parse(token).map_err(|e| (String::new(), e))?,
+        None => Cursor::start(accounts.iter().map(|a| a.id.as_str())),
+    };
+    let signed_in: std::collections::HashSet<&str> = accounts.iter().map(|a| a.id.as_str()).collect();
+    let requests = listed_accounts(&cursor, &signed_in).into_iter().map(|(account_id, at)| {
+        let account = accounts.iter().find(|a| &a.id == account_id).expect("signed in");
+        let open = &open;
+        async move {
+            let fail = |e: String| (account.id.clone(), account_error(&account.email, &e));
+            let mailbox = open(account).await.map_err(fail)?;
+            let search_failed = |e: String| fail(format!("Search failed: {}", e));
+            let (ids, next_page_token) = mailbox.list_ids(query, at.page.as_deref()).await.map_err(search_failed)?;
+            let skip = at.skip.min(ids.len());
+            let mut threads =
+                if skip < ids.len() { mailbox.details(&ids[skip..]).await.map_err(search_failed)? } else { Vec::new() };
+            for thread in &mut threads {
+                thread.account_id = account.id.clone();
+            }
+            Ok::<_, (String, String)>(AccountPage { account_id: account.id.clone(), ids, skip, threads, page: at.page.clone(), next_page_token })
+        }
+    });
+    let pages = futures::future::try_join_all(requests).await?;
+    let (threads, cursor) = merge_account_pages(pages);
+    let next_page_token = cursor.token();
+    Ok(SearchResult {
+        groups: crate::gmail::group_threads_by_date(threads, &chrono::Local::now()),
+        has_more: next_page_token.is_some(),
+        next_page_token,
+    })
 }
 
 /// Result of incremental sync
@@ -1421,14 +1497,45 @@ pub async fn search_threads_preview(
     query: String,
     app_handle: tauri::AppHandle, state: State<'_, AppState>,
 ) -> Result<Vec<ThreadGroup>, String> {
-    let access_token = account_access_token(&state, &app_handle, &account_id).await?;
-    let gmail = GmailClient::new(access_token);
+    const PREVIEW_THREADS: usize = 5;
+    let accounts = scope_accounts(&state, &account_id).await?;
+    let searches = accounts.iter().map(|account| {
+        let (state, app_handle, query) = (&state, &app_handle, &query);
+        async move {
+            let access_token = get_access_token(state, app_handle, &account.id).await?;
+            let result = GmailClient::new(access_token).search_threads_limited(query, PREVIEW_THREADS).await;
+            let mut groups = evict_token_on_auth_error(state, &account.id, result).map_err(|e| format!("Search failed: {}", e))?;
+            tag_thread_groups(&mut groups, &account.id);
+            Ok::<_, String>(groups)
+        }
+    });
+    let by_account = in_scope(&account_id, &accounts, futures::future::join_all(searches).await)?;
+    if by_account.len() == 1 && account_id != ALL_ACCOUNTS {
+        return Ok(by_account.into_iter().next().unwrap_or_default());
+    }
+    let threads = by_account.into_iter().flatten().flat_map(|g| g.threads).collect();
+    Ok(crate::gmail::group_threads_by_date(crate::unified::newest_threads(threads, PREVIEW_THREADS), &chrono::Local::now()))
+}
 
-    // Limit to 5 threads for preview
-    let mut groups = evict_token_on_auth_error(&state, &account_id, gmail.search_threads_limited(&query, 5).await)
-        .map_err(|e| format!("Search failed: {}", e))?;
-    tag_thread_groups(&mut groups, &account_id);
-    Ok(groups)
+/// The accounts a card of `account_id` covers: that one, or every signed-in
+/// account for `ALL_ACCOUNTS`
+async fn scope_accounts(state: &AppState, account_id: &str) -> Result<Vec<Account>, String> {
+    if account_id != ALL_ACCOUNTS {
+        return Ok(vec![find_account(state, account_id).await?]);
+    }
+    blocking(state, |state| with_db(state, |db| db.get_accounts().map_err(|e| e.to_string()))).await
+}
+
+/// Each account's result, or the first failure; for an all-inboxes card the
+/// failure names its account's email
+fn in_scope<T>(account_id: &str, accounts: &[Account], results: Vec<Result<T, String>>) -> Result<Vec<T>, String> {
+    accounts
+        .iter()
+        .zip(results)
+        .map(|(account, result)| {
+            result.map_err(|e| if account_id == ALL_ACCOUNTS { crate::unified::account_error(&account.email, &e) } else { e })
+        })
+        .collect()
 }
 
 #[tauri::command]
@@ -2223,15 +2330,22 @@ pub async fn fetch_calendar_events(
     app_handle: tauri::AppHandle, state: State<'_, AppState>,
 ) -> Result<Vec<crate::calendar::CalendarEvent>, String> {
     let parsed_query = crate::calendar::CalendarQuery::try_parse(&query)?;
-    let access_token = account_access_token(&state, &app_handle, &account_id).await?;
-    let calendar = crate::calendar::CalendarClient::new(access_token);
-
-    // Cap high enough that a month view on a busy account isn't silently cut off
-    let mut events = evict_token_on_auth_error(&state, &account_id, calendar.search_events(&parsed_query, 500).await)?;
-    for event in &mut events {
-        event.account_id = account_id.clone();
+    let accounts = scope_accounts(&state, &account_id).await?;
+    let searches = accounts.iter().map(|account| {
+        let (state, app_handle, parsed_query) = (&state, &app_handle, &parsed_query);
+        async move {
+            let access_token = get_access_token(state, app_handle, &account.id).await?;
+            let calendar = crate::calendar::CalendarClient::new(access_token);
+            // Cap high enough that a month view on a busy account isn't silently cut off
+            evict_token_on_auth_error(state, &account.id, calendar.search_events(parsed_query, 500).await)
+        }
+    });
+    let by_account = in_scope(&account_id, &accounts, futures::future::join_all(searches).await)?;
+    if account_id != ALL_ACCOUNTS {
+        let events = by_account.into_iter().flatten();
+        return Ok(events.map(|event| crate::models::GoogleCalendarEvent { account_id: account_id.clone(), ..event }).collect());
     }
-    Ok(events)
+    Ok(crate::unified::merge_calendar_events(accounts.iter().map(|a| a.id.clone()).zip(by_account).collect()))
 }
 
 #[tauri::command]
@@ -4051,6 +4165,87 @@ mod tests {
         assert_eq!(super::board_card(&db, "orphan").unwrap_err(), "Card not found");
         assert_eq!(super::board_card(&db, "missing").unwrap_err(), "Card not found");
         std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// A mailbox listing `threads` (id, minutes ago) two to a page
+    struct FakeMailbox {
+        threads: Vec<(String, i64)>,
+        fails: Option<&'static str>,
+    }
+
+    impl super::MailboxLister for FakeMailbox {
+        async fn list_ids(&self, _query: &str, page: Option<&str>) -> Result<(Vec<String>, Option<String>), String> {
+            if let Some(e) = self.fails {
+                return Err(e.to_string());
+            }
+            let start: usize = page.map_or(0, |p| p.parse().unwrap());
+            let end = (start + 2).min(self.threads.len());
+            let next = (end < self.threads.len()).then(|| end.to_string());
+            Ok((self.threads[start..end].iter().map(|(id, _)| id.clone()).collect(), next))
+        }
+
+        async fn details(&self, ids: &[String]) -> Result<Vec<Thread>, String> {
+            Ok(ids
+                .iter()
+                .map(|id| {
+                    let ago = self.threads.iter().find(|(t, _)| t == id).unwrap().1;
+                    Thread { last_message_date: chrono::DateTime::from_timestamp(1_800_000_000 - ago * 60, 0).unwrap(), ..thread(id) }
+                })
+                .collect())
+        }
+    }
+
+    fn mailbox(threads: &[(&str, i64)]) -> FakeMailbox {
+        FakeMailbox { threads: threads.iter().map(|(id, ago)| (id.to_string(), *ago)).collect(), fails: None }
+    }
+
+    fn listed(result: &crate::gmail::SearchResult) -> Vec<(String, String)> {
+        result.groups.iter().flat_map(|g| &g.threads).map(|t| (t.gmail_thread_id.clone(), t.account_id.clone())).collect()
+    }
+
+    #[tokio::test]
+    async fn an_all_inboxes_card_pages_through_every_mailbox_naming_each_threads_account() {
+        let accounts = vec![account("a1", "me@x.com"), account("a2", "work@x.com")];
+        let open = |a: &Account| {
+            let mailbox = if a.id == "a1" { mailbox(&[("m1", 1), ("m2", 30), ("m3", 90)]) } else { mailbox(&[("w1", 10), ("w2", 20)]) };
+            async move { Ok::<_, String>(mailbox) }
+        };
+
+        let first = super::all_inboxes_page(&accounts, "in:inbox", None, open).await.unwrap();
+        let pairs = |v: &[(&str, &str)]| v.iter().map(|(a, b)| (a.to_string(), b.to_string())).collect::<Vec<_>>();
+        assert_eq!(listed(&first), pairs(&[("m1", "a1"), ("w1", "a2"), ("w2", "a2"), ("m2", "a1")]));
+        assert!(first.has_more);
+
+        let second = super::all_inboxes_page(&accounts, "in:inbox", first.next_page_token.as_deref(), open).await.unwrap();
+        assert_eq!(listed(&second), pairs(&[("m3", "a1")]));
+        assert!(!second.has_more);
+        assert_eq!(second.next_page_token, None);
+
+        // Signed out of a1 meanwhile: the rest of its mail is not listed
+        let only_work = vec![account("a2", "work@x.com")];
+        let after_sign_out = super::all_inboxes_page(&only_work, "in:inbox", first.next_page_token.as_deref(), open).await.unwrap();
+        assert!(listed(&after_sign_out).is_empty());
+    }
+
+    #[tokio::test]
+    async fn an_all_inboxes_page_fails_whole_naming_the_account_that_failed() {
+        let accounts = vec![account("a1", "me@x.com"), account("a2", "work@x.com")];
+        let open = |a: &Account| {
+            let mut mailbox = mailbox(&[("t", 1)]);
+            if a.id == "a2" {
+                mailbox.fails = Some("401 Unauthorized");
+            }
+            async move { Ok::<_, String>(mailbox) }
+        };
+        let (account_id, message) = super::all_inboxes_page(&accounts, "q", None, open).await.unwrap_err();
+        assert_eq!((account_id.as_str(), message.as_str()), ("a2", "work@x.com: Search failed: 401 Unauthorized"));
+
+        let no_token = |a: &Account| {
+            let failed = a.id == "a1";
+            async move { if failed { Err("invalid_grant".to_string()) } else { Ok(mailbox(&[])) } }
+        };
+        let (account_id, message) = super::all_inboxes_page(&accounts, "q", None, no_token).await.unwrap_err();
+        assert_eq!((account_id.as_str(), message.as_str()), ("a1", "me@x.com: invalid_grant"));
     }
 
     #[test]

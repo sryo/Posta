@@ -3622,7 +3622,7 @@ function App() {
       }
 
       const pageToken = append ? cardPageTokens[cardId] : null;
-      const result = await fetchThreadsPaginated(account.id, cardId, pageToken);
+      const result = await fetchThreadsPaginated(cardId, pageToken);
       if (stale()) return;
 
       if (append) {
@@ -3821,7 +3821,7 @@ function App() {
     const tokenBeforeFetch = cardPageTokens[cardId] ?? null;
     const query = cards().find(c => c.id === cardId)?.query;
     try {
-      const result = await fetchThreadsPaginated(accountId, cardId, null);
+      const result = await fetchThreadsPaginated(cardId, null);
       if (selectedAccount()?.id !== accountId || cardQueryChanged(cardId, query)) return;
       // Skip update if a recent action happened (prevents overwriting optimistic updates)
       const recent = lastAction();

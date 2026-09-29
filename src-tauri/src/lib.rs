@@ -10,6 +10,7 @@ pub mod models;
 pub mod people;
 pub mod ai;
 pub mod unsubscribe;
+pub mod unified;
 
 use commands::AppState;
 use std::sync::Mutex;

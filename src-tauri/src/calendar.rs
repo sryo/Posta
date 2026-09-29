@@ -1436,6 +1436,12 @@ fn start_of_day<Z: TimeZone>(tz: &Z, date: NaiveDate) -> DateTime<Utc> {
 /// When an event starts, counting an all-day event from its date's midnight
 /// in `timezone` (else the system's) rather than the UTC midnight its
 /// timestamp holds
+/// Where an event goes in a list shown in this Mac's time zone: by day, the
+/// day's all-day events first
+pub(crate) fn local_display_order(event: &CalendarEvent) -> (i64, bool) {
+    (day_start_millis(event, None), !event.all_day)
+}
+
 fn day_start_millis(event: &CalendarEvent, timezone: Option<&str>) -> i64 {
     let date = match DateTime::<Utc>::from_timestamp_millis(event.start_time) {
         Some(start) if event.all_day => start.date_naive(),
