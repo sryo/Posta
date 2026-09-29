@@ -218,13 +218,46 @@ pub struct ICloudSync {
     store: Option<Box<dyn CardBackupStore>>,
     /// Where the `SyncRecord` lives; set once the app data dir is known
     record_path: Option<std::path::PathBuf>,
+    last_synced_at: Option<i64>,
+    last_error: Option<String>,
+}
+
+/// How card sync with iCloud last went, for Settings: a failed write or read
+/// otherwise only reaches the log, and the layout on this Mac may be its
+/// only copy
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct ICloudSyncStatus {
+    /// False in builds without an iCloud store (debug builds)
+    pub available: bool,
+    /// Unix ms of the last push or pull that reached iCloud
+    pub last_synced_at: Option<i64>,
+    /// Why the last push or pull didn't reach iCloud; cleared by one that does
+    pub last_error: Option<String>,
 }
 
 impl ICloudSync {
     fn new() -> Self {
         let store: Option<Box<dyn CardBackupStore>> =
             if cfg!(debug_assertions) { None } else { Some(Box::new(ICloudKVStore::new())) };
-        Self { store, record_path: None }
+        Self { store, record_path: None, last_synced_at: None, last_error: None }
+    }
+
+    fn note_synced(&mut self) {
+        self.last_synced_at = Some(now_ms());
+        self.last_error = None;
+    }
+
+    fn note_failure(&mut self, error: String) {
+        tracing::warn!("{}", error);
+        self.last_error = Some(error);
+    }
+
+    fn status(&self) -> ICloudSyncStatus {
+        ICloudSyncStatus {
+            available: self.store.is_some(),
+            last_synced_at: self.last_synced_at,
+            last_error: self.last_error.clone(),
+        }
     }
 
     /// A missing or unreadable record only loses the change tracking, so
@@ -399,7 +432,17 @@ fn plan_push(
 /// Push every card to iCloud after a local card change. The caller holds the
 /// iCloud lock from before its database write, so a pull can't merge in
 /// between.
-fn push_cards_to_icloud(icloud: &ICloudSync, state: &AppState, deleted_card: Option<&str>) {
+fn push_cards_to_icloud(icloud: &mut ICloudSync, state: &AppState, deleted_card: Option<&str>) {
+    match write_cards_to_icloud(icloud, state, deleted_card) {
+        Ok(true) => icloud.note_synced(),
+        Ok(false) => {}
+        Err(e) => icloud.note_failure(e),
+    }
+}
+
+/// True once the backup is written; false when there was nothing to push
+/// or no store to push to
+fn write_cards_to_icloud(icloud: &ICloudSync, state: &AppState, deleted_card: Option<&str>) -> Result<bool, String> {
     let mut record = icloud.load_record();
     if let Some(id) = deleted_card {
         record.tombstones.insert(id.to_string(), now_ms());
@@ -410,71 +453,62 @@ fn push_cards_to_icloud(icloud: &ICloudSync, state: &AppState, deleted_card: Opt
     }
 
     let (accounts, local_cards) = {
-        let Ok(db_guard) = state.db.lock() else { return };
-        let Some(db) = db_guard.as_ref() else { return };
-        let Ok(accounts) = db.get_accounts() else { return };
+        let Ok(db_guard) = state.db.lock() else { return Ok(false) };
+        let Some(db) = db_guard.as_ref() else { return Ok(false) };
+        let Ok(accounts) = db.get_accounts() else { return Ok(false) };
         let mut cards = Vec::new();
         for account in &accounts {
             match db.get_cards(&account.id) {
                 Ok(c) => cards.extend(c),
                 // A partial list would drop the missing cards from iCloud
-                Err(_) => return,
+                Err(_) => return Ok(false),
             }
         }
         (accounts, cards)
     };
 
-    let Some(store) = &icloud.store else { return };
-    let Some(backup) = backup_to_push_onto(icloud.load_backup(), &mut record, store.initial_sync_done()) else {
-        return;
-    };
+    let Some(store) = &icloud.store else { return Ok(false) };
+    let backup = backup_to_push_onto(icloud.load_backup(), &mut record, store.initial_sync_done())?;
     let Some((backup, new_record)) = plan_push(&accounts, local_cards, backup, &record, now_ms()) else {
-        return;
+        return Ok(false);
     };
-    if let Err(e) = store.sync_account_mappings(&backup.mappings()) {
-        tracing::warn!("iCloud account mapping sync failed: {}", e);
-        return;
-    }
-    match store.sync_cards(&backup.cards) {
-        Ok(()) => icloud.save_record(&new_record),
-        Err(e) => tracing::warn!("iCloud card sync failed: {}", e),
-    }
+    store
+        .sync_account_mappings(&backup.mappings())
+        .map_err(|e| format!("iCloud account mapping sync failed: {}", e))?;
+    store.sync_cards(&backup.cards).map_err(|e| format!("iCloud card sync failed: {}", e))?;
+    icloud.save_record(&new_record);
+    Ok(true)
 }
 
-/// The backup a push merges into, or None when the backup must not be
-/// overwritten. Marks the record as having seen a backup, which only sticks
-/// once the push is written.
+/// The backup a push merges into, or why the backup must not be overwritten.
+/// Marks the record as having seen a backup, which only sticks once the push
+/// is written.
 fn backup_to_push_onto(
     loaded: Result<Option<Backup>, String>,
     record: &mut SyncRecord,
     initial_sync_done: bool,
-) -> Option<Backup> {
+) -> Result<Backup, String> {
     // A new Mac's store is empty, or holds only some keys, until iCloud has
     // downloaded it; a write then would replace the backup other Macs made
     if !record.seen_backup && !initial_sync_done {
-        tracing::warn!("iCloud has not downloaded the card backup yet; card changes stay on this device for now");
-        return None;
+        return Err("iCloud has not downloaded the card backup yet; card changes stay on this Mac for now".into());
     }
     match loaded {
         Ok(Some(backup)) => {
             record.seen_backup = true;
-            Some(backup)
+            Ok(backup)
         }
         // No device has pushed yet, as far as this one knows
         Ok(None) if !record.seen_backup => {
             record.seen_backup = true;
-            Some(Backup::default())
+            Ok(Backup::default())
         }
-        Ok(None) => {
-            tracing::warn!("iCloud card backup is unavailable; card changes stay on this device for now");
-            None
-        }
-        Err(e) => {
-            tracing::warn!("iCloud card backup is unreadable, not overwriting it: {}", e);
-            None
-        }
+        Ok(None) => Err(BACKUP_UNAVAILABLE.into()),
+        Err(e) => Err(format!("iCloud card backup is unreadable, so it was not overwritten: {}", e)),
     }
 }
+
+const BACKUP_UNAVAILABLE: &str = "iCloud card backup is unavailable; card changes stay on this Mac for now";
 
 /// Run a card database write, then push the cards to iCloud
 fn change_cards<T>(
@@ -482,9 +516,9 @@ fn change_cards<T>(
     deleted_card: Option<&str>,
     write: impl FnOnce(&CacheDb) -> Result<T, String>,
 ) -> Result<T, String> {
-    let icloud = state.icloud.lock().map_err(|_| "Lock error")?;
+    let mut icloud = state.icloud.lock().map_err(|_| "Lock error")?;
     let result = with_db(state, write)?;
-    push_cards_to_icloud(&icloud, state, deleted_card);
+    push_cards_to_icloud(&mut icloud, state, deleted_card);
     Ok(result)
 }
 
@@ -1962,9 +1996,20 @@ pub async fn pull_from_icloud(state: State<'_, AppState>) -> Result<bool, String
 
 fn pull_cards_from_icloud(state: &AppState) -> Result<bool, String> {
     // Held for the whole merge so a local card change can't push in between
-    let icloud = state.icloud.lock().map_err(|_| "Lock error")?;
+    let mut icloud = state.icloud.lock().map_err(|_| "Lock error")?;
+    let result = merge_cards_from_icloud(&mut icloud, state);
+    if let Err(e) = &result {
+        icloud.note_failure(format!("Couldn't pull cards from iCloud: {}", e));
+    }
+    result
+}
 
+fn merge_cards_from_icloud(icloud: &mut ICloudSync, state: &AppState) -> Result<bool, String> {
     let Some(backup) = icloud.load_backup()? else {
+        // After a backup was seen, an empty store means iCloud is unavailable
+        if icloud.store.is_some() && icloud.load_record().seen_backup {
+            icloud.note_failure(BACKUP_UNAVAILABLE.into());
+        }
         return Ok(false);
     };
 
@@ -1990,11 +2035,19 @@ fn pull_cards_from_icloud(state: &AppState) -> Result<bool, String> {
         merge
     };
     icloud.save_record(&merge.record);
+    icloud.note_synced();
     if merge.needs_push {
-        push_cards_to_icloud(&icloud, state, None);
+        push_cards_to_icloud(icloud, state, None);
     }
 
     Ok(!(merge.insert.is_empty() && merge.update.is_empty() && merge.delete.is_empty()))
+}
+
+/// How card sync with iCloud last went
+#[tauri::command]
+pub async fn get_icloud_sync_status(state: State<'_, AppState>) -> Result<ICloudSyncStatus, String> {
+    // Waits out a sync in progress, which holds the lock
+    blocking(&state, |state| Ok(state.icloud.lock().map_err(|_| "Lock error")?.status())).await
 }
 
 // People API commands (contacts)
@@ -2492,22 +2545,22 @@ mod tests {
     #[test]
     fn push_never_overwrites_a_backup_it_cannot_read() {
         let mut seen = synced(&[]);
-        assert_eq!(super::backup_to_push_onto(Ok(None), &mut seen, true), None, "iCloud unavailable after a backup was seen");
-        assert_eq!(super::backup_to_push_onto(Err("bad json".into()), &mut seen, true), None);
-        assert_eq!(super::backup_to_push_onto(Err("bad json".into()), &mut SyncRecord::default(), true), None);
+        assert_eq!(super::backup_to_push_onto(Ok(None), &mut seen, true).ok(), None, "iCloud unavailable after a backup was seen");
+        assert_eq!(super::backup_to_push_onto(Err("bad json".into()), &mut seen, true).ok(), None);
+        assert_eq!(super::backup_to_push_onto(Err("bad json".into()), &mut SyncRecord::default(), true).ok(), None);
 
         let b = backup(vec![owned_card("c", "a1")], &[], &[]);
         let mut fresh = SyncRecord::default();
-        assert_eq!(super::backup_to_push_onto(Ok(Some(b.clone())), &mut fresh, true), Some(b));
+        assert_eq!(super::backup_to_push_onto(Ok(Some(b.clone())), &mut fresh, true), Ok(b));
         assert!(fresh.seen_backup);
     }
 
     #[test]
     fn the_first_push_starts_the_backup_and_later_empty_reads_are_not_trusted() {
         let mut record = SyncRecord::default();
-        assert_eq!(super::backup_to_push_onto(Ok(None), &mut record, true), Some(Backup::default()));
+        assert_eq!(super::backup_to_push_onto(Ok(None), &mut record, true), Ok(Backup::default()));
         assert!(record.seen_backup);
-        assert_eq!(super::backup_to_push_onto(Ok(None), &mut record, true), None);
+        assert_eq!(super::backup_to_push_onto(Ok(None), &mut record, true).ok(), None);
     }
 
     #[test]
@@ -2515,14 +2568,14 @@ mod tests {
         // An empty or half-downloaded store on a new Mac is not the backup;
         // writing over it would replace the only copy of the layout
         let mut fresh = SyncRecord::default();
-        assert_eq!(super::backup_to_push_onto(Ok(None), &mut fresh, false), None);
+        assert_eq!(super::backup_to_push_onto(Ok(None), &mut fresh, false).ok(), None);
         let partial = backup(Vec::new(), &[("a1", "me@x.com")], &[]);
-        assert_eq!(super::backup_to_push_onto(Ok(Some(partial)), &mut fresh, false), None);
+        assert_eq!(super::backup_to_push_onto(Ok(Some(partial)), &mut fresh, false).ok(), None);
         assert!(!fresh.seen_backup);
 
         // A device that has synced before keeps pushing onto what it reads
         let b = backup(vec![owned_card("c", "a1")], &[], &[]);
-        assert_eq!(super::backup_to_push_onto(Ok(Some(b.clone())), &mut synced(&[]), false), Some(b));
+        assert_eq!(super::backup_to_push_onto(Ok(Some(b.clone())), &mut synced(&[]), false), Ok(b));
     }
 
     #[test]
@@ -3396,13 +3449,14 @@ mod tests {
     }
 
     /// In-memory card backup; `unreadable` models an iCloud store that
-    /// errors on every read, `downloading` one whose first download from
-    /// iCloud has not finished
+    /// errors on every read, `refuses` one that errors on every write, and
+    /// `downloading` one whose first download from iCloud has not finished
     #[derive(Default)]
     struct FakeBackup {
         cards: Option<Vec<Card>>,
         mappings: Option<HashMap<String, String>>,
         unreadable: bool,
+        refuses: bool,
         downloading: bool,
     }
 
@@ -3421,12 +3475,20 @@ mod tests {
         }
 
         fn sync_cards(&self, cards: &[Card]) -> Result<(), String> {
-            self.0.lock().unwrap().cards = Some(cards.to_vec());
+            let mut b = self.0.lock().unwrap();
+            if b.refuses {
+                return Err("iCloud key-value store is unavailable".into());
+            }
+            b.cards = Some(cards.to_vec());
             Ok(())
         }
 
         fn sync_account_mappings(&self, mappings: &HashMap<String, String>) -> Result<(), String> {
-            self.0.lock().unwrap().mappings = Some(mappings.clone());
+            let mut b = self.0.lock().unwrap();
+            if b.refuses {
+                return Err("iCloud key-value store is unavailable".into());
+            }
+            b.mappings = Some(mappings.clone());
             Ok(())
         }
 
@@ -3521,8 +3583,61 @@ mod tests {
         std::fs::remove_dir_all(dir).unwrap();
     }
 
+    fn icloud_status(state: &super::AppState) -> super::ICloudSyncStatus {
+        state.icloud.lock().unwrap().status()
+    }
+
+    #[test]
+    fn a_card_backup_icloud_refuses_is_reported_until_a_write_goes_through() {
+        let dir = scratch_dir();
+        let (state, store) = synced_state(&dir, &[owned_card("keep", "a1")]);
+        assert_eq!(icloud_status(&state), super::ICloudSyncStatus { available: true, last_synced_at: None, last_error: None });
+
+        store.0.lock().unwrap().refuses = true;
+        super::change_cards(&state, None, |db| db.insert_card(&owned_card("new", "a1")).map_err(|e| e.to_string())).unwrap();
+        let status = icloud_status(&state);
+        assert!(status.last_error.as_deref().is_some_and(|e| e.contains("unavailable")), "{:?}", status);
+        assert_eq!(status.last_synced_at, None);
+
+        store.0.lock().unwrap().refuses = false;
+        super::change_cards(&state, None, |_| Ok(())).unwrap();
+        let status = icloud_status(&state);
+        assert_eq!(status.last_error, None);
+        assert!(status.last_synced_at.is_some());
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn a_pull_that_cannot_read_icloud_is_reported() {
+        let dir = scratch_dir();
+        let (state, store) = synced_state(&dir, &[owned_card("keep", "a1")]);
+        store.0.lock().unwrap().unreadable = true;
+        assert!(super::pull_cards_from_icloud(&state).is_err());
+        assert!(icloud_status(&state).last_error.is_some());
+
+        // A device that has synced before reads an empty store as iCloud
+        // being unavailable, not as nothing to pull
+        *store.0.lock().unwrap() = FakeBackup::default();
+        assert_eq!(super::pull_cards_from_icloud(&state), Ok(false));
+        assert!(icloud_status(&state).last_error.as_deref().is_some_and(|e| e.contains("unavailable")));
+
+        *store.0.lock().unwrap() =
+            FakeBackup { cards: Some(vec![owned_card("keep", "a1")]), mappings: Some(mappings(&[("a1", "me@x.com")])), ..Default::default() };
+        super::pull_cards_from_icloud(&state).unwrap();
+        let status = icloud_status(&state);
+        assert_eq!(status.last_error, None);
+        assert!(status.last_synced_at.is_some());
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[cfg(debug_assertions)]
+    #[test]
+    fn debug_builds_report_icloud_sync_as_unavailable() {
+        assert!(!super::ICloudSync::new().status().available);
+    }
+
     fn record_at(path: std::path::PathBuf) -> super::ICloudSync {
-        super::ICloudSync { store: None, record_path: Some(path) }
+        super::ICloudSync { store: None, record_path: Some(path), last_synced_at: None, last_error: None }
     }
 
     #[test]
@@ -3533,7 +3648,7 @@ mod tests {
 
         let mut record = record_at(path).load_record();
         assert!(record.seen_backup);
-        assert_eq!(super::backup_to_push_onto(Ok(None), &mut record, true), None);
+        assert_eq!(super::backup_to_push_onto(Ok(None), &mut record, true).ok(), None);
         std::fs::remove_dir_all(dir).unwrap();
     }
 
