@@ -141,7 +141,8 @@ a:focus-visible,
 }
 
 .thread:focus-visible,
-.calendar-event-item:focus-visible {
+.calendar-event-item:focus-visible,
+.message-body a:focus-visible {
     outline-offset: -2px;
 }
 
@@ -172,7 +173,6 @@ a:focus-visible,
     align-items: center;
     padding-top: 16px;
     padding-bottom: 20px;
-    -webkit-app-region: drag;
     transition: width 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
 }
 
@@ -185,11 +185,6 @@ a:focus-visible,
     display: flex;
     flex-direction: column;
     flex: 1;
-}
-
-/* Sidebar items should not drag */
-.sidebar>* {
-    -webkit-app-region: no-drag;
 }
 
 /* Global filter bar - keyboard activated spotlight */
@@ -587,7 +582,8 @@ a:focus-visible,
     transform: scale(1.1);
 }
 
-.compose-suggestion-avatar:hover .suggestion-label {
+.compose-suggestion-avatar:hover .suggestion-label,
+.compose-suggestion-avatar:focus-visible .suggestion-label {
     opacity: 1;
 }
 
@@ -3493,7 +3489,6 @@ button:disabled:hover {
     z-index: 200;
     width: 800px;
     max-width: calc(100% - 32px);
-    -webkit-app-region: drag;
     animation: floatingBarSlideIn 0.25s ease-out;
 }
 
@@ -3510,7 +3505,6 @@ button:disabled:hover {
 }
 
 .thread-floating-bar .close-btn {
-    -webkit-app-region: no-drag;
     height: 26px;
     padding: 0 8px;
     border-radius: var(--radius-md);
@@ -3585,7 +3579,6 @@ button:disabled:hover {
     color: var(--text-secondary);
     cursor: pointer;
     transition: all 0.15s ease;
-    -webkit-app-region: no-drag;
 }
 
 .thread-toolbar-btn:hover {
@@ -3994,7 +3987,8 @@ button:disabled:hover {
     pointer-events: none;
 }
 
-.message-action-btn:hover .action-key-hint {
+.message-action-btn:hover .action-key-hint,
+.message-action-btn:focus-visible .action-key-hint {
     opacity: 1;
 }
 
@@ -4024,8 +4018,11 @@ button:disabled:hover {
 }
 
 /* Containment stops the first block's top margin from collapsing into the
-   header's gap, so drop it to keep the spacing it had before. */
-.message-body > :first-child {
+   header's gap, so drop it to keep the spacing it had before. Emails often
+   wrap the opening paragraph in divs whose margins it collapses through. */
+.message-body > :first-child,
+.message-body > :first-child > :first-child,
+.message-body > :first-child > :first-child > :first-child {
     margin-top: 0;
 }
 
@@ -4299,7 +4296,6 @@ button:disabled:hover {
 .batch-reply-count {
     font-size: var(--font-size-base);
     color: var(--text-muted);
-    -webkit-app-region: no-drag;
 }
 
 .batch-reply-loading,

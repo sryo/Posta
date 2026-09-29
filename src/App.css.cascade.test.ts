@@ -40,6 +40,14 @@ describe("App.css cascade", () => {
     expect(marginTop("second")).toBeUndefined();
   });
 
+  it("keeps the gap under the header the same when the opening paragraph sits in wrapper divs", () => {
+    document.body.innerHTML = `<div class="message-body"><div dir="ltr" id="outer"><div id="inner">
+        <p id="first">a</p><p id="second">b</p></div></div></div>`;
+    const marginTop = (id: string) => cascadedDeclarations(rules, document.getElementById(id)!).get("margin-top");
+    for (const id of ["outer", "inner", "first"]) expect(marginTop(id), id).toBe("0");
+    expect(marginTop("second")).toBeUndefined();
+  });
+
   it("rings every keyboard-reachable control on keyboard focus, inset on list rows", () => {
     document.body.innerHTML = `<button class="collapse-btn" id="collapse"></button>
       <a href="#" id="link">x</a>
@@ -48,6 +56,7 @@ describe("App.css cascade", () => {
       <div class="scheduler-day-card" role="button" tabindex="0" id="day"></div>
       <div class="scheduler-option" role="option" tabindex="0" id="option"></div>
       <div class="attachment-thumb" role="button" tabindex="0" id="thumb"></div>
+      <div class="message-body"><a href="#" id="email-link">x</a></div>
       <div class="card"><div class="thread" role="article" tabindex="0" id="thread"></div>
       <div class="calendar-event-item" tabindex="0" id="event"></div></div>`;
     // The winning declarations among rules that apply only while :focus-visible.
@@ -66,12 +75,13 @@ describe("App.css cascade", () => {
       for (const hit of hits) for (const [prop, value] of hit.decl) out.set(prop, value);
       return out;
     };
-    for (const id of ["collapse", "link", "suggestion", "swatch", "day", "option", "thumb", "thread", "event"]) {
+    for (const id of ["collapse", "link", "suggestion", "swatch", "day", "option", "thumb", "email-link", "thread", "event"]) {
       const ring = focusRing(document.getElementById(id)!);
       expect(ring.get("outline"), id).toMatch(/^2px solid var\(--accent\)$/);
     }
-    // Rows sit flush in scrolling cards, which would clip an outset ring.
-    for (const id of ["thread", "event"]) {
+    // Rows sit flush in scrolling cards, and a message body scrolls wide
+    // content sideways; either would clip an outset ring.
+    for (const id of ["thread", "event", "email-link"]) {
       expect(focusRing(document.getElementById(id)!).get("outline-offset"), id).toMatch(/^-/);
     }
   });

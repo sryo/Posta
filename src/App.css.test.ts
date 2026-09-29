@@ -142,6 +142,24 @@ describe("App.css", () => {
     expect(scheme.split(/\s+/).sort()).toEqual(["dark", "light"]);
   });
 
+  it("leaves window dragging to data-tauri-drag-region, since no webview the app runs in honours app-region", () => {
+    const dragRules = rules.filter((r) => r.declarations.some(([prop]) => /(^|-)app-region$/.test(prop)));
+    expect(dragRules.map((r) => r.selectors.join(", "))).toEqual([]);
+  });
+
+  it("reveals whatever hovering a control reveals on keyboard focus too", () => {
+    const hoverOnly: string[] = [];
+    for (const rule of rules) {
+      if (new Map(rule.declarations).get("opacity") !== "1") continue;
+      for (const sel of rule.selectors) {
+        if (!/:hover\s+\S/.test(sel)) continue;
+        const keyboard = [sel.replace(":hover", ":focus-visible"), sel.replace(":hover", ".focused")];
+        if (!keyboard.some((k) => rule.selectors.includes(k))) hoverOnly.push(sel);
+      }
+    }
+    expect(hoverOnly).toEqual([]);
+  });
+
   it("has no keyframes that no animation plays", () => {
     expect(unusedKeyframes(css)).toEqual([]);
   });
