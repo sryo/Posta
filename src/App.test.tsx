@@ -1465,6 +1465,20 @@ describe("App calendar", () => {
     expect(await screen.findByPlaceholderText("Event title")).toHaveValue("");
   });
 
+  it("starts a new event empty after an account switch left an event mid-edit", async () => {
+    calendarCards();
+    render(() => <App />);
+    fireEvent.click(await screen.findByText("Event of a"));
+    fireEvent.keyDown(document, { key: "e" });
+    expect(await screen.findByDisplayValue("Event of a")).toBeInTheDocument();
+    fireEvent.click(screen.getByTitle("a@x.com"));
+    fireEvent.click(await screen.findByText("b@x.com"));
+    expect(await screen.findByText("Event of b")).toBeInTheDocument();
+
+    fireEvent.keyDown(document, { key: "e" });
+    expect(await screen.findByPlaceholderText("Event title")).toHaveValue("");
+  });
+
   it("edits one occurrence of a repeating event without offering a repeat rule", async () => {
     calendarCards();
     cardsByAccount.a = [{ ...card("cal-1", "a", "Week"), query: "calendar:7d", card_type: "calendar" }];

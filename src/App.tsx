@@ -446,8 +446,9 @@ function App() {
   const [editCardColor, setEditCardColor] = createSignal<CardColor>(null);
   const [editCardGroupBy, setEditCardGroupBy] = createSignal<GroupBy>("date");
   const [editColorPickerOpen, setEditColorPickerOpen] = createSignal(false);
-  // What the editor started from; saving changes only the fields edited since,
-  // so a change pulled from iCloud meanwhile isn't written back over
+  // What the editor's fields held before the user touched them; a change
+  // pulled from iCloud replaces only fields still holding it, so saving
+  // doesn't write the pulled change back over
   let editCardStart: Pick<Card, "name" | "query" | "color" | "group_by"> | null = null;
 
   // While editing, the card body doubles as a live preview: it keeps showing
@@ -2890,19 +2891,19 @@ function App() {
     const card = cards().find(c => c.id === cardId);
     if (!card) return;
 
-    const start = editCardStart ?? card;
-    const edited = <T,>(value: T, before: T, current: T) => (value === before ? current : value);
-    const newQuery = edited(editCardQuery(), start.query, card.query);
+    // The editor's fields already follow pulled changes the user hasn't
+    // overridden (followPulledCardInEditor)
+    const newQuery = editCardQuery();
     const queryChanged = card.query !== newQuery;
 
     try {
       const updatedCard: Card = {
         ...card,
-        name: edited(editCardName(), start.name, card.name),
+        name: editCardName(),
         query: newQuery,
-        color: edited(editCardColor() || null, start.color || null, card.color || null),
+        color: editCardColor() || null,
         card_type: cardTypeForQuery(newQuery),
-        group_by: edited(editCardGroupBy(), start.group_by || "date", card.group_by),
+        group_by: editCardGroupBy(),
       };
       await updateCard(updatedCard);
       setCards(cards().map(c => c.id === cardId ? updatedCard : c));
