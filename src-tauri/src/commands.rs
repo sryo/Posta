@@ -623,16 +623,7 @@ pub async fn run_oauth_flow(
     app_handle: tauri::AppHandle,
     state: State<'_, AppState>,
 ) -> Result<Account, String> {
-    // Cancel any previous in-flight flow so it releases port 8420 promptly
-    let cancel_flag = {
-        let mut slot = state.oauth_cancel.lock().map_err(|_| "Lock error")?;
-        if let Some(prev) = slot.take() {
-            prev.store(true, Ordering::SeqCst);
-        }
-        let flag = Arc::new(AtomicBool::new(false));
-        *slot = Some(flag.clone());
-        flag
-    };
+    let pending = PendingOAuth::begin(&state.oauth_cancel)?;
 
     // Bind the callback listener BEFORE opening the browser so the redirect
     // can't race the bind. Retry briefly: a just-cancelled flow may still be
@@ -671,18 +662,11 @@ pub async fn run_oauth_flow(
         .map_err(|e| format!("Failed to open browser: {}", e))?;
 
     // Wait for callback in a blocking thread
-    let wait_cancel = cancel_flag.clone();
+    let wait_cancel = pending.flag.clone();
     let callback_result = tokio::task::spawn_blocking(move || server.wait_for_callback(120, wait_cancel, &expected_state))
         .await
         .map_err(|e| format!("Task error: {}", e))?;
-
-    // Release the cancel slot if it still belongs to this flow
-    {
-        let mut slot = state.oauth_cancel.lock().map_err(|_| "Lock error")?;
-        if slot.as_ref().is_some_and(|f| Arc::ptr_eq(f, &cancel_flag)) {
-            *slot = None;
-        }
-    }
+    drop(pending);
 
     let callback_result = callback_result.map_err(|e| format!("OAuth callback error: {}", e))?;
 
@@ -697,6 +681,35 @@ pub async fn run_oauth_flow(
 
     // Finalize the OAuth flow and return account
     finalize_oauth(&access_token, &refresh_token, expires_in, &app_handle, &state).await
+}
+
+/// The cancel flag of the sign-in in flight, held in the app's slot until
+/// the flow stops waiting on the browser or returns early
+struct PendingOAuth<'a> {
+    slot: &'a std::sync::Mutex<Option<Arc<AtomicBool>>>,
+    flag: Arc<AtomicBool>,
+}
+
+impl<'a> PendingOAuth<'a> {
+    /// Cancels any previous flow, so it releases port 8420 promptly
+    fn begin(slot: &'a std::sync::Mutex<Option<Arc<AtomicBool>>>) -> Result<Self, String> {
+        let mut current = slot.lock().map_err(|_| "Lock error")?;
+        if let Some(prev) = current.take() {
+            prev.store(true, Ordering::SeqCst);
+        }
+        let flag = Arc::new(AtomicBool::new(false));
+        *current = Some(flag.clone());
+        Ok(Self { slot, flag })
+    }
+}
+
+impl Drop for PendingOAuth<'_> {
+    fn drop(&mut self) {
+        let mut current = self.slot.lock().unwrap_or_else(|e| e.into_inner());
+        if current.as_ref().is_some_and(|f| Arc::ptr_eq(f, &self.flag)) {
+            *current = None;
+        }
+    }
 }
 
 /// Stop the sign-in waiting on the browser; it then fails with "OAuth flow
@@ -3353,6 +3366,21 @@ mod tests {
         assert!(slot.lock().unwrap().is_none());
         // Nothing in flight: nothing to do
         super::cancel_pending_oauth(&slot).unwrap();
+    }
+
+    #[test]
+    fn a_sign_in_releases_its_cancel_flag_however_it_ends() {
+        let slot = std::sync::Mutex::new(None);
+        let first = super::PendingOAuth::begin(&slot).unwrap();
+        let first_flag = first.flag.clone();
+        // A retry cancels the flow before it and takes the slot over
+        let second = super::PendingOAuth::begin(&slot).unwrap();
+        assert!(first_flag.load(Ordering::SeqCst));
+        drop(first);
+        assert!(slot.lock().unwrap().is_some(), "the earlier flow must not release the retry's flag");
+        // An early return (no browser, no auth config) drops the guard
+        drop(second);
+        assert!(slot.lock().unwrap().is_none());
     }
 
     #[test]
