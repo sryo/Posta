@@ -855,6 +855,7 @@ fn delete_account_blocking(account_id: &str, app_data_dir: &std::path::Path, sta
     if let Ok(mut cache) = state.token_cache.lock() {
         cache.remove(account_id);
     }
+    crate::gmail::forget_cached_mail();
 
     Ok(())
 }

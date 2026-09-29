@@ -1288,6 +1288,12 @@ impl AttachmentCache {
         Some(data.clone())
     }
 
+    fn clear(&mut self) {
+        self.entries.clear();
+        self.recency.clear();
+        self.bytes = 0;
+    }
+
     fn insert(&mut self, key: AttachmentKey, data: String) {
         if data.len() > self.capacity {
             return;
@@ -1305,6 +1311,17 @@ impl AttachmentCache {
                 self.bytes -= old.len();
             }
         }
+    }
+}
+
+/// Drops the attachment data and reply-draft headers every client shares,
+/// which are keyed by Gmail ids alone, not by account
+pub fn forget_cached_mail() {
+    if let Ok(mut cache) = shared_attachment_cache().lock() {
+        cache.clear();
+    }
+    if let Ok(mut parents) = shared_draft_parents().lock() {
+        parents.clear();
     }
 }
 
@@ -3950,6 +3967,24 @@ mod tests {
         let keys: Vec<(String, usize)> =
             (0..3).map(|i| attachment_key(&attachments, i)).map(|k| (k.message_id, k.position)).collect();
         assert_eq!(keys, [("m1".into(), 0), ("m2".into(), 0), ("m1".into(), 1)]);
+    }
+
+    #[test]
+    fn forgetting_cached_mail_empties_the_shared_caches() {
+        let key = AttachmentKey {
+            message_id: "forget-me".into(),
+            position: 0,
+            filename: "a.png".into(),
+            mime_type: "image/png".into(),
+            size: 4,
+        };
+        shared_attachment_cache().lock().unwrap().insert(key.clone(), "data".into());
+        shared_draft_parents().lock().unwrap().insert("forget-thread".into(), (None, std::time::Instant::now()));
+
+        forget_cached_mail();
+
+        assert_eq!(shared_attachment_cache().lock().unwrap().get(&key), None);
+        assert!(!shared_draft_parents().lock().unwrap().contains_key("forget-thread"));
     }
 
     #[test]
