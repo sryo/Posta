@@ -2686,9 +2686,14 @@ button:disabled:hover {
 .preset-option {
     flex: 1 1 140px;
     min-width: 140px;
+    display: flex;
+    flex-direction: column;
     padding: var(--space-xl);
     border: 2px solid var(--border-color);
     border-radius: var(--radius-lg);
+    background: none;
+    color: inherit;
+    font: inherit;
     cursor: pointer;
     transition: border-color 0.15s, transform 0.15s, box-shadow 0.15s;
     text-align: center;
@@ -2752,8 +2757,14 @@ button:disabled:hover {
     background: rgba(142, 36, 170, 0.4);
 }
 
+.preset-card.none {
+    background: var(--bg-hover);
+    border: 1px solid var(--border-color);
+    box-sizing: border-box;
+}
+
 .preset-option.recommended {
-    border: 1px solid var(--accent);
+    border-color: var(--accent);
 }
 
 .preset-option.recommended:hover {
@@ -2765,8 +2776,10 @@ button:disabled:hover {
     font-weight: 600;
     margin-bottom: 4px;
     display: flex;
+    flex-wrap: wrap;
     align-items: center;
-    gap: var(--space-md);
+    justify-content: center;
+    gap: var(--space-sm) var(--space-md);
 }
 
 .preset-badge {
@@ -2783,6 +2796,23 @@ button:disabled:hover {
 .preset-desc {
     font-size: var(--font-size-sm);
     color: var(--text-muted);
+}
+
+.settings-layout-actions {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: var(--space-sm);
+}
+
+.preset-cards {
+    margin-top: var(--space-md);
+    font-size: var(--font-size-sm);
+    color: var(--text-secondary);
+}
+
+.preset-modal .restore-actions {
+    margin-top: var(--space-xl);
 }
 
 /* Query help button and sheet */

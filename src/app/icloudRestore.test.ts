@@ -27,4 +27,13 @@ describe("pullLayoutWithRetry", () => {
     await done;
     expect(pull).toHaveBeenCalledTimes(2);
   });
+
+  it("says whether either pull found a layout", async () => {
+    vi.useFakeTimers();
+    const found = pullLayoutWithRetry(vi.fn().mockResolvedValueOnce(false).mockResolvedValueOnce(true));
+    const missing = pullLayoutWithRetry(vi.fn(async () => false));
+    await vi.advanceTimersByTimeAsync(1500);
+    expect(await found).toBe(true);
+    expect(await missing).toBe(false);
+  });
 });

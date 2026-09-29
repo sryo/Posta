@@ -100,8 +100,7 @@ Element.prototype.scrollIntoView = () => {};
 
 const settingsSidebar = () => document.querySelector(".settings-sidebar") as HTMLElement;
 async function openSettingsFromChooser() {
-  await screen.findByText("Mail for A");
-  fireEvent.click(screen.getByTitle("a@x.com"));
+  fireEvent.click(await screen.findByTitle("a@x.com"));
   fireEvent.click(within(document.querySelector(".account-chooser-container") as HTMLElement).getByText("Settings"));
   await waitFor(() => expect(settingsSidebar()).toHaveClass("open"));
   return settingsSidebar();
@@ -200,6 +199,78 @@ describe("First-run setup", () => {
     fireEvent.click(screen.getByRole("button", { name: "Change credentials" }));
     expect(await screen.findByRole("heading", { name: "Set up Posta" })).toBeInTheDocument();
     expect(screen.getByLabelText("OAuth client ID")).toBeInTheDocument();
+  });
+});
+
+const createdCards = () => invoke.mock.calls.filter(([cmd]) => cmd === "create_card").map(([, args]) => args as Record<string, unknown>);
+
+describe("Layout after sign-in", () => {
+  it("restores a synced layout without asking, and can swap it for a preset and back", async () => {
+    handlers.get_accounts = () => [];
+    handlers.run_oauth_flow = () => account("a", "a@x.com");
+    handlers.pull_from_icloud = () => true;
+    render(() => <App />);
+    fireEvent.click(await screen.findByRole("button", { name: "Sign in with Google" }));
+
+    await screen.findByText("Mail for A");
+    const toast = await screen.findByRole("status");
+    expect(toast).toHaveTextContent("Restored 1 card from iCloud");
+    expect(screen.queryByText("Welcome Back")).not.toBeInTheDocument();
+
+    fireEvent.click(within(toast).getByRole("button", { name: "Choose a different layout" }));
+    const picker = await screen.findByRole("dialog", { name: "Pick a starting layout" });
+    fireEvent.click(within(picker).getByRole("button", { name: /^Classic/ }));
+
+    expect(await screen.findByRole("region", { name: "Inbox email card" })).toBeInTheDocument();
+    // Replacing is undoable, so it isn't confirmed
+    expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument();
+    expect(invoke).toHaveBeenCalledWith("delete_card", { id: "card-a" });
+    expect(screen.queryByRole("region", { name: "Alpha email card" })).not.toBeInTheDocument();
+
+    const sidebar = await openSettingsFromChooser();
+    const restore = within(sidebar).getByRole("button", { name: /Restore previous layout/ });
+    expect(restore).toHaveTextContent("1 card");
+    fireEvent.click(restore);
+
+    expect(await screen.findByRole("region", { name: "Alpha email card" })).toBeInTheDocument();
+    expect(createdCards().slice(-1)[0]).toMatchObject({ accountId: "a", name: "Alpha", query: "is:inbox" });
+    await waitFor(() => expect(screen.queryByRole("region", { name: "Inbox email card" })).not.toBeInTheDocument());
+  });
+
+  it("offers a different layout from Settings too", async () => {
+    render(() => <App />);
+    const sidebar = await openSettingsFromChooser();
+    fireEvent.click(within(sidebar).getByRole("button", { name: "Choose a different layout" }));
+    expect(await screen.findByRole("dialog", { name: "Pick a starting layout" })).toBeInTheDocument();
+  });
+
+  it("lets the preset picker be dismissed with Escape", async () => {
+    handlers.get_accounts = () => [];
+    handlers.run_oauth_flow = () => account("n", "n@x.com");
+    render(() => <App />);
+    fireEvent.click(await screen.findByRole("button", { name: "Sign in with Google" }));
+    await screen.findByRole("dialog", { name: "Pick a starting layout" });
+
+    fireEvent.keyDown(document, { key: "Escape" });
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "Pick a starting layout" })).not.toBeInTheDocument());
+    expect(createdCards()).toHaveLength(0);
+  });
+
+  it("opens the picker for an added account without cards, offering the other account's layout", async () => {
+    handlers.run_oauth_flow = () => account("b", "b@x.com");
+    cardsByAccount.b = [];
+    render(() => <App />);
+    await screen.findByText("Mail for A");
+    fireEvent.click(screen.getByTitle("a@x.com"));
+    fireEvent.click(await screen.findByText("Add account"));
+
+    const picker = await screen.findByRole("dialog", { name: "Pick a starting layout" });
+    const copy = await within(picker).findByRole("button", { name: /^Copy layout from a@x\.com/ });
+    expect(copy).toHaveTextContent("Alpha");
+    fireEvent.click(copy);
+
+    expect(await screen.findByRole("region", { name: "Alpha email card" })).toBeInTheDocument();
+    expect(createdCards()).toEqual([expect.objectContaining({ accountId: "b", name: "Alpha", query: "is:inbox" })]);
   });
 });
 

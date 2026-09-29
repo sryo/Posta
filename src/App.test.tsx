@@ -504,12 +504,12 @@ describe("App presets", () => {
   it("creates the preset's cards once even when clicked twice", async () => {
     signInToEmptyLayout();
     fireEvent.click(await screen.findByText("Sign in with Google"));
-    const option = (await screen.findByText("Traditional")).closest(".preset-option")!;
+    const option = await screen.findByRole("button", { name: /^Classic/ });
 
     fireEvent.click(option);
     fireEvent.click(option);
 
-    await waitFor(() => expect(screen.queryByText("How do you email?")).not.toBeInTheDocument());
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "Pick a starting layout" })).not.toBeInTheDocument());
     expect(invoke.mock.calls.filter(([cmd]) => cmd === "create_card")).toHaveLength(4);
   });
 
@@ -522,16 +522,17 @@ describe("App presets", () => {
       return create(args);
     };
     fireEvent.click(await screen.findByText("Sign in with Google"));
-    fireEvent.click((await screen.findByText("Traditional")).closest(".preset-option")!);
+    fireEvent.click(await screen.findByRole("button", { name: /^Classic/ }));
 
     expect(await screen.findByRole("region", { name: "Inbox email card" })).toBeInTheDocument();
     expect(screen.getByRole("region", { name: "Starred email card" })).toBeInTheDocument();
   });
 
-  it("keeps a restored layout whose cards could not be deleted when starting from scratch", async () => {
+  it("keeps a restored layout's cards that could not be deleted when choosing a different layout", async () => {
     handlers.get_accounts = () => [];
     handlers.run_oauth_flow = () => account("a", "a@x.com");
     handlers.pull_from_icloud = () => true;
+    handlers.create_card = () => { throw new Error("must not pile cards on a layout that is still there"); };
     handlers.delete_card = ({ id }) => {
       if (id === "card-a") throw new Error("db locked");
       return null;
@@ -540,24 +541,24 @@ describe("App presets", () => {
     render(() => <App />);
 
     fireEvent.click(await screen.findByText("Sign in with Google"));
-    fireEvent.click(await screen.findByText("Start from scratch"));
-    await answerConfirm(true);
+    fireEvent.click(await screen.findByRole("button", { name: "Choose a different layout" }));
+    fireEvent.click(await screen.findByRole("button", { name: /^Classic/ }));
 
     expect(await screen.findByText(/db locked/)).toBeInTheDocument();
-    expect(screen.queryByText("How do you email?")).not.toBeInTheDocument();
     expect(screen.getByRole("region", { name: "Alpha email card" })).toBeInTheDocument();
     expect(screen.queryByRole("region", { name: "Zeta email card" })).not.toBeInTheDocument();
+    expect(invoke).not.toHaveBeenCalledWith("create_card", expect.anything());
   });
 
   it("stays on the preset picker when no card could be created", async () => {
     signInToEmptyLayout();
     handlers.create_card = () => { throw new Error("db locked"); };
     fireEvent.click(await screen.findByText("Sign in with Google"));
-    fireEvent.click((await screen.findByText("Traditional")).closest(".preset-option")!);
+    fireEvent.click(await screen.findByRole("button", { name: /^Classic/ }));
 
     await waitFor(() => expect(invoke).toHaveBeenCalledWith("create_card", expect.anything()));
     await new Promise(r => setTimeout(r, 50));
-    expect(screen.getByText("How do you email?")).toBeInTheDocument();
+    expect(screen.getByRole("dialog", { name: "Pick a starting layout" })).toBeInTheDocument();
   });
 });
 
@@ -2377,22 +2378,6 @@ describe("App layout removal", () => {
     await waitFor(() => expect(invoke).toHaveBeenCalledWith("delete_card", { id: "card-a" }));
   });
 
-  it("asks before starting from scratch and keeps the restored layout when cancelled", async () => {
-    handlers.get_accounts = () => [];
-    handlers.run_oauth_flow = () => account("a", "a@x.com");
-    handlers.pull_from_icloud = () => true;
-    handlers.delete_card = () => null;
-    render(() => <App />);
-    fireEvent.click(await screen.findByText("Sign in with Google"));
-    fireEvent.click(await screen.findByText("Start from scratch"));
-    // Deleting a card syncs through iCloud; the user must know it isn't local
-    await answerConfirm(false, /1 card.*other Macs/);
-    await new Promise(r => setTimeout(r, 20));
-
-    expect(invoke).not.toHaveBeenCalledWith("delete_card", expect.anything());
-    expect(screen.getByText("Start from scratch")).toBeInTheDocument();
-  });
-
   it("asks before signing out and keeps the account when cancelled", async () => {
     handlers.delete_account = () => null;
     render(() => <App />);
@@ -3130,7 +3115,6 @@ describe("App accessibility", () => {
     // The user takes a moment; startup is long done
     await new Promise(r => setTimeout(r, 50));
     fireEvent.click(signIn);
-    fireEvent.click(await screen.findByText("Continue"));
 
     await waitFor(() => expect((document.querySelector(".deck") as HTMLElement).style.background).toContain("30, 136, 229"));
     expect(document.documentElement.style.getPropertyValue("--accent")).toBe("#1E88E5");

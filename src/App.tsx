@@ -113,6 +113,8 @@ import {
 import { ReactionButton } from "./components/ReactionButton";
 import { ComposeTextarea, ComposeSendButton, CloseButton } from "./components/ComposeAtoms";
 import { AuthScreen } from "./components/AuthScreen";
+import { PresetPicker } from "./components/PresetPicker";
+import { cardSpecs, loadLayoutSnapshot, saveLayoutSnapshot, type CardSpec } from "./app/layoutSnapshot";
 import { GoogleCredentialsForm } from "./components/GoogleCredentialsForm";
 import { credentialsValid, shortClientId } from "./app/googleCredentials";
 import { ComposeForm } from "./components/ComposeForm";
@@ -915,7 +917,10 @@ function App() {
 
   // Preset selection for new accounts
   const [showPresetSelection, setShowPresetSelection] = createSignal(false);
-  const [showRestorePrompt, setShowRestorePrompt] = createSignal(false);
+  // Other accounts' layouts the picker offers to copy
+  const [copySources, setCopySources] = createSignal<{ email: string; cards: Card[] }[]>([]);
+  // Bumped when a replaced layout is kept, so Settings offers it back
+  const [layoutSnapshotVersion, setLayoutSnapshotVersion] = createSignal(0);
 
   // Enhanced polling with adaptive interval
   const BASE_POLL_INTERVAL = 30000; // 30 seconds
@@ -1418,7 +1423,7 @@ function App() {
     }
 
     // Same for modals and panels over the cards; Escape still closes them
-    const overlayOpen = settingsOpen() || shortcutsHelpOpen() || queryHelpOpen() || creatingEvent() || batchReplyOpen() || showPresetSelection() || showRestorePrompt();
+    const overlayOpen = settingsOpen() || shortcutsHelpOpen() || queryHelpOpen() || creatingEvent() || batchReplyOpen() || showPresetSelection();
     if (overlayOpen && e.key !== 'Escape') {
       return;
     }
@@ -1673,14 +1678,15 @@ function App() {
     }
   }
 
-  // Post-OAuth: restore the account's layout from iCloud and only offer the
-  // preset picker when no layout exists.
+  // Post-OAuth, for every new sign-in: restore the account's layout from
+  // iCloud, and only offer the preset picker when it has no cards
   async function restoreLayoutAfterAuth(account: Account) {
     upsertAccount(account);
     setSelectedAccount(account);
 
+    let synced = false;
     try {
-      await pullLayoutWithRetry(pullFromICloud);
+      synced = await pullLayoutWithRetry(pullFromICloud);
     } catch (e) {
       console.warn("iCloud pull failed:", e);
     }
@@ -1689,11 +1695,29 @@ function App() {
     if (!cardList) return;
     startBackgroundSync(account.id);
 
-    if (cardList.length > 0) {
-      setShowRestorePrompt(true);
-    } else {
-      setShowPresetSelection(true);
+    if (cardList.length === 0) {
+      openPresetPicker();
+    } else if (synced) {
+      const count = `${cardList.length} card${cardList.length === 1 ? "" : "s"}`;
+      showToast(`Restored ${count} from iCloud`, { label: "Choose a different layout", run: openPresetPicker });
     }
+  }
+
+  async function openPresetPicker() {
+    const account = selectedAccount();
+    if (!account) return;
+    setCopySources([]);
+    setShowPresetSelection(true);
+    const sources: { email: string; cards: Card[] }[] = [];
+    for (const other of accounts().filter(a => a.id !== account.id)) {
+      try {
+        const otherCards = await getCards(other.id);
+        if (otherCards.length > 0) sources.push({ email: other.email, cards: otherCards });
+      } catch (e) {
+        console.warn("Couldn't read another account's cards:", e);
+      }
+    }
+    if (selectedAccount()?.id === account.id) setCopySources(sources);
   }
 
   // Sign in with Google through the browser, then hand the account to
@@ -1762,69 +1786,86 @@ function App() {
 
   function handleAddAccount() {
     return signInWithGoogle(async account => {
-      upsertAccount(account);
-      setSelectedAccount(account);
-
-      try {
-        await pullFromICloud();
-      } catch (e) {
-        console.warn("iCloud pull failed:", e);
-      }
-
-      await loadAccountCards(account);
-      startBackgroundSync(account.id);
-
       setSettingsOpen(false);
+      closeAccountViews();
+      await restoreLayoutAfterAuth(account);
     });
   }
 
-  let applyingPreset = false;
-  async function applyPreset(presetKey: string) {
+  // Swap the selected account's cards for new ones. The replaced layout is
+  // kept on this Mac, so Settings can bring it back. Resolves to whether
+  // the swap went through.
+  let replacingLayout = false;
+  async function replaceLayout(specs: CardSpec[]): Promise<boolean> {
     const account = selectedAccount();
-    const preset = PRESETS[presetKey];
-    if (!account || !preset || applyingPreset) return;
-
-    applyingPreset = true;
-    const newCards: Card[] = [];
+    if (!account || replacingLayout) return false;
+    replacingLayout = true;
     try {
-      for (const cardPreset of preset.cards) {
-        const cardType = cardTypeForQuery(cardPreset.query);
-        newCards.push(await createCard(account.id, cardPreset.name, cardPreset.query, cardPreset.color || null, "date", cardType));
+      const current = cards();
+      if (current.length > 0) {
+        saveLayoutSnapshot(account.email, cardSpecs(current), Date.now());
+        setLayoutSnapshotVersion(v => v + 1);
+        const results = await Promise.allSettled(current.map(card => deleteCard(card.id)));
+        // Cards that failed to delete still exist; keep showing them rather
+        // than piling new cards on top
+        const remaining = current.filter((_, i) => results[i].status === "rejected");
+        forgetCardState(current.filter((_, i) => results[i].status === "fulfilled").map(c => c.id));
+        setCards(remaining);
+        const failure = results.find((r): r is PromiseRejectedResult => r.status === "rejected");
+        if (failure) {
+          setError(`Failed to reset layout: ${failure.reason}`);
+          return false;
+        }
       }
-    } catch (e) {
-      setError(`Couldn't create the cards: ${e}`);
-      // Nothing was created: stay on the picker so the user can retry
-      if (newCards.length === 0) return;
-    } finally {
-      applyingPreset = false;
-    }
 
-    // Show whatever was created, even if a later card failed: the created
-    // ones are already stored, and hiding them invites duplicates on retry
-    setCards(newCards);
-    setCollapsedCards(reconcile(Object.fromEntries(newCards.map(c => [c.id, false]))));
-    setShowPresetSelection(false);
-    newCards.forEach(card => loadCardThreads(card.id));
+      const newCards: Card[] = [];
+      try {
+        for (const spec of specs) {
+          newCards.push(await createCard(account.id, spec.name, spec.query, spec.color, spec.group_by, spec.card_type));
+        }
+      } catch (e) {
+        setError(`Couldn't create the cards: ${e}`);
+        // Nothing was created: stay on the picker so the user can retry
+        if (newCards.length === 0) return false;
+      }
+
+      // Show whatever was created, even if a later card failed: the created
+      // ones are already stored, and hiding them invites duplicates on retry
+      setCards(newCards);
+      setCollapsedCards(reconcile(Object.fromEntries(newCards.map(c => [c.id, false]))));
+      newCards.forEach(card => loadCardThreads(card.id));
+      return true;
+    } finally {
+      replacingLayout = false;
+    }
   }
 
-  async function handleStartFresh() {
-    const currentCards = cards();
-    const count = `${currentCards.length} card${currentCards.length === 1 ? "" : "s"}`;
-    if (currentCards.length > 0 && !(await askConfirm(`Delete the restored layout's ${count}? They're also removed from your other Macs that sync through iCloud. This can't be undone.`, "Delete"))) return;
-    const results = await Promise.allSettled(currentCards.map(card => deleteCard(card.id)));
-    // Cards that failed to delete still exist; keep showing them rather than
-    // letting a preset pile new cards on top
-    const remaining = currentCards.filter((_, i) => results[i].status === "rejected");
-    setCards(remaining);
-    setCollapsedCards(reconcile(Object.fromEntries(remaining.map(c => [c.id, collapsedCards[c.id] ?? false]))));
+  async function applyPreset(presetKey: string) {
+    const preset = PRESETS[presetKey];
+    if (!preset) return;
+    const specs = preset.cards.map(c => ({
+      name: c.name, query: c.query, color: c.color || null, group_by: "date" as const, card_type: cardTypeForQuery(c.query),
+    }));
+    if (await replaceLayout(specs)) setShowPresetSelection(false);
+  }
 
-    const failure = results.find((r): r is PromiseRejectedResult => r.status === "rejected");
-    if (failure) {
-      setError(`Failed to reset layout: ${failure.reason}`);
-      return;
-    }
-    setShowRestorePrompt(false);
-    setShowPresetSelection(true);
+  async function copyLayoutFrom(email: string) {
+    const source = copySources().find(s => s.email === email);
+    if (source && await replaceLayout(cardSpecs(source.cards))) setShowPresetSelection(false);
+  }
+
+  const previousLayout = () => {
+    layoutSnapshotVersion();
+    if (!settingsOpen()) return null;
+    const account = selectedAccount();
+    return account ? loadLayoutSnapshot(account.email, Date.now()) : null;
+  };
+
+  async function restorePreviousLayout() {
+    const snapshot = previousLayout();
+    if (!snapshot) return;
+    setSettingsOpen(false);
+    await replaceLayout(snapshot.cards);
   }
 
   // Save a new OAuth client, then sign in with it: the current account
@@ -4903,53 +4944,13 @@ function App() {
 
       {/* Preset selection modal */}
       <Show when={showPresetSelection()}>
-        <div class="preset-overlay">
-          <div class="preset-modal">
-            <h2>How do you email?</h2>
-            <p>Pick a starting point. You can customize later.</p>
-            <div class="preset-options">
-              <For each={Object.entries(PRESETS)}>
-                {([key, preset]) => (
-                  <div class={`preset-option ${key === "posta" ? "recommended" : ""}`} onClick={() => applyPreset(key)}>
-                    <Show
-                      when={preset.cards.length > 0}
-                      fallback={<div class="preset-preview empty"><PlusIcon /></div>}
-                    >
-                      <div class="preset-preview">
-                        <For each={preset.cards.filter(c => c.color)}>
-                          {(c) => <div class={`preset-card ${c.color}`}></div>}
-                        </For>
-                      </div>
-                    </Show>
-                    <div class="preset-label">
-                      {preset.label}
-                      <Show when={key === "posta"}> <span class="preset-badge">Recommended</span></Show>
-                    </div>
-                    <div class="preset-desc">{preset.description}</div>
-                  </div>
-                )}
-              </For>
-            </div>
-          </div>
-        </div>
-      </Show>
-
-      {/* Restore Found Prompt */}
-      <Show when={showRestorePrompt()}>
-        <div class="preset-overlay">
-          <div class="preset-modal">
-            <h2>Welcome Back</h2>
-            <p>We found a layout from iCloud.</p>
-            <div class="restore-actions">
-              <button class="btn btn-primary" onClick={() => setShowRestorePrompt(false)}>
-                Continue
-              </button>
-              <button class="btn btn-ghost" onClick={handleStartFresh}>
-                Start from scratch
-              </button>
-            </div>
-          </div>
-        </div>
+        <PresetPicker
+          presets={PRESETS}
+          copySources={copySources()}
+          onPick={applyPreset}
+          onCopy={copyLayoutFrom}
+          onDismiss={() => setShowPresetSelection(false)}
+        />
       </Show>
 
       {/* Thread View Overlay */}
@@ -5489,13 +5490,27 @@ function App() {
               </Show>
             </Show>
           </div>
-          <Show when={icloudStatus()}>
-            {(status) => (
-              <div class="settings-section">
-                <div class="settings-section-title">Card layout</div>
-                <p class="settings-hint">{icloudStatusText(status())}</p>
-              </div>
-            )}
+          <Show when={selectedAccount() || icloudStatus()}>
+            <div class="settings-section">
+              <div class="settings-section-title">Card layout</div>
+              <Show when={icloudStatus()}>
+                {(status) => <p class="settings-hint">{icloudStatusText(status())}</p>}
+              </Show>
+              <Show when={selectedAccount()}>
+                <div class="settings-layout-actions">
+                  <button class="link-btn" onClick={() => { setSettingsOpen(false); openPresetPicker(); }}>
+                    Choose a different layout
+                  </button>
+                  <Show when={previousLayout()}>
+                    {(snapshot) => (
+                      <button class="link-btn" onClick={restorePreviousLayout}>
+                        Restore previous layout ({snapshot().cards.length} card{snapshot().cards.length === 1 ? "" : "s"}, replaced {formatSyncTime(snapshot().savedAt, currentTime())})
+                      </button>
+                    )}
+                  </Show>
+                </div>
+              </Show>
+            </div>
           </Show>
         </div>
         <div class="settings-footer">

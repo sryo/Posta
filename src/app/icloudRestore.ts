@@ -4,9 +4,10 @@ export const ICLOUD_RESTORE_DELAYS_MS = { first: 500, retry: 1000 };
 
 const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 
-export async function pullLayoutWithRetry(pull: () => Promise<boolean>): Promise<void> {
+// Resolves to whether either pull found a layout
+export async function pullLayoutWithRetry(pull: () => Promise<boolean>): Promise<boolean> {
   await sleep(ICLOUD_RESTORE_DELAYS_MS.first);
-  if (await pull()) return;
+  if (await pull()) return true;
   await sleep(ICLOUD_RESTORE_DELAYS_MS.retry);
-  await pull();
+  return pull();
 }

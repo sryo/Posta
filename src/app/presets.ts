@@ -18,7 +18,7 @@ export const PRESETS: Record<string, { label: string; description: string; cards
     ],
   },
   traditional: {
-    label: "Traditional",
+    label: "Classic",
     description: "The familiar setup",
     cards: [
       { name: "Inbox", query: "is:inbox", color: "blue" },
