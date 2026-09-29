@@ -276,7 +276,7 @@ describe("accounts on the board", () => {
 
   it("follows a card's title with its account in small muted text that gives way before the title does", () => {
     const qualifier = declarationsOf(".card-account-qualifier");
-    expect(qualifier.get("font-size")).toBe("var(--font-size-base)");
+    expect(qualifier.get("font")).toBe("var(--type-meta)");
     expect(qualifier.get("color")).toBe("var(--text-muted)");
     expect(qualifier.get("min-width")).toBe("0");
     expect(qualifier.get("text-overflow")).toBe("ellipsis");
@@ -294,8 +294,9 @@ describe("accounts on the board", () => {
   it("shows a compose's sender like the fields below it", () => {
     const from = declarationsOf(".compose-from select");
     const field = declarationsOf(".compose-field input");
-    for (const prop of ["flex", "border", "background", "font-size", "color"]) expect(from.get(prop)).toBe(field.get(prop));
-    expect(declarationsOf(".compose-from-email").get("font-size")).toBe(field.get("font-size"));
+    for (const prop of ["flex", "border", "background", "font", "color"]) expect(from.get(prop)).toBe(field.get(prop));
+    expect(field.get("font")).toBe("var(--type-ui)");
+    expect(declarationsOf(".compose-from-email").get("font")).toBe(field.get("font"));
   });
 });
 

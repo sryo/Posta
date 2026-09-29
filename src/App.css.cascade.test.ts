@@ -10,7 +10,7 @@ describe("App.css cascade", () => {
       '<div class="message-body"><pre><code id="block">x</code></pre><p><code id="inline">y</code></p></div>';
     const size = (id: string) => cascadedDeclarations(rules, document.getElementById(id)!).get("font-size");
     expect(size("block")).toBe("inherit");
-    expect(size("inline")).toMatch(/em$/);
+    expect(size("inline")).toBe("var(--size-13)");
   });
 
   it("gives code inside a preformatted block no chip padding or background of its own", () => {

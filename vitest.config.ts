@@ -8,6 +8,7 @@ const NO_DOM = [
   "src/App.css.test.ts",
   "src/App.css.global.test.ts",
   "src/App.css.postmark.test.ts",
+  "src/App.css.type.test.ts",
   "src/api/commandContract.test.ts",
   "src/app/actionOrder.test.ts",
   "src/app/authErrors.test.ts",

@@ -145,7 +145,8 @@ describe("status colour tokens", () => {
     expect(decls(".invite-block-md .invite-actions").get("align-items")).toBe("stretch");
     const join = decls(".invite-block-md .invite-actions .calendar-join-btn");
     const segment = decls(".rsvp-control-md .rsvp-segment");
-    expect(join.get("font-size")).toBe(segment.get("font-size"));
+    expect(join.get("font")).toBe(segment.get("font"));
+    expect(join.get("font")).toBeDefined();
     expect(join.get("padding")).toBe(segment.get("padding"));
     expect(join.get("border-radius")).toBe("var(--radius-md)");
   });

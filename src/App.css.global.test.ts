@@ -40,9 +40,9 @@ describe("form parts", () => {
     expect(declarationsOf(".form-footer-actions").get("gap")).toBe("var(--space-md)");
   });
 
-  it("draw a title field large and borderless", () => {
+  it("draw a title field as a borderless heading", () => {
     const decl = declarationsOf(".form-title-field");
-    expect(decl.get("font-size")).toBe("17px");
+    expect(decl.get("font")).toBe("var(--type-heading)");
     expect(decl.get("border")).toBe("none");
   });
 

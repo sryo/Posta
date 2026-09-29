@@ -23,10 +23,8 @@ describe("event form layout", () => {
     expect(day.has("width")).toBe(false);
   });
 
-  it("sets the title at 17px semibold", () => {
-    const title = decls(".form-title-field");
-    expect(title.get("font-size")).toBe("17px");
-    expect(title.get("font-weight")).toBe("600");
+  it("sets the title as a heading", () => {
+    expect(decls(".form-title-field").get("font")).toBe("var(--type-heading)");
   });
 
   it("floats the card wheel's scope menu over the board", () => {
