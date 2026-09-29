@@ -55,12 +55,28 @@ export function rankContacts(
   return Array.from(byEmail.values()).sort((a, b) => score(b) - score(a));
 }
 
+const NO_REPLY = /^(no|do[-_.]?not)[-_.]?reply\b/i;
+
+function startsAWord(contact: RecentContact, q: string): boolean {
+  const local = contact.email.toLowerCase().split("@")[0];
+  const words = [...local.split(/[-_.+]/), ...(contact.name?.toLowerCase().split(/\s+/) ?? [])];
+  return contact.email.toLowerCase().startsWith(q) || words.some(w => w.startsWith(q));
+}
+
+// Contacts the query finds, best first: people before no-reply senders, and
+// within each, names or addresses starting with the query before ones that
+// only contain it. The ranking order holds within each tier.
 export function matchContacts(contacts: RecentContact[], query: string, limit: number): RecentContact[] {
   const q = query.trim().toLowerCase();
+  const tier = (c: RecentContact) => (NO_REPLY.test(c.email) ? 2 : 0) + (q && !startsAWord(c, q) ? 1 : 0);
   const matches = q
     ? contacts.filter(c => c.email.toLowerCase().includes(q) || c.name?.toLowerCase().includes(q))
     : contacts;
-  return matches.slice(0, limit);
+  return matches
+    .map(contact => ({ contact, tier: tier(contact) }))
+    .sort((a, b) => a.tier - b.tier)
+    .slice(0, limit)
+    .map(m => m.contact);
 }
 
 // Index of the comma that ends the last complete recipient in a To/Cc value,

@@ -46,6 +46,25 @@ describe("matchContacts", () => {
   it("returns the top contacts for an empty query", () => {
     expect(matchContacts(contacts, " ", 1)).toHaveLength(1);
   });
+
+  it("ranks names and addresses that start with the query above ones that only contain it", () => {
+    const ranked = rankContacts([], [
+      { participants: ["Maria Soto <msoto@x.com>"], last_message_date: NOW },
+      { participants: ["Tomas <tomas@x.com>"], last_message_date: NOW - DAY },
+      { participants: ["Ana Tomasini <ana@x.com>"], last_message_date: NOW - 2 * DAY },
+    ], undefined, NOW);
+    expect(matchContacts(ranked, "to", 5).map(c => c.email)).toEqual(["tomas@x.com", "ana@x.com", "msoto@x.com"]);
+  });
+
+  it("puts no-reply addresses below people", () => {
+    const ranked = rankContacts([], [
+      { participants: ["Acme <no-reply@acme.com>"], last_message_date: NOW },
+      { participants: ["noreply@alerts.acme.com"], last_message_date: NOW },
+      { participants: ["Ada <ada@acme.com>"], last_message_date: NOW - 5 * DAY },
+    ], undefined, NOW);
+    expect(matchContacts(ranked, "a", 5).map(c => c.email)).toEqual(["ada@acme.com", "no-reply@acme.com", "noreply@alerts.acme.com"]);
+    expect(matchContacts(ranked, "", 1).map(c => c.email)).toEqual(["ada@acme.com"]);
+  });
 });
 
 describe("recipient completion", () => {
