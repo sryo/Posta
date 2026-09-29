@@ -56,6 +56,10 @@ impl Default for AppState {
     }
 }
 
+/// Long enough for a password plus a second factor; the wait screen can be
+/// cancelled sooner
+const OAUTH_CALLBACK_TIMEOUT_SECS: u64 = 300;
+
 // --- Helper functions to reduce boilerplate ---
 
 /// Get app data directory from handle. Debug builds keep their own
@@ -663,7 +667,7 @@ pub async fn run_oauth_flow(
 
     // Wait for callback in a blocking thread
     let wait_cancel = pending.flag.clone();
-    let callback_result = tokio::task::spawn_blocking(move || server.wait_for_callback(120, wait_cancel, &expected_state))
+    let callback_result = tokio::task::spawn_blocking(move || server.wait_for_callback(OAUTH_CALLBACK_TIMEOUT_SECS, wait_cancel, &expected_state))
         .await
         .map_err(|e| format!("Task error: {}", e))?;
     drop(pending);
