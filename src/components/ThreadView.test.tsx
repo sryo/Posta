@@ -776,8 +776,22 @@ describe("ThreadView message header", () => {
       focusedMessageIndex: 0,
     });
     const header = container.querySelector(".message-header")!;
-    expect(header.querySelector(".message-sender")?.textContent).toBe("Alice <alice@example.com>");
     expect(header.querySelector(".message-recipients-toggle")?.textContent).toBe("to me, Bob +1");
+  });
+
+  it("names the sender, with the address beside the name in quieter type", () => {
+    const { container } = renderThread({
+      thread: makeThread([
+        { from: '"Pérez, Ana" <ana@example.com>', body: "hi" },
+        { from: "bob@example.com", body: "hello" },
+      ]),
+      focusedMessageIndex: 0,
+    });
+    const [named, bare] = container.querySelectorAll(".message-sender");
+    expect(named.querySelector(".message-sender-name")?.textContent).toBe("Pérez, Ana");
+    expect(named.querySelector(".message-sender-address")?.textContent).toBe("ana@example.com");
+    expect(bare.querySelector(".message-sender-name")?.textContent).toBe("bob@example.com");
+    expect(bare.querySelector(".message-sender-address")).toBeNull();
   });
 });
 

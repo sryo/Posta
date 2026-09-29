@@ -4559,6 +4559,11 @@ button.settings-section-title {
     word-break: break-word;
 }
 
+.message-sender-address {
+    font-weight: 400;
+    color: var(--text-secondary);
+}
+
 .message-from {
     display: flex;
     flex-direction: column;

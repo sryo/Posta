@@ -624,7 +624,12 @@ export const ThreadView = (props: {
                     >
                       <div class="message-header">
                         <div class="message-from">
-                          <div class="message-sender">{from}</div>
+                          <div class="message-sender">
+                            <span class="message-sender-name">{personName(from)}</span>
+                            <Show when={extractName(from)}>
+                              {' '}<span class="message-sender-address">{extractEmail(from)}</span>
+                            </Show>
+                          </div>
                           <MessageRecipients to={findHeader(headers, 'To')} cc={findHeader(headers, 'Cc')} currentUserEmail={props.currentUserEmail} />
                         </div>
                         <div class="message-header-actions">

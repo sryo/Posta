@@ -33,6 +33,7 @@ function standaloneDeclarations(classes: string[]): Map<string, string> {
 const UNSTYLED_HOOKS = new Set([
   "time-picker-start",
   "time-picker-end",
+  "message-sender-name",
 ]);
 
 // Class names in `class="..."`, and every string literal or template text
