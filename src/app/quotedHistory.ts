@@ -22,7 +22,6 @@ export function splitQuotedText(text: string): { head: string; quoted: string } 
   }
 
   const head = lines.slice(0, start).join("\n").trimEnd();
-  if (head.trim() === "") return null;
   return { head, quoted: text.slice(head.length) };
 }
 

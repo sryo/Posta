@@ -78,3 +78,44 @@ describe("ComposeForm recipients", () => {
     expect(onSend).not.toHaveBeenCalled();
   });
 });
+
+describe("ComposeForm quoted history in a reply", () => {
+  const quote = "\n\nOn Mon, Ana <ana@x> wrote:\n> Lunch?";
+
+  function renderReply(initialBody: string, mode: "reply" | "forward" = "reply") {
+    const [body, setBody] = createSignal(initialBody);
+    render(() => (
+      <ComposeForm
+        mode={mode} to="ana@x" body={body()} setBody={setBody} attachments={[]}
+        onRemoveAttachment={vi.fn()} onFileSelect={vi.fn()} fileInputId="file" onSend={vi.fn()} onClose={vi.fn()}
+      />
+    ));
+    return { body, textarea: screen.getByPlaceholderText("Write your reply...") as HTMLTextAreaElement };
+  }
+
+  it("folds the quote away while the reply is written above it, and keeps it in the body", () => {
+    const { body, textarea } = renderReply(`\n\n--\nMateo${quote}`);
+    expect(textarea.value).toBe("\n\n--\nMateo");
+    fireEvent.input(textarea, { target: { value: "Yes!\n\n--\nMateo\n" } });
+    expect(body()).toBe(`Yes!\n\n--\nMateo\n${quote}`);
+    expect(textarea.value).toBe("Yes!\n\n--\nMateo\n");
+  });
+
+  it("shows the whole body, quote included, once the toggle is opened", () => {
+    const { body, textarea } = renderReply(quote);
+    expect(textarea.value).toBe("");
+    const toggle = screen.getByRole("button", { name: "Show quoted text" });
+    expect(toggle.textContent).toBe("•••");
+    fireEvent.click(toggle);
+    expect(textarea.value).toBe(quote);
+    fireEvent.input(textarea, { target: { value: "Hi" + quote.replace("Lunch?", "Lunch? no") } });
+    expect(body()).toBe("Hi" + quote.replace("Lunch?", "Lunch? no"));
+    expect(screen.getByRole("button", { name: "Hide quoted text" })).toHaveAttribute("aria-expanded", "true");
+  });
+
+  it("leaves a forward's text unfolded", () => {
+    const { textarea } = renderReply(`\n\n---------- Forwarded message ----------\n> quoted in the original`, "forward");
+    expect(textarea.value).toContain("Forwarded message");
+    expect(screen.queryByRole("button", { name: "Show quoted text" })).toBeNull();
+  });
+});

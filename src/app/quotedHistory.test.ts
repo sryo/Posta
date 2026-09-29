@@ -26,8 +26,8 @@ describe("splitQuotedText", () => {
     expect(splitQuotedText("Just a note")).toBeNull();
   });
 
-  it("does not fold a message that is nothing but quoted text", () => {
-    expect(splitQuotedText("On Mon, Ana wrote:\n> Hi")).toBeNull();
+  it("finds the quote in a reply nothing has been written above yet", () => {
+    expect(splitQuotedText("\n\nOn Mon, Ana wrote:\n> Hi")).toEqual({ head: "", quoted: "\n\nOn Mon, Ana wrote:\n> Hi" });
   });
 });
 
@@ -69,5 +69,6 @@ describe("splitQuotedHtml", () => {
   it("keeps a body with no quote, or a quote with nothing written above it, whole", () => {
     expect(splitQuotedHtml("<p>Hello</p><blockquote>A quote a newsletter uses</blockquote><p>More</p>")).toBeNull();
     expect(splitQuotedHtml('<div class="gmail_quote">only the forward</div>')).toBeNull();
+    expect(splitQuotedHtml('<div style="white-space: pre-wrap">On Mon, Ana wrote:\n&gt; Hi</div>')).toBeNull();
   });
 });
