@@ -5050,15 +5050,14 @@ button:disabled:hover {
 
 .scheduler-times {
     display: flex;
-    gap: 15px;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--space-md);
     padding: 0 15px;
-    height: 200px;
 }
 
-.scheduler-column {
-    flex: 1;
-    display: flex;
-    flex-direction: column;
+.scheduler-time-separator {
+    color: var(--text-muted);
 }
 
 .scheduler-occurrence-note {
@@ -5067,33 +5066,63 @@ button:disabled:hover {
     color: var(--text-secondary);
 }
 
-.scheduler-column-label {
-    display: flex;
-    align-items: center;
-    height: 17px;
-    margin-bottom: 5px;
-    font-size: 12px;
-    color: var(--text-secondary);
-}
-
-.scheduler-list {
-    flex: 1;
-    overflow-y: auto;
-    border: 1px solid var(--border-color);
-    border-radius: 6px;
-}
-
-.scheduler-option {
+.scheduler-repeat {
+    margin-left: auto;
     padding: 6px 10px;
-    cursor: pointer;
-    border-radius: 6px;
-    font-size: 13px;
-    text-align: center;
+    border: 1px solid var(--border-color);
+    border-radius: var(--radius-md);
+    background: var(--bg-primary);
     color: var(--text-primary);
+    font-size: 13px;
 }
 
-.scheduler-option.selected {
-    background-color: var(--accent);
+/* TimeCombobox: a typeable time with the day's steps below it */
+.time-combobox {
+    position: relative;
+}
+
+.time-combobox-input {
+    width: 104px;
+    padding: 6px 10px;
+    border: 1px solid var(--border-color);
+    border-radius: var(--radius-md);
+    background: var(--bg-primary);
+    color: var(--text-primary);
+    font-family: inherit;
+    font-size: 13px;
+    font-variant-numeric: tabular-nums;
+}
+
+.time-combobox-list {
+    position: absolute;
+    top: calc(100% + 4px);
+    left: 0;
+    z-index: var(--z-dropdown);
+    width: 100%;
+    max-height: 200px;
+    overflow-y: auto;
+    padding: var(--space-xs);
+    border: 1px solid var(--border-color);
+    border-radius: var(--radius-md);
+    background: var(--bg-primary);
+    box-shadow: 0 4px 12px var(--shadow);
+}
+
+.time-combobox-option {
+    padding: 5px 8px;
+    border-radius: var(--radius-sm);
+    font-size: 13px;
+    font-variant-numeric: tabular-nums;
+    color: var(--text-primary);
+    cursor: pointer;
+}
+
+.time-combobox-option:hover {
+    background: var(--bg-hover);
+}
+
+.time-combobox-option.selected {
+    background: var(--accent);
     color: #fff;
 }
 

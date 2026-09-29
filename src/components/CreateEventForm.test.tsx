@@ -44,8 +44,15 @@ function renderForm(init: { startDate: string; endDate?: string; startTime?: str
 const selects = (container: HTMLElement) => container.querySelectorAll<HTMLSelectElement>(".scheduler-header select");
 const firstDayCard = (container: HTMLElement) => container.querySelector(".scheduler-day-card")!.textContent;
 
-const slot = (container: HTMLElement, picker: "start" | "end", time: string) =>
-  Array.from(container.querySelectorAll<HTMLElement>(`.time-picker-${picker} > div`)).find(el => el.textContent === time)!;
+const timeField = (container: HTMLElement, label: "Start" | "End") =>
+  container.querySelector<HTMLInputElement>(`input[role="combobox"][aria-label="${label}"]`)!;
+
+// Types a time into the Start or End field and confirms it
+const typeTime = (container: HTMLElement, label: "Start" | "End", text: string) => {
+  const input = timeField(container, label);
+  fireEvent.input(input, { target: { value: text } });
+  fireEvent.keyDown(input, { key: "Enter" });
+};
 
 // jsdom has no layout; the form scrolls the selected times into view on open
 beforeAll(() => {
@@ -153,15 +160,13 @@ describe("CreateEventForm date navigation", () => {
 });
 
 describe("CreateEventForm keyboard access", () => {
-  it("picks a day and a time with Enter or Space", () => {
+  it("picks a day with Enter or Space and types a time", () => {
     const { container, startDate, startTime } = renderForm({ startDate: "2031-03-03", startTime: "10:00", endTime: "11:00" });
     const days = container.querySelectorAll<HTMLElement>(".scheduler-day-card");
     expect(days[2].tabIndex).toBe(0);
     fireEvent.keyDown(days[2], { key: "Enter" });
     expect(startDate()).toBe("2031-03-05");
-    const nine = slot(container, "start", "09:00");
-    expect(nine.getAttribute("role")).toBe("option");
-    fireEvent.keyDown(nine, { key: " " });
+    typeTime(container, "Start", "9am");
     expect(startTime()).toBe("09:00");
   });
 
@@ -170,7 +175,7 @@ describe("CreateEventForm keyboard access", () => {
     const { container, startDate } = renderForm({ startDate: "2031-03-03", onSave });
     const days = container.querySelectorAll<HTMLElement>(".scheduler-day-card");
     fireEvent.keyDown(days[2], { key: "Enter", metaKey: true });
-    fireEvent.keyDown(slot(container, "start", "09:00"), { key: "Enter", ctrlKey: true });
+    fireEvent.keyDown(timeField(container, "Start"), { key: "Enter", ctrlKey: true });
     expect(onSave).toHaveBeenCalledTimes(2);
     expect(startDate()).toBe("2031-03-03");
   });
@@ -179,15 +184,27 @@ describe("CreateEventForm keyboard access", () => {
 describe("CreateEventForm time pickers", () => {
   it("keeps end after start on a single-day event", () => {
     const { container, endTime } = renderForm({ startDate: "2031-03-03", startTime: "10:00", endTime: "11:00" });
-    fireEvent.click(slot(container, "end", "09:00"));
+    typeTime(container, "End", "09:00");
     expect(endTime()).toBe("11:00");
+  });
+
+  it("moves the end along with the start, keeping the length", () => {
+    const { container, endTime } = renderForm({ startDate: "2031-03-03", startTime: "10:00", endTime: "11:00" });
+    typeTime(container, "Start", "11:30");
+    expect(endTime()).toBe("12:30");
+  });
+
+  it("offers times in 15-minute steps", () => {
+    const { container } = renderForm({ startDate: "2031-03-03", startTime: "10:00", endTime: "11:00" });
+    fireEvent.focus(timeField(container, "Start"));
+    expect(container.querySelectorAll(".time-picker-start [role=option]")).toHaveLength(96);
   });
 
   it("allows an end time earlier in the day than the start on a multi-day event", () => {
     const { container, endTime } = renderForm({
       startDate: "2031-03-03", endDate: "2031-03-05", startTime: "22:00", endTime: "23:00", isEditing: true,
     });
-    fireEvent.click(slot(container, "end", "09:00"));
+    typeTime(container, "End", "09:00");
     expect(endTime()).toBe("09:00");
   });
 
@@ -195,7 +212,7 @@ describe("CreateEventForm time pickers", () => {
     const { container, endTime } = renderForm({
       startDate: "2031-03-03", endDate: "2031-03-05", startTime: "08:00", endTime: "09:00", isEditing: true,
     });
-    fireEvent.click(slot(container, "start", "10:00"));
+    typeTime(container, "Start", "10:00");
     expect(endTime()).toBe("09:00");
   });
 });
@@ -240,9 +257,16 @@ describe("CreateEventForm header", () => {
 describe("CreateEventForm repeat", () => {
   it("offers repeat options for all-day events and hides the time pickers", () => {
     const setRecurrence = vi.fn();
-    const { container, getByText } = renderForm({ startDate: "2024-06-10", allDay: true, setRecurrence });
+    const { container, getByRole } = renderForm({ startDate: "2024-06-10", allDay: true, setRecurrence });
     expect(container.querySelector(".time-picker-start")).toBeNull();
-    fireEvent.click(getByText("Weekly"));
+    fireEvent.change(getByRole("combobox", { name: "Repeat" }), { target: { value: "FREQ=WEEKLY" } });
     expect(setRecurrence).toHaveBeenCalledWith("FREQ=WEEKLY");
+  });
+
+  it("goes back to no repeat", () => {
+    const setRecurrence = vi.fn();
+    const { getByRole } = renderForm({ startDate: "2024-06-10", setRecurrence });
+    fireEvent.change(getByRole("combobox", { name: "Repeat" }), { target: { value: "" } });
+    expect(setRecurrence).toHaveBeenCalledWith(null);
   });
 });

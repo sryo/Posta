@@ -1,40 +1,10 @@
-import { createSignal, onCleanup, onMount, Show, For } from "solid-js";
+import { createSignal, Show, For } from "solid-js";
 import { ChevronLeftIcon, ChevronRightIcon } from "./Icons";
 import { CloseButton } from "./ComposeAtoms";
 import { isImeComposing, isTypingTarget, onActivateKey } from "../shared/keyboard";
 import { isWritableCalendar } from "../app/eventActions";
-
-// One labelled, scrollable single-choice list of the scheduler
-function SchedulerColumn<T>(props: {
-  label: string;
-  listClass?: string;
-  options: { label: string; value: T }[];
-  selected: T;
-  onSelect: (value: T) => void;
-}) {
-  return (
-    <div class="scheduler-column">
-      <label class="scheduler-column-label">{props.label}</label>
-      <div class={`scheduler-list ${props.listClass ?? ''}`} role="listbox" aria-label={props.label}>
-        <For each={props.options}>
-          {(opt) => (
-            <div
-              class={`scheduler-option ${props.selected === opt.value ? 'selected' : ''}`}
-              data-selected={props.selected === opt.value}
-              role="option"
-              aria-selected={props.selected === opt.value}
-              tabIndex={0}
-              onClick={() => props.onSelect(opt.value)}
-              on:keydown={onActivateKey(() => props.onSelect(opt.value))}
-            >
-              {opt.label}
-            </div>
-          )}
-        </For>
-      </div>
-    </div>
-  );
-}
+import { minutesToTime, timeToMinutes } from "../app/timeInput";
+import { TimeCombobox } from "./TimeCombobox";
 
 export const CreateEventForm = (props: {
   closing?: boolean;
@@ -103,30 +73,6 @@ export const CreateEventForm = (props: {
     { label: "Weekdays", value: "FREQ=WEEKLY;BYDAY=MO,TU,WE,TH,FR" }
   ];
 
-
-  // Auto-scroll to selected times when form opens
-  onMount(() => {
-    // Wait for DOM to be ready
-    const scrollTimer = setTimeout(() => {
-      const startContainer = document.querySelector('.time-picker-start') as HTMLDivElement;
-      const endContainer = document.querySelector('.time-picker-end') as HTMLDivElement;
-
-      if (startContainer) {
-        const selectedEl = startContainer.querySelector('[data-selected="true"]') as HTMLElement;
-        if (selectedEl) {
-          selectedEl.scrollIntoView({ block: 'center' });
-        }
-      }
-
-      if (endContainer) {
-        const selectedEl = endContainer.querySelector('[data-selected="true"]') as HTMLElement;
-        if (selectedEl) {
-          selectedEl.scrollIntoView({ block: 'center' });
-        }
-      }
-    }, 150);
-    onCleanup(() => clearTimeout(scrollTimer));
-  });
 
   // The save button advertises ⌘Enter; handle it on the form so it also
   // works in the inline edit form, which the app-level shortcut (gated on
@@ -198,44 +144,6 @@ export const CreateEventForm = (props: {
     const last = Math.max(currentYear + 4, viewYear);
     return Array.from({ length: last - first + 1 }, (_, i) => first + i);
   };
-
-  // Time Helpers
-  const timeSlots: string[] = [];
-  for (let h = 0; h < 24; h++) {
-    for (let m = 0; m < 60; m += 30) {
-      const hh = h.toString().padStart(2, '0');
-      const mm = m.toString().padStart(2, '0');
-      timeSlots.push(`${hh}:${mm}`);
-    }
-  }
-
-  const timeToMinutes = (t: string): number | null => {
-    const [h, m] = t.split(':').map(Number);
-    return Number.isFinite(h) && Number.isFinite(m) ? h * 60 + m : null;
-  };
-
-  const minutesToTime = (mins: number) =>
-    `${String(Math.floor(mins / 60)).padStart(2, '0')}:${String(mins % 60).padStart(2, '0')}`;
-
-  // Events created elsewhere can have times off the 30-minute grid; insert
-  // the current value as an extra slot so it stays visible and selected
-  const slotsWithValue = (value: string) => {
-    const mins = timeToMinutes(value);
-    if (mins === null || timeSlots.includes(value)) return timeSlots;
-    const idx = timeSlots.findIndex(t => (timeToMinutes(t) ?? 0) > mins);
-    const slots = [...timeSlots];
-    slots.splice(idx === -1 ? slots.length : idx, 0, value);
-    return slots;
-  };
-
-  // Stable option objects so <For> keeps the rendered rows when a time changes
-  const timeOptions = new Map<string, { label: string; value: string }>();
-  const toOptions = (slots: string[]) => slots.map(t => {
-    if (!timeOptions.has(t)) timeOptions.set(t, { label: t, value: t });
-    return timeOptions.get(t)!;
-  });
-  const startOptions = () => toOptions(slotsWithValue(props.startTime));
-  const endOptions = () => toOptions(slotsWithValue(props.endTime));
 
   const formatDateStr = (d: Date) => {
     const year = d.getFullYear();
@@ -361,39 +269,37 @@ export const CreateEventForm = (props: {
             All day
           </label>
 
-          {/* Vertical Time Lists + Repeat; all-day events only repeat */}
+          {/* Times, then Repeat; all-day events only repeat */}
           <div class="scheduler-times">
             <Show when={!props.allDay}>
-              <SchedulerColumn
+              <TimeCombobox
                 label="Start"
-                listClass="time-picker-start"
-                options={startOptions()}
-                selected={props.startTime}
-                onSelect={handleStartTimeChange}
+                class="time-picker-start"
+                value={props.startTime}
+                onChange={handleStartTimeChange}
               />
-              <SchedulerColumn
+              <span class="scheduler-time-separator" aria-hidden="true">–</span>
+              <TimeCombobox
                 label="End"
-                listClass="time-picker-end"
-                options={endOptions()}
-                selected={props.endTime}
-                onSelect={handleEndTimeChange}
+                class="time-picker-end"
+                value={props.endTime}
+                onChange={handleEndTimeChange}
               />
             </Show>
             <Show
               when={!props.occurrenceOnly}
-              fallback={
-                <div class="scheduler-column">
-                  <label class="scheduler-column-label">Repeat</label>
-                  <p class="scheduler-occurrence-note">Repeats (editing this occurrence only)</p>
-                </div>
-              }
+              fallback={<p class="scheduler-occurrence-note">Repeats (editing this occurrence only)</p>}
             >
-              <SchedulerColumn
-                label="Repeat"
-                options={recurrenceOptions}
-                selected={props.recurrence}
-                onSelect={props.setRecurrence}
-              />
+              <select
+                class="scheduler-repeat"
+                aria-label="Repeat"
+                value={props.recurrence ?? ""}
+                onChange={(e) => props.setRecurrence(e.currentTarget.value || null)}
+              >
+                <For each={recurrenceOptions}>
+                  {(opt) => <option value={opt.value ?? ""} selected={opt.value === props.recurrence}>{opt.label}</option>}
+                </For>
+              </select>
             </Show>
           </div>
         </div>
