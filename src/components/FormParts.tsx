@@ -33,7 +33,12 @@ export function TitleField(props: {
       aria-label={props.label ?? props.placeholder}
       ref={(el) => {
         if (!props.autofocus) return;
-        const timer = setTimeout(() => el.focus(), 0);
+        const timer = setTimeout(() => {
+          el.focus();
+          // A title prefilled from a long subject shows its start, not its tail
+          el.setSelectionRange(0, 0);
+          el.scrollLeft = 0;
+        }, 0);
         onCleanup(() => clearTimeout(timer));
       }}
     />

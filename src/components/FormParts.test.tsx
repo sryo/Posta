@@ -28,6 +28,15 @@ describe("TitleField", () => {
     fireEvent.input(input, { target: { value: "Dinner" } });
     expect(onInput).toHaveBeenCalledWith("Dinner");
   });
+
+  it("autofocuses with the caret at the start, so a long prefilled title shows its beginning", async () => {
+    const title = "Team offsite in Mendoza — flights, rooms and the (very long) agenda";
+    const { getByRole } = render(() => <TitleField value={title} placeholder="Event title" onInput={() => {}} autofocus />);
+    const input = getByRole("textbox") as HTMLInputElement;
+    await vi.waitFor(() => expect(document.activeElement).toBe(input));
+    expect(input.selectionStart).toBe(0);
+    expect(input.selectionEnd).toBe(0);
+  });
 });
 
 describe("SubmitButton", () => {
