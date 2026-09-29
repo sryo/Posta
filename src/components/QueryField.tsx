@@ -122,15 +122,22 @@ export const QueryField = (props: {
     return props.query.length;
   }
 
-  function closePicker() {
+  let chips: HTMLDivElement | undefined;
+
+  // Closing from inside the picker hands focus back to the chip it opened from
+  function closePicker(refocus = false) {
+    const index = picker()?.index;
     setPicker(null);
     setPickerFilter("");
+    if (refocus && index !== undefined) {
+      chips?.querySelector<HTMLElement>(`.query-chip-label[data-index="${index}"]`)?.focus();
+    }
   }
 
   function choose(index: number, value: string) {
     const op = words()[index].operator!;
     props.setQuery(replaceWord(props.query, index, operatorText(op.op, value, op.negated)));
-    closePicker();
+    closePicker(true);
   }
 
   function editAsText(index: number) {
@@ -149,7 +156,7 @@ export const QueryField = (props: {
     const onKeyDown = (e: KeyboardEvent) => {
       if (e.key !== "Escape" || !picker()) return;
       e.stopPropagation();
-      closePicker();
+      closePicker(true);
     };
     const reposition = () => {
       if (menuOpen()) setMenuPos(below(input));
@@ -227,6 +234,7 @@ export const QueryField = (props: {
         />
         <Show when={!editing() && words().length > 0}>
           <div
+            ref={chips}
             class="query-chips"
             onMouseDown={(e) => {
               if (e.target !== e.currentTarget) return;
@@ -242,6 +250,7 @@ export const QueryField = (props: {
                     <button
                       type="button"
                       class="query-chip-label"
+                      data-index={i()}
                       aria-label={`Change ${word.text}`}
                       aria-haspopup="dialog"
                       onClick={(e) => setPicker({ index: i(), pos: below(e.currentTarget) })}
@@ -311,6 +320,11 @@ export const QueryField = (props: {
             }
             return fixedChoices(op.op);
           };
+          let options!: HTMLDivElement;
+          onMount(() => {
+            if (address || op.op === "label") return;
+            (options.querySelector<HTMLElement>(".query-picker-option.current") ?? options.querySelector<HTMLElement>("button"))?.focus();
+          });
           return (
             <Portal>
               <div
@@ -329,7 +343,7 @@ export const QueryField = (props: {
                     ref={(el) => setTimeout(() => el.focus())}
                   />
                 </Show>
-                <div class="query-picker-options">
+                <div class="query-picker-options" ref={options}>
                   <For each={choices()}>
                     {(choice) => (
                       <button

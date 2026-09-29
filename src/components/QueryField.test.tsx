@@ -84,6 +84,28 @@ describe("QueryField chips", () => {
     expect(query()).toBe("label:work-projects");
   });
 
+  it("edits a chip as text, putting the caret after it", () => {
+    const { input } = renderField("is:unread newer_than:7d invoice");
+    fireEvent.click(screen.getByRole("button", { name: "Change newer_than:7d" }));
+    fireEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Edit as text" }));
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    expect(document.activeElement).toBe(input);
+    expect(input.selectionStart).toBe("is:unread newer_than:7d".length);
+  });
+
+  it("moves focus into a chip's picker and back to the chip when it closes", () => {
+    renderField("is:unread");
+    const chip = screen.getByRole("button", { name: "Change is:unread" });
+    chip.focus();
+    fireEvent.click(chip);
+    const picker = screen.getByRole("dialog", { name: "is" });
+    expect(picker.contains(document.activeElement)).toBe(true);
+    expect(document.activeElement).toHaveTextContent("Unread messages");
+    fireEvent.keyDown(document.activeElement!, { key: "Escape" });
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    expect(document.activeElement).toBe(screen.getByRole("button", { name: "Change is:unread" }));
+  });
+
   it("switches to the raw text while the field has focus", () => {
     const { input } = renderField("is:unread");
     fireEvent.focus(input);
@@ -128,6 +150,13 @@ describe("QueryField explanation", () => {
 });
 
 describe("QueryField insertion", () => {
+  it("hands out its insert as soon as it appears, adding to the end before the field is focused", () => {
+    let insert: ((text: string) => void) | undefined;
+    const { query } = renderField("is:unread", { onActive: fn => { insert = fn; } });
+    insert!("has:attachment");
+    expect(query()).toBe("is:unread has:attachment");
+  });
+
   it("hands out an insert that puts an operator at the caret", () => {
     let insert: ((text: string) => void) | undefined;
     const { input, query } = renderField("is:unread", { onActive: fn => { insert = fn; } });
