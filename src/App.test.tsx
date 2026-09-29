@@ -831,6 +831,8 @@ describe("App Gemini API key", () => {
     handlers.set_gemini_api_key = () => null;
     render(() => <App />);
     await screen.findByText("Mail for A");
+    fireEvent.click(screen.getByTitle("a@x.com"));
+    fireEvent.click(within(document.querySelector(".account-chooser-container") as HTMLElement).getByText("Settings"));
     fireEvent.click(screen.getByText("Smart Replies"));
 
     const field = screen.getByLabelText("Gemini API key");
@@ -3072,7 +3074,7 @@ describe("App Google API settings", () => {
     handlers.get_accounts = () => [];
     handlers.get_stored_credentials = () => null;
     render(() => <App />);
-    fireEvent.click(await screen.findByText("Settings"));
+    fireEvent.click(await screen.findByRole("button", { name: "Settings" }));
 
     expect(screen.getByLabelText("Client ID")).toHaveAttribute("placeholder", "xxxx.apps.googleusercontent.com");
     expect(screen.getByLabelText("Client Secret")).toHaveAttribute("type", "password");
@@ -3088,7 +3090,7 @@ describe("App Google API settings", () => {
     handlers.get_accounts = () => [];
     handlers.get_stored_credentials = () => null;
     render(() => <App />);
-    fireEvent.click(await screen.findByText("Settings"));
+    fireEvent.click(await screen.findByRole("button", { name: "Settings" }));
     const link = screen.getByRole("link", { name: "Open Google Cloud Console" });
 
     expect(link).toHaveAttribute("href", "https://console.cloud.google.com/apis/credentials");
@@ -3458,7 +3460,7 @@ describe("App sign-in flows", () => {
     handlers.get_stored_credentials = () => null;
     handlers.run_oauth_flow = () => account("a", "a@x.com");
     render(() => <App />);
-    fireEvent.click(await screen.findByText("Settings"));
+    fireEvent.click(await screen.findByRole("button", { name: "Settings" }));
     fireEvent.input(screen.getByLabelText("Client ID"), { target: { value: "cid" } });
     fireEvent.input(screen.getByLabelText("Client Secret"), { target: { value: "csecret" } });
     fireEvent.click(screen.getByRole("button", { name: /Connect/ }));
@@ -3474,7 +3476,7 @@ describe("App sign-in flows", () => {
     handlers.configure_auth = () => { throw "keychain locked"; };
     handlers.run_oauth_flow = () => account("a", "a@x.com");
     render(() => <App />);
-    fireEvent.click(await screen.findByText("Settings"));
+    fireEvent.click(await screen.findByRole("button", { name: "Settings" }));
     fireEvent.input(screen.getByLabelText("Client ID"), { target: { value: "cid" } });
     fireEvent.input(screen.getByLabelText("Client Secret"), { target: { value: "csecret" } });
     fireEvent.click(screen.getByRole("button", { name: /Connect/ }));

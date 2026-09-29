@@ -3665,6 +3665,14 @@ function App() {
     }
   }
 
+  let settingsSidebarRef: HTMLDivElement | undefined;
+  // The closed panel stays in the DOM to slide in; inert keeps it out of
+  // the tab order meanwhile
+  createEffect(on(settingsOpen, (open, wasOpen) => {
+    settingsSidebarRef?.toggleAttribute("inert", !open);
+    if (open && wasOpen === false) settingsSidebarRef?.querySelector<HTMLElement>(".close-btn")?.focus();
+  }));
+
   const [icloudStatus, setICloudStatus] = createSignal<ICloudSyncStatus | null>(null);
   createEffect(on(settingsOpen, open => {
     if (!open) return;
@@ -5352,7 +5360,14 @@ function App() {
 
       {/* Settings sidebar */}
       <div class={`settings-overlay ${settingsOpen() ? 'open' : ''}`} onClick={() => setSettingsOpen(false)} aria-hidden="true"></div>
-      <div class={`settings-sidebar ${settingsOpen() ? 'open' : ''}`} role="dialog" aria-label="Settings" aria-modal="true">
+      <div
+        ref={settingsSidebarRef}
+        class={`settings-sidebar ${settingsOpen() ? 'open' : ''}`}
+        role="dialog"
+        aria-label="Settings"
+        aria-modal="true"
+        aria-hidden={settingsOpen() ? undefined : "true"}
+      >
         <div class="settings-header">
           <h3>Settings</h3>
           <CloseButton onClick={() => setSettingsOpen(false)} />
