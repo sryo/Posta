@@ -1268,7 +1268,10 @@ function App() {
     }
   });
 
-  const preventFileNavigation = (e: Event) => e.preventDefault();
+  // Only file drags: text dropped into a field must still land there
+  const preventFileNavigation = (e: DragEvent) => {
+    if (Array.from(e.dataTransfer?.types ?? []).includes("Files")) e.preventDefault();
+  };
 
   const timeUpdateInterval = setInterval(() => setCurrentTime(Date.now()), 15000);
 
