@@ -1537,7 +1537,7 @@ fn find_header<'a>(headers: Option<&'a [Header]>, name: &str) -> Option<&'a str>
 /// Check that `line` is property `name`, i.e. the name is followed by ':' or ';'
 /// (a bare prefix match would let DTSTART match DTSTAMP and vice versa)
 fn ics_property_matches(line: &str, name: &str) -> bool {
-    line.starts_with(name)
+    line.get(..name.len()).is_some_and(|prefix| prefix.eq_ignore_ascii_case(name))
         && matches!(line.as_bytes().get(name.len()), Some(b':') | Some(b';'))
 }
 
@@ -1612,17 +1612,17 @@ fn parse_ics_content(ics_data: &str) -> Option<CalendarEvent> {
     let unfolded = unfold_ics_lines(ics_data);
     let lines: Vec<&str> = unfolded.iter().map(|l| l.trim()).collect();
 
-    let event_start = lines.iter().position(|l| *l == "BEGIN:VEVENT")?;
-    let event_len = lines[event_start..].iter().position(|l| *l == "END:VEVENT")?;
+    let event_start = lines.iter().position(|l| l.eq_ignore_ascii_case("BEGIN:VEVENT"))?;
+    let event_len = lines[event_start..].iter().position(|l| l.eq_ignore_ascii_case("END:VEVENT"))?;
 
     // Properties of the event itself, excluding nested components such as
     // VALARM whose DESCRIPTION would otherwise be taken for the event's
     let mut event_lines = Vec::new();
     let mut depth = 0usize;
     for line in &lines[event_start + 1..event_start + event_len] {
-        if line.starts_with("BEGIN:") {
+        if ics_property_matches(line, "BEGIN") {
             depth += 1;
-        } else if line.starts_with("END:") {
+        } else if ics_property_matches(line, "END") {
             depth = depth.saturating_sub(1);
         } else if depth == 0 {
             event_lines.push(*line);
@@ -1700,7 +1700,8 @@ fn parse_ics_datetime(s: &str, params: &str, calendar: &[&str]) -> Option<(i64, 
     } else {
         let tzid = params
             .split(';')
-            .find_map(|p| p.strip_prefix("TZID="))
+            .filter_map(|p| p.split_once('='))
+            .find_map(|(key, value)| key.trim().eq_ignore_ascii_case("TZID").then_some(value))
             .map(|v| v.trim_matches('"'));
         resolve_ics_wall_time(datetime, tzid, calendar)?
     };
@@ -1818,8 +1819,8 @@ fn ics_components<'a, 'b>(lines: &'b [&'a str], kind: &str) -> Vec<&'b [&'a str]
     let end = format!("END:{}", kind);
     let mut components = Vec::new();
     let mut rest = lines;
-    while let Some(start) = rest.iter().position(|l| *l == begin) {
-        let Some(len) = rest[start..].iter().position(|l| *l == end) else {
+    while let Some(start) = rest.iter().position(|l| l.eq_ignore_ascii_case(&begin)) {
+        let Some(len) = rest[start..].iter().position(|l| l.eq_ignore_ascii_case(&end)) else {
             break;
         };
         components.push(&rest[start + 1..start + len]);
@@ -3123,6 +3124,22 @@ mod tests {
             ics_utc("20240115", "VALUE=DATE"),
             Some(("2024-01-15T00:00:00+00:00".to_string(), true))
         );
+    }
+
+    #[test]
+    fn parse_ics_reads_names_in_any_case() {
+        let ics = "begin:vcalendar\r\nmethod:REQUEST\r\nBegin:VTimezone\r\ntzid:Custom\r\nbegin:standard\r\n\
+                   dtstart:19700101T000000\r\ntzoffsetfrom:+0200\r\ntzoffsetto:+0200\r\nend:standard\r\n\
+                   end:vtimezone\r\nbegin:vevent\r\nsummary:Lunch\r\ndtstart;tzid=Custom:20240115T120000\r\n\
+                   attendee;cn=Ann:MAILTO:ann@example.com\r\nbegin:valarm\r\ndescription:Reminder\r\n\
+                   end:valarm\r\nend:vevent\r\nend:vcalendar";
+        let event = parse_ics_content(ics).expect("event");
+        assert_eq!(event.title, "Lunch");
+        assert_eq!(event.method.as_deref(), Some("REQUEST"));
+        assert_eq!(event.description, None);
+        assert_eq!(event.attendees, ["ann@example.com"]);
+        let start = DateTime::from_timestamp_millis(event.start_time).unwrap();
+        assert_eq!(start.to_rfc3339(), "2024-01-15T10:00:00+00:00");
     }
 
     #[test]
