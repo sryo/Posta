@@ -182,6 +182,17 @@ describe("EventView video call", () => {
   });
 });
 
+const attendee = (email: string, response_status: string | null, extra: Partial<GoogleCalendarEvent["attendees"][number]> = {}) =>
+  ({ email, display_name: null, response_status, is_organizer: false, is_self: false, ...extra });
+
+describe("EventView guest list", () => {
+  it("words each guest's answer, and says so when they haven't answered", () => {
+    renderEvent({ attendees: [attendee("a@x.test", "declined"), attendee("b@x.test", "needsAction")] });
+    expect(screen.getByText("a@x.test").closest(".event-attendee")).toHaveTextContent("Not going");
+    expect(screen.getByText("b@x.test").closest(".event-attendee")).toHaveTextContent("Not answered");
+  });
+});
+
 describe("EventView closing", () => {
   afterEach(() => vi.useRealTimers());
 

@@ -39,21 +39,6 @@ function getRelativeDateLabel(date: Date, now: Date = new Date()): 'today' | 'ye
   return 'otherYear';
 }
 
-// --- Calendar response status helpers ---
-
-/**
- * Get human-readable label for calendar response status
- */
-export function getResponseStatusLabel(status: string | null | undefined): string {
-  switch (status) {
-    case 'accepted': return 'Going';
-    case 'tentative': return 'Maybe';
-    case 'declined': return 'Declined';
-    case 'needsAction': return 'Pending';
-    default: return status || 'No response';
-  }
-}
-
 /**
  * Decode HTML entities like &amp; &#39; etc.
  */

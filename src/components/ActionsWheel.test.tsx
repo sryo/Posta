@@ -140,7 +140,7 @@ describe("ActionsWheel event RSVP", () => {
     fireEvent.click(screen.getByTitle("RSVP Yes"));
     await vi.waitFor(() => expect(onRsvped).toHaveBeenCalledWith("e1_20260928T150000Z", "accepted"));
     expect(rsvpListedCalendarEvent).toHaveBeenCalledWith("acc", "team@x.com", "e1_20260928T150000Z", "accepted");
-    expect(showToast).toHaveBeenCalledWith("RSVP sent: Going");
+    expect(showToast).toHaveBeenCalledWith("You're going");
   });
 
   it("reports the new response once the RSVP succeeds", async () => {

@@ -1,9 +1,31 @@
 export type RsvpStatus = "accepted" | "tentative" | "declined";
 
-const ANSWER_LABELS: Record<RsvpStatus, string> = { accepted: "Going", tentative: "Maybe", declined: "Not going" };
+export const RSVP_ANSWERS: readonly { status: RsvpStatus; label: string; tone: "success" | "warning" | "danger" }[] = [
+  { status: "accepted", label: "Going", tone: "success" },
+  { status: "tentative", label: "Maybe", tone: "warning" },
+  { status: "declined", label: "Not going", tone: "danger" },
+];
+
+const SENT_MESSAGES: Record<RsvpStatus, string> = {
+  accepted: "You're going",
+  tentative: "You said maybe",
+  declined: "You're not going",
+};
 
 export function rsvpSentMessage(status: RsvpStatus): string {
-  return `RSVP sent: ${ANSWER_LABELS[status]}`;
+  return SENT_MESSAGES[status];
+}
+
+function answerLabel(status: string | null | undefined): string | null {
+  return RSVP_ANSWERS.find(a => a.status === status)?.label ?? null;
+}
+
+export function guestResponseLabel(status: string | null | undefined): string {
+  return answerLabel(status) ?? "Not answered";
+}
+
+export function ownResponseLabel(status: string | null | undefined): string {
+  return answerLabel(status) ?? "Going?";
 }
 
 // Whether the calendar event with this id is the one an invite email's

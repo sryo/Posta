@@ -3,7 +3,8 @@ import DOMPurify from 'dompurify';
 import { DOMPURIFY_CONFIG } from './MessageBody';
 import { openUrl } from '@tauri-apps/plugin-opener';
 import type { GoogleCalendarEvent } from "../api/tauri";
-import { formatCalendarEventDate, getResponseStatusLabel, textOrHtmlToHtml } from "../utils";
+import { formatCalendarEventDate, textOrHtmlToHtml } from "../utils";
+import { guestResponseLabel, ownResponseLabel } from "../app/rsvp";
 import {
   ReplyIcon,
   TrashIcon,
@@ -251,7 +252,7 @@ export const EventView = (props: {
                     <div class="event-rsvp-section">
                       <div class="event-rsvp-current">
                         Your response: <span class={`event-rsvp-status ${props.event!.response_status}`}>
-                          {getResponseStatusLabel(props.event!.response_status)}
+                          {ownResponseLabel(props.event!.response_status)}
                         </span>
                       </div>
                       <div class="event-rsvp-buttons">
@@ -293,7 +294,7 @@ export const EventView = (props: {
                                 {attendee.is_organizer && <span class="event-attendee-badge">Organizer</span>}
                               </span>
                               <span class={`event-attendee-status ${attendee.response_status || ''}`}>
-                                {getResponseStatusLabel(attendee.response_status)}
+                                {guestResponseLabel(attendee.response_status)}
                               </span>
                             </div>
                           )}

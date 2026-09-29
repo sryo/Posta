@@ -86,7 +86,6 @@ import {
   validateEmailList,
   formatCalendarEventDate,
   decodeHtmlEntities,
-  getResponseStatusLabel,
   normalizeBase64Url,
   addReplyPrefix,
   addForwardPrefix,
@@ -145,7 +144,7 @@ import { escapeTarget, nextCardFocus, nextItemFocus } from "./app/keyboardNav";
 import { getSmartEventTime, groupCalendarEvents, isUserLabel, mergeThreadGroups, regroupThreads, type CalendarEventGroup } from "./app/grouping";
 import { pullLayoutWithRetry } from "./app/icloudRestore";
 import { querySuggestions, type QuerySuggestion } from "./app/querySuggestions";
-import { inviteNamesEvent, rsvpSentMessage, type RsvpStatus } from "./app/rsvp";
+import { inviteNamesEvent, ownResponseLabel, rsvpSentMessage, type RsvpStatus } from "./app/rsvp";
 import { createRsvpLookups } from "./app/rsvpLookups";
 import { nextSelection } from "./app/selection";
 import { fingerprint } from "./app/fingerprint";
@@ -4295,7 +4294,7 @@ function App() {
                                         </Show>
                                         <Show when={event.response_status}>
                                           <div class={`calendar-event-response ${event.response_status}`}>
-                                            {getResponseStatusLabel(event.response_status)}
+                                            {ownResponseLabel(event.response_status)}
                                           </div>
                                         </Show>
                                         <Show when={event.hangout_link}>
@@ -4698,7 +4697,7 @@ function App() {
                                   </Show>
                                   <Show when={event.response_status}>
                                     <div class={`calendar-event-response ${event.response_status}`}>
-                                      {getResponseStatusLabel(event.response_status)}
+                                      {ownResponseLabel(event.response_status)}
                                     </div>
                                   </Show>
                                 </div>

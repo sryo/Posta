@@ -1570,12 +1570,12 @@ describe("App calendar", () => {
     handlers.rsvp_calendar_event = () => null;
     render(() => <App />);
     await screen.findByText("Invitation: Planning");
-    await screen.findByText("Pending");
+    await screen.findByText("Going?");
 
     const invite = screen.getByText("Invitation: Planning").closest(".thread") as HTMLElement;
     fireEvent.click(within(invite).getByRole("button", { name: "Yes" }));
 
-    expect(await screen.findByText("RSVP sent: Going")).toBeInTheDocument();
+    expect(await screen.findByText("You're going")).toBeInTheDocument();
     await waitFor(() => expect(invoke).toHaveBeenCalledWith("save_cached_card_events", {
       cardId: "cal-1", events: [expect.objectContaining({ id: "ev-1", response_status: "accepted" })],
     }));
