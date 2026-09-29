@@ -73,6 +73,13 @@ describe("CreateEventForm closing", () => {
     fireEvent.keyDown(container.querySelector(".scheduler-day-card")!, { key: "Escape" });
     expect(onClose).not.toHaveBeenCalled();
   });
+
+  it("leaves Escape in the month picker to the picker", () => {
+    const onClose = vi.fn();
+    const { container } = renderForm({ startDate: "2025-03-10", onClose });
+    fireEvent.keyDown(selects(container)[0], { key: "Escape" });
+    expect(onClose).not.toHaveBeenCalled();
+  });
 });
 
 describe("CreateEventForm saving", () => {

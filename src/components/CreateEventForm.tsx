@@ -130,8 +130,9 @@ export const CreateEventForm = (props: {
   const hasTitle = () => props.summary.trim().length > 0;
   const handleKeyDown = (e: KeyboardEvent) => {
     // The title field has focus from the start, and the app-level Escape
-    // skips text fields; elsewhere the hosting view's Escape closes the form
-    if (e.key === 'Escape' && isTypingTarget(e.target) && !isImeComposing(e)) {
+    // skips text fields; elsewhere the hosting view's Escape closes the form.
+    // A select's Escape belongs to its open list.
+    if (e.key === 'Escape' && isTypingTarget(e.target) && !(e.target instanceof HTMLSelectElement) && !isImeComposing(e)) {
       props.onClose();
       return;
     }
