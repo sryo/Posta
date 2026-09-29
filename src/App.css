@@ -18,8 +18,18 @@
     --border-light: rgba(0, 0, 0, 0.08);
     --accent: #4285f4;
     --shadow: rgba(0, 0, 0, 0.1);
-    --danger: #e53935;
-    --danger-bg: rgba(229, 57, 53, 0.1);
+    /* Status colours: the plain token is a fill that --on-status reads on,
+       -fg is text on a surface or on its own -bg tint */
+    --on-status: #fff;
+    --success: #1e7e34;
+    --success-fg: #176a2b;
+    --success-bg: rgba(30, 126, 52, 0.12);
+    --warning: #a35200;
+    --warning-fg: #8c4600;
+    --warning-bg: rgba(163, 82, 0, 0.12);
+    --danger: #d32f2f;
+    --danger-fg: #b71c1c;
+    --danger-bg: rgba(211, 47, 47, 0.1);
     --toast-bg: #323232;
 
     /* Z-index scale - hierarchical layers
@@ -88,7 +98,15 @@
         --border-color: rgba(255, 255, 255, 0.15);
         --border-light: rgba(255, 255, 255, 0.08);
         --shadow: rgba(0, 0, 0, 0.3);
+        --on-status: #121212;
+        --success: #5cc76c;
+        --success-fg: #6fd17e;
+        --success-bg: rgba(92, 199, 108, 0.15);
+        --warning: #f0a54a;
+        --warning-fg: #f3b262;
+        --warning-bg: rgba(240, 165, 74, 0.15);
         --danger: #ff6b6b;
+        --danger-fg: #ff8080;
         --danger-bg: rgba(255, 107, 107, 0.15);
         --toast-bg: #424242;
     }
@@ -1147,18 +1165,18 @@ a:focus-visible,
 }
 
 .calendar-event-response.accepted {
-    background: rgba(34, 197, 94, 0.15);
-    color: #22c55e;
+    background: var(--success-bg);
+    color: var(--success-fg);
 }
 
 .calendar-event-response.tentative {
-    background: rgba(234, 179, 8, 0.15);
-    color: #eab308;
+    background: var(--warning-bg);
+    color: var(--warning-fg);
 }
 
 .calendar-event-response.declined {
-    background: rgba(239, 68, 68, 0.15);
-    color: #ef4444;
+    background: var(--danger-bg);
+    color: var(--danger-fg);
 }
 
 /* Calendar card event items */
@@ -1244,7 +1262,7 @@ a:focus-visible,
 }
 
 .calendar-event-response.needsAction {
-    background: rgba(150, 150, 150, 0.15);
+    background: var(--bg-hover);
     color: var(--text-muted);
 }
 
@@ -3289,15 +3307,15 @@ button:disabled:hover {
 }
 
 .event-rsvp-status.accepted {
-    color: #43A047;
+    color: var(--success-fg);
 }
 
 .event-rsvp-status.tentative {
-    color: #FB8C00;
+    color: var(--warning-fg);
 }
 
 .event-rsvp-status.declined {
-    color: #E53935;
+    color: var(--danger-fg);
 }
 
 .event-rsvp-status.needsAction {
@@ -3386,22 +3404,22 @@ button:disabled:hover {
 }
 
 .event-attendee-status.accepted {
-    background: rgba(67, 160, 71, 0.15);
-    color: #43A047;
+    background: var(--success-bg);
+    color: var(--success-fg);
 }
 
 .event-attendee-status.tentative {
-    background: rgba(251, 140, 0, 0.15);
-    color: #FB8C00;
+    background: var(--warning-bg);
+    color: var(--warning-fg);
 }
 
 .event-attendee-status.declined {
-    background: rgba(229, 57, 53, 0.15);
-    color: #E53935;
+    background: var(--danger-bg);
+    color: var(--danger-fg);
 }
 
 .event-attendee-status.needsAction {
-    background: rgba(150, 150, 150, 0.15);
+    background: var(--bg-hover);
     color: var(--text-muted);
 }
 
