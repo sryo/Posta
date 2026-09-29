@@ -68,7 +68,7 @@ describe("SmartReplies", () => {
 
   it("asks for the keychain to be unlocked when it can't read the key", () => {
     expect(describeSuggestionError("Keychain unavailable (locked or access denied). Unlock the keychain and try again. (x)"))
-      .toEqual({ message: "Keychain is locked. Unlock it and try again.", retryable: true });
+      .toEqual({ message: "Couldn't read the Gemini key: the keychain is locked or Posta was denied access. Unlock it, or choose Always Allow when macOS asks, then try again.", retryable: true });
   });
 
   it("shows a short reason for other failures, with a retry", async () => {

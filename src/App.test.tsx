@@ -447,7 +447,7 @@ describe("App locked keychain at startup", () => {
 
     expect(await screen.findByText("Cached mail")).toBeInTheDocument();
     const banner = (await screen.findByText(/the keychain is locked/)).closest(".auth-error") as HTMLElement;
-    expect(banner).toHaveTextContent("Couldn't read the saved Google credentials: the keychain is locked. Unlock it, then come back to Posta.");
+    expect(banner).toHaveTextContent("Couldn't read the saved Google credentials: the keychain is locked or Posta was denied access. Unlock it, or choose Always Allow when macOS asks, then try again.");
     expect(banner.querySelector(".error-details")).toHaveTextContent("User interaction is not allowed.");
     expect(banner.firstChild?.textContent).not.toMatch(/Keychain unavailable/);
     expect(screen.queryByText(/Session expired/)).not.toBeInTheDocument();

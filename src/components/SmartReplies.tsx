@@ -26,7 +26,7 @@ export function describeSuggestionError(raw: string): { message: string; retryab
         return { message: "Add a Gemini API key in Settings for suggestions.", retryable: false };
     }
     if (/Keychain unavailable/.test(raw)) {
-        return { message: "Keychain is locked. Unlock it and try again.", retryable: true };
+        return { message: "Couldn't read the Gemini key: the keychain is locked or Posta was denied access. Unlock it, or choose Always Allow when macOS asks, then try again.", retryable: true };
     }
     if (status === 429 || /RESOURCE_EXHAUSTED|rate limit/i.test(raw)) {
         return { message: "Gemini rate limit reached. Try again in a minute.", retryable: true };

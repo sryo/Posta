@@ -25,7 +25,7 @@ export function storedCredentialsFailure(error: unknown): DescribedFailure {
   const details = String(error);
   if (details.includes("Keychain unavailable")) {
     return {
-      message: "Couldn't read the saved Google credentials: the keychain is locked. Unlock it, then come back to Posta.",
+      message: "Couldn't read the saved Google credentials: the keychain is locked or Posta was denied access. Unlock it, or choose Always Allow when macOS asks, then try again.",
       details,
     };
   }

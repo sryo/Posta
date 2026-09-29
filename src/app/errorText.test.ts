@@ -25,10 +25,10 @@ describe("failureMessage", () => {
 });
 
 describe("storedCredentialsFailure", () => {
-  it("says the keychain is locked and what to do, keeping the backend's text as details", () => {
+  it("says the keychain is locked or denied and what to do, keeping the backend's text as details", () => {
     const locked = "Keychain unavailable (locked or access denied). Unlock the keychain and try again. (User interaction is not allowed.)";
     expect(storedCredentialsFailure(locked)).toEqual({
-      message: "Couldn't read the saved Google credentials: the keychain is locked. Unlock it, then come back to Posta.",
+      message: "Couldn't read the saved Google credentials: the keychain is locked or Posta was denied access. Unlock it, or choose Always Allow when macOS asks, then try again.",
       details: locked,
     });
   });
