@@ -23,6 +23,9 @@ export function describeSuggestionError(raw: string): { message: string; retryab
     if (/Gemini API key is required/i.test(raw)) {
         return { message: "Add a Gemini API key in Settings for suggestions.", retryable: false };
     }
+    if (/Keychain unavailable/.test(raw)) {
+        return { message: "Keychain is locked. Unlock it and try again.", retryable: true };
+    }
     if (status === 429 || /RESOURCE_EXHAUSTED|rate limit/i.test(raw)) {
         return { message: "Gemini rate limit reached. Try again in a minute.", retryable: true };
     }

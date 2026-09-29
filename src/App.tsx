@@ -1686,7 +1686,15 @@ function App() {
   // afterAuth. Uses the stored OAuth client unless Settings just configured
   // one; without either, sends the user to Settings.
   async function signInWithGoogle(afterAuth: (account: Account) => Promise<unknown>, { configured = false } = {}) {
-    const storedCreds = configured ? null : await getStoredCredentials();
+    let storedCreds: Awaited<ReturnType<typeof getStoredCredentials>> = null;
+    if (!configured) {
+      try {
+        storedCreds = await getStoredCredentials();
+      } catch (e) {
+        setError(String(e));
+        return;
+      }
+    }
     if (!configured && !storedCreds) {
       setSettingsOpen(true);
       setError("Connect your Google account in Settings");

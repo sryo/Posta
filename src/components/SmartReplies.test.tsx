@@ -57,6 +57,11 @@ describe("SmartReplies", () => {
     expect(describeSuggestionError("Failed to fetch thread: 500").retryable).toBe(true);
   });
 
+  it("asks for the keychain to be unlocked when it can't read the key", () => {
+    expect(describeSuggestionError("Keychain unavailable (locked or access denied). Unlock the keychain and try again. (x)"))
+      .toEqual({ message: "Keychain is locked. Unlock it and try again.", retryable: true });
+  });
+
   it("shows a short reason for other failures, with a retry", async () => {
     hasGeminiApiKey.mockResolvedValue(true);
     suggestReplies.mockRejectedValue(new Error("Request failed: connection refused"));

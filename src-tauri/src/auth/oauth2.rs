@@ -446,15 +446,6 @@ pub fn store_oauth_credentials(client_id: &str, client_secret: &str, app_data_di
     store_secret(&Keychain, CREDENTIALS_KEYCHAIN_KEY, &json, &path, "credentials")
 }
 
-/// Counts an unreadable keychain as no credentials, for callers that treat
-/// any other error as fatal
-pub fn get_oauth_credentials(app_data_dir: &Path) -> Result<OAuthCredentials, AuthError> {
-    match load_oauth_credentials(app_data_dir) {
-        Err(AuthError::KeychainUnavailable(_)) => Err(AuthError::NoCredentials),
-        result => result,
-    }
-}
-
 /// `NoCredentials` only when none are stored; a locked or denied keychain
 /// with no fallback file is `KeychainUnavailable`
 pub fn load_oauth_credentials(app_data_dir: &Path) -> Result<OAuthCredentials, AuthError> {
@@ -483,10 +474,6 @@ pub fn store_gemini_api_key(api_key: &str, app_data_dir: &Path) -> Result<(), Au
     store_secret(&Keychain, GEMINI_KEYCHAIN_KEY, api_key, &path, "Gemini API key")
 }
 
-pub fn get_gemini_api_key(app_data_dir: &Path) -> Option<String> {
-    load_gemini_api_key(app_data_dir).unwrap_or_default()
-}
-
 /// `Ok(None)` only when no key is stored
 pub fn load_gemini_api_key(app_data_dir: &Path) -> Result<Option<String>, AuthError> {
     gemini_api_key_from(&Keychain, app_data_dir)
@@ -512,8 +499,6 @@ mod tests {
         store_gemini_api_key("gem", &dir).unwrap();
 
         assert_eq!(get_refresh_token("acct", &dir).unwrap(), "refresh-1");
-        assert_eq!(get_oauth_credentials(&dir).unwrap().client_secret, "secret");
-        assert_eq!(get_gemini_api_key(&dir).as_deref(), Some("gem"));
         assert_eq!(load_oauth_credentials(&dir).unwrap().client_id, "id");
         assert_eq!(load_gemini_api_key(&dir).unwrap().as_deref(), Some("gem"));
         for path in [

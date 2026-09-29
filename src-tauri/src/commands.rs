@@ -605,7 +605,7 @@ pub async fn get_stored_credentials(
 ) -> Result<Option<AuthConfig>, String> {
     let app_data_dir = get_app_data_dir(&app_handle)?;
 
-    blocking(&state, move |state| match auth::get_oauth_credentials(&app_data_dir) {
+    blocking(&state, move |state| match auth::load_oauth_credentials(&app_data_dir) {
         Ok(creds) => {
             let config = AuthConfig { client_id: creds.client_id, client_secret: creds.client_secret };
             *state.stored_credentials.lock().map_err(|_| "Lock error")? = Some(config.clone());
@@ -2282,7 +2282,7 @@ pub async fn set_gemini_api_key(api_key: String, app_handle: tauri::AppHandle, s
 #[tauri::command]
 pub async fn has_gemini_api_key(app_handle: tauri::AppHandle, state: State<'_, AppState>) -> Result<bool, String> {
     let app_data_dir = get_app_data_dir(&app_handle)?;
-    blocking(&state, move |_| Ok(auth::get_gemini_api_key(&app_data_dir).is_some())).await
+    blocking(&state, move |_| auth::load_gemini_api_key(&app_data_dir).map(|key| key.is_some()).map_err(|e| e.to_string())).await
 }
 
 #[tauri::command]
@@ -2293,7 +2293,9 @@ pub async fn suggest_replies(
 ) -> Result<Vec<String>, String> {
     let app_data_dir = get_app_data_dir(&app_handle)?;
     let api_key = blocking(&state, move |_| {
-        auth::get_gemini_api_key(&app_data_dir).ok_or_else(|| "Gemini API key is required for smart replies.".to_string())
+        auth::load_gemini_api_key(&app_data_dir)
+            .map_err(|e| e.to_string())?
+            .ok_or_else(|| "Gemini API key is required for smart replies.".to_string())
     })
     .await?;
 

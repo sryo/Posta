@@ -3426,6 +3426,24 @@ describe("App sign-in flows", () => {
     expect(invoke).not.toHaveBeenCalledWith("run_oauth_flow", expect.anything());
   });
 
+  it("says the keychain is locked when signing in, instead of sending the user to Settings", async () => {
+    handlers.get_accounts = () => [];
+    let reads = 0;
+    handlers.get_stored_credentials = () => {
+      if (reads++ === 0) return null;
+      throw "Keychain unavailable (locked or access denied). Unlock the keychain and try again.";
+    };
+    render(() => <App />);
+    const signIn = await screen.findByText("Sign in with Google");
+    await waitFor(() => expect(reads).toBe(1));
+    fireEvent.click(signIn);
+
+    await waitFor(() => expect(screen.getAllByText(/Keychain unavailable/).length).toBeGreaterThan(0));
+    expect(screen.queryByText("Connect your Google account in Settings")).not.toBeInTheDocument();
+    expect(document.querySelector(".settings-sidebar.open")).toBeNull();
+    expect(invoke).not.toHaveBeenCalledWith("run_oauth_flow", expect.anything());
+  });
+
   it("shows a failed sign-in and stops waiting", async () => {
     handlers.get_accounts = () => [];
     handlers.run_oauth_flow = () => { throw "OAuth callback error: Timed out waiting for sign-in in the browser. Try again."; };
