@@ -124,7 +124,7 @@ import { credentialsValid, shortClientId } from "./app/googleCredentials";
 import { ComposeForm } from "./components/ComposeForm";
 import { CreateEventForm } from "./components/CreateEventForm";
 import { InviteBlock } from "./components/InviteBlock";
-import { eventActions } from "./app/eventActions";
+import { deletePrompt, eventActions } from "./app/eventActions";
 import { defaultCalendarId, lastUsedCalendar, rememberCalendar } from "./app/eventCalendars";
 import { deletedByScope, type RecurrenceScope } from "./app/recurrence";
 import { ThreadView } from "./components/ThreadView";
@@ -178,13 +178,14 @@ import { querySuggestions, type QuerySuggestion } from "./app/querySuggestions";
 import { calendarRangeError } from "./app/queryTokens";
 import { useLayer } from "./app/layers";
 import { QueryHelpSheet } from "./components/QueryHelpSheet";
-import { inviteNamesEvent, ownResponseLabel, rsvpForKey, rsvpSentMessage, type RsvpStatus } from "./app/rsvp";
+import { inviteNamesEvent, ownResponseLabel, rsvpForKey, rsvpSentMessage, withOwnResponse, type RsvpStatus } from "./app/rsvp";
 import { createRsvpLookups } from "./app/rsvpLookups";
 import { nextSelection } from "./app/selection";
 import { bulkActionForKey, extendSelection, keyTargets } from "./app/bulkKeys";
 import { fingerprint } from "./app/fingerprint";
 import { hasCommandModifier, isTypingTarget, onActivateKey } from "./shared/keyboard";
 import { askConfirm, ConfirmDialog, confirmOpen, dismissConfirm } from "./app/confirm";
+import { askScope, ScopePrompt, type ScopeAnchor } from "./app/scopePrompt";
 import { moveCard, reuseUnchanged } from "./app/cardOrder";
 
 
@@ -2844,8 +2845,9 @@ function App() {
   }
 
   function markEventRsvp(eventId: string, status: string) {
-    setActiveEvent(ev => (ev && ev.id === eventId ? { ...ev, response_status: status } : ev));
-    updateEventInCards(eventId, ev => ({ ...ev, response_status: status }));
+    const email = selectedAccount()?.email ?? "";
+    setActiveEvent(ev => (ev && ev.id === eventId ? withOwnResponse(ev, status, email) : ev));
+    updateEventInCards(eventId, ev => withOwnResponse(ev, status, email));
   }
 
   // Events deleted in the app whose deletion waits out their Undo toast
@@ -2868,11 +2870,18 @@ function App() {
   // asks first (unless the scope menu, which says so, already asked) and
   // happens at once, as does deleting several occurrences of a series;
   // deleting one event without guests waits out its toast
-  async function deleteEvent(event: GoogleCalendarEvent, chosenScope?: RecurrenceScope) {
+  async function deleteEvent(event: GoogleCalendarEvent, chosenScope?: RecurrenceScope, anchor?: ScopeAnchor) {
     const account = selectedAccount();
     if (!account) return;
+    const actions = eventActions(event, account.email);
+    if (!chosenScope && event.recurring_event_id) {
+      const title = actions.role === "organizer" ? deletePrompt(actions) : "Delete repeating event";
+      const asked = await askScope(title, anchor ?? null);
+      if (!asked || selectedAccount()?.id !== account.id) return;
+      chosenScope = asked;
+    }
     const scope = chosenScope ?? "this";
-    const { role, guestCount: guests } = eventActions(event, account.email);
+    const { role, guestCount: guests } = actions;
     const notifiesGuests = role === "organizer";
     if (notifiesGuests || scope !== "this") {
       if (notifiesGuests && !chosenScope) {
@@ -2958,7 +2967,8 @@ function App() {
 
       // Find the destination calendar name
       const destCal = availableCalendars().find(c => c.id === destinationCalendarId);
-      showToast(`Moved to ${destCal?.name || 'calendar'}`);
+      const where = destCal?.name || 'calendar';
+      showToast(event.recurring_event_id ? `Moved all its events to ${where}` : `Moved to ${where}`);
       setCalendarDrawerOpen(false);
     } catch (e) {
       console.error("Failed to move event:", e);
@@ -4785,7 +4795,7 @@ function App() {
                                             <span>{event.location}</span>
                                           </div>
                                         </Show>
-                                        <Show when={event.response_status}>
+                                        <Show when={event.response_status && eventActions(event, selectedAccount()?.email ?? '').rsvp}>
                                           <div class={`calendar-event-response ${event.response_status}`}>
                                             {ownResponseLabel(event.response_status)}
                                           </div>
@@ -4837,7 +4847,7 @@ function App() {
                                               startBatchReply={startBatchReply}
                                               handleForward={handleForward}
                                               handleThreadAction={handleThreadAction}
-                                              onDeleteEvent={deleteEvent}
+                                              onDeleteEvent={(ev, anchor) => deleteEvent(ev, undefined, anchor)}
                                               onRsvped={markEventRsvp}
                                               showToast={showToast}
                                               showFailure={showFailure}
@@ -5935,6 +5945,7 @@ function App() {
       </Toasts>
 
       <ConfirmDialog />
+      <ScopePrompt />
       <Show when={attachmentPreview()}>
         {(preview) => (
           <AttachmentLightbox

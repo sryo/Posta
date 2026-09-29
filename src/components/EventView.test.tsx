@@ -98,6 +98,12 @@ describe("EventView keys match the rest of the app", () => {
     expect(move.querySelector(".shortcut-hint")).toHaveTextContent("M");
   });
 
+  it("draws Move to… and Google Calendar with different icons", () => {
+    renderEvent();
+    const icon = (title: string) => screen.getByTitle(title).querySelector("svg")!.innerHTML;
+    expect(icon("Move to calendar")).not.toBe(icon("Open in Google Calendar"));
+  });
+
   it("closes the calendar drawer with m, as its footer says", () => {
     const props = renderEvent({}, { calendarDrawerOpen: true });
     expect(document.querySelector(".label-drawer-footer")).toHaveTextContent("M to close");

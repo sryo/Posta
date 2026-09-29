@@ -1732,6 +1732,21 @@ describe("App calendar", () => {
       [calendarEvent(`ev-${accountId}`, `Event of ${accountId}`)];
   }
 
+  it("says a repeating event moves with all its events", async () => {
+    calendarCards();
+    handlers.fetch_calendar_events = () => [{ ...calendarEvent("ev-1_1", "Standup"), organizer: "a@x.com", recurring_event_id: "ev-1" }];
+    handlers.list_calendars = () => [
+      { id: "primary", name: "Main", is_primary: true, access_role: "owner" },
+      { id: "work", name: "Work", is_primary: false, access_role: "writer" },
+    ];
+    handlers.move_calendar_event = () => ({ ...calendarEvent("ev-1_1", "Standup"), calendar_id: "work", recurring_event_id: "ev-1" });
+    render(() => <App />);
+    fireEvent.click(await screen.findByText("Standup"));
+    fireEvent.click(await screen.findByTitle("Move to calendar"));
+    fireEvent.click(await screen.findByRole("radio", { name: "Work" }));
+    expect(await screen.findByText("Moved all its events to Work")).toBeInTheDocument();
+  });
+
   it("loads the calendar list once when the calendar picker is opened twice quickly", async () => {
     calendarCards();
     let release!: () => void;
@@ -2252,6 +2267,45 @@ describe("App calendar", () => {
     expect(screen.getByText("Planning")).toBeInTheDocument();
   });
 
+  it("asks which repeating events the card wheel's Delete removes", async () => {
+    localStorage.setItem("eventActionSettings", JSON.stringify({ delete: true }));
+    calendarCards();
+    cardsByAccount.a = [{ ...card("cal-1", "a", "Week"), query: "calendar:7d", card_type: "calendar" }];
+    const occurrence = (n: number) => ({ ...calendarEvent(`ev-1_${n}`, `Standup ${n}`), recurring_event_id: "ev-1", start_time: tomorrowAt(8 + n) });
+    handlers.fetch_calendar_events = () => [occurrence(1), occurrence(2), calendarEvent("ev-2", "Planning")];
+    handlers.delete_calendar_event = () => null;
+    render(() => <App />);
+    fireEvent.mouseEnter((await screen.findByText("Standup 1")).closest(".calendar-event-item")!);
+    fireEvent.click(await screen.findByTitle("Delete"), { detail: 1 });
+
+    const menu = await screen.findByRole("menu", { name: "Delete repeating event" });
+    expect(invoke).not.toHaveBeenCalledWith("delete_calendar_event", expect.anything());
+    fireEvent.click(within(menu).getByRole("menuitem", { name: "All events" }));
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith("delete_calendar_event", {
+      accountId: "a", calendarId: "primary", eventId: "ev-1_1", scope: "all",
+    }));
+    await waitFor(() => expect(screen.queryByText("Standup 2")).not.toBeInTheDocument());
+    expect(screen.getByText("Planning")).toBeInTheDocument();
+    expect(screen.queryByRole("menu")).toBeNull();
+  });
+
+  it("deletes nothing when the card wheel's scope menu is dismissed", async () => {
+    localStorage.setItem("eventActionSettings", JSON.stringify({ delete: true }));
+    calendarCards();
+    cardsByAccount.a = [{ ...card("cal-1", "a", "Week"), query: "calendar:7d", card_type: "calendar" }];
+    handlers.fetch_calendar_events = () => [{ ...calendarEvent("ev-1_1", "Standup"), recurring_event_id: "ev-1" }];
+    handlers.delete_calendar_event = () => null;
+    render(() => <App />);
+    fireEvent.mouseEnter((await screen.findByText("Standup")).closest(".calendar-event-item")!);
+    fireEvent.click(await screen.findByTitle("Delete"), { detail: 1 });
+    await screen.findByRole("menu", { name: "Delete repeating event" });
+    fireEvent.keyDown(document, { key: "Escape" });
+
+    await waitFor(() => expect(screen.queryByRole("menu")).toBeNull());
+    expect(screen.getByText("Standup")).toBeInTheDocument();
+    expect(invoke).not.toHaveBeenCalledWith("delete_calendar_event", expect.anything());
+  });
+
   it("drops a deleted event from the calendar cards' saved cache", async () => {
     calendarCards();
     cardsByAccount.a = [{ ...card("cal-1", "a", "Week"), query: "calendar:7d", card_type: "calendar" }];
@@ -2290,6 +2344,44 @@ describe("App calendar", () => {
         cardId, events: [expect.objectContaining({ id: "ev-1_20260928T150000Z", response_status: "accepted" })],
       }));
     }
+  });
+
+  it("shows the user's answer on invite rows only, not on events the user hosts", async () => {
+    calendarCards();
+    cardsByAccount.a = [{ ...card("cal-1", "a", "Week"), query: "calendar:7d", card_type: "calendar" }];
+    const me = { email: "a@x.com", display_name: null, response_status: "accepted", is_self: true, is_organizer: false };
+    handlers.fetch_calendar_events = () => [
+      { ...calendarEvent("ev-1", "Focus time"), organizer: "a@x.com", response_status: "accepted" },
+      { ...calendarEvent("ev-2", "Planning"), organizer: "org@x.com", can_edit: false, response_status: "accepted", attendees: [me] },
+    ];
+    render(() => <App />);
+    const row = async (title: string) => (await screen.findByText(title)).closest(".calendar-event-item")!;
+    expect((await row("Planning")).querySelector(".calendar-event-response")).toHaveTextContent("Going");
+    expect((await row("Focus time")).querySelector(".calendar-event-response")).toBeNull();
+  });
+
+  it("shows the user's answer in the event's guest list too", async () => {
+    calendarCards();
+    cardsByAccount.a = [{ ...card("cal-1", "a", "Week"), query: "calendar:7d", card_type: "calendar" }];
+    handlers.fetch_calendar_events = () => [{
+      ...calendarEvent("ev-1", "Planning"), organizer: "org@x.com", response_status: "needsAction", can_edit: false,
+      attendees: [
+        { email: "org@x.com", display_name: "Org", response_status: "accepted", is_self: false, is_organizer: true },
+        { email: "a@x.com", display_name: "Me", response_status: "needsAction", is_self: true, is_organizer: false },
+      ],
+    }];
+    handlers.rsvp_listed_calendar_event = () => null;
+    render(() => <App />);
+    fireEvent.click(await screen.findByText("Planning"));
+    const myRow = () => screen.getByText("Me").closest(".event-attendee")!;
+    expect(await within(await screen.findByRole("dialog")).findByText("Me")).toBeInTheDocument();
+    expect(myRow()).toHaveTextContent("Not answered");
+    fireEvent.keyDown(document, { key: "n" });
+
+    await waitFor(() => expect(myRow()).toHaveTextContent("Not going"));
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith("save_cached_card_events", {
+      cardId: "cal-1", events: [expect.objectContaining({ attendees: expect.arrayContaining([expect.objectContaining({ email: "a@x.com", response_status: "declined" })]) })],
+    }));
   });
 
   it("shows an opened invite email's event above the message and answers it there", async () => {
@@ -2368,7 +2460,7 @@ describe("App calendar", () => {
         location: null, description: null, organizer: "org@x.com", attendees: [], method: "REQUEST", status: null, response_status: null,
       },
     }];
-    handlers.fetch_calendar_events = () => [{ ...calendarEvent("ev-1", "Planning"), response_status: "needsAction" }];
+    handlers.fetch_calendar_events = () => [{ ...calendarEvent("ev-1", "Planning"), response_status: "needsAction", can_edit: false, attendees: [{ email: "a@x.com", display_name: null, response_status: "needsAction", is_self: true, is_organizer: false }] }];
     handlers.get_calendar_rsvp_status = () => null;
     handlers.rsvp_calendar_event = () => null;
     render(() => <App />);

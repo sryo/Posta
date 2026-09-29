@@ -87,6 +87,16 @@ describe("status colour tokens", () => {
     expect(hover.get("background")).toBe("var(--bg-hover)");
   });
 
+  it("sizes Join like the RSVP control beside it above an opened invite", () => {
+    const decls = (selector: string) => new Map(rules.filter(r => r.selectors.includes(selector)).flatMap(r => r.declarations));
+    expect(decls(".invite-block-md .invite-actions").get("align-items")).toBe("stretch");
+    const join = decls(".invite-block-md .invite-actions .calendar-join-btn");
+    const segment = decls(".rsvp-control-md .rsvp-segment");
+    expect(join.get("font-size")).toBe(segment.get("font-size"));
+    expect(join.get("padding")).toBe(segment.get("padding"));
+    expect(join.get("border-radius")).toBe("var(--radius-md)");
+  });
+
   it("colours every RSVP and response badge with the status tokens, not literals", () => {
     const offenders = rules
       .filter(r => r.selectors.some(s => /rsvp|response|attendee-status/.test(s)))

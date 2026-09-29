@@ -1756,6 +1756,10 @@ fn parse_ics_content(ics_data: &str) -> Option<CalendarEvent> {
     let uid = find_ics_value(&event_lines, "UID");
     let location = text("LOCATION");
     let description = text("DESCRIPTION");
+    let conference_url = find_ics_value(&event_lines, "X-GOOGLE-CONFERENCE")
+        .or_else(|| find_ics_value(&event_lines, "X-MICROSOFT-SKYPETEAMSMEETINGURL"))
+        .or_else(|| location.as_deref().and_then(video_call_link))
+        .or_else(|| description.as_deref().and_then(video_call_link));
     let status = find_ics_value(&event_lines, "STATUS");
 
     let (dtstart_params, dtstart) = find_ics_property(&event_lines, "DTSTART")?;
@@ -1786,7 +1790,27 @@ fn parse_ics_content(ics_data: &str) -> Option<CalendarEvent> {
         method,
         status,
         response_status: None, // Will be fetched from Calendar API
-        conference_url: find_ics_value(&event_lines, "X-GOOGLE-CONFERENCE"),
+        conference_url,
+    })
+}
+
+/// Hosts whose links join a video call, as opposed to the agenda or document
+/// links an invite's text also carries
+const VIDEO_CALL_HOSTS: &[&str] = &["meet.google.com", "zoom.us", "teams.microsoft.com", "teams.live.com", "webex.com", "whereby.com"];
+
+/// The first video call link in an invite's free text
+fn video_call_link(text: &str) -> Option<String> {
+    text.match_indices("https://").find_map(|(at, _)| {
+        let url: String = text[at..]
+            .chars()
+            .take_while(|c| !c.is_whitespace() && !matches!(c, '<' | '>' | '"' | '\'' | ')' | ']'))
+            .collect();
+        let url = url.trim_end_matches(['.', ',', ';', ':']);
+        let authority = url["https://".len()..].split(['/', '\\', '?', '#']).next()?;
+        let host = authority.split_once(':').map_or(authority, |(host, _)| host).to_ascii_lowercase();
+        let plain_host = host.chars().all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '-');
+        let is_call = plain_host && VIDEO_CALL_HOSTS.iter().any(|h| host == *h || host.ends_with(&format!(".{h}")));
+        is_call.then(|| url.to_string())
     })
 }
 
@@ -3319,6 +3343,32 @@ mod tests {
         }))
         .unwrap();
         assert_eq!(cached.conference_url, None);
+    }
+
+    #[test]
+    fn parse_ics_finds_a_video_call_link_outside_google_s_own_property() {
+        let join = |props: &str| parse_ics_content(&invite_with_zone(&[], &format!("DTSTART:20240715T100000Z\r\n{props}"))).unwrap().conference_url;
+        assert_eq!(
+            join("X-MICROSOFT-SKYPETEAMSMEETINGURL:https://teams.microsoft.com/l/meetup-join/19%3ameeting"),
+            Some("https://teams.microsoft.com/l/meetup-join/19%3ameeting".to_string())
+        );
+        assert_eq!(join("LOCATION:https://acme.zoom.us/j/123456789?pwd=abc"), Some("https://acme.zoom.us/j/123456789?pwd=abc".to_string()));
+        assert_eq!(
+            join("LOCATION:Room 4\r\nDESCRIPTION:Agenda first.\\nJoin: <https://meet.google.com/abc-defg-hij>\\, then notes"),
+            Some("https://meet.google.com/abc-defg-hij".to_string())
+        );
+        assert_eq!(
+            join("DESCRIPTION:Join https://acme.zoom.us/j/1\r\nX-GOOGLE-CONFERENCE:https://meet.google.com/xyz-abcd-efg"),
+            Some("https://meet.google.com/xyz-abcd-efg".to_string())
+        );
+        // Other links in an invite are not calls
+        assert_eq!(join("DESCRIPTION:Agenda at https://docs.google.com/document/d/1 and https://example.com/zoom.us"), None);
+        assert_eq!(join("LOCATION:https://notzoom.us/j/1"), None);
+        // A browser reads a backslash as a slash and what precedes @ as a user
+        // name, so these open evil.test, not Zoom
+        assert_eq!(join("LOCATION:https://evil.test\\\\.zoom.us/j/1"), None);
+        assert_eq!(join("LOCATION:https://evil.test\\\\@acme.zoom.us/j/1"), None);
+        assert_eq!(join("LOCATION:https://acme.zoom.us:443/j/1"), Some("https://acme.zoom.us:443/j/1".to_string()));
     }
 
     #[test]

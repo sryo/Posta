@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { guestResponseLabel, inviteNamesEvent, isRsvpAnswer, ownResponseLabel, rsvpForKey, rsvpSentMessage, RSVP_ANSWERS } from "./rsvp";
+import { guestResponseLabel, inviteNamesEvent, isRsvpAnswer, ownResponseLabel, rsvpForKey, rsvpSentMessage, RSVP_ANSWERS, withOwnResponse } from "./rsvp";
 
 describe("rsvpSentMessage", () => {
   it("confirms the answer in the user's own words", () => {
@@ -56,5 +56,29 @@ describe("inviteNamesEvent", () => {
     expect(inviteNamesEvent("ev1@google.com", "ev1")).toBe(true);
     expect(inviteNamesEvent("abc-123", "abc-123")).toBe(true);
     expect(inviteNamesEvent("ev1@google.com", "ev2")).toBe(false);
+  });
+});
+
+describe("withOwnResponse", () => {
+  const guest = (email: string, response_status: string | null, is_self = false) =>
+    ({ email, display_name: null, response_status, is_self, is_organizer: false });
+
+  it("answers for the user in the event and in its guest list", () => {
+    const event = { response_status: "needsAction", attendees: [guest("jules@x.test", "accepted"), guest("me@x.test", "needsAction", true)] };
+    const answered = withOwnResponse(event, "declined", "me@x.test");
+    expect(answered.response_status).toBe("declined");
+    expect(answered.attendees.map(a => a.response_status)).toEqual(["accepted", "declined"]);
+    expect(event.attendees[1].response_status).toBe("needsAction");
+  });
+
+  it("finds the user by address when Google didn't flag them", () => {
+    const event = { response_status: null, attendees: [guest("Me@X.test", null)] };
+    expect(withOwnResponse(event, "tentative", "me@x.test").attendees[0].response_status).toBe("tentative");
+  });
+
+  it("leaves the guest list alone when the user isn't on it", () => {
+    const event = { response_status: null, attendees: [guest("jules@x.test", "accepted")] };
+    const answered = withOwnResponse(event, "accepted", "me@x.test");
+    expect(answered.attendees).toBe(event.attendees);
   });
 });

@@ -132,7 +132,7 @@ describe("ActionsWheel event delete", () => {
     const onClose = vi.fn();
     render(() => <ActionsWheel {...baseProps} onClose={onClose} selectedAccount={() => ({ id: "acc" } as any)} event={event} onDeleteEvent={onDeleteEvent} />);
     fireEvent.click(screen.getByTitle("Delete"));
-    expect(onDeleteEvent).toHaveBeenCalledWith(event);
+    expect(onDeleteEvent).toHaveBeenCalledWith(event, { left: expect.any(Number), bottom: expect.any(Number) });
     expect(onClose).toHaveBeenCalled();
     expect(confirm).not.toHaveBeenCalled();
     expect(rsvpListedCalendarEvent).not.toHaveBeenCalled();
