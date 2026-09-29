@@ -111,6 +111,14 @@ describe("EventView delete", () => {
     expect(props.onDelete).toHaveBeenCalledTimes(1);
   });
 
+  it("does not take a held key or a double click as the second press", () => {
+    const props = renderEvent();
+    fireEvent.keyDown(document, { key: "d" });
+    fireEvent.keyDown(document, { key: "d", repeat: true });
+    fireEvent.click(screen.getByTitle(/again to delete/), { detail: 2 });
+    expect(props.onDelete).not.toHaveBeenCalled();
+  });
+
   it("disarms on Escape without closing the event", () => {
     const props = renderEvent();
     fireEvent.keyDown(document, { key: "d" });

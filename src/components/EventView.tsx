@@ -81,7 +81,12 @@ export const EventView = (props: {
       return;
     }
     if (e.key === 'e' && event.can_edit) { e.preventDefault(); props.onEdit(); return; }
-    if ((e.key === 'd' || e.key === '#') && event.can_edit) { e.preventDefault(); handleDelete(); return; }
+    if ((e.key === 'd' || e.key === '#') && event.can_edit) {
+      e.preventDefault();
+      // A held key repeats, and would confirm its own first press
+      if (!e.repeat) handleDelete();
+      return;
+    }
   };
 
   onMount(() => document.addEventListener('keydown', handleKeyDown));
@@ -176,7 +181,7 @@ export const EventView = (props: {
 
               <button
                 class="thread-toolbar-btn thread-toolbar-btn-danger"
-                onClick={handleDelete}
+                onClick={(e) => { if (e.detail <= 1) handleDelete(); }}
                 title={deleteConfirm.armed() ? `Press again to delete "${props.event!.title || '(No title)'}". This can't be undone.` : "Delete event"}
               >
                 <TrashIcon />

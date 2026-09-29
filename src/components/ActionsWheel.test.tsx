@@ -106,6 +106,14 @@ describe("ActionsWheel event delete", () => {
     expect(rsvpListedCalendarEvent).not.toHaveBeenCalled();
   });
 
+  it("does not take the second click of a double click as the confirmation", () => {
+    const onDeleteEvent = vi.fn();
+    render(() => <ActionsWheel {...baseProps} event={event} onDeleteEvent={onDeleteEvent} />);
+    fireEvent.click(screen.getByTitle("Delete"), { detail: 1 });
+    fireEvent.click(screen.getByTitle("Click again to delete Sync"), { detail: 2 });
+    expect(onDeleteEvent).not.toHaveBeenCalled();
+  });
+
   it("keeps the event when another action is clicked in between", () => {
     rsvpListedCalendarEvent.mockReset().mockResolvedValue(null);
     const onDeleteEvent = vi.fn();

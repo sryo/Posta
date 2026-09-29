@@ -141,6 +141,8 @@ export const ActionsWheel = (props: {
           icon: deleteConfirm.armed() ? CheckIcon : TrashIcon,
           onClick: (e) => {
             e.stopPropagation();
+            // The second click of a double click is not a confirmation
+            if (e.detail > 1) return;
             deleteConfirm.press(() => {
               props.onDeleteEvent?.(evt);
               props.onClose();
