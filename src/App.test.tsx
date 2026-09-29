@@ -1379,6 +1379,24 @@ describe("App calendar", () => {
     expect(await screen.findByText("You're not going")).toBeInTheDocument();
   });
 
+  it("does not send an answer again for a focused event the user already gave", async () => {
+    calendarCards();
+    handlers.fetch_calendar_events = () => [{
+      ...calendarEvent("ev-a", "Planning"),
+      can_edit: false,
+      response_status: "accepted",
+      attendees: [{ email: "a@x.com", display_name: null, response_status: "accepted", is_self: true, is_organizer: false }],
+    }];
+    handlers.rsvp_listed_calendar_event = () => null;
+    render(() => <App />);
+    await screen.findByText("Planning");
+
+    fireEvent.keyDown(document, { key: "l" });
+    fireEvent.keyDown(document, { key: "y" });
+    await new Promise(r => setTimeout(r, 20));
+    expect(invoke).not.toHaveBeenCalledWith("rsvp_listed_calendar_event", expect.anything());
+  });
+
   it("does not answer for the user on a focused event they own", async () => {
     calendarCards();
     handlers.fetch_calendar_events = () => [{ ...calendarEvent("ev-a", "Focus"), organizer: "a@x.com" }];
@@ -1773,6 +1791,27 @@ describe("App calendar", () => {
     expect(within(row).getByRole("button", { name: "Maybe" })).toHaveAttribute("aria-keyshortcuts", "Shift+M");
     fireEvent.keyDown(document, { key: "M", shiftKey: true });
     await waitFor(() => expect(invoke).toHaveBeenCalledWith("rsvp_calendar_event", { accountId: "a", eventUid: "ev-1@google.com", status: "tentative" }));
+  });
+
+  it("does not send an answer again for a focused invite email the user already gave", async () => {
+    threadsByCard["card-a"] = [{
+      ...thread("t-inv", "Invitation: Planning"),
+      calendar_event: {
+        uid: "ev-1@google.com", title: "Planning", start_time: Date.now() + 3600_000, end_time: null, all_day: false,
+        location: null, description: null, organizer: "org@x.com", attendees: [], method: "REQUEST", status: null, response_status: null,
+      },
+    }];
+    handlers.get_calendar_rsvp_status = () => "tentative";
+    handlers.rsvp_calendar_event = () => null;
+    render(() => <App />);
+    await screen.findByText("Invitation: Planning");
+    const row = screen.getByText("Invitation: Planning").closest(".thread") as HTMLElement;
+    await waitFor(() => expect(within(row).getByRole("button", { name: "Maybe" })).toHaveAttribute("aria-pressed", "true"));
+
+    fireEvent.keyDown(document, { key: "l" });
+    fireEvent.keyDown(document, { key: "M", shiftKey: true });
+    await new Promise(r => setTimeout(r, 20));
+    expect(invoke).not.toHaveBeenCalledWith("rsvp_calendar_event", expect.anything());
   });
 
   it("answers an invite from its email and shows the answer on the event in calendar cards", async () => {
