@@ -1,4 +1,5 @@
 import { createSignal, Show } from "solid-js";
+import { useLayer } from "./layers";
 
 // window.confirm can't be used: WKWebView answers it with Cancel unless the
 // app implements the UI delegate method, which wry does not
@@ -34,6 +35,7 @@ function answer(ok: boolean) {
 }
 
 export function ConfirmDialog() {
+  useLayer(confirmOpen, () => answer(false), { closesFromInputs: true });
   return (
     <Show when={request()}>
       {(open) => (
@@ -48,15 +50,9 @@ export function ConfirmDialog() {
             role="alertdialog"
             aria-modal="true"
             aria-label={open().message}
-            on:keydown={(e) => {
-              // Native listener so the app's document-level shortcuts never
-              // see keys meant for the dialog
-              e.stopPropagation();
-              if (e.key === "Escape") {
-                e.preventDefault();
-                answer(false);
-              }
-            }}
+            // Native listener so the app's document-level shortcuts never
+            // see keys meant for the dialog
+            on:keydown={(e) => e.stopPropagation()}
           >
             <p>{open().message}</p>
             <div class="restore-actions">

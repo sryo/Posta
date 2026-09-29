@@ -21,6 +21,7 @@ import { createCloseAfterAnimation } from "../shared/closeAfterAnimation";
 import { isTypingTarget, hasCommandModifier } from "../shared/keyboard";
 import { createTwoStepConfirm } from "../shared/twoStepConfirm";
 import type { InlineComposeProps, InlineEditEventProps } from "./types";
+import { useLayer } from "../app/layers";
 
 // Event View Component
 export const EventView = (props: {
@@ -53,19 +54,7 @@ export const EventView = (props: {
 
   // Shortcuts advertised by the toolbar badges (R/J/O/C/E/#) and the actions wheel (R/⇧R/F)
   const handleKeyDown = (e: KeyboardEvent) => {
-    const isTyping = isTypingTarget(e.target);
-
-    if (e.key === 'Escape') {
-      if (isTyping) return; // input-level handlers (e.g. ComposeForm) own Escape
-      if (deleteConfirm.armed()) { deleteConfirm.disarm(); return; }
-      if (props.inlineEdit) { props.inlineEdit.onClose(); return; }
-      if (props.inlineCompose) { props.inlineCompose.onClose(); return; }
-      if (props.calendarDrawerOpen) { props.onCloseCalendarDrawer(); return; }
-      handleClose();
-      return;
-    }
-
-    if (isTyping || hasCommandModifier(e) || !props.event || props.inlineCompose || props.inlineEdit) return;
+    if (isTypingTarget(e.target) || hasCommandModifier(e) || !props.event || props.inlineCompose || props.inlineEdit) return;
     const event = props.event;
 
     if (e.key === 'r' && event.organizer) { e.preventDefault(); props.onReplyOrganizer(); return; }
@@ -91,6 +80,13 @@ export const EventView = (props: {
 
   onMount(() => document.addEventListener('keydown', handleKeyDown));
   onCleanup(() => document.removeEventListener('keydown', handleKeyDown));
+
+  // Escape closes whichever of these opened last
+  useLayer(() => true, handleClose);
+  useLayer(() => props.calendarDrawerOpen, () => props.onCloseCalendarDrawer());
+  useLayer(() => !!props.inlineCompose, () => props.inlineCompose?.onClose());
+  useLayer(() => !!props.inlineEdit, () => props.inlineEdit?.onClose());
+  useLayer(deleteConfirm.armed, () => deleteConfirm.disarm());
 
   return (
     <div class={`thread-overlay ${closing() ? 'closing' : ''}`} style={props.focusColor ? { '--message-focused-color': props.focusColor } as any : undefined}>

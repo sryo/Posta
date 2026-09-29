@@ -1,6 +1,6 @@
 import { beforeAll, describe, expect, it, vi } from "vitest";
 import { createSignal } from "solid-js";
-import { fireEvent, render } from "@solidjs/testing-library";
+import { cleanup, fireEvent, render } from "@solidjs/testing-library";
 import { ThreadView } from "./ThreadView";
 import type { FullThread } from "../api/tauri";
 
@@ -207,6 +207,25 @@ describe("ThreadView keyboard shortcuts", () => {
     fireEvent.keyDown(document, { key: "Escape" });
     expect(onCloseLabelDrawer).toHaveBeenCalledTimes(1);
     expect(container.querySelector(".thread-overlay.closing")).toBeNull();
+  });
+
+  it("closes the label drawer opened over an inline reply before the reply", () => {
+    const onCloseLabelDrawer = vi.fn();
+    const onCloseCompose = vi.fn();
+    const [drawerOpen, setDrawerOpen] = createSignal(false);
+    const { props } = renderThread({ onCloseLabelDrawer });
+    cleanup();
+    render(() => (
+      <ThreadView
+        {...props}
+        inlineCompose={{ replyToMessageId: null, isForward: false, onClose: onCloseCompose } as any}
+        labelDrawerOpen={drawerOpen()}
+      />
+    ));
+    setDrawerOpen(true);
+    fireEvent.keyDown(document, { key: "Escape" });
+    expect(onCloseLabelDrawer).toHaveBeenCalledTimes(1);
+    expect(onCloseCompose).not.toHaveBeenCalled();
   });
 
   it("toggles the label drawer shut on a second 'l'", () => {

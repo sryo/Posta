@@ -4971,7 +4971,6 @@ function App() {
                 placeholder="Search labels..."
                 value={labelSearchQuery()}
                 onInput={(e) => setLabelSearchQuery(e.currentTarget.value)}
-                onKeyDown={(e) => { if (e.key === 'Escape') closeLabelDrawer(); }}
                 autofocus
               />
             </div>
