@@ -423,6 +423,9 @@ function App() {
   const [editCardColor, setEditCardColor] = createSignal<CardColor>(null);
   const [editCardGroupBy, setEditCardGroupBy] = createSignal<GroupBy>("date");
   const [editColorPickerOpen, setEditColorPickerOpen] = createSignal(false);
+  // What the editor started from; saving changes only the fields edited since,
+  // so a change pulled from iCloud meanwhile isn't written back over
+  let editCardStart: Pick<Card, "name" | "query" | "color" | "group_by"> | null = null;
 
   // While editing, the card body doubles as a live preview: it keeps showing
   // the card's real content until the draft query diverges from the saved one
@@ -1005,6 +1008,7 @@ function App() {
       const before = new Map(cards().map(c => [c.id, c.query]));
       const kept = new Set(cardList.map(c => c.id));
       setCards(reuseUnchanged(cards(), cardList));
+      followPulledCardInEditor();
       forgetCardState([...before.keys()].filter(id => !kept.has(id)));
       for (const card of cardList) {
         if (before.get(card.id) === card.query || collapsedCards[card.id]) continue;
@@ -2784,6 +2788,7 @@ function App() {
     setQueryPreviewCalendarEvents([]);
     setQueryPreviewLoading(false);
     setEditingCardId(card.id);
+    editCardStart = { name: card.name, query: card.query, color: card.color || null, group_by: card.group_by || "date" };
     setEditCardName(card.name);
     setEditCardQuery(card.query);
     setEditCardColor((card.color as CardColor) || null);
@@ -2798,19 +2803,19 @@ function App() {
     const card = cards().find(c => c.id === cardId);
     if (!card) return;
 
-    const queryChanged = card.query !== editCardQuery();
+    const start = editCardStart ?? card;
+    const edited = <T,>(value: T, before: T, current: T) => (value === before ? current : value);
+    const newQuery = edited(editCardQuery(), start.query, card.query);
+    const queryChanged = card.query !== newQuery;
 
     try {
-      // Detect card type from query
-      const newQuery = editCardQuery();
-      const cardType = cardTypeForQuery(newQuery);
       const updatedCard: Card = {
         ...card,
-        name: editCardName(),
+        name: edited(editCardName(), start.name, card.name),
         query: newQuery,
-        color: editCardColor() || null,
-        card_type: cardType,
-        group_by: editCardGroupBy(),
+        color: edited(editCardColor() || null, start.color || null, card.color || null),
+        card_type: cardTypeForQuery(newQuery),
+        group_by: edited(editCardGroupBy(), start.group_by || "date", card.group_by),
       };
       await updateCard(updatedCard);
       setCards(cards().map(c => c.id === cardId ? updatedCard : c));
@@ -2829,6 +2834,20 @@ function App() {
     } catch (e) {
       setError(`Couldn't save the card: ${e}`);
     }
+  }
+
+  // The open editor shows a pulled change to any field the user hasn't touched
+  function followPulledCardInEditor() {
+    const card = cards().find(c => c.id === editingCardId());
+    const start = editCardStart;
+    if (!card || !start) return;
+    batch(() => {
+      if (editCardName() === start.name) setEditCardName(card.name);
+      if (editCardQuery() === start.query) setEditCardQuery(card.query);
+      if ((editCardColor() || null) === (start.color || null)) setEditCardColor((card.color as CardColor) || null);
+      if (editCardGroupBy() === start.group_by) setEditCardGroupBy(card.group_by || "date");
+    });
+    editCardStart = { name: card.name, query: card.query, color: card.color || null, group_by: card.group_by || "date" };
   }
 
   function cancelEditCard() {

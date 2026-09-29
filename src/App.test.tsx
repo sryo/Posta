@@ -2384,6 +2384,32 @@ describe("App card query edits", () => {
   });
 });
 
+describe("App card editor and iCloud", () => {
+  it("saves only what was edited, keeping a query another Mac changed meanwhile", async () => {
+    handlers.update_card = () => null;
+    handlers.clear_card_cache = () => null;
+    render(() => <App />);
+    await screen.findByText("Mail for A");
+    fireEvent.click(screen.getByTitle("Edit query"));
+    fireEvent.input(screen.getByPlaceholderText("Inbox, Starred..."), { target: { value: "Alpha renamed" } });
+
+    handlers.pull_from_icloud = () => true;
+    cardsByAccount.a = [{ ...card("card-a", "a", "Alpha"), query: "is:starred" }];
+    fireEvent.focus(window);
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith("get_cards", { accountId: "a" }));
+    await waitFor(() => expect(screen.getByPlaceholderText("is:inbox, from:boss, newer_than:7d")).toHaveValue("is:starred"));
+    expect(screen.getByPlaceholderText("Inbox, Starred...")).toHaveValue("Alpha renamed");
+    await new Promise(r => setTimeout(r, 20));
+    invoke.mockClear();
+    fireEvent.click(screen.getByTitle("Save (⌘Enter)"));
+
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith("update_card", {
+      card: expect.objectContaining({ id: "card-a", name: "Alpha renamed", query: "is:starred" }),
+    }));
+    expect(invoke).not.toHaveBeenCalledWith("clear_card_cache", expect.anything());
+  });
+});
+
 describe("App card refreshes", () => {
   it("does not fetch a card again while its refresh is in flight", async () => {
     handlers.get_cached_card_threads = () => ({ groups: [{ label: "Today", threads: [thread("t-a", "Mail for A")] }], next_page_token: null, cached_at: 1 });
