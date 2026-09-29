@@ -142,7 +142,7 @@ import { coalesceByKey } from "./app/coalesce";
 import { batchReplyLoadErrorMessage, cardLoadErrorMessage, threadLoadErrorMessage } from "./app/loadErrors";
 import { cardTypeForQuery } from "./app/cardType";
 import { createDraftSync, draftKey, findLatestDraft, findUnsentDrafts, hasDraftContent, markDraftClosed, markDraftSending, pruneDrafts, removeAccountDrafts, sessionDraftKey, type DraftFields } from "./app/drafts";
-import { escapeTarget, nextCardFocus, nextItemFocus } from "./app/keyboardNav";
+import { escapeTarget, nextCardFocus, nextItemFocus, type ItemFocus } from "./app/keyboardNav";
 import { getSmartEventTime, groupCalendarEvents, isUserLabel, mergeThreadGroups, regroupThreads, type CalendarEventGroup } from "./app/grouping";
 import { pullLayoutWithRetry } from "./app/icloudRestore";
 import { querySuggestions, type QuerySuggestion } from "./app/querySuggestions";
@@ -1332,13 +1332,64 @@ function App() {
     });
   }
 
-  // Focus a card and the item at `index` in it (-1 focuses the card only)
+  // Focus a card and the item at `index` in it (-1 focuses the card only).
+  // The row takes keyboard focus too, so Tab and j/k agree.
   function focusCardItem(cardId: string, index: number) {
     setFocusedCardId(cardId);
     const calendar = isCalendarCard(cardId);
     setFocusedEventIndex(calendar ? index : -1);
     setFocusedThreadIndex(calendar ? -1 : index);
     scrollFocusedIntoView();
+    const card = `.card[data-id="${CSS.escape(cardId)}"]`;
+    const row = document.querySelector<HTMLElement>(`${card} .thread.focused, ${card} .calendar-event-item.focused`);
+    if (row && document.activeElement !== row) row.focus({ preventScroll: true });
+  }
+
+  // Roving tab stop: one row per card, the focused one or else the first
+  const tabStopKeys = createMemo(() => {
+    const keys = new Set<string>();
+    for (const card of cards()) {
+      if (collapsedCards[card.id]) continue;
+      const items = isCalendarCard(card.id)
+        ? getCardEventsFlat(card.id).map(ev => ev.id)
+        : getCardThreadsFlat(card.id).map(t => t.gmail_thread_id);
+      const focused = card.id === focusedCardId()
+        ? items[isCalendarCard(card.id) ? focusedEventIndex() : focusedThreadIndex()]
+        : undefined;
+      const stop = focused ?? items[0];
+      if (stop) keys.add(rowKey(card.id, stop));
+    }
+    return keys;
+  });
+  const rowTabIndex = (cardId: string, itemId: string) => (tabStopKeys().has(rowKey(cardId, itemId)) ? 0 : -1);
+
+  // A row focused by Tab or a click becomes the j/k focus
+  function onRowFocus(cardId: string, itemId: string) {
+    const ids = isCalendarCard(cardId)
+      ? getCardEventsFlat(cardId).map(ev => ev.id)
+      : getCardThreadsFlat(cardId).map(t => t.gmail_thread_id);
+    const index = ids.indexOf(itemId);
+    if (index === -1) return;
+    if (focusedCardId() === cardId && (isCalendarCard(cardId) ? focusedEventIndex() : focusedThreadIndex()) === index) return;
+    focusCardItem(cardId, index);
+  }
+
+  // The row a thread or event view was opened from, for focus to go back to
+  let openedFromRow: ItemFocus | null = null;
+  function rememberOpenedRow(cardId: string, itemId: string) {
+    const ids = isCalendarCard(cardId)
+      ? getCardEventsFlat(cardId).map(ev => ev.id)
+      : getCardThreadsFlat(cardId).map(t => t.gmail_thread_id);
+    const index = ids.indexOf(itemId);
+    openedFromRow = index === -1 ? null : { cardId, index };
+  }
+  // Back to that row, or the one now in its place when it left the card
+  function restoreOpenedRowFocus() {
+    const from = openedFromRow;
+    openedFromRow = null;
+    if (!from || !cards().some(c => c.id === from.cardId)) return;
+    const count = (isCalendarCard(from.cardId) ? getCardEventsFlat(from.cardId) : getCardThreadsFlat(from.cardId)).length;
+    if (count > 0) focusCardItem(from.cardId, Math.min(from.index, count - 1));
   }
 
   // Global keyboard shortcuts
@@ -2653,6 +2704,7 @@ function App() {
 
     if (shouldClose) {
       closeThreadView();
+      restoreOpenedRowFocus();
     } else {
       await refreshActiveThread(account.id, thread.id);
     }
@@ -3581,6 +3633,7 @@ function App() {
       return;
     }
 
+    rememberOpenedRow(cardId, threadId);
     setActiveThreadId(threadId);
     setActiveThreadCardId(cardId);
     setThreadLoading(true);
@@ -3639,6 +3692,7 @@ function App() {
   }
 
   function openEvent(event: GoogleCalendarEvent, cardId: string) {
+    rememberOpenedRow(cardId, event.id);
     setActiveEvent(event);
     setActiveEventCardId(cardId);
   }
@@ -4278,7 +4332,8 @@ function App() {
                                         onClick={() => openEvent(event, card.id)}
                                         onMouseEnter={() => showEventHoverActions(event.id)}
                                         onMouseLeave={hideEventHoverActions}
-                                        tabindex="0"
+                                        tabindex={rowTabIndex(card.id, event.id)}
+                                        onFocus={() => onRowFocus(card.id, event.id)}
                                       >
                                         <div class="calendar-event-row">
                                           <span class="calendar-event-title">{event.title}</span>
@@ -4413,7 +4468,8 @@ function App() {
                                           onClick={() => openThread(thread.gmail_thread_id, card.id)}
                                           role="article"
                                           aria-label={`${thread.unread_count > 0 ? 'Unread: ' : ''}${thread.subject} from ${thread.participants.slice(0, 2).join(', ')}`}
-                                          tabindex="0"
+                                          tabindex={rowTabIndex(card.id, thread.gmail_thread_id)}
+                                          onFocus={() => onRowFocus(card.id, thread.gmail_thread_id)}
                                         >
                                           <div class="thread-row">
                                             <Show when={thread.unread_count > 0}>
@@ -4925,7 +4981,7 @@ function App() {
             return c ? { name: c.name, color: (c.color as CardColor) || null } : null;
           })() : null}
           focusColor={selectedBgColorIndex() !== null ? BG_COLORS[selectedBgColorIndex()!].hex : null}
-          onClose={() => { if (composeShownIn() === "thread") closeCompose(); closeThreadView(); }}
+          onClose={() => { if (composeShownIn() === "thread") closeCompose(); closeThreadView(); restoreOpenedRowFocus(); }}
           focusedMessageIndex={focusedMessageIndex()}
           onFocusChange={setFocusedMessageIndex}
           onOpenAttachment={(messageId, attachmentId, filename, mimeType, inlineData) => openAttachment(messageId, attachmentId, filename, mimeType, inlineData)}
@@ -5035,7 +5091,7 @@ function App() {
             return c ? { name: c.name, color: (c.color as CardColor) || null } : null;
           })() : null}
           focusColor={selectedBgColorIndex() !== null ? BG_COLORS[selectedBgColorIndex()!].hex : null}
-          onClose={closeEvent}
+          onClose={() => { closeEvent(); restoreOpenedRowFocus(); }}
           onRsvp={async (status) => {
             const event = activeEvent();
             const account = selectedAccount();

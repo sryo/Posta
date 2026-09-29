@@ -998,6 +998,61 @@ describe("App dialogs", () => {
   });
 });
 
+describe("App keyboard focus", () => {
+  const row = (subject: string) => screen.getByText(subject).closest<HTMLElement>(".thread")!;
+
+  it("gives each card one tab stop, which follows j/k and takes keyboard focus", async () => {
+    threadsByCard["card-a"] = [thread("t-1", "First"), thread("t-2", "Second")];
+    render(() => <App />);
+    await screen.findByText("Second");
+    expect(row("First")).toHaveAttribute("tabindex", "0");
+    expect(row("Second")).toHaveAttribute("tabindex", "-1");
+
+    fireEvent.keyDown(document, { key: "l" });
+    fireEvent.keyDown(document, { key: "j" });
+    expect(row("Second")).toHaveAttribute("tabindex", "0");
+    expect(row("First")).toHaveAttribute("tabindex", "-1");
+    expect(document.activeElement).toBe(row("Second"));
+  });
+
+  it("moves the j/k focus to a row that Tab focuses", async () => {
+    threadsByCard["card-a"] = [thread("t-1", "First"), thread("t-2", "Second")];
+    render(() => <App />);
+    await screen.findByText("Second");
+    row("Second").focus();
+    expect(row("Second")).toHaveClass("focused");
+    fireEvent.keyDown(document.activeElement!, { key: "k" });
+    expect(row("First")).toHaveClass("focused");
+  });
+
+  it("gives focus back to the row a thread was opened from on closing it", async () => {
+    handlers.get_thread_details = () => ({ id: "t-a", messages: [fullMessage("m1", "Ana <ana@x.com>")] });
+    render(() => <App />);
+    await screen.findByText("Mail for A");
+    fireEvent.keyDown(document, { key: "l" });
+    fireEvent.keyDown(document, { key: "Enter" });
+    await screen.findByRole("dialog", { name: "Hi" });
+    fireEvent.keyDown(document, { key: "Escape" });
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "Hi" })).toBeNull());
+    expect(document.activeElement).toBe(row("Mail for A"));
+  });
+
+  it("focuses the row that took an archived thread's place on closing it", async () => {
+    threadsByCard["card-a"] = [{ ...thread("t-a", "First"), labels: ["INBOX"] }, { ...thread("t-2", "Second"), labels: ["INBOX"] }];
+    handlers.get_thread_details = () => ({ id: "t-a", messages: [fullMessage("m1", "Ana <ana@x.com>")] });
+    handlers.modify_threads = () => null;
+    render(() => <App />);
+    await screen.findByText("Second");
+    fireEvent.keyDown(document, { key: "l" });
+    fireEvent.keyDown(document, { key: "Enter" });
+    await screen.findByRole("dialog", { name: "Hi" });
+    fireEvent.keyDown(document, { key: "a" });
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "Hi" })).toBeNull());
+    await waitFor(() => expect(document.activeElement).toBe(row("Second")));
+    expect(row("Second")).toHaveClass("focused");
+  });
+});
+
 describe("App thread view", () => {
   it("marks an unread thread read on open without an undo toast", async () => {
     threadsByCard["card-a"] = [{ ...thread("t-a", "Mail for A"), unread_count: 1, labels: ["INBOX", "UNREAD"] }];
