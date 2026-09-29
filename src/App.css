@@ -887,7 +887,8 @@ a:focus-visible,
 }
 
 .sync-status.sync-fresh,
-.sync-status.sync-stale {
+.sync-status.sync-stale,
+.sync-status.sync-waiting {
     opacity: 0.6;
 }
 
@@ -1809,7 +1810,8 @@ a:focus-visible,
     margin-left: auto;
 }
 
-/* Card query field: chips at rest, the raw query while focused */
+/* Card query field: chips for the finished words, with the text box among
+   them while focused */
 .query-field {
     position: relative;
     display: flex;
@@ -1834,6 +1836,30 @@ a:focus-visible,
     border-radius: var(--radius-md);
     background: var(--bg-primary);
     cursor: text;
+}
+
+.query-chips:focus-within {
+    border-color: var(--accent);
+}
+
+/* As wide as its text between chips, taking the rest of the row at the end */
+.query-chips input {
+    flex: 0 1 auto;
+    min-width: 4ch;
+    padding: 0;
+    border: none;
+    border-radius: 0;
+    background: none;
+    font-size: var(--font-size-md);
+    color: var(--text-primary);
+}
+
+.query-chips input:last-child {
+    flex-grow: 1;
+}
+
+.query-chips input:focus {
+    outline: none;
 }
 
 .query-chip {
@@ -1889,6 +1915,7 @@ a:focus-visible,
 .query-word {
     font-size: var(--font-size-md);
     color: var(--text-primary);
+    cursor: text;
 }
 
 .query-explain {

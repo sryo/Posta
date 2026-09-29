@@ -24,18 +24,25 @@ export const CardEmpty = (props: { query: string }) => (
   </div>
 );
 
-// The board-wide strip saying why cards can't update, docked above the deck
-export const ConnectionStatusBar = (props: { status: ConnectionStatus; onRetry: () => void; onSignIn: () => void }) => (
-  <div class={`connection-status ${props.status.kind}`} aria-live="polite">
-    <Show when={props.status.kind === "reconnecting"}>
-      <span class="spinner-sm"></span>
-    </Show>
-    <span class="connection-status-message">{props.status.message}</span>
-    <Show when={props.status.action === "retry"}>
-      <button type="button" class="connection-status-action" onClick={() => props.onRetry()}>Try now</button>
-    </Show>
-    <Show when={props.status.action === "signIn"}>
-      <button type="button" class="connection-status-action" onClick={() => props.onSignIn()}>Sign in again</button>
+// The board-wide strip saying why cards can't update, docked above the deck.
+// Its live region stays on the page so the first message is announced too.
+export const ConnectionStatusBar = (props: { status: ConnectionStatus | null; onRetry: () => void; onSignIn: () => void }) => (
+  <div class="connection-status-region" aria-live="polite">
+    <Show when={props.status}>
+      {(status) => (
+        <div class={`connection-status ${status().kind}`}>
+          <Show when={status().kind === "reconnecting"}>
+            <span class="spinner-sm"></span>
+          </Show>
+          <span class="connection-status-message">{status().message}</span>
+          <Show when={status().action === "retry"}>
+            <button type="button" class="connection-status-action" onClick={() => props.onRetry()}>Try now</button>
+          </Show>
+          <Show when={status().action === "signIn"}>
+            <button type="button" class="connection-status-action" onClick={() => props.onSignIn()}>Sign in again</button>
+          </Show>
+        </div>
+      )}
     </Show>
   </div>
 );

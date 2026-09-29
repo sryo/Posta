@@ -33,6 +33,7 @@ function standaloneDeclarations(classes: string[]): Map<string, string> {
 const UNSTYLED_HOOKS = new Set([
   "time-picker-start",
   "time-picker-end",
+  "connection-status-region",
 ]);
 
 // Class names in `class="..."`, and every string literal or template text
@@ -207,6 +208,14 @@ describe("card query field", () => {
     expect(hidden.get("display")).toBeUndefined();
   });
 
+  it("draws the text box borderless inside the chip box while typing, the box taking the focus colour", () => {
+    const box = declarationsOf(".query-chips input");
+    expect(box.get("border")).toBe("none");
+    expect(box.get("flex")).toBe("0 1 auto");
+    expect(declarationsOf(".query-chips input:last-child").get("flex-grow")).toBe("1");
+    expect(declarationsOf(".query-chips:focus-within").get("border-color")).toBe("var(--accent)");
+  });
+
   it("shows a failed preview in the danger color", () => {
     expect(declarationsOf(".query-preview-error").get("color")).toBe("var(--danger)");
   });
@@ -256,6 +265,11 @@ describe("board connection status", () => {
 
   it("dims the mail of cards that can't update", () => {
     expect(declarationsOf(".card.stale .card-body").get("opacity")).toBeDefined();
+  });
+
+  it("keeps the age of a card that can't update in view", () => {
+    expect(declarationsOf(".sync-status").get("opacity")).toBe("0");
+    expect(Number(declarationsOf(".sync-status.sync-waiting").get("opacity"))).toBeGreaterThan(0);
   });
 });
 

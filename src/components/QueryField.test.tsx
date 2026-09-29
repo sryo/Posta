@@ -90,7 +90,10 @@ describe("QueryField chips", () => {
     fireEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Edit as text" }));
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
     expect(document.activeElement).toBe(input);
-    expect(input.selectionStart).toBe("is:unread newer_than:7d".length);
+    expect(input).toHaveValue("newer_than:7d");
+    expect(input.selectionStart).toBe("newer_than:7d".length);
+    expect(screen.getByRole("button", { name: "Change is:unread" })).toBeInTheDocument();
+    expect(screen.getByText("invoice")).toHaveClass("query-word");
   });
 
   it("moves focus into a chip's picker and back to the chip when it closes", () => {
@@ -106,27 +109,162 @@ describe("QueryField chips", () => {
     expect(document.activeElement).toBe(screen.getByRole("button", { name: "Change is:unread" }));
   });
 
-  it("switches to the raw text while the field has focus", () => {
-    const { input } = renderField("is:unread");
+});
+
+describe("QueryField while typing", () => {
+  it("keeps the finished words as chips around the text box", () => {
+    const { input } = renderField("is:unread invoice");
     fireEvent.focus(input);
-    expect(screen.queryByRole("button", { name: "Change is:unread" })).not.toBeInTheDocument();
-    expect(input).toHaveValue("is:unread");
+    expect(screen.getByRole("button", { name: "Change is:unread" })).toBeInTheDocument();
+    expect(screen.getByText("invoice")).toHaveClass("query-word");
+    expect(input).toHaveValue("");
     fireEvent.blur(input);
+    expect(screen.getByRole("button", { name: "Change is:unread" })).toBeInTheDocument();
+  });
+
+  it("turns a typed operator into a chip once a space follows it", () => {
+    const { input, query } = renderField("");
+    fireEvent.focus(input);
+    fireEvent.input(input, { target: { value: "from:ana@x.com" } });
+    expect(screen.queryByRole("button", { name: "Change from:ana@x.com" })).not.toBeInTheDocument();
+    fireEvent.input(input, { target: { value: "from:ana@x.com " } });
+    expect(screen.getByRole("button", { name: "Change from:ana@x.com" })).toBeInTheDocument();
+    expect(input).toHaveValue("");
+    expect(query()).toBe("from:ana@x.com");
+  });
+
+  it("leaves text an input method is still composing in the text box", () => {
+    const { input, query } = renderField("");
+    fireEvent.focus(input);
+    fireEvent.input(input, { target: { value: "subject:日本 " }, isComposing: true });
+    expect(input).toHaveValue("subject:日本 ");
+    expect(screen.queryByRole("button", { name: "Change subject:日本" })).not.toBeInTheDocument();
+    expect(query()).toBe("subject:日本");
+  });
+
+  it("changes a chip from its picker while typing, keeping the typed text and the focus", () => {
+    const { input, query } = renderField("is:unread newer_than:7d");
+    fireEvent.focus(input);
+    fireEvent.input(input, { target: { value: "invo" } });
+    const chip = screen.getByRole("button", { name: "Change newer_than:7d" });
+    expect(fireEvent.mouseDown(chip)).toBe(false);
+    fireEvent.click(chip);
+    fireEvent.blur(input);
+    const picker = screen.getByRole("dialog", { name: "newer_than" });
+    fireEvent.click(within(picker).getByRole("button", { name: /1 month/ }));
+    expect(query()).toBe("is:unread newer_than:1m invo");
+    expect(input).toHaveValue("invo");
+    expect(document.activeElement).toBe(input);
+  });
+
+  it("removes a chip while typing", () => {
+    const { input, query } = renderField("is:unread invoice");
+    fireEvent.focus(input);
+    fireEvent.input(input, { target: { value: "from:a" } });
+    fireEvent.click(screen.getByRole("button", { name: "Remove is:unread" }));
+    expect(query()).toBe("invoice from:a");
+    expect(input).toHaveValue("from:a");
+  });
+
+  it("takes the word before the text box back into it on Backspace at its start", () => {
+    const { input, query } = renderField("is:unread from:ana@x.com");
+    fireEvent.focus(input);
+    fireEvent.keyDown(input, { key: "Backspace" });
+    expect(input).toHaveValue("from:ana@x.com");
+    expect(input.selectionStart).toBe("from:ana@x.com".length);
+    expect(screen.queryByRole("button", { name: "Change from:ana@x.com" })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Change is:unread" })).toBeInTheDocument();
+    expect(query()).toBe("is:unread from:ana@x.com");
+  });
+
+  it("moves the text box between chips with the arrow keys", () => {
+    const { input, query } = renderField("is:unread invoice");
+    fireEvent.focus(input);
+    fireEvent.keyDown(input, { key: "ArrowLeft" });
+    fireEvent.keyDown(input, { key: "ArrowLeft" });
+    fireEvent.input(input, { target: { value: "has:attachment" } });
+    expect(query()).toBe("has:attachment is:unread invoice");
+    input.setSelectionRange(input.value.length, input.value.length);
+    fireEvent.keyDown(input, { key: "ArrowRight" });
+    expect(input).toHaveValue("");
+    expect(query()).toBe("has:attachment is:unread invoice");
+    expect(screen.getByRole("button", { name: "Change has:attachment" })).toBeInTheDocument();
+  });
+
+  it("keeps a chip focused when Tab moves to it from the text box", () => {
+    const { input } = renderField("is:unread from:ana@x.com");
+    input.focus();
+    fireEvent.input(input, { target: { value: "invo" } });
+    const chip = screen.getByRole("button", { name: "Change from:ana@x.com" });
+    chip.focus();
+    expect(chip.isConnected).toBe(true);
+    expect(document.activeElement).toBe(chip);
+    expect(input).toHaveValue("invo");
+
+    fireEvent.click(chip);
+    const picker = screen.getByRole("dialog", { name: "from" });
+    expect(picker).toBeInTheDocument();
+  });
+
+  it("stops editing once focus leaves the field from one of its chips", () => {
+    const { input } = renderField("is:unread invoice");
+    const outside = document.createElement("button");
+    document.body.append(outside);
+    input.focus();
+    screen.getByRole("button", { name: "Change is:unread" }).focus();
+    outside.focus();
+    expect(input).toHaveValue("is:unread invoice");
+    expect(input.closest(".query-field")).not.toHaveClass("editing");
+    outside.remove();
+  });
+
+  it("edits a plain word as text when it is clicked", () => {
+    const { input } = renderField("is:unread invoice");
+    fireEvent.mouseDown(screen.getByText("invoice"));
+    expect(document.activeElement).toBe(input);
+    expect(input).toHaveValue("invoice");
     expect(screen.getByRole("button", { name: "Change is:unread" })).toBeInTheDocument();
   });
 });
 
 describe("QueryField autocomplete", () => {
-  it("completes the word at the caret", () => {
+  it("completes the word at the caret, turning it into a chip", () => {
     const { input, query } = renderField("");
     fireEvent.focus(input);
-    fireEvent.input(input, { target: { value: "is:unr newer_than:7d" } });
-    input.setSelectionRange(6, 6);
-    fireEvent.select(input);
+    fireEvent.input(input, { target: { value: "is:unr" } });
     const item = screen.getByText("is:unread");
     expect(item.closest(".query-autocomplete")).not.toBeNull();
     fireEvent.mouseDown(item);
-    expect(query()).toBe("is:unread newer_than:7d");
+    expect(query()).toBe("is:unread");
+    expect(input).toHaveValue("");
+    expect(screen.getByRole("button", { name: "Change is:unread" })).toBeInTheDocument();
+  });
+
+  it("completes a plain word clicked to edit it, keeping its place", () => {
+    const { input, query } = renderField("unrea invoice");
+    fireEvent.mouseDown(screen.getByText("unrea"));
+    expect(input).toHaveValue("unrea");
+    fireEvent.mouseDown(screen.getByText("is:unread"));
+    expect(query()).toBe("is:unread invoice");
+  });
+
+  it("turns every finished word of a paste into chips", () => {
+    const { input, query } = renderField("");
+    fireEvent.focus(input);
+    fireEvent.input(input, { target: { value: "from:ana@x.com newer_than:7d invo" } });
+    expect(screen.getByRole("button", { name: "Change from:ana@x.com" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Change newer_than:7d" })).toBeInTheDocument();
+    expect(input).toHaveValue("invo");
+    expect(query()).toBe("from:ana@x.com newer_than:7d invo");
+  });
+
+  it("completes only the text being typed, not the chips after it", () => {
+    const { input, query } = renderField("invoice");
+    fireEvent.focus(input);
+    fireEvent.keyDown(input, { key: "ArrowLeft" });
+    fireEvent.input(input, { target: { value: "is:unr" } });
+    fireEvent.mouseDown(screen.getByText("is:unread"));
+    expect(query()).toBe("is:unread invoice");
   });
 
   it("offers calendar operators", () => {
@@ -161,8 +299,7 @@ describe("QueryField insertion", () => {
     let insert: ((text: string) => void) | undefined;
     const { input, query } = renderField("is:unread", { onActive: fn => { insert = fn; } });
     fireEvent.focus(input);
-    input.setSelectionRange(0, 0);
-    fireEvent.select(input);
+    fireEvent.keyDown(input, { key: "ArrowLeft" });
     insert!("from:");
     expect(query()).toBe("from: is:unread");
     expect(document.activeElement).toBe(input);

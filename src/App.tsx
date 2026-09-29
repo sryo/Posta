@@ -83,7 +83,6 @@ import {
   formatFileSize,
   formatTime,
   formatSyncTime,
-  getSyncState,
   truncateMiddle,
   getInitial,
   extractEmail,
@@ -165,7 +164,7 @@ import { sendPending, type PendingSend } from "./app/pendingSend";
 import { parseMailto } from "./app/mailto";
 import { coalesceByKey } from "./app/coalesce";
 import { batchReplyLoadErrorMessage, cardLoadErrorMessage, isOfflineError, queryPreviewErrorMessage, threadLoadErrorMessage } from "./app/loadErrors";
-import { cardWaitingMessage, connectionStatus } from "./app/connectionStatus";
+import { cardSyncLabel, cardWaitingMessage, connectionStatus } from "./app/connectionStatus";
 import { CardEmpty, CardSkeleton, ConnectionStatusBar } from "./components/CardStates";
 import { cardTypeForQuery } from "./app/cardType";
 import { discardThreadDrafts, draftToOpen, isDraftThread, prepareDraftCompose, withDraftsDiscarded, type DraftToOpen } from "./app/draftThreads";
@@ -4357,9 +4356,7 @@ function App() {
       {/* Drag region for frameless window */}
       <div class="drag-region" data-tauri-drag-region></div>
 
-      <Show when={boardStatus()}>
-        {(status) => <ConnectionStatusBar status={status()} onRetry={retryConnection} onSignIn={handleReauth} />}
-      </Show>
+      <ConnectionStatusBar status={boardStatus()} onRetry={retryConnection} onSignIn={handleReauth} />
 
       {/* Global filter bar - keyboard activated */}
       <div class={`global-filter-bar ${showGlobalFilter() ? 'visible' : ''}`}>
@@ -4682,19 +4679,16 @@ function App() {
                               <ChevronIcon />
                             </button>
                             <span class="card-title">{card.name}</span>
-                            <Show when={lastSyncTimes[card.id] && !loadingThreads[card.id]}>
-                              {(() => {
-                                const state = getSyncState(lastSyncTimes[card.id], currentTime());
-                                const hasError = syncErrors[card.id];
-                                return (
-                                  <span
-                                    class={`sync-status ${hasError ? 'sync-error' : ''} ${state === 'fresh' ? 'sync-fresh' : ''} ${state === 'stale' ? 'sync-stale' : ''}`}
-                                    title={hasError ? `Sync failed: ${hasError}` : `Last synced: ${formatSyncTime(lastSyncTimes[card.id], currentTime())}`}
-                                  >
-                                    {hasError ? 'sync failed' : formatSyncTime(lastSyncTimes[card.id], currentTime())}
-                                  </span>
-                                );
-                              })()}
+                            <Show when={!loadingThreads[card.id] && cardSyncLabel({ lastSyncedAt: lastSyncTimes[card.id], now: currentTime(), syncError: syncErrors[card.id], boardDown: offline() || sessionExpired() })}>
+                              {(label) => (
+                                <span
+                                  class="sync-status"
+                                  classList={{ "sync-fresh": label().tone === "fresh", "sync-stale": label().tone === "stale", "sync-error": label().tone === "error", "sync-waiting": label().tone === "waiting" }}
+                                  title={label().title}
+                                >
+                                  {label().text}
+                                </span>
+                              )}
                             </Show>
                             <Show when={getCardUnreadCount(card.id) > 0}>
                               <span class="card-unread-badge">{getCardUnreadCount(card.id)}</span>
