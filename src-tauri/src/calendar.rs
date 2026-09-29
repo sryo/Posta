@@ -444,11 +444,23 @@ fn ended_rules(rules: &[String], split: i64, all_day: bool) -> Vec<String> {
         .collect()
 }
 
-/// The series' rules without an end, for the series that continues it
-fn unbounded_rules(rules: &[String]) -> Vec<String> {
+fn rule_count(rule: &str) -> Option<usize> {
+    rule.strip_prefix("RRULE:")?.split(';').find_map(|p| p.strip_prefix("COUNT=")?.parse().ok())
+}
+
+/// The series' rules for the series that continues it from the split: an
+/// UNTIL stays, and a COUNT loses the `before` occurrences the ended series keeps
+fn continued_rules(rules: &[String], before: usize) -> Vec<String> {
     rules
         .iter()
-        .map(|rule| rule_without_limits(rule).map_or_else(|| rule.clone(), |parts| format!("RRULE:{}", parts.join(";"))))
+        .map(|rule| match rule_count(rule) {
+            Some(count) => {
+                let left = format!("COUNT={}", count.saturating_sub(before).max(1));
+                let body = rule["RRULE:".len()..].split(';').map(|p| if p.starts_with("COUNT=") { left.as_str() } else { p });
+                format!("RRULE:{}", body.collect::<Vec<_>>().join(";"))
+            }
+            None => rule.clone(),
+        })
         .collect()
 }
 
@@ -881,11 +893,41 @@ impl CalendarClient {
             return self.patch_event(calendar_id, &split.series.id, fields, zone.as_deref()).await;
         }
         let rules = split.series.recurrence.clone().unwrap_or_default();
+        let continued = match fields.recurrence {
+            Some(_) => None,
+            None if rules.iter().any(|r| rule_count(r).is_some()) => {
+                let before = self.occurrences_before(calendar_id, &split.series.id, split.original_start.0).await?;
+                Some(continued_rules(&rules, before))
+            }
+            None => Some(rules.clone()),
+        };
         self.end_series_before(calendar_id, &split.series.id, &rules, split.original_start).await?;
-        if fields.recurrence.is_none() {
-            fields.recurrence = Some(unbounded_rules(&rules));
+        if continued.is_some() {
+            fields.recurrence = continued;
         }
         self.create_event(calendar_id, fields).await
+    }
+
+    /// How many of the series' occurrences its rule put before `split`,
+    /// cancelled ones included, as a COUNT counts them
+    async fn occurrences_before(&self, calendar_id: &str, series_id: &str, split: i64) -> Result<usize, String> {
+        #[derive(Deserialize)]
+        struct Instance {
+            #[serde(rename = "originalStartTime")]
+            original_start_time: Option<EventDateTime>,
+        }
+        let url = format!(
+            "{}/calendars/{}/events/{}/instances?showDeleted=true&maxResults=2500&fields=items(originalStartTime),nextPageToken",
+            self.api_base,
+            urlencoding::encode(calendar_id),
+            urlencoding::encode(series_id)
+        );
+        let instances: Vec<Instance> = self.get_pages(&url, 10_000).await?;
+        Ok(instances
+            .iter()
+            .filter_map(|i| i.original_start_time.as_ref().and_then(parse_event_datetime))
+            .filter(|(start, _)| *start < split)
+            .count())
     }
 
     /// Delete an occurrence of a repeating event, the ones after it too, or
@@ -2536,6 +2578,11 @@ mod tests {
                     "start": { "dateTime": "2024-01-10T10:00:00Z" },
                     "originalStartTime": { "dateTime": "2024-01-10T10:00:00Z" },
                 }),
+                "GET" if target.contains("/events/s1/instances?") => serde_json::json!({
+                    "items": (1..=12).map(|day| serde_json::json!({
+                        "originalStartTime": { "dateTime": format!("2024-01-{day:02}T10:00:00Z") },
+                    })).collect::<Vec<_>>(),
+                }),
                 "GET" if target.contains("/events/s1?fields=id,recurringEventId") => serde_json::json!({
                     "id": "s1", "start": { "dateTime": "2024-01-01T10:00:00Z", "timeZone": "Europe/Madrid" }, "recurrence": [rule],
                 }),
@@ -2591,7 +2638,26 @@ mod tests {
         let (method, target, body) = &writes[1];
         assert_eq!((method.as_str(), target.as_str()), ("POST", "/calendars/cal/events?sendUpdates=all"));
         assert_eq!(body["start"]["dateTime"], "2024-01-10T11:00:00+00:00");
-        assert_eq!(body["recurrence"], serde_json::json!(["RRULE:FREQ=DAILY"]));
+        // Nine of the thirty came before the split
+        assert_eq!(body["recurrence"], serde_json::json!(["RRULE:FREQ=DAILY;COUNT=21"]));
+    }
+
+    #[tokio::test]
+    async fn the_series_that_continues_a_split_keeps_its_end_date() {
+        let server = StubServer::start(series_stub("RRULE:FREQ=DAILY;UNTIL=20240201T000000Z")).await;
+        server.client().update_event_in_series("cal", OCCURRENCE, moved_occurrence(), RecurrenceScope::Following).await.unwrap();
+
+        let writes = writes(&server);
+        assert_eq!(writes[1].2["recurrence"], serde_json::json!(["RRULE:FREQ=DAILY;UNTIL=20240201T000000Z"]));
+        let instance_reads = server.requests().into_iter().filter(|(_, target, _)| target.contains("/instances")).count();
+        assert_eq!(instance_reads, 0, "only a COUNT needs the occurrences before the split");
+    }
+
+    #[tokio::test]
+    async fn an_unbounded_series_continues_unbounded() {
+        let server = StubServer::start(series_stub("RRULE:FREQ=WEEKLY;BYDAY=WE")).await;
+        server.client().update_event_in_series("cal", OCCURRENCE, moved_occurrence(), RecurrenceScope::Following).await.unwrap();
+        assert_eq!(writes(&server)[1].2["recurrence"], serde_json::json!(["RRULE:FREQ=WEEKLY;BYDAY=WE"]));
     }
 
     #[tokio::test]
@@ -2631,7 +2697,10 @@ mod tests {
             "EXDATE:20240105T100000Z".to_string(),
         ]);
         assert_eq!(until("RRULE:FREQ=DAILY", true)[0], "RRULE:FREQ=DAILY;UNTIL=20240109");
-        assert_eq!(unbounded_rules(&["RRULE:FREQ=DAILY;COUNT=5;INTERVAL=2".to_string()]), vec!["RRULE:FREQ=DAILY;INTERVAL=2".to_string()]);
+        assert_eq!(
+            continued_rules(&["RRULE:FREQ=DAILY;COUNT=5;INTERVAL=2".to_string(), "EXDATE:20240105T100000Z".to_string()], 3),
+            vec!["RRULE:FREQ=DAILY;COUNT=2;INTERVAL=2".to_string(), "EXDATE:20240105T100000Z".to_string()]
+        );
     }
 
     #[tokio::test]
