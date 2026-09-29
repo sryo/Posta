@@ -1200,21 +1200,32 @@ pub async fn modify_threads(
 
     let results = for_each_thread(thread_ids, |thread_id| {
         let (gmail, add, remove) = (&gmail, add_labels.clone(), remove_labels.clone());
-        async move {
-            gmail
-                .modify_thread(&thread_id, add, remove)
-                .await
-                .map_err(|e| format!("Failed to modify thread {}: {}", thread_id, e))
-        }
+        async move { gmail.modify_thread(&thread_id, add, remove).await }
     })
     .await;
 
-    // Return first error if any
-    for result in results {
-        evict_token_on_auth_error(&state, &account_id, result)?;
-    }
+    settle_thread_results(&state, &account_id, results)
+}
 
-    Ok(())
+/// Ok when every thread went through, else one failure, counting the others:
+/// an auth error if there is one, since it evicts the cached token and
+/// signing in fixes it, else the first
+fn settle_thread_results(
+    state: &AppState,
+    account_id: &str,
+    results: Vec<(String, Result<(), String>)>,
+) -> Result<(), String> {
+    let total = results.len();
+    let failures: Vec<(String, String)> =
+        results.into_iter().filter_map(|(id, r)| r.err().map(|e| (id, e))).collect();
+    let Some((id, e)) = failures.iter().find(|(_, e)| is_auth_error(e)).or(failures.first()) else {
+        return Ok(());
+    };
+    let message = match failures.len() {
+        1 => format!("Failed to modify thread {}: {}", id, e),
+        n => format!("Failed to modify {} of {} threads: {}", n, total, e),
+    };
+    evict_token_on_auth_error(state, account_id, Err(message))
 }
 
 /// Gmail answers 429 "Too many concurrent requests for user" past a few
@@ -1222,14 +1233,18 @@ pub async fn modify_threads(
 /// at a time
 const MAX_CONCURRENT_THREAD_REQUESTS: usize = 8;
 
-async fn for_each_thread<F, Fut>(thread_ids: Vec<String>, request: F) -> Vec<Result<(), String>>
+/// Each thread id with the result of its request
+async fn for_each_thread<F, Fut>(thread_ids: Vec<String>, mut request: F) -> Vec<(String, Result<(), String>)>
 where
     F: FnMut(String) -> Fut,
     Fut: std::future::Future<Output = Result<(), String>>,
 {
     use futures::StreamExt;
     futures::stream::iter(thread_ids)
-        .map(request)
+        .map(|id| {
+            let response = request(id.clone());
+            async move { (id, response.await) }
+        })
         .buffer_unordered(MAX_CONCURRENT_THREAD_REQUESTS)
         .collect()
         .await
@@ -2342,7 +2357,7 @@ mod tests {
         let peak = AtomicUsize::new(0);
         let ids: Vec<String> = (0..60).map(|i| format!("t{}", i)).collect();
 
-        let results = super::for_each_thread(ids, |id| {
+        let results = super::for_each_thread(ids, |id: String| {
             let (in_flight, peak) = (&in_flight, &peak);
             async move {
                 let now = in_flight.fetch_add(1, Ordering::SeqCst) + 1;
@@ -2355,9 +2370,33 @@ mod tests {
         .await;
 
         assert_eq!(results.len(), 60, "a failure does not stop the others");
-        assert_eq!(results.iter().filter(|r| r.is_err()).count(), 1);
+        let failed: Vec<&str> = results.iter().filter(|(_, r)| r.is_err()).map(|(id, _)| id.as_str()).collect();
+        assert_eq!(failed, vec!["t7"]);
         let peak = peak.load(Ordering::SeqCst);
         assert!(peak > 1 && peak <= super::MAX_CONCURRENT_THREAD_REQUESTS, "peak {}", peak);
+    }
+
+    #[test]
+    fn a_bulk_action_evicts_the_token_on_any_auth_error_and_counts_failures() {
+        use std::time::{Duration, Instant};
+        let state = super::AppState::new();
+        let token = || ("t".to_string(), Instant::now() + Duration::from_secs(600));
+        state.token_cache.lock().unwrap().insert("a1".into(), token());
+        let results = vec![
+            ("t1".to_string(), Err("API error 429 Too Many Requests: {}".to_string())),
+            ("t2".to_string(), Ok(())),
+            ("t3".to_string(), Err("API error 401 Unauthorized: {}".to_string())),
+        ];
+        let err = super::settle_thread_results(&state, "a1", results).unwrap_err();
+        assert_eq!(err, "Failed to modify 2 of 3 threads: API error 401 Unauthorized: {}");
+        assert!(state.token_cache.lock().unwrap().is_empty(), "the 401 was not the first to fail");
+
+        state.token_cache.lock().unwrap().insert("a1".into(), token());
+        let one = vec![("t1".to_string(), Err("API error 500 Internal Server Error: {}".to_string()))];
+        let err = super::settle_thread_results(&state, "a1", one).unwrap_err();
+        assert_eq!(err, "Failed to modify thread t1: API error 500 Internal Server Error: {}");
+        assert!(!state.token_cache.lock().unwrap().is_empty());
+        assert_eq!(super::settle_thread_results(&state, "a1", vec![("t1".to_string(), Ok(()))]), Ok(()));
     }
 
     #[test]
