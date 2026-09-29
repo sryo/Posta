@@ -1949,6 +1949,10 @@ function App() {
     } else if (first) {
       if (synced) showToast(`Restored ${count(board.length)} from iCloud`, { label: "Choose a different layout", run: openPresetPicker });
     } else {
+      // loadBoard leaves cards it already shows alone
+      for (const card of board) {
+        if (card.account_id === ALL_ACCOUNTS && !collapsedCards[card.id]) refetchCard(card);
+      }
       const restored = board.filter(c => c.account_id === account.id).length;
       if (restored > 0) showToast(`Restored ${count(restored)} for ${account.email}`);
       else showToast(`Added ${account.email}`, { label: "Add a card", run: () => openAddCard(account.id) });

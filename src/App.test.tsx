@@ -5215,6 +5215,20 @@ describe("App one board for every account", () => {
     expect(await screen.findByPlaceholderText("e.g. Clients")).toBeInTheDocument();
   });
 
+  it("brings an added account's mail into the all-inboxes cards at once", async () => {
+    handlers.run_oauth_flow = () => account("b", "b@x.com");
+    cardsByAccount.b = [];
+    allInboxesCard([{ ...thread("x1", "From A"), account_id: "a" }]);
+    render(() => <App />);
+    await screen.findByText("From A");
+    threadsByCard["card-all"] = [{ ...thread("x1", "From A"), account_id: "a" }, { ...thread("x2", "From B"), account_id: "b" }];
+    fireEvent.click(avatar("a@x.com"));
+    fireEvent.click(await screen.findByText("Add account"));
+
+    await screen.findByText("Added b@x.com");
+    expect(await screen.findByText("From B")).toBeInTheDocument();
+  });
+
   it("names the cards iCloud brought back for an added account", async () => {
     handlers.run_oauth_flow = () => account("b", "b@x.com");
     render(() => <App />);
