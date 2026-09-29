@@ -35,7 +35,7 @@ export const CID_DOWNLOAD_CONCURRENCY = 6;
 // Downloads the images, keyed by content id; failed downloads are left out
 export async function fetchCidImages(
   refs: CidImageRef[],
-  download: (messageId: string, attachmentId: string) => Promise<string>,
+  download: (ref: CidImageRef) => Promise<string>,
 ): Promise<Record<string, string>> {
   const data: Record<string, string> = {};
   let next = 0;
@@ -43,7 +43,7 @@ export async function fetchCidImages(
     while (next < refs.length) {
       const ref = refs[next++];
       try {
-        data[ref.cid] = await download(ref.messageId, ref.attachmentId);
+        data[ref.cid] = await download(ref);
       } catch {
         // Left out; the image shows as missing
       }

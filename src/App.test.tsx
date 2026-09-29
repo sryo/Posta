@@ -871,7 +871,9 @@ describe("App thread view", () => {
 });
 
 describe("App inline images", () => {
+  // Gmail can hand out a new attachment id for the same part on every fetch
   it("downloads a thread's inline images once, not again on reopening it", async () => {
+    let fetches = 0;
     handlers.get_thread_details = () => ({
       id: "t-a",
       messages: [fullMessage("m1", "Ana <ana@x.com>", {
@@ -880,7 +882,7 @@ describe("App inline images", () => {
           headers: [{ name: "From", value: "Ana <ana@x.com>" }],
           parts: [
             { mimeType: "text/html", body: { size: 9, data: "PGltZyBzcmM9ImNpZDpsb2dvQHgiPg" } },
-            { mimeType: "image/png", headers: [{ name: "Content-ID", value: "<logo@x>" }], body: { size: 9, attachmentId: "att1" } },
+            { mimeType: "image/png", headers: [{ name: "Content-ID", value: "<logo@x>" }], body: { size: 9, attachmentId: `att${++fetches}` } },
           ],
         },
       })],

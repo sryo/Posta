@@ -3556,8 +3556,10 @@ function App() {
   async function fetchCidAttachments(accountId: string, thread: FullThread) {
     const refs = cidImagesToFetch(thread);
     if (refs.length === 0) return;
-    const data = await fetchCidImages(refs, (messageId, attachmentId) =>
-      cidImageCache.getOrLoad(`${accountId}:${messageId}:${attachmentId}`, () => downloadAttachmentApi(accountId, messageId, attachmentId)));
+    // Keyed by content id: Gmail may give the same part a new attachment id
+    // on every fetch
+    const data = await fetchCidImages(refs, ({ messageId, attachmentId, cid }) =>
+      cidImageCache.getOrLoad(`${accountId}:${messageId}:${cid}`, () => downloadAttachmentApi(accountId, messageId, attachmentId)));
     if (Object.keys(data).length > 0 && activeThreadId() === thread.id) {
       setCidAttachmentData(prev => ({ ...prev, ...data }));
     }

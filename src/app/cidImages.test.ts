@@ -41,7 +41,7 @@ describe("cidImagesToFetch", () => {
 
 describe("fetchCidImages", () => {
   it("keys downloaded data by content id and leaves out failed downloads", async () => {
-    const download = vi.fn(async (_m: string, attachmentId: string) => {
+    const download = vi.fn(async ({ attachmentId }: { attachmentId: string }) => {
       if (attachmentId === "bad") throw new Error("404");
       return `data-${attachmentId}`;
     });
@@ -50,13 +50,13 @@ describe("fetchCidImages", () => {
       { messageId: "m0", attachmentId: "bad", cid: "gone@x" },
     ], download);
     expect(data).toEqual({ "logo@x": "data-a1" });
-    expect(download).toHaveBeenCalledWith("m0", "a1");
+    expect(download).toHaveBeenCalledWith({ messageId: "m0", attachmentId: "a1", cid: "logo@x" });
   });
 
   it("downloads a few images at a time rather than all at once", async () => {
     let inFlight = 0;
     let most = 0;
-    const download = async (_m: string, attachmentId: string) => {
+    const download = async ({ attachmentId }: { attachmentId: string }) => {
       most = Math.max(most, ++inFlight);
       await new Promise(r => setTimeout(r, 1));
       inFlight--;
