@@ -146,7 +146,7 @@ import { pullLayoutWithRetry } from "./app/icloudRestore";
 import { querySuggestions, type QuerySuggestion } from "./app/querySuggestions";
 import { inviteNamesEvent, rsvpSentMessage, type RsvpStatus } from "./app/rsvp";
 import { createRsvpLookups } from "./app/rsvpLookups";
-import { hasCommandModifier, onActivateKey } from "./shared/keyboard";
+import { hasCommandModifier, isTypingTarget, onActivateKey } from "./shared/keyboard";
 import { askConfirm, ConfirmDialog, confirmOpen, dismissConfirm } from "./app/confirm";
 import { moveCard, reuseUnchanged } from "./app/cardOrder";
 
@@ -1318,8 +1318,7 @@ function App() {
   const handleGlobalKeyDown = (e: KeyboardEvent) => {
     // The dialog answers its own keys; nothing may act behind it
     if (confirmOpen()) return;
-    const target = e.target as HTMLElement;
-    const isTyping = target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable;
+    const isTyping = isTypingTarget(e.target);
 
     // Cmd/Ctrl+F to open filter (works even when typing)
     if (e.key === 'f' && (e.metaKey || e.ctrlKey)) {

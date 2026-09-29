@@ -1402,6 +1402,19 @@ describe("App calendar", () => {
     await waitFor(() => expect(screen.queryByPlaceholderText("Event title")).not.toBeInTheDocument());
   });
 
+  it("leaves Escape pressed in the event form's month picker to the picker", async () => {
+    render(() => <App />);
+    await screen.findByText("Mail for A");
+    fireEvent.keyDown(document, { key: "e" });
+    await screen.findByPlaceholderText("Event title");
+    const month = document.querySelector(".scheduler-header select") as HTMLSelectElement;
+    month.focus();
+    fireEvent.keyDown(month, { key: "Escape" });
+    await new Promise(r => setTimeout(r, 300));
+
+    expect(screen.getByPlaceholderText("Event title")).toBeInTheDocument();
+  });
+
   it("starts a new event empty after an edit was cancelled with Escape", async () => {
     calendarCards();
     render(() => <App />);
