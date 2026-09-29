@@ -1067,7 +1067,7 @@ function App() {
     try {
       if (!(await pullFromICloud())) return;
       if (selectedAccount()?.id !== account.id) return;
-      const cardList = await getCards(account.id);
+      const cardList = (await getCards(account.id)).filter(c => !heldCardDeletes.has(c.id));
       if (selectedAccount()?.id !== account.id) return;
       const before = new Map(cards().map(c => [c.id, c.query]));
       const kept = new Set(cardList.map(c => c.id));
@@ -3162,6 +3162,9 @@ function App() {
     });
   }
 
+  // Cards deleted in the app whose deletion waits out their Undo toast
+  const heldCardDeletes = new Set<string>();
+
   // The card goes at once; it is deleted for good (and from iCloud) only
   // once its toast goes without Undo
   function handleDeleteCard(cardId: string) {
@@ -3172,6 +3175,7 @@ function App() {
     const name = deleted.name || "Untitled";
     const wasCollapsed = !!collapsedCards[cardId];
     const putBack = () => {
+      heldCardDeletes.delete(cardId);
       if (selectedAccount()?.id !== account.id || cards().some(c => c.id === cardId)) return;
       const next = [...cards()];
       next.splice(Math.min(index, next.length), 0, deleted);
@@ -3179,6 +3183,7 @@ function App() {
       saveCollapsedState({ ...collapsedCards, [cardId]: wasCollapsed });
       if (!wasCollapsed) loadCardThreads(cardId);
     };
+    heldCardDeletes.add(cardId);
     setCards(cards().filter(c => c.id !== cardId));
     forgetCardState([cardId]);
     toasts.show({
@@ -3187,6 +3192,7 @@ function App() {
       onExpire: async () => {
         try {
           await deleteCard(cardId);
+          heldCardDeletes.delete(cardId);
         } catch (err) {
           console.error("Failed to delete card:", err);
           putBack();

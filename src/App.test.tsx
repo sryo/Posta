@@ -1024,6 +1024,18 @@ describe("App selection keys", () => {
     expect(row("Second")).not.toHaveClass("selected");
   });
 
+  it("clears a selection of one thread once a key acts on it", async () => {
+    handlers.modify_threads = () => null;
+    render(() => <App />);
+    await screen.findByText("Third");
+    fireEvent.keyDown(document, { key: "l" });
+    fireEvent.keyDown(document, { key: "j" });
+    fireEvent.keyDown(document, { key: "x" });
+    fireEvent.keyDown(document, { key: "s" });
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith("modify_threads", expect.objectContaining({ threadIds: ["t-2"] })));
+    expect(row("Second")).not.toHaveClass("selected");
+  });
+
   it("opens Batch Reply for the selection on r", async () => {
     handlers.get_thread_details = ({ threadId }) => ({ id: threadId, messages: [fullMessage("m1", "Ana <ana@x.com>")] });
     render(() => <App />);
@@ -1567,6 +1579,25 @@ describe("App calendar", () => {
     }));
     await vi.advanceTimersByTimeAsync(6000);
     expect(invoke).not.toHaveBeenCalledWith("delete_calendar_event", expect.anything());
+  });
+
+  it("keeps a deleted event out of a refresh that lands before its toast ends", async () => {
+    calendarCards();
+    cardsByAccount.a = [{ ...card("cal-1", "a", "Week"), query: "calendar:7d", card_type: "calendar" }];
+    handlers.fetch_calendar_events = () => [calendarEvent("ev-1", "Planning"), calendarEvent("ev-2", "Review")];
+    handlers.delete_calendar_event = () => null;
+    render(() => <App />);
+    fireEvent.click(await screen.findByText("Planning"));
+    fireEvent.keyDown(document, { key: "d" });
+    await waitFor(() => expect(screen.queryByText("Planning")).toBeNull());
+    invoke.mockClear();
+
+    await waitFor(() => expect(screen.getByTitle("Refresh")).not.toBeDisabled());
+    fireEvent.click(screen.getByTitle("Refresh"));
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith("save_cached_card_events", {
+      cardId: "cal-1", events: [expect.objectContaining({ id: "ev-2" })],
+    }));
+    expect(screen.queryByText("Planning")).toBeNull();
   });
 
   it("asks before deleting an event with guests, who are told, and then deletes it at once", async () => {
@@ -2606,10 +2637,11 @@ describe("App inline reply", () => {
 describe("App layout removal", () => {
   it("deletes a card without asking and brings it back on Undo", async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
+    cardsByAccount.a = [card("card-a", "a", "Alpha"), { ...card("card-b", "a", "Beta"), position: 1 }];
     handlers.delete_card = () => null;
     render(() => <App />);
     await screen.findByText("Mail for A");
-    fireEvent.click(screen.getByTitle("Edit query"));
+    fireEvent.click(screen.getAllByTitle("Edit query")[0]);
     fireEvent.click(await screen.findByRole("button", { name: /Delete/ }));
     expect(screen.queryByRole("alertdialog")).toBeNull();
     await waitFor(() => expect(screen.queryByRole("region", { name: "Alpha email card" })).toBeNull());
@@ -2617,8 +2649,25 @@ describe("App layout removal", () => {
 
     fireEvent.click(screen.getByRole("button", { name: /Undo/ }));
     expect(await screen.findByRole("region", { name: "Alpha email card" })).toBeInTheDocument();
+    expect(screen.getAllByRole("region", { name: /email card$/ }).map(r => r.getAttribute("aria-label"))).toEqual(["Alpha email card", "Beta email card"]);
     await vi.advanceTimersByTimeAsync(6000);
     expect(invoke).not.toHaveBeenCalledWith("delete_card", expect.anything());
+  });
+
+  it("keeps a deleted card away when an iCloud pull lands before its toast ends", async () => {
+    handlers.delete_card = () => null;
+    render(() => <App />);
+    await screen.findByText("Mail for A");
+    fireEvent.click(screen.getByTitle("Edit query"));
+    fireEvent.click(await screen.findByRole("button", { name: /Delete/ }));
+    await screen.findByText("Deleted the card “Alpha”");
+
+    handlers.pull_from_icloud = () => true;
+    invoke.mockClear();
+    fireEvent.focus(window);
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith("get_cards", { accountId: "a" }));
+    await new Promise(r => setTimeout(r, 20));
+    expect(screen.queryByRole("region", { name: "Alpha email card" })).toBeNull();
   });
 
   it("deletes a card for good once its toast goes without Undo", async () => {
