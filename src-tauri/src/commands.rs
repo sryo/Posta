@@ -748,12 +748,15 @@ async fn fetch_user_info(client: &reqwest::Client, url: &str, access_token: &str
         .bearer_auth(access_token)
         .send()
         .await
-        .map_err(|e| format!("Failed to read your Google account: {}", e.without_url()))?;
+        .map_err(|e| format!("Couldn't read your Google account: {}", e.without_url()))?;
 
     if !resp.status().is_success() {
         let status = resp.status();
         let body = resp.text().await.unwrap_or_default();
-        return Err(format!("API error {}: {}", status, body));
+        return Err(match google_error_message(&body) {
+            Some(message) => format!("Couldn't read your Google account ({}): {}", status, message),
+            None => format!("Couldn't read your Google account ({})", status),
+        });
     }
 
     #[derive(Deserialize)]
@@ -762,13 +765,25 @@ async fn fetch_user_info(client: &reqwest::Client, url: &str, access_token: &str
         picture: Option<String>,
     }
 
-    let body = resp.text().await.map_err(|e| format!("Failed to read response: {}", e))?;
-    let info: GoogleUserInfo = serde_json::from_str(&body)
-        .map_err(|e| format!("Failed to parse response: {} - Body: {}", e, body))?;
+    let info: GoogleUserInfo = resp
+        .json()
+        .await
+        .map_err(|e| format!("Couldn't read your Google account: unexpected response ({})", e.without_url()))?;
     Ok(UserInfo {
         email: info.email,
         picture: info.picture,
     })
+}
+
+/// The readable message in a Google error body: `error.message` from the
+/// APIs, or `error_description` from the OAuth endpoints
+fn google_error_message(body: &str) -> Option<String> {
+    let value: serde_json::Value = serde_json::from_str(body).ok()?;
+    let message = [&value["error"]["message"], &value["error_description"]]
+        .into_iter()
+        .find_map(|v| v.as_str().filter(|s| !s.trim().is_empty()))
+        .map(str::to_string);
+    message
 }
 
 #[tauri::command]
@@ -3138,6 +3153,10 @@ mod tests {
     /// A local HTTP server that answers every request with `reply`, or
     /// never answers when it is None
     async fn one_reply_server(reply: Option<&'static str>) -> String {
+        status_reply_server("200 OK", reply).await
+    }
+
+    async fn status_reply_server(status: &'static str, reply: Option<&'static str>) -> String {
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let url = format!("http://{}/userinfo", listener.local_addr().unwrap());
@@ -3149,7 +3168,8 @@ mod tests {
                     match reply {
                         Some(body) => {
                             let response = format!(
-                                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                                "HTTP/1.1 {}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                                status,
                                 body.len(),
                                 body
                             );
@@ -3171,8 +3191,34 @@ mod tests {
             .await
             .expect("the lookup must time out on its own");
         let err = result.err().expect("a hung lookup is an error");
-        assert!(err.starts_with("Failed to read your Google account"), "{}", err);
+        assert!(err.starts_with("Couldn't read your Google account"), "{}", err);
         assert!(!err.contains("127.0.0.1"), "{}", err);
+    }
+
+    async fn user_info_error(status: &'static str, body: &'static str) -> String {
+        let url = status_reply_server(status, Some(body)).await;
+        let client = super::userinfo_http_client(std::time::Duration::from_secs(5));
+        super::fetch_user_info(&client, &url, "t").await.err().expect("the lookup fails")
+    }
+
+    #[tokio::test]
+    async fn a_failed_account_lookup_shows_googles_message_not_the_raw_body() {
+        let err = user_info_error(
+            "401 Unauthorized",
+            r#"{"error": {"code": 401, "message": "Request had invalid authentication credentials.", "status": "UNAUTHENTICATED"}}"#,
+        )
+        .await;
+        assert_eq!(err, "Couldn't read your Google account (401 Unauthorized): Request had invalid authentication credentials.");
+
+        let err = user_info_error("401 Unauthorized", r#"{"error": "invalid_token", "error_description": "Invalid Value"}"#).await;
+        assert_eq!(err, "Couldn't read your Google account (401 Unauthorized): Invalid Value");
+
+        let err = user_info_error("502 Bad Gateway", "<html><body>Bad gateway</body></html>").await;
+        assert_eq!(err, "Couldn't read your Google account (502 Bad Gateway)");
+
+        let err = user_info_error("200 OK", r#"{"name": "no email here"}"#).await;
+        assert!(err.starts_with("Couldn't read your Google account: "), "{}", err);
+        assert!(!err.contains("no email here"), "{}", err);
     }
 
     #[tokio::test]
