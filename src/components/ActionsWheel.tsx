@@ -56,6 +56,8 @@ export const ActionsWheel = (props: {
   onDeleteEvent?: (event: GoogleCalendarEvent) => void;
   onRsvped?: (eventId: string, status: string) => void;
   showToast: (message: string) => void;
+  // "Couldn't …", with the error that caused it
+  showFailure: (failure: string, error: unknown) => void;
 }) => {
   const containerRef = (el: HTMLDivElement) => {
     // Simple animation trigger
@@ -74,7 +76,7 @@ export const ActionsWheel = (props: {
       props.showToast(rsvpSentMessage(status));
       props.onClose();
     } catch (err) {
-      props.showToast(`Couldn't RSVP: ${err instanceof Error ? err.message : String(err)}`);
+      props.showFailure("Couldn't send your RSVP", err);
     } finally {
       rsvpInFlight = false;
     }

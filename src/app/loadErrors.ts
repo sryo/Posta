@@ -1,6 +1,6 @@
 import { isSessionExpiredError, needsSignInAgain } from "./authErrors";
 
-const OFFLINE = /error sending request|could not reach|couldn't reach|timed out|didn't respond|did not respond|network/i;
+export const OFFLINE = /error sending request|could not reach|couldn't reach|timed out|didn't respond|did not respond|network/i;
 
 // Shown in the thread view when a thread's messages can't be loaded
 export function threadLoadErrorMessage(error: unknown): string {

@@ -711,7 +711,12 @@ describe("App error banner", () => {
     fireEvent.keyDown(document, { key: "l" });
     fireEvent.keyDown(document, { key: "s" });
 
-    expect(await screen.findByRole("alert")).toHaveTextContent("Couldn't star 1 thread: Error: offline");
+    const banner = await screen.findByRole("alert");
+    expect(banner).toHaveTextContent(/^Couldn't star 1 thread\./);
+    expect(banner).not.toHaveTextContent("Couldn't star 1 thread: ");
+    // The backend's text stays out of the sentence, one click away
+    expect(within(banner).getByText("Details")).toBeInTheDocument();
+    expect(banner.querySelector("details")).toHaveTextContent("Error: offline");
     fireEvent.keyDown(document, { key: "c" });
     fireEvent.input(await screen.findByPlaceholderText("Subject"), { target: { value: "Draft" } });
     handlers.save_draft = () => ({ id: "d1" });
@@ -726,13 +731,14 @@ describe("App error banner", () => {
     await screen.findByText("Mail for A");
     fireEvent.click(screen.getByTitle("Edit query"));
     fireEvent.click(screen.getByTitle("Save (⌘Enter)"));
-    expect(await screen.findByRole("alert")).toHaveTextContent("Couldn't save the card: Error: db locked");
+    expect(await screen.findByRole("alert")).toHaveTextContent(/^Couldn't save the card\.Details/);
 
     fireEvent.click(screen.getByTitle("New card"));
     fireEvent.input(screen.getAllByPlaceholderText("Inbox, Starred...").slice(-1)[0], { target: { value: "News" } });
     fireEvent.input(screen.getAllByPlaceholderText("is:inbox, from:boss, newer_than:7d").slice(-1)[0], { target: { value: "label:news" } });
     fireEvent.click(screen.getByTitle("Add (⌘Enter)"));
-    await waitFor(() => expect(screen.getByRole("alert")).toHaveTextContent("Couldn't add the card: Error: disk full"));
+    await waitFor(() => expect(screen.getByRole("alert")).toHaveTextContent(/^Couldn't add the card\.Details/));
+    expect(screen.getByRole("alert").querySelector("details")).toHaveTextContent("disk full");
   });
 
   it("leaves an expired session's banner with its account when switching accounts", async () => {
@@ -1282,7 +1288,8 @@ describe("App thread view reactions", () => {
     fireEvent.click(screen.getAllByTitle("Add reaction")[0]);
     fireEvent.click(document.querySelector<HTMLButtonElement>(".emoji-picker .emoji-btn")!);
 
-    expect(await screen.findByText(/Failed to send reaction: .*quota exceeded/)).toBeInTheDocument();
+    expect(await screen.findByText("Couldn't send the reaction.")).toBeInTheDocument();
+    expect(screen.queryByText(/quota exceeded/)).not.toBeInTheDocument();
   });
 });
 
@@ -2364,6 +2371,21 @@ describe("App drafts", () => {
     expect(storedDrafts("draft_new_a")).toEqual([expect.objectContaining({ subject: "Hello" })]);
   });
 
+  it("says a send failed in a toast only, not in a banner too", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    handlers.send_email = () => { throw new Error("offline"); };
+    render(() => <App />);
+    await screen.findByText("Mail for A");
+    fireEvent.keyDown(document, { key: "c" });
+    fireEvent.input(await screen.findByPlaceholderText("Recipients"), { target: { value: "bo@y.com" } });
+    fireEvent.input(screen.getByPlaceholderText("Subject"), { target: { value: "Hello" } });
+    fireEvent.click(screen.getByRole("button", { name: /^Send/ }));
+    await vi.advanceTimersByTimeAsync(6000);
+
+    expect(await screen.findByText("Couldn't send “Hello”.")).toBeInTheDocument();
+    expect(screen.queryByRole("alert")).toBeNull();
+  });
+
   it("leaves the email being written open when an earlier send fails", async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
     handlers.send_email = () => { throw new Error("offline"); };
@@ -2689,6 +2711,17 @@ describe("App layout removal", () => {
     const dialog = await screen.findByRole("alertdialog", { name: "Sign out of a@x.com?" });
     expect(within(dialog).getByRole("button", { name: "Sign out" })).toHaveClass("btn-danger");
     await waitFor(() => expect(document.activeElement).toBe(within(dialog).getByRole("button", { name: "Cancel" })));
+  });
+
+  it("says in words why a new event couldn't be created", async () => {
+    handlers.create_calendar_event = () => { throw "error sending request for url (https://www.googleapis.com/calendar/v3)"; };
+    render(() => <App />);
+    await screen.findByText("Mail for A");
+    fireEvent.keyDown(document, { key: "e" });
+    fireEvent.input(await screen.findByPlaceholderText("Event title"), { target: { value: "Lunch" } });
+    fireEvent.keyDown(screen.getByPlaceholderText("Event title"), { key: "Enter", metaKey: true });
+    expect(await screen.findByText("Couldn't create the event. Check your connection and try again.")).toBeInTheDocument();
+    expect(screen.queryByText(/error sending request/)).not.toBeInTheDocument();
   });
 
   it("asks before throwing away a new event's details, offering to keep editing", async () => {
@@ -3757,7 +3790,7 @@ describe("App sign-in flows", () => {
     fireEvent.input(screen.getByLabelText("Client Secret"), { target: { value: "csecret" } });
     fireEvent.click(screen.getByRole("button", { name: /Connect/ }));
 
-    expect(await screen.findByText("Failed to save credentials: keychain locked")).toBeInTheDocument();
+    expect(await screen.findByText("Couldn't save the credentials.")).toBeInTheDocument();
     expect(invoke).not.toHaveBeenCalledWith("run_oauth_flow", expect.anything());
   });
 

@@ -18,6 +18,7 @@ const NO_DOM = [
   "src/app/composePlacement.test.ts",
   "src/app/contacts.test.ts",
   "src/app/eventForm.test.ts",
+  "src/app/errorText.test.ts",
   "src/app/eventReply.test.ts",
   "src/app/grouping.test.ts",
   "src/app/keyboardNav.test.ts",

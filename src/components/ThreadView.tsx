@@ -82,7 +82,8 @@ export const ThreadView = (props: {
   threadAttachments?: Attachment[],
   // CID attachment data fetched on-demand (cid -> base64 data)
   cidAttachmentData?: Record<string, string>,
-  onError?: (message: string) => void,
+  // "Couldn't …", with the error that caused it
+  onError?: (failure: string, error: unknown) => void,
   // Whether a Gemini key is saved; smart replies ask the keychain when unknown
   geminiKeySaved?: boolean,
 }) => {
@@ -117,8 +118,7 @@ export const ThreadView = (props: {
     try {
       await sendReaction(props.accountId, props.thread.id, messageIdHeader, emoji, toEmail);
     } catch (e) {
-      console.error('Failed to send reaction:', e);
-      props.onError?.(`Failed to send reaction: ${e}`);
+      props.onError?.("Couldn't send the reaction", e);
     } finally {
       setSendingReaction(false);
     }

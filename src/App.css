@@ -1781,6 +1781,23 @@ button:disabled:hover {
     box-shadow: 0 4px 16px var(--shadow);
 }
 
+/* The backend's own words behind a failure, for reporting it */
+.error-details {
+    color: var(--text-secondary);
+    font-size: var(--font-size-sm);
+}
+
+.error-details summary {
+    cursor: pointer;
+}
+
+.error-details span {
+    display: block;
+    max-width: 480px;
+    overflow-wrap: anywhere;
+    user-select: text;
+}
+
 .auth-spinner,
 .spinner-sm {
     width: 32px;

@@ -120,7 +120,8 @@ import { ActionsWheel } from "./components/ActionsWheel";
 import { CardForm } from "./components/CardForm";
 import { Dialog } from "./components/Dialog";
 import { Toasts } from "./components/Toasts";
-import { createToasts, type ToastAction } from "./app/toasts";
+import { createToasts, type ToastAction, type ToastTone } from "./app/toasts";
+import { failureMessage } from "./app/errorText";
 import { safeGetItem, safeSetItem, safeRemoveItem, safeGetJSON, safeSetJSON } from "./shared/storage";
 import { BG_COLORS, type ActionSettings, type CardColor, type GroupBy } from "./shared/constants";
 import { createUndoableSend } from "./app/undoableSend";
@@ -194,7 +195,19 @@ function App() {
   const [labelsFailed, setLabelsFailed] = createSignal(false);
   const [labelSearchQuery, setLabelSearchQuery] = createSignal("");
 
-  const [error, setError] = createSignal<string | null>(null);
+  // The banner: a sentence, and the backend's own text behind Details
+  const [error, setErrorState] = createSignal<{ message: string; details?: string } | null>(null);
+  const setError = (message: string | null) => setErrorState(message === null ? null : { message });
+  // "Couldn't …" in the banner, the error itself only under Details
+  function setFailure(failure: string, e: unknown) {
+    console.error(`${failure}:`, e);
+    setErrorState(failureMessage(failure, e));
+  }
+  // The same as an error toast, with Retry when it can be tried again
+  function showFailure(failure: string, e: unknown, retry?: () => void) {
+    console.error(`${failure}:`, e);
+    toasts.show({ message: failureMessage(failure, e).message, tone: "error", action: retry && { label: "Retry", run: retry } });
+  }
   const [expiredAccountId, setExpiredAccountId] = createSignal<string | null>(null);
   const [accounts, setAccounts] = createSignal<Account[]>([]);
   const [selectedAccount, setSelectedAccount] = createSignal<Account | null>(null);
@@ -250,8 +263,7 @@ function App() {
       for (const eventId of eventIds) markEventRsvp(eventId, status);
       showToast(rsvpSentMessage(status));
     } catch (e) {
-      console.error("Failed to update RSVP:", e);
-      showToast(`Couldn't RSVP: ${e}`);
+      showFailure("Couldn't send your RSVP", e);
     } finally {
       setRsvpLoading(threadId, false);
     }
@@ -287,8 +299,7 @@ function App() {
     },
     onFailed: (pending, e) => {
       console.error("Failed to send email:", e);
-      putBackSend(pending, `Couldn't send "${pending.subject || "(no subject)"}"`);
-      setError(`Failed to send email: ${e}`);
+      putBackSend(pending, failureMessage(`Couldn't send “${pending.subject || "(no subject)"}”`, e).message, "error");
     },
   });
 
@@ -306,12 +317,19 @@ function App() {
     else open();
   }
 
-  function putBackSend(pending: PendingSend, busyMessage: string) {
+  // A failed send says so even when its email opens again by itself
+  function putBackSend(pending: PendingSend, message: string, tone: ToastTone = "info") {
     if (pending.draft) {
       sendingDraftKeys.delete(pending.draft.key);
       markDraftSending(pending.draft.key, null);
     }
-    openComposeUnlessBusy(busyMessage, () => restoreSend(pending));
+    const restore = () => restoreSend(pending);
+    if (composeHasWork()) {
+      toasts.show({ message, tone, action: { label: "Open", run: restore } });
+      return;
+    }
+    restore();
+    if (tone === "error") toasts.show({ message, tone });
   }
 
   // Settings
@@ -508,7 +526,7 @@ function App() {
       setComposeAttachments([...composeAttachments(), { filename: att.filename, mime_type: att.mimeType, data }]);
     } catch (e) {
       console.error("Failed to forward attachment:", e);
-      showToast(`Failed to forward ${att.filename}: ${e}`);
+      showFailure(`Couldn't forward ${att.filename}`, e);
     }
   }
 
@@ -1083,7 +1101,7 @@ function App() {
     try {
       await loadStoredCredentials();
       credentialsError = null;
-      if (error() === failed) setError(null);
+      if (error()?.message === failed) setError(null);
     } catch (e) {
       console.warn("Stored credentials still unavailable:", e);
     }
@@ -1138,7 +1156,7 @@ function App() {
     } catch (err) {
       console.error("Failed to persist card order:", err);
       setCards(previousCards);
-      showToast(`Couldn't save the card order: ${err}`);
+      showFailure("Couldn't save the card order", err);
     }
   };
 
@@ -1230,7 +1248,7 @@ function App() {
       }
       offerUnsentDraft(accts);
     } catch (e) {
-      setError(String(e));
+      setFailure("Couldn't start Posta", e);
     } finally {
       setLoading(false);
     }
@@ -1782,7 +1800,7 @@ function App() {
       try {
         storedCreds = await getStoredCredentials();
       } catch (e) {
-        setError(String(e));
+        setFailure("Couldn't read the saved Google credentials", e);
         return;
       }
     }
@@ -1805,7 +1823,7 @@ function App() {
       if (oauthCancelled) return;
       await afterAuth(await runOAuthFlow());
     } catch (e) {
-      if (!oauthCancelled) setError(String(e));
+      if (!oauthCancelled) setFailure("Couldn't sign in", e);
     } finally {
       setAuthLoading(false);
     }
@@ -1853,7 +1871,7 @@ function App() {
         newCards.push(await createCard(account.id, cardPreset.name, cardPreset.query, cardPreset.color || null, "date", cardType));
       }
     } catch (e) {
-      setError(`Couldn't create the cards: ${e}`);
+      setFailure("Couldn't create the cards", e);
       // Nothing was created: stay on the picker so the user can retry
       if (newCards.length === 0) return;
     } finally {
@@ -1886,7 +1904,7 @@ function App() {
 
     const failure = results.find((r): r is PromiseRejectedResult => r.status === "rejected");
     if (failure) {
-      setError(`Failed to reset layout: ${failure.reason}`);
+      setFailure("Couldn't delete the restored layout", failure.reason);
       return;
     }
     setShowRestorePrompt(false);
@@ -1903,7 +1921,7 @@ function App() {
         client_secret: clientSecret(),
       });
     } catch (e) {
-      setError(`Failed to save credentials: ${e}`);
+      setFailure("Couldn't save the credentials", e);
       return;
     }
     setSettingsOpen(false);
@@ -1918,7 +1936,7 @@ function App() {
       setAccounts(accounts().map(a => (a.id === account.id ? updated : a)));
       if (selectedAccount()?.id === account.id) setSelectedAccount(updated);
     } catch (e) {
-      setError(`Failed to save signature: ${e}`);
+      setFailure("Couldn't save the signature", e);
     }
   }
 
@@ -1949,7 +1967,7 @@ function App() {
         await switchAccount(remaining[0]);
       }
     } catch (e) {
-      setError(`Couldn't sign out: ${e}`);
+      setFailure("Couldn't sign out", e);
     }
   }
 
@@ -1972,7 +1990,7 @@ function App() {
       // Fetch threads/events for the new card
       loadCardThreads(card.id);
     } catch (e) {
-      setError(`Couldn't add the card: ${e}`);
+      setFailure("Couldn't add the card", e);
     }
   }
 
@@ -2285,8 +2303,9 @@ function App() {
       showToast(editing ? "Event updated" : "Event created");
 
     } catch (e) {
-      console.error(e);
-      setEventForm(f => ({ ...f, error: (editing ? "Failed to update event: " : "Failed to create event: ") + String(e) }));
+      const failure = editing ? "Couldn't update the event" : "Couldn't create the event";
+      console.error(`${failure}:`, e);
+      setEventForm(f => ({ ...f, error: failureMessage(failure, e).message }));
     } finally {
       setEventForm(f => ({ ...f, saving: false }));
     }
@@ -2433,7 +2452,7 @@ function App() {
       fetchAndCacheThreads(account.id, cardId);
     } catch (e) {
       console.error("Failed to send reply:", e);
-      setError(`Failed to send reply: ${e}`);
+      setFailure("Couldn't send the reply", e);
     } finally {
       if (stillOpen()) setQuickReply(qr => ({ ...qr, sending: false }));
     }
@@ -2462,7 +2481,7 @@ function App() {
       showToast("Reply sent");
     } catch (e) {
       console.error("Failed to send reply:", e);
-      setError(`Failed to send reply: ${e}`);
+      setFailure("Couldn't send the reply", e);
     } finally {
       if (stillOpen()) setQuickReply(qr => ({ ...qr, sending: false }));
     }
@@ -2489,7 +2508,7 @@ function App() {
       await sendReaction(account.id, threadId, messageIdHeader, emoji, toEmail);
     } catch (e) {
       console.error("Failed to send reaction:", e);
-      showToast(`Failed to send reaction: ${e}`);
+      showFailure("Couldn't send the reaction", e);
     } finally {
       setQuickReactionSending(false);
     }
@@ -2643,7 +2662,7 @@ function App() {
       setAvailableCalendars(sorted);
     } catch (e) {
       console.error("Failed to fetch calendars:", e);
-      if (selectedAccount()?.id === account.id) showToast("Failed to load calendars");
+      if (selectedAccount()?.id === account.id) showFailure("Couldn't load your calendars", e, () => { void fetchAvailableCalendars(); });
     } finally {
       if (calendarsFetchingFor === account.id) calendarsFetchingFor = null;
       if (selectedAccount()?.id === account.id) setCalendarsLoading(false);
@@ -2691,7 +2710,7 @@ function App() {
         if (activeEvent()?.id === event.id) { closeEvent(); restoreOpenedRowFocus(); }
       } catch (e) {
         console.error('Failed to delete event:', e);
-        showToast(`Couldn't delete the event: ${e}`);
+        showFailure("Couldn't delete the event", e);
       }
       return;
     }
@@ -2725,7 +2744,7 @@ function App() {
         } catch (e) {
           console.error('Failed to delete event:', e);
           putBack();
-          showToast(`Couldn't delete the event: ${e}`);
+          showFailure("Couldn't delete the event", e);
         }
       },
     });
@@ -2762,7 +2781,7 @@ function App() {
       setCalendarDrawerOpen(false);
     } catch (e) {
       console.error("Failed to move event:", e);
-      showToast(`Failed to move event: ${e}`);
+      showFailure("Couldn't move the event", e);
     }
   }
 
@@ -2845,13 +2864,13 @@ function App() {
             if (activeThreadId() === thread.id) await refreshActiveThread(account.id, thread.id);
           } catch (e) {
             console.error("Failed to undo label change:", e);
-            setError(`Couldn't undo: ${e}`);
+            setFailure("Couldn't undo", e);
           }
         },
       });
     } catch (e) {
       console.error("Failed to modify labels:", e);
-      setError(`Failed to ${isAdding ? 'add' : 'remove'} label: ${e}`);
+      setFailure(`Couldn't ${isAdding ? 'add' : 'remove'} the label “${labelName}”`, e);
     }
   }
 
@@ -3011,7 +3030,7 @@ function App() {
       return true;
     } catch (e) {
       console.error('Failed to send reply:', e);
-      if (!quiet) showToast(`Failed to send: ${e}`);
+      if (!quiet) showFailure(`Couldn't send the reply to “${thread.subject}”`, e);
       return false;
     } finally {
       setBatchReplySending({ ...batchReplySending(), [threadId]: false });
@@ -3094,7 +3113,7 @@ function App() {
         loadCardThreads(cardId, false, true);
       }
     } catch (e) {
-      setError(`Couldn't save the card: ${e}`);
+      setFailure("Couldn't save the card", e);
     }
   }
 
@@ -3170,7 +3189,7 @@ function App() {
         } catch (err) {
           console.error("Failed to delete card:", err);
           putBack();
-          showToast(`Failed to delete card: ${err}`);
+          showFailure(`Couldn't delete the card “${name}”`, err);
         }
       },
     });
@@ -3262,7 +3281,7 @@ function App() {
     try {
       if (await loadAccountCards(account)) startBackgroundSync(account.id);
     } catch (e) {
-      setError(`Couldn't load ${account.email}: ${e}`);
+      setFailure(`Couldn't load ${account.email}`, e);
     }
   }
 
@@ -3690,7 +3709,7 @@ function App() {
         });
         return;
       }
-      setError(`Failed to open attachment: ${e}`);
+      setFailure(`Couldn't open ${filename}`, e);
     }
   }
 
@@ -3717,7 +3736,7 @@ function App() {
       showToast(`Saved to ${savedPath}`);
     } catch (e) {
       console.error('Failed to download attachment:', e);
-      setError(`Failed to download attachment: ${e}`);
+      setFailure(`Couldn't save ${filename}`, e);
     }
   }
 
@@ -3853,7 +3872,7 @@ function App() {
       setGeminiKeySaved(!!apiKey.trim());
       setGeminiKeyDraft("");
     } catch (e) {
-      showToast(`Couldn't save the Gemini API key: ${e}`);
+      showFailure("Couldn't save the Gemini API key", e);
     }
   }
 
@@ -3904,7 +3923,7 @@ function App() {
       }
     } catch (e) {
       console.error("Failed to undo action", e);
-      setError(`Couldn't undo: ${e}`);
+      setFailure("Couldn't undo", e);
     }
   }
 
@@ -3975,7 +3994,7 @@ function App() {
           }
         }));
       }
-      setError(`${actionFailureLabel(action, threadIds.length)}: ${e}`);
+      setFailure(actionFailureLabel(action, threadIds.length), e);
     }
   }
 
@@ -4231,7 +4250,15 @@ function App() {
       {/* Error banner */}
       <Show when={error()}>
         <div class="auth-error" role="alert">
-          {error()}
+          {error()!.message}
+          <Show when={error()!.details}>
+            {(details) => (
+              <details class="error-details">
+                <summary>Details</summary>
+                <span>{details()}</span>
+              </details>
+            )}
+          </Show>
           <Show when={expiredAccountId() && expiredAccountId() === selectedAccount()?.id}>
             <button class="btn btn-primary" onClick={handleReauth}>Sign in again</button>
           </Show>
@@ -4500,6 +4527,7 @@ function App() {
                                               onDeleteEvent={deleteEvent}
                                               onRsvped={markEventRsvp}
                                               showToast={showToast}
+                                              showFailure={showFailure}
                                             />
                                           </Show>
                                         </div>
@@ -4710,6 +4738,7 @@ function App() {
                                                 handleForward={handleForward}
                                                 handleThreadAction={handleThreadAction}
                                                 showToast={showToast}
+                                                showFailure={showFailure}
                                               />
                                             </Show>
                                           </div>
@@ -5063,7 +5092,7 @@ function App() {
           geminiKeySaved={geminiKeySaved()}
           accountId={selectedAccount()?.id || ''}
           currentUserEmail={selectedAccount()?.email}
-          onError={showToast}
+          onError={showFailure}
           loading={threadLoading()}
           error={threadError()}
           onRetry={() => {
@@ -5197,8 +5226,7 @@ function App() {
               markEventRsvp(event.id, status);
               showToast(rsvpSentMessage(status));
             } catch (e) {
-              console.error("Failed to update RSVP", e);
-              showToast(`Couldn't RSVP: ${e}`);
+              showFailure("Couldn't send your RSVP", e);
             } finally {
               setRsvpLoading(event.id, false);
             }

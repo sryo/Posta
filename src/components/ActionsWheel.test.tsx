@@ -60,6 +60,7 @@ const baseProps = {
   handleForward: vi.fn(),
   handleThreadAction: vi.fn(),
   showToast: vi.fn(),
+  showFailure: vi.fn(),
 };
 
 const hint = (title: string) => screen.getByTitle(title).querySelector(".action-key-hint")?.textContent ?? null;
@@ -143,10 +144,10 @@ describe("ActionsWheel event RSVP", () => {
   it("does not report a response when the RSVP fails", async () => {
     rsvpListedCalendarEvent.mockReset().mockRejectedValue(new Error("offline"));
     const onRsvped = vi.fn();
-    const showToast = vi.fn();
-    render(() => <ActionsWheel {...baseProps} showToast={showToast} selectedAccount={() => ({ id: "acc" } as any)} event={event} onRsvped={onRsvped} />);
+    const showFailure = vi.fn();
+    render(() => <ActionsWheel {...baseProps} showFailure={showFailure} selectedAccount={() => ({ id: "acc" } as any)} event={event} onRsvped={onRsvped} />);
     fireEvent.click(screen.getByTitle("RSVP Yes"));
-    await vi.waitFor(() => expect(showToast).toHaveBeenCalledWith("Couldn't RSVP: offline"));
+    await vi.waitFor(() => expect(showFailure).toHaveBeenCalledWith("Couldn't send your RSVP", new Error("offline")));
     expect(onRsvped).not.toHaveBeenCalled();
   });
 
