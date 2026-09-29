@@ -11,6 +11,7 @@ const NO_DOM = [
   "src/app/actionOrder.test.ts",
   "src/app/authErrors.test.ts",
   "src/app/batchReply.test.ts",
+  "src/app/bulkKeys.test.ts",
   "src/app/cardType.test.ts",
   "src/app/cidImages.test.ts",
   "src/app/coalesce.test.ts",

@@ -998,6 +998,79 @@ describe("App dialogs", () => {
   });
 });
 
+describe("App selection keys", () => {
+  const row = (subject: string) => screen.getByText(subject).closest<HTMLElement>(".thread")!;
+  beforeEach(() => {
+    threadsByCard["card-a"] = [thread("t-1", "First"), thread("t-2", "Second"), thread("t-3", "Third")];
+  });
+
+  it("acts on every selected thread, not only the focused one, and clears the selection", async () => {
+    handlers.modify_threads = () => null;
+    render(() => <App />);
+    await screen.findByText("Third");
+    fireEvent.keyDown(document, { key: "l" });
+    fireEvent.keyDown(document, { key: "x" });
+    fireEvent.keyDown(document, { key: "j" });
+    fireEvent.keyDown(document, { key: "x" });
+    fireEvent.keyDown(document, { key: "j" });
+    fireEvent.keyDown(document, { key: "u" });
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith("modify_threads", expect.objectContaining({ threadIds: ["t-1", "t-2"] })));
+    expect(row("First")).not.toHaveClass("selected");
+    expect(row("Second")).not.toHaveClass("selected");
+  });
+
+  it("opens Batch Reply for the selection on r", async () => {
+    handlers.get_thread_details = ({ threadId }) => ({ id: threadId, messages: [fullMessage("m1", "Ana <ana@x.com>")] });
+    render(() => <App />);
+    await screen.findByText("Third");
+    fireEvent.keyDown(document, { key: "l" });
+    fireEvent.keyDown(document, { key: "x" });
+    fireEvent.keyDown(document, { key: "j" });
+    fireEvent.keyDown(document, { key: "x" });
+    fireEvent.keyDown(document, { key: "r" });
+    expect(await screen.findByText("Batch Reply")).toBeInTheDocument();
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith("get_thread_details", expect.objectContaining({ threadId: "t-2" })));
+    expect(invoke).toHaveBeenCalledWith("get_thread_details", expect.objectContaining({ threadId: "t-1" }));
+  });
+
+  it("extends the selection with Shift+J and Shift+K", async () => {
+    render(() => <App />);
+    await screen.findByText("Third");
+    fireEvent.keyDown(document, { key: "l" });
+    fireEvent.keyDown(document, { key: "J", shiftKey: true });
+    expect(row("First")).toHaveClass("selected");
+    expect(row("Second")).toHaveClass("selected");
+    expect(row("Second")).toHaveClass("focused");
+    fireEvent.keyDown(document, { key: "J", shiftKey: true });
+    expect(row("Third")).toHaveClass("selected");
+    fireEvent.keyDown(document, { key: "Escape" });
+    fireEvent.keyDown(document, { key: "K", shiftKey: true });
+    expect(row("Third")).toHaveClass("selected");
+    expect(row("Second")).toHaveClass("selected");
+    expect(row("First")).not.toHaveClass("selected");
+  });
+
+  it("selects every thread in the focused card with * then a", async () => {
+    handlers.modify_threads = () => null;
+    render(() => <App />);
+    await screen.findByText("Third");
+    fireEvent.keyDown(document, { key: "l" });
+    fireEvent.keyDown(document, { key: "*", shiftKey: true });
+    fireEvent.keyDown(document, { key: "a" });
+    for (const subject of ["First", "Second", "Third"]) expect(row(subject)).toHaveClass("selected");
+    expect(invoke).not.toHaveBeenCalledWith("modify_threads", expect.anything());
+  });
+
+  it("lists the selection keys in the shortcuts sheet", async () => {
+    render(() => <App />);
+    await screen.findByText("Third");
+    fireEvent.keyDown(document, { key: "?" });
+    const dialog = await screen.findByRole("dialog", { name: "Keyboard Shortcuts" });
+    const section = within(dialog).getByText("Selection").parentElement!;
+    for (const key of ["⇧J", "⇧K", "*a"]) expect(within(section).getByText(key)).toBeInTheDocument();
+  });
+});
+
 describe("App keyboard focus", () => {
   const row = (subject: string) => screen.getByText(subject).closest<HTMLElement>(".thread")!;
 

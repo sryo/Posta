@@ -149,6 +149,7 @@ import { querySuggestions, type QuerySuggestion } from "./app/querySuggestions";
 import { inviteNamesEvent, rsvpSentMessage, type RsvpStatus } from "./app/rsvp";
 import { createRsvpLookups } from "./app/rsvpLookups";
 import { nextSelection } from "./app/selection";
+import { bulkActionForKey, extendSelection, keyTargets } from "./app/bulkKeys";
 import { fingerprint } from "./app/fingerprint";
 import { hasCommandModifier, isTypingTarget, onActivateKey } from "./shared/keyboard";
 import { askConfirm, ConfirmDialog, confirmOpen, dismissConfirm } from "./app/confirm";
@@ -1392,6 +1393,10 @@ function App() {
     if (count > 0) focusCardItem(from.cardId, Math.min(from.index, count - 1));
   }
 
+  // When * was pressed, for a following a to select all
+  let selectAllKeyAt = 0;
+  const SELECT_ALL_WINDOW_MS = 1500;
+
   // Global keyboard shortcuts
   const handleGlobalKeyDown = (e: KeyboardEvent) => {
     // The dialog answers its own keys; nothing may act behind it
@@ -1581,9 +1586,51 @@ function App() {
       return;
     }
 
+    const cardId = focusedCardId();
+    const threadCardId = cardId && !isCalendarCard(cardId) ? cardId : null;
+
+    // * then a selects every thread in the focused card
+    const selectAllArmed = selectAllKeyAt !== 0 && Date.now() - selectAllKeyAt < SELECT_ALL_WINDOW_MS;
+    selectAllKeyAt = 0;
+    if (e.key === '*') {
+      e.preventDefault();
+      selectAllKeyAt = Date.now();
+      return;
+    }
+    if (selectAllArmed && e.key === 'a' && threadCardId) {
+      e.preventDefault();
+      setSelectedThreads({ ...selectedThreads(), [threadCardId]: new Set(getCardThreadsFlat(threadCardId).map(t => t.gmail_thread_id)) });
+      return;
+    }
+
+    if ((e.key === 'J' || e.key === 'K') && threadCardId) {
+      e.preventDefault();
+      const ids = getCardThreadsFlat(threadCardId).map(t => t.gmail_thread_id);
+      const next = extendSelection(ids, selectedThreads()[threadCardId] ?? new Set(), focusedThreadIndex(), e.key === 'J');
+      setSelectedThreads({ ...selectedThreads(), [threadCardId]: next.selected });
+      focusCardItem(threadCardId, next.index);
+      return;
+    }
+
+    // With threads selected, the keys the bulk wheel shows act on all of them
+    const selection = threadCardId ? selectedThreads()[threadCardId] : undefined;
+    if (threadCardId && selection && selection.size > 0) {
+      if (e.key === 'r') {
+        e.preventDefault();
+        startBatchReply(threadCardId, keyTargets(selection, null));
+        return;
+      }
+      const action = bulkActionForKey(e.key);
+      if (action) {
+        e.preventDefault();
+        handleThreadAction(action, keyTargets(selection, null), threadCardId);
+        setSelectedThreads({ ...selectedThreads(), [threadCardId]: new Set() });
+        return;
+      }
+    }
+
     // Quick actions on focused thread
     const thread = getFocusedThread();
-    const cardId = focusedCardId();
     if (thread && cardId) {
       if (e.key === 'a') {
         e.preventDefault();
@@ -5605,6 +5652,11 @@ function App() {
             <div class="shortcuts-section">
               <h3>Selection</h3>
               <div class="shortcut-row"><kbd>x</kbd> <span>Select thread or event</span></div>
+              <div class="shortcut-row"><kbd>⇧J</kbd> <span>Extend selection down</span></div>
+              <div class="shortcut-row"><kbd>⇧K</kbd> <span>Extend selection up</span></div>
+              <div class="shortcut-row"><kbd>*a</kbd> <span>Select all in card</span></div>
+              <div class="shortcut-row"><kbd>a s u i d !</kbd> <span>Act on the selection</span></div>
+              <div class="shortcut-row"><kbd>r</kbd> <span>Batch reply to the selection</span></div>
               <div class="shortcut-row"><kbd>Escape</kbd> <span>Clear selection</span></div>
             </div>
             <div class="shortcuts-section">
