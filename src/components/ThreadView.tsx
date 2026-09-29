@@ -40,9 +40,7 @@ import { ComposeForm } from "./ComposeForm";
 import { MessageActionsWheel } from "./MessageActionsWheel";
 import { COLOR_HEX } from "../shared/constants";
 import type { InlineComposeProps } from "./types";
-import { findHeader, lastMessageFromOthers } from "../app/messages";
-
-const normalizeMessageId = (id: string) => id.trim().replace(/^<|>$/g, '').toLowerCase();
+import { findHeader, lastMessageFromOthers, nearestShownIndex, normalizeMessageId, reactionsShownAsChips, stepShownIndex } from "../app/messages";
 
 export const ThreadView = (props: {
   thread: FullThread | null,
@@ -139,6 +137,14 @@ export const ThreadView = (props: {
     return list;
   });
 
+  const chipReactions = createMemo(() => reactionsShownAsChips(props.thread?.messages ?? []));
+  const hiddenMessages = () => (props.thread?.messages ?? []).map(m => chipReactions().has(m.id));
+  createEffect(() => {
+    if (!props.thread) return;
+    const shown = nearestShownIndex(props.focusedMessageIndex, hiddenMessages());
+    if (shown !== props.focusedMessageIndex) props.onFocusChange(shown);
+  });
+
   // Scroll to the newest message when the thread loads or gains a message.
   // Actions such as star or a label change reload the same thread, and must
   // not pull the reader away from an earlier message.
@@ -155,7 +161,7 @@ export const ThreadView = (props: {
       requestAnimationFrame(() => {
         const thread = props.thread;
         if (!thread) return;
-        const lastIndex = thread.messages.length - 1;
+        const lastIndex = nearestShownIndex(thread.messages.length - 1, hiddenMessages());
         const lastMessage = messageRefs[lastIndex];
         if (lastMessage) {
           lastMessage.scrollIntoView({ block: 'start' });
@@ -288,10 +294,7 @@ export const ThreadView = (props: {
     // j/k for message navigation
     if (e.key === 'j' || e.key === 'k') {
       e.preventDefault();
-      const maxIndex = props.thread.messages.length - 1;
-      const newIndex = e.key === 'j'
-        ? Math.min(props.focusedMessageIndex + 1, maxIndex)
-        : Math.max(props.focusedMessageIndex - 1, 0);
+      const newIndex = stepShownIndex(props.focusedMessageIndex, e.key === 'j' ? 1 : -1, hiddenMessages());
 
       if (newIndex !== props.focusedMessageIndex) {
         props.onFocusChange(newIndex);
@@ -413,8 +416,10 @@ export const ThreadView = (props: {
 
         <Show when={props.thread}>
           <div class="messages-list">
-            <For each={messages()}>
-              {(msg, index) => {
+            <For each={messages().filter(m => !chipReactions().has(m.id))}>
+              {(msg) => {
+                // Position in the whole thread, which focus and refs index by
+                const index = () => messages().indexOf(msg);
                 const headers = msg.payload?.headers || [];
                 const from = findHeader(headers, 'From') || 'Unknown';
                 const date = findHeader(headers, 'Date') || '';
@@ -497,7 +502,7 @@ export const ThreadView = (props: {
                   if (!props.inlineCompose?.isForward) return false;
                   const source = forwardSourceId();
                   const sourceShown = source != null && props.thread!.messages.some(m => m.id === source);
-                  return sourceShown ? source === msg.id : index() === props.thread!.messages.length - 1;
+                  return sourceShown ? source === msg.id : index() === nearestShownIndex(props.thread!.messages.length - 1, hiddenMessages());
                 };
                 const showInlineCompose = () => isReplyingToThis() || isForwardingFromThis();
 

@@ -270,13 +270,52 @@ describe("ThreadView reactions", () => {
       in_reply_to: "<MSG0@example.com>",
       message_id: "m1",
     };
+    const { container } = renderThread({ thread, focusedMessageIndex: 0 });
+    const cards = container.querySelectorAll(".message-card");
+    expect(cards).toHaveLength(1);
+    expect(cards[0].querySelector(".message-reaction")?.textContent).toBe("🎉");
+    expect(container.textContent).not.toContain("fallback text for the reaction");
+    expect(container.querySelector(".message-reaction-note")).toBeNull();
+    expect(cards[0].querySelector(".add-reaction-btn")).not.toBeNull();
+  });
+
+  it("still shows a reaction to a message outside the thread as its own message, with no reaction button", () => {
+    const thread = makeThread([
+      { from: "Alice <alice@example.com>", body: "first" },
+      { from: "Bob <bob@example.com>", body: "fallback" },
+    ]);
+    thread.messages[1].reaction = { emoji: "🎉", from_addr: "bob@example.com", in_reply_to: "<other@example.com>", message_id: "m1" };
     const { container } = renderThread({ thread });
     const cards = container.querySelectorAll(".message-card");
-    expect(cards[0].querySelector(".message-reaction")?.textContent).toBe("🎉");
-    expect(cards[1].textContent).not.toContain("fallback text for the reaction");
+    expect(cards).toHaveLength(2);
     expect(cards[1].querySelector(".message-reaction-note")?.textContent).toContain("🎉");
     expect(cards[1].querySelector(".add-reaction-btn")).toBeNull();
-    expect(cards[0].querySelector(".add-reaction-btn")).not.toBeNull();
+  });
+
+  it("moves focus off a reaction shown as a chip, and j/k skip it", () => {
+    const thread = makeThread([
+      { from: "Alice <alice@example.com>", body: "first" },
+      { from: "Bob <bob@example.com>", body: "second" },
+      { from: "Carol <carol@example.com>", body: "reaction" },
+    ]);
+    thread.messages[2].reaction = { emoji: "👍", from_addr: "carol@example.com", in_reply_to: "<msg1@example.com>", message_id: "m2" };
+    const onFocusChange = vi.fn();
+    const [focus, setFocus] = createSignal(2);
+    onFocusChange.mockImplementation(setFocus);
+    render(() => (
+      <ThreadView
+        thread={thread} loading={false} error={null} card={null} focusColor={null} onClose={vi.fn()}
+        focusedMessageIndex={focus()} onFocusChange={onFocusChange} onOpenAttachment={vi.fn()} onDownloadAttachment={vi.fn()}
+        onShowAttachmentMenu={vi.fn()} onReply={vi.fn()} onForward={vi.fn()} onAction={vi.fn()} onOpenLabels={vi.fn()}
+        accountId="acc" currentUserEmail="me@example.com" isStarred={false} isRead={true} isImportant={false}
+        isInInbox={true} labelCount={0} inlineCompose={null}
+      />
+    ));
+    expect(focus()).toBe(1);
+    fireEvent.keyDown(document, { key: "j" });
+    expect(focus()).toBe(1);
+    fireEvent.keyDown(document, { key: "k" });
+    expect(focus()).toBe(0);
   });
 
   it("groups identical emojis with a count and names who reacted", () => {

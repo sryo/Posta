@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { findHeader, lastMessageFromOthers } from "./messages";
+import { findHeader, lastMessageFromOthers, nearestShownIndex, reactionsShownAsChips, stepShownIndex } from "./messages";
 
 const msg = (id: string, headers: Record<string, string>) => ({
   id,
@@ -46,5 +46,34 @@ describe("lastMessageFromOthers", () => {
 
   it("returns undefined for an empty thread", () => {
     expect(lastMessageFromOthers([], "me@x.com")).toBeUndefined();
+  });
+});
+
+describe("reactionsShownAsChips", () => {
+  const reaction = (id: string, inReplyTo: string) => ({
+    ...msg(id, { From: "Bob <bob@x>" }),
+    reaction: { emoji: "👍", from_addr: "bob@x", in_reply_to: inReplyTo, message_id: id },
+  });
+
+  it("names reactions whose message is in the thread, matching Message-IDs loosely", () => {
+    const messages = [msg("m0", { "Message-ID": "<Abc@x>" }), reaction("m1", "abc@X"), reaction("m2", "<elsewhere@x>")];
+    expect([...reactionsShownAsChips(messages)]).toEqual(["m1"]);
+  });
+});
+
+describe("shown message navigation", () => {
+  const hidden = [false, true, false, true];
+
+  it("steps over hidden messages and stops at the ends", () => {
+    expect(stepShownIndex(0, 1, hidden)).toBe(2);
+    expect(stepShownIndex(2, 1, hidden)).toBe(2);
+    expect(stepShownIndex(2, -1, hidden)).toBe(0);
+    expect(stepShownIndex(0, -1, hidden)).toBe(0);
+  });
+
+  it("moves focus off a hidden message to the closest earlier one, or a later one", () => {
+    expect(nearestShownIndex(3, hidden)).toBe(2);
+    expect(nearestShownIndex(1, [true, true, false])).toBe(2);
+    expect(nearestShownIndex(2, hidden)).toBe(2);
   });
 });
