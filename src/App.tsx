@@ -39,6 +39,7 @@ import {
   type Card,
   type ThreadGroup,
   type Thread,
+  type Attachment,
   getThreadDetails,
   type FullThread,
   sendEmail,
@@ -128,6 +129,7 @@ import { completeRecipient, currentRecipient, matchContacts, rankContacts, type 
 import { eventReplyRecipients } from "./app/eventReply";
 import { labelDisplayName } from "./app/labels";
 import { personName } from "./app/people";
+import { CardAttachments } from "./components/CardAttachments";
 import { runUnsubscribe, type UnsubscribeMethod } from "./app/unsubscribe";
 import { actionFailureLabel, actionLabel, actionRemovesFromCard, applyThreadAction, bulkActionConfirm, labelChangeFor, threadMayJoinCard, undoLabelChanges, type LabelReversal } from "./app/threadActions";
 import { PRESETS } from "./app/presets";
@@ -3520,6 +3522,10 @@ function App() {
     }
   }
 
+  function openCardAttachment(_attachments: Attachment[], attachment: Attachment, _index: number) {
+    openAttachment(attachment.message_id, attachment.attachment_id, attachment.filename, attachment.mime_type, attachment.inline_data);
+  }
+
   async function downloadAttachment(
     messageId: string,
     attachmentId: string | undefined,
@@ -4488,46 +4494,16 @@ function App() {
                                           </div>
                                           {/* Attachment previews (filter out .ics when calendar event is shown) */}
                                           {(() => {
-                                            const attachments = thread.calendar_event
-                                              ? thread.attachments?.filter(a => !isCalendarAttachment(a))
-                                              : thread.attachments;
-                                            const imageAttachments = attachments?.filter(a => a.inline_data && a.mime_type.startsWith("image/")) ?? [];
-                                            const fileAttachments = attachments?.filter(a => !a.inline_data || !a.mime_type.startsWith("image/")) ?? [];
-                                            const shownCount = Math.min(imageAttachments.length, 4) + Math.min(fileAttachments.length, 3);
+                                            const attachments = () => thread.calendar_event
+                                              ? thread.attachments?.filter(a => !isCalendarAttachment(a)) ?? []
+                                              : thread.attachments ?? [];
                                             return (
-                                              <Show when={attachments && attachments.length > 0}>
-                                                <div class="thread-attachments" onClick={(e) => e.stopPropagation()}>
-                                                  {/* Image thumbnails */}
-                                                  <For each={imageAttachments.slice(0, 4)}>
-                                                    {(attachment) => (
-                                                      <img
-                                                        class="thread-image-thumb"
-                                                        src={`data:${attachment.mime_type};base64,${normalizeBase64Url(attachment.inline_data || '')}`}
-                                                        alt={attachment.filename}
-                                                        title={attachment.filename}
-                                                        onClick={() => openAttachment(attachment.message_id, attachment.attachment_id, attachment.filename, attachment.mime_type, attachment.inline_data)}
-                                                        onContextMenu={(e) => { e.preventDefault(); e.stopPropagation(); showAttachmentContextMenu({ messageId: attachment.message_id, attachmentId: attachment.attachment_id, filename: attachment.filename, mimeType: attachment.mime_type, inlineData: attachment.inline_data }); }}
-                                                      />
-                                                    )}
-                                                  </For>
-                                                  {/* Other files (non-image or images without inline data) */}
-                                                  <For each={fileAttachments.slice(0, 3)}>
-                                                    {(attachment) => (
-                                                      <div
-                                                        class="thread-file-item"
-                                                        title={`${attachment.filename} (${formatFileSize(attachment.size)})`}
-                                                        onClick={() => openAttachment(attachment.message_id, attachment.attachment_id, attachment.filename, attachment.mime_type, attachment.inline_data)}
-                                                        onContextMenu={(e) => { e.preventDefault(); e.stopPropagation(); showAttachmentContextMenu({ messageId: attachment.message_id, attachmentId: attachment.attachment_id, filename: attachment.filename, mimeType: attachment.mime_type, inlineData: attachment.inline_data }); }}
-                                                      >
-                                                        <span class="file-name">{truncateMiddle(attachment.filename, 14)}</span>
-                                                      </div>
-                                                    )}
-                                                  </For>
-                                                  {/* More indicator */}
-                                                  <Show when={attachments && attachments.length > shownCount}>
-                                                    <span class="thread-attachment-more">+{attachments!.length - shownCount}</span>
-                                                  </Show>
-                                                </div>
+                                              <Show when={attachments().length > 0}>
+                                                <CardAttachments
+                                                  attachments={attachments()}
+                                                  onOpen={(attachment, index) => openCardAttachment(attachments(), attachment, index)}
+                                                  onMenu={(attachment) => showAttachmentContextMenu({ messageId: attachment.message_id, attachmentId: attachment.attachment_id, filename: attachment.filename, mimeType: attachment.mime_type, inlineData: attachment.inline_data })}
+                                                />
                                               </Show>
                                             );
                                           })()}
