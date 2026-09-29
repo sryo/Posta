@@ -1161,9 +1161,17 @@ describe("App compose", () => {
   });
 });
 
+// A fixed hour, so an event never straddles midnight (and shows under two
+// days) when the tests run late in the evening
+const tomorrowAt = (hour: number) => {
+  const d = new Date();
+  d.setDate(d.getDate() + 1);
+  d.setHours(hour, 0, 0, 0);
+  return d.getTime();
+};
 const calendarEvent = (id: string, title: string) => ({
   id, calendar_id: "primary", calendar_name: "Main", title, description: null, location: null,
-  start_time: Date.now() + 3600_000, end_time: Date.now() + 7200_000, all_day: false, status: "confirmed",
+  start_time: tomorrowAt(10), end_time: tomorrowAt(11), all_day: false, status: "confirmed",
   organizer: "org@x.com", attendees: [], html_link: null, hangout_link: null, response_status: null, can_edit: true,
 });
 
