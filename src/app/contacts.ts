@@ -58,9 +58,10 @@ export function rankContacts(
 const NO_REPLY = /^(no|do[-_.]?not)[-_.]?reply\b/i;
 
 function startsAWord(contact: RecentContact, q: string): boolean {
-  const local = contact.email.toLowerCase().split("@")[0];
-  const words = [...local.split(/[-_.+]/), ...(contact.name?.toLowerCase().split(/\s+/) ?? [])];
-  return contact.email.toLowerCase().startsWith(q) || words.some(w => w.startsWith(q));
+  const email = contact.email.toLowerCase();
+  const name = contact.name?.toLowerCase() ?? "";
+  const words = [...email.split("@")[0].split(/[-_.+]/), ...name.split(/\s+/)];
+  return email.startsWith(q) || name.startsWith(q) || words.some(w => w.startsWith(q));
 }
 
 // Contacts the query finds, best first: people before no-reply senders, and

@@ -56,6 +56,14 @@ describe("matchContacts", () => {
     expect(matchContacts(ranked, "to", 5).map(c => c.email)).toEqual(["tomas@x.com", "ana@x.com", "msoto@x.com"]);
   });
 
+  it("counts a query that runs past the first name as starting the name", () => {
+    const ranked = rankContacts([], [
+      { participants: ["Juana Soto <jsoto@x.com>"], last_message_date: NOW },
+      { participants: ["Ana Sosa <asosa@x.com>"], last_message_date: NOW - DAY },
+    ], undefined, NOW);
+    expect(matchContacts(ranked, "ana so", 5).map(c => c.email)).toEqual(["asosa@x.com", "jsoto@x.com"]);
+  });
+
   it("puts no-reply addresses below people", () => {
     const ranked = rankContacts([], [
       { participants: ["Acme <no-reply@acme.com>"], last_message_date: NOW },
