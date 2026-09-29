@@ -1,4 +1,4 @@
-import { Show, For, createEffect, type Setter } from "solid-js";
+import { Show, For, createEffect } from "solid-js";
 import {
   CARD_COLORS,
   COLOR_HEX,
@@ -10,12 +10,9 @@ import {
 import { PaletteIcon, TrashIcon } from "./Icons";
 import { cardTypeForQuery } from "../app/cardType";
 import { isImeComposing, onActivateKey } from "../shared/keyboard";
-
-interface QuerySuggestion {
-  text: string;
-  desc: string;
-  replace: { start: number; end: number };
-}
+import type { RecentContact } from "../app/contacts";
+import type { QuerySuggestion } from "../app/querySuggestions";
+import { QueryField } from "./QueryField";
 
 // Shared card form component for new and edit modes
 export const CardForm = (props: {
@@ -34,20 +31,19 @@ export const CardForm = (props: {
   onCancel: () => void;
   onDelete?: () => void;
   saveDisabled: boolean;
-  // Query autocomplete wiring (state lives in App)
   setQueryHelpOpen: (v: boolean) => void;
-  setQueryInputRef: (el: HTMLInputElement) => void;
-  getQuerySuggestions: (query: string) => QuerySuggestion[];
-  queryAutocompleteOpen: () => boolean;
-  setQueryAutocompleteOpen: (v: boolean) => void;
-  queryAutocompleteIndex: () => number;
-  setQueryAutocompleteIndex: (v: number) => void;
-  updateDropdownPosition: () => void;
+  suggestQuery: (query: string, caret: number) => QuerySuggestion[];
+  contacts: RecentContact[];
+  labelNames: string[];
   debounceQueryPreview: (query: string) => void;
-  setActiveQueryGetter: Setter<(() => string) | null>;
-  setActiveQuerySetter: Setter<((q: string) => void) | null>;
-  applyQuerySuggestion: (suggestion: QuerySuggestion) => void;
+  // Receives the function that inserts text at the query field's caret
+  onQueryFieldActive: (insert: (text: string) => void) => void;
 }) => {
+  const setQuery = (query: string) => {
+    props.setQuery(query);
+    props.debounceQueryPreview(query);
+  };
+
   const groupByOptions = () =>
     cardTypeForQuery(props.query) === "calendar" ? CALENDAR_GROUP_BY_OPTIONS : EMAIL_GROUP_BY_OPTIONS;
 
@@ -74,7 +70,7 @@ export const CardForm = (props: {
                 props.onSave();
               }
             }}
-            placeholder="Inbox, Starred..."
+            placeholder="e.g. Clients"
             ref={(el) => setTimeout(() => el.focus(), 50)}
           />
           <div class={`color-picker ${props.colorPickerOpen ? 'open' : ''}`}>
@@ -122,58 +118,15 @@ export const CardForm = (props: {
             ?
           </button>
         </label>
-        <input
-          type="text"
-          ref={(el) => props.setQueryInputRef(el)}
-          value={props.query}
-          onInput={(e) => {
-            const value = e.currentTarget.value;
-            props.setQuery(value);
-            const suggestions = props.getQuerySuggestions(value);
-            props.setQueryAutocompleteOpen(suggestions.length > 0);
-            props.setQueryAutocompleteIndex(0);
-            props.updateDropdownPosition();
-            props.debounceQueryPreview(value);
-          }}
-          onFocus={() => {
-            props.setActiveQueryGetter(() => () => props.query);
-            props.setActiveQuerySetter(() => props.setQuery);
-            const suggestions = props.getQuerySuggestions(props.query);
-            props.setQueryAutocompleteOpen(suggestions.length > 0);
-            props.updateDropdownPosition();
-          }}
-          onBlur={() => setTimeout(() => props.setQueryAutocompleteOpen(false), 150)}
-          onKeyDown={(e) => {
-            if (isImeComposing(e)) return;
-            const suggestions = props.getQuerySuggestions(props.query);
-            if (e.key === 'Escape') {
-              if (props.queryAutocompleteOpen()) {
-                props.setQueryAutocompleteOpen(false);
-              } else {
-                props.onCancel();
-              }
-              return;
-            }
-            if (e.key === 'Enter' && (e.metaKey || e.ctrlKey) && !props.saveDisabled) {
-              e.preventDefault();
-              props.onSave();
-              return;
-            }
-            if (!props.queryAutocompleteOpen() || suggestions.length === 0) return;
-            if (e.key === 'ArrowDown') {
-              e.preventDefault();
-              props.setQueryAutocompleteIndex((props.queryAutocompleteIndex() + 1) % suggestions.length);
-            } else if (e.key === 'ArrowUp') {
-              e.preventDefault();
-              props.setQueryAutocompleteIndex((props.queryAutocompleteIndex() - 1 + suggestions.length) % suggestions.length);
-            } else if (e.key === 'Enter' || e.key === 'Tab') {
-              if (suggestions[props.queryAutocompleteIndex()]) {
-                e.preventDefault();
-                props.applyQuerySuggestion(suggestions[props.queryAutocompleteIndex()]);
-              }
-            }
-          }}
-          placeholder="is:inbox, from:boss, newer_than:7d"
+        <QueryField
+          query={props.query}
+          setQuery={setQuery}
+          suggest={props.suggestQuery}
+          contacts={props.contacts}
+          labelNames={props.labelNames}
+          onSave={() => { if (!props.saveDisabled) props.onSave(); }}
+          onCancel={props.onCancel}
+          onActive={props.onQueryFieldActive}
         />
       </div>
       <div class="card-form-group">

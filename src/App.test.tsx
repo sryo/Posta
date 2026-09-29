@@ -744,8 +744,8 @@ describe("App error banner", () => {
     expect(await screen.findByRole("alert")).toHaveTextContent("Couldn't save the card: Error: db locked");
 
     fireEvent.click(screen.getByTitle("New card"));
-    fireEvent.input(screen.getAllByPlaceholderText("Inbox, Starred...").slice(-1)[0], { target: { value: "News" } });
-    fireEvent.input(screen.getAllByPlaceholderText("is:inbox, from:boss, newer_than:7d").slice(-1)[0], { target: { value: "label:news" } });
+    fireEvent.input(screen.getAllByPlaceholderText("e.g. Clients").slice(-1)[0], { target: { value: "News" } });
+    fireEvent.input(screen.getAllByPlaceholderText("e.g. from:boss is:unread newer_than:7d").slice(-1)[0], { target: { value: "label:news" } });
     fireEvent.click(screen.getByTitle("Add (⌘Enter)"));
     await waitFor(() => expect(screen.getByRole("alert")).toHaveTextContent("Couldn't add the card: Error: disk full"));
   });
@@ -2763,12 +2763,12 @@ describe("App new card form", () => {
     render(() => <App />);
     await screen.findByText("Mail for A");
     fireEvent.click(screen.getByTitle("New card"));
-    fireEvent.input(screen.getByPlaceholderText("Inbox, Starred..."), { target: { value: "Temp" } });
+    fireEvent.input(screen.getByPlaceholderText("e.g. Clients"), { target: { value: "Temp" } });
     fireEvent.click(screen.getByTitle("Cancel (Esc)"));
-    await waitFor(() => expect(screen.queryByPlaceholderText("Inbox, Starred...")).not.toBeInTheDocument());
+    await waitFor(() => expect(screen.queryByPlaceholderText("e.g. Clients")).not.toBeInTheDocument());
 
     fireEvent.click(screen.getByTitle("New card"));
-    expect(screen.getByPlaceholderText("Inbox, Starred...")).toHaveValue("");
+    expect(screen.getByPlaceholderText("e.g. Clients")).toHaveValue("");
   });
 });
 
@@ -2834,7 +2834,7 @@ describe("App card query edits", () => {
     fireEvent.click(screen.getByTitle("Refresh"));
     await waitFor(() => expect(calls).toBe(2));
     fireEvent.click(screen.getByTitle("Edit query"));
-    fireEvent.input(screen.getByPlaceholderText("is:inbox, from:boss, newer_than:7d"), { target: { value: "is:starred" } });
+    fireEvent.input(screen.getByPlaceholderText("e.g. from:boss is:unread newer_than:7d"), { target: { value: "is:starred" } });
     fireEvent.click(screen.getByTitle("Save (⌘Enter)"));
     await screen.findByText("New query result");
 
@@ -2855,14 +2855,14 @@ describe("App card editor and iCloud", () => {
     render(() => <App />);
     await screen.findByText("Mail for A");
     fireEvent.click(screen.getByTitle("Edit query"));
-    fireEvent.input(screen.getByPlaceholderText("Inbox, Starred..."), { target: { value: "Alpha renamed" } });
+    fireEvent.input(screen.getByPlaceholderText("e.g. Clients"), { target: { value: "Alpha renamed" } });
 
     handlers.pull_from_icloud = () => true;
     cardsByAccount.a = [{ ...card("card-a", "a", "Alpha"), query: "is:starred" }];
     fireEvent.focus(window);
     await waitFor(() => expect(invoke).toHaveBeenCalledWith("get_cards", { accountId: "a" }));
-    await waitFor(() => expect(screen.getByPlaceholderText("is:inbox, from:boss, newer_than:7d")).toHaveValue("is:starred"));
-    expect(screen.getByPlaceholderText("Inbox, Starred...")).toHaveValue("Alpha renamed");
+    await waitFor(() => expect(screen.getByPlaceholderText("e.g. from:boss is:unread newer_than:7d")).toHaveValue("is:starred"));
+    expect(screen.getByPlaceholderText("e.g. Clients")).toHaveValue("Alpha renamed");
     await new Promise(r => setTimeout(r, 20));
     invoke.mockClear();
     fireEvent.click(screen.getByTitle("Save (⌘Enter)"));
@@ -3300,13 +3300,58 @@ describe("App card query autocomplete", () => {
     fireEvent.click(screen.getByTitle("New card"));
     await waitFor(() => expect(invoke).toHaveBeenCalledWith("list_labels", { accountId: "a" }));
     await new Promise(r => setTimeout(r, 10));
-    const query = screen.getAllByPlaceholderText("is:inbox, from:boss, newer_than:7d").slice(-1)[0];
+    const query = screen.getAllByPlaceholderText("e.g. from:boss is:unread newer_than:7d").slice(-1)[0];
     fireEvent.focus(query);
     fireEvent.input(query, { target: { value: "label:tr" } });
 
     const suggestion = await screen.findByText("label:travel");
     expect(suggestion.closest(".query-autocomplete")).not.toBeNull();
     expect(screen.queryByText("label:inbox")).not.toBeInTheDocument();
+  });
+});
+
+describe("App card query help and errors", () => {
+  it("adds an operator picked in the help sheet to the query being edited", async () => {
+    handlers.list_labels = () => [];
+    handlers.search_threads_preview = () => [];
+    render(() => <App />);
+    await screen.findByText("Mail for A");
+    fireEvent.click(screen.getByTitle("New card"));
+    const query = screen.getAllByPlaceholderText("e.g. from:boss is:unread newer_than:7d").slice(-1)[0];
+    fireEvent.focus(query);
+    fireEvent.input(query, { target: { value: "is:unread" } });
+    fireEvent.click(screen.getByTitle("Query operators help"));
+    fireEvent.click(screen.getByRole("button", { name: /^has:attachment/ }));
+
+    expect(query).toHaveValue("is:unread has:attachment");
+    expect(screen.queryByText("Query Operators")).not.toBeInTheDocument();
+  });
+
+  it("shows why a preview failed instead of saying nothing matches", async () => {
+    handlers.list_labels = () => [];
+    handlers.search_threads_preview = () => { throw "Search failed: Invalid query"; };
+    render(() => <App />);
+    await screen.findByText("Mail for A");
+    fireEvent.click(screen.getByTitle("New card"));
+    const query = screen.getAllByPlaceholderText("e.g. from:boss is:unread newer_than:7d").slice(-1)[0];
+    fireEvent.input(query, { target: { value: "larger:huge" } });
+
+    expect(await screen.findByText("Invalid query")).toBeInTheDocument();
+    expect(screen.queryByText("No matches")).not.toBeInTheDocument();
+  });
+
+  it("names an unknown calendar range without asking the calendar", async () => {
+    handlers.list_labels = () => [];
+    handlers.fetch_calendar_events = () => [];
+    render(() => <App />);
+    await screen.findByText("Mail for A");
+    fireEvent.click(screen.getByTitle("Edit query"));
+    const query = screen.getByPlaceholderText("e.g. from:boss is:unread newer_than:7d");
+    fireEvent.input(query, { target: { value: "calendar:nextweek" } });
+
+    expect(await screen.findByText('Unknown range "nextweek". Try today, tomorrow, week, month, 7d, 2w')).toBeInTheDocument();
+    expect(screen.queryByText("No events")).not.toBeInTheDocument();
+    expect(invoke).not.toHaveBeenCalledWith("fetch_calendar_events", expect.anything());
   });
 });
 
@@ -3317,7 +3362,7 @@ describe("App new card preview", () => {
     render(() => <App />);
     await screen.findByText("Mail for A");
     fireEvent.click(screen.getByTitle("New card"));
-    const query = screen.getAllByPlaceholderText("is:inbox, from:boss, newer_than:7d").slice(-1)[0];
+    const query = screen.getAllByPlaceholderText("e.g. from:boss is:unread newer_than:7d").slice(-1)[0];
     fireEvent.input(query, { target: { value: "calendar:7d" } });
 
     expect(await screen.findByText("Meeting 0")).toBeInTheDocument();

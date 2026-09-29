@@ -20,6 +20,13 @@ export function cardLoadErrorMessage(error: unknown, calendar: boolean): string 
   return `Couldn't load this card: ${text.replace(/^(Search failed: |Request failed: )+/, "")}`;
 }
 
+// Shown in place of a card query's preview when it can't be fetched
+export function queryPreviewErrorMessage(error: unknown, calendar: boolean): string {
+  const text = String(error);
+  if (OFFLINE.test(text)) return `Couldn't reach ${calendar ? "Google Calendar" : "Gmail"} to preview this query.`;
+  return text.replace(/^(Search failed: |Request failed: )+/, "");
+}
+
 // Shown in the Batch Reply panel when none of its threads could be loaded
 export function batchReplyLoadErrorMessage(error: unknown): string {
   const text = String(error);

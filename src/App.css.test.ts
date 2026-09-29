@@ -196,6 +196,22 @@ describe("App.css", () => {
   });
 });
 
+describe("card query field", () => {
+  const declarationsOf = (selector: string) =>
+    new Map(rules.filter((rule) => rule.selectors.includes(selector)).flatMap((rule) => [...rule.declarations]));
+
+  it("keeps the raw query input focusable but out of sight behind its chips until edited", () => {
+    const hidden = declarationsOf(".query-field:not(.editing) input");
+    expect(hidden.get("position")).toBe("absolute");
+    expect(hidden.get("opacity")).toBe("0");
+    expect(hidden.get("display")).toBeUndefined();
+  });
+
+  it("shows a failed preview in the danger color", () => {
+    expect(declarationsOf(".query-preview-error").get("color")).toBe("var(--danger)");
+  });
+});
+
 describe("snippet previews", () => {
   it("clamp to five lines from the stylesheet, not from a property the app sets", () => {
     const root = rules.filter((rule) => rule.selectors.includes(":root")).flatMap((rule) => [...rule.declarations]);

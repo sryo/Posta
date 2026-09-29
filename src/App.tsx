@@ -138,13 +138,15 @@ import { cidImagesToFetch, createLruCache, fetchCidImages } from "./app/cidImage
 import { sendPending, type PendingSend } from "./app/pendingSend";
 import { parseMailto } from "./app/mailto";
 import { coalesceByKey } from "./app/coalesce";
-import { batchReplyLoadErrorMessage, cardLoadErrorMessage, threadLoadErrorMessage } from "./app/loadErrors";
+import { batchReplyLoadErrorMessage, cardLoadErrorMessage, queryPreviewErrorMessage, threadLoadErrorMessage } from "./app/loadErrors";
 import { cardTypeForQuery } from "./app/cardType";
 import { createDraftSync, draftKey, findLatestDraft, findUnsentDrafts, hasDraftContent, markDraftClosed, markDraftSending, pruneDrafts, removeAccountDrafts, sessionDraftKey, type DraftFields } from "./app/drafts";
 import { escapeTarget, nextCardFocus, nextItemFocus } from "./app/keyboardNav";
 import { getSmartEventTime, groupCalendarEvents, isUserLabel, mergeThreadGroups, regroupThreads, type CalendarEventGroup } from "./app/grouping";
 import { pullLayoutWithRetry } from "./app/icloudRestore";
 import { querySuggestions, type QuerySuggestion } from "./app/querySuggestions";
+import { calendarRangeError } from "./app/queryTokens";
+import { QueryHelpSheet } from "./components/QueryHelpSheet";
 import { inviteNamesEvent, rsvpSentMessage, type RsvpStatus } from "./app/rsvp";
 import { createRsvpLookups } from "./app/rsvpLookups";
 import { nextSelection } from "./app/selection";
@@ -515,46 +517,18 @@ function App() {
     }
   }
 
-  // Gmail search autocomplete
-  const [queryAutocompleteOpen, setQueryAutocompleteOpen] = createSignal(false);
-  const [queryAutocompleteIndex, setQueryAutocompleteIndex] = createSignal(0);
-  const [queryInputRef, setQueryInputRef] = createSignal<HTMLInputElement | null>(null);
-  const [queryDropdownPos, setQueryDropdownPos] = createSignal<{ top: number; left: number; width: number } | null>(null);
+  // Card query preview
   const [queryPreviewThreads, setQueryPreviewThreads] = createSignal<ThreadGroup[]>([]);
   const [queryPreviewCalendarEvents, setQueryPreviewCalendarEvents] = createSignal<GoogleCalendarEvent[]>([]);
   const [queryPreviewLoading, setQueryPreviewLoading] = createSignal(false);
+  const [queryPreviewError, setQueryPreviewError] = createSignal<string | null>(null);
   const [queryHelpOpen, setQueryHelpOpen] = createSignal(false);
   const [globalFilter, setGlobalFilter] = createSignal("");
   const [showGlobalFilter, setShowGlobalFilter] = createSignal(false);
   let filterInputRef: HTMLInputElement | undefined;
-  const [activeQueryGetter, setActiveQueryGetter] = createSignal<(() => string) | null>(null);
-  const [activeQuerySetter, setActiveQuerySetter] = createSignal<((q: string) => void) | null>(null);
+  // Inserts text at the caret of the query field shown or focused last
+  let insertIntoQueryField: ((text: string) => void) | null = null;
   let queryPreviewTimeout: number | undefined;
-
-  function updateDropdownPosition() {
-    const input = queryInputRef();
-    if (input) {
-      const rect = input.getBoundingClientRect();
-      setQueryDropdownPos({ top: rect.bottom + 4, left: rect.left, width: rect.width });
-    }
-  }
-
-  // The dropdown floats at app level with fixed coordinates; keep it glued
-  // to its input while open (deck/card scrolls are caught via capture phase)
-  createEffect(() => {
-    if (!queryAutocompleteOpen()) return;
-    window.addEventListener("resize", updateDropdownPosition);
-    window.addEventListener("scroll", updateDropdownPosition, true);
-    onCleanup(() => {
-      window.removeEventListener("resize", updateDropdownPosition);
-      window.removeEventListener("scroll", updateDropdownPosition, true);
-    });
-  });
-
-  function getCurrentQuery(): string {
-    const getter = activeQueryGetter();
-    return getter ? getter() : "";
-  }
 
   // Preview requests can resolve out of order; only the latest may render
   let queryPreviewSeq = 0;
@@ -562,9 +536,12 @@ function App() {
   async function fetchQueryPreview(query: string) {
     const seq = ++queryPreviewSeq;
 
-    if (!query.trim()) {
+    setQueryPreviewError(null);
+    const rangeError = calendarRangeError(query);
+    if (!query.trim() || rangeError) {
       setQueryPreviewThreads([]);
       setQueryPreviewCalendarEvents([]);
+      setQueryPreviewError(rangeError);
       setQueryPreviewLoading(false);
       return;
     }
@@ -584,9 +561,10 @@ function App() {
         const events = await fetchCalendarEvents(account.id, query);
         if (seq !== queryPreviewSeq) return;
         setQueryPreviewCalendarEvents(events);
-      } catch {
+      } catch (e) {
         if (seq !== queryPreviewSeq) return;
         setQueryPreviewCalendarEvents([]);
+        setQueryPreviewError(queryPreviewErrorMessage(e, true));
       } finally {
         if (seq === queryPreviewSeq) setQueryPreviewLoading(false);
       }
@@ -599,9 +577,10 @@ function App() {
       const groups = await searchThreadsPreview(account.id, query);
       if (seq !== queryPreviewSeq) return;
       setQueryPreviewThreads(groups);
-    } catch {
+    } catch (e) {
       if (seq !== queryPreviewSeq) return;
       setQueryPreviewThreads([]);
+      setQueryPreviewError(queryPreviewErrorMessage(e, false));
     } finally {
       if (seq === queryPreviewSeq) setQueryPreviewLoading(false);
     }
@@ -3573,23 +3552,8 @@ function App() {
 
   const userLabelNames = createMemo(() => accountLabels().filter(l => l.label_type === "user").map(l => l.name));
 
-  // Gmail search autocomplete suggestions
-  function getQuerySuggestions(query: string): QuerySuggestion[] {
-    return querySuggestions(query, rankedContacts(), userLabelNames());
-  }
-
-  function applyQuerySuggestion(suggestion: { text: string; replace: { start: number; end: number } }) {
-    const query = getCurrentQuery();
-    const setQuery = activeQuerySetter();
-    if (!setQuery) return;
-
-    const before = query.slice(0, suggestion.replace.start);
-    const newQuery = before + suggestion.text + (suggestion.text.endsWith(':') ? '' : ' ');
-    setQuery(newQuery);
-    setQueryAutocompleteOpen(false);
-    debounceQueryPreview(newQuery);
-    // Focus back on input
-    queryInputRef()?.focus();
+  function suggestQuery(query: string, caret: number): QuerySuggestion[] {
+    return querySuggestions(query, rankedContacts(), userLabelNames(), caret);
   }
 
   async function openThread(threadId: string, cardId: string) {
@@ -4184,17 +4148,11 @@ function App() {
                             onDelete={() => handleDeleteCard(card.id)}
                             saveDisabled={!editCardName() || !editCardQuery()}
                             setQueryHelpOpen={setQueryHelpOpen}
-                            setQueryInputRef={setQueryInputRef}
-                            getQuerySuggestions={getQuerySuggestions}
-                            queryAutocompleteOpen={queryAutocompleteOpen}
-                            setQueryAutocompleteOpen={setQueryAutocompleteOpen}
-                            queryAutocompleteIndex={queryAutocompleteIndex}
-                            setQueryAutocompleteIndex={setQueryAutocompleteIndex}
-                            updateDropdownPosition={updateDropdownPosition}
+                            suggestQuery={suggestQuery}
+                            contacts={rankedContacts()}
+                            labelNames={userLabelNames()}
                             debounceQueryPreview={debounceQueryPreview}
-                            setActiveQueryGetter={setActiveQueryGetter}
-                            setActiveQuerySetter={setActiveQuerySetter}
-                            applyQuerySuggestion={applyQuerySuggestion}
+                            onQueryFieldActive={(insert) => { insertIntoQueryField = insert; }}
                           />
                         </Show>
                         <Show when={editingCardId() !== card.id}>
@@ -4265,6 +4223,9 @@ function App() {
                           <Show when={isPreviewingQuery(card.id) && queryPreviewLoading()}>
                             <div class="loading">Searching...</div>
                           </Show>
+                          <Show when={isPreviewingQuery(card.id) && !queryPreviewLoading() && queryPreviewError()}>
+                            <div class="query-preview-error" aria-live="polite">{queryPreviewError()}</div>
+                          </Show>
                           <Show when={!loadingThreads[card.id] && cardErrors[card.id] && !cardThreads[card.id] && !cardCalendarEvents[card.id]}>
                             <div class="card-error">
                               <span class="error-icon">⚠</span>
@@ -4280,7 +4241,7 @@ function App() {
 
                           {/* Calendar card: show calendar events */}
                           <Show when={effectiveCardType(card) === "calendar" && (isPreviewingQuery(card.id) || cardCalendarEvents[card.id])}>
-                            <Show when={getCalendarEventGroups(card.id).length === 0 && !(isPreviewingQuery(card.id) && queryPreviewLoading())}>
+                            <Show when={getCalendarEventGroups(card.id).length === 0 && !(isPreviewingQuery(card.id) && (queryPreviewLoading() || queryPreviewError()))}>
                               <div class="empty">No events</div>
                             </Show>
                             <Index each={getCalendarEventGroups(card.id)}>
@@ -4404,7 +4365,7 @@ function App() {
 
                           {/* Email card: show threads */}
                           <Show when={effectiveCardType(card) !== "calendar" && (isPreviewingQuery(card.id) || cardThreads[card.id])}>
-                            <Show when={getDisplayGroups(card.id).length === 0 && !(isPreviewingQuery(card.id) && queryPreviewLoading())}>
+                            <Show when={getDisplayGroups(card.id).length === 0 && !(isPreviewingQuery(card.id) && (queryPreviewLoading() || queryPreviewError()))}>
                               <div class="empty">All clear</div>
                             </Show>
                             <Index each={getDisplayGroups(card.id)}>
@@ -4671,26 +4632,23 @@ function App() {
                     onCancel={cancelAddCard}
                     saveDisabled={!newCardName() || !newCardQuery()}
                     setQueryHelpOpen={setQueryHelpOpen}
-                    setQueryInputRef={setQueryInputRef}
-                    getQuerySuggestions={getQuerySuggestions}
-                    queryAutocompleteOpen={queryAutocompleteOpen}
-                    setQueryAutocompleteOpen={setQueryAutocompleteOpen}
-                    queryAutocompleteIndex={queryAutocompleteIndex}
-                    setQueryAutocompleteIndex={setQueryAutocompleteIndex}
-                    updateDropdownPosition={updateDropdownPosition}
+                    suggestQuery={suggestQuery}
+                    contacts={rankedContacts()}
+                    labelNames={userLabelNames()}
                     debounceQueryPreview={debounceQueryPreview}
-                    setActiveQueryGetter={setActiveQueryGetter}
-                    setActiveQuerySetter={setActiveQuerySetter}
-                    applyQuerySuggestion={applyQuerySuggestion}
+                    onQueryFieldActive={(insert) => { insertIntoQueryField = insert; }}
                   />
                   {/* Query preview for new card */}
                   <div class="card-body">
                     <Show when={queryPreviewLoading()}>
                       <div class="loading">Searching...</div>
                     </Show>
+                    <Show when={!queryPreviewLoading() && queryPreviewError()}>
+                      <div class="query-preview-error" aria-live="polite">{queryPreviewError()}</div>
+                    </Show>
                     {/* Calendar events preview */}
                     <Show when={!queryPreviewLoading() && cardTypeForQuery(newCardQuery()) === "calendar"}>
-                      <Show when={queryPreviewCalendarEvents().length === 0}>
+                      <Show when={queryPreviewCalendarEvents().length === 0 && !queryPreviewError()}>
                         <div class="empty">No events</div>
                       </Show>
                       <For each={groupCalendarEvents(queryPreviewCalendarEvents().slice(0, NEW_CARD_PREVIEW_EVENTS), newCardGroupBy())}>
@@ -4731,7 +4689,7 @@ function App() {
                       </Show>
                     </Show>
                     {/* Email threads preview */}
-                    <Show when={!queryPreviewLoading() && queryPreviewThreads().length === 0 && newCardQuery().trim() && cardTypeForQuery(newCardQuery()) !== "calendar"}>
+                    <Show when={!queryPreviewLoading() && !queryPreviewError() && queryPreviewThreads().length === 0 && newCardQuery().trim() && cardTypeForQuery(newCardQuery()) !== "calendar"}>
                       <div class="empty">No matches</div>
                     </Show>
                     <Show when={!queryPreviewLoading() && queryPreviewThreads().length > 0}>
@@ -5255,118 +5213,8 @@ function App() {
         </div>
       </Show>
 
-      {/* Query help sheet */}
       <Show when={queryHelpOpen()}>
-        <div class="query-help-overlay" onClick={() => setQueryHelpOpen(false)}></div>
-        <div class="query-help-sheet">
-          <div class="query-help-header">
-            <h3>Query Operators</h3>
-            <CloseButton onClick={() => setQueryHelpOpen(false)} />
-          </div>
-          <div class="query-help-body">
-            <div class="query-help-section">
-              <h4>Email Operators</h4>
-              <div class="query-help-table">
-                <div class="query-help-row">
-                  <code>from:</code>
-                  <span>Sender email or name</span>
-                </div>
-                <div class="query-help-row">
-                  <code>to:</code>
-                  <span>Recipient email</span>
-                </div>
-                <div class="query-help-row">
-                  <code>subject:</code>
-                  <span>Words in subject</span>
-                </div>
-                <div class="query-help-row">
-                  <code>label:</code>
-                  <span>Gmail label (e.g., label:inbox)</span>
-                </div>
-                <div class="query-help-row">
-                  <code>is:unread</code>
-                  <span>Unread messages</span>
-                </div>
-                <div class="query-help-row">
-                  <code>is:starred</code>
-                  <span>Starred messages</span>
-                </div>
-                <div class="query-help-row">
-                  <code>has:attachment</code>
-                  <span>Has attachments</span>
-                </div>
-                <div class="query-help-row">
-                  <code>newer_than:7d</code>
-                  <span>Last 7 days (d/m/y)</span>
-                </div>
-                <div class="query-help-row">
-                  <code>older_than:1m</code>
-                  <span>Older than 1 month</span>
-                </div>
-                <div class="query-help-row">
-                  <code>-word</code>
-                  <span>Exclude word</span>
-                </div>
-              </div>
-            </div>
-            <div class="query-help-section">
-              <h4>Calendar Operators</h4>
-              <p class="query-help-note">Start query with <code>calendar:</code> to create a calendar card</p>
-              <div class="query-help-table">
-                <div class="query-help-row">
-                  <code>calendar:today</code>
-                  <span>Today's events</span>
-                </div>
-                <div class="query-help-row">
-                  <code>calendar:tomorrow</code>
-                  <span>Tomorrow's events</span>
-                </div>
-                <div class="query-help-row">
-                  <code>calendar:7d</code>
-                  <span>Next 7 days</span>
-                </div>
-                <div class="query-help-row">
-                  <code>calendar:2w</code>
-                  <span>Next 2 weeks</span>
-                </div>
-                <div class="query-help-row">
-                  <code>calendar:month</code>
-                  <span>This month</span>
-                </div>
-                <div class="query-help-row">
-                  <code>with:name</code>
-                  <span>Attendee name/email</span>
-                </div>
-                <div class="query-help-row">
-                  <code>organizer:email</code>
-                  <span>Event organizer</span>
-                </div>
-                <div class="query-help-row">
-                  <code>location:text</code>
-                  <span>Event location</span>
-                </div>
-                <div class="query-help-row">
-                  <code>response:needsAction</code>
-                  <span>Needs RSVP</span>
-                </div>
-                <div class="query-help-row">
-                  <code>-keyword</code>
-                  <span>Exclude events</span>
-                </div>
-              </div>
-            </div>
-            <div class="query-help-section">
-              <h4>Examples</h4>
-              <div class="query-help-examples">
-                <code>from:boss is:unread</code>
-                <code>label:inbox newer_than:1d</code>
-                <code>has:attachment -newsletter</code>
-                <code>calendar:week with:john</code>
-                <code>calendar:today response:needsAction</code>
-              </div>
-            </div>
-          </div>
-        </div>
+        <QueryHelpSheet onClose={() => setQueryHelpOpen(false)} onInsert={(text) => insertIntoQueryField?.(text)} />
       </Show>
 
       {/* Settings sidebar */}
@@ -5558,30 +5406,6 @@ function App() {
               <div class="shortcut-row"><kbd>?</kbd> <span>Show this help</span></div>
             </div>
           </div>
-        </div>
-      </Show>
-
-      {/* Query autocomplete dropdown - rendered at app level to avoid clipping */}
-      <Show when={queryAutocompleteOpen() && queryDropdownPos()}>
-        <div
-          class="query-autocomplete"
-          style={{
-            top: `${queryDropdownPos()!.top}px`,
-            left: `${queryDropdownPos()!.left}px`,
-            width: `${queryDropdownPos()!.width}px`,
-          }}
-        >
-          <For each={getQuerySuggestions(getCurrentQuery())}>
-            {(suggestion, i) => (
-              <div
-                class={`query-autocomplete-item ${i() === queryAutocompleteIndex() ? 'selected' : ''}`}
-                onMouseDown={() => applyQuerySuggestion(suggestion)}
-              >
-                <span class="query-autocomplete-op">{suggestion.text}</span>
-                <span class="query-autocomplete-desc">{suggestion.desc}</span>
-              </div>
-            )}
-          </For>
         </div>
       </Show>
 

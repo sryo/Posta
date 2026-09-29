@@ -4,7 +4,7 @@ import { createSignal } from "solid-js";
 import type { GroupBy } from "../shared/constants";
 import { CardForm } from "./CardForm";
 
-function renderCardForm(mode: "new" | "edit", init: { query?: string; groupBy?: GroupBy; setColor?: (c: any) => void; setColorPickerOpen?: (v: boolean) => void; onCancel?: () => void } = {}) {
+function renderCardForm(mode: "new" | "edit", init: { query?: string; groupBy?: GroupBy; setColor?: (c: any) => void; setColorPickerOpen?: (v: boolean) => void; onCancel?: () => void; debounceQueryPreview?: (q: string) => void } = {}) {
   const [query, setQuery] = createSignal(init.query ?? "is:inbox");
   const [groupBy, setGroupBy] = createSignal<GroupBy>(init.groupBy ?? "date");
   render(() => (
@@ -24,27 +24,21 @@ function renderCardForm(mode: "new" | "edit", init: { query?: string; groupBy?: 
       onCancel={init.onCancel ?? vi.fn()}
       saveDisabled={false}
       setQueryHelpOpen={vi.fn()}
-      setQueryInputRef={vi.fn()}
-      getQuerySuggestions={() => []}
-      queryAutocompleteOpen={() => false}
-      setQueryAutocompleteOpen={vi.fn()}
-      queryAutocompleteIndex={() => 0}
-      setQueryAutocompleteIndex={vi.fn()}
-      updateDropdownPosition={vi.fn()}
-      debounceQueryPreview={vi.fn()}
-      setActiveQueryGetter={vi.fn() as any}
-      setActiveQuerySetter={vi.fn() as any}
-      applyQuerySuggestion={vi.fn()}
+      suggestQuery={() => []}
+      contacts={[]}
+      labelNames={[]}
+      debounceQueryPreview={init.debounceQueryPreview ?? vi.fn()}
+      onQueryFieldActive={vi.fn()}
     />
   ));
-  return { groupBy };
+  return { groupBy, query };
 }
 
 describe("CardForm", () => {
   it.each(["new", "edit"] as const)("focuses the name field in %s mode", async (mode) => {
     renderCardForm(mode);
     await new Promise(r => setTimeout(r, 100));
-    expect(document.activeElement).toBe(screen.getByPlaceholderText("Inbox, Starred..."));
+    expect(document.activeElement).toBe(screen.getByPlaceholderText("e.g. Clients"));
   });
 });
 
@@ -52,10 +46,10 @@ describe("CardForm while an input method is composing", () => {
   it("does not discard the form on the Escape that cancels a composition", () => {
     const onCancel = vi.fn();
     renderCardForm("new", { onCancel });
-    fireEvent.keyDown(screen.getByPlaceholderText("Inbox, Starred..."), { key: "Escape", isComposing: true });
-    fireEvent.keyDown(screen.getByPlaceholderText("is:inbox, from:boss, newer_than:7d"), { key: "Escape", isComposing: true });
+    fireEvent.keyDown(screen.getByPlaceholderText("e.g. Clients"), { key: "Escape", isComposing: true });
+    fireEvent.keyDown(screen.getByPlaceholderText("e.g. from:boss is:unread newer_than:7d"), { key: "Escape", isComposing: true });
     expect(onCancel).not.toHaveBeenCalled();
-    fireEvent.keyDown(screen.getByPlaceholderText("Inbox, Starred..."), { key: "Escape" });
+    fireEvent.keyDown(screen.getByPlaceholderText("e.g. Clients"), { key: "Escape" });
     expect(onCancel).toHaveBeenCalledTimes(1);
   });
 });
@@ -66,7 +60,7 @@ describe("CardForm grouping", () => {
   it("falls back to date grouping when the query switches card type", () => {
     const { groupBy } = renderCardForm("edit", { groupBy: "sender" });
     expect(active()).toBe("Sender");
-    fireEvent.input(screen.getByPlaceholderText("is:inbox, from:boss, newer_than:7d"), { target: { value: "calendar:today" } });
+    fireEvent.input(screen.getByPlaceholderText("e.g. from:boss is:unread newer_than:7d"), { target: { value: "calendar:today" } });
     expect(groupBy()).toBe("date");
     expect(active()).toBe("Date");
   });
@@ -98,5 +92,23 @@ describe("CardForm color picker keyboard access", () => {
     expect(setColor).toHaveBeenCalledWith("blue");
     fireEvent.keyDown(document.querySelector<HTMLElement>(".no-color-option")!, { key: "Enter" });
     expect(setColor).toHaveBeenLastCalledWith(null);
+  });
+});
+
+describe("CardForm query", () => {
+  it("previews the query as it is typed", () => {
+    const debounceQueryPreview = vi.fn();
+    const { query } = renderCardForm("new", { query: "", debounceQueryPreview });
+    fireEvent.input(screen.getByPlaceholderText("e.g. from:boss is:unread newer_than:7d"), { target: { value: "is:starred" } });
+    expect(query()).toBe("is:starred");
+    expect(debounceQueryPreview).toHaveBeenCalledWith("is:starred");
+  });
+
+  it("previews the query again when a chip changes it", () => {
+    const debounceQueryPreview = vi.fn();
+    const { query } = renderCardForm("edit", { query: "is:unread invoice", debounceQueryPreview });
+    fireEvent.click(screen.getByRole("button", { name: "Remove is:unread" }));
+    expect(query()).toBe("invoice");
+    expect(debounceQueryPreview).toHaveBeenCalledWith("invoice");
   });
 });
