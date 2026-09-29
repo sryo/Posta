@@ -35,7 +35,9 @@ const NO_DOM = [
 ];
 
 export default defineConfig({
-  plugins: [solid()],
+  // Hot reload only matters in the dev server; under vitest on Windows its
+  // "/@solid-refresh" import resolves to a path Node rejects
+  plugins: [solid({ hot: false })],
   resolve: {
     conditions: ["development", "browser"],
   },
