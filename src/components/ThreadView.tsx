@@ -33,6 +33,8 @@ import {
   EyeClosedIcon,
   LabelIcon,
   UnsubscribeIcon,
+  ChevronLeftIcon,
+  ChevronRightIcon,
 } from "./Icons";
 import { SmartReplies } from "./SmartReplies";
 import { ReactionButton } from "./ReactionButton";
@@ -94,6 +96,9 @@ export const ThreadView = (props: {
   geminiKeySaved?: boolean,
   // listName: how the list's sender reads, for saying what was left
   onUnsubscribe?: (method: UnsubscribeMethod, listName: string) => Promise<void>,
+  // Where the thread sits among its card's threads, counting from one
+  position?: { index: number; total: number } | null,
+  onStepThread?: (direction: 1 | -1) => void,
 }) => {
   let messageRefs: (HTMLDivElement | undefined)[] = [];
   let contentRef: HTMLDivElement | undefined;
@@ -364,6 +369,8 @@ export const ThreadView = (props: {
     if (e.key === '!') { e.preventDefault(); props.onAction('spam'); return; }
     if (e.key === '#' || e.key === 'd') { e.preventDefault(); props.onAction('trash'); return; }
     if (e.key === 'l') { e.preventDefault(); props.onOpenLabels(); return; }
+    if ((e.key === 'J' || e.key === ']') && props.onStepThread) { e.preventDefault(); props.onStepThread(1); return; }
+    if ((e.key === 'K' || e.key === '[') && props.onStepThread) { e.preventDefault(); props.onStepThread(-1); return; }
 
     // Reply shortcuts advertised by the focused message's actions wheel
     if ((e.key === 'r' || e.key === 'R' || e.key === 'f') && !props.inlineCompose) {
@@ -415,6 +422,17 @@ export const ThreadView = (props: {
               }}
             >
               {props.card?.name}
+              <Show when={props.position}>{(p) => ` · ${p().index} of ${p().total}`}</Show>
+            </div>
+          </Show>
+          <Show when={props.position && props.onStepThread}>
+            <div class="thread-bar-stepper">
+              <button class="thread-toolbar-btn" aria-label="Previous thread" title="Previous thread ([ or ⇧K)" disabled={props.position!.index <= 1} onClick={() => props.onStepThread!(-1)}>
+                <ChevronLeftIcon />
+              </button>
+              <button class="thread-toolbar-btn" aria-label="Next thread" title="Next thread (] or ⇧J)" disabled={props.position!.index >= props.position!.total} onClick={() => props.onStepThread!(1)}>
+                <ChevronRightIcon />
+              </button>
             </div>
           </Show>
         </div>

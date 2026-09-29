@@ -129,7 +129,9 @@ import { completeRecipient, currentRecipient, matchContacts, rankContacts, type 
 import { eventReplyRecipients } from "./app/eventReply";
 import { labelDisplayName } from "./app/labels";
 import { personName } from "./app/people";
+import { afterRemoval, loadAfterArchive, stepThread, threadPosition } from "./app/threadNavigation";
 import { CardAttachments } from "./components/CardAttachments";
+import { AfterArchiveSetting } from "./components/AfterArchiveSetting";
 import { runUnsubscribe, type UnsubscribeMethod } from "./app/unsubscribe";
 import { actionFailureLabel, actionLabel, actionRemovesFromCard, applyThreadAction, bulkActionConfirm, labelChangeFor, threadMayJoinCard, undoLabelChanges, type LabelReversal } from "./app/threadActions";
 import { PRESETS } from "./app/presets";
@@ -2663,17 +2665,39 @@ function App() {
     const cardId = activeThreadCardId();
     if (!thread || !account) return;
 
-    // Close thread view after action (except for read/unread/important)
-    const shouldClose = ['archive', 'inbox', 'trash', 'spam'].includes(action);
+    // Actions that take the thread out of view move on (except for read/unread/important);
+    // the card's order is taken before the optimistic update removes it
+    const leavesView = ['archive', 'inbox', 'trash', 'spam'].includes(action);
+    const order = cardId ? cardThreadOrder(cardId) : [];
 
     await handleThreadAction(action, [thread.id], cardId || '');
     if (activeThreadId() !== thread.id) return;
 
-    if (shouldClose) {
-      closeThreadView();
+    if (leavesView) {
+      const next = cardId ? afterRemoval(order, thread.id, loadAfterArchive()) : null;
+      if (next && cardId && cardThreadOrder(cardId).includes(next)) openThread(next, cardId);
+      else closeThreadView();
     } else {
       await refreshActiveThread(account.id, thread.id);
     }
+  }
+
+  function cardThreadOrder(cardId: string): string[] {
+    return getDisplayGroups(cardId).flatMap(g => g.threads.map(t => t.gmail_thread_id));
+  }
+
+  const activeThreadPosition = createMemo(() => {
+    const cardId = activeThreadCardId();
+    const threadId = activeThreadId();
+    return cardId && threadId ? threadPosition(cardThreadOrder(cardId), threadId) : null;
+  });
+
+  function stepActiveThread(direction: 1 | -1) {
+    const cardId = activeThreadCardId();
+    const threadId = activeThreadId();
+    if (!cardId || !threadId) return;
+    const next = stepThread(cardThreadOrder(cardId), threadId, direction);
+    if (next) openThread(next, cardId);
   }
 
   // Reload the open thread after changing it; the user may have opened
@@ -4943,6 +4967,8 @@ function App() {
           onReply={handleReplyFromThread}
           onForward={handleForwardFromThread}
           onUnsubscribe={unsubscribeFromList}
+          position={activeThreadPosition()}
+          onStepThread={stepActiveThread}
           onAction={handleThreadViewAction}
           onOpenLabels={() => { fetchAccountLabels({ refresh: true }); setLabelDrawerOpen(true); }}
           labelDrawerOpen={labelDrawerOpen()}
@@ -5434,6 +5460,7 @@ function App() {
               </div>
             )}
           </Show>
+          <AfterArchiveSetting />
           <div class={`settings-section collapsible ${smartRepliesOpen() ? 'open' : ''}`}>
             <div class="settings-section-title" onClick={() => setSmartRepliesOpen(!smartRepliesOpen())}>
               <span>Smart Replies</span>
@@ -5512,6 +5539,8 @@ function App() {
               <h3>Open thread</h3>
               <div class="shortcut-row"><kbd>j</kbd> <span>Next message</span></div>
               <div class="shortcut-row"><kbd>k</kbd> <span>Previous message</span></div>
+              <div class="shortcut-row"><kbd>]</kbd> <span>Next thread in the card (or ⇧J)</span></div>
+              <div class="shortcut-row"><kbd>[</kbd> <span>Previous thread in the card (or ⇧K)</span></div>
               <div class="shortcut-row"><kbd>r</kbd> <span>Reply to message</span></div>
               <div class="shortcut-row"><kbd>⇧R</kbd> <span>Reply all</span></div>
               <div class="shortcut-row"><kbd>f</kbd> <span>Forward message</span></div>

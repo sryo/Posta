@@ -3693,4 +3693,49 @@ describe("App reading view", () => {
     await waitFor(() => expect(screen.queryByRole("dialog", { name: "big.jpg" })).not.toBeInTheDocument());
     expect(screen.getByText("Mail for A")).toBeInTheDocument();
   });
+
+  describe("after archiving", () => {
+    const threeThreads = () => {
+      threadsByCard["card-a"] = ["One", "Two", "Three"].map((subject, i) => ({ ...thread(`t-${i}`, subject), last_message_date: 3 - i }));
+      handlers.get_thread_details = ({ threadId }) => ({
+        id: threadId, messages: [fullMessage(`m-${threadId}`, "Ana <ana@x.com>", { threadId, snippet: `body of ${threadId}` })],
+      });
+      handlers.modify_threads = () => null;
+    };
+
+    it("opens the card's next thread, and says where it is in the card", async () => {
+      threeThreads();
+      render(() => <App />);
+      fireEvent.click(await screen.findByText("Two"));
+      await screen.findByText("body of t-1");
+      expect(document.querySelector(".thread-bar-card")?.textContent).toBe("Alpha · 2 of 3");
+
+      fireEvent.keyDown(document, { key: "a" });
+      await waitFor(() => expect(invoke).toHaveBeenCalledWith("modify_threads", expect.objectContaining({ threadIds: ["t-1"], removeLabels: ["INBOX"] })));
+      expect(await screen.findByText("body of t-2")).toBeInTheDocument();
+      expect(document.querySelector(".thread-bar-card")?.textContent).toBe("Alpha · 2 of 2");
+    });
+
+    it("goes back to the board when the setting says so", async () => {
+      threeThreads();
+      localStorage.setItem("afterArchive", "board");
+      render(() => <App />);
+      fireEvent.click(await screen.findByText("Two"));
+      await screen.findByText("body of t-1");
+      fireEvent.keyDown(document, { key: "#" });
+      await waitFor(() => expect(document.querySelector(".thread-overlay")).toBeNull());
+      expect(invoke).not.toHaveBeenCalledWith("get_thread_details", expect.objectContaining({ threadId: "t-2" }));
+    });
+
+    it("steps to the neighbouring thread with ] and [", async () => {
+      threeThreads();
+      render(() => <App />);
+      fireEvent.click(await screen.findByText("One"));
+      await screen.findByText("body of t-0");
+      fireEvent.keyDown(document, { key: "]" });
+      expect(await screen.findByText("body of t-1")).toBeInTheDocument();
+      fireEvent.keyDown(document, { key: "[" });
+      expect(await screen.findByText("body of t-0")).toBeInTheDocument();
+    });
+  });
 });

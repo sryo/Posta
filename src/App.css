@@ -3047,7 +3047,8 @@ button:disabled:hover {
 }
 
 .settings-form-group input,
-.settings-form-group textarea {
+.settings-form-group textarea,
+.settings-form-group select {
     width: 100%;
     padding: var(--space-md) var(--space-lg);
     border: 1px solid var(--border-color);
@@ -3063,7 +3064,8 @@ button:disabled:hover {
 }
 
 .settings-form-group input:focus,
-.settings-form-group textarea:focus {
+.settings-form-group textarea:focus,
+.settings-form-group select:focus {
     outline: none;
     border-color: var(--accent);
 }
@@ -3602,6 +3604,12 @@ button:disabled:hover {
 
 .thread-toolbar-btn:active {
     transform: scale(0.95);
+}
+
+.thread-bar-stepper {
+    display: flex;
+    align-items: center;
+    flex-shrink: 0;
 }
 
 .thread-toolbar-btn:disabled {

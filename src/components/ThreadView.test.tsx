@@ -714,6 +714,31 @@ describe("ThreadView message header", () => {
   });
 });
 
+describe("ThreadView moving between the card's threads", () => {
+  it("says where the thread sits in its card", () => {
+    const { container } = renderThread({ card: { name: "Inbox", color: null }, position: { index: 3, total: 12 }, onStepThread: vi.fn() });
+    expect(container.querySelector(".thread-bar-card")?.textContent).toBe("Inbox · 3 of 12");
+  });
+
+  it("steps with the arrows, Shift+J/K and ]/[", () => {
+    const onStepThread = vi.fn();
+    const { getByRole } = renderThread({ card: { name: "Inbox", color: null }, position: { index: 3, total: 12 }, onStepThread });
+    fireEvent.click(getByRole("button", { name: "Next thread" }));
+    fireEvent.click(getByRole("button", { name: "Previous thread" }));
+    fireEvent.keyDown(document, { key: "J", shiftKey: true });
+    fireEvent.keyDown(document, { key: "K", shiftKey: true });
+    fireEvent.keyDown(document, { key: "]" });
+    fireEvent.keyDown(document, { key: "[" });
+    expect(onStepThread.mock.calls.map(c => c[0])).toEqual([1, -1, 1, -1, 1, -1]);
+  });
+
+  it("disables the arrow that would leave the card", () => {
+    const { getByRole } = renderThread({ card: { name: "Inbox", color: null }, position: { index: 1, total: 2 }, onStepThread: vi.fn() });
+    expect(getByRole("button", { name: "Previous thread" })).toBeDisabled();
+    expect(getByRole("button", { name: "Next thread" })).not.toBeDisabled();
+  });
+});
+
 describe("ThreadView toolbar", () => {
   const labels = (container: HTMLElement) =>
     Array.from(container.querySelectorAll(".thread-toolbar-label")).map(l => l.textContent);
