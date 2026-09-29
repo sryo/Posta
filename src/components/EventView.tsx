@@ -14,6 +14,7 @@ import {
   TrashIcon,
   EditIcon,
   CalendarIcon,
+  MoveToCalendarIcon,
   LocationIcon,
   VideoIcon,
 } from "./Icons";
@@ -192,7 +193,7 @@ export const EventView = (props: {
 
             <Show when={actions()!.move}>
               <button class="thread-toolbar-btn" onClick={props.onOpenCalendars} title="Move to calendar">
-                <CalendarIcon />
+                <MoveToCalendarIcon />
                 <span class="thread-toolbar-label">Move to…</span>
                 <span class="shortcut-hint">M</span>
               </button>
