@@ -4,7 +4,8 @@ import { DOMPURIFY_CONFIG } from './MessageBody';
 import { openUrl } from '@tauri-apps/plugin-opener';
 import type { GoogleCalendarEvent } from "../api/tauri";
 import { formatCalendarEventDate, textOrHtmlToHtml } from "../utils";
-import { guestResponseLabel, ownResponseLabel } from "../app/rsvp";
+import { guestResponseLabel, isRsvpAnswer, ownResponseLabel } from "../app/rsvp";
+import { RsvpControl } from "./RsvpControl";
 import {
   ReplyIcon,
   TrashIcon,
@@ -251,33 +252,13 @@ export const EventView = (props: {
                   <Show when={props.event!.response_status}>
                     <div class="event-rsvp-section">
                       <div class="event-rsvp-current">
-                        Your response: <span class={`event-rsvp-status ${props.event!.response_status}`}>
-                          {ownResponseLabel(props.event!.response_status)}
-                        </span>
+                        {isRsvpAnswer(props.event!.response_status) ? "Your response" : ownResponseLabel(props.event!.response_status)}
                       </div>
-                      <div class="event-rsvp-buttons">
-                        <button
-                          class={`event-rsvp-btn ${props.event!.response_status === 'accepted' ? 'active' : ''}`}
-                          onClick={() => props.onRsvp('accepted')}
-                          disabled={props.rsvpLoading}
-                        >
-                          Yes
-                        </button>
-                        <button
-                          class={`event-rsvp-btn ${props.event!.response_status === 'tentative' ? 'active' : ''}`}
-                          onClick={() => props.onRsvp('tentative')}
-                          disabled={props.rsvpLoading}
-                        >
-                          Maybe
-                        </button>
-                        <button
-                          class={`event-rsvp-btn ${props.event!.response_status === 'declined' ? 'active' : ''}`}
-                          onClick={() => props.onRsvp('declined')}
-                          disabled={props.rsvpLoading}
-                        >
-                          No
-                        </button>
-                      </div>
+                      <RsvpControl
+                        value={props.event!.response_status}
+                        onAnswer={props.onRsvp}
+                        disabled={props.rsvpLoading}
+                      />
                     </div>
                   </Show>
 

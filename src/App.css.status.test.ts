@@ -76,6 +76,17 @@ describe("status colour tokens", () => {
     });
   }
 
+  it("fills the selected RSVP segment in its status colour, unlike hover", () => {
+    const decls = (selector: string) => new Map(rules.filter(r => r.selectors.includes(selector)).flatMap(r => r.declarations));
+    for (const s of STATUSES) {
+      const selected = decls(`.rsvp-segment.rsvp-${s}.selected`);
+      expect(selected.get("background"), s).toBe(`var(--${s})`);
+      expect(selected.get("color"), s).toBe("var(--on-status)");
+    }
+    const hover = decls(".rsvp-segment:hover:not(:disabled):not(.selected)");
+    expect(hover.get("background")).toBe("var(--bg-hover)");
+  });
+
   it("colours every RSVP and response badge with the status tokens, not literals", () => {
     const offenders = rules
       .filter(r => r.selectors.some(s => /rsvp|response|attendee-status/.test(s)))

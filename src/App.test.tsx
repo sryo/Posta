@@ -1541,7 +1541,7 @@ describe("App calendar", () => {
     render(() => <App />);
     await waitFor(() => expect(screen.getAllByText("Planning")).toHaveLength(2));
     fireEvent.click(screen.getAllByText("Planning")[0]);
-    fireEvent.click(await screen.findByRole("button", { name: "Yes" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Going" }));
 
     await waitFor(() => expect(invoke).toHaveBeenCalledWith("rsvp_listed_calendar_event", {
       accountId: "a", calendarId: "team@group.calendar.google.com", eventId: "ev-1_20260928T150000Z", status: "accepted",
@@ -1573,7 +1573,7 @@ describe("App calendar", () => {
     await screen.findByText("Going?");
 
     const invite = screen.getByText("Invitation: Planning").closest(".thread") as HTMLElement;
-    fireEvent.click(within(invite).getByRole("button", { name: "Yes" }));
+    fireEvent.click(within(invite).getByRole("button", { name: "Going" }));
 
     expect(await screen.findByText("You're going")).toBeInTheDocument();
     await waitFor(() => expect(invoke).toHaveBeenCalledWith("save_cached_card_events", {
@@ -1608,7 +1608,7 @@ describe("App calendar", () => {
     await waitFor(() => expect(lookups()).toHaveLength(2));
     for (const id of ["t-1", "t-2"]) {
       const row = screen.getByText(`Invite ${id}`).closest(".thread") as HTMLElement;
-      await waitFor(() => expect(within(row).getByRole("button", { name: "Yes" })).toHaveClass("selected"));
+      await waitFor(() => expect(within(row).getByRole("button", { name: "Going" })).toHaveAttribute("aria-pressed", "true"));
     }
   });
 

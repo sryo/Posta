@@ -1113,38 +1113,90 @@ a:focus-visible,
     white-space: nowrap;
 }
 
-.calendar-rsvp {
+/* RSVP segmented control (RsvpControl) */
+.rsvp-control {
     display: flex;
-    margin-top: 6px;
-    background: var(--bg-secondary);
+    background: var(--bg-primary);
     box-shadow: inset 0 0 0 1px var(--border-color);
-    border-radius: var(--radius-sm);
+    border-radius: var(--radius-md);
     overflow: hidden;
-    width: fit-content;
 }
 
-.calendar-rsvp button {
-    padding: var(--space-sm) var(--space-lg);
+.rsvp-control-sm {
+    width: fit-content;
+    margin-top: 6px;
+    border-radius: var(--radius-sm);
+}
+
+.rsvp-segment {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: var(--space-sm);
     background: transparent;
     border: none;
-    font-size: var(--font-size-sm);
-    color: var(--text-muted);
+    color: var(--text-secondary);
+    font-weight: 500;
     cursor: pointer;
     transition: background 0.15s ease, color 0.15s ease;
 }
 
-.calendar-rsvp button:not(:last-child) {
+.rsvp-control-sm .rsvp-segment {
+    padding: var(--space-sm) var(--space-lg);
+    font-size: var(--font-size-sm);
+}
+
+.rsvp-control-md .rsvp-segment {
+    flex: 1;
+    padding: var(--space-lg) var(--space-xl);
+    font-size: var(--font-size-lg);
+}
+
+.rsvp-segment:not(:last-child) {
     border-right: 1px solid var(--border-color);
 }
 
-.calendar-rsvp button:hover {
-    background: var(--bg-hover);
-    color: var(--text-secondary);
-}
-
-.calendar-rsvp button.selected {
+.rsvp-segment:hover:not(:disabled):not(.selected) {
     background: var(--bg-hover);
     color: var(--text-primary);
+}
+
+.rsvp-segment:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+}
+
+.rsvp-segment.rsvp-success.selected {
+    background: var(--success);
+    color: var(--on-status);
+}
+
+.rsvp-segment.rsvp-warning.selected {
+    background: var(--warning);
+    color: var(--on-status);
+}
+
+.rsvp-segment.rsvp-danger.selected {
+    background: var(--danger);
+    color: var(--on-status);
+}
+
+.rsvp-segment.selected:disabled {
+    opacity: 1;
+}
+
+.rsvp-check {
+    display: inline-flex;
+}
+
+.rsvp-control-sm .rsvp-check svg {
+    width: 11px;
+    height: 11px;
+}
+
+.rsvp-segment .shortcut-hint {
+    color: inherit;
+    opacity: 0.6;
 }
 
 .calendar-event-title {
@@ -3300,59 +3352,6 @@ button:disabled:hover {
     font-size: 0.9rem;
     color: var(--text-secondary);
     margin-bottom: 12px;
-}
-
-.event-rsvp-status {
-    font-weight: 500;
-}
-
-.event-rsvp-status.accepted {
-    color: var(--success-fg);
-}
-
-.event-rsvp-status.tentative {
-    color: var(--warning-fg);
-}
-
-.event-rsvp-status.declined {
-    color: var(--danger-fg);
-}
-
-.event-rsvp-status.needsAction {
-    color: var(--text-muted);
-}
-
-.event-rsvp-buttons {
-    display: flex;
-    gap: var(--space-md);
-}
-
-.event-rsvp-btn {
-    flex: 1;
-    padding: var(--space-lg) var(--space-xl);
-    border: 1px solid var(--border-color);
-    background: var(--bg-primary);
-    color: var(--text-primary);
-    border-radius: var(--radius-lg);
-    font-size: 0.875rem;
-    font-weight: 500;
-    cursor: pointer;
-    transition: all 0.15s;
-}
-
-.event-rsvp-btn:hover {
-    background: var(--bg-secondary);
-}
-
-.event-rsvp-btn.active {
-    background: var(--accent);
-    color: white;
-    border-color: var(--accent);
-}
-
-.event-rsvp-btn:disabled {
-    opacity: 0.5;
-    cursor: not-allowed;
 }
 
 .event-attendees-section {

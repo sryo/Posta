@@ -113,6 +113,7 @@ import { ReactionButton } from "./components/ReactionButton";
 import { ComposeTextarea, ComposeSendButton, CloseButton } from "./components/ComposeAtoms";
 import { ComposeForm } from "./components/ComposeForm";
 import { CreateEventForm } from "./components/CreateEventForm";
+import { RsvpControl } from "./components/RsvpControl";
 import { ThreadView } from "./components/ThreadView";
 import { EventView } from "./components/EventView";
 import { ActionsWheel } from "./components/ActionsWheel";
@@ -4443,23 +4444,12 @@ function App() {
                                                 </div>
                                               </Show>
                                               <Show when={thread.calendar_event!.method === "REQUEST" && thread.calendar_event!.uid}>
-                                                <div class="calendar-rsvp" onClick={(e) => e.stopPropagation()}>
-                                                  <button
-                                                    class={inviteRsvp(thread.calendar_event!.uid) === "accepted" ? "selected" : ""}
-                                                    disabled={rsvpLoading[thread.gmail_thread_id]}
-                                                    onClick={() => handleRsvp(thread.gmail_thread_id, thread.calendar_event!.uid, "accepted")}
-                                                  >Yes</button>
-                                                  <button
-                                                    class={inviteRsvp(thread.calendar_event!.uid) === "tentative" ? "selected" : ""}
-                                                    disabled={rsvpLoading[thread.gmail_thread_id]}
-                                                    onClick={() => handleRsvp(thread.gmail_thread_id, thread.calendar_event!.uid, "tentative")}
-                                                  >Maybe</button>
-                                                  <button
-                                                    class={inviteRsvp(thread.calendar_event!.uid) === "declined" ? "selected" : ""}
-                                                    disabled={rsvpLoading[thread.gmail_thread_id]}
-                                                    onClick={() => handleRsvp(thread.gmail_thread_id, thread.calendar_event!.uid, "declined")}
-                                                  >No</button>
-                                                </div>
+                                                <RsvpControl
+                                                  size="sm"
+                                                  value={inviteRsvp(thread.calendar_event!.uid)}
+                                                  disabled={rsvpLoading[thread.gmail_thread_id]}
+                                                  onAnswer={(status) => handleRsvp(thread.gmail_thread_id, thread.calendar_event!.uid, status)}
+                                                />
                                               </Show>
                                             </div>
                                           </Show>

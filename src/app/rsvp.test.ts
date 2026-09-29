@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { guestResponseLabel, inviteNamesEvent, ownResponseLabel, rsvpSentMessage, RSVP_ANSWERS } from "./rsvp";
+import { guestResponseLabel, inviteNamesEvent, isRsvpAnswer, ownResponseLabel, rsvpForKey, rsvpSentMessage, RSVP_ANSWERS } from "./rsvp";
 
 describe("rsvpSentMessage", () => {
   it("confirms the answer in the user's own words", () => {
@@ -31,6 +31,23 @@ describe("RSVP vocabulary", () => {
     expect(ownResponseLabel(null)).toBe("Going?");
     expect(ownResponseLabel("accepted")).toBe("Going");
     expect(ownResponseLabel("declined")).toBe("Not going");
+  });
+});
+
+describe("isRsvpAnswer", () => {
+  it("tells an answer from no answer yet", () => {
+    expect(isRsvpAnswer("declined")).toBe(true);
+    expect(isRsvpAnswer("needsAction")).toBe(false);
+    expect(isRsvpAnswer(null)).toBe(false);
+  });
+});
+
+describe("rsvpForKey", () => {
+  it("answers y, ⇧M and n", () => {
+    expect(rsvpForKey({ key: "y" })).toBe("accepted");
+    expect(rsvpForKey({ key: "M" })).toBe("tentative");
+    expect(rsvpForKey({ key: "n" })).toBe("declined");
+    expect(rsvpForKey({ key: "m" })).toBeNull();
   });
 });
 
