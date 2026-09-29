@@ -255,6 +255,10 @@ export async function listThreadDrafts(accountId: string, threadId: string): Pro
   return invoke("list_thread_drafts", { accountId, threadId });
 }
 
+export async function deleteDraft(accountId: string, draftId: string): Promise<void> {
+  return invoke("delete_draft", { accountId, draftId });
+}
+
 export async function getThreadDetails(
   accountId: string,
   threadId: string

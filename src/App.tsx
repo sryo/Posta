@@ -40,6 +40,8 @@ import {
   type ThreadGroup,
   type Thread,
   getThreadDetails,
+  listThreadDrafts,
+  deleteDraft,
   type FullThread,
   sendEmail,
   replyToThread,
@@ -140,6 +142,7 @@ import { parseMailto } from "./app/mailto";
 import { coalesceByKey } from "./app/coalesce";
 import { batchReplyLoadErrorMessage, cardLoadErrorMessage, threadLoadErrorMessage } from "./app/loadErrors";
 import { cardTypeForQuery } from "./app/cardType";
+import { discardThreadDrafts, draftToOpen, isDraftThread, prepareDraftCompose, withDraftsDiscarded, type DraftToOpen } from "./app/draftThreads";
 import { createDraftSync, draftKey, findLatestDraft, findUnsentDrafts, hasDraftContent, markDraftClosed, markDraftSending, pruneDrafts, removeAccountDrafts, sessionDraftKey, type DraftFields } from "./app/drafts";
 import { escapeTarget, nextCardFocus, nextItemFocus } from "./app/keyboardNav";
 import { getSmartEventTime, groupCalendarEvents, isUserLabel, mergeThreadGroups, regroupThreads, type CalendarEventGroup } from "./app/grouping";
@@ -152,6 +155,8 @@ import { fingerprint } from "./app/fingerprint";
 import { hasCommandModifier, isTypingTarget, onActivateKey } from "./shared/keyboard";
 import { askConfirm, ConfirmDialog, confirmOpen, dismissConfirm } from "./app/confirm";
 import { moveCard, reuseUnchanged } from "./app/cardOrder";
+
+type ToastAction = { label: string; run: () => void };
 
 const SESSION_EXPIRED_MESSAGE = "Session expired - sign in again";
 
@@ -266,7 +271,7 @@ function App() {
   const [lastAction, setLastAction] = createSignal<UndoableAction | null>(null);
   const [toast, setToast] = createSignal<{
     message: string | null;
-    action?: { label: string; run: () => void };
+    action?: ToastAction | ToastAction[];
     visible: boolean;
     closing: boolean;
     key: number;
@@ -1962,14 +1967,14 @@ function App() {
           showToast(`${message} without ${attachmentNames}`, reopen);
           return;
         }
-        showToast(message, {
+        showToast(message, [{ ...reopen, label: "Open" }, {
           label: "Discard",
           run: () => {
             // A reply opened again since continues this draft
             if (composing() && !closingCompose() && composeDraftKey === key) return;
             if (accountId) drafts.discard(key, accountId);
           },
-        });
+        }]);
         discardToastDraftKey = key;
       };
       if (storedHere) {
@@ -3614,7 +3619,15 @@ function App() {
       // A slower response for a thread the user already left must not
       // clobber the one they're looking at now
       if (activeThreadId() !== threadId) return;
+      const gmailDraft = draftToOpen(details);
+      if (gmailDraft && !gmailDraft.replyTo) {
+        setThreadLoading(false);
+        closeThreadView();
+        continueGmailDraft(account.id, threadId, gmailDraft);
+        return;
+      }
       setActiveThread(details);
+      if (gmailDraft) continueGmailDraft(account.id, threadId, gmailDraft);
       // Focus the most recent (last) message
       setFocusedMessageIndex(details.messages.length - 1);
 
@@ -3630,6 +3643,37 @@ function App() {
         setThreadLoading(false);
       }
     }
+  }
+
+  // Continue a thread's Gmail draft in compose: a new email in the compose
+  // panel, a reply in the open thread
+  async function continueGmailDraft(accountId: string, threadId: string, draft: DraftToOpen) {
+    const { init, missingAttachments } = await prepareDraftCompose(accountId, threadId, draft, {
+      listThreadDrafts,
+      download: (messageId, attachmentId) => downloadAttachmentApi(accountId, messageId, attachmentId),
+    }, Date.now());
+    if (activeThreadId() !== (draft.replyTo ? threadId : null) || selectedAccount()?.id !== accountId) return;
+    openComposeUnlessBusy(`Draft: ${init.subject || "(no subject)"}`, () => {
+      startCompose({ ...init, accountId, signature: false, focusBody: true });
+      if (missingAttachments.length > 0) showToast(`Attach again: ${missingAttachments.join(", ")}`);
+    });
+  }
+
+  async function discardDraftRow(threadId: string) {
+    const account = selectedAccount();
+    if (!account) return;
+    try {
+      await discardThreadDrafts(account.id, threadId, { listThreadDrafts, deleteDraft });
+    } catch (e) {
+      showToast(`Couldn't discard the draft: ${e}`);
+      return;
+    }
+    if (selectedAccount()?.id !== account.id) return;
+    const updated: Record<string, ThreadGroup[]> = { ...cardThreads };
+    for (const card of cards()) {
+      if (updated[card.id]) updated[card.id] = withDraftsDiscarded(updated[card.id], threadId, card.query);
+    }
+    setCardThreads(reconcile(updated, { key: "gmail_thread_id" }));
   }
 
   // Fetch CID image attachments for inline display; reopening a thread
@@ -3704,7 +3748,7 @@ function App() {
     }
   }
 
-  function showToast(message?: string, action?: { label: string; run: () => void }) {
+  function showToast(message?: string, action?: ToastAction | ToastAction[]) {
     discardToastDraftKey = null;
     clearTimeout(toastTimeoutId);
     // Cancel a pending hide so it can't null out this newer toast
@@ -4433,6 +4477,12 @@ function App() {
                                               <span class="thread-indicator" title="Has attachment">
                                                 <AttachmentIcon />
                                               </span>
+                                            </Show>
+                                            <Show when={isDraftThread(thread)}>
+                                              <button
+                                                class="thread-draft-discard"
+                                                onClick={(e) => { e.stopPropagation(); discardDraftRow(thread.gmail_thread_id); }}
+                                              >Discard</button>
                                             </Show>
                                             <span class="thread-time">{threadTime(thread.last_message_date)}</span>
                                           </div>
@@ -5627,11 +5677,11 @@ function App() {
               <Show when={!toast()?.message && lastAction()}>
                 <button class="toast-undo-btn" onClick={undoLastAction}>Undo <span class="shortcut-hint">z</span></button>
               </Show>
-              <Show when={toast()?.action}>
+              <For each={[toast()?.action ?? []].flat()}>
                 {(action) => (
-                  <button class="toast-undo-btn" onClick={() => { hideToast(); action().run(); }}>{action().label}</button>
+                  <button class="toast-undo-btn" onClick={() => { hideToast(); action.run(); }}>{action.label}</button>
                 )}
-              </Show>
+              </For>
               <button class="toast-close-btn" onClick={hideToast} title="Dismiss">
                 <CloseIcon />
               </button>

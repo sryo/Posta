@@ -989,6 +989,23 @@ a:focus-visible,
     flex-shrink: 0;
 }
 
+.thread-draft-discard {
+    flex-shrink: 0;
+    padding: 0 var(--space-sm);
+    border: none;
+    border-radius: var(--radius-sm);
+    background: none;
+    font-size: var(--font-size-sm);
+    color: var(--text-muted);
+    cursor: pointer;
+}
+
+.thread-draft-discard:hover,
+.thread-draft-discard:focus-visible {
+    color: var(--danger);
+    background: var(--danger-bg);
+}
+
 .thread-indicator {
     display: inline-flex;
     align-items: center;

@@ -117,6 +117,17 @@ export function pruneDrafts(now: number) {
   }
 }
 
+// Local copies of Gmail drafts discarded elsewhere, which a compose would
+// otherwise pick up again
+export function forgetDraftsSyncedTo(gmailDraftIds: string[]) {
+  const ids = new Set(gmailDraftIds);
+  for (const key of storageKeys()) {
+    if (!key.startsWith("draft_")) continue;
+    const id = safeGetJSON<Draft | null>(key, null)?.gmailDraftId;
+    if (id && ids.has(id)) safeRemoveItem(key);
+  }
+}
+
 export function removeAccountDrafts(accountId: string) {
   const prefixes = DRAFT_KINDS.map(kind => `draft_${kind}_${accountId}`);
   for (const key of storageKeys()) {

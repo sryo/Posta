@@ -2247,6 +2247,99 @@ describe("App drafts", () => {
     expect(draftKeys("draft_new_a")).toEqual([]);
   });
 
+  it("offers to open a closed compose's draft again", async () => {
+    handlers.save_draft = () => ({ id: "d1" });
+    render(() => <App />);
+    await screen.findByText("Mail for A");
+    fireEvent.keyDown(document, { key: "c" });
+    fireEvent.input(await screen.findByPlaceholderText("Subject"), { target: { value: "Half written" } });
+    fireEvent.keyDown(document, { key: "Escape" });
+
+    const toast = await screen.findByRole("status");
+    expect(within(toast).getByRole("button", { name: "Discard" })).toBeInTheDocument();
+    fireEvent.click(within(toast).getByRole("button", { name: "Open" }));
+    await waitFor(() => expect(screen.getByPlaceholderText("Subject")).toHaveValue("Half written"));
+  });
+
+  describe("drafts in Gmail", () => {
+    const draftMessage = (id: string, threadId: string, headers: Record<string, string>, body: string) => ({
+      id, threadId, labelIds: ["DRAFT"], snippet: body, internalDate: "0",
+      payload: {
+        mimeType: "text/plain",
+        headers: Object.entries(headers).map(([name, value]) => ({ name, value })),
+        body: { size: body.length, data: btoa(body) },
+      },
+    });
+
+    it("opens a thread that is only a draft as a new email that saves over that draft", async () => {
+      threadsByCard["card-a"] = [{ ...thread("t-d", "Plans"), labels: ["DRAFT"] }];
+      handlers.get_thread_details = () => ({ id: "t-d", messages: [draftMessage("dm", "t-d", { To: "ana@x.com", Subject: "Plans" }, "Hello")] });
+      handlers.list_thread_drafts = () => [{ id: "g1", message: { id: "dm", threadId: "t-d" } }];
+      handlers.save_draft = () => ({ id: "g1" });
+      render(() => <App />);
+      fireEvent.click(await screen.findByText("Plans"));
+
+      await waitFor(() => expect(screen.getByPlaceholderText("Recipients")).toHaveValue("ana@x.com"));
+      expect(screen.getByPlaceholderText("Subject")).toHaveValue("Plans");
+      const body = screen.getByPlaceholderText("Write something...");
+      expect(body).toHaveValue("Hello");
+      expect(screen.queryByPlaceholderText("Write your reply...")).not.toBeInTheDocument();
+
+      fireEvent.input(body, { target: { value: "Hello again" } });
+      fireEvent.keyDown(body, { key: "Escape" });
+      await waitFor(() => expect(invoke).toHaveBeenCalledWith("save_draft", expect.objectContaining({ draftId: "g1", body: "Hello again", threadId: null })));
+    });
+
+    it("offers a draft opened over an email being written instead of replacing it", async () => {
+      threadsByCard["card-a"] = [{ ...thread("t-d", "Plans"), labels: ["DRAFT"] }];
+      handlers.get_thread_details = () => ({ id: "t-d", messages: [draftMessage("dm", "t-d", { To: "ana@x.com", Subject: "Plans" }, "Hello")] });
+      handlers.list_thread_drafts = () => [{ id: "g1", message: { id: "dm", threadId: "t-d" } }];
+      render(() => <App />);
+      await screen.findByText("Plans");
+      fireEvent.keyDown(document, { key: "c" });
+      fireEvent.input(await screen.findByPlaceholderText("Subject"), { target: { value: "Writing" } });
+      fireEvent.click(screen.getByText("Plans"));
+
+      const toast = await screen.findByText("Draft: Plans");
+      expect(screen.getByPlaceholderText("Subject")).toHaveValue("Writing");
+      fireEvent.click(within(toast.closest("[role=status]") as HTMLElement).getByRole("button", { name: "Open" }));
+      await waitFor(() => expect(screen.getByPlaceholderText("Subject")).toHaveValue("Plans"));
+    });
+
+    it("opens a reply draft in the thread's inline reply", async () => {
+      threadsByCard["card-a"] = [{ ...thread("t-a", "Mail for A"), labels: ["INBOX", "DRAFT"] }];
+      handlers.get_thread_details = () => ({
+        id: "t-a",
+        messages: [fullMessage("m1", "Ana <ana@x.com>"), draftMessage("dm", "t-a", { To: "ana@x.com", Subject: "Re: Hi" }, "Draft reply")],
+      });
+      handlers.list_thread_drafts = () => [{ id: "g2", message: { id: "dm", threadId: "t-a" } }];
+      handlers.save_draft = () => ({ id: "g2" });
+      render(() => <App />);
+      fireEvent.click(await screen.findByText("Mail for A"));
+
+      const reply = await screen.findByPlaceholderText("Write your reply...");
+      await waitFor(() => expect(reply).toHaveValue("Draft reply"));
+      fireEvent.input(reply, { target: { value: "Draft reply, edited" } });
+      fireEvent.keyDown(reply, { key: "Escape" });
+      await waitFor(() => expect(invoke).toHaveBeenCalledWith("save_draft", expect.objectContaining({ draftId: "g2", threadId: "t-a", body: "Draft reply, edited" })));
+    });
+
+    it("discards a draft row's drafts from the row, without opening it", async () => {
+      threadsByCard["card-a"] = [{ ...thread("t-d", "Plans"), labels: ["DRAFT"] }, thread("t-a", "Mail for A")];
+      handlers.list_thread_drafts = () => [{ id: "g1", message: { id: "dm", threadId: "t-d" } }];
+      handlers.delete_draft = () => null;
+      render(() => <App />);
+      const row = (await screen.findByText("Plans")).closest(".thread") as HTMLElement;
+      expect(within(screen.getByText("Mail for A").closest(".thread") as HTMLElement).queryByRole("button", { name: "Discard" })).toBeNull();
+
+      fireEvent.click(within(row).getByRole("button", { name: "Discard" }));
+
+      await waitFor(() => expect(invoke).toHaveBeenCalledWith("delete_draft", { accountId: "a", draftId: "g1" }));
+      await waitFor(() => expect(screen.queryByText("Plans")).not.toBeInTheDocument());
+      expect(invoke).not.toHaveBeenCalledWith("get_thread_details", expect.anything());
+    });
+  });
+
   describe("when local storage refuses drafts", () => {
     let restoreStorage: () => void;
     beforeEach(() => {

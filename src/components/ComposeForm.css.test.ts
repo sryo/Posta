@@ -14,6 +14,15 @@ describe("compose styles", () => {
     expect(declarations(".compose-field").get("position")).toBe("relative");
   });
 
+  it("keeps a draft row's Discard button a quiet control that turns to danger on hover or focus", () => {
+    const button = declarations(".thread-draft-discard");
+    expect(button.get("color")).toBe("var(--text-muted)");
+    expect(button.get("flex-shrink")).toBe("0");
+    const hover = declarations(".thread-draft-discard:hover");
+    expect(hover.get("color")).toBe("var(--danger)");
+    expect(declarations(".thread-draft-discard:focus-visible").get("color")).toBe("var(--danger)");
+  });
+
   it("covers the whole compose with the drop target without adding a box around the form", () => {
     expect(declarations(".compose-drop-zone").get("display")).toBe("contents");
     const overlay = declarations(".compose-drop-overlay");
