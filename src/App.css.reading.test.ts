@@ -36,6 +36,13 @@ describe("attachment lightbox", () => {
     expect(z("lightbox")).toBeGreaterThan(z("drawer"));
   });
 
+  it("draws its close button light on the dark backdrop in either theme", () => {
+    document.body.innerHTML = '<div class="lightbox"><button class="close-btn" id="close"></button></div>';
+    const decl = cascadedDeclarations(rules, document.getElementById("close")!);
+    expect(decl.get("color")).toBe("#fff");
+    expect(decl.get("background")).toBe("rgba(255, 255, 255, 0.15)");
+  });
+
   it("may show a PDF from a blob: URL in a frame, and nothing else from outside the app", () => {
     const csp: string = JSON.parse(readRepoFile("src-tauri/tauri.conf.json")).app.security.csp;
     const frameSrc = csp.split(";").map(d => d.trim()).find(d => d.startsWith("frame-src"));

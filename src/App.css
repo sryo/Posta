@@ -4247,6 +4247,16 @@ button:disabled:hover {
     cursor: default;
 }
 
+/* The backdrop is dark in both themes, so the shared close button is too */
+.lightbox .close-btn {
+    color: #fff;
+    background: rgba(255, 255, 255, 0.15);
+}
+
+.lightbox .close-btn:hover {
+    background: rgba(255, 255, 255, 0.3);
+}
+
 .lightbox-prev {
     left: var(--space-lg);
 }
