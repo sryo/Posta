@@ -2552,6 +2552,18 @@ describe("App forward from a card", () => {
     expect(body).toContain("To: Bo <bo@x.com>");
     expect(body).toContain("Cc: cy@x.com");
   });
+
+  it("says so when it can only forward the preview of an email it couldn't load", async () => {
+    threadsByCard["card-a"] = [{ ...thread("t-a", "Mail for A"), snippet: "Just the preview" }];
+    handlers.get_thread_details = () => { throw "Request failed: could not reach Gmail. Check your connection."; };
+    render(() => <App />);
+    await screen.findByText("Mail for A");
+    fireEvent.keyDown(document, { key: "l" });
+    fireEvent.keyDown(document, { key: "f" });
+
+    expect(await screen.findByText("Couldn't load the whole email, so only its preview is quoted")).toBeInTheDocument();
+    expect(document.querySelector<HTMLTextAreaElement>(".compose-panel textarea")!.value).toContain("Just the preview");
+  });
 });
 
 describe("App links", () => {

@@ -2371,6 +2371,7 @@ function App() {
     let to = '';
     let cc = '';
     let body = thread.snippet;
+    let previewOnly = false;
     const account = selectedAccount();
     if (account) {
       try {
@@ -2385,6 +2386,8 @@ function App() {
         }
       } catch (e) {
         console.error("Failed to fetch thread for forward:", e);
+        previewOnly = true;
+        noteBackgroundError(account.id, e);
       }
     }
     const quotedBody = buildForwardBody({ from, date, subject: thread.subject, to, cc, body });
@@ -2394,6 +2397,7 @@ function App() {
       body: quotedBody,
       forward: { threadId, subject: fwdSubject, body: quotedBody },
     });
+    if (previewOnly) showToast("Couldn't load the whole email, so only its preview is quoted");
   }
 
   function handleReplyFromThread(to: string, cc: string, subject: string, quotedBody: string, messageId: string | undefined, isHtml: boolean) {
