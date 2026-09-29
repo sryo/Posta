@@ -47,6 +47,9 @@ pub struct CalendarInfo {
     pub is_primary: bool,
     pub access_role: String, // owner, writer, reader, freeBusyReader
     pub timezone: Option<String>, // IANA timezone (e.g. "America/Argentina/Buenos_Aires")
+    /// Checked and not hidden in Google Calendar's own list
+    #[serde(skip)]
+    pub shown: bool,
 }
 
 /// Convert calendar API errors to user-friendly messages
@@ -170,6 +173,9 @@ struct CalendarListEntry {
     access_role: Option<String>,
     #[serde(rename = "timeZone")]
     time_zone: Option<String>,
+    // Omitted by Google when false
+    selected: Option<bool>,
+    hidden: Option<bool>,
 }
 
 impl From<CalendarListEntry> for CalendarInfo {
@@ -180,6 +186,7 @@ impl From<CalendarListEntry> for CalendarInfo {
             is_primary: c.primary.unwrap_or(false),
             access_role: c.access_role.unwrap_or_else(|| "reader".to_string()),
             timezone: c.time_zone,
+            shown: c.selected.unwrap_or(false) && !c.hidden.unwrap_or(false),
         }
     }
 }
@@ -559,6 +566,9 @@ impl CalendarClient {
         // Determine time range from query using calendar timezone
         let (time_min, time_max) = query.get_time_range(timezone);
 
+        // Calendar cards show what Google Calendar shows; the primary
+        // calendar always counts, even if unchecked there
+        let calendars: Vec<&CalendarInfo> = calendars.iter().filter(|c| c.is_primary || c.shown).collect();
         let fetches: Vec<_> = calendars
             .iter()
             .map(|cal| {
@@ -1770,6 +1780,7 @@ mod tests {
             is_primary: true,
             access_role: "owner".into(),
             timezone: Some("Asia/Tokyo".into()),
+            shown: true,
         };
         let single = fields(0, 0, false);
         let recurring = EventFields { recurrence: Some(vec!["FREQ=DAILY".into()]), ..fields(0, 0, false) };
@@ -1862,7 +1873,7 @@ mod tests {
     }
 
     fn calendar_entry(id: &str) -> serde_json::Value {
-        serde_json::json!({ "id": id, "summary": id, "accessRole": "owner", "timeZone": "UTC" })
+        serde_json::json!({ "id": id, "summary": id, "accessRole": "owner", "timeZone": "UTC", "selected": true })
     }
 
     #[test]
@@ -1923,7 +1934,7 @@ mod tests {
     }
 
     fn calendar_with_role(id: &str, role: &str) -> serde_json::Value {
-        serde_json::json!({ "id": id, "summary": id, "accessRole": role })
+        serde_json::json!({ "id": id, "summary": id, "accessRole": role, "selected": true })
     }
 
     fn searched_calendars(server: &StubServer) -> Vec<String> {
@@ -2064,6 +2075,36 @@ mod tests {
 
     fn calendar_list_requests(server: &StubServer) -> usize {
         server.requests().iter().filter(|(_, t, _)| t.starts_with("/users/me/calendarList")).count()
+    }
+
+    #[tokio::test]
+    async fn calendar_cards_skip_calendars_unchecked_or_hidden_in_google_calendar() {
+        // Google leaves `selected` out for unchecked calendars
+        let server = StubServer::start(|_, target| {
+            let items = if target.starts_with("/users/me/calendarList") {
+                let mut unchecked = calendar_entry("unchecked");
+                unchecked.as_object_mut().unwrap().remove("selected");
+                let mut hidden = calendar_entry("hidden");
+                hidden["hidden"] = true.into();
+                let mut primary = calendar_entry("me");
+                primary.as_object_mut().unwrap().remove("selected");
+                primary["primary"] = true.into();
+                serde_json::json!([primary, calendar_entry("shown"), unchecked, hidden])
+            } else {
+                serde_json::json!([])
+            };
+            (200, serde_json::json!({ "items": items }).to_string())
+        })
+        .await;
+        server.client().search_events(&CalendarQuery::parse("calendar:week"), 10).await.unwrap();
+        let mut searched: Vec<String> = server
+            .requests()
+            .into_iter()
+            .filter_map(|(_, t, _)| t.strip_prefix("/calendars/").map(|r| r.split('/').next().unwrap().to_string()))
+            .collect();
+        searched.sort();
+        // The primary calendar is always searched
+        assert_eq!(searched, vec!["me", "shown"]);
     }
 
     #[tokio::test]
@@ -2281,7 +2322,7 @@ mod tests {
                 200,
                 serde_json::json!({ "items": [
                     { "id": "me@x.com", "summary": "Personal", "primary": true, "accessRole": "owner", "timeZone": "UTC" },
-                    { "id": "work", "summary": "Work", "accessRole": "writer", "timeZone": "UTC" },
+                    { "id": "work", "summary": "Work", "accessRole": "writer", "timeZone": "UTC", "selected": true },
                 ] })
                 .to_string(),
             ),
