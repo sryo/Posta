@@ -293,6 +293,8 @@ describe("Blank board", () => {
     expect(await screen.findByText("Query Operators")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Browse presets" }));
     expect(await screen.findByRole("dialog", { name: "Pick a starting layout" })).toBeInTheDocument();
+    // The picker stands in for the guidance rather than stacking on it
+    expect(screen.queryByRole("heading", { name: "Cards are saved searches" })).not.toBeInTheDocument();
   });
 });
 
