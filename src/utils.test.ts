@@ -8,6 +8,8 @@ import {
   extractMessageText,
   extractName,
   formatCalendarEventDate,
+  formatEmailDate,
+  formatTime,
   smoothScroll,
   splitEmailList,
   stripHtml,
@@ -15,6 +17,7 @@ import {
   truncateMiddle,
   validateEmailList,
 } from "./utils";
+import { formatClock, formatWhen, relativeDayName } from "./app/dateFormat";
 
 describe("subject prefixes", () => {
   it("adds Re: only when missing", () => {
@@ -205,15 +208,40 @@ describe("formatCalendarEventDate durations", () => {
   const hours = (h: number) => start + h * 3600_000;
 
   it("keeps hours and minutes for events under a day", () => {
-    expect(formatCalendarEventDate(start, start + 45 * 60_000, false)).toMatch(/2pm \(45m\)$/);
-    expect(formatCalendarEventDate(start, hours(1.5), false)).toMatch(/2pm \(1h30m\)$/);
-    expect(formatCalendarEventDate(start, hours(23), false)).toMatch(/2pm \(23h\)$/);
+    expect(formatCalendarEventDate(start, start + 45 * 60_000, false)).toMatch(/2:00\sPM \(45m\)$/);
+    expect(formatCalendarEventDate(start, hours(1.5), false)).toMatch(/2:00\sPM \(1h30m\)$/);
+    expect(formatCalendarEventDate(start, hours(23), false)).toMatch(/2:00\sPM \(23h\)$/);
   });
 
   it("shows days for events of a day or longer", () => {
-    expect(formatCalendarEventDate(start, hours(24), false)).toMatch(/2pm \(1d\)$/);
-    expect(formatCalendarEventDate(start, hours(72), false)).toMatch(/2pm \(3d\)$/);
-    expect(formatCalendarEventDate(start, hours(26), false)).toMatch(/2pm \(1d2h\)$/);
+    expect(formatCalendarEventDate(start, hours(24), false)).toMatch(/2:00\sPM \(1d\)$/);
+    expect(formatCalendarEventDate(start, hours(72), false)).toMatch(/2:00\sPM \(3d\)$/);
+    expect(formatCalendarEventDate(start, hours(26), false)).toMatch(/2:00\sPM \(1d2h\)$/);
+  });
+});
+
+describe("dates and times in the system locale", () => {
+  it("writes an event's time as the locale does, not as a hard-coded 12-hour clock", () => {
+    const start = new Date(2030, 5, 10, 0, 41).getTime();
+    expect(formatCalendarEventDate(start, start + 3600_000, false)).toBe(`Mon, Jun 10, 2030 ${formatClock(new Date(start))} (1h)`);
+  });
+
+  it("names today's and tomorrow's events with the locale's relative day names", () => {
+    const today = new Date();
+    today.setHours(9, 0, 0, 0);
+    expect(formatCalendarEventDate(today.getTime(), null, false)).toBe(`${relativeDayName(today, new Date())} ${formatClock(today)}`);
+  });
+
+  it("dates an email relative to today, with the time as the locale writes it", () => {
+    const sent = new Date();
+    sent.setHours(0, 42, 0, 0);
+    expect(formatEmailDate(sent.toString())).toBe(formatWhen(sent, new Date()));
+  });
+
+  it("shows a thread's time today as the locale writes it", () => {
+    const sent = new Date();
+    sent.setHours(0, 30, 0, 0);
+    expect(formatTime(sent.getTime())).toBe(formatClock(sent));
   });
 });
 

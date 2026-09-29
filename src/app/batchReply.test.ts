@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { FullMessage } from "../api/tauri";
 import { batchReplyEntry } from "./batchReply";
+import { formatWhen } from "./dateFormat";
 
 const msg = (id: string, headers: Record<string, string>): FullMessage => ({
   id, threadId: "t", snippet: `snippet ${id}`, internalDate: "0",
@@ -26,7 +27,14 @@ describe("batchReplyEntry", () => {
     expect(entry?.to).toBe("jo@x.com, bo@x.com");
   });
 
+  it("dates the message like the thread view does, not as a bare numeric date", () => {
+    const sent = new Date(2026, 8, 29, 0, 41);
+    const entry = batchReplyEntry("t", [{ ...msg("1", { From: "ana@x.com" }), internalDate: String(sent.getTime()) }], "me@x.com");
+    expect(entry?.date).toBe(formatWhen(sent, new Date()));
+  });
+
   it("has nothing to answer in an empty thread", () => {
+
     expect(batchReplyEntry("t", [], "me@x.com")).toBeNull();
   });
 });

@@ -1,6 +1,7 @@
 import type { GoogleCalendarEvent, Thread, ThreadGroup } from "../api/tauri";
 import type { GroupBy } from "../shared/constants";
 import { formatCalendarEventDate } from "../utils";
+import { formatDayLabel } from "./dateFormat";
 
 export type CalendarEventGroup = { label: string; events: GoogleCalendarEvent[] };
 
@@ -50,21 +51,9 @@ export function groupCalendarEvents(events: GoogleCalendarEvent[], groupBy: Grou
     const groupDays: Record<string, number> = {};
 
     const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-    const tomorrow = new Date(today);
-    tomorrow.setDate(tomorrow.getDate() + 1);
-    const yesterday = new Date(today);
-    yesterday.setDate(yesterday.getDate() - 1);
 
-    // Compare calendar days by components; midnight-to-midnight ms math
-    // breaks on DST-transition days (23h/25h)
-    const sameDay = (a: Date, b: Date) =>
-      a.getFullYear() === b.getFullYear() && a.getMonth() === b.getMonth() && a.getDate() === b.getDate();
-
-    const labelFor = (day: Date) =>
-      sameDay(day, today) ? "Today"
-        : sameDay(day, tomorrow) ? "Tomorrow"
-          : sameDay(day, yesterday) ? "Yesterday"
-            : day.toLocaleDateString(undefined, { weekday: 'long', month: 'short', day: 'numeric' });
+    // Today's name and other days' dates in one locale
+    const labelFor = (day: Date) => formatDayLabel(day, now);
 
     const addToDay = (event: GoogleCalendarEvent, day: Date) => {
       const label = labelFor(day);

@@ -122,6 +122,7 @@ import { Dialog } from "./components/Dialog";
 import { Toasts } from "./components/Toasts";
 import { createToasts, type ToastAction, type ToastTone } from "./app/toasts";
 import { failureMessage } from "./app/errorText";
+import { formatWhen, threadGroupLabel } from "./app/dateFormat";
 import { safeGetItem, safeSetItem, safeRemoveItem, safeGetJSON, safeSetJSON } from "./shared/storage";
 import { BG_COLORS, type ActionSettings, type CardColor, type GroupBy } from "./shared/constants";
 import { createUndoableSend } from "./app/undoableSend";
@@ -4571,7 +4572,7 @@ function App() {
                             <Index each={getDisplayGroups(card.id)}>
                               {(group) => (
                                 <>
-                                  <div class="date-header">{group().label}</div>
+                                  <div class="date-header">{threadGroupLabel(group().label)}</div>
                                   <For each={group().threads}>
                                     {(thread) => {
                                       // An event that is over needs no answer
@@ -5251,7 +5252,7 @@ function App() {
             const subject = addForwardPrefix(event.title);
             const body = `---------- Forwarded event ----------\n` +
               `Title: ${event.title}\n` +
-              `When: ${new Date(event.start_time).toLocaleString()}\n` +
+              `When: ${formatWhen(new Date(event.start_time), new Date())}\n` +
               (event.location ? `Where: ${event.location}\n` : '') +
               (event.organizer ? `Organizer: ${event.organizer}\n` : '') +
               (event.description ? `\n${event.description}` : '');

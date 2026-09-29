@@ -1,5 +1,7 @@
 // Utility functions
 
+import { formatClock, formatShortDate, formatWhen, relativeDayName } from "./app/dateFormat";
+
 // --- Base64 helpers ---
 
 /**
@@ -25,18 +27,6 @@ function base64ToBytes(base64: string): Uint8Array {
  */
 function isSameDay(date1: Date, date2: Date): boolean {
   return date1.toDateString() === date2.toDateString();
-}
-
-/**
- * Get date label: 'today' | 'yesterday' | 'thisYear' | 'otherYear'
- */
-function getRelativeDateLabel(date: Date, now: Date = new Date()): 'today' | 'yesterday' | 'thisYear' | 'otherYear' {
-  if (isSameDay(date, now)) return 'today';
-  const yesterday = new Date(now);
-  yesterday.setDate(yesterday.getDate() - 1);
-  if (isSameDay(date, yesterday)) return 'yesterday';
-  if (date.getFullYear() === now.getFullYear()) return 'thisYear';
-  return 'otherYear';
 }
 
 // --- Calendar response status helpers ---
@@ -221,10 +211,8 @@ export function formatFileSize(bytes: number): string {
  */
 export function formatTime(timestamp: number): string {
   const date = new Date(timestamp);
-  if (isSameDay(date, new Date())) {
-    return date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
-  }
-  return date.toLocaleDateString([], { month: "short", day: "numeric" });
+  if (isSameDay(date, new Date())) return formatClock(date);
+  return formatShortDate(date);
 }
 
 // Sync status thresholds (in milliseconds)
@@ -259,7 +247,7 @@ export function formatSyncTime(timestamp: number | undefined, now?: number): str
   if (seconds < 60) return `${seconds}s ago`;
   if (minutes < 60) return `${minutes}m ago`;
   if (hours < 24) return `${hours}h ago`;
-  return new Date(timestamp).toLocaleDateString([], { month: "short", day: "numeric" });
+  return formatShortDate(new Date(timestamp));
 }
 
 /**
@@ -396,15 +384,7 @@ export function formatEmailDate(dateStr: string): string {
   const date = new Date(dateStr);
   if (isNaN(date.getTime())) return dateStr;
 
-  const timeStr = date.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
-  const label = getRelativeDateLabel(date);
-
-  switch (label) {
-    case 'today': return `Today at ${timeStr}`;
-    case 'yesterday': return `Yesterday at ${timeStr}`;
-    case 'thisYear': return date.toLocaleDateString([], { month: 'short', day: 'numeric' }) + ` at ${timeStr}`;
-    default: return date.toLocaleDateString([], { month: 'short', day: 'numeric', year: 'numeric' }) + ` at ${timeStr}`;
-  }
+  return formatWhen(date, new Date());
 }
 
 /**
@@ -444,29 +424,16 @@ export function formatCalendarEventDate(
   const isTomorrow = startDay.getTime() === tomorrow.getTime();
   const isThisYear = start.getFullYear() === now.getFullYear();
 
-  // Format date part
-  let dateStr: string;
-  if (isToday) {
-    dateStr = 'Today';
-  } else if (isTomorrow) {
-    dateStr = 'Tomorrow';
-  } else if (isThisYear) {
-    dateStr = start.toLocaleDateString([], { weekday: 'short', month: 'short', day: 'numeric' });
-  } else {
-    dateStr = start.toLocaleDateString([], { weekday: 'short', month: 'short', day: 'numeric', year: 'numeric' });
-  }
+  // Yesterday reads as a plain date here; only today and tomorrow get names
+  const dateStr = (isToday || isTomorrow ? relativeDayName(start, now) : null)
+    ?? formatShortDate(start, undefined, { weekday: true, year: !isThisYear });
 
   // For all-day events, just show the date
   if (allDay) {
     return dateStr;
   }
 
-  // Format time - compact format like "2pm" or "2:30pm"
-  const hours = start.getHours();
-  const minutes = start.getMinutes();
-  const ampm = hours >= 12 ? 'pm' : 'am';
-  const hour12 = hours % 12 || 12;
-  const timeStr = minutes === 0 ? `${hour12}${ampm}` : `${hour12}:${minutes.toString().padStart(2, '0')}${ampm}`;
+  const timeStr = formatClock(start);
 
   if (endTime) {
     const durationMs = endTime - startTime;

@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { GoogleCalendarEvent, Thread, ThreadGroup } from "../api/tauri";
 import { getSmartEventTime, groupCalendarEvents, mergeThreadGroups, regroupThreads } from "./grouping";
+import { formatDayLabel } from "./dateFormat";
 
 function thread(id: string, over: Partial<Thread> = {}): Thread {
   return {
@@ -115,6 +116,11 @@ describe("groupCalendarEvents", () => {
       ["Today", ["today-early", "today-late"]],
       ["Tomorrow", ["tomorrow"]],
     ]);
+  });
+
+  it("labels a later day in the same locale and style as today's label", () => {
+    const groups = groupCalendarEvents([event("friday", { start_time: at(13, 10), end_time: at(13, 11) })], "date", now);
+    expect(groups.map(g => g.label)).toEqual([formatDayLabel(new Date(2026, 2, 13), now)]);
   });
 
   it("puts a one-day all-day event on its own date only", () => {
