@@ -1514,7 +1514,7 @@
                                 <div class="card-form-group">
                                     <label class="query-label">Query <button type="button" class="query-help-btn" title="Query operators help">?</button></label>
                                     <div class="query-autocomplete-wrap">
-                                        <input type="text" value="is:important newer_than:1d" data-field="query" class="query-input">
+                                        <input type="text" value="is:important in:inbox" data-field="query" class="query-input">
                                         <div class="query-autocomplete"></div>
                                     </div>
                                 </div>
@@ -2193,7 +2193,7 @@
 
             // Default Posta preset - resets on every page load
             const defaultCards = [
-                { id: 'hot', name: 'Hot', query: 'is:important newer_than:1d', color: 'blue', groupBy: 'label' },
+                { id: 'hot', name: 'Hot', query: 'is:important in:inbox', color: 'blue', groupBy: 'label' },
                 { id: 'meh', name: 'Meh', query: 'category:promotions OR category:updates', color: 'red', groupBy: 'date' },
                 { id: 'files', name: 'Files', query: 'has:attachment newer_than:1d', color: 'purple', groupBy: 'date' }
             ];
