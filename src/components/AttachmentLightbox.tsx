@@ -73,21 +73,44 @@ export const AttachmentLightbox = (props: {
     ArrowRight: () => step(1),
     ArrowLeft: () => step(-1),
   };
+  let dialogEl: HTMLDivElement | undefined;
+  // Tab cycles through the lightbox's own controls, never the page behind it
+  const keepTabInside = (e: KeyboardEvent) => {
+    if (!dialogEl) return;
+    const focusable = Array.from(dialogEl.querySelectorAll<HTMLElement>("button:not([disabled]), iframe"));
+    if (focusable.length === 0) return;
+    const at = focusable.indexOf(document.activeElement as HTMLElement);
+    const wrapTo = e.shiftKey
+      ? (at <= 0 ? focusable[focusable.length - 1] : null)
+      : (at === -1 || at === focusable.length - 1 ? focusable[0] : null);
+    if (wrapTo) {
+      e.preventDefault();
+      wrapTo.focus();
+    }
+  };
   const handleKeyDown = (e: KeyboardEvent) => {
     if (e.metaKey || e.ctrlKey || e.altKey) return;
     e.stopPropagation();
+    if (e.key === "Tab") { keepTabInside(e); return; }
     const action = keyActions[e.key];
     if (!action) return;
     e.preventDefault();
     action();
   };
-  onMount(() => window.addEventListener("keydown", handleKeyDown, true));
-  onCleanup(() => window.removeEventListener("keydown", handleKeyDown, true));
+  const returnFocus = document.activeElement;
+  onMount(() => {
+    window.addEventListener("keydown", handleKeyDown, true);
+    dialogEl?.focus();
+  });
+  onCleanup(() => {
+    window.removeEventListener("keydown", handleKeyDown, true);
+    if (returnFocus instanceof HTMLElement && returnFocus.isConnected) returnFocus.focus();
+  });
 
   return (
     <Show when={current()}>
       {(item) => (
-        <div class="lightbox" role="dialog" aria-modal="true" aria-label={item().filename} onClick={(e) => { if (e.target === e.currentTarget) props.onClose(); }}>
+        <div ref={dialogEl} tabIndex={-1} class="lightbox" role="dialog" aria-modal="true" aria-label={item().filename} onClick={(e) => { if (e.target === e.currentTarget) props.onClose(); }}>
           <div class="lightbox-bar">
             <div class="lightbox-title">
               <span class="lightbox-name">{item().filename}</span>

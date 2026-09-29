@@ -4165,6 +4165,11 @@ button:disabled:hover {
     background: rgba(0, 0, 0, 0.82);
 }
 
+/* Focused only to take focus from the page behind it */
+.lightbox:focus {
+    outline: none;
+}
+
 .lightbox-bar {
     display: flex;
     align-items: center;

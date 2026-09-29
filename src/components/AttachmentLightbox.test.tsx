@@ -72,6 +72,27 @@ describe("AttachmentLightbox", () => {
     expect(props.onOpenExternally).toHaveBeenCalledWith(items[2]);
   });
 
+  it("takes keyboard focus while open and gives it back once closed", () => {
+    const opener = document.createElement("button");
+    document.body.appendChild(opener);
+    opener.focus();
+    const { unmount } = renderLightbox();
+    expect(screen.getByRole("dialog").contains(document.activeElement)).toBe(true);
+    unmount();
+    expect(document.activeElement).toBe(opener);
+    opener.remove();
+  });
+
+  it("keeps Tab within its own buttons", () => {
+    renderLightbox();
+    const buttons = screen.getAllByRole("button").filter(b => !(b as HTMLButtonElement).disabled);
+    buttons[buttons.length - 1].focus();
+    fireEvent.keyDown(document.activeElement!, { key: "Tab" });
+    expect(document.activeElement).toBe(buttons[0]);
+    fireEvent.keyDown(document.activeElement!, { key: "Tab", shiftKey: true });
+    expect(document.activeElement).toBe(buttons[buttons.length - 1]);
+  });
+
   it("offers the other app when the preview can't be loaded", async () => {
     renderLightbox(1, vi.fn(async () => { throw new Error("offline"); }));
     expect(await screen.findByText(/Couldn't load a preview/)).toBeInTheDocument();
