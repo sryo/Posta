@@ -1241,6 +1241,23 @@ describe("App calendar", () => {
     expect(invoke).not.toHaveBeenCalledWith("update_calendar_event", expect.anything());
   });
 
+  it("asks before Escape throws away a new event's typed details", async () => {
+    render(() => <App />);
+    await screen.findByText("Mail for A");
+    fireEvent.keyDown(document, { key: "e" });
+    const title = await screen.findByPlaceholderText("Event title");
+    fireEvent.input(title, { target: { value: "Dentist" } });
+    title.blur();
+    fireEvent.keyDown(document, { key: "Escape" });
+    await answerConfirm(false, /Discard/);
+    await new Promise(r => setTimeout(r, 300));
+    expect(screen.getByPlaceholderText("Event title")).toHaveValue("Dentist");
+
+    fireEvent.keyDown(document, { key: "Escape" });
+    await answerConfirm(true);
+    await waitFor(() => expect(screen.queryByPlaceholderText("Event title")).not.toBeInTheDocument());
+  });
+
   it("starts a new event empty after an edit was cancelled with Escape", async () => {
     calendarCards();
     render(() => <App />);

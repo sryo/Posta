@@ -742,6 +742,13 @@ function App() {
       : { ...f, startDate: defaults.date, startTime: defaults.startTime, endDate: defaults.date, endTime: defaults.endTime });
     setCreatingEvent(true);
   };
+  // The form is kept nowhere once closed, so typed details need a yes first
+  const dismissEventForm = async () => {
+    const f = eventForm();
+    const typed = [f.summary, f.description, f.location, f.attendees].some(v => v.trim());
+    if (f.closing || (typed && !(await askConfirm("Discard this event?", "Discard")))) return;
+    if (creatingEvent()) closeEventForm();
+  };
   const closeEventForm = () => {
     setEventForm(f => ({ ...f, closing: true }));
     setTimeout(() => {
@@ -1407,7 +1414,7 @@ function App() {
         case "batchReply": dismissBatchReply(); break;
         case "compose": closeCompose(); break;
         case "queryHelp": setQueryHelpOpen(false); break;
-        case "eventForm": closeEventForm(); break;
+        case "eventForm": dismissEventForm(); break;
         case "cardEditor": setEditingCardId(null); break;
         case "settings": setSettingsOpen(false); break;
         case "actionConfigMenu": setActionConfigMenu(null); break;
@@ -4799,7 +4806,7 @@ function App() {
       <Show when={creatingEvent()}>
         <CreateEventForm
           closing={eventForm().closing}
-          onClose={closeEventForm}
+          onClose={dismissEventForm}
           summary={eventForm().summary}
           setSummary={(v: string) => setEventForm(f => ({ ...f, summary: v }))}
           description={eventForm().description}
