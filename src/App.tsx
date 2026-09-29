@@ -158,9 +158,6 @@ const SESSION_EXPIRED_MESSAGE = "Session expired - sign in again";
 // As many as the backend's preview of an email query returns
 const NEW_CARD_PREVIEW_EVENTS = 5;
 
-// Names for BG_COLORS, in its order, for the colour picker's options
-const BG_COLOR_NAMES = ["Red", "Orange", "Yellow", "Green", "Teal", "Blue", "Purple", "Pink"];
-
 function App() {
   const [loading, setLoading] = createSignal(true);
 
@@ -4004,7 +4001,7 @@ function App() {
                     style={{ background: color.hex }}
                     role="button"
                     tabIndex={bgColorPickerOpen() ? 0 : -1}
-                    aria-label={BG_COLOR_NAMES[index()] ?? `Color ${index() + 1}`}
+                    aria-label={color.name}
                     onClick={() => selectBgColor(index())}
                     on:keydown={onActivateKey(() => selectBgColor(index()))}
                   ></div>

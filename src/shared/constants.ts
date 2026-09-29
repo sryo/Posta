@@ -14,14 +14,14 @@ export type CardColor = typeof CARD_COLORS[number] | null;
 
 // Background colors with light/dark mode support (same base colors, lower opacity)
 export const BG_COLORS = [
-  { light: "rgba(229, 57, 53, 0.18)", dark: "rgba(229, 57, 53, 0.25)", hex: "#E53935" },
-  { light: "rgba(251, 140, 0, 0.18)", dark: "rgba(251, 140, 0, 0.25)", hex: "#FB8C00" },
-  { light: "rgba(253, 216, 53, 0.20)", dark: "rgba(253, 216, 53, 0.22)", hex: "#FDD835" },
-  { light: "rgba(67, 160, 71, 0.18)", dark: "rgba(67, 160, 71, 0.25)", hex: "#43A047" },
-  { light: "rgba(0, 172, 193, 0.18)", dark: "rgba(0, 172, 193, 0.25)", hex: "#00ACC1" },
-  { light: "rgba(30, 136, 229, 0.18)", dark: "rgba(30, 136, 229, 0.25)", hex: "#1E88E5" },
-  { light: "rgba(94, 53, 177, 0.18)", dark: "rgba(94, 53, 177, 0.25)", hex: "#5E35B1" },
-  { light: "rgba(216, 27, 96, 0.18)", dark: "rgba(216, 27, 96, 0.25)", hex: "#D81B60" },
+  { name: "Red", light: "rgba(229, 57, 53, 0.18)", dark: "rgba(229, 57, 53, 0.25)", hex: "#E53935" },
+  { name: "Orange", light: "rgba(251, 140, 0, 0.18)", dark: "rgba(251, 140, 0, 0.25)", hex: "#FB8C00" },
+  { name: "Yellow", light: "rgba(253, 216, 53, 0.20)", dark: "rgba(253, 216, 53, 0.22)", hex: "#FDD835" },
+  { name: "Green", light: "rgba(67, 160, 71, 0.18)", dark: "rgba(67, 160, 71, 0.25)", hex: "#43A047" },
+  { name: "Teal", light: "rgba(0, 172, 193, 0.18)", dark: "rgba(0, 172, 193, 0.25)", hex: "#00ACC1" },
+  { name: "Blue", light: "rgba(30, 136, 229, 0.18)", dark: "rgba(30, 136, 229, 0.25)", hex: "#1E88E5" },
+  { name: "Purple", light: "rgba(94, 53, 177, 0.18)", dark: "rgba(94, 53, 177, 0.25)", hex: "#5E35B1" },
+  { name: "Pink", light: "rgba(216, 27, 96, 0.18)", dark: "rgba(216, 27, 96, 0.25)", hex: "#D81B60" },
 ];
 
 export type GroupBy = "date" | "sender" | "label" | "organizer" | "calendar";
