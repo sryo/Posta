@@ -118,6 +118,7 @@ import { ThreadView } from "./components/ThreadView";
 import { EventView } from "./components/EventView";
 import { ActionsWheel } from "./components/ActionsWheel";
 import { CardForm } from "./components/CardForm";
+import { Dialog } from "./components/Dialog";
 import { safeGetItem, safeSetItem, safeRemoveItem, safeGetJSON, safeSetJSON } from "./shared/storage";
 import { BG_COLORS, type ActionSettings, type CardColor, type GroupBy } from "./shared/constants";
 import { createUndoableSend } from "./app/undoableSend";
@@ -3904,6 +3905,7 @@ function App() {
             <Show when={!composing()}>
             <div
               class="compose-toolbar"
+              data-board
               onMouseLeave={() => {
                 fabHoverTimeout = window.setTimeout(() => setComposeFabHovered(false), 250);
               }}
@@ -3969,7 +3971,7 @@ function App() {
             </div>
           </Show>
 
-          <div class="toolbar-wrapper">
+          <div class="toolbar-wrapper" data-board>
             <div class={`color-picker ${bgColorPickerOpen() ? 'open' : ''}`}>
               <div
                 class={`color-picker-selected ${selectedBgColorIndex() === null ? 'no-color' : ''}`}
@@ -4126,7 +4128,7 @@ function App() {
       <Show when={!loading() && selectedAccount()}>
         <DragDropProvider onDragStart={onDragStart} onDragEnd={onDragEnd as any} collisionDetector={mostIntersecting}>
           <DragDropSensors />
-          <div class={`deck ${resizing() ? 'resizing' : ''}`} style={{ background: deckBackground() }}>
+          <div class={`deck ${resizing() ? 'resizing' : ''}`} style={{ background: deckBackground() }} data-board>
             <SortableProvider ids={cardIds()}>
               <For each={cards()}>
                 {(card) => {
@@ -4959,9 +4961,15 @@ function App() {
         {/* Label Drawer */}
         <Show when={labelDrawerOpen()}>
           <div class="label-drawer-overlay" onClick={closeLabelDrawer}></div>
-          <div class="label-drawer">
+          <Dialog
+            class="label-drawer"
+            labelledBy="label-drawer-title"
+            onClose={closeLabelDrawer}
+            closesFromInputs
+            initialFocus={(el) => el.querySelector<HTMLElement>(".label-drawer-search input")}
+          >
             <div class="label-drawer-header">
-              <h3>Labels</h3>
+              <h3 id="label-drawer-title">Labels</h3>
               <CloseButton onClick={closeLabelDrawer} />
             </div>
 
@@ -5014,7 +5022,7 @@ function App() {
               </Show>
             </div>
 
-          </div>
+          </Dialog>
         </Show>
       </Show>
 
@@ -5238,12 +5246,17 @@ function App() {
       {/* Query help sheet */}
       <Show when={queryHelpOpen()}>
         <div class="query-help-overlay" onClick={() => setQueryHelpOpen(false)}></div>
-        <div class="query-help-sheet">
+        <Dialog
+          class="query-help-sheet"
+          labelledBy="query-help-title"
+          onClose={() => setQueryHelpOpen(false)}
+          initialFocus={(el) => el.querySelector<HTMLElement>(".query-help-body")}
+        >
           <div class="query-help-header">
-            <h3>Query Operators</h3>
+            <h3 id="query-help-title">Query Operators</h3>
             <CloseButton onClick={() => setQueryHelpOpen(false)} />
           </div>
-          <div class="query-help-body">
+          <div class="query-help-body" tabindex="0">
             <div class="query-help-section">
               <h4>Email Operators</h4>
               <div class="query-help-table">
@@ -5346,7 +5359,7 @@ function App() {
               </div>
             </div>
           </div>
-        </div>
+        </Dialog>
       </Show>
 
       {/* Settings sidebar */}
@@ -5465,12 +5478,17 @@ function App() {
       {/* Keyboard shortcuts help modal */}
       <Show when={shortcutsHelpOpen()}>
         <div class="shortcuts-overlay" onClick={() => setShortcutsHelpOpen(false)}></div>
-        <div class="shortcuts-modal">
+        <Dialog
+          class="shortcuts-modal"
+          labelledBy="shortcuts-title"
+          onClose={() => setShortcutsHelpOpen(false)}
+          initialFocus={(el) => el.querySelector<HTMLElement>(".shortcuts-body")}
+        >
           <div class="shortcuts-header">
-            <h2>Keyboard Shortcuts</h2>
+            <h2 id="shortcuts-title">Keyboard Shortcuts</h2>
             <CloseButton onClick={() => setShortcutsHelpOpen(false)} />
           </div>
-          <div class="shortcuts-body">
+          <div class="shortcuts-body" tabindex="0">
             <div class="shortcuts-section">
               <h3>Navigation</h3>
               <div class="shortcut-row"><kbd>j</kbd> <span>Next thread</span></div>
@@ -5538,7 +5556,7 @@ function App() {
               <div class="shortcut-row"><kbd>?</kbd> <span>Show this help</span></div>
             </div>
           </div>
-        </div>
+        </Dialog>
       </Show>
 
       {/* Query autocomplete dropdown - rendered at app level to avoid clipping */}

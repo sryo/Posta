@@ -950,6 +950,54 @@ const fullMessage = (id: string, from: string, extra: Record<string, unknown> = 
   ...extra,
 });
 
+describe("App dialogs", () => {
+  it("shows the keyboard shortcuts as a dialog that scrolls by keyboard, with the board inert behind it", async () => {
+    render(() => <App />);
+    await screen.findByText("Mail for A");
+    fireEvent.keyDown(document, { key: "?" });
+    const dialog = await screen.findByRole("dialog", { name: "Keyboard Shortcuts" });
+    expect(dialog).toHaveAttribute("aria-modal", "true");
+    const body = dialog.querySelector(".shortcuts-body")!;
+    expect(body).toHaveAttribute("tabindex", "0");
+    expect(document.activeElement).toBe(body);
+    expect(document.querySelector(".deck")).toHaveAttribute("inert");
+
+    fireEvent.keyDown(body, { key: "Escape" });
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "Keyboard Shortcuts" })).toBeNull());
+    expect(document.querySelector(".deck")).not.toHaveAttribute("inert");
+  });
+
+  it("shows the query operators as a dialog over the card form", async () => {
+    render(() => <App />);
+    await screen.findByText("Mail for A");
+    fireEvent.keyDown(document, { key: "l" });
+    fireEvent.keyDown(document, { key: "l" });
+    const help = await screen.findByTitle("Query operators help");
+    help.focus();
+    fireEvent.click(help);
+    const dialog = await screen.findByRole("dialog", { name: "Query Operators" });
+    expect(dialog.contains(document.activeElement)).toBe(true);
+    fireEvent.keyDown(document.activeElement!, { key: "Escape" });
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "Query Operators" })).toBeNull());
+    expect(document.activeElement).toBe(help);
+  });
+
+  it("shows a thread as a dialog named by its subject, and its labels drawer as a dialog over it", async () => {
+    handlers.get_thread_details = () => ({ id: "t-a", messages: [fullMessage("m1", "Ana <ana@x.com>")] });
+    handlers.list_labels = () => [];
+    render(() => <App />);
+    fireEvent.click(await screen.findByText("Mail for A"));
+    await screen.findByRole("dialog", { name: "Hi" });
+
+    fireEvent.keyDown(document, { key: "l" });
+    const drawer = await screen.findByRole("dialog", { name: "Labels" });
+    expect(document.activeElement).toBe(within(drawer).getByPlaceholderText("Search labels..."));
+    fireEvent.keyDown(document.activeElement!, { key: "Escape" });
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "Labels" })).toBeNull());
+    expect(screen.getByRole("dialog", { name: "Hi" })).toBeInTheDocument();
+  });
+});
+
 describe("App thread view", () => {
   it("marks an unread thread read on open without an undo toast", async () => {
     threadsByCard["card-a"] = [{ ...thread("t-a", "Mail for A"), unread_count: 1, labels: ["INBOX", "UNREAD"] }];

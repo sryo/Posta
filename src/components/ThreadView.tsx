@@ -42,6 +42,7 @@ import { COLOR_HEX } from "../shared/constants";
 import type { InlineComposeProps } from "./types";
 import { findHeader, lastMessageFromOthers } from "../app/messages";
 import { useLayer } from "../app/layers";
+import { useDialog } from "../app/dialog";
 
 const normalizeMessageId = (id: string) => id.trim().replace(/^<|>$/g, '').toLowerCase();
 
@@ -124,6 +125,7 @@ export const ThreadView = (props: {
   };
 
   const { closing, close: handleClose } = createCloseAfterAnimation(() => props.onClose());
+  const dialogRef = useDialog({ onClose: handleClose, labelledBy: "thread-view-title", initialFocus: (el) => el });
 
   // Gmail messages never change content under the same id (a draft edit gets
   // a new id), so a reloaded thread reuses the loaded message objects and
@@ -296,19 +298,18 @@ export const ThreadView = (props: {
   onCleanup(() => document.removeEventListener('keydown', handleKeyDown));
 
   // Escape closes whichever of these opened last
-  useLayer(() => true, handleClose);
   useLayer(() => !!props.inlineCompose, () => props.inlineCompose?.onClose());
   useLayer(() => !!props.labelDrawerOpen, () => props.onCloseLabelDrawer?.(), { closesFromInputs: true });
 
   return (
-    <div class={`thread-overlay ${closing() ? 'closing' : ''}`} style={props.focusColor ? { '--message-focused-color': props.focusColor } as any : undefined}>
+    <div ref={dialogRef} class={`thread-overlay ${closing() ? 'closing' : ''}`} style={props.focusColor ? { '--message-focused-color': props.focusColor } as any : undefined}>
       <div class="thread-floating-bar">
         {/* Row 1: Close + Subject + Card indicator */}
         <div class="thread-floating-bar-row">
           <CloseButton onClick={handleClose} />
           <div class="thread-bar-subject">
             <Show when={props.thread} fallback={<Show when={props.loading}><span>Loading...</span></Show>}>
-              <h2>{findHeader(props.thread?.messages[0]?.payload?.headers, 'Subject') || '(No Subject)'}</h2>
+              <h2 id="thread-view-title">{findHeader(props.thread?.messages[0]?.payload?.headers, 'Subject') || '(No Subject)'}</h2>
             </Show>
           </div>
           <Show when={props.card}>

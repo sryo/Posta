@@ -22,6 +22,7 @@ import { isTypingTarget, hasCommandModifier } from "../shared/keyboard";
 import { createTwoStepConfirm } from "../shared/twoStepConfirm";
 import type { InlineComposeProps, InlineEditEventProps } from "./types";
 import { useLayer } from "../app/layers";
+import { useDialog } from "../app/dialog";
 
 // Event View Component
 export const EventView = (props: {
@@ -47,6 +48,7 @@ export const EventView = (props: {
 }) => {
 
   const { closing, close: handleClose } = createCloseAfterAnimation(() => props.onClose());
+  const dialogRef = useDialog({ onClose: handleClose, labelledBy: "event-view-title", initialFocus: (el) => el });
 
   const deleteConfirm = createTwoStepConfirm();
   const handleDelete = () => deleteConfirm.press(() => props.onDelete());
@@ -82,21 +84,20 @@ export const EventView = (props: {
   onCleanup(() => document.removeEventListener('keydown', handleKeyDown));
 
   // Escape closes whichever of these opened last
-  useLayer(() => true, handleClose);
   useLayer(() => props.calendarDrawerOpen, () => props.onCloseCalendarDrawer());
   useLayer(() => !!props.inlineCompose, () => props.inlineCompose?.onClose());
   useLayer(() => !!props.inlineEdit, () => props.inlineEdit?.onClose());
   useLayer(deleteConfirm.armed, () => deleteConfirm.disarm());
 
   return (
-    <div class={`thread-overlay ${closing() ? 'closing' : ''}`} style={props.focusColor ? { '--message-focused-color': props.focusColor } as any : undefined}>
+    <div ref={dialogRef} class={`thread-overlay ${closing() ? 'closing' : ''}`} style={props.focusColor ? { '--message-focused-color': props.focusColor } as any : undefined}>
       <div class="thread-floating-bar">
         {/* Row 1: Close + Title + Card indicator */}
         <div class="thread-floating-bar-row">
           <CloseButton onClick={handleClose} />
           <div class="thread-bar-subject">
             <Show when={props.event} fallback={<span>Loading...</span>}>
-              <h2>{props.event?.title || '(No title)'}</h2>
+              <h2 id="event-view-title">{props.event?.title || '(No title)'}</h2>
             </Show>
           </div>
           <Show when={props.card}>
