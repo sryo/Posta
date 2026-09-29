@@ -25,6 +25,9 @@ export function splitQuotedText(text: string): { head: string; quoted: string } 
   return { head, quoted: text.slice(head.length) };
 }
 
+const FORWARD_START = /^\s*-+\s*Forwarded message/i;
+const FORWARD_INTRO = /Begin forwarded message:\s*$/i;
+
 // Where mail clients start the history they quote
 const QUOTE_MARKERS = [
   ".gmail_quote",
@@ -68,6 +71,8 @@ export function splitQuotedHtml(html: string): { main: string; quoted: string } 
   const history = range.extractContents();
 
   if (body.textContent?.trim() === "" && !body.querySelector("img")) return null;
+  // A forward's message is its point, not history to tuck away
+  if (FORWARD_START.test(history.textContent ?? "") || FORWARD_INTRO.test(body.textContent ?? "")) return null;
   const holder = doc.createElement("div");
   holder.appendChild(history);
   return { main: body.innerHTML, quoted: holder.innerHTML };

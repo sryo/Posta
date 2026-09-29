@@ -66,6 +66,13 @@ describe("splitQuotedHtml", () => {
     expect(split.quoted).toContain("white-space: pre-wrap");
   });
 
+  it("keeps a forwarded message in view, since it is what the forward is about", () => {
+    const gmail = '<div dir="ltr">FYI</div><br><div class="gmail_quote gmail_quote_container"><div dir="ltr" class="gmail_attr">---------- Forwarded message ---------<br>From: Ana</div><div>The plan</div></div>';
+    const apple = '<div>FYI</div><div><br><div>Begin forwarded message:</div><br><blockquote type="cite"><div>From: Ana</div><div>The plan</div></blockquote></div>';
+    expect(splitQuotedHtml(gmail)).toBeNull();
+    expect(splitQuotedHtml(apple)).toBeNull();
+  });
+
   it("keeps a body with no quote, or a quote with nothing written above it, whole", () => {
     expect(splitQuotedHtml("<p>Hello</p><blockquote>A quote a newsletter uses</blockquote><p>More</p>")).toBeNull();
     expect(splitQuotedHtml('<div class="gmail_quote">only the forward</div>')).toBeNull();
