@@ -22,6 +22,11 @@ const BATCH_ATTEMPTS: usize = 2;
 const BATCH_RETRY_DELAY: std::time::Duration = std::time::Duration::from_secs(1);
 const MAX_INLINE_IMAGE_SIZE: i32 = 100_000; // 100KB max for inline images
 const MAX_INLINE_IMAGES: usize = 3;
+/// Budget of the attachment data kept in memory between thread list fetches
+const ATTACHMENT_CACHE_BYTES: usize = 32 * 1024 * 1024;
+/// How long a reply draft's autosaves reuse the threading headers they looked
+/// up; sending always looks them up afresh
+const DRAFT_PARENT_TTL: std::time::Duration = std::time::Duration::from_secs(10 * 60);
 
 /// Partial-response fields for thread list entries: message headers and the
 /// part tree (with part headers, for Content-ID) three levels deep, without
@@ -48,6 +53,17 @@ pub struct GmailClient {
     batch_endpoint: String,
     upload_base: String,
     batch_retry_delay: std::time::Duration,
+    attachment_cache: std::sync::Arc<std::sync::Mutex<AttachmentCache>>,
+    draft_parents: std::sync::Arc<std::sync::Mutex<DraftParents>>,
+}
+
+/// Threading headers of a reply draft's thread, by thread id, with when they were read
+type DraftParents = HashMap<String, (Option<(String, String)>, std::time::Instant)>;
+
+/// A messages.attachments.get response
+#[derive(Deserialize)]
+struct AttachmentResponse {
+    data: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -99,7 +115,7 @@ pub struct MessageBody {
 pub struct MessagePart {
     #[serde(rename = "partId")]
     pub part_id: Option<String>,
-    #[serde(rename = "mimeType")]
+    #[serde(rename = "mimeType", default)]
     pub mime_type: String,
     pub filename: Option<String>,
     pub headers: Option<Vec<Header>>,
@@ -121,7 +137,9 @@ pub struct MessagePayload {
 
 #[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct Header {
+    #[serde(default)]
     pub name: String,
+    #[serde(default)]
     pub value: String,
 }
 
@@ -337,6 +355,8 @@ impl GmailClient {
             batch_endpoint: BATCH_API_ENDPOINT.to_string(),
             upload_base: GMAIL_UPLOAD_BASE.to_string(),
             batch_retry_delay: BATCH_RETRY_DELAY,
+            attachment_cache: shared_attachment_cache(),
+            draft_parents: shared_draft_parents(),
         }
     }
 
@@ -471,11 +491,6 @@ impl GmailClient {
 
         let resp = ensure_success(resp).await?;
 
-        #[derive(Deserialize)]
-        struct AttachmentResponse {
-            data: String,
-        }
-
         let attachment: AttachmentResponse = resp
             .json()
             .await
@@ -585,27 +600,36 @@ impl GmailClient {
     }
 
     /// Fetch the data the list shows with a thread: its first few small images
-    /// and its calendar invite. Failures leave the data out.
+    /// and its calendar invite. Data downloaded before is reused, since a
+    /// message never changes. Failures leave the data out.
     async fn load_attachment_data(&self, threads: &mut [Thread]) {
         let fetches = attachment_fetches(threads);
-        let mut data = Vec::with_capacity(fetches.len());
-        for chunk in fetches.chunks(MAX_BATCH_SIZE) {
+        let mut data: Vec<Option<String>> = {
+            let mut cache = self.attachment_cache.lock().unwrap_or_else(|e| e.into_inner());
+            fetches.iter().map(|f| cache.get(&f.key)).collect()
+        };
+        let misses: Vec<usize> = (0..fetches.len()).filter(|&i| data[i].is_none()).collect();
+        for chunk in misses.chunks(MAX_BATCH_SIZE) {
             let paths: Vec<String> = chunk
                 .iter()
-                .map(|f| attachment_path(&threads[f.thread].attachments[f.attachment]))
+                .map(|&i| attachment_path(&threads[fetches[i].thread].attachments[fetches[i].attachment]))
                 .collect();
-            match self.execute_batch_get(&paths).await {
-                Ok(bodies) => data.extend(bodies.into_iter().map(|body| {
-                    #[derive(Deserialize)]
-                    struct AttachmentResponse {
-                        data: String,
-                    }
-                    serde_json::from_str::<AttachmentResponse>(&body?).ok().map(|a| a.data)
-                })),
+            let bodies = match self.execute_batch_get(&paths).await {
+                Ok(bodies) => bodies,
                 Err(e) => {
                     tracing::warn!("Attachment batch failed: {}", e);
-                    data.extend(std::iter::repeat_n(None, chunk.len()));
+                    continue;
                 }
+            };
+            let mut cache = self.attachment_cache.lock().unwrap_or_else(|e| e.into_inner());
+            for (&i, body) in chunk.iter().zip(bodies) {
+                let fetched = body
+                    .and_then(|body| serde_json::from_str::<AttachmentResponse>(&body).ok())
+                    .map(|a| a.data);
+                if let Some(fetched) = &fetched {
+                    cache.insert(fetches[i].key.clone(), fetched.clone());
+                }
+                data[i] = fetched;
             }
         }
         apply_attachment_data(threads, &fetches, data);
@@ -747,6 +771,30 @@ impl GmailClient {
         }
     }
 
+    /// resolve_reply_headers for a draft replying to the latest message of
+    /// `thread_id`, reusing a successful lookup for DRAFT_PARENT_TTL
+    async fn draft_reply_headers(&self, thread_id: &str) -> Option<(String, String)> {
+        {
+            let parents = self.draft_parents.lock().unwrap_or_else(|e| e.into_inner());
+            if let Some((headers, _)) = parents.get(thread_id).filter(|(_, at)| at.elapsed() < DRAFT_PARENT_TTL) {
+                return headers.clone();
+            }
+        }
+        match self.get_thread_metadata(&thread_reply_metadata_url(&self.api_base, thread_id)).await {
+            Ok(thread) => {
+                let headers = reply_headers_from_thread(&thread, None);
+                let mut parents = self.draft_parents.lock().unwrap_or_else(|e| e.into_inner());
+                parents.retain(|_, (_, at)| at.elapsed() < DRAFT_PARENT_TTL);
+                parents.insert(thread_id.to_string(), (headers.clone(), std::time::Instant::now()));
+                headers
+            }
+            Err(e) => {
+                tracing::warn!("Failed to fetch reply headers for thread {}: {}", thread_id, e);
+                None
+            }
+        }
+    }
+
     /// A thread fetched with a thread_metadata_url
     async fn get_thread_metadata(&self, url: &str) -> Result<FullThread, String> {
         let resp = self
@@ -790,8 +838,8 @@ impl GmailClient {
         message: &OutgoingMessage<'_>,
         thread_id: Option<&str>,
     ) -> Result<GmailDraft, String> {
-        let url = format!("{}/users/me/drafts", self.api_base);
-        self.upsert_draft(self.client.post(&url), message, thread_id).await
+        let body = self.draft_body(message, thread_id).await;
+        self.save_draft(self.client.post(format!("{}/users/me/drafts", self.api_base)), &body).await
     }
 
     pub async fn update_draft(
@@ -800,44 +848,43 @@ impl GmailClient {
         message: &OutgoingMessage<'_>,
         thread_id: Option<&str>,
     ) -> Result<GmailDraft, String> {
+        let body = self.draft_body(message, thread_id).await;
         let url = format!("{}/users/me/drafts/{}", self.api_base, path_id(draft_id));
-        match self.upsert_draft(self.client.put(&url), message, thread_id).await {
+        match self.save_draft(self.client.put(&url), &body).await {
             // Sent or discarded from another device while this compose stayed
             // open; without a new draft the text would never reach Gmail again
             Err(e) if e.starts_with("API error 404") => {
                 tracing::info!("Draft {} no longer exists, saving as a new draft", draft_id);
-                self.create_draft(message, thread_id).await
+                self.save_draft(self.client.post(format!("{}/users/me/drafts", self.api_base)), &body).await
             }
             result => result,
         }
     }
 
-    async fn upsert_draft(
-        &self,
-        request: reqwest::RequestBuilder,
-        message: &OutgoingMessage<'_>,
-        thread_id: Option<&str>,
-    ) -> Result<GmailDraft, String> {
+    /// The drafts.create/update request body for `message`
+    async fn draft_body(&self, message: &OutgoingMessage<'_>, thread_id: Option<&str>) -> serde_json::Value {
         // Gmail only files a draft into a thread when it carries the RFC 2822
         // threading headers, not just the threadId
         let reply_headers = match thread_id {
-            Some(tid) => self.resolve_reply_headers(tid, None).await,
+            Some(tid) => self.draft_reply_headers(tid).await,
             None => None,
         };
 
-        let mut request_body = serde_json::json!({
+        let mut body = serde_json::json!({
             "message": {
                 "raw": encode_raw_message(&build_mime_message(message, reply_headers.as_ref()))
             }
         });
-
         if let Some(tid) = thread_id {
-            request_body["message"]["threadId"] = serde_json::json!(tid);
+            body["message"]["threadId"] = serde_json::json!(tid);
         }
+        body
+    }
 
+    async fn save_draft(&self, request: reqwest::RequestBuilder, body: &serde_json::Value) -> Result<GmailDraft, String> {
         let resp = request
             .bearer_auth(&self.access_token)
-            .json(&request_body)
+            .json(body)
             .send()
             .await
             .map_err(request_error)?;
@@ -1006,42 +1053,51 @@ impl GmailClient {
     }
 
     /// `thread_ids` split into those that still exist and those Gmail no
-    /// longer has (404). Checked with batch requests; a thread whose check
-    /// fails for another reason is checked again on its own, and the call
-    /// fails if that fails too, since a thread wrongly taken for deleted
-    /// would drop out of the user's list.
+    /// longer has (404), each in the order asked. Checked with batch
+    /// requests; threads a batch misses (429, 5xx) are batched again after a
+    /// pause, then checked one by one, and the call fails if that fails too,
+    /// since a thread wrongly taken for deleted would drop out of the user's list.
     pub async fn split_deleted_threads(&self, thread_ids: &[String]) -> Result<(Vec<String>, Vec<String>), String> {
-        let mut existing = Vec::new();
-        let mut deleted = Vec::new();
+        let mut exists: HashMap<&str, bool> = HashMap::new();
         for chunk in thread_ids.chunks(MAX_BATCH_SIZE) {
-            let paths: Vec<String> = chunk
-                .iter()
-                .map(|id| format!("/gmail/v1/users/me/threads/{}?format=minimal&fields=id", path_id(id)))
-                .collect();
-            let statuses: Vec<Option<u16>> = match self.execute_batch(&paths).await {
-                Ok(items) => items.into_iter().map(|item| item.map(|(status, _)| status)).collect(),
-                Err(e) => {
-                    tracing::warn!("Batch existence check failed, checking one by one: {}", e);
-                    vec![None; chunk.len()]
+            let mut pending: Vec<&str> = chunk.iter().map(String::as_str).collect();
+            for attempt in 0..BATCH_ATTEMPTS {
+                if pending.is_empty() {
+                    break;
                 }
-            };
-            for (thread_id, status) in chunk.iter().zip(statuses) {
-                let exists = match status {
-                    Some(200..=299) => true,
-                    Some(404) => false,
-                    _ => self
-                        .thread_exists(thread_id)
-                        .await
-                        .map_err(|e| format!("Failed to verify deleted thread {}: {}", thread_id, e))?,
+                if attempt > 0 {
+                    tokio::time::sleep(self.batch_retry_delay).await;
+                }
+                let paths: Vec<String> = pending
+                    .iter()
+                    .map(|id| format!("/gmail/v1/users/me/threads/{}?format=minimal&fields=id", path_id(id)))
+                    .collect();
+                let items = match self.execute_batch(&paths).await {
+                    Ok(items) => items,
+                    Err(e) => {
+                        tracing::warn!("Batch existence check failed: {}", e);
+                        continue;
+                    }
                 };
-                if exists {
-                    existing.push(thread_id.clone());
-                } else {
-                    deleted.push(thread_id.clone());
+                let mut missed = Vec::new();
+                for (thread_id, item) in pending.into_iter().zip(items) {
+                    match item.map(|(status, _)| status) {
+                        Some(200..=299) => _ = exists.insert(thread_id, true),
+                        Some(404) => _ = exists.insert(thread_id, false),
+                        _ => missed.push(thread_id),
+                    }
                 }
+                pending = missed;
+            }
+            for thread_id in pending {
+                let found = self
+                    .thread_exists(thread_id)
+                    .await
+                    .map_err(|e| format!("Failed to verify deleted thread {}: {}", thread_id, e))?;
+                exists.insert(thread_id, found);
             }
         }
-        Ok((existing, deleted))
+        Ok(thread_ids.iter().cloned().partition(|id| exists.get(id.as_str()).copied().unwrap_or(true)))
     }
 
     /// Check whether a thread still exists (false when the API returns 404)
@@ -1182,6 +1238,86 @@ fn split_at_blank_line(text: &str) -> Option<(&str, &str)> {
 struct AttachmentFetch {
     thread: usize,
     attachment: usize,
+    key: AttachmentKey,
+}
+
+/// A message part's identity across fetches. Gmail hands out a new
+/// attachment id on every fetch, so the part is known by its message, its
+/// position among the message's attachments and what it is.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+struct AttachmentKey {
+    message_id: String,
+    position: usize,
+    filename: String,
+    mime_type: String,
+    size: i32,
+}
+
+fn attachment_key(attachments: &[Attachment], index: usize) -> AttachmentKey {
+    let attachment = &attachments[index];
+    AttachmentKey {
+        message_id: attachment.message_id.clone(),
+        position: attachments[..index].iter().filter(|a| a.message_id == attachment.message_id).count(),
+        filename: attachment.filename.clone(),
+        mime_type: attachment.mime_type.clone(),
+        size: attachment.size,
+    }
+}
+
+/// Attachment data by part, least recently used dropped first once the data
+/// exceeds `capacity` bytes
+struct AttachmentCache {
+    entries: HashMap<AttachmentKey, (String, u64)>,
+    recency: std::collections::BTreeMap<u64, AttachmentKey>,
+    bytes: usize,
+    tick: u64,
+    capacity: usize,
+}
+
+impl AttachmentCache {
+    fn new(capacity: usize) -> Self {
+        Self { entries: HashMap::new(), recency: Default::default(), bytes: 0, tick: 0, capacity }
+    }
+
+    fn get(&mut self, key: &AttachmentKey) -> Option<String> {
+        self.tick += 1;
+        let (data, used) = self.entries.get_mut(key)?;
+        self.recency.remove(used);
+        *used = self.tick;
+        self.recency.insert(self.tick, key.clone());
+        Some(data.clone())
+    }
+
+    fn insert(&mut self, key: AttachmentKey, data: String) {
+        if data.len() > self.capacity {
+            return;
+        }
+        self.tick += 1;
+        self.bytes += data.len();
+        self.recency.insert(self.tick, key.clone());
+        if let Some((old, used)) = self.entries.insert(key, (data, self.tick)) {
+            self.bytes -= old.len();
+            self.recency.remove(&used);
+        }
+        while self.bytes > self.capacity {
+            let Some((_, oldest)) = self.recency.pop_first() else { break };
+            if let Some((old, _)) = self.entries.remove(&oldest) {
+                self.bytes -= old.len();
+            }
+        }
+    }
+}
+
+fn shared_draft_parents() -> std::sync::Arc<std::sync::Mutex<DraftParents>> {
+    static PARENTS: std::sync::OnceLock<std::sync::Arc<std::sync::Mutex<DraftParents>>> = std::sync::OnceLock::new();
+    PARENTS.get_or_init(Default::default).clone()
+}
+
+fn shared_attachment_cache() -> std::sync::Arc<std::sync::Mutex<AttachmentCache>> {
+    static CACHE: std::sync::OnceLock<std::sync::Arc<std::sync::Mutex<AttachmentCache>>> = std::sync::OnceLock::new();
+    CACHE
+        .get_or_init(|| std::sync::Arc::new(std::sync::Mutex::new(AttachmentCache::new(ATTACHMENT_CACHE_BYTES))))
+        .clone()
 }
 
 /// The first few small images of each thread and all its calendar invites
@@ -1199,7 +1335,7 @@ fn attachment_fetches(threads: &[Thread]) -> Vec<AttachmentFetch> {
             let invites = t.attachments.iter().enumerate().filter(|(_, a)| a.is_calendar());
             images
                 .chain(invites)
-                .map(move |(attachment, _)| AttachmentFetch { thread, attachment })
+                .map(move |(attachment, _)| AttachmentFetch { thread, attachment, key: attachment_key(&t.attachments, attachment) })
                 .collect::<Vec<_>>()
         })
         .collect()
@@ -1437,7 +1573,7 @@ fn find_header<'a>(headers: Option<&'a [Header]>, name: &str) -> Option<&'a str>
 /// Check that `line` is property `name`, i.e. the name is followed by ':' or ';'
 /// (a bare prefix match would let DTSTART match DTSTAMP and vice versa)
 fn ics_property_matches(line: &str, name: &str) -> bool {
-    line.starts_with(name)
+    line.get(..name.len()).is_some_and(|prefix| prefix.eq_ignore_ascii_case(name))
         && matches!(line.as_bytes().get(name.len()), Some(b':') | Some(b';'))
 }
 
@@ -1512,17 +1648,17 @@ fn parse_ics_content(ics_data: &str) -> Option<CalendarEvent> {
     let unfolded = unfold_ics_lines(ics_data);
     let lines: Vec<&str> = unfolded.iter().map(|l| l.trim()).collect();
 
-    let event_start = lines.iter().position(|l| *l == "BEGIN:VEVENT")?;
-    let event_len = lines[event_start..].iter().position(|l| *l == "END:VEVENT")?;
+    let event_start = lines.iter().position(|l| l.eq_ignore_ascii_case("BEGIN:VEVENT"))?;
+    let event_len = lines[event_start..].iter().position(|l| l.eq_ignore_ascii_case("END:VEVENT"))?;
 
     // Properties of the event itself, excluding nested components such as
     // VALARM whose DESCRIPTION would otherwise be taken for the event's
     let mut event_lines = Vec::new();
     let mut depth = 0usize;
     for line in &lines[event_start + 1..event_start + event_len] {
-        if line.starts_with("BEGIN:") {
+        if ics_property_matches(line, "BEGIN") {
             depth += 1;
-        } else if line.starts_with("END:") {
+        } else if ics_property_matches(line, "END") {
             depth = depth.saturating_sub(1);
         } else if depth == 0 {
             event_lines.push(*line);
@@ -1600,7 +1736,8 @@ fn parse_ics_datetime(s: &str, params: &str, calendar: &[&str]) -> Option<(i64, 
     } else {
         let tzid = params
             .split(';')
-            .find_map(|p| p.strip_prefix("TZID="))
+            .filter_map(|p| p.split_once('='))
+            .find_map(|(key, value)| key.trim().eq_ignore_ascii_case("TZID").then_some(value))
             .map(|v| v.trim_matches('"'));
         resolve_ics_wall_time(datetime, tzid, calendar)?
     };
@@ -1718,8 +1855,8 @@ fn ics_components<'a, 'b>(lines: &'b [&'a str], kind: &str) -> Vec<&'b [&'a str]
     let end = format!("END:{}", kind);
     let mut components = Vec::new();
     let mut rest = lines;
-    while let Some(start) = rest.iter().position(|l| *l == begin) {
-        let Some(len) = rest[start..].iter().position(|l| *l == end) else {
+    while let Some(start) = rest.iter().position(|l| l.eq_ignore_ascii_case(&begin)) {
+        let Some(len) = rest[start..].iter().position(|l| l.eq_ignore_ascii_case(&end)) else {
             break;
         };
         components.push(&rest[start + 1..start + len]);
@@ -2151,6 +2288,7 @@ fn strip_html_tags(html: &str) -> String {
     let mut result = String::new();
     let mut tag = String::new();
     let mut in_tag = false;
+    let mut attribute_quote: Option<char> = None;
     let mut in_pre = false;
     // Element whose content is not text (style, script, head) until it closes
     let mut hidden_element: Option<String> = None;
@@ -2166,6 +2304,18 @@ fn strip_html_tags(html: &str) -> String {
     for (i, c) in html.char_indices() {
         if i < skip_to {
             continue;
+        }
+        // A quoted attribute value may hold '<' and '>'
+        if in_tag {
+            match attribute_quote {
+                Some(quote) if c == quote => attribute_quote = None,
+                None if matches!(c, '"' | '\'') && tag.trim_end().ends_with('=') => attribute_quote = Some(c),
+                _ => {}
+            }
+            if attribute_quote.is_some() || !matches!(c, '<' | '>') {
+                tag.push(c);
+                continue;
+            }
         }
         // Style and script end at their closing tag even inside "<!--"
         let raw_text = matches!(hidden_element.as_deref(), Some("style" | "script"));
@@ -2220,7 +2370,6 @@ fn strip_html_tags(html: &str) -> String {
                     _ => {}
                 }
             }
-            _ if in_tag => tag.push(c),
             _ if hidden_element.is_some() => {}
             _ if in_pre => result.push(c),
             c if c.is_ascii_whitespace() => {
@@ -2784,6 +2933,9 @@ mod tests {
     fn strip_html_removes_other_tags() {
         assert_eq!(strip_html_tags("<b>bold</b> and <i>italic</i>"), "bold and italic");
         assert_eq!(strip_html_tags("<a href=\"http://x\">link</a>"), "link");
+        // innerHTML leaves '>' unescaped in attribute values
+        assert_eq!(strip_html_tags("<a title=\"a > b\" href='?x>1'>link</a>"), "link");
+        assert_eq!(strip_html_tags("<img alt=\"it's\">ok"), "ok");
     }
 
     #[test]
@@ -3008,6 +3160,22 @@ mod tests {
             ics_utc("20240115", "VALUE=DATE"),
             Some(("2024-01-15T00:00:00+00:00".to_string(), true))
         );
+    }
+
+    #[test]
+    fn parse_ics_reads_names_in_any_case() {
+        let ics = "begin:vcalendar\r\nmethod:REQUEST\r\nBegin:VTimezone\r\ntzid:Custom\r\nbegin:standard\r\n\
+                   dtstart:19700101T000000\r\ntzoffsetfrom:+0200\r\ntzoffsetto:+0200\r\nend:standard\r\n\
+                   end:vtimezone\r\nbegin:vevent\r\nsummary:Lunch\r\ndtstart;tzid=Custom:20240115T120000\r\n\
+                   attendee;cn=Ann:MAILTO:ann@example.com\r\nbegin:valarm\r\ndescription:Reminder\r\n\
+                   end:valarm\r\nend:vevent\r\nend:vcalendar";
+        let event = parse_ics_content(ics).expect("event");
+        assert_eq!(event.title, "Lunch");
+        assert_eq!(event.method.as_deref(), Some("REQUEST"));
+        assert_eq!(event.description, None);
+        assert_eq!(event.attendees, ["ann@example.com"]);
+        let start = DateTime::from_timestamp_millis(event.start_time).unwrap();
+        assert_eq!(start.to_rfc3339(), "2024-01-15T10:00:00+00:00");
     }
 
     #[test]
@@ -3742,6 +3910,54 @@ mod tests {
         );
     }
 
+    fn cache_key(message_id: &str, position: usize) -> AttachmentKey {
+        AttachmentKey {
+            message_id: message_id.to_string(),
+            position,
+            filename: "a.png".to_string(),
+            mime_type: "image/png".to_string(),
+            size: 10,
+        }
+    }
+
+    #[test]
+    fn the_attachment_cache_drops_the_least_recently_used_data_past_its_budget() {
+        let mut cache = AttachmentCache::new(10);
+        cache.insert(cache_key("m1", 0), "aaaa".into());
+        cache.insert(cache_key("m2", 0), "bbbb".into());
+        assert_eq!(cache.get(&cache_key("m1", 0)).as_deref(), Some("aaaa"));
+
+        cache.insert(cache_key("m3", 0), "cccc".into());
+        assert_eq!(cache.get(&cache_key("m2", 0)), None, "least recently used");
+        assert_eq!(cache.get(&cache_key("m1", 0)).as_deref(), Some("aaaa"));
+        assert_eq!(cache.get(&cache_key("m3", 0)).as_deref(), Some("cccc"));
+
+        cache.insert(cache_key("m3", 0), "cc".into());
+        assert_eq!(cache.bytes, 6);
+        cache.insert(cache_key("huge", 0), "x".repeat(11));
+        assert_eq!(cache.get(&cache_key("huge", 0)), None, "larger than the whole budget");
+        assert_eq!(cache.entries.len(), 2);
+        assert_eq!(cache.recency.len(), 2);
+    }
+
+    #[test]
+    fn attachments_are_known_by_their_position_in_their_message() {
+        let attachments = vec![
+            listed_attachment("m1", "x1", "image/png", 10),
+            listed_attachment("m2", "x2", "image/png", 10),
+            listed_attachment("m1", "x3", "image/png", 10),
+        ];
+        let keys: Vec<(String, usize)> =
+            (0..3).map(|i| attachment_key(&attachments, i)).map(|k| (k.message_id, k.position)).collect();
+        assert_eq!(keys, [("m1".into(), 0), ("m2".into(), 0), ("m1".into(), 1)]);
+    }
+
+    #[test]
+    fn clients_share_one_attachment_cache() {
+        let (a, b) = (GmailClient::new("a".into()), GmailClient::new("b".into()));
+        assert!(std::sync::Arc::ptr_eq(&a.attachment_cache, &b.attachment_cache));
+    }
+
     fn listed_attachment(message_id: &str, attachment_id: &str, mime: &str, size: i32) -> Attachment {
         Attachment {
             message_id: message_id.to_string(),
@@ -3955,6 +4171,23 @@ mod tests {
         assert_eq!(thread.subject, "(No Subject)");
         assert_eq!(thread.snippet, "");
         assert_eq!(thread.unread_count, 0);
+    }
+
+    #[test]
+    fn a_part_or_header_with_an_empty_field_left_out_still_parses() {
+        // Google's JSON leaves out fields holding their default, such as an
+        // empty header value; one odd part must not make the thread unreadable
+        let json = r#"{"id": "t3", "messages": [{"id": "m1", "payload": {
+            "headers": [{"name": "Subject", "value": "Hi"}, {"name": "Cc"}],
+            "parts": [{"filename": "", "body": {"size": 5}}]
+        }}]}"#;
+        let thread = thread_summary(serde_json::from_str(json).unwrap());
+        assert_eq!(thread.subject, "Hi");
+        let full: FullThread = serde_json::from_str(
+            r#"{"id": "t3", "messages": [{"id": "m1", "threadId": "t3", "payload": {"headers": [{"name": "Cc"}], "parts": [{}]}}]}"#,
+        )
+        .unwrap();
+        assert_eq!(full.messages.len(), 1);
     }
 
     #[test]

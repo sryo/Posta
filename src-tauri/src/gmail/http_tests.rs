@@ -145,6 +145,8 @@ impl StubServer {
             batch_endpoint: format!("{}/batch/gmail/v1", self.base),
             upload_base: format!("{}/upload/gmail/v1", self.base),
             batch_retry_delay: StdDuration::from_millis(10),
+            attachment_cache: Arc::new(Mutex::new(AttachmentCache::new(ATTACHMENT_CACHE_BYTES))),
+            draft_parents: Default::default(),
             ..GmailClient::new("token".into())
         }
     }
@@ -314,7 +316,8 @@ async fn deletion_candidates_are_checked_in_batches() {
 
     let requests = server.requests();
     let batches: Vec<&StubRequest> = requests.iter().filter(|r| r.target.starts_with("/batch/")).collect();
-    assert_eq!(batches.len(), 3, "111 ids fit in three batches of 50");
+    let batch_sizes: Vec<usize> = batches.iter().map(|b| batch_paths(b).len()).collect();
+    assert_eq!(batch_sizes, [50, 50, 11, 1], "111 ids in batches of 50, then the miss batched again");
     assert!(batch_paths(batches[0]).iter().all(|p| p.contains("format=minimal") && p.contains("fields=id")));
     let singles: Vec<&str> = requests
         .iter()
@@ -446,6 +449,98 @@ async fn saving_over_a_draft_deleted_elsewhere_creates_a_new_one() {
         .map(|raw| decode_base64_body(raw).unwrap())
         .unwrap();
     assert!(raw.contains("still writing"));
+}
+
+#[tokio::test]
+async fn a_reply_draft_recreated_after_a_deletion_elsewhere_keeps_its_threading_headers() {
+    let server = StubServer::start(|request| match (request.method.as_str(), request.target.as_str()) {
+        ("PUT", _) => Reply::Json(404, google_error(404, "NOT_FOUND", "notFound", "Requested entity was not found.")),
+        ("POST", "/gmail/v1/users/me/drafts") => Reply::Json(200, r#"{"id":"fresh","message":{"id":"m2"}}"#.into()),
+        ("GET", target) if target.starts_with("/gmail/v1/users/me/threads/t1?") => Reply::Json(
+            200,
+            r#"{"id":"t1","messages":[{"id":"m1","threadId":"t1","payload":{"headers":[{"name":"Message-ID","value":"<parent@example.com>"}]}}]}"#
+                .into(),
+        ),
+        _ => Reply::Json(500, "{}".into()),
+    })
+    .await;
+    let message = OutgoingMessage { to: "bob@example.com", body: "still writing", ..Default::default() };
+
+    let draft = within(server.client().update_draft("gone", &message, Some("t1"))).await.unwrap();
+
+    assert_eq!(draft.id, "fresh");
+    let requests = server.requests();
+    let created = requests.iter().find(|r| r.method == "POST").expect("draft recreated");
+    let body = serde_json::from_slice::<serde_json::Value>(&created.body).unwrap();
+    let raw = decode_base64_body(body["message"]["raw"].as_str().unwrap()).unwrap();
+    assert!(raw.contains("In-Reply-To: <parent@example.com>"), "{}", raw);
+    assert_eq!(body["message"]["threadId"], "t1");
+    assert_eq!(requests.iter().filter(|r| r.method == "GET").count(), 1);
+}
+
+#[tokio::test]
+async fn a_reply_draft_recreated_after_a_deletion_elsewhere_looks_its_parent_up_once() {
+    // A failed lookup is not remembered, so only reusing the request body
+    // keeps the new draft from looking the parent up again
+    let server = StubServer::start(|request| match request.method.as_str() {
+        "PUT" => Reply::Json(404, google_error(404, "NOT_FOUND", "notFound", "Requested entity was not found.")),
+        "POST" => Reply::Json(200, r#"{"id":"fresh","message":{"id":"m2"}}"#.into()),
+        _ => Reply::Json(503, "{}".into()),
+    })
+    .await;
+    let message = OutgoingMessage { to: "bob@example.com", body: "still writing", ..Default::default() };
+
+    let draft = within(server.client().update_draft("gone", &message, Some("t1"))).await.unwrap();
+
+    assert_eq!(draft.id, "fresh");
+    let requests = server.requests();
+    let created = requests.iter().find(|r| r.method == "POST").expect("draft recreated");
+    let body = serde_json::from_slice::<serde_json::Value>(&created.body).unwrap();
+    assert_eq!(body["message"]["threadId"], "t1");
+    assert_eq!(requests.iter().filter(|r| r.method == "GET").count(), 1);
+}
+
+#[tokio::test]
+async fn autosaving_a_reply_draft_looks_its_parent_up_once_per_thread() {
+    let lookups = Arc::new(AtomicUsize::new(0));
+    let server = StubServer::start({
+        let lookups = lookups.clone();
+        move |request| match (request.method.as_str(), request.target.as_str()) {
+            ("PUT", _) | ("POST", _) => Reply::Json(200, r#"{"id":"d1","message":{"id":"m2"}}"#.into()),
+            ("GET", target) => {
+                // The first lookup fails, and a failure is not remembered
+                if lookups.fetch_add(1, Ordering::SeqCst) == 0 {
+                    return Reply::Json(503, "{}".into());
+                }
+                let thread = thread_id_of(target);
+                Reply::Json(
+                    200,
+                    serde_json::json!({ "id": thread, "messages": [{ "id": "m1", "threadId": thread, "payload": {
+                        "headers": [{ "name": "Message-ID", "value": format!("<{}@example.com>", thread) }]
+                    }}]})
+                    .to_string(),
+                )
+            }
+            _ => Reply::Json(500, "{}".into()),
+        }
+    })
+    .await;
+    let gmail = server.client();
+    let message = OutgoingMessage { to: "bob@example.com", body: "typing", ..Default::default() };
+
+    within(gmail.create_draft(&message, Some("t1"))).await.unwrap();
+    for _ in 0..3 {
+        within(gmail.update_draft("d1", &message, Some("t1"))).await.unwrap();
+    }
+    within(gmail.update_draft("d2", &message, Some("t2"))).await.unwrap();
+
+    let requests = server.requests();
+    let gets: Vec<&str> = requests.iter().filter(|r| r.method == "GET").map(|r| thread_id_of(&r.target)).collect();
+    assert_eq!(gets, ["t1", "t1", "t2"]);
+    let last_t1_save = requests.iter().rfind(|r| r.target.ends_with("/drafts/d1")).unwrap();
+    let body = serde_json::from_slice::<serde_json::Value>(&last_t1_save.body).unwrap();
+    let raw = decode_base64_body(body["message"]["raw"].as_str().unwrap()).unwrap();
+    assert!(raw.contains("In-Reply-To: <t1@example.com>"), "{}", raw);
 }
 
 #[tokio::test]
@@ -698,4 +793,110 @@ async fn ids_are_escaped_in_request_paths() {
     for target in &targets {
         assert!(target.contains(escaped) && !target.contains(odd), "{}", target);
     }
+}
+
+/// A thread whose one message has a small image and a calendar invite, with
+/// attachment ids that differ on every fetch, as Gmail's do
+fn thread_with_attachments_json(id: &str, fetch: usize) -> String {
+    let part = |filename: &str, mime: &str, size: u32| {
+        serde_json::json!({
+            "mimeType": mime,
+            "filename": filename,
+            "body": { "size": size, "attachmentId": format!("{}-{}-att{}", filename, id, fetch) }
+        })
+    };
+    serde_json::json!({
+        "id": id,
+        "messages": [{
+            "id": format!("m-{}", id),
+            "internalDate": "1700000000000",
+            "payload": {
+                "mimeType": "multipart/mixed",
+                "parts": [part("photo.png", "image/png", 2000), part("invite.ics", "text/calendar", 300)]
+            }
+        }]
+    })
+    .to_string()
+}
+
+#[tokio::test]
+async fn attachment_data_is_downloaded_once_across_refreshes() {
+    let thread_fetches = Arc::new(AtomicUsize::new(0));
+    let server = StubServer::start({
+        let thread_fetches = thread_fetches.clone();
+        move |request| {
+            if !request.target.starts_with("/batch/") {
+                return Reply::Json(500, "{}".into());
+            }
+            let fetch = thread_fetches.fetch_add(1, Ordering::SeqCst);
+            batch_reply(request, |path| {
+                if path.contains("/attachments/") {
+                    let ics = "BEGIN:VCALENDAR\r\nBEGIN:VEVENT\r\nSUMMARY:Standup\r\nDTSTART:20240101T100000Z\r\nEND:VEVENT\r\nEND:VCALENDAR";
+                    let data = if path.contains("invite.ics") {
+                        base64::Engine::encode(&base64::engine::general_purpose::URL_SAFE, ics)
+                    } else {
+                        "aW1hZ2U".to_string()
+                    };
+                    (200, serde_json::json!({ "data": data }).to_string())
+                } else {
+                    (200, thread_with_attachments_json(thread_id_of(path), fetch))
+                }
+            })
+        }
+    })
+    .await;
+    let gmail = server.client();
+    let ids = vec!["t1".to_string(), "t2".to_string()];
+
+    let first = within(gmail.batch_get_thread_details(&ids)).await.unwrap();
+    let second = within(gmail.batch_get_thread_details(&ids)).await.unwrap();
+
+    for threads in [&first, &second] {
+        for thread in threads.iter() {
+            assert_eq!(thread.attachments[0].inline_data.as_deref(), Some("aW1hZ2U"));
+            assert_eq!(thread.calendar_event.as_ref().map(|e| e.title.as_str()), Some("Standup"));
+        }
+    }
+    let attachment_requests: usize = server
+        .requests()
+        .iter()
+        .map(batch_paths)
+        .map(|paths| paths.iter().filter(|p| p.contains("/attachments/")).count())
+        .sum();
+    assert_eq!(attachment_requests, 4, "each attachment downloaded once");
+}
+
+#[tokio::test]
+async fn deletion_checks_a_batch_misses_are_batched_again_before_one_by_one() {
+    let failed_once: Arc<Mutex<HashSet<String>>> = Default::default();
+    let server = StubServer::start({
+        let failed_once = failed_once.clone();
+        move |request| {
+            if !request.target.starts_with("/batch/") {
+                return Reply::Json(500, "{}".into());
+            }
+            batch_reply(request, |path| match thread_id_of(path) {
+                id if id.starts_with("gone") => (404, google_error(404, "NOT_FOUND", "notFound", "Not Found")),
+                id if id.starts_with("busy") && failed_once.lock().unwrap().insert(id.to_string()) => {
+                    (429, google_error(429, "RESOURCE_EXHAUSTED", "rateLimitExceeded", "slow down"))
+                }
+                id => (200, serde_json::json!({ "id": id }).to_string()),
+            })
+        }
+    })
+    .await;
+    let mut ids: Vec<String> = (0..10).map(|i| format!("busy{}", i)).collect();
+    ids.extend((0..3).map(|i| format!("gone{}", i)));
+    ids.push("kept".to_string());
+
+    let (existing, deleted) = within(server.client().split_deleted_threads(&ids)).await.unwrap();
+
+    let mut expected: Vec<String> = (0..10).map(|i| format!("busy{}", i)).collect();
+    expected.push("kept".to_string());
+    assert_eq!(existing, expected, "in the order asked");
+    assert_eq!(deleted, ["gone0", "gone1", "gone2"]);
+    let requests = server.requests();
+    assert!(requests.iter().all(|r| r.target.starts_with("/batch/")), "checked one by one");
+    let batch_sizes: Vec<usize> = requests.iter().map(batch_paths).map(|p| p.len()).collect();
+    assert_eq!(batch_sizes, [14, 10]);
 }
