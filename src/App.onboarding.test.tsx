@@ -367,11 +367,17 @@ describe("Settings Google connection", () => {
     expect(save).toBeDisabled();
     fireEvent.input(within(sidebar).getByLabelText("OAuth client ID"), { target: { value: VALID_ID.replace("1234", "9999") } });
     fireEvent.input(within(sidebar).getByLabelText("OAuth client secret"), { target: { value: VALID_SECRET } });
+    const calls = (cmd: string) => invoke.mock.calls.filter(([c]) => c === cmd).length;
+    const pullsBefore = calls("pull_from_icloud");
+    const cardLoadsBefore = calls("get_cards");
     fireEvent.click(save);
 
     await waitFor(() => expect(invoke).toHaveBeenCalledWith("run_oauth_flow", undefined));
+    await waitFor(() => expect(calls("get_cards")).toBeGreaterThan(cardLoadsBefore));
     await screen.findByText("Mail for A");
     await new Promise(r => setTimeout(r, 30));
+    expect(calls("pull_from_icloud")).toBe(pullsBefore);
+    expect(screen.queryByText(/Restored .* from iCloud/)).not.toBeInTheDocument();
     // Only the account is signed in again: no layout prompt or preset picker
     expect(screen.queryByText("Welcome Back")).not.toBeInTheDocument();
     expect(document.querySelector(".preset-overlay")).toBeNull();
