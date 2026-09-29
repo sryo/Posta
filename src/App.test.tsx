@@ -1219,6 +1219,26 @@ describe("App calendar", () => {
     await waitFor(() => expect(screen.queryAllByText("Planning")).toHaveLength(0));
   });
 
+  it("keeps an event's row when a refresh or the filter leaves it unchanged", async () => {
+    calendarCards();
+    cardsByAccount.a = [{ ...card("cal-1", "a", "Week"), query: "calendar:7d", card_type: "calendar" }];
+    const planning = calendarEvent("ev-1", "Planning");
+    const review = calendarEvent("ev-2", "Review");
+    handlers.get_cached_card_events = () => ({ events: [planning, review], cached_at: 1 });
+    handlers.fetch_calendar_events = () => structuredClone([planning, review]);
+    render(() => <App />);
+    const row = (await screen.findByText("Planning")).closest(".calendar-event-item");
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith("save_cached_card_events", expect.anything()));
+    expect(screen.getByText("Planning").closest(".calendar-event-item")).toBe(row);
+
+    fireEvent.keyDown(document, { key: "/" });
+    const filter = await screen.findByPlaceholderText(/Filter threads/);
+    fireEvent.input(filter, { target: { value: "p" } });
+    fireEvent.input(filter, { target: { value: "pl" } });
+    expect(screen.queryByText("Review")).not.toBeInTheDocument();
+    expect(screen.getByText("Planning").closest(".calendar-event-item")).toBe(row);
+  });
+
   it("creates a new event, not an edit of the last one, after closing an event mid-edit", async () => {
     calendarCards();
     cardsByAccount.a = [{ ...card("cal-1", "a", "Week"), query: "calendar:7d", card_type: "calendar" }];

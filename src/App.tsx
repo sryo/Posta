@@ -2495,7 +2495,7 @@ function App() {
     for (const [cId, events] of Object.entries(cardCalendarEvents)) {
       if (!events?.some(e => e.id === eventId)) continue;
       const next = events.flatMap(e => (e.id === eventId ? update(e) ?? [] : [e]));
-      setCardCalendarEvents(cId, next);
+      setCardCalendarEvents(cId, reconcile(next, { key: "id" }));
       saveCachedCardEvents(cId, next).catch(e => console.warn("Failed to update event cache:", e));
     }
   }
@@ -3137,7 +3137,7 @@ function App() {
         if (stale()) return;
         if (cached && cached.events.length > 0) {
           // Show cached data immediately
-          setCardCalendarEvents(cardId, cached.events);
+          setCardCalendarEvents(cardId, reconcile(cached.events, { key: "id" }));
           // cached_at is in seconds
           setLastSyncTimes(cardId, cached.cached_at * 1000);
           setLoadingThreads(cardId, false);
@@ -3199,7 +3199,7 @@ function App() {
     try {
       const events = await fetchCalendarEvents(accountId, query);
       if (selectedAccount()?.id !== accountId || cardQueryChanged(cardId, query)) return;
-      setCardCalendarEvents(cardId, events);
+      setCardCalendarEvents(cardId, reconcile(events, { key: "id" }));
       await saveCachedCardEvents(cardId, events);
       setLastSyncTimes(cardId, Date.now());
       setSyncErrors(cardId, null);
@@ -4236,11 +4236,11 @@ function App() {
                             <Show when={getCalendarEventGroups(card.id).length === 0 && !(isPreviewingQuery(card.id) && queryPreviewLoading())}>
                               <div class="empty">No events</div>
                             </Show>
-                            <For each={getCalendarEventGroups(card.id)}>
+                            <Index each={getCalendarEventGroups(card.id)}>
                               {(group) => (
                                 <>
-                                  <div class="date-header">{group.label}</div>
-                                  <For each={group.events}>
+                                  <div class="date-header">{group().label}</div>
+                                  <For each={group().events}>
                                     {(event) => (
                                       <>
                                       <div
@@ -4352,7 +4352,7 @@ function App() {
                                   </For>
                                 </>
                               )}
-                            </For>
+                            </Index>
                           </Show>
 
                           {/* Email card: show threads */}
