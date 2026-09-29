@@ -1266,6 +1266,26 @@ describe("App calendar", () => {
     await waitFor(() => expect(screen.queryAllByText("Planning")).toHaveLength(0));
   });
 
+  it("moves the day labels and thread times on at midnight", async () => {
+    const lateEvening = new Date();
+    lateEvening.setHours(23, 59, 0, 0);
+    vi.useFakeTimers({ shouldAdvanceTime: true, now: lateEvening });
+    calendarCards();
+    cardsByAccount.a = [card("card-a", "a", "Alpha"), { ...card("cal-1", "a", "Week"), query: "calendar:7d", card_type: "calendar", position: 1 }];
+    threadsByCard["card-a"] = [{ ...thread("t-a", "Mail for A"), last_message_date: lateEvening.getTime() - 60_000 }];
+    handlers.fetch_calendar_events = () => [calendarEvent("ev-1", "Planning")];
+    render(() => <App />);
+    await screen.findByText("Planning");
+    const week = screen.getByRole("region", { name: "Week calendar card" });
+    expect(within(week).getByText("Tomorrow")).toBeInTheDocument();
+    const time = (await screen.findByText("Mail for A")).closest(".thread")!.querySelector(".thread-time")!;
+    const eveningText = time.textContent;
+
+    await vi.advanceTimersByTimeAsync(2 * 60_000);
+    await waitFor(() => expect(within(week).getByText("Today")).toBeInTheDocument());
+    expect(time.textContent).not.toBe(eveningText);
+  });
+
   it("keeps an event's row when a refresh or the filter leaves it unchanged", async () => {
     calendarCards();
     cardsByAccount.a = [{ ...card("cal-1", "a", "Week"), query: "calendar:7d", card_type: "calendar" }];

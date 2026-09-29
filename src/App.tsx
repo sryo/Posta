@@ -207,6 +207,14 @@ function App() {
   const [syncErrors, setSyncErrors] = createStore<Record<string, string | null>>({});
   // Ticking clock for relative time displays
   const [currentTime, setCurrentTime] = createSignal(Date.now());
+  // Local midnight of the current day; notifies once a day, so "Today" labels
+  // and today's times move on at midnight without re-rendering every tick
+  const today = createMemo(() => new Date(currentTime()).setHours(0, 0, 0, 0));
+  // formatTime reads the clock itself; reading today() re-runs it at midnight
+  const threadTime = (timestamp: number) => {
+    today();
+    return formatTime(timestamp);
+  };
 
   // Google Contacts from People API
   const [googleContacts, setGoogleContacts] = createSignal<Contact[]>([]);
@@ -3361,7 +3369,7 @@ function App() {
     const events = isPreviewingQuery(cardId) ? queryPreviewCalendarEvents() : cardCalendarEvents[cardId];
     if (!events) return [];
     const groupBy = getGroupByForCard(cardId);
-    let groups = groupCalendarEvents(events, groupBy);
+    let groups = groupCalendarEvents(events, groupBy, new Date(today()));
 
     // Apply global filter
     const filter = globalFilter().toLowerCase().trim();
@@ -4399,7 +4407,7 @@ function App() {
                                                 <AttachmentIcon />
                                               </span>
                                             </Show>
-                                            <span class="thread-time">{formatTime(thread.last_message_date)}</span>
+                                            <span class="thread-time">{threadTime(thread.last_message_date)}</span>
                                           </div>
                                           {/* Calendar event preview */}
                                           <Show when={thread.calendar_event}>
@@ -4701,7 +4709,7 @@ function App() {
                                         <AttachmentIcon />
                                       </span>
                                     </Show>
-                                    <span class="thread-time">{formatTime(thread.last_message_date)}</span>
+                                    <span class="thread-time">{threadTime(thread.last_message_date)}</span>
                                   </div>
                                   <div class="thread-snippet">{decodeHtmlEntities(thread.snippet)}</div>
                                   <Show when={thread.attachments?.length > 0}>
