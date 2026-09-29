@@ -455,7 +455,6 @@ describe("App card deletion", () => {
 
     fireEvent.click(screen.getAllByTitle("Edit query")[1]);
     fireEvent.click(await screen.findByRole("button", { name: /Delete/ }));
-    await answerConfirm(true);
 
     await waitFor(() => expect(screen.queryByText("Unread in B")).not.toBeInTheDocument());
     await waitFor(() => expect(setBadgeCount).toHaveBeenLastCalledWith(undefined));
@@ -1126,6 +1125,25 @@ describe("App keyboard focus", () => {
   });
 });
 
+describe("App thread labels", () => {
+  it("offers to undo a label change", async () => {
+    handlers.get_thread_details = () => ({ id: "t-a", messages: [fullMessage("m1", "Ana <ana@x.com>")] });
+    handlers.list_labels = () => [{ id: "Label_7", name: "Receipts", messageListVisibility: null, labelListVisibility: null, label_type: "user" }];
+    handlers.modify_threads = () => null;
+    render(() => <App />);
+    fireEvent.click(await screen.findByText("Mail for A"));
+    await screen.findByRole("dialog", { name: "Hi" });
+    fireEvent.keyDown(document, { key: "l" });
+    fireEvent.click(await screen.findByLabelText("Receipts"));
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith("modify_threads", expect.objectContaining({ threadIds: ["t-a"], addLabels: ["Label_7"], removeLabels: [] })));
+    await screen.findByText(/Added the label “Receipts”/);
+
+    invoke.mockClear();
+    fireEvent.click(screen.getByRole("button", { name: /Undo/ }));
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith("modify_threads", expect.objectContaining({ threadIds: ["t-a"], addLabels: [], removeLabels: ["Label_7"] })));
+  });
+});
+
 describe("App thread view", () => {
   it("marks an unread thread read on open without an undo toast", async () => {
     threadsByCard["card-a"] = [{ ...thread("t-a", "Mail for A"), unread_count: 1, labels: ["INBOX", "UNREAD"] }];
@@ -1512,13 +1530,51 @@ describe("App calendar", () => {
     render(() => <App />);
     await waitFor(() => expect(screen.getAllByText("Planning")).toHaveLength(2));
 
+    vi.useFakeTimers({ shouldAdvanceTime: true });
     fireEvent.click(screen.getAllByText("Planning")[0]);
     fireEvent.keyDown(document, { key: "d" });
-    expect(invoke).not.toHaveBeenCalledWith("delete_calendar_event", expect.anything());
-    fireEvent.keyDown(document, { key: "d" });
-
-    await waitFor(() => expect(invoke).toHaveBeenCalledWith("delete_calendar_event", expect.anything()));
     await waitFor(() => expect(screen.queryAllByText("Planning")).toHaveLength(0));
+    expect(screen.queryByRole("alertdialog")).toBeNull();
+    expect(invoke).not.toHaveBeenCalledWith("delete_calendar_event", expect.anything());
+
+    await vi.advanceTimersByTimeAsync(6000);
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith("delete_calendar_event", expect.anything()));
+  });
+
+  it("brings a deleted event back on Undo, in every card and their saved cache", async () => {
+    calendarCards();
+    cardsByAccount.a = [{ ...card("cal-1", "a", "Week"), query: "calendar:7d", card_type: "calendar" }];
+    handlers.fetch_calendar_events = () => [calendarEvent("ev-1", "Planning"), calendarEvent("ev-2", "Review")];
+    handlers.delete_calendar_event = () => null;
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    render(() => <App />);
+    fireEvent.click(await screen.findByText("Planning"));
+    fireEvent.keyDown(document, { key: "d" });
+    await waitFor(() => expect(screen.queryByText("Planning")).toBeNull());
+    invoke.mockClear();
+
+    fireEvent.keyDown(document, { key: "z" });
+    expect(await screen.findByText("Planning")).toBeInTheDocument();
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith("save_cached_card_events", {
+      cardId: "cal-1", events: [expect.objectContaining({ id: "ev-1" }), expect.objectContaining({ id: "ev-2" })],
+    }));
+    await vi.advanceTimersByTimeAsync(6000);
+    expect(invoke).not.toHaveBeenCalledWith("delete_calendar_event", expect.anything());
+  });
+
+  it("asks before deleting an event with guests, who are told, and then deletes it at once", async () => {
+    calendarCards();
+    cardsByAccount.a = [{ ...card("cal-1", "a", "Week"), query: "calendar:7d", card_type: "calendar" }];
+    const guest = (email: string, is_self = false) => ({ email, display_name: null, response_status: null, is_self, is_organizer: is_self });
+    handlers.fetch_calendar_events = () => [{ ...calendarEvent("ev-1", "Planning"), attendees: [guest("a@x.com", true), guest("b@y.com"), guest("c@y.com")] }];
+    handlers.delete_calendar_event = () => null;
+    render(() => <App />);
+    fireEvent.click(await screen.findByText("Planning"));
+    fireEvent.keyDown(document, { key: "d" });
+    const dialog = await screen.findByRole("alertdialog", { name: "Delete and notify 2 guests?" });
+    expect(invoke).not.toHaveBeenCalledWith("delete_calendar_event", expect.anything());
+    fireEvent.click(within(dialog).getByRole("button", { name: "Delete event" }));
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith("delete_calendar_event", expect.objectContaining({ eventId: "ev-1" })));
   });
 
   it("selects a range of events with shift-click", async () => {
@@ -1698,7 +1754,6 @@ describe("App calendar", () => {
     render(() => <App />);
     fireEvent.click(await screen.findByText("Planning"));
     invoke.mockClear();
-    fireEvent.keyDown(document, { key: "d" });
     fireEvent.keyDown(document, { key: "d" });
 
     await waitFor(() => expect(invoke).toHaveBeenCalledWith("save_cached_card_events", {
@@ -2527,27 +2582,34 @@ describe("App inline reply", () => {
 });
 
 describe("App layout removal", () => {
-  it("asks before deleting a card and keeps it when cancelled", async () => {
+  it("deletes a card without asking and brings it back on Undo", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
     handlers.delete_card = () => null;
     render(() => <App />);
     await screen.findByText("Mail for A");
     fireEvent.click(screen.getByTitle("Edit query"));
     fireEvent.click(await screen.findByRole("button", { name: /Delete/ }));
-    await answerConfirm(false, /Alpha/);
-    await new Promise(r => setTimeout(r, 20));
+    expect(screen.queryByRole("alertdialog")).toBeNull();
+    await waitFor(() => expect(screen.queryByRole("region", { name: "Alpha email card" })).toBeNull());
+    expect(await screen.findByText("Deleted the card “Alpha”")).toBeInTheDocument();
 
+    fireEvent.click(screen.getByRole("button", { name: /Undo/ }));
+    expect(await screen.findByRole("region", { name: "Alpha email card" })).toBeInTheDocument();
+    await vi.advanceTimersByTimeAsync(6000);
     expect(invoke).not.toHaveBeenCalledWith("delete_card", expect.anything());
-    expect(screen.getByRole("region", { name: "Alpha email card" })).toBeInTheDocument();
   });
 
-  it("deletes a card once confirmed", async () => {
+  it("deletes a card for good once its toast goes without Undo", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
     handlers.delete_card = () => null;
     render(() => <App />);
     await screen.findByText("Mail for A");
     fireEvent.click(screen.getByTitle("Edit query"));
     fireEvent.click(await screen.findByRole("button", { name: /Delete/ }));
-    await answerConfirm(true);
+    await screen.findByText("Deleted the card “Alpha”");
+    expect(invoke).not.toHaveBeenCalledWith("delete_card", expect.anything());
 
+    await vi.advanceTimersByTimeAsync(6000);
     await waitFor(() => expect(invoke).toHaveBeenCalledWith("delete_card", { id: "card-a" }));
   });
 

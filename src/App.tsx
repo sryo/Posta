@@ -2667,18 +2667,68 @@ function App() {
     updateEventInCards(eventId, ev => ({ ...ev, response_status: status }));
   }
 
+  // Events deleted in the app whose deletion waits out their Undo toast
+  const heldEventDeletes = new Set<string>();
+
+  // Deleting an event tells its guests, which can't be taken back, so that
+  // asks first and happens at once; any other delete waits out its toast
   async function deleteEvent(event: GoogleCalendarEvent) {
     const account = selectedAccount();
     if (!account) return;
-    try {
-      await deleteCalendarEvent(account.id, event.calendar_id, event.id);
-      updateEventInCards(event.id, () => null);
-      showToast('Event deleted');
-      if (activeEvent()?.id === event.id) closeEvent();
-    } catch (e) {
-      console.error('Failed to delete event:', e);
-      showToast(`Couldn't delete the event: ${e}`);
+    const guests = event.attendees.filter(a => !a.is_self).length;
+    if (guests > 0) {
+      const confirmed = await askConfirm({
+        title: `Delete and notify ${guests} guest${guests === 1 ? "" : "s"}?`,
+        message: "Each guest gets an email saying the event was cancelled.",
+        confirmLabel: "Delete event",
+        tone: "danger",
+      });
+      if (!confirmed || selectedAccount()?.id !== account.id) return;
+      try {
+        await deleteCalendarEvent(account.id, event.calendar_id, event.id);
+        updateEventInCards(event.id, () => null);
+        showToast("Event deleted");
+        if (activeEvent()?.id === event.id) { closeEvent(); restoreOpenedRowFocus(); }
+      } catch (e) {
+        console.error('Failed to delete event:', e);
+        showToast(`Couldn't delete the event: ${e}`);
+      }
+      return;
     }
+
+    // Where the event was in each card, to put it back on Undo
+    const places = Object.entries(cardCalendarEvents)
+      .map(([cardId, events]) => ({ cardId, index: events?.findIndex(e => e.id === event.id) ?? -1 }))
+      .filter(p => p.index !== -1);
+    const putBack = () => {
+      heldEventDeletes.delete(event.id);
+      if (selectedAccount()?.id !== account.id) return;
+      for (const { cardId, index } of places) {
+        const events = cardCalendarEvents[cardId];
+        if (!events || events.some(e => e.id === event.id)) continue;
+        const next = [...events];
+        next.splice(Math.min(index, next.length), 0, event);
+        setCardCalendarEvents(cardId, reconcile(next, { key: "id" }));
+        saveCachedCardEvents(cardId, next).catch(e => console.warn("Failed to update event cache:", e));
+      }
+    };
+    heldEventDeletes.add(event.id);
+    updateEventInCards(event.id, () => null);
+    if (activeEvent()?.id === event.id) { closeEvent(); restoreOpenedRowFocus(); }
+    toasts.show({
+      message: `Deleted “${event.title || "(No title)"}”`,
+      undo: putBack,
+      onExpire: async () => {
+        try {
+          await deleteCalendarEvent(account.id, event.calendar_id, event.id);
+          heldEventDeletes.delete(event.id);
+        } catch (e) {
+          console.error('Failed to delete event:', e);
+          putBack();
+          showToast(`Couldn't delete the event: ${e}`);
+        }
+      },
+    });
   }
 
   async function handleMoveEventToCalendar(destinationCalendarId: string) {
@@ -2787,7 +2837,18 @@ function App() {
     try {
       await modifyThreads(account.id, [thread.id], addLabels, removeLabels);
       await refreshActiveThread(account.id, thread.id);
-      showToast(`${isAdding ? 'Added' : 'Removed'} label "${labelName}"`);
+      toasts.show({
+        message: `${isAdding ? 'Added' : 'Removed'} the label “${labelName}”`,
+        undo: async () => {
+          try {
+            await modifyThreads(account.id, [thread.id], removeLabels, addLabels);
+            if (activeThreadId() === thread.id) await refreshActiveThread(account.id, thread.id);
+          } catch (e) {
+            console.error("Failed to undo label change:", e);
+            setError(`Couldn't undo: ${e}`);
+          }
+        },
+      });
     } catch (e) {
       console.error("Failed to modify labels:", e);
       setError(`Failed to ${isAdding ? 'add' : 'remove'} label: ${e}`);
@@ -3081,17 +3142,38 @@ function App() {
     });
   }
 
-  async function handleDeleteCard(cardId: string) {
-    const name = cards().find(c => c.id === cardId)?.name || "Untitled";
-    if (!(await askConfirm(`Delete the card "${name}"? This can't be undone.`, "Delete"))) return;
-    try {
-      await deleteCard(cardId);
-      setCards(cards().filter(c => c.id !== cardId));
-      forgetCardState([cardId]);
-    } catch (err) {
-      console.error("Failed to delete card:", err);
-      showToast(`Failed to delete card: ${err}`);
-    }
+  // The card goes at once; it is deleted for good (and from iCloud) only
+  // once its toast goes without Undo
+  function handleDeleteCard(cardId: string) {
+    const account = selectedAccount();
+    const index = cards().findIndex(c => c.id === cardId);
+    if (!account || index === -1) return;
+    const deleted = cards()[index];
+    const name = deleted.name || "Untitled";
+    const wasCollapsed = !!collapsedCards[cardId];
+    const putBack = () => {
+      if (selectedAccount()?.id !== account.id || cards().some(c => c.id === cardId)) return;
+      const next = [...cards()];
+      next.splice(Math.min(index, next.length), 0, deleted);
+      setCards(next);
+      saveCollapsedState({ ...collapsedCards, [cardId]: wasCollapsed });
+      if (!wasCollapsed) loadCardThreads(cardId);
+    };
+    setCards(cards().filter(c => c.id !== cardId));
+    forgetCardState([cardId]);
+    toasts.show({
+      message: `Deleted the card “${name}”`,
+      undo: putBack,
+      onExpire: async () => {
+        try {
+          await deleteCard(cardId);
+        } catch (err) {
+          console.error("Failed to delete card:", err);
+          putBack();
+          showToast(`Failed to delete card: ${err}`);
+        }
+      },
+    });
   }
 
   // Collapsed cards a history reset skipped; their threads are refetched on expanding
@@ -3377,7 +3459,7 @@ function App() {
 
   async function fetchAndCacheCalendarEvents(accountId: string, cardId: string, query: string) {
     try {
-      const events = await fetchCalendarEvents(accountId, query);
+      const events = (await fetchCalendarEvents(accountId, query)).filter(ev => !heldEventDeletes.has(ev.id));
       if (selectedAccount()?.id !== accountId || cardQueryChanged(cardId, query)) return;
       setCardCalendarEvents(cardId, reconcile(events, { key: "id" }));
       await saveCachedCardEvents(cardId, events);
