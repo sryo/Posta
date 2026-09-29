@@ -132,6 +132,7 @@ import { ThreadView } from "./components/ThreadView";
 import { EventView } from "./components/EventView";
 import { ActionsWheel } from "./components/ActionsWheel";
 import { CardForm } from "./components/CardForm";
+import { CardAccountBadge } from "./components/CardAccountBadge";
 import { Dialog } from "./components/Dialog";
 import { Toasts } from "./components/Toasts";
 import { createToasts, type ToastAction, type ToastTone } from "./app/toasts";
@@ -155,7 +156,7 @@ import { PRESETS } from "./app/presets";
 import { normalizeActionOrder } from "./app/actionOrder";
 import { parseStoredWidth } from "./app/storedWidth";
 import { isSessionExpiredError, needsSignInAgain } from "./app/authErrors";
-import { signatureBlock, withSignature } from "./app/signature";
+import { signatureBlock, swapSignature, withSignature } from "./app/signature";
 import { isCalendarAttachment, isPreviewable, readFilesAsAttachments } from "./app/attachments";
 import { AttachmentLightbox, type PreviewAttachment } from "./components/AttachmentLightbox";
 import { MessageSender } from "./components/MessageSender";
@@ -944,6 +945,30 @@ function App() {
     if (stored !== null && !safeSetItem(key, stored)) return;
     safeRemoveItem(composeDraftKey);
     composeDraftKey = key;
+  }
+
+  // Named in a reply with more than one account signed in
+  const composeFromEmail = () => (accounts().length > 1 ? composeAccount()?.email : undefined);
+  // A new email can go out from any account; a reply from its thread's
+  const composeIsReply = () => !!replyingToThread() || !!replyingToEvent();
+
+  // Sends the open compose from another account: its draft moves to that
+  // account, and its signature takes the old one's place
+  function changeComposeAccount(accountId: string) {
+    const next = accountById(accountId);
+    const previous = composeAccount();
+    if (!next || next.id === previous?.id || !composing() || closingCompose()) return;
+    // The Gmail draft saved so far is in the old account's Drafts
+    const oldDraftId = drafts.gmailDraftId();
+    cancelDraftSave();
+    drafts.detach();
+    if (previous && oldDraftId) {
+      deleteDraft(previous.id, oldDraftId).catch(e => console.warn("Failed to delete the old account's draft:", e));
+    }
+    setComposeAccount(next);
+    moveComposeDraftTo(next.id);
+    setComposeBody(swapSignature(composeBody(), previous?.signature, next.signature));
+    handleComposeInput();
   }
 
   function saveDraft() {
@@ -2287,6 +2312,7 @@ function App() {
       onClose: target.onClose,
       onInput: handleComposeInput,
       get focusBody() { return focusComposeBody(); },
+      get fromEmail() { return composeFromEmail(); },
       get resizing() { return inlineResizing(); },
       onResizeStart: handleInlineResizeStart,
     };
@@ -4840,6 +4866,9 @@ function App() {
                             labelNames={userLabelNames()}
                             debounceQueryPreview={debounceQueryPreview}
                             onQueryFieldActive={(insert) => { insertIntoQueryField = insert; }}
+                            accounts={accounts()}
+                            accountId={editCardAccountId()}
+                            setAccountId={(id) => { setEditCardAccountId(id); if (editCardQuery().trim()) debounceQueryPreview(editCardQuery()); }}
                           />
                         </Show>
                         <Show when={editingCardId() !== card.id}>
@@ -4856,6 +4885,7 @@ function App() {
                               <ChevronIcon />
                             </button>
                             <span class="card-title">{card.name}</span>
+                            <CardAccountBadge accountId={card.account_id} accounts={accounts()} />
                             <Show when={!loadingThreads[card.id] && cardSyncLabel({ lastSyncedAt: lastSyncTimes[card.id], now: currentTime(), syncError: syncErrors[card.id], boardDown: offline() || cardExpired(card) })}>
                               {(label) => (
                                 <span
@@ -5283,6 +5313,9 @@ function App() {
                     labelNames={userLabelNames()}
                     debounceQueryPreview={debounceQueryPreview}
                     onQueryFieldActive={(insert) => { insertIntoQueryField = insert; }}
+                    accounts={accounts()}
+                    accountId={newCardAccountId() ?? selectedAccount()?.id}
+                    setAccountId={(id) => { setNewCardAccountId(id); if (newCardQuery().trim()) debounceQueryPreview(newCardQuery()); }}
                   />
                   {/* Query preview for new card */}
                   <div class="card-body">
@@ -5442,6 +5475,10 @@ function App() {
             onInput={handleComposeInput}
             focusBody={focusComposeBody()}
             suggestContacts={suggestContacts}
+            fromAccounts={composeIsReply() ? undefined : accounts()}
+            fromAccountId={composeAccount()?.id}
+            setFromAccountId={changeComposeAccount}
+            fromEmail={composeIsReply() ? composeFromEmail() : undefined}
           />
         </div>
       </Show>

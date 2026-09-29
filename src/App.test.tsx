@@ -87,6 +87,13 @@ const thread = (id: string, subject: string): Thread => ({
 
 const cardsByAccount: Record<string, Card[]> = {};
 const threadsByCard: Record<string, Thread[]> = {};
+// The account chooser's button, titled with the default account's email
+// (cards' account badges carry the emails too)
+function avatar(email: string): HTMLElement {
+  const button = document.querySelector<HTMLElement>(`.toolbar-avatar[title="${email}"]`);
+  if (!button) throw new Error(`No account button for ${email}`);
+  return button;
+}
 // What get_cards answers: every signed-in account's cards, then the
 // all-inboxes ones
 const boardCards = (): Card[] => [
@@ -636,12 +643,12 @@ describe("App accounts", () => {
     render(() => <App />);
     await screen.findByText("Mail for A");
 
-    fireEvent.click(screen.getByTitle("a@x.com"));
+    fireEvent.click(avatar("a@x.com"));
     fireEvent.click(await screen.findByText("Add account"));
 
     expect(await screen.findByText("Mail for B")).toBeInTheDocument();
     expect(screen.getByText("Mail for A")).toBeInTheDocument();
-    expect(screen.getByTitle("a@x.com")).toBeInTheDocument();
+    expect(avatar("a@x.com")).toBeInTheDocument();
   });
 
   it("keeps the open thread open when the default account changes", async () => {
@@ -651,10 +658,10 @@ describe("App accounts", () => {
     fireEvent.click(await screen.findByText("Mail for A"));
     await screen.findByText("body m1");
 
-    fireEvent.click(screen.getByTitle("a@x.com"));
+    fireEvent.click(avatar("a@x.com"));
     fireEvent.click(await screen.findByText("b@x.com"));
 
-    await screen.findByTitle("b@x.com");
+    await waitFor(() => avatar("b@x.com"));
     expect(screen.getByText("body m1")).toBeInTheDocument();
   });
 
@@ -805,9 +812,9 @@ describe("App error banner", () => {
     window.dispatchEvent(new Event("focus"));
     await screen.findByText("Posta lost access to a@x.com");
 
-    fireEvent.click(screen.getByTitle("a@x.com"));
+    fireEvent.click(avatar("a@x.com"));
     fireEvent.click(await screen.findByText("b@x.com"));
-    await screen.findByTitle("b@x.com");
+    await waitFor(() => avatar("b@x.com"));
     const banner = screen.getByText("Posta lost access to a@x.com").closest(".connection-status") as HTMLElement;
     expect(within(banner).getByRole("button", { name: "Sign in again" })).toBeInTheDocument();
   });
@@ -1022,7 +1029,7 @@ describe("App Gemini API key", () => {
     handlers.set_gemini_api_key = () => null;
     render(() => <App />);
     await screen.findByText("Mail for A");
-    fireEvent.click(screen.getByTitle("a@x.com"));
+    fireEvent.click(avatar("a@x.com"));
     fireEvent.click(within(document.querySelector(".account-chooser-container") as HTMLElement).getByText("Settings"));
     fireEvent.click(screen.getByText("Smart replies"));
 
@@ -1113,9 +1120,9 @@ describe("App thread list shortcuts", () => {
     fireEvent.keyDown(document, { key: "a" });
     await screen.findByText("Archived 1 thread in a@x.com");
 
-    fireEvent.click(screen.getByTitle("a@x.com"));
+    fireEvent.click(avatar("a@x.com"));
     fireEvent.click(await screen.findByText("b@x.com"));
-    await screen.findByTitle("b@x.com");
+    await waitFor(() => avatar("b@x.com"));
     invoke.mockClear();
     fireEvent.click(screen.getByText("Undo"));
 
@@ -1692,9 +1699,9 @@ describe("App compose", () => {
     fireEvent.input(await screen.findByPlaceholderText("Recipients"), { target: { value: "bo@y.com" } });
     fireEvent.input(screen.getByPlaceholderText("Subject"), { target: { value: "Hello" } });
 
-    fireEvent.click(screen.getByTitle("a@x.com"));
-    fireEvent.click(await screen.findByText("b@x.com"));
-    await screen.findByTitle("b@x.com");
+    fireEvent.click(avatar("a@x.com"));
+    fireEvent.click(within(await waitFor(() => document.querySelector(".account-chooser-dropdown") as HTMLElement)).getByText("b@x.com"));
+    await waitFor(() => avatar("b@x.com"));
 
     fireEvent.click(screen.getByRole("button", { name: /^Send/ }));
     await vi.advanceTimersByTimeAsync(6000);
@@ -3650,7 +3657,7 @@ describe("App shortcuts behind overlays", () => {
     render(() => <App />);
     await screen.findByText("Mail for A");
     fireEvent.keyDown(document, { key: "l" });
-    fireEvent.click(screen.getByTitle("a@x.com"));
+    fireEvent.click(avatar("a@x.com"));
     await waitFor(() => expect(document.querySelector(".account-chooser-container")).toHaveTextContent("Settings"));
     fireEvent.click(within(document.querySelector(".account-chooser-container") as HTMLElement).getByText("Settings"));
     await waitFor(() => expect(document.querySelector(".settings-sidebar.open")).not.toBeNull());
@@ -4054,7 +4061,7 @@ describe("App background sync refetches", () => {
 describe("App iCloud sync status", () => {
   const openSettings = async () => {
     await screen.findByText("Mail for A");
-    fireEvent.click(screen.getByTitle("a@x.com"));
+    fireEvent.click(avatar("a@x.com"));
     fireEvent.click(within(document.querySelector(".account-chooser-container") as HTMLElement).getByText("Settings"));
     return document.querySelector(".settings-sidebar")!;
   };
@@ -4350,11 +4357,11 @@ describe("App accessibility", () => {
   it("says the account button opens a menu and whether it is open", async () => {
     render(() => <App />);
     await screen.findByText("Mail for A");
-    const avatar = screen.getByTitle("a@x.com");
-    expect(avatar).toHaveAttribute("aria-haspopup", "menu");
-    expect(avatar).toHaveAttribute("aria-expanded", "false");
-    fireEvent.click(avatar);
-    expect(avatar).toHaveAttribute("aria-expanded", "true");
+    const button = avatar("a@x.com");
+    expect(button).toHaveAttribute("aria-haspopup", "menu");
+    expect(button).toHaveAttribute("aria-expanded", "false");
+    fireEvent.click(button);
+    expect(button).toHaveAttribute("aria-expanded", "true");
   });
 
   it("starts an email to a suggested contact from the keyboard", async () => {
@@ -4722,9 +4729,9 @@ describe("App batch reply closing", () => {
   it("keeps typed replies when the default account changes", async () => {
     handlers.get_accounts = () => [account("a", "a@x.com"), account("b", "b@x.com")];
     await openBatchReplyWithText();
-    fireEvent.click(screen.getByTitle("a@x.com"));
+    fireEvent.click(avatar("a@x.com"));
     fireEvent.click(await screen.findByText("b@x.com"));
-    await screen.findByTitle("b@x.com");
+    await waitFor(() => avatar("b@x.com"));
 
     expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument();
     expect(screen.getByPlaceholderText(/^Reply to/)).toHaveValue("A long answer");
@@ -4748,9 +4755,9 @@ describe("App batch reply closing", () => {
     fireEvent.keyDown(document, { key: "r" });
     const input = await screen.findByPlaceholderText("Write a reply...");
     fireEvent.input(input, { target: { value: "Quick answer" } });
-    fireEvent.click(screen.getByTitle("a@x.com"));
+    fireEvent.click(avatar("a@x.com"));
     fireEvent.click(await screen.findByText("b@x.com"));
-    await screen.findByTitle("b@x.com");
+    await waitFor(() => avatar("b@x.com"));
 
     expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument();
     expect(screen.getByPlaceholderText("Write a reply...")).toHaveValue("Quick answer");
@@ -5114,10 +5121,10 @@ describe("App one board for every account", () => {
     render(() => <App />);
     await screen.findByText("Mail for B");
     invoke.mockClear();
-    fireEvent.click(screen.getByTitle("a@x.com"));
+    fireEvent.click(avatar("a@x.com"));
     fireEvent.click(await screen.findByText("b@x.com"));
 
-    expect(screen.getByTitle("b@x.com")).toBeInTheDocument();
+    expect(avatar("b@x.com")).toBeInTheDocument();
     expect(invoke).not.toHaveBeenCalledWith("get_cards", undefined);
     expect(screen.getByText("Mail for A")).toBeInTheDocument();
     fireEvent.keyDown(document, { key: "c" });
@@ -5141,7 +5148,7 @@ describe("App one board for every account", () => {
     localStorage.setItem("defaultAccountId", "b");
     render(() => <App />);
     await screen.findByText("Mail for A");
-    expect(screen.getByTitle("b@x.com")).toBeInTheDocument();
+    expect(avatar("b@x.com")).toBeInTheDocument();
   });
 
   it("signing out of an account takes its cards, its threads in all-inboxes cards and its drafts", async () => {
@@ -5163,7 +5170,7 @@ describe("App one board for every account", () => {
     expect(screen.queryByText("From B")).not.toBeInTheDocument();
     expect(screen.getByText("Mail for A")).toBeInTheDocument();
     expect(screen.getByText("From A")).toBeInTheDocument();
-    expect(screen.getByTitle("a@x.com")).toBeInTheDocument();
+    expect(avatar("a@x.com")).toBeInTheDocument();
     expect(localStorage.getItem("draft_new_b#1")).toBeNull();
     expect(localStorage.getItem("draft_new_a#1")).not.toBeNull();
   });
@@ -5173,7 +5180,7 @@ describe("App one board for every account", () => {
     cardsByAccount.b = [];
     render(() => <App />);
     await screen.findByText("Mail for A");
-    fireEvent.click(screen.getByTitle("a@x.com"));
+    fireEvent.click(avatar("a@x.com"));
     fireEvent.click(await screen.findByText("Add account"));
 
     expect(await screen.findByText("Added b@x.com")).toBeInTheDocument();
@@ -5187,11 +5194,88 @@ describe("App one board for every account", () => {
     handlers.run_oauth_flow = () => account("b", "b@x.com");
     render(() => <App />);
     await screen.findByText("Mail for A");
-    fireEvent.click(screen.getByTitle("a@x.com"));
+    fireEvent.click(avatar("a@x.com"));
     fireEvent.click(await screen.findByText("Add account"));
 
     expect(await screen.findByText("Restored 1 card for b@x.com")).toBeInTheDocument();
     expect(await screen.findByText("Mail for B")).toBeInTheDocument();
     expect(screen.getByText("Mail for A")).toBeInTheDocument();
+  });
+});
+
+describe("App choosing accounts for cards and emails", () => {
+  const signedIn = () => [account("a", "a@x.com"), { ...account("b", "b@x.com"), signature: "B sig" }];
+
+  it("replies from the thread's account, saying so, with its signature", async () => {
+    handlers.get_accounts = signedIn;
+    handlers.get_thread_details = ({ threadId }) => ({ id: threadId, messages: [fullMessage("m1", "Ana <ana@x.com>", { threadId })] });
+    render(() => <App />);
+    fireEvent.click(await screen.findByText("Mail for B"));
+    await screen.findByText("body m1");
+    fireEvent.keyDown(document, { key: "r" });
+
+    const from = await waitFor(() => {
+      const el = document.querySelector(".inline-compose .compose-from");
+      expect(el).not.toBeNull();
+      return el as HTMLElement;
+    });
+    expect(from).toHaveTextContent("b@x.com");
+    expect((document.querySelector(".inline-compose textarea") as HTMLTextAreaElement).value).toContain("-- \nB sig");
+  });
+
+  it("sends a new email from the account chosen in From, with that account's signature", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    handlers.get_accounts = signedIn;
+    handlers.send_email = () => null;
+    handlers.save_draft = () => ({ id: "d1" });
+    handlers.delete_draft = () => null;
+    render(() => <App />);
+    await screen.findByText("Mail for A");
+    fireEvent.keyDown(document, { key: "c" });
+    const from = await screen.findByRole("combobox", { name: "From" }) as HTMLSelectElement;
+    expect(from.value).toBe("a");
+    fireEvent.input(screen.getByPlaceholderText("Write something..."), { target: { value: "Hi" } });
+
+    fireEvent.change(from, { target: { value: "b" } });
+    expect(screen.getByPlaceholderText("Write something...")).toHaveValue("Hi\n\n-- \nB sig");
+    fireEvent.input(screen.getByPlaceholderText("Recipients"), { target: { value: "bo@y.com" } });
+    fireEvent.click(screen.getByRole("button", { name: /^Send/ }));
+    await vi.advanceTimersByTimeAsync(6000);
+
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith("send_email", expect.objectContaining({ accountId: "b", to: "bo@y.com", body: "Hi\n\n-- \nB sig" })));
+  });
+
+  it("moves a card to every account's mail and fetches it again", async () => {
+    handlers.get_accounts = signedIn;
+    handlers.update_card = () => null;
+    handlers.clear_card_cache = () => null;
+    render(() => <App />);
+    await screen.findByText("Mail for A");
+    const alpha = screen.getByRole("region", { name: "Alpha email card" });
+    expect(within(alpha).getByRole("img", { name: "a@x.com" })).toHaveTextContent("A");
+    fireEvent.click(within(alpha).getByTitle("Edit query"));
+    fireEvent.change(await screen.findByRole("combobox", { name: "Account" }), { target: { value: "all" } });
+    invoke.mockClear();
+    fireEvent.click(screen.getByTitle("Save (⌘Enter)"));
+
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith("update_card", { card: expect.objectContaining({ id: "card-a", account_id: "all" }) }));
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith("fetch_threads_paginated", { cardId: "card-a", pageToken: null }));
+    expect(within(screen.getByRole("region", { name: "Alpha email card" })).getByRole("img", { name: "All inboxes" })).toBeInTheDocument();
+  });
+
+  it("adds a card for the account chosen in the form", async () => {
+    handlers.get_accounts = signedIn;
+    handlers.create_card = ({ accountId, name, query }) => ({ ...card("card-new", accountId as string, name as string), query: query as string });
+    handlers.search_threads_preview = () => [];
+    render(() => <App />);
+    await screen.findByText("Mail for A");
+    fireEvent.click(screen.getByTitle("New card"));
+    fireEvent.change(await screen.findByRole("combobox", { name: "Account" }), { target: { value: "b" } });
+    fireEvent.input(screen.getAllByPlaceholderText("e.g. Clients").slice(-1)[0], { target: { value: "Work" } });
+    fireEvent.input(screen.getAllByPlaceholderText("e.g. from:boss is:unread newer_than:7d").slice(-1)[0], { target: { value: "is:starred" } });
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith("search_threads_preview", { accountId: "b", query: "is:starred" }));
+    fireEvent.click(screen.getByTitle("Add (⌘Enter)"));
+
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith("create_card", expect.objectContaining({ accountId: "b", name: "Work" })));
   });
 });

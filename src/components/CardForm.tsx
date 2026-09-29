@@ -1,4 +1,6 @@
-import { Show, For, createEffect } from "solid-js";
+import { Show, For, createEffect, createUniqueId } from "solid-js";
+import type { Account } from "../api/tauri";
+import { ALL_ACCOUNTS } from "../app/accountScope";
 import {
   CARD_COLORS,
   COLOR_HEX,
@@ -39,7 +41,13 @@ export const CardForm = (props: {
   debounceQueryPreview: (query: string) => void;
   // Receives the function that inserts text at the query field's caret
   onQueryFieldActive: (insert: (text: string) => void) => void;
+  // Whose mail the card shows: one account, or ALL_ACCOUNTS. Asked only
+  // with more than one account signed in.
+  accounts?: Account[];
+  accountId?: string;
+  setAccountId?: (id: string) => void;
 }) => {
+  const accountFieldId = createUniqueId();
   const setQuery = (query: string) => {
     props.setQuery(query);
     props.debounceQueryPreview(query);
@@ -107,6 +115,21 @@ export const CardForm = (props: {
           </div>
         </div>
       </div>
+      <Show when={(props.accounts?.length ?? 0) > 1}>
+        <div class="card-form-group">
+          <label for={accountFieldId}>Account</label>
+          <select
+            id={accountFieldId}
+            value={props.accountId}
+            onChange={(e) => props.setAccountId?.(e.currentTarget.value)}
+          >
+            <option value={ALL_ACCOUNTS}>All inboxes</option>
+            <For each={props.accounts}>
+              {(account) => <option value={account.id}>{account.email}</option>}
+            </For>
+          </select>
+        </div>
+      </Show>
       <div class="card-form-group">
         <label class="query-label">
           Query

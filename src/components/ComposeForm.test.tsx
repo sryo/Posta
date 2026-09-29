@@ -243,3 +243,35 @@ describe("ComposeForm fields and footer", () => {
     expect(screen.getByRole("button", { name: "Sending..." })).toBeDisabled();
   });
 });
+
+describe("ComposeForm sender", () => {
+  const accounts = [
+    { id: "a", email: "a@x.com", picture: null, signature: null },
+    { id: "b", email: "b@x.com", picture: null, signature: null },
+  ];
+  const base = {
+    body: "", setBody: vi.fn(), attachments: [], onRemoveAttachment: vi.fn(), onFileSelect: vi.fn(),
+    fileInputId: "file", onSend: vi.fn(), onClose: vi.fn(), to: "", setTo: vi.fn(),
+  };
+
+  it("lets a new email be sent from any signed-in account", () => {
+    const setFrom = vi.fn();
+    render(() => <ComposeForm mode="new" {...base} fromAccounts={accounts} fromAccountId="a" setFromAccountId={setFrom} />);
+    const from = screen.getByRole("combobox", { name: "From" }) as HTMLSelectElement;
+    expect([...from.options].map(o => o.textContent)).toEqual(["a@x.com", "b@x.com"]);
+    expect(from.value).toBe("a");
+    fireEvent.change(from, { target: { value: "b" } });
+    expect(setFrom).toHaveBeenCalledWith("b");
+  });
+
+  it("asks nothing with one account", () => {
+    render(() => <ComposeForm mode="new" {...base} fromAccounts={accounts.slice(0, 1)} fromAccountId="a" setFromAccountId={vi.fn()} />);
+    expect(screen.queryByRole("combobox", { name: "From" })).not.toBeInTheDocument();
+  });
+
+  it("names the account a reply goes out from", () => {
+    render(() => <ComposeForm mode="reply" {...base} fromEmail="b@x.com" />);
+    expect(screen.getByText("b@x.com").closest(".compose-from")).toHaveTextContent("Fromb@x.com");
+    expect(screen.queryByRole("combobox", { name: "From" })).not.toBeInTheDocument();
+  });
+});

@@ -23,9 +23,14 @@ describe("signature", () => {
     expect(swapSignature("\n\nOn Mon, Bo wrote:", null, "Ana")).toBe(withSignature("\n\nOn Mon, Bo wrote:", "Ana"));
   });
 
-  it("leaves a signature the user edited, or a body without one, as it is", () => {
+  it("leaves a signature the user edited as it is", () => {
     expect(swapSignature("Hi\n\n-- \nAna, typed over", "Ana", "Bo")).toBe("Hi\n\n-- \nAna, typed over");
-    expect(swapSignature("Hi there", null, "Bo")).toBe("Hi there");
+  });
+
+  it("adds the new signature below typed text that had none, above quoted text", () => {
+    expect(swapSignature("Hi there\n", null, "Bo")).toBe("Hi there\n\n-- \nBo\n");
+    expect(swapSignature("Thanks!\n\nOn Mon, Ana wrote:\n> hi", null, "Bo")).toBe("Thanks!\n\n-- \nBo\n\nOn Mon, Ana wrote:\n> hi");
+    expect(swapSignature("Hi there", null, null)).toBe("Hi there");
   });
 
   it("recognises a body that is only the signature", () => {

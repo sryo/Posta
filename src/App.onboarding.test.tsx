@@ -48,6 +48,13 @@ const thread = (id: string, subject: string): Thread => ({
 
 const cardsByAccount: Record<string, Card[]> = {};
 const threadsByCard: Record<string, Thread[]> = {};
+// The account chooser's button, titled with the default account's email
+// (cards' account badges carry the emails too)
+function avatar(email: string): HTMLElement {
+  const button = document.querySelector<HTMLElement>(`.toolbar-avatar[title="${email}"]`);
+  if (!button) throw new Error(`No account button for ${email}`);
+  return button;
+}
 let nextCardId = 0;
 
 beforeEach(() => {
@@ -107,7 +114,7 @@ Element.prototype.scrollIntoView = () => {};
 
 const settingsSidebar = () => document.querySelector(".settings-sidebar") as HTMLElement;
 async function openSettingsFromChooser() {
-  fireEvent.click(await screen.findByTitle("a@x.com"));
+  fireEvent.click(await waitFor(() => avatar("a@x.com")));
   fireEvent.click(within(document.querySelector(".account-chooser-container") as HTMLElement).getByText("Settings"));
   await waitFor(() => expect(settingsSidebar()).toHaveClass("open"));
   return settingsSidebar();
