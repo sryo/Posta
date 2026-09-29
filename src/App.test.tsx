@@ -970,6 +970,27 @@ describe("App thread view", () => {
     expect(Array.from(document.querySelectorAll(".guest-chip-label")).map(el => el.textContent)).toEqual(["Ana", "bo@y.com"]);
   });
 
+  it("keeps the thread's keys off it while the event form is open over it", async () => {
+    threadsByCard["card-a"] = [thread("t-a", "Lunch")];
+    handlers.modify_threads = () => null;
+    handlers.get_thread_details = () => ({ id: "t-a", messages: [fullMessage("m1", "Ana <ana@x.com>")] });
+    render(() => <App />);
+    fireEvent.click(await screen.findByText("Lunch"));
+    fireEvent.click(await screen.findByTitle("Create event from this thread"));
+    await screen.findByPlaceholderText("Event title");
+    (document.activeElement as HTMLElement | null)?.blur();
+
+    fireEvent.keyDown(document.body, { key: "#" });
+    fireEvent.keyDown(document.body, { key: "e" });
+    await new Promise(r => setTimeout(r, 20));
+    expect(invoke).not.toHaveBeenCalledWith("modify_threads", expect.anything());
+
+    fireEvent.keyDown(document.body, { key: "Escape" });
+    fireEvent.click(await screen.findByRole("button", { name: "Discard" }));
+    await waitFor(() => expect(screen.queryByPlaceholderText("Event title")).toBeNull());
+    expect(screen.getByTitle("Create event from this thread")).toBeInTheDocument();
+  });
+
   it("marks an unread thread read on open without an undo toast", async () => {
     threadsByCard["card-a"] = [{ ...thread("t-a", "Mail for A"), unread_count: 1, labels: ["INBOX", "UNREAD"] }];
     handlers.modify_threads = () => null;

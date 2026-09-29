@@ -91,6 +91,8 @@ export const ThreadView = (props: {
   invite?: { event: CalendarEvent; rsvp: string | null | undefined; onAnswer: (status: RsvpStatus) => void; disabled: boolean } | null,
   // Opens a new event named after the thread, with its people as guests
   onCreateEvent?: () => void,
+  // A panel over the thread (the new-event form) owns the keyboard
+  keysPaused?: boolean,
 }) => {
   let messageRefs: (HTMLDivElement | undefined)[] = [];
   let contentRef: HTMLDivElement | undefined;
@@ -265,6 +267,7 @@ export const ThreadView = (props: {
   };
 
   const handleKeyDown = (e: KeyboardEvent) => {
+    if (props.keysPaused) return;
     const isTyping = isTypingTarget(e.target);
 
     if (e.key === 'Escape') {

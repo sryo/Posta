@@ -1440,7 +1440,8 @@ function App() {
 
     // ThreadView/EventView own the keyboard while open; without this, keys
     // like a/s/d also hit the focused thread *behind* the overlay
-    if (activeThreadId() || activeEvent()) {
+    // The new-event form over a thread is handled below like any overlay
+    if ((activeThreadId() || activeEvent()) && !creatingEvent()) {
       return;
     }
 
@@ -4979,6 +4980,7 @@ function App() {
           onForward={handleForwardFromThread}
           onAction={handleThreadViewAction}
           onOpenLabels={() => { fetchAccountLabels({ refresh: true }); setLabelDrawerOpen(true); }}
+          keysPaused={creatingEvent()}
           onCreateEvent={() => {
             const messages = activeThread()?.messages ?? [];
             const people = messages
