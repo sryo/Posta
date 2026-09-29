@@ -38,6 +38,21 @@ export function eventTimesFromForm(form: EventFormTimes): { start: number; end: 
   return { start, end };
 }
 
+// A new event about an email thread: named after its subject, with its
+// participants other than the user as guests
+export function eventFromThread(subject: string, participants: string[], accountEmail: string): { summary: string; attendees: string } {
+  const summary = subject.replace(/^(\s*(re|fwd?)\s*:\s*)+/i, "").trim();
+  const seen = new Set([accountEmail.toLowerCase()]);
+  const guests: string[] = [];
+  for (const participant of participants) {
+    const email = extractEmail(participant).trim().toLowerCase();
+    if (!email || seen.has(email)) continue;
+    seen.add(email);
+    guests.push(participant.trim());
+  }
+  return { summary, attendees: guests.join(", ") };
+}
+
 // Guest addresses typed as a comma-separated list, with or without names
 export function eventAttendees(text: string): string[] {
   return splitEmailList(text).map(extractEmail).filter(e => e.trim());

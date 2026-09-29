@@ -566,6 +566,18 @@ describe("ThreadView closing", () => {
   });
 });
 
+describe("ThreadView Create event", () => {
+  it("offers to create an event about the thread, from the toolbar or with e", () => {
+    const onCreateEvent = vi.fn();
+    const { getByTitle } = renderThread({ onCreateEvent });
+    const button = getByTitle("Create event from this thread");
+    expect(button).toHaveTextContent("Create event…");
+    fireEvent.click(button);
+    fireEvent.keyDown(document, { key: "e" });
+    expect(onCreateEvent).toHaveBeenCalledTimes(2);
+  });
+});
+
 describe("ThreadView invite", () => {
   const invite = {
     uid: "ev-1@google.com", title: "Design review", start_time: Date.UTC(2030, 0, 1, 15), end_time: Date.UTC(2030, 0, 1, 16),

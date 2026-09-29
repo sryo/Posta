@@ -85,6 +85,7 @@ import {
   extractMessageText,
   getAvatarColor,
   validateEmailList,
+  splitEmailList,
   decodeHtmlEntities,
   normalizeBase64Url,
   addReplyPrefix,
@@ -134,7 +135,7 @@ import { parseStoredWidth } from "./app/storedWidth";
 import { isSessionExpiredError, needsSignInAgain } from "./app/authErrors";
 import { signatureBlock, withSignature } from "./app/signature";
 import { isCalendarAttachment, readFilesAsAttachments } from "./app/attachments";
-import { eventAttendees, eventTimesFromForm, smartEventDefaults } from "./app/eventForm";
+import { eventAttendees, eventFromThread, eventTimesFromForm, smartEventDefaults } from "./app/eventForm";
 import { composePlacement } from "./app/composePlacement";
 import { cidImagesToFetch, createLruCache, fetchCidImages } from "./app/cidImages";
 import { sendPending, type PendingSend } from "./app/pendingSend";
@@ -783,9 +784,12 @@ function App() {
 
   // A new event starts now; what was typed into a closed new-event form stays,
   // but an event's edit never carries into a new one
-  const openNewEventForm = () => {
+  // `about` starts the event from an email thread instead
+  const openNewEventForm = (about?: { summary: string; attendees: string }) => {
     const defaults = smartEventDefaults();
-    setEventForm(f => f.editing
+    setEventForm(f => about
+      ? { ...defaultEventForm(), ...about }
+      : f.editing
       ? defaultEventForm()
       : { ...f, startDate: defaults.date, startTime: defaults.startTime, endDate: defaults.endDate, endTime: defaults.endTime });
     setCreatingEvent(true);
@@ -4020,7 +4024,7 @@ function App() {
               </div>
               <button
                 class="new-event-btn"
-                onClick={openNewEventForm}
+                onClick={() => openNewEventForm()}
                 title="New event (E)"
                 aria-label="Create new calendar event"
               >
@@ -4975,6 +4979,15 @@ function App() {
           onForward={handleForwardFromThread}
           onAction={handleThreadViewAction}
           onOpenLabels={() => { fetchAccountLabels({ refresh: true }); setLabelDrawerOpen(true); }}
+          onCreateEvent={() => {
+            const messages = activeThread()?.messages ?? [];
+            const people = messages
+              .flatMap(m => m.payload?.headers ?? [])
+              .filter(h => /^(from|to|cc)$/i.test(h.name))
+              .flatMap(h => splitEmailList(h.value));
+            const subject = activeListedThread()?.subject ?? findHeader(messages[0]?.payload?.headers, 'Subject') ?? '';
+            openNewEventForm(eventFromThread(subject, people, selectedAccount()?.email ?? ''));
+          }}
           labelDrawerOpen={labelDrawerOpen()}
           onCloseLabelDrawer={closeLabelDrawer}
           isStarred={isThreadStarred()}
@@ -5540,6 +5553,7 @@ function App() {
               <div class="shortcut-row"><kbd>⇧R</kbd> <span>Reply all</span></div>
               <div class="shortcut-row"><kbd>f</kbd> <span>Forward message</span></div>
               <div class="shortcut-row"><kbd>l</kbd> <span>Labels</span></div>
+              <div class="shortcut-row"><kbd>e</kbd> <span>Create event from thread</span></div>
               <div class="shortcut-row"><kbd>a</kbd> <span>Archive</span></div>
               <div class="shortcut-row"><kbd>s</kbd> <span>Star</span></div>
               <div class="shortcut-row"><kbd>u</kbd> <span>Toggle read</span></div>

@@ -35,6 +35,7 @@ import {
   EyeOpenIcon,
   EyeClosedIcon,
   LabelIcon,
+  CalendarIcon,
 } from "./Icons";
 import { SmartReplies } from "./SmartReplies";
 import { ReactionButton } from "./ReactionButton";
@@ -88,6 +89,8 @@ export const ThreadView = (props: {
   geminiKeySaved?: boolean,
   // The event of an invite email, shown above the body of the message carrying it
   invite?: { event: CalendarEvent; rsvp: string | null | undefined; onAnswer: (status: RsvpStatus) => void; disabled: boolean } | null,
+  // Opens a new event named after the thread, with its people as guests
+  onCreateEvent?: () => void,
 }) => {
   let messageRefs: (HTMLDivElement | undefined)[] = [];
   let contentRef: HTMLDivElement | undefined;
@@ -286,6 +289,7 @@ export const ThreadView = (props: {
     if (e.key === '!') { e.preventDefault(); props.onAction('spam'); return; }
     if (e.key === '#' || e.key === 'd') { e.preventDefault(); props.onAction('trash'); return; }
     if (e.key === 'l') { e.preventDefault(); props.onOpenLabels(); return; }
+    if (e.key === 'e' && props.onCreateEvent) { e.preventDefault(); props.onCreateEvent(); return; }
 
     // Reply shortcuts advertised by the focused message's actions wheel
     if ((e.key === 'r' || e.key === 'R' || e.key === 'f') && !props.inlineCompose) {
@@ -378,6 +382,14 @@ export const ThreadView = (props: {
               <span class="thread-toolbar-label">Labels{props.labelCount > 0 ? ` (${props.labelCount})` : ''}</span>
               <span class="shortcut-hint">L</span>
             </button>
+
+            <Show when={props.onCreateEvent}>
+              <button class="thread-toolbar-btn" onClick={() => props.onCreateEvent!()} title="Create event from this thread">
+                <CalendarIcon />
+                <span class="thread-toolbar-label">Create event…</span>
+                <span class="shortcut-hint">E</span>
+              </button>
+            </Show>
 
             <div class="thread-toolbar-divider" />
 

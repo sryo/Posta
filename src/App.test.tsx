@@ -951,6 +951,25 @@ const fullMessage = (id: string, from: string, extra: Record<string, unknown> = 
 });
 
 describe("App thread view", () => {
+  it("creates an event from a thread, named after it with its people as guests", async () => {
+    threadsByCard["card-a"] = [thread("t-a", "Re: Lunch on Thursday")];
+    const withTo = (id: string, from: string, to: string) => {
+      const m = fullMessage(id, from);
+      m.payload.headers.push({ name: "To", value: to });
+      return m;
+    };
+    handlers.get_thread_details = () => ({ id: "t-a", messages: [
+      withTo("m1", "Ana <ana@x.com>", "a@x.com"),
+      withTo("m2", "a@x.com", "Ana <ana@x.com>, bo@y.com"),
+    ] });
+    render(() => <App />);
+    fireEvent.click(await screen.findByText("Re: Lunch on Thursday"));
+    fireEvent.click(await screen.findByTitle("Create event from this thread"));
+
+    expect(await screen.findByPlaceholderText("Event title")).toHaveValue("Lunch on Thursday");
+    expect(Array.from(document.querySelectorAll(".guest-chip-label")).map(el => el.textContent)).toEqual(["Ana", "bo@y.com"]);
+  });
+
   it("marks an unread thread read on open without an undo toast", async () => {
     threadsByCard["card-a"] = [{ ...thread("t-a", "Mail for A"), unread_count: 1, labels: ["INBOX", "UNREAD"] }];
     handlers.modify_threads = () => null;
@@ -3322,6 +3341,7 @@ describe("App accessibility", () => {
     expect(keyFor(event, "Maybe")).toBe("⇧M");
     expect(keyFor(event, "Not going")).toBe("n");
     expect(keyFor(section("Actions"), "Answer a focused invite: Going, Maybe, Not going")).toBe("y ⇧M n");
+    expect(keyFor(section("Open thread"), "Create event from thread")).toBe("e");
   });
 
   it("names the collapse button and says whether the card is expanded", async () => {
