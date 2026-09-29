@@ -65,6 +65,40 @@ describe("askConfirm", () => {
     expect(await second).toBe(true);
   });
 
+  it("asks a destructive question with a bold title, a red verb and focus on the safe answer", async () => {
+    render(() => <ConfirmDialog />);
+    const answer = askConfirm({
+      title: "Delete and notify 2 guests?",
+      message: "They get an email saying the event was cancelled.",
+      confirmLabel: "Delete event",
+      cancelLabel: "Keep event",
+      tone: "danger",
+    });
+    const dialog = await screen.findByRole("alertdialog", { name: "Delete and notify 2 guests?" });
+    expect(dialog.querySelector("strong")).toHaveTextContent("Delete and notify 2 guests?");
+    expect(dialog).toHaveTextContent("They get an email saying the event was cancelled.");
+    expect(dialog).toHaveAccessibleDescription("They get an email saying the event was cancelled.");
+    const confirm = screen.getByRole("button", { name: "Delete event" });
+    expect(confirm).toHaveClass("btn-danger");
+    const keep = screen.getByRole("button", { name: "Keep event" });
+    await new Promise(r => setTimeout(r, 0));
+    expect(document.activeElement).toBe(keep);
+    fireEvent.click(keep);
+    expect(await answer).toBe(false);
+  });
+
+  it("keeps Tab inside the dialog", async () => {
+    render(() => <ConfirmDialog />);
+    askConfirm("Delete?", "Delete");
+    const confirm = await screen.findByRole("button", { name: "Delete" });
+    const cancel = screen.getByRole("button", { name: "Cancel" });
+    confirm.focus();
+    fireEvent.keyDown(confirm, { key: "Tab" });
+    expect(document.activeElement).toBe(cancel);
+    fireEvent.keyDown(cancel, { key: "Tab", shiftKey: true });
+    expect(document.activeElement).toBe(confirm);
+  });
+
   it("keeps keys typed in the dialog from reaching the app's shortcuts", async () => {
     render(() => <ConfirmDialog />);
     let reached = 0;

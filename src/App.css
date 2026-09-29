@@ -20,7 +20,19 @@
     --shadow: rgba(0, 0, 0, 0.1);
     --danger: #e53935;
     --danger-bg: rgba(229, 57, 53, 0.1);
+    /* A button filled red, and its label */
+    --danger-fill: #d32f2f;
+    --on-danger: #fff;
+    /* Controls floating over the page: wheels, pickers, dropdowns */
+    --bg-elevated: #fff;
+    --elevated-ring: var(--border-color);
     --toast-bg: #323232;
+    --toast-text: #fff;
+    --toast-progress: #3d3d3d;
+    --toast-action: #8ab4f8;
+    --toast-action-hover: rgba(138, 180, 248, 0.15);
+    --toast-muted: #999;
+    --toast-close-hover: rgba(255, 255, 255, 0.1);
 
     /* Z-index scale - hierarchical layers
        Low (within cards): 10-40
@@ -90,7 +102,18 @@
         --shadow: rgba(0, 0, 0, 0.3);
         --danger: #ff6b6b;
         --danger-bg: rgba(255, 107, 107, 0.15);
-        --toast-bg: #424242;
+        --danger-fill: #ff6b6b;
+        --on-danger: #1e1e1e;
+        --bg-elevated: #2c2c2c;
+        --elevated-ring: rgba(255, 255, 255, 0.14);
+        /* A light toast stands out from the dark page */
+        --toast-bg: #ececec;
+        --toast-text: #1e1e1e;
+        --toast-progress: #dcdcdc;
+        --toast-action: #1a5fd0;
+        --toast-action-hover: rgba(26, 95, 208, 0.12);
+        --toast-muted: #666;
+        --toast-close-hover: rgba(0, 0, 0, 0.08);
     }
 }
 
@@ -1511,8 +1534,8 @@ a:focus-visible,
 /* Query autocomplete dropdown */
 .query-autocomplete {
     position: fixed;
-    background: var(--bg-primary);
-    border: 1px solid var(--border-color);
+    background: var(--bg-elevated);
+    border: 1px solid var(--elevated-ring);
     border-radius: var(--radius-md);
     box-shadow: 0 4px 12px var(--shadow);
     max-height: 200px;
@@ -1654,6 +1677,18 @@ a:focus-visible,
     background: var(--danger-bg);
 }
 
+/* The destructive answer of a confirm dialog */
+.confirm-dialog .btn-danger {
+    background: var(--danger-fill);
+    border-color: var(--danger-fill);
+    color: var(--on-danger);
+}
+
+.confirm-dialog .btn-danger:hover {
+    background: var(--danger-fill);
+    filter: brightness(1.08);
+}
+
 .btn-ghost {
     background: transparent;
     border-color: transparent;
@@ -1678,7 +1713,9 @@ button:disabled:hover {
 }
 
 .btn-primary:disabled {
-    background: var(--text-muted);
+    background: var(--accent);
+    border-color: var(--accent);
+    opacity: 0.4;
 }
 
 /* Auth Screen */
@@ -1755,6 +1792,23 @@ button:disabled:hover {
     border: 1px solid var(--danger-bg);
     border-radius: var(--radius-lg);
     box-shadow: 0 4px 16px var(--shadow);
+}
+
+/* The backend's own words behind a failure, for reporting it */
+.error-details {
+    color: var(--text-secondary);
+    font-size: var(--font-size-sm);
+}
+
+.error-details summary {
+    cursor: pointer;
+}
+
+.error-details span {
+    display: block;
+    max-width: 480px;
+    overflow-wrap: anywhere;
+    user-select: text;
 }
 
 .auth-spinner,
@@ -2436,8 +2490,8 @@ button:disabled:hover {
     left: 0;
     right: 0;
     top: 100%;
-    background: var(--bg-primary);
-    border: 1px solid var(--border-color);
+    background: var(--bg-elevated);
+    border: 1px solid var(--elevated-ring);
     border-radius: var(--radius-lg);
     box-shadow: 0 4px 12px var(--shadow);
     max-height: 200px;
@@ -2744,6 +2798,7 @@ button:disabled:hover {
 .query-help-body {
     padding: var(--space-xl) var(--space-2xl);
     overflow-y: auto;
+    min-height: 0;
     display: flex;
     flex-direction: column;
     gap: var(--space-2xl);
@@ -3106,14 +3161,14 @@ button:disabled:hover {
 .message-action-btn {
     position: absolute;
     border: none;
-    background: var(--bg-primary);
+    background: var(--bg-elevated);
     cursor: pointer;
     border-radius: var(--radius-full);
     display: flex;
     align-items: center;
     justify-content: center;
-    color: var(--text-muted);
-    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2);
+    color: var(--text-secondary);
+    box-shadow: 0 0 0 1px var(--elevated-ring), 0 2px 8px rgba(0, 0, 0, 0.2);
     opacity: 0;
     pointer-events: none;
     transition:
@@ -3495,7 +3550,8 @@ button:disabled:hover {
 
 @media (prefers-color-scheme: dark) {
     .thread-floating-bar {
-        background: rgba(30, 30, 30, 0.8);
+        background: color-mix(in srgb, var(--bg-elevated) 85%, transparent);
+        box-shadow: 0 0 0 1px var(--elevated-ring), 0 2px 8px rgba(0, 0, 0, 0.3);
     }
 }
 
@@ -4179,7 +4235,7 @@ button:disabled:hover {
     left: 50%;
     transform: translateX(-50%);
     background: var(--toast-bg);
-    color: #fff;
+    color: var(--toast-text);
     border-radius: var(--radius-lg);
     box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
     z-index: var(--z-toast);
@@ -4193,7 +4249,7 @@ button:disabled:hover {
     left: 0;
     bottom: 0;
     width: 0%;
-    background: #3d3d3d;
+    background: var(--toast-progress);
     animation: toast-progress-fill 5s linear forwards;
     z-index: 0;
 }
@@ -4223,6 +4279,10 @@ button:disabled:hover {
 
 .undo-toast.closing .toast-progress {
     animation: none;
+}
+
+.undo-toast.paused .toast-progress {
+    animation-play-state: paused;
 }
 
 /* Send toast progress - uses inline width instead of animation */
@@ -4262,7 +4322,7 @@ button:disabled:hover {
 .toast-undo-btn {
     background: transparent;
     border: none;
-    color: #8ab4f8;
+    color: var(--toast-action);
     font-size: var(--font-size-lg);
     font-weight: 600;
     cursor: pointer;
@@ -4272,13 +4332,13 @@ button:disabled:hover {
 }
 
 .toast-undo-btn:hover {
-    background: rgba(138, 180, 248, 0.15);
+    background: var(--toast-action-hover);
 }
 
 .toast-close-btn {
     background: transparent;
     border: none;
-    color: #999;
+    color: var(--toast-muted);
     cursor: pointer;
     padding: var(--space-sm);
     display: flex;
@@ -4289,8 +4349,8 @@ button:disabled:hover {
 }
 
 .toast-close-btn:hover {
-    background: rgba(255, 255, 255, 0.1);
-    color: #fff;
+    background: var(--toast-close-hover);
+    color: var(--toast-text);
 }
 
 /* Batch Reply Panel - Uses thread-overlay and thread-floating-bar */
@@ -4349,6 +4409,11 @@ button:disabled:hover {
     animation: fadeIn 0.15s ease;
 }
 
+/* Dialogs take focus as a whole when nothing in them should have it first */
+[role="dialog"][tabindex="-1"]:focus {
+    outline: none;
+}
+
 .shortcuts-modal {
     position: fixed;
     top: 50%;
@@ -4397,6 +4462,7 @@ button:disabled:hover {
 .shortcuts-body {
     padding: var(--space-xl) var(--space-2xl);
     overflow-y: auto;
+    min-height: 0;
     display: grid;
     grid-template-columns: 1fr 1fr;
     gap: var(--space-2xl);
@@ -4725,8 +4791,8 @@ button:disabled:hover {
     z-index: 100;
     width: 320px;
     max-height: 360px;
-    background: var(--bg-primary);
-    border: 1px solid var(--border-color);
+    background: var(--bg-elevated);
+    border: 1px solid var(--elevated-ring);
     border-radius: var(--radius-lg);
     box-shadow: 0 4px 20px rgba(0, 0, 0, 0.15);
     display: flex;

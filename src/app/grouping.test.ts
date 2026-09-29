@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { GoogleCalendarEvent, Thread, ThreadGroup } from "../api/tauri";
 import { getSmartEventTime, groupCalendarEvents, mergeThreadGroups, regroupThreads } from "./grouping";
+import { formatDayLabel } from "./dateFormat";
 
 function thread(id: string, over: Partial<Thread> = {}): Thread {
   return {
@@ -115,6 +116,28 @@ describe("groupCalendarEvents", () => {
       ["Today", ["today-early", "today-late"]],
       ["Tomorrow", ["tomorrow"]],
     ]);
+  });
+
+  it("names the days in the system's language", () => {
+    const { DateTimeFormat, RelativeTimeFormat } = Intl;
+    const intl = Intl as unknown as Record<string, unknown>;
+    intl.DateTimeFormat = function (locale?: string | string[], options?: Intl.DateTimeFormatOptions) {
+      return new DateTimeFormat(locale ?? "es-AR", options);
+    };
+    intl.RelativeTimeFormat = function (locale?: string | string[], options?: Intl.RelativeTimeFormatOptions) {
+      return new RelativeTimeFormat(locale ?? "es-AR", options);
+    };
+    try {
+      const groups = groupCalendarEvents([
+        event("today", { start_time: at(11, 15), end_time: at(11, 16) }),
+        event("later", { start_time: at(13, 10), end_time: at(13, 11) }),
+      ], "date", now);
+      expect(groups[0].label).toBe("Hoy");
+      expect(groups[1].label).toBe(formatDayLabel(new Date(2026, 2, 13), now, "es-AR"));
+    } finally {
+      intl.DateTimeFormat = DateTimeFormat;
+      intl.RelativeTimeFormat = RelativeTimeFormat;
+    }
   });
 
   it("puts a one-day all-day event on its own date only", () => {

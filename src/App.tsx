@@ -118,6 +118,11 @@ import { ThreadView } from "./components/ThreadView";
 import { EventView } from "./components/EventView";
 import { ActionsWheel } from "./components/ActionsWheel";
 import { CardForm } from "./components/CardForm";
+import { Dialog } from "./components/Dialog";
+import { Toasts } from "./components/Toasts";
+import { createToasts, type ToastAction, type ToastTone } from "./app/toasts";
+import { failureMessage } from "./app/errorText";
+import { formatWhen, threadGroupLabel } from "./app/dateFormat";
 import { safeGetItem, safeSetItem, safeRemoveItem, safeGetJSON, safeSetJSON } from "./shared/storage";
 import { BG_COLORS, type ActionSettings, type CardColor, type GroupBy } from "./shared/constants";
 import { createUndoableSend } from "./app/undoableSend";
@@ -141,13 +146,14 @@ import { coalesceByKey } from "./app/coalesce";
 import { batchReplyLoadErrorMessage, cardLoadErrorMessage, threadLoadErrorMessage } from "./app/loadErrors";
 import { cardTypeForQuery } from "./app/cardType";
 import { createDraftSync, draftKey, findLatestDraft, findUnsentDrafts, hasDraftContent, markDraftClosed, markDraftSending, pruneDrafts, removeAccountDrafts, sessionDraftKey, type DraftFields } from "./app/drafts";
-import { escapeTarget, nextCardFocus, nextItemFocus } from "./app/keyboardNav";
+import { escapeTarget, nextCardFocus, nextItemFocus, type ItemFocus } from "./app/keyboardNav";
 import { getSmartEventTime, groupCalendarEvents, isUserLabel, mergeThreadGroups, regroupThreads, type CalendarEventGroup } from "./app/grouping";
 import { pullLayoutWithRetry } from "./app/icloudRestore";
 import { querySuggestions, type QuerySuggestion } from "./app/querySuggestions";
 import { inviteNamesEvent, rsvpSentMessage, type RsvpStatus } from "./app/rsvp";
 import { createRsvpLookups } from "./app/rsvpLookups";
 import { nextSelection } from "./app/selection";
+import { bulkActionForKey, extendSelection, keyTargets } from "./app/bulkKeys";
 import { fingerprint } from "./app/fingerprint";
 import { hasCommandModifier, isTypingTarget, onActivateKey } from "./shared/keyboard";
 import { askConfirm, ConfirmDialog, confirmOpen, dismissConfirm } from "./app/confirm";
@@ -190,7 +196,19 @@ function App() {
   const [labelsFailed, setLabelsFailed] = createSignal(false);
   const [labelSearchQuery, setLabelSearchQuery] = createSignal("");
 
-  const [error, setError] = createSignal<string | null>(null);
+  // The banner: a sentence, and the backend's own text behind Details
+  const [error, setErrorState] = createSignal<{ message: string; details?: string } | null>(null);
+  const setError = (message: string | null) => setErrorState(message === null ? null : { message });
+  // "Couldn't …" in the banner, the error itself only under Details
+  function setFailure(failure: string, e: unknown) {
+    console.error(`${failure}:`, e);
+    setErrorState(failureMessage(failure, e));
+  }
+  // The same as an error toast, with Retry when it can be tried again
+  function showFailure(failure: string, e: unknown, retry?: () => void) {
+    console.error(`${failure}:`, e);
+    toasts.show({ message: failureMessage(failure, e).message, tone: "error", action: retry && { label: "Retry", run: retry } });
+  }
   const [expiredAccountId, setExpiredAccountId] = createSignal<string | null>(null);
   const [accounts, setAccounts] = createSignal<Account[]>([]);
   const [selectedAccount, setSelectedAccount] = createSignal<Account | null>(null);
@@ -246,8 +264,7 @@ function App() {
       for (const eventId of eventIds) markEventRsvp(eventId, status);
       showToast(rsvpSentMessage(status));
     } catch (e) {
-      console.error("Failed to update RSVP:", e);
-      showToast(`Couldn't RSVP: ${e}`);
+      showFailure("Couldn't send your RSVP", e);
     } finally {
       setRsvpLoading(threadId, false);
     }
@@ -263,18 +280,11 @@ function App() {
     reversals: LabelReversal[];
     timestamp: number;
   }
+  // The latest thread action, which a refresh landing just after it must not undo
   const [lastAction, setLastAction] = createSignal<UndoableAction | null>(null);
-  const [toast, setToast] = createSignal<{
-    message: string | null;
-    action?: { label: string; run: () => void };
-    visible: boolean;
-    closing: boolean;
-    key: number;
-  } | null>(null);
-  let toastTimeoutId: number | undefined;
-  let toastHideTimeoutId: number | undefined;
-  // The closed draft the toast's Discard would delete
-  let discardToastDraftKey: string | null = null;
+  const toasts = createToasts();
+  // Tags the toast offering to discard a closed draft
+  const discardDraftTag = (key: string) => `discard-draft:${key}`;
 
   // Undo send state
   const undoableSend = createUndoableSend<PendingSend>({
@@ -290,8 +300,7 @@ function App() {
     },
     onFailed: (pending, e) => {
       console.error("Failed to send email:", e);
-      putBackSend(pending, `Couldn't send "${pending.subject || "(no subject)"}"`);
-      setError(`Failed to send email: ${e}`);
+      putBackSend(pending, failureMessage(`Couldn't send “${pending.subject || "(no subject)"}”`, e).message, "error");
     },
   });
 
@@ -309,12 +318,19 @@ function App() {
     else open();
   }
 
-  function putBackSend(pending: PendingSend, busyMessage: string) {
+  // A failed send says so even when its email opens again by itself
+  function putBackSend(pending: PendingSend, message: string, tone: ToastTone = "info") {
     if (pending.draft) {
       sendingDraftKeys.delete(pending.draft.key);
       markDraftSending(pending.draft.key, null);
     }
-    openComposeUnlessBusy(busyMessage, () => restoreSend(pending));
+    const restore = () => restoreSend(pending);
+    if (composeHasWork()) {
+      toasts.show({ message, tone, action: { label: "Open", run: restore } });
+      return;
+    }
+    restore();
+    if (tone === "error") toasts.show({ message, tone });
   }
 
   // Settings
@@ -511,7 +527,7 @@ function App() {
       setComposeAttachments([...composeAttachments(), { filename: att.filename, mime_type: att.mimeType, data }]);
     } catch (e) {
       console.error("Failed to forward attachment:", e);
-      showToast(`Failed to forward ${att.filename}: ${e}`);
+      showFailure(`Couldn't forward ${att.filename}`, e);
     }
   }
 
@@ -772,7 +788,7 @@ function App() {
   const dismissEventForm = async () => {
     const f = eventForm();
     const typed = [f.summary, f.description, f.location, f.attendees].some(v => v.trim());
-    if (f.closing || (typed && !(await askConfirm("Discard this event?", "Discard")))) return;
+    if (f.closing || (typed && !(await askConfirm({ title: "Discard this event?", message: "What you typed in it is lost.", confirmLabel: "Discard", cancelLabel: "Keep editing", tone: "danger" })))) return;
     if (creatingEvent()) closeEventForm();
   };
   const closeEventForm = () => {
@@ -1051,7 +1067,7 @@ function App() {
     try {
       if (!(await pullFromICloud())) return;
       if (selectedAccount()?.id !== account.id) return;
-      const cardList = await getCards(account.id);
+      const cardList = (await getCards(account.id)).filter(c => !heldCardDeletes.has(c.id));
       if (selectedAccount()?.id !== account.id) return;
       const before = new Map(cards().map(c => [c.id, c.query]));
       const kept = new Set(cardList.map(c => c.id));
@@ -1086,7 +1102,7 @@ function App() {
     try {
       await loadStoredCredentials();
       credentialsError = null;
-      if (error() === failed) setError(null);
+      if (error()?.message === failed) setError(null);
     } catch (e) {
       console.warn("Stored credentials still unavailable:", e);
     }
@@ -1141,7 +1157,7 @@ function App() {
     } catch (err) {
       console.error("Failed to persist card order:", err);
       setCards(previousCards);
-      showToast(`Couldn't save the card order: ${err}`);
+      showFailure("Couldn't save the card order", err);
     }
   };
 
@@ -1233,7 +1249,7 @@ function App() {
       }
       offerUnsentDraft(accts);
     } catch (e) {
-      setError(String(e));
+      setFailure("Couldn't start Posta", e);
     } finally {
       setLoading(false);
     }
@@ -1331,14 +1347,69 @@ function App() {
     });
   }
 
-  // Focus a card and the item at `index` in it (-1 focuses the card only)
+  // Focus a card and the item at `index` in it (-1 focuses the card only).
+  // The row takes keyboard focus too, so Tab and j/k agree.
   function focusCardItem(cardId: string, index: number) {
     setFocusedCardId(cardId);
     const calendar = isCalendarCard(cardId);
     setFocusedEventIndex(calendar ? index : -1);
     setFocusedThreadIndex(calendar ? -1 : index);
     scrollFocusedIntoView();
+    const card = `.card[data-id="${CSS.escape(cardId)}"]`;
+    const row = document.querySelector<HTMLElement>(`${card} .thread.focused, ${card} .calendar-event-item.focused`);
+    if (row && document.activeElement !== row) row.focus({ preventScroll: true });
   }
+
+  // Roving tab stop: one row per card, the focused one or else the first
+  const tabStopKeys = createMemo(() => {
+    const keys = new Set<string>();
+    for (const card of cards()) {
+      if (collapsedCards[card.id]) continue;
+      const items = isCalendarCard(card.id)
+        ? getCardEventsFlat(card.id).map(ev => ev.id)
+        : getCardThreadsFlat(card.id).map(t => t.gmail_thread_id);
+      const focused = card.id === focusedCardId()
+        ? items[isCalendarCard(card.id) ? focusedEventIndex() : focusedThreadIndex()]
+        : undefined;
+      const stop = focused ?? items[0];
+      if (stop) keys.add(rowKey(card.id, stop));
+    }
+    return keys;
+  });
+  const rowTabIndex = (cardId: string, itemId: string) => (tabStopKeys().has(rowKey(cardId, itemId)) ? 0 : -1);
+
+  // A row focused by Tab or a click becomes the j/k focus
+  function onRowFocus(cardId: string, itemId: string) {
+    const ids = isCalendarCard(cardId)
+      ? getCardEventsFlat(cardId).map(ev => ev.id)
+      : getCardThreadsFlat(cardId).map(t => t.gmail_thread_id);
+    const index = ids.indexOf(itemId);
+    if (index === -1) return;
+    if (focusedCardId() === cardId && (isCalendarCard(cardId) ? focusedEventIndex() : focusedThreadIndex()) === index) return;
+    focusCardItem(cardId, index);
+  }
+
+  // The row a thread or event view was opened from, for focus to go back to
+  let openedFromRow: ItemFocus | null = null;
+  function rememberOpenedRow(cardId: string, itemId: string) {
+    const ids = isCalendarCard(cardId)
+      ? getCardEventsFlat(cardId).map(ev => ev.id)
+      : getCardThreadsFlat(cardId).map(t => t.gmail_thread_id);
+    const index = ids.indexOf(itemId);
+    openedFromRow = index === -1 ? null : { cardId, index };
+  }
+  // Back to that row, or the one now in its place when it left the card
+  function restoreOpenedRowFocus() {
+    const from = openedFromRow;
+    openedFromRow = null;
+    if (!from || !cards().some(c => c.id === from.cardId)) return;
+    const count = (isCalendarCard(from.cardId) ? getCardEventsFlat(from.cardId) : getCardThreadsFlat(from.cardId)).length;
+    if (count > 0) focusCardItem(from.cardId, Math.min(from.index, count - 1));
+  }
+
+  // When * was pressed, for a following a to select all
+  let selectAllKeyAt = 0;
+  const SELECT_ALL_WINDOW_MS = 1500;
 
   // Global keyboard shortcuts
   const handleGlobalKeyDown = (e: KeyboardEvent) => {
@@ -1387,10 +1458,10 @@ function App() {
       return;
     }
 
-    // z to undo last action (when toast is visible) — works even with overlays open
-    if (e.key === 'z' && toast()?.visible && lastAction()) {
+    // z undoes what the toast offers to undo, even with overlays open
+    if (e.key === 'z' && toasts.hasUndo()) {
       e.preventDefault();
-      undoLastAction();
+      toasts.undo();
       return;
     }
 
@@ -1529,9 +1600,51 @@ function App() {
       return;
     }
 
+    const cardId = focusedCardId();
+    const threadCardId = cardId && !isCalendarCard(cardId) ? cardId : null;
+
+    // * then a selects every thread in the focused card
+    const selectAllArmed = selectAllKeyAt !== 0 && Date.now() - selectAllKeyAt < SELECT_ALL_WINDOW_MS;
+    selectAllKeyAt = 0;
+    if (e.key === '*') {
+      e.preventDefault();
+      selectAllKeyAt = Date.now();
+      return;
+    }
+    if (selectAllArmed && e.key === 'a' && threadCardId) {
+      e.preventDefault();
+      setSelectedThreads({ ...selectedThreads(), [threadCardId]: new Set(getCardThreadsFlat(threadCardId).map(t => t.gmail_thread_id)) });
+      return;
+    }
+
+    if ((e.key === 'J' || e.key === 'K') && threadCardId) {
+      e.preventDefault();
+      const ids = getCardThreadsFlat(threadCardId).map(t => t.gmail_thread_id);
+      const next = extendSelection(ids, selectedThreads()[threadCardId] ?? new Set(), focusedThreadIndex(), e.key === 'J');
+      setSelectedThreads({ ...selectedThreads(), [threadCardId]: next.selected });
+      focusCardItem(threadCardId, next.index);
+      return;
+    }
+
+    // With threads selected, the keys the bulk wheel shows act on all of them
+    const selection = threadCardId ? selectedThreads()[threadCardId] : undefined;
+    if (threadCardId && selection && selection.size > 0) {
+      if (e.key === 'r') {
+        e.preventDefault();
+        startBatchReply(threadCardId, keyTargets(selection, null));
+        return;
+      }
+      const action = bulkActionForKey(e.key);
+      if (action) {
+        e.preventDefault();
+        handleThreadAction(action, keyTargets(selection, null), threadCardId);
+        setSelectedThreads({ ...selectedThreads(), [threadCardId]: new Set() });
+        return;
+      }
+    }
+
     // Quick actions on focused thread
     const thread = getFocusedThread();
-    const cardId = focusedCardId();
     if (thread && cardId) {
       if (e.key === 'a') {
         e.preventDefault();
@@ -1688,7 +1801,7 @@ function App() {
       try {
         storedCreds = await getStoredCredentials();
       } catch (e) {
-        setError(String(e));
+        setFailure("Couldn't read the saved Google credentials", e);
         return;
       }
     }
@@ -1711,7 +1824,7 @@ function App() {
       if (oauthCancelled) return;
       await afterAuth(await runOAuthFlow());
     } catch (e) {
-      if (!oauthCancelled) setError(String(e));
+      if (!oauthCancelled) setFailure("Couldn't sign in", e);
     } finally {
       setAuthLoading(false);
     }
@@ -1759,7 +1872,7 @@ function App() {
         newCards.push(await createCard(account.id, cardPreset.name, cardPreset.query, cardPreset.color || null, "date", cardType));
       }
     } catch (e) {
-      setError(`Couldn't create the cards: ${e}`);
+      setFailure("Couldn't create the cards", e);
       // Nothing was created: stay on the picker so the user can retry
       if (newCards.length === 0) return;
     } finally {
@@ -1777,7 +1890,12 @@ function App() {
   async function handleStartFresh() {
     const currentCards = cards();
     const count = `${currentCards.length} card${currentCards.length === 1 ? "" : "s"}`;
-    if (currentCards.length > 0 && !(await askConfirm(`Delete the restored layout's ${count}? They're also removed from your other Macs that sync through iCloud. This can't be undone.`, "Delete"))) return;
+    if (currentCards.length > 0 && !(await askConfirm({
+      title: `Delete the restored layout's ${count}?`,
+      message: "They're also removed from your other Macs that sync through iCloud. This can't be undone.",
+      confirmLabel: currentCards.length === 1 ? "Delete card" : "Delete cards",
+      tone: "danger",
+    }))) return;
     const results = await Promise.allSettled(currentCards.map(card => deleteCard(card.id)));
     // Cards that failed to delete still exist; keep showing them rather than
     // letting a preset pile new cards on top
@@ -1787,7 +1905,7 @@ function App() {
 
     const failure = results.find((r): r is PromiseRejectedResult => r.status === "rejected");
     if (failure) {
-      setError(`Failed to reset layout: ${failure.reason}`);
+      setFailure("Couldn't delete the restored layout", failure.reason);
       return;
     }
     setShowRestorePrompt(false);
@@ -1804,7 +1922,7 @@ function App() {
         client_secret: clientSecret(),
       });
     } catch (e) {
-      setError(`Failed to save credentials: ${e}`);
+      setFailure("Couldn't save the credentials", e);
       return;
     }
     setSettingsOpen(false);
@@ -1819,14 +1937,19 @@ function App() {
       setAccounts(accounts().map(a => (a.id === account.id ? updated : a)));
       if (selectedAccount()?.id === account.id) setSelectedAccount(updated);
     } catch (e) {
-      setError(`Failed to save signature: ${e}`);
+      setFailure("Couldn't save the signature", e);
     }
   }
 
   async function handleSignOut() {
     const account = selectedAccount();
     if (!account) return;
-    if (!(await askConfirm(`Sign out of ${account.email}? Its cards and the drafts saved on this computer are removed.`, "Sign out"))) return;
+    if (!(await askConfirm({
+      title: `Sign out of ${account.email}?`,
+      message: "Its cards and the drafts saved on this computer are removed. Your email stays in Gmail.",
+      confirmLabel: "Sign out",
+      tone: "danger",
+    }))) return;
     if (selectedAccount()?.id !== account.id) return;
 
     const signedOutCards = cards();
@@ -1845,7 +1968,7 @@ function App() {
         await switchAccount(remaining[0]);
       }
     } catch (e) {
-      setError(`Couldn't sign out: ${e}`);
+      setFailure("Couldn't sign out", e);
     }
   }
 
@@ -1868,7 +1991,7 @@ function App() {
       // Fetch threads/events for the new card
       loadCardThreads(card.id);
     } catch (e) {
-      setError(`Couldn't add the card: ${e}`);
+      setFailure("Couldn't add the card", e);
     }
   }
 
@@ -1960,15 +2083,18 @@ function App() {
           showToast(`${message} without ${attachmentNames}`, reopen);
           return;
         }
-        showToast(message, {
-          label: "Discard",
-          run: () => {
-            // A reply opened again since continues this draft
-            if (composing() && !closingCompose() && composeDraftKey === key) return;
-            if (accountId) drafts.discard(key, accountId);
+        toasts.show({
+          message,
+          action: {
+            label: "Discard",
+            run: () => {
+              // A reply opened again since continues this draft
+              if (composing() && !closingCompose() && composeDraftKey === key) return;
+              if (accountId) drafts.discard(key, accountId);
+            },
           },
+          tag: discardDraftTag(key),
         });
-        discardToastDraftKey = key;
       };
       if (storedHere) {
         offerDiscard("Draft saved");
@@ -2043,7 +2169,7 @@ function App() {
     // A draft being continued is the user's own text
     composeEdited = !!(init.draftKey || saved);
     const continued = init.draftKey || saved ? drafts.load(composeDraftKey) : null;
-    if (composeDraftKey === discardToastDraftKey && toast()?.visible) hideToast();
+    toasts.dismissTag(discardDraftTag(composeDraftKey));
     const lostAttachments = init.attachments ? [] : continued?.attachmentNames ?? [];
     if (lostAttachments.length > 0) showToast(`Attach again: ${lostAttachments.join(", ")}`);
     const fields = saved?.draft ?? init;
@@ -2178,8 +2304,9 @@ function App() {
       showToast(editing ? "Event updated" : "Event created");
 
     } catch (e) {
-      console.error(e);
-      setEventForm(f => ({ ...f, error: (editing ? "Failed to update event: " : "Failed to create event: ") + String(e) }));
+      const failure = editing ? "Couldn't update the event" : "Couldn't create the event";
+      console.error(`${failure}:`, e);
+      setEventForm(f => ({ ...f, error: failureMessage(failure, e).message }));
     } finally {
       setEventForm(f => ({ ...f, saving: false }));
     }
@@ -2326,7 +2453,7 @@ function App() {
       fetchAndCacheThreads(account.id, cardId);
     } catch (e) {
       console.error("Failed to send reply:", e);
-      setError(`Failed to send reply: ${e}`);
+      setFailure("Couldn't send the reply", e);
     } finally {
       if (stillOpen()) setQuickReply(qr => ({ ...qr, sending: false }));
     }
@@ -2355,7 +2482,7 @@ function App() {
       showToast("Reply sent");
     } catch (e) {
       console.error("Failed to send reply:", e);
-      setError(`Failed to send reply: ${e}`);
+      setFailure("Couldn't send the reply", e);
     } finally {
       if (stillOpen()) setQuickReply(qr => ({ ...qr, sending: false }));
     }
@@ -2382,7 +2509,7 @@ function App() {
       await sendReaction(account.id, threadId, messageIdHeader, emoji, toEmail);
     } catch (e) {
       console.error("Failed to send reaction:", e);
-      showToast(`Failed to send reaction: ${e}`);
+      showFailure("Couldn't send the reaction", e);
     } finally {
       setQuickReactionSending(false);
     }
@@ -2536,7 +2663,7 @@ function App() {
       setAvailableCalendars(sorted);
     } catch (e) {
       console.error("Failed to fetch calendars:", e);
-      if (selectedAccount()?.id === account.id) showToast("Failed to load calendars");
+      if (selectedAccount()?.id === account.id) showFailure("Couldn't load your calendars", e, () => { void fetchAvailableCalendars(); });
     } finally {
       if (calendarsFetchingFor === account.id) calendarsFetchingFor = null;
       if (selectedAccount()?.id === account.id) setCalendarsLoading(false);
@@ -2560,18 +2687,68 @@ function App() {
     updateEventInCards(eventId, ev => ({ ...ev, response_status: status }));
   }
 
+  // Events deleted in the app whose deletion waits out their Undo toast
+  const heldEventDeletes = new Set<string>();
+
+  // Deleting an event tells its guests, which can't be taken back, so that
+  // asks first and happens at once; any other delete waits out its toast
   async function deleteEvent(event: GoogleCalendarEvent) {
     const account = selectedAccount();
     if (!account) return;
-    try {
-      await deleteCalendarEvent(account.id, event.calendar_id, event.id);
-      updateEventInCards(event.id, () => null);
-      showToast('Event deleted');
-      if (activeEvent()?.id === event.id) closeEvent();
-    } catch (e) {
-      console.error('Failed to delete event:', e);
-      showToast(`Couldn't delete the event: ${e}`);
+    const guests = event.attendees.filter(a => !a.is_self).length;
+    if (guests > 0) {
+      const confirmed = await askConfirm({
+        title: `Delete and notify ${guests} guest${guests === 1 ? "" : "s"}?`,
+        message: "Each guest gets an email saying the event was cancelled.",
+        confirmLabel: "Delete event",
+        tone: "danger",
+      });
+      if (!confirmed || selectedAccount()?.id !== account.id) return;
+      try {
+        await deleteCalendarEvent(account.id, event.calendar_id, event.id);
+        updateEventInCards(event.id, () => null);
+        showToast("Event deleted");
+        if (activeEvent()?.id === event.id) { closeEvent(); restoreOpenedRowFocus(); }
+      } catch (e) {
+        console.error('Failed to delete event:', e);
+        showFailure("Couldn't delete the event", e);
+      }
+      return;
     }
+
+    // Where the event was in each card, to put it back on Undo
+    const places = Object.entries(cardCalendarEvents)
+      .map(([cardId, events]) => ({ cardId, index: events?.findIndex(e => e.id === event.id) ?? -1 }))
+      .filter(p => p.index !== -1);
+    const putBack = () => {
+      heldEventDeletes.delete(event.id);
+      if (selectedAccount()?.id !== account.id) return;
+      for (const { cardId, index } of places) {
+        const events = cardCalendarEvents[cardId];
+        if (!events || events.some(e => e.id === event.id)) continue;
+        const next = [...events];
+        next.splice(Math.min(index, next.length), 0, event);
+        setCardCalendarEvents(cardId, reconcile(next, { key: "id" }));
+        saveCachedCardEvents(cardId, next).catch(e => console.warn("Failed to update event cache:", e));
+      }
+    };
+    heldEventDeletes.add(event.id);
+    updateEventInCards(event.id, () => null);
+    if (activeEvent()?.id === event.id) { closeEvent(); restoreOpenedRowFocus(); }
+    toasts.show({
+      message: `Deleted “${event.title || "(No title)"}”`,
+      undo: putBack,
+      onExpire: async () => {
+        try {
+          await deleteCalendarEvent(account.id, event.calendar_id, event.id);
+          heldEventDeletes.delete(event.id);
+        } catch (e) {
+          console.error('Failed to delete event:', e);
+          putBack();
+          showFailure("Couldn't delete the event", e);
+        }
+      },
+    });
   }
 
   async function handleMoveEventToCalendar(destinationCalendarId: string) {
@@ -2605,7 +2782,7 @@ function App() {
       setCalendarDrawerOpen(false);
     } catch (e) {
       console.error("Failed to move event:", e);
-      showToast(`Failed to move event: ${e}`);
+      showFailure("Couldn't move the event", e);
     }
   }
 
@@ -2652,6 +2829,7 @@ function App() {
 
     if (shouldClose) {
       closeThreadView();
+      restoreOpenedRowFocus();
     } else {
       await refreshActiveThread(account.id, thread.id);
     }
@@ -2679,10 +2857,21 @@ function App() {
     try {
       await modifyThreads(account.id, [thread.id], addLabels, removeLabels);
       await refreshActiveThread(account.id, thread.id);
-      showToast(`${isAdding ? 'Added' : 'Removed'} label "${labelName}"`);
+      toasts.show({
+        message: `${isAdding ? 'Added' : 'Removed'} the label “${labelName}”`,
+        undo: async () => {
+          try {
+            await modifyThreads(account.id, [thread.id], removeLabels, addLabels);
+            if (activeThreadId() === thread.id) await refreshActiveThread(account.id, thread.id);
+          } catch (e) {
+            console.error("Failed to undo label change:", e);
+            setFailure("Couldn't undo", e);
+          }
+        },
+      });
     } catch (e) {
       console.error("Failed to modify labels:", e);
-      setError(`Failed to ${isAdding ? 'add' : 'remove'} label: ${e}`);
+      setFailure(`Couldn't ${isAdding ? 'add' : 'remove'} the label “${labelName}”`, e);
     }
   }
 
@@ -2759,7 +2948,7 @@ function App() {
   // Closing by hand throws away typed replies, so ask first
   async function confirmDiscardBatchReplies(): Promise<boolean> {
     const unsent = unsentBatchReplies();
-    return !unsent || askConfirm(`Discard ${unsent}?`, "Discard");
+    return !unsent || askConfirm({ title: `Discard ${unsent}?`, message: "What you typed is lost.", confirmLabel: "Discard", cancelLabel: "Keep editing", tone: "danger" });
   }
 
   async function dismissBatchReply() {
@@ -2842,7 +3031,7 @@ function App() {
       return true;
     } catch (e) {
       console.error('Failed to send reply:', e);
-      if (!quiet) showToast(`Failed to send: ${e}`);
+      if (!quiet) showFailure(`Couldn't send the reply to “${thread.subject}”`, e);
       return false;
     } finally {
       setBatchReplySending({ ...batchReplySending(), [threadId]: false });
@@ -2925,7 +3114,7 @@ function App() {
         loadCardThreads(cardId, false, true);
       }
     } catch (e) {
-      setError(`Couldn't save the card: ${e}`);
+      setFailure("Couldn't save the card", e);
     }
   }
 
@@ -2973,17 +3162,44 @@ function App() {
     });
   }
 
-  async function handleDeleteCard(cardId: string) {
-    const name = cards().find(c => c.id === cardId)?.name || "Untitled";
-    if (!(await askConfirm(`Delete the card "${name}"? This can't be undone.`, "Delete"))) return;
-    try {
-      await deleteCard(cardId);
-      setCards(cards().filter(c => c.id !== cardId));
-      forgetCardState([cardId]);
-    } catch (err) {
-      console.error("Failed to delete card:", err);
-      showToast(`Failed to delete card: ${err}`);
-    }
+  // Cards deleted in the app whose deletion waits out their Undo toast
+  const heldCardDeletes = new Set<string>();
+
+  // The card goes at once; it is deleted for good (and from iCloud) only
+  // once its toast goes without Undo
+  function handleDeleteCard(cardId: string) {
+    const account = selectedAccount();
+    const index = cards().findIndex(c => c.id === cardId);
+    if (!account || index === -1) return;
+    const deleted = cards()[index];
+    const name = deleted.name || "Untitled";
+    const wasCollapsed = !!collapsedCards[cardId];
+    const putBack = () => {
+      heldCardDeletes.delete(cardId);
+      if (selectedAccount()?.id !== account.id || cards().some(c => c.id === cardId)) return;
+      const next = [...cards()];
+      next.splice(Math.min(index, next.length), 0, deleted);
+      setCards(next);
+      saveCollapsedState({ ...collapsedCards, [cardId]: wasCollapsed });
+      if (!wasCollapsed) loadCardThreads(cardId);
+    };
+    heldCardDeletes.add(cardId);
+    setCards(cards().filter(c => c.id !== cardId));
+    forgetCardState([cardId]);
+    toasts.show({
+      message: `Deleted the card “${name}”`,
+      undo: putBack,
+      onExpire: async () => {
+        try {
+          await deleteCard(cardId);
+          heldCardDeletes.delete(cardId);
+        } catch (err) {
+          console.error("Failed to delete card:", err);
+          putBack();
+          showFailure(`Couldn't delete the card “${name}”`, err);
+        }
+      },
+    });
   }
 
   // Collapsed cards a history reset skipped; their threads are refetched on expanding
@@ -3061,7 +3277,7 @@ function App() {
       batchReplyOpen() ? unsentBatchReplies() : null,
       quickReply().text.trim() ? "your quick reply" : null,
     ].filter((what): what is string => !!what);
-    if (lost.length > 0 && !(await askConfirm(`Discard ${lost.join(" and ")}?`, "Discard"))) return;
+    if (lost.length > 0 && !(await askConfirm({ title: `Discard ${lost.join(" and ")}?`, message: "What you typed is lost.", confirmLabel: "Discard", cancelLabel: "Keep editing", tone: "danger" }))) return;
     if (selectedAccount()?.id === account.id) return;
 
     closeAccountViews();
@@ -3072,7 +3288,7 @@ function App() {
     try {
       if (await loadAccountCards(account)) startBackgroundSync(account.id);
     } catch (e) {
-      setError(`Couldn't load ${account.email}: ${e}`);
+      setFailure(`Couldn't load ${account.email}`, e);
     }
   }
 
@@ -3269,7 +3485,7 @@ function App() {
 
   async function fetchAndCacheCalendarEvents(accountId: string, cardId: string, query: string) {
     try {
-      const events = await fetchCalendarEvents(accountId, query);
+      const events = (await fetchCalendarEvents(accountId, query)).filter(ev => !heldEventDeletes.has(ev.id));
       if (selectedAccount()?.id !== accountId || cardQueryChanged(cardId, query)) return;
       setCardCalendarEvents(cardId, reconcile(events, { key: "id" }));
       await saveCachedCardEvents(cardId, events);
@@ -3500,7 +3716,7 @@ function App() {
         });
         return;
       }
-      setError(`Failed to open attachment: ${e}`);
+      setFailure(`Couldn't open ${filename}`, e);
     }
   }
 
@@ -3527,7 +3743,7 @@ function App() {
       showToast(`Saved to ${savedPath}`);
     } catch (e) {
       console.error('Failed to download attachment:', e);
-      setError(`Failed to download attachment: ${e}`);
+      setFailure(`Couldn't save ${filename}`, e);
     }
   }
 
@@ -3580,6 +3796,7 @@ function App() {
       return;
     }
 
+    rememberOpenedRow(cardId, threadId);
     setActiveThreadId(threadId);
     setActiveThreadCardId(cardId);
     setThreadLoading(true);
@@ -3638,6 +3855,7 @@ function App() {
   }
 
   function openEvent(event: GoogleCalendarEvent, cardId: string) {
+    rememberOpenedRow(cardId, event.id);
     setActiveEvent(event);
     setActiveEventCardId(cardId);
   }
@@ -3661,7 +3879,7 @@ function App() {
       setGeminiKeySaved(!!apiKey.trim());
       setGeminiKeyDraft("");
     } catch (e) {
-      showToast(`Couldn't save the Gemini API key: ${e}`);
+      showFailure("Couldn't save the Gemini API key", e);
     }
   }
 
@@ -3694,43 +3912,12 @@ function App() {
     }
   }
 
-  function showToast(message?: string, action?: { label: string; run: () => void }) {
-    discardToastDraftKey = null;
-    clearTimeout(toastTimeoutId);
-    // Cancel a pending hide so it can't null out this newer toast
-    clearTimeout(toastHideTimeoutId);
-    if (message) {
-      // Plain message toast: drop any pending undo so `z` (or the Undo
-      // button) can't replay an older, unrelated action. The action-undo
-      // toast path calls showToast() with no message after setLastAction.
-      setLastAction(null);
-    }
-    setToast(prev => ({
-      message: message || null,
-      action,
-      visible: true,
-      closing: false,
-      key: (prev?.key ?? 0) + 1, // Increment key to force remount and restart animation
-    }));
-    toastTimeoutId = window.setTimeout(() => {
-      hideToast();
-    }, 5000);
+  function showToast(message: string, action?: ToastAction) {
+    toasts.show({ message, action });
   }
 
-  function hideToast() {
-    setToast(t => t ? { ...t, closing: true } : null);
-    toastHideTimeoutId = window.setTimeout(() => {
-      setToast(null);
-      setLastAction(null); // Expire undo when toast closes
-    }, 200);
-  }
-
-  async function undoLastAction() {
-    const action = lastAction();
-    if (!action) return;
-
-    hideToast();
-
+  async function undoThreadAction(action: UndoableAction) {
+    if (lastAction() === action) setLastAction(null);
     try {
       await Promise.all(action.reversals.map(r => modifyThreads(action.accountId, r.threadIds, r.add, r.remove)));
       // Refresh every card the optimistic update touched, not just the
@@ -3743,9 +3930,8 @@ function App() {
       }
     } catch (e) {
       console.error("Failed to undo action", e);
-      setError(`Couldn't undo: ${e}`);
+      setFailure("Couldn't undo", e);
     }
-    setLastAction(null);
   }
 
   // silent: a change the user didn't ask for directly (marking a thread
@@ -3753,16 +3939,6 @@ function App() {
   async function handleThreadAction(action: string, threadIds: string[], cardId: string, { silent = false } = {}) {
     const account = selectedAccount();
     if (!account) return;
-
-    // Confirm destructive bulk actions
-    if (threadIds.length > 1 && (action === 'archive' || action === 'trash' || action === 'spam')) {
-      const actionText = action === 'trash' ? 'delete' : action === 'spam' ? 'move to spam' : 'archive';
-      const verb = actionText.charAt(0).toUpperCase() + actionText.slice(1);
-      if (!(await askConfirm(`${verb} ${threadIds.length} threads?`, verb))) {
-        return;
-      }
-      if (selectedAccount()?.id !== account.id) return;
-    }
 
     const { add: addLabels, remove: removeLabels } = labelChangeFor(action);
 
@@ -3803,8 +3979,7 @@ function App() {
           .catch(e => console.warn("Failed to update thread cache:", e));
       }
       if (silent) return;
-      // Store undo state and show toast
-      setLastAction({
+      const done: UndoableAction = {
         accountId: account.id,
         action,
         threadIds,
@@ -3812,8 +3987,9 @@ function App() {
         cardIds: affectedCardIds,
         reversals: undoLabelChanges(threadIds, { add: addLabels, remove: removeLabels }, labelsBefore),
         timestamp: Date.now()
-      });
-      showToast();
+      };
+      setLastAction(done);
+      toasts.show({ message: actionLabel(action, threadIds.length), undo: () => undoThreadAction(done) });
     } catch (e) {
       console.error("Failed to modify threads", e);
       // Roll back the optimistic update; the cache was never written. After
@@ -3825,7 +4001,7 @@ function App() {
           }
         }));
       }
-      setError(`${actionFailureLabel(action, threadIds.length)}: ${e}`);
+      setFailure(actionFailureLabel(action, threadIds.length), e);
     }
   }
 
@@ -3904,6 +4080,7 @@ function App() {
             <Show when={!composing()}>
             <div
               class="compose-toolbar"
+              data-board
               onMouseLeave={() => {
                 fabHoverTimeout = window.setTimeout(() => setComposeFabHovered(false), 250);
               }}
@@ -3969,7 +4146,7 @@ function App() {
             </div>
           </Show>
 
-          <div class="toolbar-wrapper">
+          <div class="toolbar-wrapper" data-board>
             <div class={`color-picker ${bgColorPickerOpen() ? 'open' : ''}`}>
               <div
                 class={`color-picker-selected ${selectedBgColorIndex() === null ? 'no-color' : ''}`}
@@ -4080,7 +4257,15 @@ function App() {
       {/* Error banner */}
       <Show when={error()}>
         <div class="auth-error" role="alert">
-          {error()}
+          {error()!.message}
+          <Show when={error()!.details}>
+            {(details) => (
+              <details class="error-details">
+                <summary>Details</summary>
+                <span>{details()}</span>
+              </details>
+            )}
+          </Show>
           <Show when={expiredAccountId() && expiredAccountId() === selectedAccount()?.id}>
             <button class="btn btn-primary" onClick={handleReauth}>Sign in again</button>
           </Show>
@@ -4126,7 +4311,7 @@ function App() {
       <Show when={!loading() && selectedAccount()}>
         <DragDropProvider onDragStart={onDragStart} onDragEnd={onDragEnd as any} collisionDetector={mostIntersecting}>
           <DragDropSensors />
-          <div class={`deck ${resizing() ? 'resizing' : ''}`} style={{ background: deckBackground() }}>
+          <div class={`deck ${resizing() ? 'resizing' : ''}`} style={{ background: deckBackground() }} data-board>
             <SortableProvider ids={cardIds()}>
               <For each={cards()}>
                 {(card) => {
@@ -4276,7 +4461,8 @@ function App() {
                                         onClick={() => openEvent(event, card.id)}
                                         onMouseEnter={() => showEventHoverActions(event.id)}
                                         onMouseLeave={hideEventHoverActions}
-                                        tabindex="0"
+                                        tabindex={rowTabIndex(card.id, event.id)}
+                                        onFocus={() => onRowFocus(card.id, event.id)}
                                       >
                                         <div class="calendar-event-row">
                                           <span class="calendar-event-title">{event.title}</span>
@@ -4348,6 +4534,7 @@ function App() {
                                               onDeleteEvent={deleteEvent}
                                               onRsvped={markEventRsvp}
                                               showToast={showToast}
+                                              showFailure={showFailure}
                                             />
                                           </Show>
                                         </div>
@@ -4391,7 +4578,7 @@ function App() {
                             <Index each={getDisplayGroups(card.id)}>
                               {(group) => (
                                 <>
-                                  <div class="date-header">{group().label}</div>
+                                  <div class="date-header">{threadGroupLabel(group().label)}</div>
                                   <For each={group().threads}>
                                     {(thread) => {
                                       // An event that is over needs no answer
@@ -4411,7 +4598,8 @@ function App() {
                                           onClick={() => openThread(thread.gmail_thread_id, card.id)}
                                           role="article"
                                           aria-label={`${thread.unread_count > 0 ? 'Unread: ' : ''}${thread.subject} from ${thread.participants.slice(0, 2).join(', ')}`}
-                                          tabindex="0"
+                                          tabindex={rowTabIndex(card.id, thread.gmail_thread_id)}
+                                          onFocus={() => onRowFocus(card.id, thread.gmail_thread_id)}
                                         >
                                           <div class="thread-row">
                                             <Show when={thread.unread_count > 0}>
@@ -4557,6 +4745,7 @@ function App() {
                                                 handleForward={handleForward}
                                                 handleThreadAction={handleThreadAction}
                                                 showToast={showToast}
+                                                showFailure={showFailure}
                                               />
                                             </Show>
                                           </div>
@@ -4910,7 +5099,7 @@ function App() {
           geminiKeySaved={geminiKeySaved()}
           accountId={selectedAccount()?.id || ''}
           currentUserEmail={selectedAccount()?.email}
-          onError={showToast}
+          onError={showFailure}
           loading={threadLoading()}
           error={threadError()}
           onRetry={() => {
@@ -4923,7 +5112,7 @@ function App() {
             return c ? { name: c.name, color: (c.color as CardColor) || null } : null;
           })() : null}
           focusColor={selectedBgColorIndex() !== null ? BG_COLORS[selectedBgColorIndex()!].hex : null}
-          onClose={() => { if (composeShownIn() === "thread") closeCompose(); closeThreadView(); }}
+          onClose={() => { if (composeShownIn() === "thread") closeCompose(); closeThreadView(); restoreOpenedRowFocus(); }}
           focusedMessageIndex={focusedMessageIndex()}
           onFocusChange={setFocusedMessageIndex}
           onOpenAttachment={(messageId, attachmentId, filename, mimeType, inlineData) => openAttachment(messageId, attachmentId, filename, mimeType, inlineData)}
@@ -4959,9 +5148,15 @@ function App() {
         {/* Label Drawer */}
         <Show when={labelDrawerOpen()}>
           <div class="label-drawer-overlay" onClick={closeLabelDrawer}></div>
-          <div class="label-drawer">
+          <Dialog
+            class="label-drawer"
+            labelledBy="label-drawer-title"
+            onClose={closeLabelDrawer}
+            closesFromInputs
+            initialFocus={(el) => el.querySelector<HTMLElement>(".label-drawer-search input")}
+          >
             <div class="label-drawer-header">
-              <h3>Labels</h3>
+              <h3 id="label-drawer-title">Labels</h3>
               <CloseButton onClick={closeLabelDrawer} />
             </div>
 
@@ -4971,7 +5166,6 @@ function App() {
                 placeholder="Search labels..."
                 value={labelSearchQuery()}
                 onInput={(e) => setLabelSearchQuery(e.currentTarget.value)}
-                onKeyDown={(e) => { if (e.key === 'Escape') closeLabelDrawer(); }}
                 autofocus
               />
             </div>
@@ -5015,7 +5209,7 @@ function App() {
               </Show>
             </div>
 
-          </div>
+          </Dialog>
         </Show>
       </Show>
 
@@ -5028,7 +5222,7 @@ function App() {
             return c ? { name: c.name, color: (c.color as CardColor) || null } : null;
           })() : null}
           focusColor={selectedBgColorIndex() !== null ? BG_COLORS[selectedBgColorIndex()!].hex : null}
-          onClose={closeEvent}
+          onClose={() => { closeEvent(); restoreOpenedRowFocus(); }}
           onRsvp={async (status) => {
             const event = activeEvent();
             const account = selectedAccount();
@@ -5039,8 +5233,7 @@ function App() {
               markEventRsvp(event.id, status);
               showToast(rsvpSentMessage(status));
             } catch (e) {
-              console.error("Failed to update RSVP", e);
-              showToast(`Couldn't RSVP: ${e}`);
+              showFailure("Couldn't send your RSVP", e);
             } finally {
               setRsvpLoading(event.id, false);
             }
@@ -5065,7 +5258,7 @@ function App() {
             const subject = addForwardPrefix(event.title);
             const body = `---------- Forwarded event ----------\n` +
               `Title: ${event.title}\n` +
-              `When: ${new Date(event.start_time).toLocaleString()}\n` +
+              `When: ${formatWhen(new Date(event.start_time), new Date())}\n` +
               (event.location ? `Where: ${event.location}\n` : '') +
               (event.organizer ? `Organizer: ${event.organizer}\n` : '') +
               (event.description ? `\n${event.description}` : '');
@@ -5239,12 +5432,17 @@ function App() {
       {/* Query help sheet */}
       <Show when={queryHelpOpen()}>
         <div class="query-help-overlay" onClick={() => setQueryHelpOpen(false)}></div>
-        <div class="query-help-sheet">
+        <Dialog
+          class="query-help-sheet"
+          labelledBy="query-help-title"
+          onClose={() => setQueryHelpOpen(false)}
+          initialFocus={(el) => el.querySelector<HTMLElement>(".query-help-body")}
+        >
           <div class="query-help-header">
-            <h3>Query Operators</h3>
+            <h3 id="query-help-title">Query Operators</h3>
             <CloseButton onClick={() => setQueryHelpOpen(false)} />
           </div>
-          <div class="query-help-body">
+          <div class="query-help-body" tabindex="0">
             <div class="query-help-section">
               <h4>Email Operators</h4>
               <div class="query-help-table">
@@ -5347,7 +5545,7 @@ function App() {
               </div>
             </div>
           </div>
-        </div>
+        </Dialog>
       </Show>
 
       {/* Settings sidebar */}
@@ -5466,12 +5664,17 @@ function App() {
       {/* Keyboard shortcuts help modal */}
       <Show when={shortcutsHelpOpen()}>
         <div class="shortcuts-overlay" onClick={() => setShortcutsHelpOpen(false)}></div>
-        <div class="shortcuts-modal">
+        <Dialog
+          class="shortcuts-modal"
+          labelledBy="shortcuts-title"
+          onClose={() => setShortcutsHelpOpen(false)}
+          initialFocus={(el) => el.querySelector<HTMLElement>(".shortcuts-body")}
+        >
           <div class="shortcuts-header">
-            <h2>Keyboard Shortcuts</h2>
+            <h2 id="shortcuts-title">Keyboard Shortcuts</h2>
             <CloseButton onClick={() => setShortcutsHelpOpen(false)} />
           </div>
-          <div class="shortcuts-body">
+          <div class="shortcuts-body" tabindex="0">
             <div class="shortcuts-section">
               <h3>Navigation</h3>
               <div class="shortcut-row"><kbd>j</kbd> <span>Next thread</span></div>
@@ -5532,6 +5735,11 @@ function App() {
             <div class="shortcuts-section">
               <h3>Selection</h3>
               <div class="shortcut-row"><kbd>x</kbd> <span>Select thread or event</span></div>
+              <div class="shortcut-row"><kbd>⇧J</kbd> <span>Extend selection down</span></div>
+              <div class="shortcut-row"><kbd>⇧K</kbd> <span>Extend selection up</span></div>
+              <div class="shortcut-row"><kbd>*a</kbd> <span>Select all in card</span></div>
+              <div class="shortcut-row"><kbd>a s u i d !</kbd> <span>Act on the selection</span></div>
+              <div class="shortcut-row"><kbd>r</kbd> <span>Batch reply to the selection</span></div>
               <div class="shortcut-row"><kbd>Escape</kbd> <span>Clear selection</span></div>
             </div>
             <div class="shortcuts-section">
@@ -5539,7 +5747,7 @@ function App() {
               <div class="shortcut-row"><kbd>?</kbd> <span>Show this help</span></div>
             </div>
           </div>
-        </div>
+        </Dialog>
       </Show>
 
       {/* Query autocomplete dropdown - rendered at app level to avoid clipping */}
@@ -5616,41 +5824,20 @@ function App() {
         })()}
       </Show>
 
-      {/* Undo Toast - For with key forces remount to restart progress bar animation */}
-      <For each={toast()?.visible ? [toast()!.key] : []}>
-        {() => (
-          <div class={`undo-toast ${toast()?.closing ? 'closing' : ''}`} role="status">
-            <div class="toast-progress"></div>
+      <Toasts toasts={toasts}>
+        {/* Send Toast with Undo */}
+        <Show when={undoableSend.toastVisible()}>
+          <div class={`undo-toast send-toast ${undoableSend.toastClosing() ? 'closing' : ''}`}>
+            <div class="toast-progress send-progress" style={{ width: `${undoableSend.progress()}%` }}></div>
             <div class="toast-content">
-              <span class="toast-message">{toast()?.message || (lastAction() ? actionLabel(lastAction()!.action, lastAction()!.threadIds.length) : '')}</span>
-              <Show when={!toast()?.message && lastAction()}>
-                <button class="toast-undo-btn" onClick={undoLastAction}>Undo <span class="shortcut-hint">z</span></button>
+              <span class="toast-message">Sending message...</span>
+              <Show when={undoableSend.pending()}>
+                <button class="toast-undo-btn" onClick={undoSend}>Undo</button>
               </Show>
-              <Show when={toast()?.action}>
-                {(action) => (
-                  <button class="toast-undo-btn" onClick={() => { hideToast(); action().run(); }}>{action().label}</button>
-                )}
-              </Show>
-              <button class="toast-close-btn" onClick={hideToast} title="Dismiss">
-                <CloseIcon />
-              </button>
             </div>
           </div>
-        )}
-      </For>
-
-      {/* Send Toast with Undo */}
-      <Show when={undoableSend.toastVisible()}>
-        <div class={`undo-toast send-toast ${undoableSend.toastClosing() ? 'closing' : ''}`} role="status">
-          <div class="toast-progress send-progress" style={{ width: `${undoableSend.progress()}%` }}></div>
-          <div class="toast-content">
-            <span class="toast-message">Sending message...</span>
-            <Show when={undoableSend.pending()}>
-              <button class="toast-undo-btn" onClick={undoSend}>Undo</button>
-            </Show>
-          </div>
-        </div>
-      </Show>
+        </Show>
+      </Toasts>
 
       <ConfirmDialog />
     </div >

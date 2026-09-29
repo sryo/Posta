@@ -1,4 +1,4 @@
-import { createEffect, on, onMount, onCleanup, Show, For } from "solid-js";
+import { onMount, onCleanup, Show, For } from "solid-js";
 import DOMPurify from 'dompurify';
 import { DOMPURIFY_CONFIG } from './MessageBody';
 import { openUrl } from '@tauri-apps/plugin-opener';
@@ -19,8 +19,9 @@ import { MessageActionsWheel } from "./MessageActionsWheel";
 import { COLOR_HEX } from "../shared/constants";
 import { createCloseAfterAnimation } from "../shared/closeAfterAnimation";
 import { isTypingTarget, hasCommandModifier } from "../shared/keyboard";
-import { createTwoStepConfirm } from "../shared/twoStepConfirm";
 import type { InlineComposeProps, InlineEditEventProps } from "./types";
+import { useLayer } from "../app/layers";
+import { useDialog } from "../app/dialog";
 
 // Event View Component
 export const EventView = (props: {
@@ -46,26 +47,12 @@ export const EventView = (props: {
 }) => {
 
   const { closing, close: handleClose } = createCloseAfterAnimation(() => props.onClose());
+  const dialogRef = useDialog({ onClose: handleClose, labelledBy: "event-view-title", initialFocus: (el) => el });
 
-  const deleteConfirm = createTwoStepConfirm();
-  const handleDelete = () => deleteConfirm.press(() => props.onDelete());
-  createEffect(on(() => props.event?.id, () => deleteConfirm.disarm(), { defer: true }));
 
   // Shortcuts advertised by the toolbar badges (R/J/O/C/E/#) and the actions wheel (R/⇧R/F)
   const handleKeyDown = (e: KeyboardEvent) => {
-    const isTyping = isTypingTarget(e.target);
-
-    if (e.key === 'Escape') {
-      if (isTyping) return; // input-level handlers (e.g. ComposeForm) own Escape
-      if (deleteConfirm.armed()) { deleteConfirm.disarm(); return; }
-      if (props.inlineEdit) { props.inlineEdit.onClose(); return; }
-      if (props.inlineCompose) { props.inlineCompose.onClose(); return; }
-      if (props.calendarDrawerOpen) { props.onCloseCalendarDrawer(); return; }
-      handleClose();
-      return;
-    }
-
-    if (isTyping || hasCommandModifier(e) || !props.event || props.inlineCompose || props.inlineEdit) return;
+    if (isTypingTarget(e.target) || hasCommandModifier(e) || !props.event || props.inlineCompose || props.inlineEdit) return;
     const event = props.event;
 
     if (e.key === 'r' && event.organizer) { e.preventDefault(); props.onReplyOrganizer(); return; }
@@ -83,8 +70,8 @@ export const EventView = (props: {
     if (e.key === 'e' && event.can_edit) { e.preventDefault(); props.onEdit(); return; }
     if ((e.key === 'd' || e.key === '#') && event.can_edit) {
       e.preventDefault();
-      // A held key repeats, and would confirm its own first press
-      if (!e.repeat) handleDelete();
+      // A held key repeats
+      if (!e.repeat) props.onDelete();
       return;
     }
   };
@@ -92,15 +79,20 @@ export const EventView = (props: {
   onMount(() => document.addEventListener('keydown', handleKeyDown));
   onCleanup(() => document.removeEventListener('keydown', handleKeyDown));
 
+  // Escape closes whichever of these opened last
+  useLayer(() => props.calendarDrawerOpen, () => props.onCloseCalendarDrawer());
+  useLayer(() => !!props.inlineCompose, () => props.inlineCompose?.onClose());
+  useLayer(() => !!props.inlineEdit, () => props.inlineEdit?.onClose());
+
   return (
-    <div class={`thread-overlay ${closing() ? 'closing' : ''}`} style={props.focusColor ? { '--message-focused-color': props.focusColor } as any : undefined}>
+    <div ref={dialogRef} class={`thread-overlay ${closing() ? 'closing' : ''}`} style={props.focusColor ? { '--message-focused-color': props.focusColor } as any : undefined}>
       <div class="thread-floating-bar">
         {/* Row 1: Close + Title + Card indicator */}
         <div class="thread-floating-bar-row">
           <CloseButton onClick={handleClose} />
           <div class="thread-bar-subject">
             <Show when={props.event} fallback={<span>Loading...</span>}>
-              <h2>{props.event?.title || '(No title)'}</h2>
+              <h2 id="event-view-title">{props.event?.title || '(No title)'}</h2>
             </Show>
           </div>
           <Show when={props.card}>
@@ -181,11 +173,11 @@ export const EventView = (props: {
 
               <button
                 class="thread-toolbar-btn thread-toolbar-btn-danger"
-                onClick={(e) => { if (e.detail <= 1) handleDelete(); }}
-                title={deleteConfirm.armed() ? `Press again to delete "${props.event!.title || '(No title)'}". This can't be undone.` : "Delete event"}
+                onClick={(e) => { if (e.detail <= 1) props.onDelete(); }}
+                title="Delete event"
               >
                 <TrashIcon />
-                <span class="thread-toolbar-label">{deleteConfirm.armed() ? "Confirm" : "Delete"}</span>
+                <span class="thread-toolbar-label">Delete</span>
                 <span class="shortcut-hint">#</span>
               </button>
             </Show>

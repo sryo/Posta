@@ -41,6 +41,8 @@ import { MessageActionsWheel } from "./MessageActionsWheel";
 import { COLOR_HEX } from "../shared/constants";
 import type { InlineComposeProps } from "./types";
 import { findHeader, lastMessageFromOthers } from "../app/messages";
+import { useLayer } from "../app/layers";
+import { useDialog } from "../app/dialog";
 
 const normalizeMessageId = (id: string) => id.trim().replace(/^<|>$/g, '').toLowerCase();
 
@@ -80,7 +82,8 @@ export const ThreadView = (props: {
   threadAttachments?: Attachment[],
   // CID attachment data fetched on-demand (cid -> base64 data)
   cidAttachmentData?: Record<string, string>,
-  onError?: (message: string) => void,
+  // "Couldn't …", with the error that caused it
+  onError?: (failure: string, error: unknown) => void,
   // Whether a Gemini key is saved; smart replies ask the keychain when unknown
   geminiKeySaved?: boolean,
 }) => {
@@ -115,14 +118,14 @@ export const ThreadView = (props: {
     try {
       await sendReaction(props.accountId, props.thread.id, messageIdHeader, emoji, toEmail);
     } catch (e) {
-      console.error('Failed to send reaction:', e);
-      props.onError?.(`Failed to send reaction: ${e}`);
+      props.onError?.("Couldn't send the reaction", e);
     } finally {
       setSendingReaction(false);
     }
   };
 
   const { closing, close: handleClose } = createCloseAfterAnimation(() => props.onClose());
+  const dialogRef = useDialog({ onClose: handleClose, labelledBy: "thread-view-title", initialFocus: (el) => el });
 
   // Gmail messages never change content under the same id (a draft edit gets
   // a new id), so a reloaded thread reuses the loaded message objects and
@@ -248,16 +251,7 @@ export const ThreadView = (props: {
   };
 
   const handleKeyDown = (e: KeyboardEvent) => {
-    const isTyping = isTypingTarget(e.target);
-
-    if (e.key === 'Escape') {
-      if (isTyping) return; // input-level handlers (e.g. ComposeForm) own Escape
-      if (props.inlineCompose) { props.inlineCompose.onClose(); return; }
-      if (props.labelDrawerOpen) { props.onCloseLabelDrawer?.(); return; }
-      handleClose();
-      return;
-    }
-    if (isTyping || hasCommandModifier(e) || !props.thread) return;
+    if (isTypingTarget(e.target) || hasCommandModifier(e) || !props.thread) return;
 
     // The drawer covers the thread, so only its own toggle stays live
     if (props.labelDrawerOpen) {
@@ -303,15 +297,19 @@ export const ThreadView = (props: {
   onMount(() => document.addEventListener('keydown', handleKeyDown));
   onCleanup(() => document.removeEventListener('keydown', handleKeyDown));
 
+  // Escape closes whichever of these opened last
+  useLayer(() => !!props.inlineCompose, () => props.inlineCompose?.onClose());
+  useLayer(() => !!props.labelDrawerOpen, () => props.onCloseLabelDrawer?.(), { closesFromInputs: true });
+
   return (
-    <div class={`thread-overlay ${closing() ? 'closing' : ''}`} style={props.focusColor ? { '--message-focused-color': props.focusColor } as any : undefined}>
+    <div ref={dialogRef} class={`thread-overlay ${closing() ? 'closing' : ''}`} style={props.focusColor ? { '--message-focused-color': props.focusColor } as any : undefined}>
       <div class="thread-floating-bar">
         {/* Row 1: Close + Subject + Card indicator */}
         <div class="thread-floating-bar-row">
           <CloseButton onClick={handleClose} />
           <div class="thread-bar-subject">
             <Show when={props.thread} fallback={<Show when={props.loading}><span>Loading...</span></Show>}>
-              <h2>{findHeader(props.thread?.messages[0]?.payload?.headers, 'Subject') || '(No Subject)'}</h2>
+              <h2 id="thread-view-title">{findHeader(props.thread?.messages[0]?.payload?.headers, 'Subject') || '(No Subject)'}</h2>
             </Show>
           </div>
           <Show when={props.card}>

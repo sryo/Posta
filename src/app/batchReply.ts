@@ -1,6 +1,7 @@
 import type { FullMessage, MessagePart } from "../api/tauri";
 import { extractEmail, extractMessageHtml, splitEmailList } from "../utils";
 import { findHeader, lastMessageFromOthers } from "./messages";
+import { formatWhen } from "./dateFormat";
 
 export interface BatchReplyThread {
   threadId: string;
@@ -41,7 +42,7 @@ export function batchReplyEntry(threadId: string, messages: FullMessage[], accou
     snippet: msg.snippet || "",
     body: extractMessageHtml(msg.payload, msg.snippet),
     from,
-    date: msg.internalDate ? new Date(parseInt(msg.internalDate)).toLocaleDateString() : "",
+    date: msg.internalDate ? formatWhen(new Date(parseInt(msg.internalDate)), new Date()) : "",
     messageId: msg.id,
     to,
     parts: msg.payload?.parts,

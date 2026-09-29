@@ -26,7 +26,6 @@ import {
   VideoIcon,
   CheckIcon,
 } from "./Icons";
-import { createTwoStepConfirm } from "../shared/twoStepConfirm";
 
 // Half Pie Menu Component
 export const ActionsWheel = (props: {
@@ -56,14 +55,14 @@ export const ActionsWheel = (props: {
   // Deletes an event the user can edit; without it the wheel offers no delete
   onDeleteEvent?: (event: GoogleCalendarEvent) => void;
   onRsvped?: (eventId: string, status: string) => void;
-  showToast: (message?: string) => void;
+  showToast: (message: string) => void;
+  // "Couldn't …", with the error that caused it
+  showFailure: (failure: string, error: unknown) => void;
 }) => {
   const containerRef = (el: HTMLDivElement) => {
     // Simple animation trigger
     setTimeout(() => el.classList.add('open'), 10);
   };
-
-  const deleteConfirm = createTwoStepConfirm();
 
   // One response at a time: a double click would otherwise send two
   let rsvpInFlight = false;
@@ -77,7 +76,7 @@ export const ActionsWheel = (props: {
       props.showToast(rsvpSentMessage(status));
       props.onClose();
     } catch (err) {
-      props.showToast(`Couldn't RSVP: ${err instanceof Error ? err.message : String(err)}`);
+      props.showFailure("Couldn't send your RSVP", err);
     } finally {
       rsvpInFlight = false;
     }
@@ -87,7 +86,7 @@ export const ActionsWheel = (props: {
   // selection changes while the wheel stays mounted
   const actions = createMemo(() => {
     const settings = props.actionSettings();
-    const actions: { cls: string; title: string, keyHint?: string, icon: () => JSX.Element, onClick: (e: MouseEvent) => void, confirmsDelete?: boolean }[] = [];
+    const actions: { cls: string; title: string, keyHint?: string, icon: () => JSX.Element, onClick: (e: MouseEvent) => void }[] = [];
 
     // Event actions (when event prop is provided)
     if (props.event) {
@@ -98,7 +97,7 @@ export const ActionsWheel = (props: {
       const evtOrder = props.eventActionOrder();
 
       // Event action definitions
-      const eventActionDefs: Record<string, { cls: string; title: string; keyHint?: string; icon: () => JSX.Element; onClick: (e: MouseEvent) => void; available: boolean; confirmsDelete?: boolean }> = {
+      const eventActionDefs: Record<string, { cls: string; title: string; keyHint?: string; icon: () => JSX.Element; onClick: (e: MouseEvent) => void; available: boolean }> = {
         quickReply: {
           cls: 'bulk-reply',
           title: 'Reply to organizer',
@@ -137,19 +136,16 @@ export const ActionsWheel = (props: {
         },
         delete: {
           cls: 'bulk-danger',
-          title: deleteConfirm.armed() ? `Click again to delete ${evt.title || '(No title)'}` : 'Delete',
-          icon: deleteConfirm.armed() ? CheckIcon : TrashIcon,
+          title: 'Delete',
+          icon: TrashIcon,
           onClick: (e) => {
             e.stopPropagation();
-            // The second click of a double click is not a confirmation
+            // The second click of a double click would delete it again
             if (e.detail > 1) return;
-            deleteConfirm.press(() => {
-              props.onDeleteEvent?.(evt);
-              props.onClose();
-            });
+            props.onDeleteEvent?.(evt);
+            props.onClose();
           },
-          available: evt.can_edit && !!props.onDeleteEvent,
-          confirmsDelete: true
+          available: evt.can_edit && !!props.onDeleteEvent
         }
       };
 
@@ -163,7 +159,7 @@ export const ActionsWheel = (props: {
         } else {
           if (!evtSettings[key]) continue;
         }
-        actions.push({ cls: def.cls, title: def.title, keyHint: def.keyHint, icon: def.icon, onClick: def.onClick, confirmsDelete: def.confirmsDelete });
+        actions.push({ cls: def.cls, title: def.title, keyHint: def.keyHint, icon: def.icon, onClick: def.onClick });
       }
 
       // Clear selection (if events are selected)
@@ -305,10 +301,7 @@ export const ActionsWheel = (props: {
                   left: `calc(50% + ${x.toFixed(1)}px - 14px)`,
                   top: `calc(50% + ${y.toFixed(1)}px - 14px)`
                 }}
-                onClick={(e) => {
-                  if (!action.confirmsDelete) deleteConfirm.disarm();
-                  action.onClick(e);
-                }}
+                onClick={(e) => action.onClick(e)}
                 title={action.title}
               >
                 <div style={{ width: '14px', height: '14px' }}>

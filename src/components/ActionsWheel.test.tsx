@@ -60,6 +60,7 @@ const baseProps = {
   handleForward: vi.fn(),
   handleThreadAction: vi.fn(),
   showToast: vi.fn(),
+  showFailure: vi.fn(),
 };
 
 const hint = (title: string) => screen.getByTitle(title).querySelector(".action-key-hint")?.textContent ?? null;
@@ -91,37 +92,24 @@ describe("ActionsWheel key hints", () => {
 describe("ActionsWheel event delete", () => {
   afterEach(() => vi.restoreAllMocks());
 
-  it("deletes an event the user can edit on a second click, without a native confirm", () => {
+  it("deletes an event the user can edit on one click, without a native confirm", () => {
     const confirm = vi.spyOn(window, "confirm").mockReturnValue(false);
     const onDeleteEvent = vi.fn();
     const onClose = vi.fn();
     render(() => <ActionsWheel {...baseProps} onClose={onClose} selectedAccount={() => ({ id: "acc" } as any)} event={event} onDeleteEvent={onDeleteEvent} />);
     fireEvent.click(screen.getByTitle("Delete"));
-    expect(onDeleteEvent).not.toHaveBeenCalled();
-    expect(onClose).not.toHaveBeenCalled();
-    fireEvent.click(screen.getByTitle("Click again to delete Sync"));
     expect(onDeleteEvent).toHaveBeenCalledWith(event);
     expect(onClose).toHaveBeenCalled();
     expect(confirm).not.toHaveBeenCalled();
     expect(rsvpListedCalendarEvent).not.toHaveBeenCalled();
   });
 
-  it("does not take the second click of a double click as the confirmation", () => {
+  it("does not delete again on the second click of a double click", () => {
     const onDeleteEvent = vi.fn();
     render(() => <ActionsWheel {...baseProps} event={event} onDeleteEvent={onDeleteEvent} />);
     fireEvent.click(screen.getByTitle("Delete"), { detail: 1 });
-    fireEvent.click(screen.getByTitle("Click again to delete Sync"), { detail: 2 });
-    expect(onDeleteEvent).not.toHaveBeenCalled();
-  });
-
-  it("keeps the event when another action is clicked in between", () => {
-    rsvpListedCalendarEvent.mockReset().mockResolvedValue(null);
-    const onDeleteEvent = vi.fn();
-    render(() => <ActionsWheel {...baseProps} event={event} onDeleteEvent={onDeleteEvent} />);
-    fireEvent.click(screen.getByTitle("Delete"));
-    fireEvent.click(screen.getByTitle("Join meeting"));
-    fireEvent.click(screen.getByTitle("Delete"));
-    expect(onDeleteEvent).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByTitle("Delete"), { detail: 2 });
+    expect(onDeleteEvent).toHaveBeenCalledTimes(1);
   });
 
   it("offers no delete on events the user cannot edit, where RSVP No already declines", () => {
@@ -156,10 +144,10 @@ describe("ActionsWheel event RSVP", () => {
   it("does not report a response when the RSVP fails", async () => {
     rsvpListedCalendarEvent.mockReset().mockRejectedValue(new Error("offline"));
     const onRsvped = vi.fn();
-    const showToast = vi.fn();
-    render(() => <ActionsWheel {...baseProps} showToast={showToast} selectedAccount={() => ({ id: "acc" } as any)} event={event} onRsvped={onRsvped} />);
+    const showFailure = vi.fn();
+    render(() => <ActionsWheel {...baseProps} showFailure={showFailure} selectedAccount={() => ({ id: "acc" } as any)} event={event} onRsvped={onRsvped} />);
     fireEvent.click(screen.getByTitle("RSVP Yes"));
-    await vi.waitFor(() => expect(showToast).toHaveBeenCalledWith("Couldn't RSVP: offline"));
+    await vi.waitFor(() => expect(showFailure).toHaveBeenCalledWith("Couldn't send your RSVP", new Error("offline")));
     expect(onRsvped).not.toHaveBeenCalled();
   });
 
