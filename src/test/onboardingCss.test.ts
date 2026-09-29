@@ -34,3 +34,10 @@ describe("settings section toggles", () => {
     expect(toggle.has("font")).toBe(false);
   });
 });
+
+describe("client file chooser", () => {
+  it("shows keyboard focus on its label, since the file input itself is hidden", () => {
+    const focused = declarations(".credentials-drop-zone label:has(:focus-visible)");
+    expect(focused.get("outline")).toBe("2px solid var(--accent)");
+  });
+});
