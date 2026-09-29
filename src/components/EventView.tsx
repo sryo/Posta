@@ -17,6 +17,7 @@ import { ComposeForm } from "./ComposeForm";
 import { CreateEventForm } from "./CreateEventForm";
 import { MessageActionsWheel } from "./MessageActionsWheel";
 import { COLOR_HEX } from "../shared/constants";
+import { organizerName } from "../app/people";
 import { createCloseAfterAnimation } from "../shared/closeAfterAnimation";
 import { isTypingTarget, hasCommandModifier } from "../shared/keyboard";
 import type { InlineComposeProps, InlineEditEventProps } from "./types";
@@ -192,7 +193,7 @@ export const EventView = (props: {
                 <div class="message-card message-focused">
                   {/* Event Header */}
                   <div class="message-header">
-                    <div class="message-sender">{props.event!.organizer || 'Unknown organizer'}</div>
+                    <div class="message-sender" title={props.event!.organizer ?? undefined}>{organizerName(props.event!) || 'Unknown organizer'}</div>
                     <div class="message-date">{formatCalendarEventDate(props.event!.start_time, props.event!.end_time, props.event!.all_day)}</div>
                   </div>
 

@@ -60,7 +60,7 @@ export function actionLabel(action: string, count: number): string {
     case "inbox": return `Moved ${threads} to inbox`;
     case "star": return `Starred ${threads}`;
     case "unstar": return `Removed star from ${threads}`;
-    case "trash": return `Deleted ${threads}`;
+    case "trash": return `Moved ${threads} to Trash`;
     case "read": return `Marked ${threads} as read`;
     case "unread": return `Marked ${threads} as unread`;
     case "important": return `Marked ${threads} as important`;

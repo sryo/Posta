@@ -1,9 +1,10 @@
-import { Show, For, onCleanup } from "solid-js";
+import { Show, For, onCleanup, createSignal, createEffect } from "solid-js";
 import type { SendAttachment } from "../api/tauri";
 import { getAvatarColor, truncateMiddle } from "../utils";
 import { CloseIcon, AttachmentIcon } from "./Icons";
 import { CloseButton } from "./ComposeAtoms";
 import { isImeComposing } from "../shared/keyboard";
+import { splitQuotedText } from "../app/quotedHistory";
 
 // Shared Compose Form component
 interface ComposeFormProps {
@@ -189,6 +190,24 @@ export const ComposeForm = (props: ComposeFormProps) => {
     </Show>
   );
 
+  // A reply's quoted history, captured once so typing above it never
+  // re-splits the body; folded away until the toggle opens it
+  const [quotedTail, setQuotedTail] = createSignal<string | null>(null);
+  const [quoteShown, setQuoteShown] = createSignal(false);
+  createEffect(() => {
+    if (props.mode !== 'reply' || quotedTail() !== null) return;
+    const split = splitQuotedText(props.body);
+    if (split) setQuotedTail(split.quoted);
+  });
+  const foldedTail = () => {
+    const tail = quotedTail();
+    return tail && props.body.endsWith(tail) ? tail : null;
+  };
+  const visibleBody = () => {
+    const tail = foldedTail();
+    return tail && !quoteShown() ? props.body.slice(0, props.body.length - tail.length) : props.body;
+  };
+
   const BodyTextarea = () => (
     <div class="compose-content">
       <textarea
@@ -202,11 +221,29 @@ export const ComposeForm = (props: ComposeFormProps) => {
             });
           }
         }}
-        value={props.body}
-        onInput={(e) => { props.setBody(e.currentTarget.value); props.onInput?.(); }}
+        value={visibleBody()}
+        onInput={(e) => {
+          const value = e.currentTarget.value;
+          if (quoteShown()) {
+            if (quotedTail() !== null) setQuotedTail(splitQuotedText(value)?.quoted ?? '');
+            props.setBody(value);
+          } else {
+            props.setBody(value + (foldedTail() ?? ''));
+          }
+          props.onInput?.();
+        }}
         onKeyDown={handleKeyDown}
         placeholder={props.placeholder || (props.mode === 'new' ? "Write something..." : "Write your reply...")}
       />
+      <Show when={foldedTail()}>
+        <button
+          class="quoted-toggle"
+          aria-expanded={quoteShown()}
+          aria-label={quoteShown() ? 'Hide quoted text' : 'Show quoted text'}
+          title={quoteShown() ? 'Hide quoted text' : 'Show quoted text'}
+          onClick={() => setQuoteShown(!quoteShown())}
+        >•••</button>
+      </Show>
     </div>
   );
 

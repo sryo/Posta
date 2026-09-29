@@ -61,6 +61,15 @@ describe("regroupThreads", () => {
     expect(ids(regroupThreads(groups, "sender"))).toEqual([["al@x", ["b"]], ["bo@x", ["c", "a"]]]);
   });
 
+  it("names sender groups after the sender, keeping one group per address", () => {
+    const groups = [{ label: "Today", threads: [
+      thread("a", { participants: ["Ana Pérez <ana@x>"], last_message_date: 2 }),
+      thread("b", { participants: ["ana@x"], last_message_date: 1 }),
+      thread("c", { participants: ["Ana Pérez <other@x>"], last_message_date: 3 }),
+    ] }];
+    expect(ids(regroupThreads(groups, "sender"))).toEqual([["Ana Pérez", ["a", "b"]], ["Ana Pérez", ["c"]]]);
+  });
+
   it("groups by label using label names and skipping system labels", () => {
     const groups = [{ label: "Today", threads: [
       thread("a", { labels: ["IMPORTANT", "INBOX", "Label_7"] }),
@@ -164,6 +173,13 @@ describe("groupCalendarEvents", () => {
     expect(groupCalendarEvents(events, "organizer").map(g => [g.label, g.events.map(e => e.id)]))
       .toEqual([["Unknown", ["2"]], ["zed@x", ["3", "1"]]]);
     expect(groupCalendarEvents(events, "calendar").map(g => g.label)).toEqual(["Home", "Work"]);
+  });
+
+  it("names organizer groups from the guest list", () => {
+    const guest = { email: "zed@x", display_name: "Zed Alvarez", response_status: null, is_self: false, is_organizer: true };
+    const events = [event("1", { organizer: "zed@x", attendees: [guest] }), event("2", { organizer: "zed@x" })];
+    expect(groupCalendarEvents(events, "organizer").map(g => [g.label, g.events.map(e => e.id)]))
+      .toEqual([["Zed Alvarez", ["1", "2"]]]);
   });
 
   it("sorts an all-day event from its local midnight, ahead of meetings starting then", () => {

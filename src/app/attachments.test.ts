@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { isCalendarAttachment, readFilesAsAttachments } from "./attachments";
+import { isCalendarAttachment, isPreviewable, readFilesAsAttachments } from "./attachments";
 
 describe("readFilesAsAttachments", () => {
   it("base64-encodes each file without the data URL prefix", async () => {
@@ -30,5 +30,15 @@ describe("isCalendarAttachment", () => {
     expect(isCalendarAttachment({ filename: "invite", mime_type: "Text/Calendar" })).toBe(true);
     expect(isCalendarAttachment({ filename: "invite", mime_type: "APPLICATION/ICS" })).toBe(true);
     expect(isCalendarAttachment({ filename: "notes.ics.pdf", mime_type: "application/pdf" })).toBe(false);
+  });
+});
+
+describe("isPreviewable", () => {
+  it("previews images and PDFs in the app, not scripts drawn as images or other files", () => {
+    expect(isPreviewable("image/png")).toBe(true);
+    expect(isPreviewable("IMAGE/JPEG")).toBe(true);
+    expect(isPreviewable("application/pdf")).toBe(true);
+    expect(isPreviewable("image/svg+xml")).toBe(false);
+    expect(isPreviewable("text/plain")).toBe(false);
   });
 });

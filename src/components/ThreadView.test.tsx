@@ -289,13 +289,52 @@ describe("ThreadView reactions", () => {
       in_reply_to: "<MSG0@example.com>",
       message_id: "m1",
     };
+    const { container } = renderThread({ thread, focusedMessageIndex: 0 });
+    const cards = container.querySelectorAll(".message-card");
+    expect(cards).toHaveLength(1);
+    expect(cards[0].querySelector(".message-reaction")?.textContent).toBe("🎉");
+    expect(container.textContent).not.toContain("fallback text for the reaction");
+    expect(container.querySelector(".message-reaction-note")).toBeNull();
+    expect(cards[0].querySelector(".add-reaction-btn")).not.toBeNull();
+  });
+
+  it("still shows a reaction to a message outside the thread as its own message, with no reaction button", () => {
+    const thread = makeThread([
+      { from: "Alice <alice@example.com>", body: "first" },
+      { from: "Bob <bob@example.com>", body: "fallback" },
+    ]);
+    thread.messages[1].reaction = { emoji: "🎉", from_addr: "bob@example.com", in_reply_to: "<other@example.com>", message_id: "m1" };
     const { container } = renderThread({ thread });
     const cards = container.querySelectorAll(".message-card");
-    expect(cards[0].querySelector(".message-reaction")?.textContent).toBe("🎉");
-    expect(cards[1].textContent).not.toContain("fallback text for the reaction");
+    expect(cards).toHaveLength(2);
     expect(cards[1].querySelector(".message-reaction-note")?.textContent).toContain("🎉");
     expect(cards[1].querySelector(".add-reaction-btn")).toBeNull();
-    expect(cards[0].querySelector(".add-reaction-btn")).not.toBeNull();
+  });
+
+  it("moves focus off a reaction shown as a chip, and j/k skip it", () => {
+    const thread = makeThread([
+      { from: "Alice <alice@example.com>", body: "first" },
+      { from: "Bob <bob@example.com>", body: "second" },
+      { from: "Carol <carol@example.com>", body: "reaction" },
+    ]);
+    thread.messages[2].reaction = { emoji: "👍", from_addr: "carol@example.com", in_reply_to: "<msg1@example.com>", message_id: "m2" };
+    const onFocusChange = vi.fn();
+    const [focus, setFocus] = createSignal(2);
+    onFocusChange.mockImplementation(setFocus);
+    render(() => (
+      <ThreadView
+        thread={thread} loading={false} error={null} card={null} focusColor={null} onClose={vi.fn()}
+        focusedMessageIndex={focus()} onFocusChange={onFocusChange} onOpenAttachment={vi.fn()} onDownloadAttachment={vi.fn()}
+        onShowAttachmentMenu={vi.fn()} onReply={vi.fn()} onForward={vi.fn()} onAction={vi.fn()} onOpenLabels={vi.fn()}
+        accountId="acc" currentUserEmail="me@example.com" isStarred={false} isRead={true} isImportant={false}
+        isInInbox={true} labelCount={0} inlineCompose={null}
+      />
+    ));
+    expect(focus()).toBe(1);
+    fireEvent.keyDown(document, { key: "j" });
+    expect(focus()).toBe(1);
+    fireEvent.keyDown(document, { key: "k" });
+    expect(focus()).toBe(0);
   });
 
   it("groups identical emojis with a count and names who reacted", () => {
@@ -491,6 +530,41 @@ describe("ThreadView attachments", () => {
     fireEvent.keyDown(thumb, { key: "Enter" });
     expect(props.onOpenAttachment).toHaveBeenCalledTimes(1);
   });
+
+  const withFiles = () => {
+    const thread = makeThread([
+      { from: "Alice <alice@example.com>", body: "" },
+      { from: "Bob <bob@example.com>", body: "" },
+    ]);
+    const part = (filename: string, mimeType: string, id: string) => ({ filename, mimeType, body: { attachmentId: id, size: 2048 } });
+    thread.messages[0].payload = { ...thread.messages[0].payload, mimeType: "multipart/mixed",
+      parts: [{ mimeType: "text/plain", body: { data: b64("hi") } }, part("plan.pdf", "application/pdf", "a1"), part("notes.txt", "text/plain", "a2")] };
+    thread.messages[1].payload = { ...thread.messages[1].payload, mimeType: "multipart/mixed",
+      parts: [{ mimeType: "text/plain", body: { data: b64("hi") } }, part("hotel.png", "image/png", "a3")] };
+    return thread;
+  };
+
+  it("previews the thread's images and PDFs together, starting at the one clicked", () => {
+    const onPreviewAttachments = vi.fn();
+    const { container, props } = renderThread({ thread: withFiles(), onPreviewAttachments });
+    const thumbs = container.querySelectorAll<HTMLElement>(".attachment-thumb");
+    fireEvent.click(thumbs[2]);
+    const [items, index] = onPreviewAttachments.mock.calls[0];
+    expect(items.map((i: { filename: string }) => i.filename)).toEqual(["plan.pdf", "hotel.png"]);
+    expect(items[1]).toMatchObject({ messageId: "m1", attachmentId: "a3", mimeType: "image/png", size: 2048 });
+    expect(index).toBe(1);
+
+    fireEvent.click(thumbs[1]);
+    expect(props.onOpenAttachment).toHaveBeenCalledWith("m0", "a2", "notes.txt", "text/plain", undefined);
+  });
+
+  it("names attachments with their size and opens their menu with Shift+F10", () => {
+    const { container, props } = renderThread({ thread: withFiles() });
+    const thumb = container.querySelector<HTMLElement>(".attachment-thumb")!;
+    expect(thumb.getAttribute("aria-label")).toBe("plan.pdf, 2.0 KB");
+    fireEvent.keyDown(thumb, { key: "F10", shiftKey: true });
+    expect(props.onShowAttachmentMenu).toHaveBeenCalledWith(expect.objectContaining({ filename: "plan.pdf", attachmentId: "a1" }));
+  });
 });
 
 describe("ThreadView scrolling", () => {
@@ -601,5 +675,107 @@ describe("ThreadView load errors", () => {
   it("says Loading in the title bar while the thread loads", () => {
     const { getByText } = renderThread({ thread: null, loading: true });
     expect(getByText("Loading...")).toBeInTheDocument();
+  });
+});
+
+describe("ThreadView mailing lists", () => {
+  const newsletter = () => {
+    const thread = makeThread([{ from: "The Weekly Byte <hello@weeklybyte.test>", body: "Issue 212" }]);
+    thread.messages[0].payload!.headers!.push(
+      { name: "List-Unsubscribe", value: "<https://weeklybyte.test/u/1>" },
+      { name: "List-Unsubscribe-Post", value: "List-Unsubscribe=One-Click" },
+    );
+    return thread;
+  };
+
+  it("offers to unsubscribe from list mail, once", async () => {
+    let finish!: () => void;
+    const onUnsubscribe = vi.fn(() => new Promise<void>(r => { finish = r; }));
+    const { getByRole } = renderThread({ thread: newsletter(), focusedMessageIndex: 0, onUnsubscribe });
+    fireEvent.click(getByRole("button", { name: /Unsubscribe/ }));
+    expect(onUnsubscribe).toHaveBeenCalledWith({ kind: "oneClick", url: "https://weeklybyte.test/u/1" }, "The Weekly Byte");
+    expect(getByRole("button", { name: /Unsubscribing/ })).toBeDisabled();
+    finish();
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(getByRole("button", { name: /Unsubscribed/ })).toBeDisabled();
+  });
+
+  it("lets the user try again when unsubscribing fails", async () => {
+    const onUnsubscribe = vi.fn(async () => { throw new Error("offline"); });
+    const { getByRole } = renderThread({ thread: newsletter(), focusedMessageIndex: 0, onUnsubscribe });
+    fireEvent.click(getByRole("button", { name: /Unsubscribe/ }));
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(getByRole("button", { name: /Unsubscribe/ })).not.toBeDisabled();
+  });
+
+  it("offers no unsubscribe, reaction or smart replies where they don't fit", () => {
+    const list = renderThread({ thread: newsletter(), focusedMessageIndex: 0, onUnsubscribe: vi.fn() });
+    expect(list.container.querySelector(".add-reaction-btn")).toBeNull();
+    expect(list.container.querySelector(".reply-chip")).toBeNull();
+    list.unmount();
+    const personal = renderThread({ onUnsubscribe: vi.fn() });
+    expect(personal.queryByRole("button", { name: /Unsubscribe/ })).toBeNull();
+    expect(personal.container.querySelector(".reply-chip")).not.toBeNull();
+  });
+});
+
+describe("ThreadView message header", () => {
+  it("says who each message went to under its sender", () => {
+    const { container } = renderThread({
+      thread: makeThread([{ from: "Alice <alice@example.com>", to: "Me <me@example.com>, Bob <bob@example.com>", cc: "carol@example.com", body: "hi" }]),
+      focusedMessageIndex: 0,
+    });
+    const header = container.querySelector(".message-header")!;
+    expect(header.querySelector(".message-sender")?.textContent).toBe("Alice <alice@example.com>");
+    expect(header.querySelector(".message-recipients-toggle")?.textContent).toBe("to me, Bob +1");
+  });
+});
+
+describe("ThreadView moving between the card's threads", () => {
+  it("says where the thread sits in its card", () => {
+    const { container } = renderThread({ card: { name: "Inbox", color: null }, position: { index: 3, total: 12 }, onStepThread: vi.fn() });
+    expect(container.querySelector(".thread-bar-card")?.textContent).toBe("Inbox · 3 of 12");
+  });
+
+  it("steps with the arrows, Shift+J/K and ]/[", () => {
+    const onStepThread = vi.fn();
+    const { getByRole } = renderThread({ card: { name: "Inbox", color: null }, position: { index: 3, total: 12 }, onStepThread });
+    fireEvent.click(getByRole("button", { name: "Next thread" }));
+    fireEvent.click(getByRole("button", { name: "Previous thread" }));
+    fireEvent.keyDown(document, { key: "J", shiftKey: true });
+    fireEvent.keyDown(document, { key: "K", shiftKey: true });
+    fireEvent.keyDown(document, { key: "]" });
+    fireEvent.keyDown(document, { key: "[" });
+    expect(onStepThread.mock.calls.map(c => c[0])).toEqual([1, -1, 1, -1, 1, -1]);
+  });
+
+  it("disables the arrow that would leave the card", () => {
+    const { getByRole } = renderThread({ card: { name: "Inbox", color: null }, position: { index: 1, total: 2 }, onStepThread: vi.fn() });
+    expect(getByRole("button", { name: "Previous thread" })).toBeDisabled();
+    expect(getByRole("button", { name: "Next thread" })).not.toBeDisabled();
+  });
+});
+
+describe("ThreadView toolbar", () => {
+  const labels = (container: HTMLElement) =>
+    Array.from(container.querySelectorAll(".thread-toolbar-label")).map(l => l.textContent);
+
+  it("names the read and importance buttons after the action they take", () => {
+    const { container, unmount } = renderThread({ isRead: true, isImportant: true });
+    expect(labels(container)).toContain("Mark unread");
+    expect(labels(container)).toContain("Not important");
+    unmount();
+    const other = renderThread({ isRead: false, isImportant: false });
+    expect(labels(other.container)).toContain("Mark read");
+    expect(labels(other.container)).toContain("Important");
+  });
+
+  it("keeps the thumbs-up as the importance icon", () => {
+    const { container } = renderThread({ isImportant: true });
+    const button = Array.from(container.querySelectorAll(".thread-toolbar-btn"))
+      .find(b => b.textContent?.includes("important"))!;
+    expect(button.querySelector("path")?.getAttribute("d")).toMatch(/^M14 9V5/);
   });
 });

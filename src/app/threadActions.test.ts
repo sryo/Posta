@@ -33,6 +33,11 @@ describe("actionLabel", () => {
     expect(actionLabel("spam", 3)).toBe("Moved 3 threads to spam");
     expect(actionLabel("bogus", 2)).toBe("Modified 2 threads");
   });
+
+  it("says deleted threads went to Trash, where they can still be recovered", () => {
+    expect(actionLabel("trash", 1)).toBe("Moved 1 thread to Trash");
+    expect(actionLabel("trash", 2)).toBe("Moved 2 threads to Trash");
+  });
 });
 
 describe("actionRemovesFromCard", () => {

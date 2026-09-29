@@ -39,9 +39,11 @@ import {
   type Card,
   type ThreadGroup,
   type Thread,
+  type Attachment,
   getThreadDetails,
   type FullThread,
   sendEmail,
+  unsubscribeOneClick,
   replyToThread,
   getCachedCardThreads,
   saveCachedCardThreads,
@@ -137,13 +139,20 @@ import { findHeader, lastMessageFromOthers } from "./app/messages";
 import { batchReplyEntry, type BatchReplyThread } from "./app/batchReply";
 import { completeRecipient, currentRecipient, matchContacts, rankContacts, type RecentContact } from "./app/contacts";
 import { eventReplyRecipients } from "./app/eventReply";
+import { labelDisplayName } from "./app/labels";
+import { personName } from "./app/people";
+import { afterRemoval, loadAfterArchive, stepThread, threadPosition } from "./app/threadNavigation";
+import { CardAttachments } from "./components/CardAttachments";
+import { AfterArchiveSetting } from "./components/AfterArchiveSetting";
+import { runUnsubscribe, type UnsubscribeMethod } from "./app/unsubscribe";
 import { actionFailureLabel, actionLabel, actionRemovesFromCard, applyThreadAction, labelChangeFor, threadMayJoinCard, undoLabelChanges, type LabelReversal } from "./app/threadActions";
 import { PRESETS } from "./app/presets";
 import { normalizeActionOrder } from "./app/actionOrder";
 import { parseStoredWidth } from "./app/storedWidth";
 import { isSessionExpiredError, needsSignInAgain } from "./app/authErrors";
 import { signatureBlock, withSignature } from "./app/signature";
-import { isCalendarAttachment, readFilesAsAttachments } from "./app/attachments";
+import { isCalendarAttachment, isPreviewable, readFilesAsAttachments } from "./app/attachments";
+import { AttachmentLightbox, type PreviewAttachment } from "./components/AttachmentLightbox";
 import { eventAttendees, eventTimesFromForm, smartEventDefaults } from "./app/eventForm";
 import { composePlacement } from "./app/composePlacement";
 import { cidImagesToFetch, createLruCache, fetchCidImages } from "./app/cidImages";
@@ -2667,6 +2676,18 @@ function App() {
     startCompose({ subject, body, forward: { threadId: activeThreadId() || '', subject, body } });
   }
 
+  async function unsubscribeFromList(method: UnsubscribeMethod, listName: string) {
+    const account = selectedAccount();
+    if (!account) return;
+    try {
+      const outcome = await runUnsubscribe(account.id, method, { sendEmail, postOneClick: unsubscribeOneClick, openUrl });
+      showToast(outcome === "done" ? `Unsubscribed from ${listName}` : `Finish unsubscribing from ${listName} on its page`);
+    } catch (e) {
+      showToast(`Couldn't unsubscribe: ${e}`);
+      throw e;
+    }
+  }
+
   // Label drawer functions
   let labelsAccountId: string | null = null;
   let labelsFetchingFor: string | null = null;
@@ -2696,7 +2717,7 @@ function App() {
       const sorted = labels.sort((a, b) => {
         if (a.label_type === 'user' && b.label_type !== 'user') return -1;
         if (a.label_type !== 'user' && b.label_type === 'user') return 1;
-        return a.name.localeCompare(b.name);
+        return labelDisplayName(a).localeCompare(labelDisplayName(b));
       });
       setAccountLabels(sorted);
     } catch (e) {
@@ -2711,7 +2732,7 @@ function App() {
   const labelNames = createMemo(() => Object.fromEntries(accountLabels().map(l => [l.id, l.name])));
   const filteredLabels = createMemo(() => {
     const query = labelSearchQuery().toLowerCase();
-    return query ? accountLabels().filter(l => l.name.toLowerCase().includes(query)) : accountLabels();
+    return query ? accountLabels().filter(l => labelDisplayName(l).toLowerCase().includes(query)) : accountLabels();
   });
 
   // "Group by label" shows label names, and a card query completes label:
@@ -2907,18 +2928,42 @@ function App() {
     const cardId = activeThreadCardId();
     if (!thread || !account) return;
 
-    // Close thread view after action (except for read/unread/important)
-    const shouldClose = ['archive', 'inbox', 'trash', 'spam'].includes(action);
+    // Actions that take the thread out of view move on (except for read/unread/important);
+    // the card's order is taken before the optimistic update removes it
+    const leavesView = ['archive', 'inbox', 'trash', 'spam'].includes(action);
+    const order = cardId ? cardThreadOrder(cardId) : [];
 
     await handleThreadAction(action, [thread.id], cardId || '');
     if (activeThreadId() !== thread.id) return;
 
-    if (shouldClose) {
-      closeThreadView();
-      restoreOpenedRowFocus();
+    if (leavesView) {
+      const next = cardId ? afterRemoval(order, thread.id, loadAfterArchive()) : null;
+      if (next && cardId && cardThreadOrder(cardId).includes(next)) openThread(next, cardId);
+      else {
+        closeThreadView();
+        restoreOpenedRowFocus();
+      }
     } else {
       await refreshActiveThread(account.id, thread.id);
     }
+  }
+
+  function cardThreadOrder(cardId: string): string[] {
+    return getDisplayGroups(cardId).flatMap(g => g.threads.map(t => t.gmail_thread_id));
+  }
+
+  const activeThreadPosition = createMemo(() => {
+    const cardId = activeThreadCardId();
+    const threadId = activeThreadId();
+    return cardId && threadId ? threadPosition(cardThreadOrder(cardId), threadId) : null;
+  });
+
+  function stepActiveThread(direction: 1 | -1) {
+    const cardId = activeThreadCardId();
+    const threadId = activeThreadId();
+    if (!cardId || !threadId) return;
+    const next = stepThread(cardThreadOrder(cardId), threadId, direction);
+    if (next) openThread(next, cardId);
   }
 
   // Reload the open thread after changing it; the user may have opened
@@ -3854,6 +3899,28 @@ function App() {
     }
   }
 
+  const [attachmentPreview, setAttachmentPreview] = createSignal<{ items: PreviewAttachment[]; index: number } | null>(null);
+
+  // Images and PDFs open in the lightbox, with the row's others to step through
+  function openCardAttachment(attachments: Attachment[], attachment: Attachment) {
+    const previewable = attachments.filter(a => isPreviewable(a.mime_type));
+    const index = previewable.indexOf(attachment);
+    if (index === -1) {
+      openAttachment(attachment.message_id, attachment.attachment_id, attachment.filename, attachment.mime_type, attachment.inline_data);
+      return;
+    }
+    const items = previewable.map(a => ({
+      messageId: a.message_id, attachmentId: a.attachment_id, filename: a.filename, mimeType: a.mime_type, size: a.size, inlineData: a.inline_data,
+    }));
+    setAttachmentPreview({ items, index });
+  }
+
+  async function loadPreviewData(item: PreviewAttachment): Promise<string> {
+    const account = selectedAccount();
+    if (!account) throw new Error("No account selected");
+    return downloadAttachmentApi(account.id, item.messageId, item.attachmentId);
+  }
+
   async function downloadAttachment(
     messageId: string,
     attachmentId: string | undefined,
@@ -4726,7 +4793,7 @@ function App() {
                                           onMouseLeave={() => hideThreadHoverActions()}
                                           onClick={() => openThread(thread.gmail_thread_id, card.id)}
                                           role="article"
-                                          aria-label={`${thread.unread_count > 0 ? 'Unread: ' : ''}${thread.subject} from ${thread.participants.slice(0, 2).join(', ')}`}
+                                          aria-label={`${thread.unread_count > 0 ? 'Unread: ' : ''}${thread.subject} from ${thread.participants.slice(0, 2).map(personName).join(', ')}`}
                                           tabindex={rowTabIndex(card.id, thread.gmail_thread_id)}
                                           onFocus={() => onRowFocus(card.id, thread.gmail_thread_id)}
                                         >
@@ -4785,51 +4852,21 @@ function App() {
                                             <div class="thread-snippet">{decodeHtmlEntities(thread.snippet)}</div>
                                           </Show>
                                           <div class="thread-participants">
-                                            {thread.participants.slice(0, 3).join(", ")}
+                                            {thread.participants.slice(0, 3).map(personName).join(", ")}
                                             {thread.participants.length > 3 && ` + ${thread.participants.length - 3} `}
                                           </div>
                                           {/* Attachment previews (filter out .ics when calendar event is shown) */}
                                           {(() => {
-                                            const attachments = thread.calendar_event
-                                              ? thread.attachments?.filter(a => !isCalendarAttachment(a))
-                                              : thread.attachments;
-                                            const imageAttachments = attachments?.filter(a => a.inline_data && a.mime_type.startsWith("image/")) ?? [];
-                                            const fileAttachments = attachments?.filter(a => !a.inline_data || !a.mime_type.startsWith("image/")) ?? [];
-                                            const shownCount = Math.min(imageAttachments.length, 4) + Math.min(fileAttachments.length, 3);
+                                            const attachments = () => thread.calendar_event
+                                              ? thread.attachments?.filter(a => !isCalendarAttachment(a)) ?? []
+                                              : thread.attachments ?? [];
                                             return (
-                                              <Show when={attachments && attachments.length > 0}>
-                                                <div class="thread-attachments" onClick={(e) => e.stopPropagation()}>
-                                                  {/* Image thumbnails */}
-                                                  <For each={imageAttachments.slice(0, 4)}>
-                                                    {(attachment) => (
-                                                      <img
-                                                        class="thread-image-thumb"
-                                                        src={`data:${attachment.mime_type};base64,${normalizeBase64Url(attachment.inline_data || '')}`}
-                                                        alt={attachment.filename}
-                                                        title={attachment.filename}
-                                                        onClick={() => openAttachment(attachment.message_id, attachment.attachment_id, attachment.filename, attachment.mime_type, attachment.inline_data)}
-                                                        onContextMenu={(e) => { e.preventDefault(); e.stopPropagation(); showAttachmentContextMenu({ messageId: attachment.message_id, attachmentId: attachment.attachment_id, filename: attachment.filename, mimeType: attachment.mime_type, inlineData: attachment.inline_data }); }}
-                                                      />
-                                                    )}
-                                                  </For>
-                                                  {/* Other files (non-image or images without inline data) */}
-                                                  <For each={fileAttachments.slice(0, 3)}>
-                                                    {(attachment) => (
-                                                      <div
-                                                        class="thread-file-item"
-                                                        title={`${attachment.filename} (${formatFileSize(attachment.size)})`}
-                                                        onClick={() => openAttachment(attachment.message_id, attachment.attachment_id, attachment.filename, attachment.mime_type, attachment.inline_data)}
-                                                        onContextMenu={(e) => { e.preventDefault(); e.stopPropagation(); showAttachmentContextMenu({ messageId: attachment.message_id, attachmentId: attachment.attachment_id, filename: attachment.filename, mimeType: attachment.mime_type, inlineData: attachment.inline_data }); }}
-                                                      >
-                                                        <span class="file-name">{truncateMiddle(attachment.filename, 14)}</span>
-                                                      </div>
-                                                    )}
-                                                  </For>
-                                                  {/* More indicator */}
-                                                  <Show when={attachments && attachments.length > shownCount}>
-                                                    <span class="thread-attachment-more">+{attachments!.length - shownCount}</span>
-                                                  </Show>
-                                                </div>
+                                              <Show when={attachments().length > 0}>
+                                                <CardAttachments
+                                                  attachments={attachments()}
+                                                  onOpen={(attachment) => openCardAttachment(attachments(), attachment)}
+                                                  onMenu={(attachment) => showAttachmentContextMenu({ messageId: attachment.message_id, attachmentId: attachment.attachment_id, filename: attachment.filename, mimeType: attachment.mime_type, inlineData: attachment.inline_data })}
+                                                />
                                               </Show>
                                             );
                                           })()}
@@ -5213,8 +5250,12 @@ function App() {
           onOpenAttachment={(messageId, attachmentId, filename, mimeType, inlineData) => openAttachment(messageId, attachmentId, filename, mimeType, inlineData)}
           onDownloadAttachment={(messageId, attachmentId, filename, mimeType, inlineData) => downloadAttachment(messageId, attachmentId, filename, mimeType, inlineData)}
           onShowAttachmentMenu={showAttachmentContextMenu}
+          onPreviewAttachments={(items, index) => setAttachmentPreview({ items, index })}
           onReply={handleReplyFromThread}
           onForward={handleForwardFromThread}
+          onUnsubscribe={unsubscribeFromList}
+          position={activeThreadPosition()}
+          onStepThread={stepActiveThread}
           onAction={handleThreadViewAction}
           onOpenLabels={() => { fetchAccountLabels({ refresh: true }); setLabelDrawerOpen(true); }}
           labelDrawerOpen={labelDrawerOpen()}
@@ -5281,9 +5322,9 @@ function App() {
                         <input
                           type="checkbox"
                           checked={isApplied()}
-                          onChange={() => handleToggleLabel(label.id, label.name, !isApplied())}
+                          onChange={() => handleToggleLabel(label.id, labelDisplayName(label), !isApplied())}
                         />
-                        <span class="label-name">{label.name}</span>
+                        <span class="label-name">{labelDisplayName(label)}</span>
                         <Show when={isSystem()}>
                           <span class="label-badge">System</span>
                         </Show>
@@ -5593,6 +5634,7 @@ function App() {
               </div>
             )}
           </Show>
+          <AfterArchiveSetting />
           <SmartRepliesSettings
             open={smartRepliesOpen()}
             onToggle={() => setSmartRepliesOpen(!smartRepliesOpen())}
@@ -5673,6 +5715,8 @@ function App() {
               <h3>Open thread</h3>
               <div class="shortcut-row"><kbd>j</kbd> <span>Next message</span></div>
               <div class="shortcut-row"><kbd>k</kbd> <span>Previous message</span></div>
+              <div class="shortcut-row"><kbd>]</kbd> <span>Next thread in the card (or ⇧J)</span></div>
+              <div class="shortcut-row"><kbd>[</kbd> <span>Previous thread in the card (or ⇧K)</span></div>
               <div class="shortcut-row"><kbd>r</kbd> <span>Reply to message</span></div>
               <div class="shortcut-row"><kbd>⇧R</kbd> <span>Reply all</span></div>
               <div class="shortcut-row"><kbd>f</kbd> <span>Forward message</span></div>
@@ -5786,6 +5830,19 @@ function App() {
       </Toasts>
 
       <ConfirmDialog />
+      <Show when={attachmentPreview()}>
+        {(preview) => (
+          <AttachmentLightbox
+            items={preview().items}
+            index={preview().index}
+            onIndexChange={(index) => setAttachmentPreview({ ...preview(), index })}
+            onClose={() => setAttachmentPreview(null)}
+            loadData={loadPreviewData}
+            onDownload={(item) => downloadAttachment(item.messageId, item.attachmentId, item.filename, item.mimeType, item.inlineData)}
+            onOpenExternally={(item) => openAttachment(item.messageId, item.attachmentId, item.filename, item.mimeType, item.inlineData)}
+          />
+        )}
+      </Show>
     </div >
   );
 }

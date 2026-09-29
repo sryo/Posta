@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createSignal } from "solid-js";
-import { render } from "@solidjs/testing-library";
+import { fireEvent, render } from "@solidjs/testing-library";
 import DOMPurify from "dompurify";
 import { MessageBody } from "./MessageBody";
 
@@ -132,5 +132,39 @@ describe("MessageBody cid image updates", () => {
     setCidData({ "b@x": "QUJD", "a@x": "REVG" });
     expect(sanitize).toHaveBeenCalledTimes(3);
     expect(container.querySelectorAll("img")[0].getAttribute("src")).toBe("data:image/png;base64,REVG");
+  });
+});
+
+describe("MessageBody quoted history", () => {
+  const reply = '<div>Thanks!</div><div class="gmail_quote"><div>On Mon, Ana wrote:</div><blockquote class="gmail_quote">Earlier <img src="cid:logo@x"></blockquote></div>';
+
+  it("folds the history a reply quotes behind a toggle that shows it again", () => {
+    const { container, getByRole } = render(() => <MessageBody body={reply} msgId="m1" />);
+    expect(container.textContent).toContain("Thanks!");
+    expect(container.textContent).not.toContain("Earlier");
+    const toggle = getByRole("button", { name: "Show quoted text" });
+    expect(toggle).toHaveAttribute("aria-expanded", "false");
+    expect(toggle.textContent).toBe("•••");
+
+    fireEvent.click(toggle);
+    expect(container.textContent).toContain("On Mon, Ana wrote:");
+    expect(container.textContent).toContain("Earlier");
+    expect(getByRole("button", { name: "Hide quoted text" })).toHaveAttribute("aria-expanded", "true");
+  });
+
+  it("still sanitizes and fills in cid images inside the folded history", () => {
+    const parts = [{ mimeType: "image/gif", headers: [{ name: "Content-ID", value: "<logo@x>" }], body: { data: "R0lG" } }];
+    const { container, getByRole } = render(() => (
+      <MessageBody body={reply.replace("Earlier", 'Earlier <img src="x" onerror="alert(1)">')} msgId="m1" msgPayloadParts={parts} />
+    ));
+    fireEvent.click(getByRole("button", { name: "Show quoted text" }));
+    const [bad, logo] = container.querySelectorAll("img");
+    expect(bad.hasAttribute("onerror")).toBe(false);
+    expect(logo.getAttribute("src")).toBe("data:image/gif;base64,R0lG");
+  });
+
+  it("shows no toggle for a message without quoted history", () => {
+    const { queryByRole } = render(() => <MessageBody body="<p>Hello</p>" msgId="m1" />);
+    expect(queryByRole("button")).toBeNull();
   });
 });

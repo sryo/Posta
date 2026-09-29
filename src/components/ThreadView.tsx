@@ -1,4 +1,4 @@
-import { createSignal, createEffect, createMemo, onMount, onCleanup, Show, For } from "solid-js";
+import { createSignal, createEffect, createMemo, on, onMount, onCleanup, Show, For } from "solid-js";
 import { MessageBody } from './MessageBody';
 import { sendReaction, type FullThread, type FullMessage, type Attachment } from "../api/tauri";
 import { createCloseAfterAnimation } from "../shared/closeAfterAnimation";
@@ -32,19 +32,27 @@ import {
   EyeOpenIcon,
   EyeClosedIcon,
   LabelIcon,
+  UnsubscribeIcon,
+  ChevronLeftIcon,
+  ChevronRightIcon,
 } from "./Icons";
 import { SmartReplies } from "./SmartReplies";
 import { ReactionButton } from "./ReactionButton";
 import { CloseButton } from "./ComposeAtoms";
 import { ComposeForm } from "./ComposeForm";
 import { MessageActionsWheel } from "./MessageActionsWheel";
+import { MessageRecipients } from "./MessageRecipients";
+import type { PreviewAttachment } from "./AttachmentLightbox";
+import { isPreviewable } from "../app/attachments";
+import { isMailingList, unsubscribeMethod, type UnsubscribeMethod } from "../app/unsubscribe";
+import { personName } from "../app/people";
 import { COLOR_HEX } from "../shared/constants";
 import type { InlineComposeProps } from "./types";
-import { findHeader, lastMessageFromOthers } from "../app/messages";
+import { findHeader, lastMessageFromOthers, nearestShownIndex, normalizeMessageId, reactionsShownAsChips, stepShownIndex } from "../app/messages";
 import { useLayer } from "../app/layers";
 import { useDialog } from "../app/dialog";
 
-const normalizeMessageId = (id: string) => id.trim().replace(/^<|>$/g, '').toLowerCase();
+type MessageAttachment = { filename: string; mimeType: string; size: number; attachmentId?: string; inlineData?: string };
 
 export const ThreadView = (props: {
   thread: FullThread | null,
@@ -59,6 +67,9 @@ export const ThreadView = (props: {
   onOpenAttachment: (messageId: string, attachmentId: string | undefined, filename: string, mimeType: string, inlineData?: string) => void,
   onDownloadAttachment: (messageId: string, attachmentId: string | undefined, filename: string, mimeType: string, inlineData?: string) => void,
   onShowAttachmentMenu: (att: { messageId: string; attachmentId: string; filename: string; mimeType: string; inlineData: string | null }) => void,
+  // Opens the lightbox on the thread's images and PDFs; without it every
+  // attachment opens in another app
+  onPreviewAttachments?: (items: PreviewAttachment[], index: number) => void,
   // messageId is the RFC 2822 Message-ID header value (undefined when the
   // header is missing; the backend resolves missing ids itself)
   onReply: (to: string, cc: string, subject: string, quotedBody: string, messageId: string | undefined, isHtml: boolean) => void,
@@ -87,6 +98,11 @@ export const ThreadView = (props: {
   // Whether a Gemini key is saved; smart replies ask the keychain when unknown
   geminiKeySaved?: boolean,
   onOpenSmartReplySettings?: () => void,
+  // listName: how the list's sender reads, for saying what was left
+  onUnsubscribe?: (method: UnsubscribeMethod, listName: string) => Promise<void>,
+  // Where the thread sits among its card's threads, counting from one
+  position?: { index: number; total: number } | null,
+  onStepThread?: (direction: 1 | -1) => void,
 }) => {
   let messageRefs: (HTMLDivElement | undefined)[] = [];
   let contentRef: HTMLDivElement | undefined;
@@ -143,6 +159,87 @@ export const ThreadView = (props: {
     return list;
   });
 
+  // The newest list message's way out of the list
+  const unsubscribe = createMemo(() => {
+    const list = props.thread?.messages ?? [];
+    for (let i = list.length - 1; i >= 0; i--) {
+      const headers = list[i].payload?.headers;
+      const method = unsubscribeMethod(headers);
+      if (method) return { method, listName: personName(findHeader(headers, 'From') || '') || 'the list' };
+    }
+    return null;
+  });
+  const [unsubscribeState, setUnsubscribeState] = createSignal<'idle' | 'working' | 'done'>('idle');
+  createEffect(on(() => props.thread?.id, () => setUnsubscribeState('idle')));
+  const handleUnsubscribe = async () => {
+    const target = unsubscribe();
+    if (!target || !props.onUnsubscribe || unsubscribeState() !== 'idle') return;
+    setUnsubscribeState('working');
+    try {
+      await props.onUnsubscribe(target.method, target.listName);
+      // A web page still needs the reader to finish there
+      setUnsubscribeState(target.method.kind === 'web' ? 'idle' : 'done');
+    } catch {
+      setUnsubscribeState('idle');
+    }
+  };
+
+  // Extract attachments from message parts, enriched with inline_data from threadAttachments
+  const attachmentsOf = (msg: FullMessage): MessageAttachment[] => {
+    const attachments: MessageAttachment[] = [];
+    const payload = msg.payload;
+    const fileParts: any[] = [];
+    const findFileParts = (parts: any[]) => {
+      parts?.forEach(part => {
+        if (part.filename && part.filename.length > 0) fileParts.push(part);
+        if (part.parts) findFileParts(part.parts);
+      });
+    };
+    findFileParts(payload?.parts?.length ? payload.parts : payload?.filename ? [payload] : []);
+
+    // Gmail issues a new attachmentId on every fetch, so the
+    // listing's ids often differ from these; fall back to
+    // pairing same-named files in order, each listing entry once
+    const listed = props.threadAttachments?.filter(a => a.message_id === msg.id) ?? [];
+    const partIds = new Set(fileParts.map(p => p.body?.attachmentId));
+    const unpaired = listed.filter(a => !partIds.has(a.attachment_id));
+    for (const part of fileParts) {
+      const attachmentId = part.body?.attachmentId;
+      let threadAtt = listed.find(a => a.attachment_id === attachmentId);
+      if (!threadAtt) {
+        const i = unpaired.findIndex(a => a.filename === part.filename);
+        if (i !== -1) threadAtt = unpaired.splice(i, 1)[0];
+      }
+      attachments.push({
+        filename: part.filename,
+        mimeType: part.mimeType || 'application/octet-stream',
+        size: part.body?.size || 0,
+        attachmentId,
+        inlineData: threadAtt?.inline_data || part.body?.data,
+      });
+    }
+    return attachments;
+  };
+
+  // Every image and PDF in the thread, in order, for the lightbox
+  const previewItems = createMemo(() => messages().flatMap(msg =>
+    attachmentsOf(msg).filter(a => isPreviewable(a.mimeType)).map(a => ({
+      messageId: msg.id,
+      attachmentId: a.attachmentId || "",
+      filename: a.filename,
+      mimeType: a.mimeType,
+      size: a.size,
+      inlineData: a.inlineData || null,
+    }))));
+
+  const chipReactions = createMemo(() => reactionsShownAsChips(props.thread?.messages ?? []));
+  const hiddenMessages = () => (props.thread?.messages ?? []).map(m => chipReactions().has(m.id));
+  createEffect(() => {
+    if (!props.thread) return;
+    const shown = nearestShownIndex(props.focusedMessageIndex, hiddenMessages());
+    if (shown !== props.focusedMessageIndex) props.onFocusChange(shown);
+  });
+
   // Scroll to the newest message when the thread loads or gains a message.
   // Actions such as star or a label change reload the same thread, and must
   // not pull the reader away from an earlier message.
@@ -159,7 +256,7 @@ export const ThreadView = (props: {
       requestAnimationFrame(() => {
         const thread = props.thread;
         if (!thread) return;
-        const lastIndex = thread.messages.length - 1;
+        const lastIndex = nearestShownIndex(thread.messages.length - 1, hiddenMessages());
         const lastMessage = messageRefs[lastIndex];
         if (lastMessage) {
           lastMessage.scrollIntoView({ block: 'start' });
@@ -267,6 +364,8 @@ export const ThreadView = (props: {
     if (e.key === '!') { e.preventDefault(); props.onAction('spam'); return; }
     if (e.key === '#' || e.key === 'd') { e.preventDefault(); props.onAction('trash'); return; }
     if (e.key === 'l') { e.preventDefault(); props.onOpenLabels(); return; }
+    if ((e.key === 'J' || e.key === ']') && props.onStepThread) { e.preventDefault(); props.onStepThread(1); return; }
+    if ((e.key === 'K' || e.key === '[') && props.onStepThread) { e.preventDefault(); props.onStepThread(-1); return; }
 
     // Reply shortcuts advertised by the focused message's actions wheel
     if ((e.key === 'r' || e.key === 'R' || e.key === 'f') && !props.inlineCompose) {
@@ -283,10 +382,7 @@ export const ThreadView = (props: {
     // j/k for message navigation
     if (e.key === 'j' || e.key === 'k') {
       e.preventDefault();
-      const maxIndex = props.thread.messages.length - 1;
-      const newIndex = e.key === 'j'
-        ? Math.min(props.focusedMessageIndex + 1, maxIndex)
-        : Math.max(props.focusedMessageIndex - 1, 0);
+      const newIndex = stepShownIndex(props.focusedMessageIndex, e.key === 'j' ? 1 : -1, hiddenMessages());
 
       if (newIndex !== props.focusedMessageIndex) {
         props.onFocusChange(newIndex);
@@ -325,6 +421,17 @@ export const ThreadView = (props: {
               }}
             >
               {props.card?.name}
+              <Show when={props.position}>{(p) => ` · ${p().index} of ${p().total}`}</Show>
+            </div>
+          </Show>
+          <Show when={props.position && props.onStepThread}>
+            <div class="thread-bar-stepper">
+              <button class="thread-toolbar-btn" aria-label="Previous thread" title="Previous thread ([ or ⇧K)" disabled={props.position!.index <= 1} onClick={() => props.onStepThread!(-1)}>
+                <ChevronLeftIcon />
+              </button>
+              <button class="thread-toolbar-btn" aria-label="Next thread" title="Next thread (] or ⇧J)" disabled={props.position!.index >= props.position!.total} onClick={() => props.onStepThread!(1)}>
+                <ChevronRightIcon />
+              </button>
             </div>
           </Show>
         </div>
@@ -346,13 +453,13 @@ export const ThreadView = (props: {
 
             <button class="thread-toolbar-btn" onClick={() => props.onAction(props.isRead ? 'unread' : 'read')} title={props.isRead ? "Mark unread" : "Mark read"}>
               {props.isRead ? <EyeClosedIcon /> : <EyeOpenIcon />}
-              <span class="thread-toolbar-label">{props.isRead ? 'Unread' : 'Read'}</span>
+              <span class="thread-toolbar-label">{props.isRead ? 'Mark unread' : 'Mark read'}</span>
               <span class="shortcut-hint">U</span>
             </button>
 
-            <button class="thread-toolbar-btn" onClick={() => props.onAction(props.isImportant ? 'notImportant' : 'important')} title={props.isImportant ? "Unmark important" : "Mark important"}>
+            <button class="thread-toolbar-btn" onClick={() => props.onAction(props.isImportant ? 'notImportant' : 'important')} title={props.isImportant ? "Mark not important" : "Mark important"}>
               {props.isImportant ? <ThumbsUpFilledIcon /> : <ThumbsUpIcon />}
-              <span class="thread-toolbar-label">{props.isImportant ? 'Unmark' : 'Important'}</span>
+              <span class="thread-toolbar-label">{props.isImportant ? 'Not important' : 'Important'}</span>
               <span class="shortcut-hint">I</span>
             </button>
 
@@ -363,6 +470,15 @@ export const ThreadView = (props: {
               <span class="thread-toolbar-label">Labels{props.labelCount > 0 ? ` (${props.labelCount})` : ''}</span>
               <span class="shortcut-hint">L</span>
             </button>
+
+            <Show when={props.onUnsubscribe && unsubscribe()}>
+              <button class="thread-toolbar-btn" onClick={handleUnsubscribe} disabled={unsubscribeState() !== 'idle'} title="Unsubscribe from this mailing list">
+                <UnsubscribeIcon />
+                <span class="thread-toolbar-label">
+                  {unsubscribeState() === 'working' ? 'Unsubscribing…' : unsubscribeState() === 'done' ? 'Unsubscribed' : 'Unsubscribe'}
+                </span>
+              </button>
+            </Show>
 
             <div class="thread-toolbar-divider" />
 
@@ -412,56 +528,22 @@ export const ThreadView = (props: {
 
         <Show when={props.thread}>
           <div class="messages-list">
-            <For each={messages()}>
-              {(msg, index) => {
+            <For each={messages().filter(m => !chipReactions().has(m.id))}>
+              {(msg) => {
+                // Position in the whole thread, which focus and refs index by
+                const index = () => messages().indexOf(msg);
                 const headers = msg.payload?.headers || [];
                 const from = findHeader(headers, 'From') || 'Unknown';
                 const date = findHeader(headers, 'Date') || '';
 
                 const getBody = () => extractMessageHtml(msg.payload, msg.snippet);
 
-                // Extract attachments from message parts, enriched with inline_data from threadAttachments
-                const getAttachments = () => {
-                  const attachments: { filename: string; mimeType: string; size: number; attachmentId?: string; inlineData?: string }[] = [];
-                  const payload = msg.payload;
-                  const fileParts: any[] = [];
-                  const findFileParts = (parts: any[]) => {
-                    parts?.forEach(part => {
-                      if (part.filename && part.filename.length > 0) fileParts.push(part);
-                      if (part.parts) findFileParts(part.parts);
-                    });
-                  };
-                  findFileParts(payload?.parts?.length ? payload.parts : payload?.filename ? [payload] : []);
-
-                  // Gmail issues a new attachmentId on every fetch, so the
-                  // listing's ids often differ from these; fall back to
-                  // pairing same-named files in order, each listing entry once
-                  const listed = props.threadAttachments?.filter(a => a.message_id === msg.id) ?? [];
-                  const partIds = new Set(fileParts.map(p => p.body?.attachmentId));
-                  const unpaired = listed.filter(a => !partIds.has(a.attachment_id));
-                  for (const part of fileParts) {
-                    const attachmentId = part.body?.attachmentId;
-                    let threadAtt = listed.find(a => a.attachment_id === attachmentId);
-                    if (!threadAtt) {
-                      const i = unpaired.findIndex(a => a.filename === part.filename);
-                      if (i !== -1) threadAtt = unpaired.splice(i, 1)[0];
-                    }
-                    attachments.push({
-                      filename: part.filename,
-                      mimeType: part.mimeType || 'application/octet-stream',
-                      size: part.body?.size || 0,
-                      attachmentId,
-                      inlineData: threadAtt?.inline_data || part.body?.data,
-                    });
-                  }
-                  return attachments;
-                };
 
                 // Memo (not snapshot): threadAttachments is a live getter that
                 // re-reads cardThreads, so inline_data arriving after this row
                 // mounts must re-render the thumbnails (same reason MessageBody
                 // wraps its lookup in createMemo)
-                const attachments = createMemo(() => getAttachments());
+                const attachments = createMemo(() => attachmentsOf(msg));
                 const isImage = (mime: string) => mime.startsWith('image/');
                 const isPdf = (mime: string) => mime === 'application/pdf';
 
@@ -496,7 +578,7 @@ export const ThreadView = (props: {
                   if (!props.inlineCompose?.isForward) return false;
                   const source = forwardSourceId();
                   const sourceShown = source != null && props.thread!.messages.some(m => m.id === source);
-                  return sourceShown ? source === msg.id : index() === props.thread!.messages.length - 1;
+                  return sourceShown ? source === msg.id : index() === nearestShownIndex(props.thread!.messages.length - 1, hiddenMessages());
                 };
                 const showInlineCompose = () => isReplyingToThis() || isForwardingFromThis();
 
@@ -511,9 +593,12 @@ export const ThreadView = (props: {
                       ref={(el) => { messageRefs[index()] = el; }}
                     >
                       <div class="message-header">
-                        <div class="message-sender">{from}</div>
+                        <div class="message-from">
+                          <div class="message-sender">{from}</div>
+                          <MessageRecipients to={findHeader(headers, 'To')} cc={findHeader(headers, 'Cc')} currentUserEmail={props.currentUserEmail} />
+                        </div>
                         <div class="message-header-actions">
-                          <Show when={!msg.reaction && extractEmail(from).toLowerCase() !== props.currentUserEmail?.toLowerCase()}>
+                          <Show when={!msg.reaction && !isMailingList(headers) && extractEmail(from).toLowerCase() !== props.currentUserEmail?.toLowerCase()}>
                             <ReactionButton
                               onSelect={(emoji) => handleSendReaction(msg.id, emoji)}
                               sending={sendingReaction()}
@@ -570,15 +655,30 @@ export const ThreadView = (props: {
                                 });
                               };
                               const hasThumb = att.inlineData && isImage(att.mimeType);
-                              const open = () => props.onOpenAttachment(msg.id, att.attachmentId, att.filename, att.mimeType, att.inlineData);
+                              const open = () => {
+                                const index = previewItems().findIndex(p =>
+                                  p.messageId === msg.id && p.filename === att.filename && p.attachmentId === (att.attachmentId || ""));
+                                if (props.onPreviewAttachments && index !== -1) props.onPreviewAttachments(previewItems(), index);
+                                else props.onOpenAttachment(msg.id, att.attachmentId, att.filename, att.mimeType, att.inlineData);
+                              };
+                              const activate = onActivateKey(open);
+                              const handleKeyDown = (e: KeyboardEvent) => {
+                                if (e.key === 'F10' && e.shiftKey) {
+                                  e.stopPropagation();
+                                  handleContextMenu(e as unknown as MouseEvent);
+                                  return;
+                                }
+                                activate(e);
+                              };
                               return (
                                 <div
                                   class="attachment-thumb"
                                   role="button"
                                   tabIndex={0}
+                                  aria-label={`${att.filename}, ${formatFileSize(att.size)}`}
                                   title={`${att.filename} (${formatFileSize(att.size)})`}
                                   onClick={open}
-                                  on:keydown={onActivateKey(open)}
+                                  on:keydown={handleKeyDown}
                                   onContextMenu={handleContextMenu}
                                 >
                                   {hasThumb ? (
@@ -642,17 +742,19 @@ export const ThreadView = (props: {
               }}
             </For>
           </div>
-          <SmartReplies
-            accountId={props.accountId}
-            threadId={props.thread!.id}
-            lastMessageId={props.thread!.messages[props.thread!.messages.length - 1]?.id}
-            keySaved={props.geminiKeySaved}
-            onOpenSettings={props.onOpenSmartReplySettings}
-            onSelect={(suggestion) => {
-              const target = lastMessageFromOthers(props.thread!.messages, props.currentUserEmail ?? '');
-              if (target) messageActions(target).reply(suggestion);
-            }}
-          />
+          <Show when={!isMailingList(lastMessageFromOthers(props.thread!.messages, props.currentUserEmail ?? '')?.payload?.headers)}>
+            <SmartReplies
+              accountId={props.accountId}
+              threadId={props.thread!.id}
+              lastMessageId={props.thread!.messages[props.thread!.messages.length - 1]?.id}
+              keySaved={props.geminiKeySaved}
+              onOpenSettings={props.onOpenSmartReplySettings}
+              onSelect={(suggestion) => {
+                const target = lastMessageFromOthers(props.thread!.messages, props.currentUserEmail ?? '');
+                if (target) messageActions(target).reply(suggestion);
+              }}
+            />
+          </Show>
         </Show>
       </div>
 

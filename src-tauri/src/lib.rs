@@ -9,6 +9,7 @@ pub mod icloud;
 pub mod models;
 pub mod people;
 pub mod ai;
+pub mod unsubscribe;
 
 use commands::AppState;
 use std::sync::Mutex;
@@ -236,6 +237,7 @@ pub fn run() {
             commands::send_email,
             commands::reply_to_thread,
             commands::send_reaction,
+            commands::unsubscribe_one_click,
             commands::get_cached_card_threads,
             commands::save_cached_card_threads,
             commands::get_cached_card_events,

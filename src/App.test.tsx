@@ -1251,7 +1251,8 @@ describe("App keyboard focus", () => {
     expect(document.activeElement).toBe(row("Mail for A"));
   });
 
-  it("focuses the row that took an archived thread's place on closing it", async () => {
+  it("focuses the row that took an archived thread's place when archiving goes back to the board", async () => {
+    localStorage.setItem("afterArchive", "board");
     threadsByCard["card-a"] = [{ ...thread("t-a", "First"), labels: ["INBOX"] }, { ...thread("t-2", "Second"), labels: ["INBOX"] }];
     handlers.get_thread_details = () => ({ id: "t-a", messages: [fullMessage("m1", "Ana <ana@x.com>")] });
     handlers.modify_threads = () => null;
@@ -4083,5 +4084,163 @@ describe("App batch reply closing", () => {
     fireEvent.click(await screen.findByText("b@x.com"));
     await answerConfirm(true);
     expect(await screen.findByText("Mail for B")).toBeInTheDocument();
+  });
+});
+
+describe("App reading view", () => {
+  it("names system labels in the label drawer as Gmail does and finds them by that name", async () => {
+    handlers.get_thread_details = () => ({ id: "t-a", messages: [fullMessage("m1", "Ana <ana@x.com>")] });
+    handlers.list_labels = () => [
+      { id: "Label_1", name: "Receipts", messageListVisibility: null, labelListVisibility: null, label_type: "user" },
+      { id: "INBOX", name: "INBOX", messageListVisibility: null, labelListVisibility: null, label_type: "system" },
+      { id: "IMPORTANT", name: "IMPORTANT", messageListVisibility: null, labelListVisibility: null, label_type: "system" },
+    ];
+    render(() => <App />);
+    fireEvent.click(await screen.findByText("Mail for A"));
+    await screen.findByText("body m1");
+    fireEvent.keyDown(document, { key: "l" });
+
+    const drawer = (await screen.findByText("Receipts")).closest(".label-drawer") as HTMLElement;
+    expect(within(drawer).getByText("Inbox")).toBeInTheDocument();
+    expect(within(drawer).getByText("Important")).toBeInTheDocument();
+    expect(within(drawer).queryByText("INBOX")).not.toBeInTheDocument();
+    fireEvent.input(screen.getByPlaceholderText("Search labels..."), { target: { value: "impor" } });
+    await waitFor(() => expect(within(drawer).queryByText("Inbox")).not.toBeInTheDocument());
+    expect(within(drawer).getByText("Important")).toBeInTheDocument();
+  });
+
+  it("names a thread's participants in its row, by address when there is no name", async () => {
+    threadsByCard["card-a"] = [{ ...thread("t-a", "Mail for A"), participants: ["Ana Pérez <ana@x.com>", "bob@x.com"] }];
+    render(() => <App />);
+    const row = (await screen.findByText("Mail for A")).closest(".thread") as HTMLElement;
+    expect(row.querySelector(".thread-participants")?.textContent?.trim()).toBe("Ana Pérez, bob@x.com");
+    expect(row.getAttribute("aria-label")).toContain("from Ana Pérez, bob@x.com");
+  });
+
+  it("moves several threads to Trash without asking, saying where they went", async () => {
+    localStorage.setItem("actionSettings", JSON.stringify({ trash: true }));
+    threadsByCard["card-a"] = [{ ...thread("t-1", "One"), labels: ["INBOX"] }, { ...thread("t-2", "Two"), labels: ["INBOX"] }];
+    handlers.modify_threads = () => null;
+    render(() => <App />);
+    await screen.findByText("One");
+    fireEvent.keyDown(document, { key: "l" });
+    fireEvent.keyDown(document, { key: "x" });
+    fireEvent.keyDown(document, { key: "j" });
+    fireEvent.keyDown(document, { key: "x" });
+
+    fireEvent.click(await screen.findByTitle("Delete"));
+    expect(await screen.findByText("Moved 2 threads to Trash")).toBeInTheDocument();
+    expect(screen.queryByRole("alertdialog")).toBeNull();
+  });
+
+  it("unsubscribes from a newsletter with its one-click link and says so", async () => {
+    const message = fullMessage("m1", "The Weekly Byte <hello@weeklybyte.test>");
+    message.payload.headers.push(
+      { name: "List-Unsubscribe", value: "<https://weeklybyte.test/u/1>" },
+      { name: "List-Unsubscribe-Post", value: "List-Unsubscribe=One-Click" },
+    );
+    handlers.get_thread_details = () => ({ id: "t-a", messages: [message] });
+    handlers.unsubscribe_one_click = () => null;
+    render(() => <App />);
+    fireEvent.click(await screen.findByText("Mail for A"));
+    fireEvent.click(await screen.findByRole("button", { name: "Unsubscribe" }));
+
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith("unsubscribe_one_click", { url: "https://weeklybyte.test/u/1" }));
+    expect(await screen.findByText(/Unsubscribed from The Weekly Byte/)).toBeInTheDocument();
+  });
+
+  it("emails a list's unsubscribe address when that is all it offers", async () => {
+    const message = fullMessage("m1", "Digest <digest@ds.test>");
+    message.payload.headers.push({ name: "List-Unsubscribe", value: "<mailto:leave@ds.test?subject=unsubscribe>" });
+    handlers.get_thread_details = () => ({ id: "t-a", messages: [message] });
+    handlers.send_email = () => null;
+    render(() => <App />);
+    fireEvent.click(await screen.findByText("Mail for A"));
+    fireEvent.click(await screen.findByRole("button", { name: "Unsubscribe" }));
+
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith("send_email", expect.objectContaining({ to: "leave@ds.test", subject: "unsubscribe" })));
+    expect(await screen.findByText(/Unsubscribed from Digest/)).toBeInTheDocument();
+  });
+
+  it("says when unsubscribing failed", async () => {
+    const message = fullMessage("m1", "The Weekly Byte <hello@weeklybyte.test>");
+    message.payload.headers.push(
+      { name: "List-Unsubscribe", value: "<https://weeklybyte.test/u/1>" },
+      { name: "List-Unsubscribe-Post", value: "List-Unsubscribe=One-Click" },
+    );
+    handlers.get_thread_details = () => ({ id: "t-a", messages: [message] });
+    handlers.unsubscribe_one_click = () => { throw "The list refused the unsubscribe request (500)"; };
+    render(() => <App />);
+    fireEvent.click(await screen.findByText("Mail for A"));
+    fireEvent.click(await screen.findByRole("button", { name: "Unsubscribe" }));
+    expect(await screen.findByText(/Couldn't unsubscribe: The list refused/)).toBeInTheDocument();
+  });
+
+  it("previews a card row's images in a lightbox, loading those the listing didn't carry", async () => {
+    const att = (filename: string, mime_type: string, inline_data: string | null) =>
+      ({ message_id: "m1", attachment_id: `id-${filename}`, filename, mime_type, size: 2048, inline_data, content_id: null });
+    threadsByCard["card-a"] = [{ ...thread("t-a", "Mail for A"), has_attachment: true,
+      attachments: [att("hotel.png", "image/png", "aW1n"), att("notes.txt", "text/plain", null), att("big.jpg", "image/jpeg", null)] }];
+    handlers.download_attachment = () => "Ymln";
+    handlers.save_attachment = () => "/Users/me/Downloads/big.jpg";
+    render(() => <App />);
+    fireEvent.click(await screen.findByRole("button", { name: "hotel.png, 2.0 KB" }));
+
+    const dialog = await screen.findByRole("dialog", { name: "hotel.png" });
+    expect(dialog).toHaveTextContent("1 of 2");
+    fireEvent.keyDown(document, { key: "ArrowRight" });
+    await waitFor(() => expect(screen.getByRole("dialog", { name: "big.jpg" }).querySelector("img")?.getAttribute("src")).toBe("data:image/jpeg;base64,Ymln"));
+    expect(invoke).toHaveBeenCalledWith("download_attachment", { accountId: "a", messageId: "m1", attachmentId: "id-big.jpg" });
+
+    fireEvent.click(within(screen.getByRole("dialog", { name: "big.jpg" })).getByRole("button", { name: "Download" }));
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith("save_attachment", expect.objectContaining({ filename: "big.jpg" })));
+    fireEvent.keyDown(document, { key: "Escape" });
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "big.jpg" })).not.toBeInTheDocument());
+    expect(screen.getByText("Mail for A")).toBeInTheDocument();
+  });
+
+  describe("after archiving", () => {
+    const threeThreads = () => {
+      threadsByCard["card-a"] = ["One", "Two", "Three"].map((subject, i) => ({ ...thread(`t-${i}`, subject), last_message_date: 3 - i }));
+      handlers.get_thread_details = ({ threadId }) => ({
+        id: threadId, messages: [fullMessage(`m-${threadId}`, "Ana <ana@x.com>", { threadId, snippet: `body of ${threadId}` })],
+      });
+      handlers.modify_threads = () => null;
+    };
+
+    it("opens the card's next thread, and says where it is in the card", async () => {
+      threeThreads();
+      render(() => <App />);
+      fireEvent.click(await screen.findByText("Two"));
+      await screen.findByText("body of t-1");
+      expect(document.querySelector(".thread-bar-card")?.textContent).toBe("Alpha · 2 of 3");
+
+      fireEvent.keyDown(document, { key: "a" });
+      await waitFor(() => expect(invoke).toHaveBeenCalledWith("modify_threads", expect.objectContaining({ threadIds: ["t-1"], removeLabels: ["INBOX"] })));
+      expect(await screen.findByText("body of t-2")).toBeInTheDocument();
+      expect(document.querySelector(".thread-bar-card")?.textContent).toBe("Alpha · 2 of 2");
+    });
+
+    it("goes back to the board when the setting says so", async () => {
+      threeThreads();
+      localStorage.setItem("afterArchive", "board");
+      render(() => <App />);
+      fireEvent.click(await screen.findByText("Two"));
+      await screen.findByText("body of t-1");
+      fireEvent.keyDown(document, { key: "#" });
+      await waitFor(() => expect(document.querySelector(".thread-overlay")).toBeNull());
+      expect(invoke).not.toHaveBeenCalledWith("get_thread_details", expect.objectContaining({ threadId: "t-2" }));
+    });
+
+    it("steps to the neighbouring thread with ] and [", async () => {
+      threeThreads();
+      render(() => <App />);
+      fireEvent.click(await screen.findByText("One"));
+      await screen.findByText("body of t-0");
+      fireEvent.keyDown(document, { key: "]" });
+      expect(await screen.findByText("body of t-1")).toBeInTheDocument();
+      fireEvent.keyDown(document, { key: "[" });
+      expect(await screen.findByText("body of t-0")).toBeInTheDocument();
+    });
   });
 });

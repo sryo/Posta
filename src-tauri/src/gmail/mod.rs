@@ -1477,9 +1477,25 @@ fn thread_labels(messages: &[MessageDetail]) -> Vec<String> {
     labels
 }
 
-/// Sender addresses in first-seen order, without duplicates
+/// The display name of a "Name <email>" address, unquoted; None for a bare
+/// address or an empty name
+fn extract_display_name(from: &str) -> Option<String> {
+    let start = from.rfind('<')?;
+    from[start..].find('>')?;
+    let name = from[..start].trim();
+    let unquoted = [('"', '"'), ('\'', '\'')]
+        .iter()
+        .find_map(|&(open, close)| name.strip_prefix(open).and_then(|n| n.strip_suffix(close)))
+        .unwrap_or(name)
+        .replace("\\\"", "\"");
+    let unquoted = unquoted.trim();
+    (!unquoted.is_empty()).then(|| unquoted.to_string())
+}
+
+/// Senders in first-seen order, one per address: "Name <email>" when any of
+/// their messages names them, otherwise the bare address
 fn thread_participants(messages: &[MessageDetail]) -> Vec<String> {
-    let mut participants: Vec<String> = Vec::new();
+    let mut participants: Vec<(String, Option<String>)> = Vec::new();
     for message in messages {
         let from = message
             .payload
@@ -1487,12 +1503,24 @@ fn thread_participants(messages: &[MessageDetail]) -> Vec<String> {
             .and_then(|p| find_header(p.headers.as_deref(), "From"));
         if let Some(from) = from {
             let email = extract_email_address(from);
-            if !participants.iter().any(|p| p.eq_ignore_ascii_case(&email)) {
-                participants.push(email);
+            let name = extract_display_name(from);
+            match participants.iter_mut().find(|(e, _)| e.eq_ignore_ascii_case(&email)) {
+                Some((_, known)) => {
+                    if known.is_none() {
+                        *known = name;
+                    }
+                }
+                None => participants.push((email, name)),
             }
         }
     }
     participants
+        .into_iter()
+        .map(|(email, name)| match name {
+            Some(name) => format!("{} <{}>", name, email),
+            None => email,
+        })
+        .collect()
 }
 
 /// A thread's messages with only the headers `header_names`, without bodies
@@ -3496,7 +3524,21 @@ mod tests {
             detail("3", &[], "Alice <A@example.com>"),
             detail("4", &[], "me@example.com"),
         ];
-        assert_eq!(thread_participants(&messages), vec!["a@example.com", "me@example.com"]);
+        assert_eq!(thread_participants(&messages), vec!["Alice <a@example.com>", "me@example.com"]);
+    }
+
+    #[test]
+    fn thread_participants_carry_display_names_without_quotes() {
+        let messages = vec![
+            detail("1", &[], "bob@example.com"),
+            detail("2", &[], "\"Stone, Bob\" <BOB@example.com>"),
+            detail("3", &[], "\"\" <empty@example.com>"),
+            detail("4", &[], "'Ana Pérez' <ana@example.com>"),
+        ];
+        assert_eq!(
+            thread_participants(&messages),
+            vec!["Stone, Bob <bob@example.com>", "empty@example.com", "Ana Pérez <ana@example.com>"]
+        );
     }
 
     fn full_message(id: &str, labels: &[&str], headers: Vec<Header>) -> FullMessage {
@@ -4109,7 +4151,7 @@ mod tests {
             summary,
             vec![("att-img", "logo@x.png", Some("logo@x")), ("att-pdf", "plan.pdf", None)]
         );
-        assert_eq!(thread_participants(&messages), vec!["ann@example.com"]);
+        assert_eq!(thread_participants(&messages), vec!["Ann <ann@example.com>"]);
     }
 
     #[test]

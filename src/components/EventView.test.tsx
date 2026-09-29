@@ -148,6 +148,17 @@ describe("EventView video call", () => {
   });
 });
 
+describe("EventView organizer", () => {
+  it("names the organizer from the guest list, keeping the address as a tooltip", () => {
+    const { container } = renderEvent({
+      attendees: [{ email: "boss@example.com", display_name: "Jules Martin", response_status: "accepted", is_self: false, is_organizer: true }],
+    });
+    const sender = container.querySelector(".message-header .message-sender")!;
+    expect(sender.textContent).toBe("Jules Martin");
+    expect(sender.getAttribute("title")).toBe("boss@example.com");
+  });
+});
+
 describe("EventView closing", () => {
   afterEach(() => vi.useRealTimers());
 

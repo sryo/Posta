@@ -146,6 +146,14 @@ export const SpamIcon = () => (
   </svg>
 );
 
+export const UnsubscribeIcon = () => (
+  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+    <path d="M22 12V6a2 2 0 0 0-2-2H4a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h9"></path>
+    <polyline points="22 6 12 13 2 6"></polyline>
+    <line x1="16" y1="19" x2="22" y2="19"></line>
+  </svg>
+);
+
 // Important icons (thumb up/down)
 export const ThumbsUpIcon = () => (
   <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
