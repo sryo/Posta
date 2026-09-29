@@ -330,7 +330,6 @@ function App() {
   const [cardWidth, setCardWidth] = createSignal<number>(
     parseStoredWidth(safeGetItem("cardWidth"), 320, MIN_CARD_WIDTH, MAX_CARD_WIDTH)
   );
-  const snippetLines = 5; // Fixed at 5 lines
 
   // Inline compose resize
   const [inlineResizing, setInlineResizing] = createSignal(false);
@@ -1196,9 +1195,6 @@ function App() {
     colorSchemeQuery = window.matchMedia?.("(prefers-color-scheme: dark)");
     handleColorSchemeChange = (e: MediaQueryListEvent) => setPrefersDark(e.matches);
     colorSchemeQuery?.addEventListener("change", handleColorSchemeChange);
-
-    // Set snippet lines CSS variable
-    document.documentElement.style.setProperty("--snippet-lines", String(snippetLines));
 
     loadGeminiKeyState();
     pruneDrafts(Date.now());

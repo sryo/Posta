@@ -195,3 +195,11 @@ describe("App.css", () => {
     expect(decl.get("border-top-color")).toBeDefined();
   });
 });
+
+describe("snippet previews", () => {
+  it("clamp to five lines from the stylesheet, not from a property the app sets", () => {
+    const root = rules.filter((rule) => rule.selectors.includes(":root")).flatMap((rule) => [...rule.declarations]);
+    expect(new Map(root).get("--snippet-lines")).toBe("5");
+    for (const [, source] of sources) expect(source).not.toContain("--snippet-lines");
+  });
+});

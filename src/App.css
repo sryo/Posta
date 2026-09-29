@@ -6,6 +6,7 @@
 
 :root {
     color-scheme: light dark;
+    --snippet-lines: 5;
     --bg-primary: #fff;
     --bg-secondary: #f5f5f5;
     --bg-tertiary: #fafafa;
@@ -1058,7 +1059,7 @@ a:focus-visible,
     text-overflow: ellipsis;
     display: -webkit-box;
     -webkit-box-orient: vertical;
-    -webkit-line-clamp: var(--snippet-lines, 2);
+    -webkit-line-clamp: var(--snippet-lines);
 }
 
 /* Calendar Event Preview */
@@ -1210,7 +1211,7 @@ a:focus-visible,
     margin-top: 4px;
     overflow: hidden;
     display: -webkit-box;
-    -webkit-line-clamp: var(--snippet-lines, 2);
+    -webkit-line-clamp: var(--snippet-lines);
     -webkit-box-orient: vertical;
     line-height: 1.4;
     white-space: pre-wrap;
