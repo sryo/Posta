@@ -14,7 +14,7 @@ export function appLocale(system: string): string {
   const regional = region ? `en-${region}` : "en-001";
   const resolved = new Intl.Locale(new Intl.DateTimeFormat(regional).resolvedOptions().locale);
   const base = resolved.region ? regional : "en-001";
-  const hourCycle = new Intl.DateTimeFormat(system, { hour: "numeric" }).resolvedOptions().hourCycle;
+  const { hourCycle } = new Intl.DateTimeFormat(system, { hour: "numeric" }).resolvedOptions() as { hourCycle?: Intl.LocaleOptions["hourCycle"] };
   return new Intl.Locale(base, hourCycle ? { hourCycle } : {}).toString();
 }
 
