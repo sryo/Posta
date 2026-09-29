@@ -1420,6 +1420,16 @@ a:focus-visible,
     font-weight: 600;
 }
 
+.invite-block-md .invite-actions {
+    align-items: stretch;
+}
+
+.invite-block-md .invite-actions .calendar-join-btn {
+    padding: var(--space-lg) var(--space-xl);
+    font-size: var(--font-size-lg);
+    border-radius: var(--radius-md);
+}
+
 .invite-block-md .invite-actions .rsvp-control-md {
     flex: 1;
     min-width: 240px;
