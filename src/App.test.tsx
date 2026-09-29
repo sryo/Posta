@@ -4820,6 +4820,13 @@ describe("App reading view", () => {
     expect(row.getAttribute("aria-label")).toContain("from Ana Pérez, bob@x.com");
   });
 
+  it("names the signed-in user among a row's participants as me", async () => {
+    threadsByCard["card-a"] = [{ ...thread("t-a", "Mail for A"), participants: ["a@x.com", "Ana Pérez <ana@x.com>"] }];
+    render(() => <App />);
+    const row = (await screen.findByText("Mail for A")).closest(".thread") as HTMLElement;
+    expect(row.querySelector(".thread-participants")?.textContent?.trim()).toBe("me, Ana Pérez");
+  });
+
   it("moves several threads to Trash without asking, saying where they went", async () => {
     localStorage.setItem("actionSettings", JSON.stringify({ trash: true }));
     threadsByCard["card-a"] = [{ ...thread("t-1", "One"), labels: ["INBOX"] }, { ...thread("t-2", "Two"), labels: ["INBOX"] }];

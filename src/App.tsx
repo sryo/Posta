@@ -146,7 +146,7 @@ import { batchReplyEntry, type BatchReplyThread } from "./app/batchReply";
 import { matchContacts, rankContacts, type RecentContact } from "./app/contacts";
 import { eventReplyRecipients } from "./app/eventReply";
 import { labelDisplayName } from "./app/labels";
-import { personName } from "./app/people";
+import { participantNames, personName } from "./app/people";
 import { afterRemoval, loadAfterArchive, stepThread, threadPosition } from "./app/threadNavigation";
 import { CardAttachments } from "./components/CardAttachments";
 import { AfterArchiveSetting } from "./components/AfterArchiveSetting";
@@ -5169,8 +5169,7 @@ function App() {
                                             <div class="thread-snippet">{decodeHtmlEntities(thread.snippet)}</div>
                                           </Show>
                                           <div class="thread-participants">
-                                            {thread.participants.slice(0, 3).map(personName).join(", ")}
-                                            {thread.participants.length > 3 && ` + ${thread.participants.length - 3} `}
+                                            {participantNames(thread.participants, accounts().map(a => a.email))}
                                           </div>
                                           {/* Attachment previews (filter out .ics when calendar event is shown) */}
                                           {(() => {

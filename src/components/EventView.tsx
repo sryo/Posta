@@ -235,7 +235,7 @@ export const EventView = (props: {
                 <div class="message-card message-focused">
                   {/* Event Header */}
                   <div class="message-header">
-                    <div class="message-sender" title={props.event!.organizer ?? undefined}>{organizerName(props.event!) || 'Unknown organizer'}</div>
+                    <div class="message-sender" title={props.event!.organizer ?? undefined}>{organizerName(props.event!, props.accountEmail) || 'Unknown organizer'}</div>
                     <div class="message-date">{formatCalendarEventDate(props.event!.start_time, props.event!.end_time, props.event!.all_day)}</div>
                   </div>
 

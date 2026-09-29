@@ -116,7 +116,7 @@ export function groupCalendarEvents(events: GoogleCalendarEvent[], groupBy: Grou
   if (groupBy === "organizer") {
     return groupByKey(events, e => e.organizer ? extractEmail(e.organizer).toLowerCase() : "", byStartTime,
       list => {
-        const names = list.map(organizerName);
+        const names = list.map(e => organizerName(e));
         return names.find(n => n && !n.includes("@")) || names[0] || "Unknown";
       })
       .map(({ label, items }) => ({ label, events: items }));

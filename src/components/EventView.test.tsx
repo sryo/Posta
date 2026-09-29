@@ -299,6 +299,11 @@ describe("EventView organizer", () => {
     expect(sender.textContent).toBe("Jules Martin");
     expect(sender.getAttribute("title")).toBe("boss@example.com");
   });
+
+  it("calls the user's own event theirs instead of repeating their address", () => {
+    const { container } = renderEvent({ organizer: "ME@example.com" });
+    expect(container.querySelector(".message-header .message-sender")!.textContent).toBe("You");
+  });
 });
 
 const attendee = (email: string, response_status: string | null, extra: Partial<GoogleCalendarEvent["attendees"][number]> = {}) =>
