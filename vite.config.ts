@@ -14,8 +14,8 @@ export default defineConfig({
   //
   // 1. prevent Vite from obscuring rust errors
   clearScreen: false,
-  // Vite's default targets Safari 16.4; macOS 10.15, the oldest the bundle
-  // supports, runs at most Safari 15.6, which cannot parse some of that output.
+  // Vite's default targets Safari 16.4; macOS 11, the oldest the bundle
+  // supports, may still be on Safari 15, which cannot parse some of that output.
   build: {
     target: "safari15",
   },

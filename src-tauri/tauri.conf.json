@@ -42,7 +42,7 @@
     "copyright": "sryo",
     "homepage": "https://github.com/sryo/Posta",
     "macOS": {
-      "minimumSystemVersion": "10.15",
+      "minimumSystemVersion": "11.0",
       "signingIdentity": "Developer ID Application: Mateo Yadarola (CL6XWJCS9R)",
       "entitlements": "Entitlements.plist",
       "files": {
