@@ -146,7 +146,7 @@ import { batchReplyEntry, type BatchReplyThread } from "./app/batchReply";
 import { matchContacts, rankContacts, type RecentContact } from "./app/contacts";
 import { eventReplyRecipients } from "./app/eventReply";
 import { labelDisplayName } from "./app/labels";
-import { participantNames, personName } from "./app/people";
+import { nameInThreads, participantNames, personName } from "./app/people";
 import { afterRemoval, loadAfterArchive, stepThread, threadPosition } from "./app/threadNavigation";
 import { CardAttachments } from "./components/CardAttachments";
 import { AfterArchiveSetting } from "./components/AfterArchiveSetting";
@@ -5756,6 +5756,7 @@ function App() {
           calendarDrawerOpen={calendarDrawerOpen()}
           onCloseCalendarDrawer={() => setCalendarDrawerOpen(false)}
           accountEmail={activeEventAccount()?.email ?? ""}
+          nameForEmail={(email) => nameInThreads(email, Object.values(cardThreads).flatMap(groups => groups.flatMap(g => g.threads)))}
           calendars={calendarsFor(activeEventAccountId() ?? undefined)}
           calendarsLoading={!!calendarsLoading[activeEventAccountId() ?? ""]}
           onMoveToCalendar={handleMoveEventToCalendar}

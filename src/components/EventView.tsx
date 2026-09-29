@@ -48,6 +48,8 @@ export const EventView = (props: {
   onCloseCalendarDrawer: () => void;
   // Signed-in account's email; decides whether the user owns, hosts or is invited to the event
   accountEmail: string;
+  // A name the user's mail gives an address, for an organizer the guest list doesn't name
+  nameForEmail?: (email: string) => string | undefined;
   calendars: { id: string; name: string; is_primary: boolean; access_role: string }[];
   calendarsLoading: boolean;
   onMoveToCalendar: (calendarId: string) => void;
@@ -235,7 +237,7 @@ export const EventView = (props: {
                 <div class="message-card message-focused">
                   {/* Event Header */}
                   <div class="message-header">
-                    <div class="message-sender" title={props.event!.organizer ?? undefined}>{organizerName(props.event!, props.accountEmail) || 'Unknown organizer'}</div>
+                    <div class="message-sender" title={props.event!.organizer ?? undefined}>{organizerName(props.event!, props.accountEmail, props.nameForEmail) || 'Unknown organizer'}</div>
                     <div class="message-date">{formatCalendarEventDate(props.event!.start_time, props.event!.end_time, props.event!.all_day)}</div>
                   </div>
 
