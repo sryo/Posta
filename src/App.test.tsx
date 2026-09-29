@@ -88,11 +88,15 @@ const thread = (id: string, subject: string): Thread => ({
 const cardsByAccount: Record<string, Card[]> = {};
 const threadsByCard: Record<string, Thread[]> = {};
 // The account chooser's button, titled with the default account's email
-// (cards' account badges carry the emails too)
 function avatar(email: string): HTMLElement {
   const button = document.querySelector<HTMLElement>(`.toolbar-avatar[title="${email}"]`);
   if (!button) throw new Error(`No account button for ${email}`);
   return button;
+}
+// An account in the open account chooser; card titles carry emails too
+async function chooserEntry(email: string): Promise<HTMLElement> {
+  const dropdown = await waitFor(() => document.querySelector(".account-chooser-dropdown") as HTMLElement);
+  return within(dropdown).getByText(email);
 }
 // What get_cards answers: every signed-in account's cards, then the
 // all-inboxes ones
@@ -659,7 +663,7 @@ describe("App accounts", () => {
     await screen.findByText("body m1");
 
     fireEvent.click(avatar("a@x.com"));
-    fireEvent.click(await screen.findByText("b@x.com"));
+    fireEvent.click(await chooserEntry("b@x.com"));
 
     await waitFor(() => avatar("b@x.com"));
     expect(screen.getByText("body m1")).toBeInTheDocument();
@@ -813,7 +817,7 @@ describe("App error banner", () => {
     await screen.findByText("Posta lost access to a@x.com");
 
     fireEvent.click(avatar("a@x.com"));
-    fireEvent.click(await screen.findByText("b@x.com"));
+    fireEvent.click(await chooserEntry("b@x.com"));
     await waitFor(() => avatar("b@x.com"));
     const banner = screen.getByText("Posta lost access to a@x.com").closest(".connection-status") as HTMLElement;
     expect(within(banner).getByRole("button", { name: "Sign in again" })).toBeInTheDocument();
@@ -921,7 +925,7 @@ describe("App card load errors", () => {
     language.mockRestore();
   });
 
-  it("shows each cached card's age instead of a sync failure while offline", async () => {
+  it("says a cached card is offline, keeping its age in refresh's name, instead of a sync failure", async () => {
     const cachedAt = Date.now() - 5 * 60_000;
     handlers.get_cached_card_threads = () => ({ groups: [{ label: "Today", threads: [thread("t-a", "Cached mail")] }], next_page_token: null, cached_at: Math.floor(cachedAt / 1000) });
     handlers.fetch_threads_paginated = () => { throw "Search failed: Request failed: could not reach Gmail. Check your connection."; };
@@ -930,14 +934,10 @@ describe("App card load errors", () => {
     await screen.findByText("Cached mail");
     await waitFor(() => expect(document.querySelector(".connection-status")).not.toBeNull());
     const alpha = screen.getByRole("region", { name: "Alpha email card" });
-    const age = await waitFor(() => {
-      const el = alpha.querySelector(".sync-status");
-      expect(el).not.toBeNull();
-      return el as HTMLElement;
-    });
-    expect(age).toHaveTextContent("5m ago");
-    expect(age).toHaveClass("sync-waiting");
-    expect(within(alpha).queryByText("sync failed")).not.toBeInTheDocument();
+    expect(await within(alpha).findByText("Offline")).toHaveClass("problem");
+    expect(within(alpha).getByRole("button", { name: "Refresh Alpha, offline, synced 5m ago" })).toBeInTheDocument();
+    expect(within(alpha).getByRole("button", { name: "Alpha, offline. Collapse" })).toBeInTheDocument();
+    expect(within(alpha).queryByText("Sync failed")).not.toBeInTheDocument();
   });
 
   it("tries again as soon as the Mac is back online", async () => {
@@ -1020,8 +1020,9 @@ describe("App card loading and empty states", () => {
     render(() => <App />);
     await screen.findByText("Mail for A");
     handlers.fetch_threads_paginated = () => ({ groups: [], next_page_token: null, has_more: false });
-    await waitFor(() => expect(screen.getAllByTitle("Refresh")[0]).not.toBeDisabled());
-    fireEvent.click(screen.getAllByTitle("Refresh")[0]);
+    const refresh = () => screen.getByRole("button", { name: /^Refresh Alpha\b/ });
+    await waitFor(() => expect(refresh()).not.toBeDisabled());
+    fireEvent.click(refresh());
     const empty = await screen.findByRole("status", { name: /^Alpha is empty\./ });
     expect(empty.querySelector(".postmark")).toHaveClass("lands");
   });
@@ -1146,7 +1147,7 @@ describe("App thread list shortcuts", () => {
     await screen.findByText("Archived 1 thread in a@x.com");
 
     fireEvent.click(avatar("a@x.com"));
-    fireEvent.click(await screen.findByText("b@x.com"));
+    fireEvent.click(await chooserEntry("b@x.com"));
     await waitFor(() => avatar("b@x.com"));
     invoke.mockClear();
     fireEvent.click(screen.getByText("Undo"));
@@ -1961,8 +1962,8 @@ describe("App calendar", () => {
     await waitFor(() => expect(screen.queryByText("Planning")).toBeNull());
     invoke.mockClear();
 
-    await waitFor(() => expect(screen.getByTitle("Refresh")).not.toBeDisabled());
-    fireEvent.click(screen.getByTitle("Refresh"));
+    await waitFor(() => expect(screen.getByRole("button", { name: /^Refresh / })).not.toBeDisabled());
+    fireEvent.click(screen.getByRole("button", { name: /^Refresh / }));
     await waitFor(() => expect(invoke).toHaveBeenCalledWith("save_cached_card_events", {
       cardId: "cal-1", events: [expect.objectContaining({ id: "ev-2" })],
     }));
@@ -3987,9 +3988,9 @@ describe("App card query edits", () => {
     handlers.clear_card_cache = () => null;
     render(() => <App />);
     await screen.findByText("Mail for A");
-    await waitFor(() => expect(screen.getByTitle("Refresh")).not.toBeDisabled());
+    await waitFor(() => expect(screen.getByRole("button", { name: /^Refresh / })).not.toBeDisabled());
 
-    fireEvent.click(screen.getByTitle("Refresh"));
+    fireEvent.click(screen.getByRole("button", { name: /^Refresh / }));
     await waitFor(() => expect(calls).toBe(2));
     fireEvent.click(screen.getByTitle("Edit query"));
     fireEvent.input(screen.getByPlaceholderText("e.g. from:boss is:unread newer_than:7d"), { target: { value: "is:starred" } });
@@ -4129,8 +4130,8 @@ describe("App full sync", () => {
     await screen.findByText("Mail for A");
     const fetches = () => invoke.mock.calls.filter(([cmd, args]) => cmd === "fetch_threads_paginated" && (args as { cardId: string }).cardId === "card-a").length;
     await waitFor(() => expect(fetches()).toBe(1));
-    fireEvent.click(screen.getByRole("button", { name: "Collapse Alpha" }));
-    await screen.findByRole("button", { name: "Expand Alpha" });
+    fireEvent.click(screen.getByRole("button", { name: "Alpha. Collapse" }));
+    await screen.findByRole("button", { name: "Alpha. Expand" });
 
     handlers.sync_threads_incremental = () => ({ modified_threads: [], deleted_thread_ids: [], is_full_sync: true });
     threadsByCard["card-a"] = [thread("t-new", "Arrived during the reset")];
@@ -4139,9 +4140,73 @@ describe("App full sync", () => {
     await new Promise(r => setTimeout(r, 20));
     expect(fetches()).toBe(1);
 
-    fireEvent.click(screen.getByRole("button", { name: "Expand Alpha" }));
+    fireEvent.click(screen.getByRole("button", { name: "Alpha. Expand" }));
     expect(await screen.findByText("Arrived during the reset")).toBeInTheDocument();
     expect(fetches()).toBe(2);
+  });
+});
+
+describe("App card headers", () => {
+  const twoAccounts = () => [account("a", "a@x.com"), account("b", "b@x.com")];
+  const qualifier = (region: HTMLElement) => region.querySelector(".card-account-qualifier");
+
+  it("follows each title with its account's short name when the board mixes accounts", async () => {
+    handlers.get_accounts = twoAccounts;
+    render(() => <App />);
+    await screen.findByText("Mail for B");
+    const alpha = screen.getByRole("region", { name: "Alpha email card" });
+    const title = within(alpha).getByRole("button", { name: "Alpha, a@x.com. Collapse" });
+    expect(title).toHaveAttribute("aria-expanded", "true");
+    expect(title).toContainElement(qualifier(alpha) as HTMLElement);
+    expect(qualifier(alpha)).toHaveAttribute("aria-hidden", "true");
+    expect(alpha.querySelector(".card-account-qualifier-short")).toHaveTextContent("a");
+    expect(alpha.querySelector(".card-account-qualifier-full")).toHaveTextContent("a@x.com");
+  });
+
+  it("names no account when every card shows the same one, however many are signed in", async () => {
+    handlers.get_accounts = twoAccounts;
+    cardsByAccount.a = [card("card-a", "a", "Alpha"), card("card-a2", "a", "Gamma")];
+    cardsByAccount.b = [];
+    render(() => <App />);
+    await screen.findByText("Mail for A");
+    const alpha = screen.getByRole("region", { name: "Alpha email card" });
+    expect(within(alpha).getByRole("button", { name: "Alpha. Collapse" })).toBeInTheDocument();
+    expect(qualifier(alpha)).toBeNull();
+  });
+
+  it("says all accounts only on hover for an all-inboxes card", async () => {
+    handlers.get_accounts = twoAccounts;
+    cardsByAccount.a = [];
+    cardsByAccount.b = [];
+    cardsByAccount.all = [card("card-all", "all", "Everything")];
+    threadsByCard["card-all"] = [{ ...thread("x1", "From A"), account_id: "a" }];
+    render(() => <App />);
+    await screen.findByText("From A");
+    const everything = screen.getByRole("region", { name: "Everything email card" });
+    expect(within(everything).getByRole("button", { name: "Everything, all accounts. Collapse" })).toBeInTheDocument();
+    expect(everything.querySelector(".card-account-qualifier-short")).toBeEmptyDOMElement();
+    expect(everything.querySelector(".card-account-qualifier-full")).toHaveTextContent("all accounts");
+  });
+
+  it("keeps the sync time in refresh's name and title rather than the header", async () => {
+    render(() => <App />);
+    await screen.findByText("Mail for A");
+    const alpha = screen.getByRole("region", { name: "Alpha email card" });
+    const refresh = await within(alpha).findByRole("button", { name: "Refresh Alpha, synced just now" });
+    expect(refresh).toHaveAttribute("title", "Refresh Alpha, synced just now");
+    expect(within(alpha).getByRole("button", { name: "Edit Alpha" })).toBeInTheDocument();
+    expect(within(alpha).queryByText("just now")).not.toBeInTheDocument();
+  });
+
+  it("puts the count on the collapsed strip's button, named with it", async () => {
+    handlers.get_accounts = twoAccounts;
+    threadsByCard["card-a"] = [{ ...thread("t-a", "Mail for A"), unread_count: 1 }, { ...thread("t-a2", "More for A"), unread_count: 2 }];
+    render(() => <App />);
+    await screen.findByText("Mail for A");
+    fireEvent.click(screen.getByRole("button", { name: "Alpha, a@x.com. Collapse" }));
+    const strip = await screen.findByRole("button", { name: "Alpha, a@x.com, 2 unread. Expand" });
+    expect(strip).toHaveAttribute("aria-expanded", "false");
+    expect(strip.querySelector(".card-unread-badge")).toHaveTextContent("2");
   });
 });
 
@@ -4338,11 +4403,11 @@ describe("App accessibility", () => {
   it("names the collapse button and says whether the card is expanded", async () => {
     render(() => <App />);
     await screen.findByText("Mail for A");
-    const button = screen.getByRole("button", { name: "Collapse Alpha" });
+    const button = screen.getByRole("button", { name: "Alpha. Collapse" });
     expect(button).toHaveAttribute("aria-expanded", "true");
 
     fireEvent.click(button);
-    await waitFor(() => expect(screen.getByRole("button", { name: "Expand Alpha" })).toHaveAttribute("aria-expanded", "false"));
+    await waitFor(() => expect(screen.getByRole("button", { name: "Alpha. Expand" })).toHaveAttribute("aria-expanded", "false"));
   });
 
   it("picks a background colour from the keyboard", async () => {
@@ -4781,7 +4846,7 @@ describe("App batch reply closing", () => {
     handlers.get_accounts = () => [account("a", "a@x.com"), account("b", "b@x.com")];
     await openBatchReplyWithText();
     fireEvent.click(avatar("a@x.com"));
-    fireEvent.click(await screen.findByText("b@x.com"));
+    fireEvent.click(await chooserEntry("b@x.com"));
     await waitFor(() => avatar("b@x.com"));
 
     expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument();
@@ -4807,7 +4872,7 @@ describe("App batch reply closing", () => {
     const input = await screen.findByPlaceholderText("Write a reply...");
     fireEvent.input(input, { target: { value: "Quick answer" } });
     fireEvent.click(avatar("a@x.com"));
-    fireEvent.click(await screen.findByText("b@x.com"));
+    fireEvent.click(await chooserEntry("b@x.com"));
     await waitFor(() => avatar("b@x.com"));
 
     expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument();
@@ -5205,7 +5270,7 @@ describe("App one board for every account", () => {
     await screen.findByText("Mail for B");
     invoke.mockClear();
     fireEvent.click(avatar("a@x.com"));
-    fireEvent.click(await screen.findByText("b@x.com"));
+    fireEvent.click(await chooserEntry("b@x.com"));
 
     expect(avatar("b@x.com")).toBeInTheDocument();
     expect(invoke).not.toHaveBeenCalledWith("get_cards", undefined);
@@ -5364,7 +5429,7 @@ describe("App choosing accounts for cards and emails", () => {
     render(() => <App />);
     await screen.findByText("Mail for A");
     const alpha = screen.getByRole("region", { name: "Alpha email card" });
-    expect(within(alpha).getByRole("img", { name: "a@x.com" })).toHaveTextContent("A");
+    expect(within(alpha).getByRole("button", { name: "Alpha, a@x.com. Collapse" })).toBeInTheDocument();
     fireEvent.click(within(alpha).getByTitle("Edit query"));
     fireEvent.change(await screen.findByRole("combobox", { name: "Account" }), { target: { value: "all" } });
     invoke.mockClear();
@@ -5372,7 +5437,7 @@ describe("App choosing accounts for cards and emails", () => {
 
     await waitFor(() => expect(invoke).toHaveBeenCalledWith("update_card", { card: expect.objectContaining({ id: "card-a", account_id: "all" }) }));
     await waitFor(() => expect(invoke).toHaveBeenCalledWith("fetch_threads_paginated", { cardId: "card-a", pageToken: null }));
-    expect(within(screen.getByRole("region", { name: "Alpha email card" })).getByRole("img", { name: "All inboxes" })).toBeInTheDocument();
+    expect(await within(screen.getByRole("region", { name: "Alpha email card" })).findByRole("button", { name: "Alpha, all accounts. Collapse" })).toBeInTheDocument();
   });
 
   it("adds a card for the account chosen in the form", async () => {

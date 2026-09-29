@@ -793,8 +793,8 @@ a:focus-visible,
 .card-header {
     display: flex;
     align-items: center;
-    padding: var(--space-md);
-    gap: var(--space-md);
+    padding: var(--space-md) var(--space-md) var(--space-md) 6px;
+    gap: var(--space-sm);
     border-bottom: 1px solid var(--border-light);
     cursor: grab;
 }
@@ -805,148 +805,158 @@ a:focus-visible,
 
 .card.collapsed .card-header {
     flex-direction: column;
-    padding: var(--space-md) var(--space-md);
+    padding: var(--space-md) 3px;
     border-bottom: none;
     min-height: 150px;
     position: relative;
 }
 
-.collapse-btn {
-    width: 32px;
-    height: 32px;
-    border: none;
-    background: none;
-    color: var(--text-muted);
-    cursor: pointer;
-    border-radius: var(--radius-lg);
+/* The title is the collapse control, with the account qualifier inside it */
+.card-title-btn {
+    font: inherit;
+    flex: 1;
+    min-width: 0;
     display: flex;
-    align-items: center;
-    justify-content: center;
-    flex-shrink: 0;
+    align-items: baseline;
+    gap: var(--space-md);
+    height: 32px;
+    line-height: 32px;
+    padding: 0 var(--space-md);
+    border: none;
+    border-radius: var(--radius-lg);
+    background: none;
+    color: inherit;
+    text-align: left;
+    cursor: pointer;
 }
 
-.collapse-btn:hover {
+.card-title-btn:hover {
     background: var(--bg-hover);
-    color: var(--text-secondary);
-}
-
-.collapse-btn svg {
-    transition: transform 150ms;
-}
-
-.card.collapsed .collapse-btn svg {
-    transform: rotate(-90deg);
 }
 
 .card-title {
-    flex-grow: 1;
+    flex-shrink: 0;
+    max-width: 70%;
     font-weight: 500;
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
 }
 
-.card-unread-badge {
-    color: var(--text-muted);
-    font-size: var(--font-size-sm);
-    font-weight: 500;
-    margin-left: 6px;
-    flex-shrink: 0;
-}
-
-/* Whose mail a card shows, once more than one account is signed in: the
-   account's initial on its avatar color, set inline */
-.card-account-badge {
-    flex-shrink: 0;
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    min-width: 18px;
-    height: 18px;
-    padding: 0 4px;
-    margin-left: 6px;
-    border-radius: 9px;
-    font-size: var(--font-size-xs);
-    font-weight: 600;
-    line-height: 1;
-    color: #fff;
-}
-
-.card-account-badge-photo {
-    width: 18px;
-    height: 18px;
-    margin: 0 -4px;
-    border-radius: 50%;
-    object-fit: cover;
-}
-
-.card-account-badge.all {
-    background: var(--bg-tertiary);
-    color: var(--text-secondary);
-    border: 1px solid var(--border-color);
-}
-
-.card.collapsed .card-account-badge {
-    margin-left: 0;
-}
-
-.card.collapsed .card-unread-badge {
-    order: 1;
-    margin-top: auto;
-    margin-bottom: 4px;
-    margin-left: 0;
-}
-
-.card.collapsed .card-title {
-    order: 2;
-    margin-top: auto;
-    flex-grow: 0;
-    writing-mode: vertical-rl;
-    transform: rotate(180deg);
-    white-space: nowrap;
-    overflow: visible;
-    padding: 4px 0 0 0;
+.card-account-qualifier {
+    flex: 1;
+    min-width: 0;
     font-size: var(--font-size-base);
-}
-
-/* When badge exists, title doesn't need margin-top: auto */
-.card.collapsed:has(.card-unread-badge) .card-title {
-    margin-top: 0;
-}
-
-.sync-status {
-    font-size: var(--font-size-xs);
-    color: inherit;
-    opacity: 0;
-    margin-left: auto;
-    margin-right: 4px;
+    color: var(--text-muted);
     white-space: nowrap;
-    transition: opacity 0.3s;
+    overflow: hidden;
+    text-overflow: ellipsis;
 }
 
-.sync-status.sync-fresh,
-.sync-status.sync-stale,
-.sync-status.sync-waiting {
-    opacity: 0.6;
-}
-
-.sync-status.sync-error {
-    opacity: 1;
+.card-account-qualifier.problem {
     color: var(--danger);
-    cursor: help;
 }
 
-.card.collapsed .sync-status {
+.card-account-qualifier-full {
     display: none;
 }
 
+.card:hover .card-account-qualifier-short,
+.card:focus-within .card-account-qualifier-short {
+    display: none;
+}
+
+.card:hover .card-account-qualifier-full,
+.card:focus-within .card-account-qualifier-full {
+    display: inline;
+}
+
+.card-unread-badge {
+    flex-shrink: 0;
+    padding: 0 6px;
+    color: var(--text-secondary);
+    font-size: var(--font-size-base);
+    font-weight: 500;
+    font-variant-numeric: tabular-nums;
+}
+
+/* Refresh and edit stay in the tab order while hidden, so focusing into the
+   card reveals them. A card that can't sync keeps refresh in view. */
 .card-actions {
     display: flex;
     gap: var(--space-xs);
+    flex-shrink: 0;
+    max-width: 0;
+    opacity: 0;
+    overflow: hidden;
+    transition: max-width 0.2s ease, opacity 0.15s ease;
+}
+
+.card-header.has-problem .card-actions {
+    max-width: 32px;
+    opacity: 1;
+}
+
+.card:hover .card-actions,
+.card:focus-within .card-actions {
+    max-width: 70px;
+    opacity: 1;
+}
+
+@media (hover: none) {
+    .card-actions {
+        max-width: 70px;
+        opacity: 1;
+    }
+}
+
+.card-header.has-problem .card-refresh {
+    color: var(--danger);
+}
+
+.card-actions .icon-btn {
+    flex-shrink: 0;
 }
 
 .card.collapsed .card-actions {
     display: none;
+}
+
+/* Collapsed strip: the count, then the title and its account read bottom to top */
+.card.collapsed .card-title-btn {
+    flex: 1;
+    flex-direction: column;
+    align-items: center;
+    justify-content: flex-end;
+    width: 100%;
+    height: auto;
+    padding: 6px 0;
+    gap: 6px;
+    line-height: 1.2;
+}
+
+.card.collapsed .card-unread-badge {
+    order: 0;
+    padding: 0;
+}
+
+.card.collapsed .card-title,
+.card.collapsed .card-account-qualifier {
+    flex: none;
+    max-width: none;
+    overflow: visible;
+    writing-mode: vertical-rl;
+    transform: rotate(180deg);
+}
+
+.card.collapsed .card-title {
+    order: 1;
+    font-size: var(--font-size-base);
+}
+
+.card.collapsed .card-account-qualifier {
+    order: 2;
+    font-size: var(--font-size-sm);
 }
 
 .icon-btn {

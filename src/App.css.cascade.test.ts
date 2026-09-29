@@ -49,7 +49,7 @@ describe("App.css cascade", () => {
   });
 
   it("rings every keyboard-reachable control on keyboard focus, inset on list rows", () => {
-    document.body.innerHTML = `<button class="collapse-btn" id="collapse"></button>
+    document.body.innerHTML = `<button class="card-title-btn" id="collapse"></button>
       <a href="#" id="link">x</a>
       <div class="compose-suggestion-avatar" role="button" tabindex="0" id="suggestion"></div>
       <div class="color-picker-selected" role="button" tabindex="0" id="swatch"></div>

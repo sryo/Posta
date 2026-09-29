@@ -1,4 +1,4 @@
-import { formatSyncTime, getSyncState } from "../utils";
+import { formatSyncTime } from "../utils";
 import { isOfflineError, syncFailureReason } from "./loadErrors";
 
 export interface ConnectionStatus {
@@ -32,23 +32,22 @@ export function cardWaitingMessage(cardError: string, rawError: string | null | 
   return null;
 }
 
-export interface CardSyncLabel {
-  text: string;
-  tone: "fresh" | "normal" | "stale" | "error" | "waiting";
-  title: string;
+export interface CardSyncStatus {
+  // How the card's sync stands, after its name in refresh's label:
+  // "synced 5m ago", "offline, synced 5m ago"
+  summary: string | null;
+  // The word a header shows in red while the card can't sync
+  problem: string | null;
 }
 
-// The age a card's header shows. While the board can't reach Google
-// (`boardDown`), a card showing cached mail always shows its age, and its
-// failed refreshes stay unsaid: the status strip explains them.
-export function cardSyncLabel(state: { lastSyncedAt: number | null | undefined; now: number; syncError: string | null | undefined; boardDown: boolean }): CardSyncLabel | null {
-  if (!state.lastSyncedAt) return null;
-  const age = formatSyncTime(state.lastSyncedAt, state.now);
-  const title = `Last synced: ${age}`;
-  if (state.boardDown) return { text: age, tone: "waiting", title };
+export function cardSyncStatus(state: { lastSyncedAt: number | null | undefined; now: number; syncError: string | null | undefined; offline: boolean; expired: boolean }): CardSyncStatus {
+  const age = state.lastSyncedAt ? `synced ${formatSyncTime(state.lastSyncedAt, state.now)}` : null;
+  const withAge = (text: string) => (age ? `${text}, ${age}` : text);
+  if (state.expired) return { summary: withAge("signed out"), problem: "Signed out" };
+  if (state.offline) return { summary: withAge("offline"), problem: "Offline" };
   if (state.syncError) {
     const reason = syncFailureReason(state.syncError);
-    return { text: "sync failed", tone: "error", title: reason ? `Sync failed: ${reason}` : "Sync failed" };
+    return { summary: withAge(reason ? `sync failed: ${reason}` : "sync failed"), problem: "Sync failed" };
   }
-  return { text: age, tone: getSyncState(state.lastSyncedAt, state.now), title };
+  return { summary: age, problem: null };
 }
