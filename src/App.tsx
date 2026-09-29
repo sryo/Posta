@@ -949,9 +949,10 @@ function App() {
         // History ID was reset; incremental results are unusable.
         // Refetch all non-collapsed email cards and go back to fast polling.
         setPollInterval(BASE_POLL_INTERVAL);
-        const nonCollapsedCards = cards().filter(c => !collapsedCards[c.id] && c.account_id === account.id && c.card_type !== "calendar");
-        for (const card of nonCollapsedCards) {
-          fetchAndCacheThreads(account.id, card.id);
+        for (const card of cards()) {
+          if (card.account_id !== account.id || card.card_type === "calendar") continue;
+          if (collapsedCards[card.id]) cardsMissingFullSync.add(card.id);
+          else fetchAndCacheThreads(account.id, card.id);
         }
       } else if (hasChanges) {
         // Reset to fast polling when changes detected
@@ -2990,15 +2991,18 @@ function App() {
     }
   }
 
+  // Collapsed cards a history reset skipped; their threads are refetched on expanding
+  const cardsMissingFullSync = new Set<string>();
   async function toggleCardCollapse(cardId: string) {
     const isCollapsed = collapsedCards[cardId];
     const newCollapsed = { ...collapsedCards, [cardId]: !isCollapsed };
     saveCollapsedState(newCollapsed);
 
     const account = selectedAccount();
-    if (isCollapsed && account && !cardThreads[cardId]) {
-      loadCardThreads(cardId);
-    }
+    if (!isCollapsed || !account) return;
+    const missedFullSync = cardsMissingFullSync.delete(cardId);
+    if (!cardThreads[cardId]) loadCardThreads(cardId);
+    else if (missedFullSync) fetchAndCacheThreads(account.id, cardId);
   }
 
 

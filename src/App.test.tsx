@@ -2872,6 +2872,28 @@ describe("App background sync refetches", () => {
   });
 });
 
+describe("App full sync", () => {
+  it("refetches a card that was collapsed during a full sync once it is expanded", async () => {
+    render(() => <App />);
+    await screen.findByText("Mail for A");
+    const fetches = () => invoke.mock.calls.filter(([cmd, args]) => cmd === "fetch_threads_paginated" && (args as { cardId: string }).cardId === "card-a").length;
+    await waitFor(() => expect(fetches()).toBe(1));
+    fireEvent.click(screen.getByRole("button", { name: "Collapse Alpha" }));
+    await screen.findByRole("button", { name: "Expand Alpha" });
+
+    handlers.sync_threads_incremental = () => ({ modified_threads: [], deleted_thread_ids: [], is_full_sync: true });
+    threadsByCard["card-a"] = [thread("t-new", "Arrived during the reset")];
+    window.dispatchEvent(new Event("focus"));
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith("sync_threads_incremental", { accountId: "a" }));
+    await new Promise(r => setTimeout(r, 20));
+    expect(fetches()).toBe(1);
+
+    fireEvent.click(screen.getByRole("button", { name: "Expand Alpha" }));
+    expect(await screen.findByText("Arrived during the reset")).toBeInTheDocument();
+    expect(fetches()).toBe(2);
+  });
+});
+
 describe("App dock badge", () => {
   it("updates the badge only when the unread count changes", async () => {
     threadsByCard["card-a"] = [{ ...thread("t-a", "Mail for A"), unread_count: 1 }];
