@@ -28,7 +28,6 @@ function baseProps() {
   return {
     event: event as GoogleCalendarEvent | null,
     card: null,
-    focusColor: null,
     onClose: vi.fn(),
     onRsvp: vi.fn(),
     onReplyOrganizer: vi.fn(),

@@ -87,7 +87,7 @@ import {
   getInitial,
   extractEmail,
   extractMessageText,
-  getAvatarColor,
+  getAvatarHue,
   validateEmailList,
   splitEmailList,
   decodeHtmlEntities,
@@ -142,7 +142,7 @@ import { createToasts, type ToastAction, type ToastTone } from "./app/toasts";
 import { failureMessage, storedCredentialsFailure } from "./app/errorText";
 import { formatClock, formatWhen, threadGroupLabel } from "./app/dateFormat";
 import { safeGetItem, safeSetItem, safeRemoveItem, safeGetJSON, safeSetJSON } from "./shared/storage";
-import { BG_COLORS, type ActionSettings, type CardColor, type GroupBy } from "./shared/constants";
+import { BOARD_COLORS, type ActionSettings, type CardColor, type GroupBy } from "./shared/constants";
 import { createUndoableSend } from "./app/undoableSend";
 import { findHeader, lastMessageFromOthers } from "./app/messages";
 import { batchReplyEntry, type BatchReplyThread } from "./app/batchReply";
@@ -492,35 +492,26 @@ function App() {
 
   // Background color picker (stores index, not color value)
   const [bgColorPickerOpen, setBgColorPickerOpen] = createSignal(false);
-  // A stored index can be stale (BG_COLORS shrank/reordered) or corrupt;
-  // render sites dereference BG_COLORS[idx] directly, so validate on load
+  // A stored index can be stale (BOARD_COLORS shrank/reordered) or corrupt;
+  // render sites dereference BOARD_COLORS[idx] directly, so validate on load
   function readSavedBgColorIndex(): number | null {
     const raw = safeGetItem("bgColorIndex");
     if (raw === null) return null;
     const idx = parseInt(raw, 10);
-    return Number.isInteger(idx) && idx >= 0 && idx < BG_COLORS.length ? idx : null;
+    return Number.isInteger(idx) && idx >= 0 && idx < BOARD_COLORS.length ? idx : null;
   }
   const [selectedBgColorIndex, setSelectedBgColorIndex] = createSignal<number | null>(readSavedBgColorIndex());
-  const [prefersDark, setPrefersDark] = createSignal(!!window.matchMedia?.("(prefers-color-scheme: dark)")?.matches);
-  // Derived rather than written onto the deck, which is rebuilt whenever the
-  // signed-in account goes away and comes back
-  const deckBackground = createMemo(() => {
+  const boardHue = () => {
     const index = selectedBgColorIndex();
-    const color = index === null ? undefined : BG_COLORS[index];
-    if (!color) return undefined;
-    return prefersDark() ? color.dark : color.light;
-  });
+    return index === null ? undefined : BOARD_COLORS[index]?.hue;
+  };
+  // Named on <html> rather than the deck, which is rebuilt whenever the
+  // signed-in account goes away and comes back. The stylesheet takes the hue
+  // as the accent and a tint of it, per theme, as the board's background.
   createEffect(() => {
-    const index = selectedBgColorIndex();
-    const root = document.documentElement.style;
-    const background = deckBackground();
-    if (index === null || !background) {
-      root.removeProperty("--accent");
-      root.removeProperty("--app-bg");
-    } else {
-      root.setProperty("--accent", BG_COLORS[index].hex);
-      root.setProperty("--app-bg", background);
-    }
+    const hue = boardHue();
+    if (hue) document.documentElement.dataset.boardHue = hue;
+    else delete document.documentElement.dataset.boardHue;
   });
 
   // Add card form
@@ -1319,8 +1310,6 @@ function App() {
   let unlistenMailto: (() => void) | undefined;
   // Hoisted out of onMount so onCleanup can remove them
   let handleResize: (() => void) | undefined;
-  let colorSchemeQuery: MediaQueryList | undefined;
-  let handleColorSchemeChange: ((e: MediaQueryListEvent) => void) | undefined;
 
   onMount(async () => {
     document.documentElement.style.setProperty("--card-width", `${cardWidth()}px`);
@@ -1338,11 +1327,6 @@ function App() {
     window.addEventListener("resize", handleResize);
     // The webview would open a file dropped anywhere but a drop zone in
     // place of the app
-
-    // Listen for color scheme changes
-    colorSchemeQuery = window.matchMedia?.("(prefers-color-scheme: dark)");
-    handleColorSchemeChange = (e: MediaQueryListEvent) => setPrefersDark(e.matches);
-    colorSchemeQuery?.addEventListener("change", handleColorSchemeChange);
 
     loadGeminiKeyState();
     pruneDrafts(Date.now());
@@ -1417,7 +1401,7 @@ function App() {
     window.removeEventListener("online", retryConnection);
     window.removeEventListener("offline", goOffline);
     if (handleResize) window.removeEventListener("resize", handleResize);
-    if (handleColorSchemeChange) colorSchemeQuery?.removeEventListener("change", handleColorSchemeChange);
+    delete document.documentElement.dataset.boardHue;
     unlistenMailto?.();
   });
 
@@ -4697,7 +4681,7 @@ function App() {
                           role="button"
                           tabindex={composeFabHovered() ? 0 : -1}
                           aria-label={`New email to ${contact.name || contact.email}`}
-                          style={{ background: getAvatarColor(contact.name || contact.email) }}
+                          data-hue={getAvatarHue(contact.name || contact.email)}
                           title={contact.name ? `${contact.name} <${contact.email}>` : contact.email}
                           onClick={writeTo}
                           on:keydown={onActivateKey(writeTo)}
@@ -4726,7 +4710,7 @@ function App() {
             <div class={`color-picker ${bgColorPickerOpen() ? 'open' : ''}`}>
               <div
                 class={`color-picker-selected ${selectedBgColorIndex() === null ? 'no-color' : ''}`}
-                style={selectedBgColorIndex() !== null ? { background: BG_COLORS[selectedBgColorIndex()!].hex } : {}}
+                data-hue={boardHue()}
                 onClick={(e) => { e.stopPropagation(); setBgColorPickerOpen(!bgColorPickerOpen()); }}
                 on:keydown={onActivateKey(() => setBgColorPickerOpen(!bgColorPickerOpen()))}
                 title="Background color"
@@ -4747,11 +4731,10 @@ function App() {
                 onClick={() => selectBgColor(null)}
                 on:keydown={onActivateKey(() => selectBgColor(null))}
               ></div>
-              <For each={BG_COLORS}>
+              <For each={BOARD_COLORS}>
                 {(color, index) => (
                   <div
-                    class="color-option"
-                    style={{ background: color.hex }}
+                    class={`color-option ${color.hue}`}
                     role="button"
                     tabIndex={bgColorPickerOpen() ? 0 : -1}
                     aria-label={color.name}
@@ -4887,7 +4870,7 @@ function App() {
       <Show when={!loading() && selectedAccount()}>
         <DragDropProvider onDragStart={onDragStart} onDragEnd={onDragEnd as any} collisionDetector={mostIntersecting}>
           <DragDropSensors />
-          <div class={`deck ${resizing() ? 'resizing' : ''} ${boardStatus() ? 'has-status' : ''}`} style={{ background: deckBackground() }} data-board>
+          <div class={`deck ${resizing() ? 'resizing' : ''} ${boardStatus() ? 'has-status' : ''}`} data-board>
             <SortableProvider ids={cardIds()}>
               <For each={cards()}>
                 {(card) => {
@@ -5645,7 +5628,6 @@ function App() {
             const c = cards().find(c => c.id === activeThreadCardId());
             return c ? { name: c.name, color: (c.color as CardColor) || null } : null;
           })() : null}
-          focusColor={selectedBgColorIndex() !== null ? BG_COLORS[selectedBgColorIndex()!].hex : null}
           onClose={() => { if (composeShownIn() === "thread") closeCompose(); closeThreadView(); restoreOpenedRowFocus(); }}
           focusedMessageIndex={focusedMessageIndex()}
           onFocusChange={setFocusedMessageIndex}
@@ -5770,7 +5752,6 @@ function App() {
             const c = cards().find(c => c.id === activeEventCardId());
             return c ? { name: c.name, color: (c.color as CardColor) || null } : null;
           })() : null}
-          focusColor={selectedBgColorIndex() !== null ? BG_COLORS[selectedBgColorIndex()!].hex : null}
           onClose={() => { closeEvent(); restoreOpenedRowFocus(); }}
           onRsvp={(status) => { const event = activeEvent(); if (event) answerListedEvent(event, status, activeEventCardId()); }}
           onReplyOrganizer={() => {

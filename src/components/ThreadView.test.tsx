@@ -45,7 +45,6 @@ function renderThread(overrides: Partial<Parameters<typeof ThreadView>[0]> = {})
     loading: false,
     error: null,
     card: null,
-    focusColor: null,
     onClose: vi.fn(),
     focusedMessageIndex: 1,
     onFocusChange: vi.fn(),
@@ -323,7 +322,7 @@ describe("ThreadView reactions", () => {
     onFocusChange.mockImplementation(setFocus);
     render(() => (
       <ThreadView
-        thread={thread} loading={false} error={null} card={null} focusColor={null} onClose={vi.fn()}
+        thread={thread} loading={false} error={null} card={null} onClose={vi.fn()}
         focusedMessageIndex={focus()} onFocusChange={onFocusChange} onOpenAttachment={vi.fn()} onDownloadAttachment={vi.fn()}
         onShowAttachmentMenu={vi.fn()} onReply={vi.fn()} onForward={vi.fn()} onAction={vi.fn()} onOpenLabels={vi.fn()}
         accountId="acc" currentUserEmail="me@example.com" isStarred={false} isRead={true} isImportant={false}
@@ -394,7 +393,7 @@ describe("ThreadView smart replies", () => {
     const [thread, setThread] = createSignal(makeThread([{ from: "Alice <alice@example.com>", body: "one" }]));
     render(() => (
       <ThreadView
-        thread={thread()} loading={false} error={null} card={null} focusColor={null} onClose={vi.fn()}
+        thread={thread()} loading={false} error={null} card={null} onClose={vi.fn()}
         focusedMessageIndex={0} onFocusChange={vi.fn()} onOpenAttachment={vi.fn()} onDownloadAttachment={vi.fn()}
         onShowAttachmentMenu={vi.fn()} onReply={vi.fn()} onForward={vi.fn()} onAction={vi.fn()} onOpenLabels={vi.fn()}
         accountId="acc" isStarred={false} isRead={true} isImportant={false} isInInbox={true} labelCount={0} inlineCompose={null}
@@ -425,7 +424,7 @@ describe("ThreadView inline forward", () => {
       { from: "Carol <carol@example.com>", body: "third" },
     ]);
     const props: any = {
-      thread, loading: false, error: null, card: null, focusColor: null, onClose: vi.fn(),
+      thread, loading: false, error: null, card: null, onClose: vi.fn(),
       focusedMessageIndex, onFocusChange: vi.fn(), onOpenAttachment: vi.fn(), onDownloadAttachment: vi.fn(),
       onShowAttachmentMenu: vi.fn(), onReply: vi.fn(), onForward: vi.fn(() => setCompose(composeStub(true))),
       onAction: vi.fn(), onOpenLabels: vi.fn(), accountId: "acc", currentUserEmail: "me@example.com",
@@ -580,7 +579,7 @@ describe("ThreadView scrolling", () => {
     Element.prototype.scrollIntoView = scroll;
     render(() => (
       <ThreadView
-        thread={thread()} loading={false} error={null} card={null} focusColor={null} onClose={vi.fn()}
+        thread={thread()} loading={false} error={null} card={null} onClose={vi.fn()}
         focusedMessageIndex={0} onFocusChange={vi.fn()} onOpenAttachment={vi.fn()} onDownloadAttachment={vi.fn()}
         onShowAttachmentMenu={vi.fn()} onReply={vi.fn()} onForward={vi.fn()} onAction={vi.fn()} onOpenLabels={vi.fn()}
         accountId="acc" isStarred={false} isRead={true} isImportant={false} isInInbox={true} labelCount={0} inlineCompose={null}
@@ -615,7 +614,7 @@ describe("ThreadView scrolling", () => {
     Element.prototype.scrollIntoView = scroll;
     render(() => (
       <ThreadView
-        thread={thread()} loading={false} error={null} card={null} focusColor={null} onClose={vi.fn()}
+        thread={thread()} loading={false} error={null} card={null} onClose={vi.fn()}
         focusedMessageIndex={0} onFocusChange={vi.fn()} onOpenAttachment={vi.fn()} onDownloadAttachment={vi.fn()}
         onShowAttachmentMenu={vi.fn()} onReply={vi.fn()} onForward={vi.fn()} onAction={vi.fn()} onOpenLabels={vi.fn()}
         accountId="acc" isStarred={false} isRead={true} isImportant={false} isInInbox={true} labelCount={0} inlineCompose={null}

@@ -4538,25 +4538,29 @@ describe("App accessibility", () => {
     await new Promise(r => setTimeout(r, 50));
     fireEvent.click(signIn);
 
-    await waitFor(() => expect((document.querySelector(".deck") as HTMLElement).style.background).toContain("30, 136, 229"));
-    expect(document.documentElement.style.getPropertyValue("--accent")).toBe("#1E88E5");
+    await waitFor(() => expect(document.querySelector(".deck")).toBeInTheDocument());
+    // The stylesheet tints the board and its accent from the hue named on <html>
+    expect(document.documentElement.dataset.boardHue).toBe("blue");
+    expect((document.querySelector(".deck") as HTMLElement).getAttribute("style")).toBeNull();
+    expect(document.documentElement.style.getPropertyValue("--accent")).toBe("");
   });
 
-  it("follows the system's dark mode with the chosen background colour", async () => {
-    const listeners: ((e: { matches: boolean }) => void)[] = [];
-    const media = { matches: false, addEventListener: (_: string, l: (e: { matches: boolean }) => void) => listeners.push(l), removeEventListener: () => {} };
-    const matchMedia = vi.fn(() => media);
-    Object.defineProperty(window, "matchMedia", { value: matchMedia, configurable: true });
-    onTestFinished(() => { delete (window as { matchMedia?: unknown }).matchMedia; });
-    localStorage.setItem("bgColorIndex", "5");
+  it("names the board colour on the root and its swatch, and clears it for no colour", async () => {
     render(() => <App />);
     await screen.findByText("Mail for A");
-    await waitFor(() => expect((document.querySelector(".deck") as HTMLElement).style.background).toContain("0.18"));
+    const picker = screen.getByRole("button", { name: "Choose background color" });
+    expect(document.documentElement.dataset.boardHue).toBeUndefined();
 
-    media.matches = true;
-    listeners.forEach(l => l({ matches: true }));
-    await waitFor(() => expect((document.querySelector(".deck") as HTMLElement).style.background).toContain("0.25"));
-    expect(document.documentElement.style.getPropertyValue("--app-bg")).toContain("0.25");
+    fireEvent.click(picker);
+    fireEvent.click(screen.getByRole("button", { name: "Teal" }));
+    expect(document.documentElement.dataset.boardHue).toBe("cyan");
+    expect(picker).toHaveAttribute("data-hue", "cyan");
+    expect(picker.getAttribute("style")).toBeNull();
+
+    fireEvent.click(picker);
+    fireEvent.click(screen.getByRole("button", { name: "No color" }));
+    expect(document.documentElement.dataset.boardHue).toBeUndefined();
+    expect(picker).not.toHaveAttribute("data-hue");
   });
 
   it("says the account button opens a menu and whether it is open", async () => {

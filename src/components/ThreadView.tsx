@@ -66,7 +66,6 @@ export const ThreadView = (props: {
   error: string | null,
   onRetry?: () => void,
   card: { name: string; color: string | null } | null,
-  focusColor: string | null,
   onClose: () => void,
   focusedMessageIndex: number,
   onFocusChange: (index: number) => void,
@@ -422,7 +421,7 @@ export const ThreadView = (props: {
   useLayer(() => !!props.labelDrawerOpen, () => props.onCloseLabelDrawer?.(), { closesFromInputs: true });
 
   return (
-    <div ref={dialogRef} class={`thread-overlay ${closing() ? 'closing' : ''}`} style={props.focusColor ? { '--message-focused-color': props.focusColor } as any : undefined}>
+    <div ref={dialogRef} class={`thread-overlay ${closing() ? 'closing' : ''}`}>
       <div class="thread-floating-bar">
         {/* Row 1: Close + Subject + Card indicator */}
         <div class="thread-floating-bar-row">

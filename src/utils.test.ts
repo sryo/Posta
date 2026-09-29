@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it } from "vitest";
+import { CARD_COLORS } from "./shared/constants";
 import {
   addForwardPrefix,
   addReplyPrefix,
@@ -10,6 +11,7 @@ import {
   formatCalendarEventDate,
   formatEmailDate,
   formatTime,
+  getAvatarHue,
   smoothScroll,
   splitEmailList,
   stripHtml,
@@ -312,5 +314,17 @@ describe("smoothScroll", () => {
   it("jumps instead when the system asks for reduced motion", () => {
     stubMotion(true);
     expect(smoothScroll()).toBe("auto");
+  });
+});
+
+describe("getAvatarHue", () => {
+  it("names a card hue for the stylesheet, the same one each time for a name", () => {
+    expect(CARD_COLORS).toContain(getAvatarHue("Ada Lovelace"));
+    expect(getAvatarHue("Ada Lovelace")).toBe(getAvatarHue("Ada Lovelace"));
+  });
+
+  it("spreads different names across the hues", () => {
+    const hues = new Set(["Ada", "Bo", "Cy", "Di", "Ed", "Flo", "Gus", "Hal", "Ivy", "Jo"].map(getAvatarHue));
+    expect(hues.size).toBeGreaterThan(3);
   });
 });

@@ -1,6 +1,7 @@
 // Utility functions
 
 import { formatClock, formatShortDate, formatWhen, relativeDayName } from "./app/dateFormat";
+import { CARD_COLORS, type CardHue } from "./shared/constants";
 
 // --- Base64 helpers ---
 
@@ -272,19 +273,14 @@ export function parseContact(str: string): { email: string; name?: string } {
 }
 
 /**
- * Generate consistent color from string (for avatars)
+ * A card hue picked consistently from a string, for an avatar's data-hue
  */
-const AVATAR_COLORS = [
-  '#E53935', '#FB8C00', '#FDD835', '#43A047',
-  '#00ACC1', '#1E88E5', '#5E35B1', '#D81B60'
-];
-
-export function getAvatarColor(str: string): string {
+export function getAvatarHue(str: string): CardHue {
   let hash = 0;
   for (let i = 0; i < str.length; i++) {
     hash = str.charCodeAt(i) + ((hash << 5) - hash);
   }
-  return AVATAR_COLORS[Math.abs(hash) % AVATAR_COLORS.length];
+  return CARD_COLORS[Math.abs(hash) % CARD_COLORS.length];
 }
 
 /**

@@ -3,7 +3,6 @@ import type { Account } from "../api/tauri";
 import { ALL_ACCOUNTS } from "../app/accountScope";
 import {
   CARD_COLORS,
-  COLOR_HEX,
   EMAIL_GROUP_BY_OPTIONS,
   CALENDAR_GROUP_BY_OPTIONS,
   type CardColor,
@@ -85,7 +84,7 @@ export const CardForm = (props: {
           <div class={`color-picker ${props.colorPickerOpen ? 'open' : ''}`}>
             <div
               class={`color-picker-selected ${props.color === null ? 'no-color' : ''}`}
-              style={props.color ? { background: COLOR_HEX[props.color] } : {}}
+              data-hue={props.color ?? undefined}
               onClick={(e) => { e.stopPropagation(); props.setColorPickerOpen(!props.colorPickerOpen); }}
               role="button"
               tabIndex={0}

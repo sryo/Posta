@@ -1,27 +1,21 @@
+// The eight card hues, by the names App.css gives them (--hue-red, …). Script
+// passes a hue by name, as data-color or data-hue; the stylesheet colours it.
 export const CARD_COLORS = ["red", "orange", "yellow", "green", "cyan", "blue", "purple", "pink"] as const;
-export const COLOR_HEX: Record<string, string> = {
-  red: "#E53935",
-  orange: "#FB8C00",
-  yellow: "#FDD835",
-  green: "#43A047",
-  cyan: "#00ACC1",
-  blue: "#1E88E5",
-  purple: "#5E35B1",
-  pink: "#D81B60",
-};
 
-export type CardColor = typeof CARD_COLORS[number] | null;
+export type CardHue = typeof CARD_COLORS[number];
+export type CardColor = CardHue | null;
 
-// Background colors with light/dark mode support (same base colors, lower opacity)
-export const BG_COLORS = [
-  { name: "Red", light: "rgba(229, 57, 53, 0.18)", dark: "rgba(229, 57, 53, 0.25)", hex: "#E53935" },
-  { name: "Orange", light: "rgba(251, 140, 0, 0.18)", dark: "rgba(251, 140, 0, 0.25)", hex: "#FB8C00" },
-  { name: "Yellow", light: "rgba(253, 216, 53, 0.20)", dark: "rgba(253, 216, 53, 0.22)", hex: "#FDD835" },
-  { name: "Green", light: "rgba(67, 160, 71, 0.18)", dark: "rgba(67, 160, 71, 0.25)", hex: "#43A047" },
-  { name: "Teal", light: "rgba(0, 172, 193, 0.18)", dark: "rgba(0, 172, 193, 0.25)", hex: "#00ACC1" },
-  { name: "Blue", light: "rgba(30, 136, 229, 0.18)", dark: "rgba(30, 136, 229, 0.25)", hex: "#1E88E5" },
-  { name: "Purple", light: "rgba(94, 53, 177, 0.18)", dark: "rgba(94, 53, 177, 0.25)", hex: "#5E35B1" },
-  { name: "Pink", light: "rgba(216, 27, 96, 0.18)", dark: "rgba(216, 27, 96, 0.25)", hex: "#D81B60" },
+// Board colours, in the order their index is stored under; the board wears
+// the hue through data-board-hue on <html>.
+export const BOARD_COLORS: { name: string; hue: CardHue }[] = [
+  { name: "Red", hue: "red" },
+  { name: "Orange", hue: "orange" },
+  { name: "Yellow", hue: "yellow" },
+  { name: "Green", hue: "green" },
+  { name: "Teal", hue: "cyan" },
+  { name: "Blue", hue: "blue" },
+  { name: "Purple", hue: "purple" },
+  { name: "Pink", hue: "pink" },
 ];
 
 export type GroupBy = "date" | "sender" | "label" | "organizer" | "calendar";

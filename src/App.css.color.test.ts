@@ -2,6 +2,8 @@ import { describe, it, expect } from "vitest";
 import { parseRules, type Rule } from "./test/css";
 import { readRepoFile } from "./test/files";
 import { cssColorLiteral } from "./test/colorLiterals";
+import { resolveColor, tokenScope, toHex } from "./test/color";
+import { BOARD_COLORS, CARD_COLORS } from "./shared/constants";
 
 const css = readRepoFile("src/App.css").replace(/\/\*[\s\S]*?\*\//g, "");
 const rules = parseRules(css);
@@ -100,3 +102,38 @@ describe("colour tiers", () => {
     expect(literals.size).toBeLessThanOrEqual(32);
   });
 });
+
+describe("hues named from script", () => {
+  const board = (theme: "light" | "dark", hue: string) =>
+    tokenScope(rules, theme, [":root[data-board-hue]", `:root[data-board-hue="${hue}"]`]);
+
+  it("gives every board colour and card colour a hue", () => {
+    for (const { hue } of BOARD_COLORS) {
+      expect(rules.some((r) => r.selectors.includes(`:root[data-board-hue="${hue}"]`)), hue).toBe(true);
+    }
+    for (const hue of CARD_COLORS) {
+      const rule = rules.find((r) => r.selectors.includes(`[data-hue="${hue}"]`));
+      expect(new Map(rule?.declarations).get("--card-hue"), hue).toBe(`var(--hue-${hue})`);
+    }
+  });
+
+  it("takes the board's hue as the accent and tints the board with it, a little stronger in dark mode", () => {
+    const tint = (theme: "light" | "dark", hue: string) => resolveColor("var(--app-bg)", board(theme, hue));
+    const blue = resolveColor("var(--hue-blue)", board("light", "blue"));
+    expect(toHex(resolveColor("var(--accent-fill)", board("light", "blue")))).toBe(toHex(blue));
+    expect(toHex(tint("light", "blue"))).toBe(toHex(blue));
+    expect(tint("light", "blue")[3]).toBeCloseTo(0.18);
+    expect(tint("dark", "blue")[3]).toBeCloseTo(0.25);
+    // Yellow is pale enough to need a touch more in light and less in dark
+    expect(tint("light", "yellow")[3]).toBeCloseTo(0.2);
+    expect(tint("dark", "yellow")[3]).toBeCloseTo(0.22);
+  });
+
+  it("paints a swatch or an avatar that names its hue in that hue", () => {
+    for (const selector of [".color-picker-selected[data-hue]", ".compose-suggestion-avatar[data-hue]", ".compose-autocomplete-avatar[data-hue]"]) {
+      const rule = rules.find((r) => !r.context && r.selectors.includes(selector));
+      expect(new Map(rule?.declarations).get("background"), selector).toBe("var(--card-hue)");
+    }
+  });
+});
+

@@ -34,7 +34,6 @@ import { useDialog } from "../app/dialog";
 export const EventView = (props: {
   event: GoogleCalendarEvent | null;
   card: { name: string; color: string | null } | null;
-  focusColor: string | null;
   onClose: () => void;
   onRsvp: (status: "accepted" | "declined" | "tentative") => void;
   onReplyOrganizer: () => void;
@@ -115,7 +114,7 @@ export const EventView = (props: {
   useLayer(() => !!props.inlineEdit, () => props.inlineEdit?.onClose());
 
   return (
-    <div ref={dialogRef} class={`thread-overlay ${closing() ? 'closing' : ''}`} style={props.focusColor ? { '--message-focused-color': props.focusColor } as any : undefined}>
+    <div ref={dialogRef} class={`thread-overlay ${closing() ? 'closing' : ''}`}>
       <div class="thread-floating-bar">
         {/* Row 1: Close + Title + Card indicator */}
         <div class="thread-floating-bar-row">
