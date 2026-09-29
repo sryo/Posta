@@ -3438,7 +3438,7 @@ describe("App sign-in flows", () => {
     expect(await screen.findByText("Sign in with Google")).toBeInTheDocument();
     expect(invoke).toHaveBeenCalledWith("cancel_oauth_flow", undefined);
     expect(screen.queryByText(/cancelled/)).not.toBeInTheDocument();
-    expect(screen.queryByText("Complete sign-in in your browser...")).not.toBeInTheDocument();
+    expect(screen.queryByText("Finish signing in with Google in your browser. Posta will pick up automatically.")).not.toBeInTheDocument();
   });
 
   it("cancels a sign-in waiting on the browser on Escape", async () => {
@@ -3448,7 +3448,7 @@ describe("App sign-in flows", () => {
     handlers.cancel_oauth_flow = () => { rejectFlow("OAuth callback error: OAuth flow cancelled"); return null; };
     render(() => <App />);
     fireEvent.click(await screen.findByText("Sign in with Google"));
-    await screen.findByText("Complete sign-in in your browser...");
+    await screen.findByText("Finish signing in with Google in your browser. Posta will pick up automatically.");
     fireEvent.keyDown(document, { key: "Escape" });
 
     expect(await screen.findByText("Sign in with Google")).toBeInTheDocument();
@@ -3521,7 +3521,7 @@ describe("App sign-in flows", () => {
     fireEvent.click(await screen.findByText("Sign in with Google"));
 
     expect(await screen.findByText(/Timed out waiting for sign-in in the browser/)).toBeInTheDocument();
-    expect(screen.queryByText("Complete sign-in in your browser...")).not.toBeInTheDocument();
+    expect(screen.queryByText("Finish signing in with Google in your browser. Posta will pick up automatically.")).not.toBeInTheDocument();
   });
 });
 

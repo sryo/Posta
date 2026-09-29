@@ -107,6 +107,34 @@ async function openSettingsFromChooser() {
   return settingsSidebar();
 }
 
+describe("Sign-in wait", () => {
+  it("asks the user to finish in the browser, can reopen the page, then says it is setting up cards", async () => {
+    handlers.get_accounts = () => [];
+    let resolveFlow!: (a: Account) => void;
+    handlers.run_oauth_flow = () => new Promise(resolve => { resolveFlow = resolve; });
+    handlers.reopen_oauth_page = () => null;
+    let resolvePull!: (v: boolean) => void;
+    handlers.pull_from_icloud = () => new Promise(resolve => { resolvePull = resolve; });
+    render(() => <App />);
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith("pull_from_icloud", undefined));
+    resolvePull(false);
+
+    fireEvent.click(await screen.findByRole("button", { name: "Sign in with Google" }));
+    expect(await screen.findByText("Finish signing in with Google in your browser. Posta will pick up automatically.")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Open sign-in page again" }));
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith("reopen_oauth_page", undefined));
+    await waitFor(() => expect(resolveFlow).toBeTypeOf("function"));
+
+    resolveFlow(account("a", "a@x.com"));
+    expect(await screen.findByText("Setting up your cards…")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Open sign-in page again" })).not.toBeInTheDocument();
+    await waitFor(() => expect(invoke.mock.calls.filter(([cmd]) => cmd === "pull_from_icloud")).toHaveLength(2));
+    resolvePull(true);
+    await screen.findByText("Mail for A");
+    expect(screen.queryByText("Setting up your cards…")).not.toBeInTheDocument();
+  });
+});
+
 describe("Settings panel focus", () => {
   it("keeps the closed panel out of the tab order and moves focus to Close on open", async () => {
     render(() => <App />);

@@ -1700,6 +1700,13 @@ button:disabled:hover {
 .auth-screen p {
     color: var(--text-secondary);
     margin: 0;
+    max-width: 360px;
+    text-align: center;
+}
+
+.auth-wait-actions {
+    display: flex;
+    gap: var(--space-md);
 }
 
 .auth-btn {

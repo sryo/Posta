@@ -219,6 +219,7 @@ pub fn run() {
             commands::get_stored_credentials,
             commands::run_oauth_flow,
             commands::cancel_oauth_flow,
+            commands::reopen_oauth_page,
             commands::get_accounts,
             commands::delete_account,
             commands::update_account_signature,

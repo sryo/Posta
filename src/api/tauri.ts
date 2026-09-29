@@ -112,6 +112,10 @@ export async function cancelOAuthFlow(): Promise<void> {
   return invoke("cancel_oauth_flow");
 }
 
+export async function reopenOAuthPage(): Promise<void> {
+  return invoke("reopen_oauth_page");
+}
+
 export async function getAccounts(): Promise<Account[]> {
   return invoke("get_accounts");
 }

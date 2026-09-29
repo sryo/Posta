@@ -66,6 +66,7 @@ import {
   updateCalendarEvent,
   pullFromICloud,
   cancelOAuthFlow,
+  reopenOAuthPage,
   getCachedCardEvents,
   saveCachedCardEvents,
   createCalendarEvent,
@@ -1698,6 +1699,7 @@ function App() {
       return;
     }
 
+    setAuthPhase("browser");
     setAuthLoading(true);
     setError(null);
     oauthCancelled = false;
@@ -1709,12 +1711,20 @@ function App() {
         });
       }
       if (oauthCancelled) return;
-      await afterAuth(await runOAuthFlow());
+      const account = await runOAuthFlow();
+      setAuthPhase("setup");
+      await afterAuth(account);
     } catch (e) {
       if (!oauthCancelled) setError(String(e));
     } finally {
       setAuthLoading(false);
     }
+  }
+
+  // Waiting on Google in the browser, then loading the signed-in account
+  const [authPhase, setAuthPhase] = createSignal<"browser" | "setup">("browser");
+  function reopenSignInPage() {
+    reopenOAuthPage().catch(e => setError(String(e)));
   }
 
   let oauthCancelled = false;
@@ -4125,8 +4135,13 @@ function App() {
       <Show when={authLoading()}>
         <div class="auth-screen">
           <div class="auth-spinner"></div>
-          <p>Complete sign-in in your browser...</p>
-          <button class="btn btn-ghost" onClick={cancelSignIn}>Cancel</button>
+          <Show when={authPhase() === "browser"} fallback={<p>Setting up your cards…</p>}>
+            <p>Finish signing in with Google in your browser. Posta will pick up automatically.</p>
+            <div class="auth-wait-actions">
+              <button class="btn btn-ghost" onClick={cancelSignIn}>Cancel</button>
+              <button class="btn btn-ghost" onClick={reopenSignInPage}>Open sign-in page again</button>
+            </div>
+          </Show>
         </div>
       </Show>
 
