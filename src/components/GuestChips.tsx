@@ -64,12 +64,14 @@ export const GuestChips = (props: {
   };
 
   // A pasted list becomes chips up to its last separator; what follows it
-  // stays in the field to finish typing
+  // stays in the field to finish typing. Text with a piece that isn't an
+  // address stays as it is, rather than losing that piece.
   const handleInput = (input: HTMLInputElement) => {
     const pieces = splitAtSeparators(input.value);
+    const complete = pieces.slice(0, -1).map(p => p.trim()).filter(p => p);
     let typed = input.value;
-    if (pieces.length > 1) {
-      addAll(pieces.slice(0, -1).map(p => p.trim()).filter(p => p.includes("@")));
+    if (complete.length && complete.every(p => p.includes("@"))) {
+      addAll(complete);
       typed = pieces[pieces.length - 1].trimStart();
       input.value = typed;
     }

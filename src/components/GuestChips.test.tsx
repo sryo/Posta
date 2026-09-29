@@ -43,6 +43,13 @@ describe("GuestChips", () => {
     expect(screen.getByRole("option", { name: /Lucas Romero/ })).toBeInTheDocument();
   });
 
+  it("keeps text before a separator that isn't an address", () => {
+    const { input, value } = renderChips("a@y.test");
+    fireEvent.input(input, { target: { value: "Díaz; Bo <bo@y.test>" } });
+    expect(value()).toBe("a@y.test");
+    expect(input.value).toBe("Díaz; Bo <bo@y.test>");
+  });
+
   it("adds what was typed when focus leaves", () => {
     const { input, value } = renderChips("a@y.test");
     fireEvent.input(input, { target: { value: "b@y.test" } });
