@@ -896,6 +896,45 @@ impl GmailClient {
             .map_err(|e| body_error("draft", e))
     }
 
+    /// The drafts filed in `thread_id`. Gmail can't list one thread's
+    /// drafts, so this pages through them all.
+    pub async fn list_thread_drafts(&self, thread_id: &str) -> Result<Vec<GmailDraft>, String> {
+        #[derive(Deserialize)]
+        struct ListDraftsResponse {
+            drafts: Option<Vec<GmailDraft>>,
+            #[serde(rename = "nextPageToken")]
+            next_page_token: Option<String>,
+        }
+
+        let mut found = Vec::new();
+        let mut page_token: Option<String> = None;
+        loop {
+            let mut url = format!("{}/users/me/drafts?maxResults=500", self.api_base);
+            if let Some(token) = &page_token {
+                url.push_str(&format!("&pageToken={}", urlencoding::encode(token)));
+            }
+            let resp = self
+                .client
+                .get(&url)
+                .bearer_auth(&self.access_token)
+                .send()
+                .await
+                .map_err(request_error)?;
+            let page: ListDraftsResponse = ensure_success(resp)
+                .await?
+                .json()
+                .await
+                .map_err(|e| body_error("drafts", e))?;
+            found.extend(page.drafts.unwrap_or_default().into_iter().filter(|draft| {
+                draft.message.as_ref().and_then(|m| m.thread_id.as_deref()) == Some(thread_id)
+            }));
+            match page.next_page_token {
+                Some(token) => page_token = Some(token),
+                None => return Ok(found),
+            }
+        }
+    }
+
     /// Delete a draft
     pub async fn delete_draft(&self, draft_id: &str) -> Result<(), String> {
         let url = format!("{}/users/me/drafts/{}", self.api_base, path_id(draft_id));

@@ -553,6 +553,33 @@ async fn other_draft_save_failures_are_not_retried_as_new_drafts() {
 }
 
 #[tokio::test]
+async fn a_threads_drafts_are_found_across_every_page_of_drafts() {
+    let server = StubServer::start(|request| match request.target.as_str() {
+        "/gmail/v1/users/me/drafts?maxResults=500" => Reply::Json(
+            200,
+            r#"{"drafts":[{"id":"d1","message":{"id":"m1","threadId":"t1"}},{"id":"d2","message":{"id":"m2","threadId":"t2"}}],"nextPageToken":"p 2"}"#.into(),
+        ),
+        "/gmail/v1/users/me/drafts?maxResults=500&pageToken=p%202" => {
+            Reply::Json(200, r#"{"drafts":[{"id":"d3","message":{"id":"m3","threadId":"t1"}}]}"#.into())
+        }
+        _ => Reply::Json(500, "{}".into()),
+    })
+    .await;
+
+    let drafts = within(server.client().list_thread_drafts("t1")).await.unwrap();
+
+    let found: Vec<(&str, &str)> = drafts.iter().map(|d| (d.id.as_str(), d.message.as_ref().unwrap().id.as_str())).collect();
+    assert_eq!(found, [("d1", "m1"), ("d3", "m3")]);
+}
+
+#[tokio::test]
+async fn an_account_without_drafts_has_none_in_any_thread() {
+    let server = StubServer::start(|_| Reply::Json(200, r#"{"resultSizeEstimate":0}"#.into())).await;
+
+    assert!(within(server.client().list_thread_drafts("t1")).await.unwrap().is_empty());
+}
+
+#[tokio::test]
 async fn deleting_a_draft_that_is_already_gone_succeeds() {
     let server = StubServer::start(|request| match request.target.as_str() {
         "/gmail/v1/users/me/drafts/gone" => Reply::Json(404, google_error(404, "NOT_FOUND", "notFound", "Not Found")),

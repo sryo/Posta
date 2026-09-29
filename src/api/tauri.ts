@@ -246,6 +246,15 @@ export interface FullThread {
   messages: FullMessage[];
 }
 
+export interface GmailDraft {
+  id: string;
+  message: { id: string; threadId?: string | null } | null;
+}
+
+export async function listThreadDrafts(accountId: string, threadId: string): Promise<GmailDraft[]> {
+  return invoke("list_thread_drafts", { accountId, threadId });
+}
+
 export async function getThreadDetails(
   accountId: string,
   threadId: string
