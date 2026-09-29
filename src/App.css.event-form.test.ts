@@ -29,6 +29,14 @@ describe("event form layout", () => {
     expect(decls(".scope-prompt .scope-menu").get("position")).toBe("static");
   });
 
+  it("keeps the scope menu its own width inside an inline edit, whose children are held to the column", () => {
+    const shrink = decls(".message-row.with-compose .inline-compose *");
+    expect(shrink.get("min-width")).toBe("0 !important");
+    const menu = decls(".message-row.with-compose .inline-compose .scope-menu");
+    expect(menu.get("min-width")).toBe("200px !important");
+    expect(menu.get("max-width")).toBe("none");
+  });
+
   it("keeps Cancel and Save in view", () => {
     const footer = decls(".event-form-footer");
     expect(footer.get("position")).toBe("sticky");
