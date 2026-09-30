@@ -79,6 +79,13 @@ describe("nearWheel", () => {
     expect(nearWheel(anchor, fan, { x: 38 + 14 + 13, y: 0 }, 12)).toBe(false);
   });
 
+  it("holds in the gap between two petals past the ring's outer edge", () => {
+    // Between the top and right petals, 60 out: 30+ from either petal's centre
+    const gap = { x: 60 * Math.cos(-Math.PI / 4), y: 60 * Math.sin(-Math.PI / 4) };
+    expect(nearWheel(anchor, fan, gap, 12)).toBe(true);
+    expect(nearWheel(anchor, fan, { x: gap.x * 1.2, y: gap.y * 1.2 }, 12)).toBe(false);
+  });
+
   it("holds on the way out from the anchor to a petal", () => {
     expect(nearWheel(anchor, fan, { x: 19, y: 0 }, 12)).toBe(true);
   });

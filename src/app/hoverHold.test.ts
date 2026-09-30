@@ -27,9 +27,9 @@ describe("createHoverHold", () => {
     const hold = createHoverHold();
     const exit = vi.fn();
     expect(hold.hold(wheel(), 138 + 14 + 8, 100, exit)).toBe(true);
-    move(138, 100 + 14 + 10);
+    move(138, 100 + 14 + 18);
     expect(exit).not.toHaveBeenCalled();
-    move(138, 100 + 14 + 20);
+    move(138, 100 + 14 + 30);
     expect(exit).toHaveBeenCalledOnce();
   });
 

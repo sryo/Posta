@@ -6,7 +6,7 @@
 export const RADIAL_HOVER_OPEN_MS = 150;
 export const RADIAL_HOVER_CLOSE_MS = 120;
 // How far past a hover wheel's petals the pointer may stray and keep it open
-export const RADIAL_HOVER_PAD = 12;
+export const RADIAL_HOVER_PAD = 20;
 
 export type Arc = { start: number; span: number };
 export type Rect = { left: number; top: number; right: number; bottom: number };
@@ -121,27 +121,22 @@ function distanceToSegment(p: Point, a: Point, b: Point): number {
   return Math.hypot(p.x - (a.x + t * dx), p.y - (a.y + t * dy));
 }
 
-function inTriangle(p: Point, a: Point, b: Point, c: Point): boolean {
-  const side = (u: Point, v: Point) => (v.x - u.x) * (p.y - u.y) - (v.y - u.y) * (p.x - u.x);
-  const [d1, d2, d3] = [side(a, b), side(b, c), side(c, a)];
-  const negative = d1 < 0 || d2 < 0 || d3 < 0;
-  const positive = d1 > 0 || d2 > 0 || d3 > 0;
-  return !(negative && positive);
-}
-
 // Whether a point is near a wheel: within `pad` of a petal or of the path out
-// to it from the anchor, or in the wedge between two neighbouring petals, so
-// a fan or a ring is one place to rest in rather than islands with gaps
+// to it from the anchor, or anywhere in the slice of the wheel between two
+// neighbouring petals, out to `pad` past the ring, so a fan or a ring is one
+// place to rest in rather than islands with gaps
 export function nearWheel(anchor: Point, petals: Circle[], point: Point, pad: number): boolean {
   if (petals.some(petal => distanceToSegment(point, anchor, petal) <= petal.r + pad)) return true;
   if (petals.length < 2) return false;
-  const around = petals
-    .map(petal => ({ petal, angle: (Math.atan2(petal.y - anchor.y, petal.x - anchor.x) * 180) / Math.PI }))
-    .sort((a, b) => a.angle - b.angle);
-  return around.some(({ petal, angle }, i) => {
-    const next = around[(i + 1) % around.length];
-    // Neighbours only: the open side of a fan is no wedge of it
-    const gap = (next.angle - angle + 360) % 360;
-    return gap > 0 && gap < 180 && inTriangle(point, anchor, petal, next.petal);
+  const reach = Math.max(...petals.map(p => Math.hypot(p.x - anchor.x, p.y - anchor.y) + p.r)) + pad;
+  if (Math.hypot(point.x - anchor.x, point.y - anchor.y) > reach) return false;
+  const angleOf = (p: Point) => (Math.atan2(p.y - anchor.y, p.x - anchor.x) * 180) / Math.PI;
+  const angles = petals.map(angleOf).sort((a, b) => a - b);
+  const at = angleOf(point);
+  return angles.some((angle, i) => {
+    const next = angles[(i + 1) % angles.length];
+    // Neighbours only: the open side of a fan is no slice of it
+    const gap = (next - angle + 360) % 360;
+    return gap > 0 && gap < 180 && (at - angle + 360) % 360 <= gap;
   });
 }
