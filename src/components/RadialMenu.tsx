@@ -3,12 +3,14 @@ import { Dynamic } from "solid-js/web";
 import type { IconProps } from "./Icons";
 import { autoArc, fittedRadius, layoutPetals, type Arc, type Overlap, type Rect } from "../app/radial";
 
-// One petal: an action with an icon, or a colour swatch (`hue`, null for none)
+// One petal: an action with an icon, an emoji (`glyph`), or a colour swatch
+// (`hue`, null for none)
 export type RadialItem = {
   id: string;
   label: string;
   hint?: string;
   icon?: (props: IconProps) => JSX.Element;
+  glyph?: string;
   hue?: string | null;
   selected?: boolean;
   danger?: boolean;
@@ -49,6 +51,9 @@ export function RadialMenu(props: {
   // A press that opened the menu and is still held: sliding onto a petal and
   // letting go chooses it, as a press on a petal does
   pressed?: boolean;
+  // Only a click chooses: a press let go over a petal does nothing, for
+  // petals that can't be taken back
+  clickOnly?: boolean;
   // The petal being tried: under the pointer, under a held press, or focused
   // by keyboard; null once none is
   onScrub?: (item: RadialItem | null) => void;
@@ -139,7 +144,7 @@ export function RadialMenu(props: {
     document.addEventListener("pointerup", up, true);
   };
   createEffect(() => {
-    if (props.open && props.pressed) beginScrub();
+    if (props.open && props.pressed && !props.clickOnly) beginScrub();
   });
 
   // One tab stop: the chosen petal, else the first; arrows move among the rest
@@ -232,7 +237,7 @@ export function RadialMenu(props: {
               onBlur={() => props.onScrub?.(null)}
               onPointerEnter={() => { if (!scrubbing) props.onScrub?.(item); }}
               onPointerLeave={() => { if (!scrubbing) props.onScrub?.(null); }}
-              onPointerDown={(e) => { if (e.button === 0) beginScrub(i()); }}
+              onPointerDown={(e) => { if (e.button === 0 && !props.clickOnly) beginScrub(i()); }}
               onClick={(e) => {
                 // A release on the petal already chose it; its click goes no further
                 if (swallowClick) e.stopPropagation();
@@ -241,6 +246,9 @@ export function RadialMenu(props: {
             >
               <Show when={item.icon}>
                 <Dynamic component={item.icon} size="ui" />
+              </Show>
+              <Show when={item.glyph}>
+                <span class="radial-glyph" aria-hidden="true">{item.glyph}</span>
               </Show>
               <Show when={item.hint}>
                 <span class="action-key-hint" aria-hidden="true">{item.hint}</span>

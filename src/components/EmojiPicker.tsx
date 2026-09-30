@@ -13,7 +13,7 @@ const EMOJI_CATEGORIES: { name: string; icon: string; emojis: string[] }[] = [
       "\ud83d\ude00", "\ud83d\ude03", "\ud83d\ude04", "\ud83d\ude01", "\ud83d\ude06", "\ud83d\ude05", "\ud83d\ude02", "\ud83e\udd23",
       "\ud83d\ude0a", "\ud83d\ude07", "\ud83d\ude42", "\ud83d\ude43", "\ud83d\ude09", "\ud83d\ude0c", "\ud83d\ude0d", "\ud83e\udd70",
       "\ud83d\ude18", "\ud83d\ude17", "\ud83d\ude19", "\ud83d\ude1a", "\ud83d\ude0b", "\ud83d\ude1b", "\ud83d\ude1c", "\ud83e\udd2a",
-      "\ud83d\ude1d", "\ud83e\udd11", "\ud83e\udd17", "\ud83e\udd2d", "\ud83e\udd2b", "\ud83e\udd14", "\ud83e\udd10", "\ud83e\udd28",
+      "\ud83d\ude1d", "\ud83e\udd11", "\ud83e\udd17", "\ud83e\udd2d", "\ud83e\udd2b", "\ud83e\udd14", "\ud83e\udee1", "\ud83e\udd10", "\ud83e\udd28",
       "\ud83d\ude10", "\ud83d\ude11", "\ud83d\ude36", "\ud83d\ude0f", "\ud83d\ude12", "\ud83d\ude44", "\ud83d\ude2c", "\ud83e\udd25",
       "\ud83d\ude14", "\ud83d\ude2a", "\ud83e\udd24", "\ud83d\ude34", "\ud83d\ude37", "\ud83e\udd12", "\ud83e\udd15",
       "\ud83e\udd22", "\ud83e\udd2e", "\ud83e\udd27", "\ud83e\udd75", "\ud83e\udd76", "\ud83e\udd74", "\ud83d\ude35", "\ud83e\udd2f",
@@ -30,7 +30,7 @@ const EMOJI_CATEGORIES: { name: string; icon: string; emojis: string[] }[] = [
     icon: "\ud83d\udc4d",
     emojis: [
       "\ud83d\udc4d", "\ud83d\udc4e", "\ud83d\udc4a", "\u270a", "\ud83e\udd1b", "\ud83e\udd1c", "\ud83e\udd1e", "\u270c\ufe0f",
-      "\ud83e\udd1f", "\ud83e\udd18", "\ud83d\udc4c", "\ud83e\udd0f", "\ud83d\udc48", "\ud83d\udc49", "\ud83d\udc46", "\ud83d\udc47",
+      "\ud83e\udd1f", "\ud83e\udd18", "\ud83d\udc4c", "\ud83e\udd0c", "\ud83e\udd0f", "\ud83d\udc48", "\ud83d\udc49", "\ud83d\udc46", "\ud83d\udc47",
       "\u261d\ufe0f", "\u270b", "\ud83e\udd1a", "\ud83d\udd90\ufe0f", "\ud83d\udd96", "\ud83d\udc4b", "\ud83e\udd19", "\ud83d\udcaa",
       "\ud83d\ude4f", "\u270d\ufe0f", "\ud83d\udc85", "\ud83e\udd33", "\ud83d\udc4f", "\ud83d\ude4c", "\ud83d\udc50", "\ud83e\udd32",
     ],
@@ -39,7 +39,7 @@ const EMOJI_CATEGORIES: { name: string; icon: string; emojis: string[] }[] = [
     name: "Hearts",
     icon: "\u2764\ufe0f",
     emojis: [
-      "\u2764\ufe0f", "\ud83e\udde1", "\ud83d\udc9b", "\ud83d\udc9a", "\ud83d\udc99", "\ud83d\udc9c", "\ud83e\udd0e", "\ud83d\udda4",
+      "\u2764\ufe0f", "\ud83e\udef6", "\ud83e\udde1", "\ud83d\udc9b", "\ud83d\udc9a", "\ud83d\udc99", "\ud83d\udc9c", "\ud83e\udd0e", "\ud83d\udda4",
       "\ud83e\udd0d", "\ud83d\udc94", "\u2763\ufe0f", "\ud83d\udc95", "\ud83d\udc9e", "\ud83d\udc93", "\ud83d\udc97", "\ud83d\udc96",
       "\ud83d\udc98", "\ud83d\udc9d", "\ud83d\udc9f", "\u2665\ufe0f", "\ud83d\udc8b", "\ud83d\udc8c", "\ud83d\udc8d", "\ud83d\udc8e",
     ],
@@ -116,12 +116,14 @@ interface EmojiPickerProps {
   onClose: () => void;
   // Viewport position; the picker then floats above everything that clips it
   at?: { top: number; left: number };
+  // What was already typed before the picker opened
+  initialSearch?: string;
 }
 
 export const EMOJI_PICKER_SIZE = { width: 320, height: 360 };
 
 export const EmojiPicker = (props: EmojiPickerProps) => {
-  const [search, setSearch] = createSignal("");
+  const [search, setSearch] = createSignal(props.initialSearch ?? "");
   const [activeCategory, setActiveCategory] = createSignal(0);
   let containerRef: HTMLDivElement | undefined;
   let searchRef: HTMLInputElement | undefined;

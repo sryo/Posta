@@ -175,9 +175,16 @@ describe("ThreadView keyboard shortcuts", () => {
     expect((props.onReply as any).mock.calls[0][1]).toBe("carol@example.com");
   });
 
-  it("closes only the emoji picker on Escape", () => {
+  it("closes only the reaction wheel, or the emoji picker, on Escape", () => {
     const { container } = renderThread();
     fireEvent.click(container.querySelectorAll<HTMLButtonElement>(".add-reaction-btn")[0]);
+    expect(document.querySelector(".reaction-wheel")).not.toBeNull();
+    fireEvent.keyDown(document, { key: "Escape" });
+    expect(document.querySelector(".reaction-wheel")).toBeNull();
+    expect(container.querySelector(".thread-overlay.closing")).toBeNull();
+
+    fireEvent.click(container.querySelectorAll<HTMLButtonElement>(".add-reaction-btn")[0]);
+    fireEvent.click(document.querySelector<HTMLButtonElement>(".reaction-wheel-more")!);
     expect(document.querySelector(".emoji-picker")).not.toBeNull();
     expect(document.activeElement).toBe(document.querySelector(".emoji-search"));
     fireEvent.keyDown(document.activeElement!, { key: "Escape" });
@@ -186,6 +193,7 @@ describe("ThreadView keyboard shortcuts", () => {
 
     // Same when focus has left the search box (e.g. after clicking a category)
     fireEvent.click(container.querySelectorAll<HTMLButtonElement>(".add-reaction-btn")[0]);
+    fireEvent.click(document.querySelector<HTMLButtonElement>(".reaction-wheel-more")!);
     (document.activeElement as HTMLElement | null)?.blur();
     fireEvent.keyDown(document, { key: "Escape" });
     expect(document.querySelector(".emoji-picker")).toBeNull();
