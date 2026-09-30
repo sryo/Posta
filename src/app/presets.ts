@@ -12,9 +12,11 @@ export const PRESETS: Record<string, { label: string; description: string; cards
     label: "Posta",
     description: "Focus on what matters",
     cards: [
-      { name: "Hot", query: "is:important in:inbox", color: "blue" },
+      { name: "Hot", query: "is:important is:unread in:inbox", color: "blue" },
+      { name: "Ping", query: "is:read older_than:2d newer_than:4d -in:sent -is:muted", color: "orange" },
+      { name: "Waiting", query: "in:sent older_than:3d newer_than:7d -filename:ics -is:muted", color: "yellow" },
       { name: "Meh", query: "category:promotions OR category:updates OR category:social -is:important -is:starred", color: "red" },
-      { name: "Files", query: "has:attachment", color: "purple" },
+      { name: "Stash", query: "has:attachment", color: "purple" },
       { name: "Today", query: "calendar:today" },
       { name: "Everything else", query: "in:inbox", collapsed: true },
     ],

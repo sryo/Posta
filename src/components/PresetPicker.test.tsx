@@ -27,7 +27,7 @@ describe("PresetPicker", () => {
   it("lists each preset's cards and previews every one of them, calendar cards included", () => {
     renderPicker();
     const posta = option("Posta");
-    expect(within(posta).getByText("Hot · Meh · Files · Today · Everything else")).toBeInTheDocument();
+    expect(within(posta).getByText("Hot · Ping · Waiting · Meh · Stash · Today · Everything else")).toBeInTheDocument();
     expect(posta.querySelectorAll(".preset-card")).toHaveLength(PRESETS.posta.cards.length);
     expect(posta.querySelector(".preset-card.none")).not.toBeNull();
     expect(within(option("Blank")).getByText("No cards")).toBeInTheDocument();

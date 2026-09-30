@@ -1514,7 +1514,7 @@
                                 <div class="card-form-group">
                                     <label class="query-label">Query <button type="button" class="query-help-btn" title="Query operators help">?</button></label>
                                     <div class="query-autocomplete-wrap">
-                                        <input type="text" value="is:important in:inbox" data-field="query" class="query-input">
+                                        <input type="text" value="is:important is:unread in:inbox" data-field="query" class="query-input">
                                         <div class="query-autocomplete"></div>
                                     </div>
                                 </div>
@@ -1808,7 +1808,7 @@
                         <div class="card-resize-handle"></div>
                     </div>
 
-                    <!-- Files Card (Purple) -->
+                    <!-- Stash Card (Purple) -->
                     <div class="card-wrapper" draggable="false">
                         <div class="card" data-color="purple" data-card-id="files">
                             <!-- Card Form -->
@@ -1816,7 +1816,7 @@
                                 <div class="card-form-group">
                                     <label>Name</label>
                                     <div class="name-color-row">
-                                        <input type="text" value="Files" data-field="name">
+                                        <input type="text" value="Stash" data-field="name">
                                         <div class="color-picker">
                                             <div class="color-picker-selected" style="background: #5E35B1;">
                                                 <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M12 22C6.49 22 2 17.51 2 12S6.49 2 12 2s10 4.04 10 9c0 3.31-2.69 6-6 6h-1.77c-.28 0-.5.22-.5.5 0 .12.05.23.13.33.41.47.64 1.06.64 1.67A2.5 2.5 0 0 1 12 22zm0-18c-4.41 0-8 3.59-8 8s3.59 8 8 8c.28 0 .5-.22.5-.5a.54.54 0 0 0-.14-.35c-.41-.46-.63-1.05-.63-1.65a2.5 2.5 0 0 1 2.5-2.5H16c2.21 0 4-1.79 4-4 0-3.86-3.59-7-8-7z"/></svg>
@@ -1865,7 +1865,7 @@
                                         <path d="M7.41 8.59L12 13.17l4.59-4.58L18 10l-6 6-6-6 1.41-1.41z"/>
                                     </svg>
                                 </button>
-                                <span class="card-title">Files</span>
+                                <span class="card-title">Stash</span>
                                 <span class="card-unread-badge">8</span>
                                 <div class="card-actions">
                                     <button class="icon-btn" title="Refresh" data-action="refresh">
@@ -2193,9 +2193,9 @@
 
             // Default Posta preset - resets on every page load
             const defaultCards = [
-                { id: 'hot', name: 'Hot', query: 'is:important in:inbox', color: 'blue', groupBy: 'label' },
+                { id: 'hot', name: 'Hot', query: 'is:important is:unread in:inbox', color: 'blue', groupBy: 'label' },
                 { id: 'meh', name: 'Meh', query: 'category:promotions OR category:updates', color: 'red', groupBy: 'date' },
-                { id: 'files', name: 'Files', query: 'has:attachment newer_than:1d', color: 'purple', groupBy: 'date' }
+                { id: 'files', name: 'Stash', query: 'has:attachment newer_than:1d', color: 'purple', groupBy: 'date' }
             ];
 
             // Color hex map
