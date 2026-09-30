@@ -1,7 +1,7 @@
 import { For, Show, createEffect, createMemo, createSignal, onCleanup, type JSX } from "solid-js";
 import { Dynamic } from "solid-js/web";
 import type { IconProps } from "./Icons";
-import { autoArc, layoutPetals, type Arc, type Overlap } from "../app/radial";
+import { autoArc, layoutPetals, type Arc, type Overlap, type Rect } from "../app/radial";
 
 // One petal: an action with an icon, or a colour swatch (`hue`, null for none)
 export type RadialItem = {
@@ -36,8 +36,8 @@ export function RadialMenu(props: {
   overlap?: Overlap;
   maxRadius?: number;
   // What the petals must stay inside when the arc is chosen from the room,
-  // found from the menu's own element
-  bounds?: (menu: HTMLElement) => Element | null | undefined;
+  // found from the menu's own element: an element's box, or a box of its own
+  bounds?: (menu: HTMLElement) => Element | Rect | null | undefined;
   hints?: "always" | "hover";
   class?: string;
   center?: JSX.Element;
@@ -69,7 +69,8 @@ export function RadialMenu(props: {
     const arc = props.arc;
     if ("start" in arc) return arc;
     if (!root) return null;
-    const bounds = props.bounds?.(root)?.getBoundingClientRect();
+    const found = props.bounds?.(root);
+    const bounds = found instanceof Element ? found.getBoundingClientRect() : found ?? undefined;
     const anchor = root.getBoundingClientRect();
     return autoArc({ anchor, bounds, toward: arc.toward, maxSpan: arc.maxSpan, radius: props.radius, itemSize: props.itemSize });
   };
@@ -97,9 +98,12 @@ export function RadialMenu(props: {
     const el = document.elementFromPoint(x, y)?.closest(".radial-petal");
     return el ? petalEls.indexOf(el as HTMLButtonElement) : -1;
   };
-  const beginScrub = () => {
+  // A press chooses only a petal it started on or slid onto: a click on the
+  // anchor lets go over petals still blooming out from under it
+  const beginScrub = (start = -1) => {
     if (scrubbing) return;
     scrubbing = true;
+    setScrubbed(start);
     let previewed = false;
     const move = (e: PointerEvent) => {
       const i = petalAt(e.clientX, e.clientY);
@@ -112,7 +116,8 @@ export function RadialMenu(props: {
       document.removeEventListener("pointermove", move, true);
       document.removeEventListener("pointerup", up, true);
       scrubbing = false;
-      const i = petalAt(e.clientX, e.clientY);
+      const at = petalAt(e.clientX, e.clientY);
+      const i = at === scrubbed() ? at : -1;
       setScrubbed(-1);
       if (i >= 0) {
         swallowClick = true;
@@ -219,7 +224,7 @@ export function RadialMenu(props: {
               onBlur={() => props.onScrub?.(null)}
               onPointerEnter={() => { if (!scrubbing) props.onScrub?.(item); }}
               onPointerLeave={() => { if (!scrubbing) props.onScrub?.(null); }}
-              onPointerDown={(e) => { if (e.button === 0) beginScrub(); }}
+              onPointerDown={(e) => { if (e.button === 0) beginScrub(i()); }}
               onClick={(e) => { if (!swallowClick) item.onSelect(e); }}
             >
               <Show when={item.icon}>

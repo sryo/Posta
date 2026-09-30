@@ -4702,10 +4702,7 @@ function App() {
               }
             }}
           />
-          <button class="global-filter-close" onClick={() => { setShowGlobalFilter(false); setGlobalFilter(""); }} title="Close filter">
-            <CloseIcon />
-            <span class="shortcut-hint">ESC</span>
-          </button>
+          <span class="shortcut-hint global-filter-hint" title="Escape closes the filter">ESC</span>
         </div>
       </div>
 
@@ -5772,8 +5769,8 @@ function App() {
             initialFocus={(el) => el.querySelector<HTMLElement>(".label-drawer-search input")}
           >
             <div class="label-drawer-header">
-              <h3 id="label-drawer-title">Labels</h3>
               <CloseButton onClick={closeLabelDrawer} />
+              <h3 id="label-drawer-title">Labels</h3>
             </div>
 
             <div class="label-drawer-search">
@@ -6054,8 +6051,8 @@ function App() {
         aria-hidden={settingsOpen() ? undefined : "true"}
       >
         <div class="settings-header">
-          <h3>Settings</h3>
           <CloseButton onClick={() => setSettingsOpen(false)} />
+          <h3>Settings</h3>
         </div>
         <div class="settings-body">
           <div class="settings-section">
@@ -6157,8 +6154,8 @@ function App() {
           initialFocus={(el) => el.querySelector<HTMLElement>(".shortcuts-body")}
         >
           <div class="shortcuts-header">
-            <h2 id="shortcuts-title">Keyboard Shortcuts</h2>
             <CloseButton onClick={() => setShortcutsHelpOpen(false)} />
+            <h2 id="shortcuts-title">Keyboard Shortcuts</h2>
           </div>
           <div class="shortcuts-body" tabindex="0">
             <div class="shortcuts-section">

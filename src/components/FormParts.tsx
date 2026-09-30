@@ -5,15 +5,16 @@ import { CloseButton } from "./ComposeAtoms";
 // The pieces the compose, event and card forms are built from, so their
 // fields, titles and footers look and behave alike.
 
-// The top of a compose or event panel: whose it is on the left, then
-// anything else, then close
+// The top of a compose or event panel: close first, where every view and
+// sheet keeps it, then whose it is and anything else. A panel whose Escape
+// discards work passes no onClose and offers Cancel in its footer instead
 export function PanelHeader(props: { children: JSX.Element; onClose?: () => void }) {
   return (
     <div class="panel-header">
-      {props.children}
       <Show when={props.onClose}>
         <CloseButton onClick={props.onClose!} />
       </Show>
+      {props.children}
     </div>
   );
 }

@@ -251,7 +251,7 @@ describe("CreateEventForm header", () => {
     { id: "team", name: "Team", is_primary: false, access_role: "writer" },
   ];
 
-  it("names the account and calendar above the title, with close", () => {
+  it("names the account and calendar above the title, leaving Cancel to the footer", () => {
     const { container, getByRole } = renderForm({ startDate: "2031-03-03", extra: { calendars, calendarId: "team", setCalendarId: vi.fn(), accountEmail: "me@x.test" } });
     const header = container.querySelector(".panel-header")!;
     expect(header.querySelector(".panel-account-avatar")).toHaveAttribute("data-hue");
@@ -259,7 +259,9 @@ describe("CreateEventForm header", () => {
     const select = getByRole("combobox", { name: "Calendar" }) as HTMLSelectElement;
     expect(header.contains(select)).toBe(true);
     expect(select.value).toBe("team");
-    expect(header.querySelector(".close-btn")).not.toBeNull();
+    // Escape discards the event, so it is Cancel in the footer, not a close up here
+    expect(header.querySelector(".close-btn")).toBeNull();
+    expect(container.querySelector(".event-form-footer")).toHaveTextContent("Cancel");
     expect(header.querySelector('input[placeholder="Event title"]')).toBeNull();
     expect(container.querySelector('input[placeholder="Event title"]')).toHaveClass("form-title-field");
   });

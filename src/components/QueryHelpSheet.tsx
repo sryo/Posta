@@ -69,8 +69,8 @@ export const QueryHelpSheet = (props: { onInsert: (text: string) => void; onClos
         initialFocus={(el) => el.querySelector<HTMLElement>(".query-help-body")}
       >
         <div class="query-help-header">
-          <h3 id="query-help-title">Query Operators</h3>
           <CloseButton onClick={props.onClose} />
+          <h3 id="query-help-title">Query Operators</h3>
         </div>
         <div class="query-help-body" tabindex="0">
           <p class="query-help-note">Click an operator to add it to the query.</p>

@@ -112,6 +112,7 @@ export const AttachmentLightbox = (props: {
       {(item) => (
         <div ref={dialogEl} tabIndex={-1} class="lightbox" role="dialog" aria-modal="true" aria-label={item().filename} onClick={(e) => { if (e.target === e.currentTarget) props.onClose(); }}>
           <div class="lightbox-bar">
+            <CloseButton onClick={props.onClose} />
             <div class="lightbox-title">
               <span class="lightbox-name">{item().filename}</span>
               <span class="lightbox-meta">
@@ -121,7 +122,6 @@ export const AttachmentLightbox = (props: {
             </div>
             <button class="btn btn-sm" onClick={() => props.onDownload(item())}>Download</button>
             <button class="btn btn-sm" onClick={() => props.onOpenExternally(item())}>Open in…</button>
-            <CloseButton onClick={props.onClose} />
           </div>
           <div class="lightbox-stage">
             <Show when={props.items.length > 1}>

@@ -597,26 +597,6 @@ a:focus-visible,
     color: var(--text-muted);
 }
 
-.global-filter-close {
-    display: flex;
-    align-items: center;
-    gap: var(--space-md);
-    background: transparent;
-    border: none;
-    color: var(--text-muted);
-    cursor: pointer;
-    padding: var(--space-md) var(--space-lg);
-    border-radius: var(--radius-md);
-    font: var(--type-meta);
-    transition: all 0.15s ease;
-    flex-shrink: 0;
-}
-
-.global-filter-close:hover {
-    background: var(--surface-hover);
-    color: var(--text-primary);
-}
-
 /* Toolbar (settings + bg color) - Now at bottom of sidebar */
 .toolbar-wrapper {
     position: relative;
@@ -3332,7 +3312,7 @@ button:disabled:hover {
     display: flex;
     align-items: center;
     gap: var(--space-md);
-    padding: var(--space-md) var(--space-md) var(--space-md) var(--space-xl);
+    padding: var(--space-md) var(--space-xl) var(--space-md) var(--space-md);
     border-bottom: 1px solid var(--border-subtle);
 }
 
@@ -4021,6 +4001,21 @@ button:disabled:hover {
     margin-top: var(--space-xl);
 }
 
+/* A sheet's title fills its header, after the close button */
+.label-drawer-header > h3,
+.settings-header > h3,
+.shortcuts-header > h2,
+.query-help-header > h3 {
+    flex: 1;
+}
+
+.global-filter-hint {
+    flex-shrink: 0;
+    margin-right: var(--space-lg);
+    color: var(--text-muted);
+    opacity: 0.6;
+}
+
 /* Query help sheet */
 .query-help-overlay {
     position: fixed;
@@ -4052,7 +4047,7 @@ button:disabled:hover {
 .query-help-header {
     display: flex;
     align-items: center;
-    justify-content: space-between;
+    gap: var(--space-md);
     padding: var(--space-xl) var(--space-2xl);
     border-bottom: 1px solid var(--border-default);
 }
@@ -4183,7 +4178,7 @@ button:disabled:hover {
     border-bottom: 1px solid var(--border-subtle);
     display: flex;
     align-items: center;
-    justify-content: space-between;
+    gap: var(--space-md);
 }
 
 .settings-header h3 {
@@ -4988,7 +4983,7 @@ button.settings-section-title {
 .label-drawer-header {
     display: flex;
     align-items: center;
-    justify-content: space-between;
+    gap: var(--space-md);
     padding: var(--space-xl) var(--space-2xl);
     border-bottom: 1px solid var(--border-subtle);
 }
@@ -5855,7 +5850,7 @@ button.settings-section-title {
 .shortcuts-header {
     display: flex;
     align-items: center;
-    justify-content: space-between;
+    gap: var(--space-md);
     padding: var(--space-xl) var(--space-2xl);
     border-bottom: 1px solid var(--border-subtle);
 }

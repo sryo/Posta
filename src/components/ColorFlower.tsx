@@ -5,6 +5,14 @@ import { onActivateKey } from "../shared/keyboard";
 
 export type FlowerColor = { hue: string; label: string };
 
+// The board (or window) below the strip that drags the window: a petal up
+// there would move the window instead of taking the click
+function roomFor(menu: HTMLElement) {
+  const board = (menu.closest(".deck") ?? document.body).getBoundingClientRect();
+  const dragStrip = document.querySelector(".drag-region")?.getBoundingClientRect();
+  return { left: board.left, right: board.right, bottom: board.bottom, top: Math.max(board.top, dragStrip?.bottom ?? 0) };
+}
+
 // Every colour flower is the same size; only the way it opens differs
 const RADIUS = 34;
 const PETAL = 20;
@@ -104,7 +112,7 @@ export function ColorFlower(props: {
           })),
         ]}
         arc={{ toward: props.toward, maxSpan: MAX_SPAN }}
-        bounds={(menu) => menu.closest(".deck") ?? document.body}
+        bounds={roomFor}
         radius={RADIUS}
         itemSize={PETAL}
         onEscape={() => { preview(undefined); props.setOpen(false); }}

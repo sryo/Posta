@@ -209,7 +209,7 @@ export const CreateEventForm = (props: {
   const formContent = () => (
     <>
       <Show when={!props.inline}>
-        <PanelHeader onClose={props.onClose}>
+        <PanelHeader>
           <Show when={props.accountEmail} fallback={<div class="panel-account">{calendarSelect()}</div>}>
             <PanelAccount email={props.accountEmail!}>
               {calendarSelect()}

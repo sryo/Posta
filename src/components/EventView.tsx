@@ -413,8 +413,8 @@ export const EventView = (props: {
         <div class="label-drawer-overlay" onClick={props.onCloseCalendarDrawer}></div>
         <div class="label-drawer">
           <div class="label-drawer-header">
-            <h3>Move to Calendar</h3>
             <CloseButton onClick={props.onCloseCalendarDrawer} />
+            <h3>Move to Calendar</h3>
           </div>
 
           <div class="label-drawer-body">
