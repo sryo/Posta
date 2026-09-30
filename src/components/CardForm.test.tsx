@@ -56,7 +56,7 @@ describe("CardForm while an input method is composing", () => {
 });
 
 describe("CardForm grouping", () => {
-  const active = () => document.querySelector(".group-by-btn.active")?.textContent;
+  const active = () => document.querySelector('[aria-label="Group by"] [aria-pressed="true"]')?.textContent;
 
   it("falls back to date grouping when the query switches card type", () => {
     const { groupBy } = renderCardForm("edit", { groupBy: "sender" });
@@ -137,13 +137,19 @@ describe("CardForm header", () => {
   });
 
   it("ignores ✓ right after opening, so the double-click that opened it doesn't save", async () => {
-    const onSave = vi.fn();
-    renderCardForm("edit", { onSave });
-    fireEvent.click(screen.getByRole("button", { name: "Save" }));
-    expect(onSave).not.toHaveBeenCalled();
-    await wait(350);
-    fireEvent.click(screen.getByRole("button", { name: "Save" }));
-    expect(onSave).toHaveBeenCalledTimes(1);
+    // The clock only moves when the test says, so a slow query can't outlast the guard
+    vi.useFakeTimers({ toFake: ["Date"] });
+    try {
+      const onSave = vi.fn();
+      renderCardForm("edit", { onSave });
+      fireEvent.click(screen.getByRole("button", { name: "Save" }));
+      expect(onSave).not.toHaveBeenCalled();
+      vi.setSystemTime(Date.now() + 350);
+      fireEvent.click(screen.getByRole("button", { name: "Save" }));
+      expect(onSave).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("names a new card's ✓ Add", () => {

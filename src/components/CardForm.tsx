@@ -1,4 +1,6 @@
 import { Show, For, createEffect } from "solid-js";
+import { IconButton } from "./IconButton";
+import { Segmented } from "./Segmented";
 import type { Account } from "../api/tauri";
 import { ALL_ACCOUNTS } from "../app/accountScope";
 import {
@@ -117,9 +119,9 @@ export const CardForm = (props: {
           ref={(el) => setTimeout(() => el.focus(), 50)}
         />
         <div class="card-edit-actions">
-          <button type="button" class="icon-btn" onClick={() => props.onCancel()} title="Cancel (Esc)" aria-label="Cancel">
+          <IconButton label="Cancel" title="Cancel (Esc)" onClick={() => props.onCancel()}>
             <CloseIcon size="tool" />
-          </button>
+          </IconButton>
           <button
             type="button"
             class="icon-btn card-edit-done"
@@ -161,32 +163,15 @@ export const CardForm = (props: {
           />
         </div>
         <div class="card-edit-controls">
-          <div class="group-by-buttons" role="group" aria-label="Group by">
-            <For each={groupByOptions()}>
-              {(option) => (
-                <button
-                  class={`group-by-btn ${props.groupBy === option.value ? 'active' : ''}`}
-                  aria-pressed={props.groupBy === option.value}
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    props.setGroupBy(option.value);
-                  }}
-                  type="button"
-                >
-                  {option.label}
-                </button>
-              )}
-            </For>
-          </div>
-          <button
-            type="button"
-            class="icon-btn card-edit-help"
-            onClick={() => props.setQueryHelpOpen(true)}
-            title="Query operators help"
-            aria-label="Query operators help"
-          >
+          <Segmented
+            label="Group by"
+            options={groupByOptions()}
+            value={props.groupBy}
+            onChange={(value) => props.setGroupBy(value)}
+          />
+          <IconButton label="Query operators help" size="sm" class="card-edit-help" onClick={() => props.setQueryHelpOpen(true)}>
             <QuestionCircleIcon />
-          </button>
+          </IconButton>
           <Show when={props.onDelete}>
             <button
               type="button"

@@ -1422,7 +1422,7 @@ describe("App thread view", () => {
     fireEvent.click(await screen.findByTitle("Create event from this thread"));
 
     expect(await screen.findByPlaceholderText("Event title")).toHaveValue("Lunch on Thursday");
-    expect(Array.from(document.querySelectorAll(".guest-chip-label")).map(el => el.textContent)).toEqual(["Ana", "bo@y.com"]);
+    expect(Array.from(document.querySelectorAll(".guest-chip .chip-label")).map(el => el.textContent)).toEqual(["Ana", "bo@y.com"]);
     // The thread moves over to keep its toolbar clear of the form
     expect(document.querySelector(".app")).toHaveClass("side-panel-open");
   });
@@ -2186,7 +2186,7 @@ describe("App calendar", () => {
     const guests = await screen.findByRole("combobox", { name: "Guests" });
     fireEvent.input(guests, { target: { value: "ana" } });
     fireEvent.keyDown(guests, { key: "Enter" });
-    expect(document.querySelector(".guest-chip-label")).toHaveTextContent("Ana Pérez");
+    expect(document.querySelector(".guest-chip .chip-label")).toHaveTextContent("Ana Pérez");
 
     const title = screen.getByPlaceholderText("Event title");
     fireEvent.input(title, { target: { value: "Lunch" } });
@@ -2488,6 +2488,42 @@ describe("App calendar", () => {
     await waitFor(() => expect(invoke).toHaveBeenCalledWith("rsvp_calendar_event", { accountId: "a", eventUid: "ev-1@google.com", status: "tentative" }));
   });
 
+  it("sends no answer from the keyboard to an invite that has passed", async () => {
+    threadsByCard["card-a"] = [{
+      ...thread("t-inv", "Invitation: Planning"),
+      calendar_event: {
+        uid: "ev-1@google.com", title: "Planning", start_time: Date.now() - 2 * 3600_000, end_time: Date.now() - 3600_000, all_day: false,
+        location: null, description: null, organizer: "org@x.com", attendees: [], method: "REQUEST", status: null, response_status: null,
+      },
+    }];
+    handlers.get_calendar_rsvp_status = () => null;
+    handlers.rsvp_calendar_event = () => null;
+    render(() => <App />);
+    await screen.findByTitle("Invitation: Planning");
+    fireEvent.keyDown(document, { key: "l" });
+    fireEvent.keyDown(document, { key: "y" });
+    await new Promise(r => setTimeout(r, 20));
+    expect(invoke).not.toHaveBeenCalledWith("rsvp_calendar_event", expect.anything());
+  });
+
+  it("opens the answer menu from an invite row without opening the email", async () => {
+    threadsByCard["card-a"] = [{
+      ...thread("t-inv", "Invitation: Planning"),
+      calendar_event: {
+        uid: "ev-1@google.com", title: "Planning", start_time: Date.now() + 3600_000, end_time: null, all_day: false,
+        location: null, description: null, organizer: "org@x.com", attendees: [], method: "REQUEST", status: null, response_status: null,
+      },
+    }];
+    handlers.get_calendar_rsvp_status = () => null;
+    handlers.get_thread_details = () => ({ id: "t-inv", messages: [] });
+    render(() => <App />);
+    const row = (await screen.findByTitle("Invitation: Planning")).closest(".thread") as HTMLElement;
+    fireEvent.click(within(row).getByRole("button", { name: /^Your response/ }));
+    expect(screen.getByRole("menu", { name: "Your response" })).toBeInTheDocument();
+    await new Promise(r => setTimeout(r, 20));
+    expect(invoke).not.toHaveBeenCalledWith("get_thread_details", expect.anything());
+  });
+
   it("does not send an answer again for a focused invite email the user already gave", async () => {
     threadsByCard["card-a"] = [{
       ...thread("t-inv", "Invitation: Planning"),
@@ -2618,11 +2654,11 @@ describe("App calendar", () => {
       render(() => <App />);
       await screen.findByText("Q4 kickoff");
       const row = rowOf("Q4 kickoff");
-      await waitFor(() => expect(row.querySelector(".invite-strip")).not.toBeNull());
+      await waitFor(() => expect(row.querySelector(".day-strip")).not.toBeNull());
       expect(invoke).toHaveBeenCalledWith("fetch_calendar_events", { accountId: "a", query: "calendar:7d" });
-      expect(row.querySelector(".invite-strip")).toHaveAttribute("aria-hidden", "true");
-      expect(row.querySelectorAll(".invite-strip-busy")).toHaveLength(1);
-      expect(row.querySelector(".invite-strip-busy.overlap")).not.toBeNull();
+      expect(row.querySelector(".day-strip")).toHaveAttribute("aria-hidden", "true");
+      expect(row.querySelectorAll(".day-strip-busy")).toHaveLength(1);
+      expect(row.querySelector(".day-strip-busy.overlap")).not.toBeNull();
       expect(row.querySelector(".invite-clash")).toHaveTextContent("Dentist");
       expect(row.getAttribute("aria-label")).toMatch(/Overlaps Dentist, .*\. You have not answered\.$/);
     });
@@ -2635,7 +2671,7 @@ describe("App calendar", () => {
       await screen.findByText("Planning");
       await waitFor(() => expect(invoke).toHaveBeenCalledWith("fetch_calendar_events", expect.anything()));
       await new Promise(r => setTimeout(r, 20));
-      expect(document.querySelector(".invite-strip")).toBeNull();
+      expect(document.querySelector(".day-strip")).toBeNull();
       expect(screen.queryByText("Posta lost access to a@x.com")).toBeNull();
     });
 
@@ -2983,7 +3019,7 @@ describe("App batch reply", () => {
     fireEvent.keyDown(document, { key: "x" });
     fireEvent.click(await screen.findByTitle("Batch Reply"));
     fireEvent.input(await screen.findByPlaceholderText(/^Reply to/), { target: { value: "Thanks" } });
-    fireEvent.click(screen.getByRole("button", { name: /^Send ⌘/ }));
+    fireEvent.click(screen.getByRole("button", { name: "Send" }));
 
     await waitFor(() => expect(invoke).toHaveBeenCalledWith("reply_to_thread", expect.objectContaining({ to: "team@x.com" })), { timeout: 8000 });
   });
@@ -2998,7 +3034,7 @@ describe("App batch reply", () => {
     fireEvent.keyDown(document, { key: "x" });
     fireEvent.click(await screen.findByTitle("Batch Reply"));
     fireEvent.input(await screen.findByPlaceholderText(/^Reply to/), { target: { value: "Thanks" } });
-    fireEvent.click(screen.getByRole("button", { name: /^Send ⌘/ }));
+    fireEvent.click(screen.getByRole("button", { name: "Send" }));
 
     await waitFor(() => expect(invoke).toHaveBeenCalledWith("reply_to_thread", expect.objectContaining({ body: "Thanks\n\n-- \nAna" })), { timeout: 8000 });
   });
@@ -3017,7 +3053,7 @@ describe("App batch reply", () => {
     fireEvent.keyDown(document, { key: "x" });
     fireEvent.click(await screen.findByTitle("Batch Reply"));
     fireEvent.input(await screen.findByPlaceholderText(/^Reply to/), { target: { value: "Thanks" } });
-    fireEvent.click(screen.getByRole("button", { name: /^Send ⌘/ }));
+    fireEvent.click(screen.getByRole("button", { name: "Send" }));
 
     await waitFor(() => expect(invoke).toHaveBeenCalledWith("reply_to_thread", expect.objectContaining({ to: "ana@x.com", messageId: "m1" })), { timeout: 8000 });
   });
@@ -3036,7 +3072,7 @@ describe("App batch reply", () => {
     fireEvent.keyDown(document, { key: "x" });
     fireEvent.click(await screen.findByTitle("Batch Reply"));
     fireEvent.input(await screen.findByPlaceholderText(/^Reply to/), { target: { value: "Thanks" } });
-    fireEvent.click(screen.getByRole("button", { name: /^Send ⌘/ }));
+    fireEvent.click(screen.getByRole("button", { name: "Send" }));
 
     expect(await screen.findByText(/No one to reply to/)).toBeInTheDocument();
     expect(invoke).not.toHaveBeenCalledWith("reply_to_thread", expect.anything());
@@ -4717,7 +4753,7 @@ describe("App accessibility", () => {
     fireEvent.keyDown(suggestion, { key: "Enter" });
 
     expect(await screen.findByPlaceholderText("Event title")).toHaveValue("Sync next week?");
-    expect(Array.from(document.querySelectorAll(".guest-chip-label")).map(el => el.textContent)).toEqual(["Ana"]);
+    expect(Array.from(document.querySelectorAll(".guest-chip .chip-label")).map(el => el.textContent)).toEqual(["Ana"]);
   });
 
   it("ranks contacts only when suggestions are wanted, not on every mail change", async () => {
@@ -4788,7 +4824,7 @@ describe("App card query help and errors", () => {
     expect(screen.queryByText("No matches")).not.toBeInTheDocument();
   });
 
-  it("says nothing matches, not a postmark, when an edited query finds nothing", async () => {
+  it("returns an edited query that finds nothing to sender, not a postmark", async () => {
     handlers.list_labels = () => [];
     handlers.search_threads_preview = () => [];
     render(() => <App />);
@@ -4797,9 +4833,9 @@ describe("App card query help and errors", () => {
     const query = screen.getByPlaceholderText("e.g. from:boss is:unread newer_than:7d");
     fireEvent.input(query, { target: { value: "from:nobody" } });
 
-    const empty = await screen.findByText(/Nothing matches/);
-    expect(empty.closest(".empty")).toHaveTextContent("Nothing matches from:nobody");
-    expect(document.querySelector(".postmark")).toBeNull();
+    const empty = await screen.findByRole("status", { name: "No mail matches from:nobody" });
+    expect(empty).toHaveTextContent("No such address.");
+    expect(document.querySelector(".postmarked")).toBeNull();
   });
 
   it("names an unknown calendar range without asking the calendar", async () => {
@@ -5755,6 +5791,23 @@ describe("App quick search", () => {
     const kept = await waitFor(() => { const el = document.querySelector<HTMLElement>('.card[data-id="card-new"]'); expect(el).not.toBeNull(); return el!; });
     expect(within(kept).getByText("Report.pdf")).toBeInTheDocument();
     expect(document.querySelector(".card.search")).toBeNull();
+  });
+
+  it("returns a card the typed filter empties to sender, naming the filter, and searches all mail from it", async () => {
+    searchResults({ ...thread("t-old", "Old invoice"), account_id: "a" });
+    render(() => <App />);
+    await screen.findByText("Mail for A");
+
+    fireEvent.keyDown(document, { key: "/" });
+    fireEvent.input(await screen.findByPlaceholderText(/Search mail/), { target: { value: "invoice" } });
+    const alpha = document.querySelector('.card[data-id="card-a"]') as HTMLElement;
+    const returned = await within(alpha).findByRole("status", { name: /matches invoice$/ });
+    expect(returned).toHaveTextContent("Nothing loaded for invoice");
+    expect(document.querySelector(".postmarked")).toBeNull();
+
+    fireEvent.click(within(returned).getByRole("button", { name: "Search all mail" }));
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith("fetch_query_threads", expect.objectContaining({ query: "invoice" })));
+    expect(await screen.findByText("Old invoice")).toBeInTheDocument();
   });
 
   it("offers recent searches when the field is empty", async () => {

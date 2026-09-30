@@ -10,7 +10,7 @@ const decls = (selector: string) =>
 
 describe("event form layout", () => {
   it("lets the timeline take a drag without scrolling or selecting text", () => {
-    const track = decls(".day-timeline-track");
+    const track = decls('.day-strip[data-size="lg"] .day-strip-track');
     expect(track.get("touch-action")).toBe("none");
     expect(track.get("user-select")).toBe("none");
   });

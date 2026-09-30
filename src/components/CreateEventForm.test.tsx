@@ -191,7 +191,7 @@ describe("CreateEventForm timeline", () => {
     const at = (h: number) => new Date(2031, 2, 3, h).getTime();
     const dayBusy = [{ title: "Standup", start: at(9), end: at(10) }, { title: "Design sync", start: at(10), end: at(12) }];
     const { container } = renderForm({ startDate: "2031-03-03", startTime: "11:00", endTime: "12:30", extra: { dayBusy } });
-    expect(Array.from(container.querySelectorAll(".day-timeline-busy")).map(b => [b.textContent, b.classList.contains("overlap")]))
+    expect(Array.from(container.querySelectorAll(".day-strip-busy")).map(b => [b.textContent, b.classList.contains("overlap")]))
       .toEqual([["Standup", false], ["Design sync", true]]);
     expect(container.querySelector(".event-when-note")).toHaveTextContent("Clashes with Design sync");
   });
@@ -203,7 +203,7 @@ describe("CreateEventForm timeline", () => {
 
   it("leaves the timeline out of an all-day event", () => {
     const { container } = renderForm({ startDate: "2031-03-03", allDay: true });
-    expect(container.querySelector(".day-timeline")).toBeNull();
+    expect(container.querySelector(".day-strip")).toBeNull();
   });
 });
 
@@ -254,7 +254,7 @@ describe("CreateEventForm header", () => {
   it("names the account and calendar above the title, leaving Cancel to the footer", () => {
     const { container, getByRole } = renderForm({ startDate: "2031-03-03", extra: { calendars, calendarId: "team", setCalendarId: vi.fn(), accountEmail: "me@x.test" } });
     const header = container.querySelector(".panel-header")!;
-    expect(header.querySelector(".panel-account-avatar")).toHaveAttribute("data-hue");
+    expect(header.querySelector(".avatar")).toHaveAttribute("data-hue");
     expect(header).toHaveTextContent("me@x.test");
     const select = getByRole("combobox", { name: "Calendar" }) as HTMLSelectElement;
     expect(header.contains(select)).toBe(true);

@@ -1,4 +1,7 @@
 import { batch, createSignal, onMount, onCleanup, Show, For, Index, createMemo, createEffect, createComputed, createSelector, mapArray, on, untrack } from "solid-js";
+import { StatusLine } from "./components/StatusLine";
+import { Avatar } from "./components/Avatar";
+import { KeyHint } from "./components/KeyHint";
 import { createStore, produce, reconcile, unwrap } from "solid-js/store";
 import { MessageBody } from './components/MessageBody';
 import { getCurrentWindow } from '@tauri-apps/api/window';
@@ -85,7 +88,6 @@ import {
   formatFileSize,
   formatTime,
   formatSyncTime,
-  getInitial,
   extractEmail,
   extractMessageText,
   getAvatarHue,
@@ -118,7 +120,7 @@ import {
 } from "./components/Icons";
 import { ReactionButton } from "./components/ReactionButton";
 import { ComposeTextarea, CloseButton } from "./components/ComposeAtoms";
-import { CancelButton, FormFooter, SubmitButton } from "./components/FormParts";
+import { CancelButton, FormFooter, PanelHeader, SubmitButton } from "./components/FormParts";
 import { AuthScreen } from "./components/AuthScreen";
 import { PresetPicker } from "./components/PresetPicker";
 import { EmptyBoard } from "./components/EmptyBoard";
@@ -146,8 +148,8 @@ import { RADIAL_HOVER_CLOSE_MS, RADIAL_HOVER_OPEN_MS } from "./app/radial";
 import { CardForm } from "./components/CardForm";
 import { QueryField } from "./components/QueryField";
 import { CardAccountQualifier, cardTitleLabel } from "./components/CardAccountQualifier";
-import { Dialog } from "./components/Dialog";
-import { Toasts } from "./components/Toasts";
+import { Sheet } from "./components/Sheet";
+import { ToastFrame, Toasts } from "./components/Toasts";
 import { createToasts, type ToastAction, type ToastTone } from "./app/toasts";
 import { failureMessage, storedCredentialsFailure } from "./app/errorText";
 import { formatClock, formatShortDate, formatWhen, threadGroupLabel } from "./app/dateFormat";
@@ -185,7 +187,7 @@ import { parseMailto } from "./app/mailto";
 import { coalesceByKey } from "./app/coalesce";
 import { batchReplyLoadErrorMessage, cardLoadErrorMessage, isOfflineError, queryPreviewErrorMessage, threadLoadErrorMessage } from "./app/loadErrors";
 import { cardSyncStatus, cardWaitingMessage, connectionStatus } from "./app/connectionStatus";
-import { CardEmpty, CardSkeleton, ConnectionStatusBar, PostmarkDefs } from "./components/CardStates";
+import { CardEmpty, CardSkeleton, ConnectionStatusBar, PostmarkDefs, type NoMatch } from "./components/CardStates";
 import { createPostmarkLedger } from "./app/postmark";
 import { cardTypeForQuery } from "./app/cardType";
 import { SEARCH_CARD_ID, forgetSearch, isSearchCard, keptCardName, parseRecentSearches, rememberSearch, searchCard as searchCardFor } from "./app/quickSearch";
@@ -610,7 +612,12 @@ function App() {
   // When each card last went from showing rows to empty, for its postmark
   const postmarks = createPostmarkLedger();
   // A filtered or previewed card that shows nothing says what matched nothing
-  const emptyMeansNoMatch = (cardId: string) => isPreviewingQuery(cardId) || isSearchCard(cardId) || filterHides();
+  const noMatchFor = (cardId: string): NoMatch | null => {
+    if (isPreviewingQuery(cardId)) return { kind: "query" };
+    if (isSearchCard(cardId)) return { kind: "search", term: searchCard()?.query ?? "" };
+    if (filterHides()) return { kind: "filter", term: globalFilter().trim(), onSearch: () => runSearch(), onClear: closeSearch };
+    return null;
+  };
 
   function effectiveCardType(card: Card): Card["card_type"] {
     if (editingCardId() === card.id) {
@@ -838,6 +845,8 @@ function App() {
 
   function hideThreadHoverActions() {
     clearTimeout(hoverActionsTimeout);
+    // The answer menu opens outside the row; reaching into it isn't leaving
+    if (document.querySelector('.invite-answer[aria-expanded="true"]')) return;
     hoverActionsTimeout = window.setTimeout(() => {
       setActionsWheelOpen(false);
       setHoveredThread(null);
@@ -1893,7 +1902,9 @@ function App() {
     const thread = getFocusedThread();
     if (thread && cardId) {
       const invite = thread.calendar_event;
-      const answer = invite?.method === "REQUEST" && invite.uid ? rsvpForKey(e) : null;
+      // Only an invite still open to an answer takes one: not a past or cancelled one
+      const answerable = !!invite && invite.method === "REQUEST" && !!invite.uid && !inviteIsOver(invite, threadOwner(thread.gmail_thread_id, cardId));
+      const answer = answerable ? rsvpForKey(e) : null;
       if (answer) {
         e.preventDefault();
         const owner = threadOwner(thread.gmail_thread_id, cardId);
@@ -4837,7 +4848,7 @@ function App() {
           </Show>
           <Show
             when={searchShown()}
-            fallback={<span class="shortcut-hint global-filter-hint" title="Enter searches, ⌘Enter keeps it as a card, Escape closes">↵</span>}
+            fallback={<KeyHint keys="↵" class="global-filter-hint" title="Enter searches, ⌘Enter keeps it as a card, Escape closes" />}
           >
             <button type="button" class="btn btn-primary btn-sm global-filter-keep" onClick={keepSearch} title="Keep as a card (⌘Enter)">
               <CheckIcon size="meta" />
@@ -4883,13 +4894,7 @@ function App() {
                 aria-haspopup="menu"
                 aria-expanded={accountChooserOpen()}
               >
-                {selectedAccount()?.picture ? (
-                  <img src={selectedAccount()!.picture!} alt="" class="toolbar-avatar-img" />
-                ) : (
-                  <span class="toolbar-avatar-placeholder">
-                    {getInitial(selectedAccount()?.email || "")}
-                  </span>
-                )}
+                <Avatar email={selectedAccount()?.email || ""} picture={selectedAccount()?.picture} size="fill" />
               </button>
               <Show when={accountChooserOpen()}>
                 <div class="account-chooser-dropdown" onClick={(e) => e.stopPropagation()}>
@@ -4906,13 +4911,7 @@ function App() {
                             chooseDefaultAccount(account);
                           }}
                         >
-                          {account.picture ? (
-                            <img src={account.picture} alt="" class="account-chooser-avatar" />
-                          ) : (
-                            <span class="account-chooser-avatar-placeholder">
-                              {getInitial(account.email)}
-                            </span>
-                          )}
+                          <Avatar email={account.email} picture={account.picture} size="md" />
                           <span class="account-chooser-email">{account.email}</span>
                           {account.id === selectedAccount()?.id && (
                             <span class="account-chooser-check"><CheckIcon /></span>
@@ -5266,10 +5265,10 @@ function App() {
                             <CardSkeleton />
                           </Show>
                           <Show when={isPreviewingQuery(card.id) && queryPreviewLoading()}>
-                            <div class="loading">Searching...</div>
+                            <StatusLine kind="loading">Searching...</StatusLine>
                           </Show>
                           <Show when={isPreviewingQuery(card.id) && !queryPreviewLoading() && queryPreviewError()}>
-                            <div class="query-preview-error" aria-live="polite">{queryPreviewError()}</div>
+                            <StatusLine kind="error">{queryPreviewError()}</StatusLine>
                           </Show>
                           <Show when={!loadingThreads[card.id] && cardErrors[card.id] && !cardThreads[card.id] && !cardCalendarEvents[card.id] && cardWaitingMessage(cardErrors[card.id]!, syncErrors[card.id], cardExpired(card))}>
                             {(waiting) => <div class="card-waiting">{waiting()}</div>}
@@ -5290,7 +5289,7 @@ function App() {
                           {/* Calendar card: show calendar events */}
                           <Show when={effectiveCardType(card) === "calendar" && (isPreviewingQuery(card.id) || cardCalendarEvents[card.id])}>
                             <Show when={getCalendarEventGroups(card.id).length === 0 && !(isPreviewingQuery(card.id) && (queryPreviewLoading() || queryPreviewError()))}>
-                              <CardEmpty cardId={card.id} name={card.name} query={isPreviewingQuery(card.id) ? editCardQuery() : card.query} kind="calendar" plain={emptyMeansNoMatch(card.id)} ledger={postmarks} />
+                              <CardEmpty cardId={card.id} name={card.name} query={isPreviewingQuery(card.id) ? editCardQuery() : card.query} kind="calendar" noMatch={noMatchFor(card.id)} ledger={postmarks} />
                             </Show>
                             <Index each={getCalendarEventGroups(card.id)}>
                               {(group) => (
@@ -5412,7 +5411,7 @@ function App() {
                           {/* Email card: show threads */}
                           <Show when={effectiveCardType(card) !== "calendar" && (isPreviewingQuery(card.id) || cardThreads[card.id])}>
                             <Show when={getDisplayGroups(card.id).length === 0 && !(isPreviewingQuery(card.id) && (queryPreviewLoading() || queryPreviewError()))}>
-                              <CardEmpty cardId={card.id} name={card.name} query={isPreviewingQuery(card.id) ? editCardQuery() : card.query} kind="mail" plain={emptyMeansNoMatch(card.id)} ledger={postmarks} />
+                              <CardEmpty cardId={card.id} name={card.name} query={isPreviewingQuery(card.id) ? editCardQuery() : card.query} kind="mail" noMatch={noMatchFor(card.id)} ledger={postmarks} />
                             </Show>
                             <Index each={getDisplayGroups(card.id)}>
                               {(group) => (
@@ -5454,7 +5453,11 @@ function App() {
                                           class={`thread ${fadedBySearch(card.id, thread.gmail_thread_id) ? 'faded' : ''} ${thread.unread_count > 0 ? 'unread' : ''} ${selectedThreads()[card.id]?.has(thread.gmail_thread_id) ? 'selected' : ''} ${isThreadFocused(card.id, thread.gmail_thread_id) ? 'focused' : ''} ${isQuickReplyThread(thread.gmail_thread_id) ? 'replying' : ''}${thread.calendar_event ? ' invite' : ''}${live() ? ' live' : ''}${inviteIsOver(thread.calendar_event, owner()) ? ' invite-over' : ''}`}
                                           onMouseEnter={() => showThreadHoverActions(thread.gmail_thread_id)}
                                           onMouseLeave={() => hideThreadHoverActions()}
-                                          onClick={() => openThread(thread.gmail_thread_id, card.id)}
+                                          onClick={(e) => {
+                                            // The answer button is a control of its own, not a way into the thread
+                                            if ((e.target as Element).closest(".invite-answer")) return;
+                                            openThread(thread.gmail_thread_id, card.id);
+                                          }}
                                           role="article"
                                           aria-label={`${thread.unread_count > 0 ? 'Unread: ' : ''}${thread.subject} from ${thread.participants.slice(0, 2).map(personName).join(', ')}${inviteLabel()}`}
                                           tabindex={rowTabIndex(card.id, thread.gmail_thread_id)}
@@ -5594,7 +5597,7 @@ function App() {
                             </Index>
                             {/* Loading more indicator for infinite scroll */}
                             <Show when={loadingMore[card.id]}>
-                              <div class="loading">Loading more...</div>
+                              <StatusLine kind="loading">Loading more...</StatusLine>
                             </Show>
                           </Show>
                         </div>
@@ -5662,15 +5665,15 @@ function App() {
                   {/* Query preview for new card */}
                   <div class="card-body">
                     <Show when={queryPreviewLoading()}>
-                      <div class="loading">Searching...</div>
+                      <StatusLine kind="loading">Searching...</StatusLine>
                     </Show>
                     <Show when={!queryPreviewLoading() && queryPreviewError()}>
-                      <div class="query-preview-error" aria-live="polite">{queryPreviewError()}</div>
+                      <StatusLine kind="error">{queryPreviewError()}</StatusLine>
                     </Show>
                     {/* Calendar events preview */}
                     <Show when={!queryPreviewLoading() && cardTypeForQuery(newCardQuery()) === "calendar"}>
                       <Show when={queryPreviewCalendarEvents().length === 0 && !queryPreviewError()}>
-                        <div class="empty">No events</div>
+                        <StatusLine kind="empty">No events</StatusLine>
                       </Show>
                       <For each={groupCalendarEvents(queryPreviewCalendarEvents().slice(0, NEW_CARD_PREVIEW_EVENTS), newCardGroupBy())}>
                         {(group) => (
@@ -5706,12 +5709,12 @@ function App() {
                         )}
                       </For>
                       <Show when={queryPreviewCalendarEvents().length > NEW_CARD_PREVIEW_EVENTS}>
-                        <div class="empty">+{queryPreviewCalendarEvents().length - NEW_CARD_PREVIEW_EVENTS} more</div>
+                        <StatusLine kind="empty">+{queryPreviewCalendarEvents().length - NEW_CARD_PREVIEW_EVENTS} more</StatusLine>
                       </Show>
                     </Show>
                     {/* Email threads preview */}
                     <Show when={!queryPreviewLoading() && !queryPreviewError() && queryPreviewThreads().length === 0 && newCardQuery().trim() && cardTypeForQuery(newCardQuery()) !== "calendar"}>
-                      <div class="empty">No matches</div>
+                      <StatusLine kind="empty">No matches</StatusLine>
                     </Show>
                     <Show when={!queryPreviewLoading() && queryPreviewThreads().length > 0}>
                       <For each={regroupThreads(queryPreviewThreads(), newCardGroupBy(), cardLabelNames(undefined))}>
@@ -5937,19 +5940,14 @@ function App() {
 
         {/* Label Drawer */}
         <Show when={labelDrawerOpen()}>
-          <div class="label-drawer-overlay" onClick={closeLabelDrawer}></div>
-          <Dialog
+          <Sheet
+            title="Labels"
+            placement="side"
             class="label-drawer"
-            labelledBy="label-drawer-title"
             onClose={closeLabelDrawer}
             closesFromInputs
             initialFocus={(el) => el.querySelector<HTMLElement>(".label-drawer-search input")}
           >
-            <div class="label-drawer-header">
-              <CloseButton onClick={closeLabelDrawer} />
-              <h3 id="label-drawer-title">Labels</h3>
-            </div>
-
             <div class="label-drawer-search">
               <input
                 type="text"
@@ -5962,7 +5960,7 @@ function App() {
 
             <div class="label-drawer-body">
               <Show when={labelsLoading()}>
-                <div class="label-drawer-loading">Loading labels...</div>
+                <StatusLine kind="loading">Loading labels...</StatusLine>
               </Show>
 
               <Show when={!labelsLoading()}>
@@ -5988,18 +5986,18 @@ function App() {
                 </For>
 
                 <Show when={labelsFailed()}>
-                  <div class="label-drawer-empty">
+                  <StatusLine kind="error">
                     Couldn't load labels.{" "}
                     <button class="retry-btn" onClick={() => fetchAccountLabels(activeThreadAccountId() ?? undefined)}>Try again</button>
-                  </div>
+                  </StatusLine>
                 </Show>
                 <Show when={!labelsLoading() && !labelsFailed() && filteredLabels().length === 0}>
-                  <div class="label-drawer-empty">No labels found</div>
+                  <StatusLine kind="empty">No labels found</StatusLine>
                 </Show>
               </Show>
             </div>
 
-          </Dialog>
+          </Sheet>
         </Show>
       </Show>
 
@@ -6146,21 +6144,21 @@ function App() {
           </div>
           <div class="thread-content">
             <Show when={batchReplyLoading()}>
-              <div class="batch-reply-loading">
+              <StatusLine kind="loading" size="block">
                 <div class="loading-spinner"></div>
                 Loading threads...
-              </div>
+              </StatusLine>
             </Show>
             <Show when={!batchReplyLoading() && batchReplyError()}>
               {(failed) => (
-                <div class="batch-reply-empty" role="alert">
+                <StatusLine kind="error" size="block">
                   {failed().message}{" "}
                   <button class="retry-btn" onClick={() => startBatchReply(batchReplyCardId() ?? "", failed().threadIds)}>Try again</button>
-                </div>
+                </StatusLine>
               )}
             </Show>
             <Show when={!batchReplyLoading() && !batchReplyError() && batchReplyThreads().length === 0}>
-              <div class="batch-reply-empty">No threads to reply to</div>
+              <StatusLine kind="empty" size="block">No threads to reply to</StatusLine>
             </Show>
             <div class="messages-list">
               <For each={batchReplyThreads()}>
@@ -6227,10 +6225,9 @@ function App() {
         aria-modal="true"
         aria-hidden={settingsOpen() ? undefined : "true"}
       >
-        <div class="settings-header">
-          <CloseButton onClick={() => setSettingsOpen(false)} />
-          <h3>Settings</h3>
-        </div>
+        <PanelHeader size="sheet" onClose={() => setSettingsOpen(false)}>
+          <h2 class="sheet-title">Settings</h2>
+        </PanelHeader>
         <div class="settings-body">
           <div class="settings-section">
             <div class="settings-section-title">Google connection</div>
@@ -6260,7 +6257,7 @@ function App() {
                 onClick={handleSaveSettings}
                 disabled={!credentialsValid(clientId(), clientSecret())}
               >
-                Save and sign in <span class="shortcut-hint">↵</span>
+                Save and sign in <KeyHint keys="↵" />
               </button>
             </Show>
           </div>
@@ -6323,99 +6320,95 @@ function App() {
 
       {/* Keyboard shortcuts help modal */}
       <Show when={shortcutsHelpOpen()}>
-        <div class="shortcuts-overlay" onClick={() => setShortcutsHelpOpen(false)}></div>
-        <Dialog
+        <Sheet
+          title="Keyboard Shortcuts"
+          placement="center"
           class="shortcuts-modal"
-          labelledBy="shortcuts-title"
           onClose={() => setShortcutsHelpOpen(false)}
           initialFocus={(el) => el.querySelector<HTMLElement>(".shortcuts-body")}
         >
-          <div class="shortcuts-header">
-            <CloseButton onClick={() => setShortcutsHelpOpen(false)} />
-            <h2 id="shortcuts-title">Keyboard Shortcuts</h2>
-          </div>
           <div class="shortcuts-body" tabindex="0">
             <div class="shortcuts-section">
               <h3>Navigation</h3>
-              <div class="shortcut-row"><kbd>j</kbd> <span>Next thread</span></div>
-              <div class="shortcut-row"><kbd>k</kbd> <span>Previous thread</span></div>
-              <div class="shortcut-row"><kbd>h</kbd> <span>Previous card</span></div>
-              <div class="shortcut-row"><kbd>l</kbd> <span>Next card</span></div>
-              <div class="shortcut-row"><kbd>Enter</kbd> <span>Open thread or event</span></div>
-              <div class="shortcut-row"><kbd>Escape</kbd> <span>Close / Go back</span></div>
-              <div class="shortcut-row"><kbd>/</kbd> <span>Search</span></div>
-              <div class="shortcut-row"><kbd>⌘F</kbd> <span>Search</span></div>
-              <div class="shortcut-row"><kbd>p</kbd> <span>Keep the search as a card</span></div>
+              <div class="shortcut-row"><KeyHint keys="j" look="key" /> <span>Next thread</span></div>
+              <div class="shortcut-row"><KeyHint keys="k" look="key" /> <span>Previous thread</span></div>
+              <div class="shortcut-row"><KeyHint keys="h" look="key" /> <span>Previous card</span></div>
+              <div class="shortcut-row"><KeyHint keys="l" look="key" /> <span>Next card</span></div>
+              <div class="shortcut-row"><KeyHint keys="Enter" look="key" /> <span>Open thread or event</span></div>
+              <div class="shortcut-row"><KeyHint keys="Escape" look="key" /> <span>Close / Go back</span></div>
+              <div class="shortcut-row"><KeyHint keys="/" look="key" /> <span>Search</span></div>
+              <div class="shortcut-row"><KeyHint keys="⌘F" look="key" /> <span>Search</span></div>
+              <div class="shortcut-row"><KeyHint keys="p" look="key" /> <span>Keep the search as a card</span></div>
             </div>
             <div class="shortcuts-section">
               <h3>Actions</h3>
-              <div class="shortcut-row"><kbd>a</kbd> <span>Archive thread</span></div>
-              <div class="shortcut-row"><kbd>s</kbd> <span>Star thread</span></div>
-              <div class="shortcut-row"><kbd>d</kbd> <span>Delete thread</span></div>
-              <div class="shortcut-row"><kbd>#</kbd> <span>Delete thread</span></div>
-              <div class="shortcut-row"><kbd>r</kbd> <span>Reply to thread</span></div>
-              <div class="shortcut-row"><kbd>f</kbd> <span>Forward thread</span></div>
-              <div class="shortcut-row"><kbd>u</kbd> <span>Toggle read</span></div>
-              <div class="shortcut-row"><kbd>i</kbd> <span>Toggle important</span></div>
-              <div class="shortcut-row"><kbd>!</kbd> <span>Report spam</span></div>
-              <div class="shortcut-row"><kbd>y ⇧M n</kbd> <span>Answer a focused invite: Going, Maybe, Not going</span></div>
-              <div class="shortcut-row"><kbd>z</kbd> <span>Undo last action</span></div>
+              <div class="shortcut-row"><KeyHint keys="a" look="key" /> <span>Archive thread</span></div>
+              <div class="shortcut-row"><KeyHint keys="s" look="key" /> <span>Star thread</span></div>
+              <div class="shortcut-row"><KeyHint keys="d" look="key" /> <span>Delete thread</span></div>
+              <div class="shortcut-row"><KeyHint keys="#" look="key" /> <span>Delete thread</span></div>
+              <div class="shortcut-row"><KeyHint keys="r" look="key" /> <span>Reply to thread</span></div>
+              <div class="shortcut-row"><KeyHint keys="f" look="key" /> <span>Forward thread</span></div>
+              <div class="shortcut-row"><KeyHint keys="u" look="key" /> <span>Toggle read</span></div>
+              <div class="shortcut-row"><KeyHint keys="i" look="key" /> <span>Toggle important</span></div>
+              <div class="shortcut-row"><KeyHint keys="!" look="key" /> <span>Report spam</span></div>
+              <div class="shortcut-row"><KeyHint keys="y ⇧M n" look="key" /> <span>Answer a focused invite: Going, Maybe, Not going</span></div>
+              <div class="shortcut-row"><KeyHint keys="z" look="key" /> <span>Undo last action</span></div>
             </div>
             <div class="shortcuts-section">
               <h3>Open thread</h3>
-              <div class="shortcut-row"><kbd>j</kbd> <span>Next message</span></div>
-              <div class="shortcut-row"><kbd>k</kbd> <span>Previous message</span></div>
-              <div class="shortcut-row"><kbd>]</kbd> <span>Next thread in the card (or ⇧J)</span></div>
-              <div class="shortcut-row"><kbd>[</kbd> <span>Previous thread in the card (or ⇧K)</span></div>
-              <div class="shortcut-row"><kbd>r</kbd> <span>Reply to message</span></div>
-              <div class="shortcut-row"><kbd>⇧R</kbd> <span>Reply all</span></div>
-              <div class="shortcut-row"><kbd>f</kbd> <span>Forward message</span></div>
-              <div class="shortcut-row"><kbd>l</kbd> <span>Labels</span></div>
-              <div class="shortcut-row"><kbd>e</kbd> <span>Create event from thread</span></div>
-              <div class="shortcut-row"><kbd>a</kbd> <span>Archive</span></div>
-              <div class="shortcut-row"><kbd>s</kbd> <span>Star</span></div>
-              <div class="shortcut-row"><kbd>u</kbd> <span>Toggle read</span></div>
-              <div class="shortcut-row"><kbd>i</kbd> <span>Toggle important</span></div>
-              <div class="shortcut-row"><kbd>!</kbd> <span>Report spam</span></div>
-              <div class="shortcut-row"><kbd>d</kbd> <span>Delete</span></div>
+              <div class="shortcut-row"><KeyHint keys="j" look="key" /> <span>Next message</span></div>
+              <div class="shortcut-row"><KeyHint keys="k" look="key" /> <span>Previous message</span></div>
+              <div class="shortcut-row"><KeyHint keys="]" look="key" /> <span>Next thread in the card (or ⇧J)</span></div>
+              <div class="shortcut-row"><KeyHint keys="[" look="key" /> <span>Previous thread in the card (or ⇧K)</span></div>
+              <div class="shortcut-row"><KeyHint keys="r" look="key" /> <span>Reply to message</span></div>
+              <div class="shortcut-row"><KeyHint keys="⇧R" look="key" /> <span>Reply all</span></div>
+              <div class="shortcut-row"><KeyHint keys="f" look="key" /> <span>Forward message</span></div>
+              <div class="shortcut-row"><KeyHint keys="l" look="key" /> <span>Labels</span></div>
+              <div class="shortcut-row"><KeyHint keys="e" look="key" /> <span>Create event from thread</span></div>
+              <div class="shortcut-row"><KeyHint keys="a" look="key" /> <span>Archive</span></div>
+              <div class="shortcut-row"><KeyHint keys="s" look="key" /> <span>Star</span></div>
+              <div class="shortcut-row"><KeyHint keys="u" look="key" /> <span>Toggle read</span></div>
+              <div class="shortcut-row"><KeyHint keys="i" look="key" /> <span>Toggle important</span></div>
+              <div class="shortcut-row"><KeyHint keys="!" look="key" /> <span>Report spam</span></div>
+              <div class="shortcut-row"><KeyHint keys="d" look="key" /> <span>Delete</span></div>
             </div>
             <div class="shortcuts-section">
               <h3>Open event</h3>
-              <div class="shortcut-row"><kbd>r</kbd> <span>Reply to organizer</span></div>
-              <div class="shortcut-row"><kbd>⇧R</kbd> <span>Reply all</span></div>
-              <div class="shortcut-row"><kbd>f</kbd> <span>Forward</span></div>
-              <div class="shortcut-row"><kbd>v</kbd> <span>Join meeting</span></div>
-              <div class="shortcut-row"><kbd>o</kbd> <span>Open in Google Calendar</span></div>
-              <div class="shortcut-row"><kbd>m</kbd> <span>Move to calendar</span></div>
-              <div class="shortcut-row"><kbd>y</kbd> <span>Going</span></div>
-              <div class="shortcut-row"><kbd>⇧M</kbd> <span>Maybe</span></div>
-              <div class="shortcut-row"><kbd>n</kbd> <span>Not going</span></div>
-              <div class="shortcut-row"><kbd>e</kbd> <span>Edit</span></div>
-              <div class="shortcut-row"><kbd>d</kbd> <span>Delete</span></div>
+              <div class="shortcut-row"><KeyHint keys="r" look="key" /> <span>Reply to organizer</span></div>
+              <div class="shortcut-row"><KeyHint keys="⇧R" look="key" /> <span>Reply all</span></div>
+              <div class="shortcut-row"><KeyHint keys="f" look="key" /> <span>Forward</span></div>
+              <div class="shortcut-row"><KeyHint keys="v" look="key" /> <span>Join meeting</span></div>
+              <div class="shortcut-row"><KeyHint keys="o" look="key" /> <span>Open in Google Calendar</span></div>
+              <div class="shortcut-row"><KeyHint keys="m" look="key" /> <span>Move to calendar</span></div>
+              <div class="shortcut-row"><KeyHint keys="y" look="key" /> <span>Going</span></div>
+              <div class="shortcut-row"><KeyHint keys="⇧M" look="key" /> <span>Maybe</span></div>
+              <div class="shortcut-row"><KeyHint keys="n" look="key" /> <span>Not going</span></div>
+              <div class="shortcut-row"><KeyHint keys="e" look="key" /> <span>Edit</span></div>
+              <div class="shortcut-row"><KeyHint keys="d" look="key" /> <span>Delete</span></div>
             </div>
             <div class="shortcuts-section">
               <h3>Compose</h3>
-              <div class="shortcut-row"><kbd>c</kbd> <span>New email</span></div>
-              <div class="shortcut-row"><kbd>e</kbd> <span>New event</span></div>
-              <div class="shortcut-row"><kbd>⌘Enter</kbd> <span>Send email</span></div>
-              <div class="shortcut-row"><kbd>Escape</kbd> <span>Close compose</span></div>
+              <div class="shortcut-row"><KeyHint keys="c" look="key" /> <span>New email</span></div>
+              <div class="shortcut-row"><KeyHint keys="e" look="key" /> <span>New event</span></div>
+              <div class="shortcut-row"><KeyHint keys="⌘Enter" look="key" /> <span>Send email</span></div>
+              <div class="shortcut-row"><KeyHint keys="Escape" look="key" /> <span>Close compose</span></div>
             </div>
             <div class="shortcuts-section">
               <h3>Selection</h3>
-              <div class="shortcut-row"><kbd>x</kbd> <span>Select thread or event</span></div>
-              <div class="shortcut-row"><kbd>⇧J</kbd> <span>Extend selection down</span></div>
-              <div class="shortcut-row"><kbd>⇧K</kbd> <span>Extend selection up</span></div>
-              <div class="shortcut-row"><kbd>*a</kbd> <span>Select all in card</span></div>
-              <div class="shortcut-row"><kbd>a s u i d !</kbd> <span>Act on the selection</span></div>
-              <div class="shortcut-row"><kbd>r</kbd> <span>Batch reply to the selection</span></div>
-              <div class="shortcut-row"><kbd>Escape</kbd> <span>Clear selection</span></div>
+              <div class="shortcut-row"><KeyHint keys="x" look="key" /> <span>Select thread or event</span></div>
+              <div class="shortcut-row"><KeyHint keys="⇧J" look="key" /> <span>Extend selection down</span></div>
+              <div class="shortcut-row"><KeyHint keys="⇧K" look="key" /> <span>Extend selection up</span></div>
+              <div class="shortcut-row"><KeyHint keys="*a" look="key" /> <span>Select all in card</span></div>
+              <div class="shortcut-row"><KeyHint keys="a s u i d !" look="key" /> <span>Act on the selection</span></div>
+              <div class="shortcut-row"><KeyHint keys="r" look="key" /> <span>Batch reply to the selection</span></div>
+              <div class="shortcut-row"><KeyHint keys="Escape" look="key" /> <span>Clear selection</span></div>
             </div>
             <div class="shortcuts-section">
               <h3>Help</h3>
-              <div class="shortcut-row"><kbd>?</kbd> <span>Show this help</span></div>
+              <div class="shortcut-row"><KeyHint keys="?" look="key" /> <span>Show this help</span></div>
             </div>
           </div>
-        </Dialog>
+        </Sheet>
       </Show>
 
       {/* Action config context menu */}
@@ -6471,15 +6464,15 @@ function App() {
       <Toasts toasts={toasts} othersShowing={undoableSend.toastVisible()}>
         {/* Send Toast with Undo */}
         <Show when={undoableSend.toastVisible()}>
-          <div class={`undo-toast send-toast ${undoableSend.toastClosing() ? 'closing' : ''}`}>
-            <div class="toast-progress send-progress" style={{ width: `${undoableSend.progress()}%` }}></div>
-            <div class="toast-content">
-              <span class="toast-message">{inAccount("Sending message", [accountById(undoableSend.pending()?.accountId)?.email ?? ""].filter(Boolean), accounts().length, "from")}...</span>
-              <Show when={undoableSend.pending()}>
-                <button class="toast-undo-btn" onClick={undoSend}>Undo</button>
-              </Show>
-            </div>
-          </div>
+          <ToastFrame
+            message={`${inAccount("Sending message", [accountById(undoableSend.pending()?.accountId)?.email ?? ""].filter(Boolean), accounts().length, "from")}...`}
+            closing={undoableSend.toastClosing()}
+            percent={undoableSend.progress()}
+          >
+            <Show when={undoableSend.pending()}>
+              <button class="toast-undo-btn" onClick={undoSend}>Undo</button>
+            </Show>
+          </ToastFrame>
         </Show>
       </Toasts>
 

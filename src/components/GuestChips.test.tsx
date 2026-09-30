@@ -17,7 +17,7 @@ function renderChips(initial = "") {
   return { value, outer, input: screen.getByRole("combobox", { name: "Guests" }) as HTMLInputElement };
 }
 
-const chipTexts = () => Array.from(document.querySelectorAll(".guest-chip-label")).map(el => el.textContent);
+const chipTexts = () => Array.from(document.querySelectorAll(".guest-chip .chip-label")).map(el => el.textContent);
 
 describe("GuestChips", () => {
   it("shows each guest as a chip, by name when there is one", () => {

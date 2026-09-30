@@ -12,7 +12,6 @@ import {
   type EmptyKind,
   type PostmarkLedger,
 } from "../app/postmark";
-import { InboxIcon } from "./Icons";
 
 // Placeholder rows shaped like the card's thread rows while it first loads
 export const CardSkeleton = () => (
@@ -29,30 +28,96 @@ export const CardSkeleton = () => (
   </div>
 );
 
+// Why a card that could show mail shows none:
+//   query   the query being edited finds nothing
+//   search  Gmail found nothing for what was searched from the / bar
+//   filter  none of the card's loaded threads contain what is being typed
+export type NoMatch =
+  | { kind: "query" }
+  | { kind: "search"; term: string }
+  | { kind: "filter"; term: string; onSearch: () => void; onClear: () => void };
+
 type CardEmptyProps = {
   cardId: string;
   name: string;
   query: string;
   kind: EmptyKind;
-  // While a query is being tried out, empty means it matches nothing
-  plain: boolean;
+  noMatch: NoMatch | null;
   ledger: PostmarkLedger;
   locale?: string;
 };
 
 export const CardEmpty = (props: CardEmptyProps) => (
-  <Show
-    when={!props.plain}
-    fallback={
-      <div class="empty">
-        <span class="empty-icon"><InboxIcon size="tool" /></span>
-        <span>Nothing matches <code class="empty-query">{props.query}</code></span>
-      </div>
-    }
-  >
-    <Postmarked {...props} />
+  <Show when={props.noMatch} fallback={<Postmarked {...props} />}>
+    {(noMatch) => <ReturnedToSender name={props.name} query={props.query} noMatch={noMatch()} />}
   </Show>
 );
+
+// Nothing matched: the post office's boxed "Return to sender" handstamp, in
+// the same ink as the postmark but square and straight, so it never reads as
+// an emptied card. Narrow cards get a magnifier over a "0 found" stamp.
+const ReturnedToSender = (props: { name: string; query: string; noMatch: NoMatch }) => {
+  const term = () => (props.noMatch.kind === "query" ? props.query : props.noMatch.term);
+  const label = () => {
+    const nm = props.noMatch;
+    if (nm.kind === "query") return `No mail matches ${props.query}`;
+    if (nm.kind === "search") return `Gmail has nothing for ${nm.term}`;
+    return `Nothing loaded in ${props.name} matches ${nm.term}`;
+  };
+  return (
+    <div class="empty returned" role="status" aria-label={label()}>
+      <svg class="postmark returned-wide" viewBox="0 0 168 76" aria-hidden="true">
+        <g filter="url(#postmark-ink)" fill="none" stroke="currentColor">
+          <rect x="4" y="6" width="160" height="64" rx="3" stroke-width="1.8" />
+          <rect x="8" y="10" width="152" height="56" rx="1.5" stroke-width="0.9" />
+          <path d="M40 48 H24 a9 9 0 0 1 0 -18 H38" stroke-width="2.2" stroke-linecap="round" />
+          <path d="M33 24.5 L39 30 L33 35.5" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" />
+          <path d="M48 16 V60" stroke-width="0.9" />
+          <g class="postmark-text" fill="currentColor" stroke="none">
+            <text x="106" y="27" font-size="9.5" text-anchor="middle">RETURN TO</text>
+            <text x="106" y="38" font-size="9.5" text-anchor="middle">SENDER</text>
+            <text x="66" y="51" font-size="5.6" letter-spacing="1">MOVED</text>
+            <text x="66" y="60" font-size="5.6" letter-spacing="1">NO SUCH ADDRESS</text>
+          </g>
+          <rect x="56" y="46" width="5" height="5" stroke-width="0.9" />
+          <rect x="56" y="55" width="5" height="5" stroke-width="0.9" />
+          <path d="M55 54 L62.5 61.5 M62.5 54 L55 61.5" stroke-width="1.4" stroke-linecap="round" />
+        </g>
+      </svg>
+      <svg class="postmark returned-narrow" viewBox="0 0 120 76" aria-hidden="true">
+        <g filter="url(#postmark-ink)" fill="none" stroke="currentColor">
+          <rect x="18" y="8" width="46" height="58" stroke-width="3.2" stroke-dasharray="0 4.6" stroke-linecap="round" />
+          <rect x="23" y="13" width="36" height="48" stroke-width="1" />
+          <rect x="27" y="17" width="28" height="30" stroke-width="0.8" stroke-dasharray="1.5 2" />
+          <g class="postmark-text" fill="currentColor" stroke="none">
+            <text x="28" y="57" font-size="9">0</text>
+            <text x="55" y="57" font-size="4.6" letter-spacing="1" text-anchor="end">FOUND</text>
+          </g>
+          <circle cx="74" cy="34" r="17" stroke-width="2" />
+          <circle cx="74" cy="34" r="13.5" stroke-width="0.8" />
+          <path d="M86.5 46.5 L103 63" stroke-width="5" stroke-linecap="round" />
+          <path d="M66 26 a11 11 0 0 1 8 -3.5" stroke-width="1.2" stroke-linecap="round" />
+        </g>
+      </svg>
+      <span class="empty-line">
+        <Show when={props.noMatch.kind === "query"}>No such address.</Show>
+        <Show when={props.noMatch.kind === "search"}>Gmail has nothing for <code class="empty-query">{term()}</code></Show>
+        <Show when={props.noMatch.kind === "filter"}>Nothing loaded for <code class="empty-query">{term()}</code></Show>
+      </span>
+      <Show when={props.noMatch.kind === "query"}>
+        <code class="empty-query">{term()}</code>
+      </Show>
+      <Show when={props.noMatch.kind === "filter" && props.noMatch}>
+        {(nm) => (
+          <span class="returned-actions">
+            <button type="button" class="link-btn" onClick={() => nm().onSearch()}>Search all mail</button>
+            <button type="button" class="link-btn" onClick={() => nm().onClear()}>Clear filter</button>
+          </span>
+        )}
+      </Show>
+    </div>
+  );
+};
 
 // Cancellation lines to the right of the ring, one per row
 const CANCEL_ROWS: [x: number, y: number][] = [[78, 20], [80, 29], [81, 38], [80, 47], [78, 56]];

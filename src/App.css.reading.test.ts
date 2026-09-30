@@ -50,7 +50,7 @@ describe("thread beside a side panel", () => {
 
 describe("thread load error", () => {
   it("sits in the thread's column, as wide as its toolbar, not across the window", () => {
-    document.body.innerHTML = '<div class="thread-overlay"><div class="thread-floating-bar" id="bar"></div><div class="thread-content"><div class="error-message" id="error"></div></div></div>';
+    document.body.innerHTML = '<div class="thread-overlay"><div class="thread-floating-bar" id="bar"></div><div class="thread-content"><div class="status-line" data-size="block" id="error"></div></div></div>';
     const error = cascadedDeclarations(rules, document.getElementById("error")!);
     const bar = cascadedDeclarations(rules, document.getElementById("bar")!);
     expect(error.get("max-width")).toBe(bar.get("width"));
@@ -61,7 +61,7 @@ describe("thread load error", () => {
 
 describe("attachment lightbox", () => {
   it("covers the thread view and the label drawer", () => {
-    document.body.innerHTML = '<div class="thread-overlay" id="thread"></div><div class="label-drawer" id="drawer"></div><div class="lightbox" id="lightbox"></div>';
+    document.body.innerHTML = '<div class="thread-overlay" id="thread"></div><div class="sheet label-drawer" data-placement="side" id="drawer"></div><div class="lightbox" id="lightbox"></div>';
     const z = (id: string) => zIndex(cascadedDeclarations(rules, document.getElementById(id)!).get("z-index"));
     expect(z("lightbox")).toBeGreaterThan(z("thread"));
     expect(z("lightbox")).toBeGreaterThan(z("drawer"));

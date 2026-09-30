@@ -23,7 +23,7 @@ describe("dialogs", () => {
   });
 
   it("keep a shortcut's keys on one line however long its description", () => {
-    const key = declarationsOf(".shortcut-row kbd");
+    const key = declarationsOf(".key-hint.key");
     expect(key.get("white-space")).toBe("nowrap");
     expect(key.get("flex-shrink")).toBe("0");
   });
@@ -85,7 +85,7 @@ describe("toasts", () => {
     expect(declarationsOf(".undo-toast").get("color")).toBe("var(--text-inverse)");
     expect(declarationsOf(".toast-progress").get("background")).toBe("var(--surface-inverse-hover)");
     expect(declarationsOf(".toast-undo-btn").get("color")).toBe("var(--text-link-inverse)");
-    expect(declarationsOf(".toast-close-btn").get("color")).toBe("var(--text-inverse-muted)");
+    expect(declarationsOf(".icon-btn[data-tone=\"inverse\"]").get("color")).toBe("var(--text-inverse-muted)");
   });
 
   it("are light in dark mode, so they stand out from the dark page", () => {

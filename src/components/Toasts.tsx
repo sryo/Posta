@@ -1,40 +1,82 @@
 import { For, Show, type JSX } from "solid-js";
+import { IconButton } from "./IconButton";
+import { KeyHint } from "./KeyHint";
 import { toastActions, type createToasts, type ShownToast } from "../app/toasts";
 import { CloseIcon } from "./Icons";
 
 type ToastStore = ReturnType<typeof createToasts>;
 
+// A toast's look: a dark bar at the bottom with a message, its actions and a
+// fill that shows the time left. The fill runs by itself over `durationMs`,
+// or follows `percent` when the caller counts the time (the send toast).
+export function ToastFrame(props: {
+  message: JSX.Element;
+  closing?: boolean;
+  paused?: boolean;
+  raised?: boolean;
+  durationMs?: number | null;
+  percent?: number;
+  onPause?: () => void;
+  onResume?: () => void;
+  onDismiss?: () => void;
+  children?: JSX.Element;
+}) {
+  return (
+    <div
+      class={`undo-toast${props.closing ? " closing" : ""}${props.paused ? " paused" : ""}${props.raised ? " raised" : ""}`}
+      onMouseEnter={() => props.onPause?.()}
+      onMouseLeave={(e) => {
+        if (!e.currentTarget.contains(document.activeElement)) props.onResume?.();
+      }}
+      onFocusIn={() => props.onPause?.()}
+      onFocusOut={(e) => {
+        if (!e.currentTarget.contains(e.relatedTarget as Node | null)) props.onResume?.();
+      }}
+    >
+      <Show
+        when={props.percent === undefined}
+        fallback={<div class="toast-progress" data-driven="" style={{ width: `${props.percent}%` }}></div>}
+      >
+        <Show when={props.durationMs}>
+          {(ms) => <div class="toast-progress" style={{ "animation-duration": `${ms()}ms` }}></div>}
+        </Show>
+      </Show>
+      <div class="toast-content">
+        <span class="toast-message">{props.message}</span>
+        {props.children}
+        <Show when={props.onDismiss}>
+          {(dismiss) => (
+            <IconButton label="Dismiss" size="sm" tone="inverse" onClick={() => dismiss()()}>
+              <CloseIcon />
+            </IconButton>
+          )}
+        </Show>
+      </div>
+    </div>
+  );
+}
+
 function Toast(props: { toast: ShownToast; toasts: ToastStore; raised?: boolean }) {
   const t = () => props.toast;
   const id = () => props.toast.id;
   return (
-    <div
-      class={`undo-toast ${t().closing ? "closing" : ""} ${t().paused ? "paused" : ""} ${props.raised ? "raised" : ""}`}
-      onMouseEnter={() => props.toasts.pause(id())}
-      onMouseLeave={(e) => {
-        if (!e.currentTarget.contains(document.activeElement)) props.toasts.resume(id());
-      }}
-      onFocusIn={() => props.toasts.pause(id())}
-      onFocusOut={(e) => {
-        if (!e.currentTarget.contains(e.relatedTarget as Node | null)) props.toasts.resume(id());
-      }}
+    <ToastFrame
+      message={t().message}
+      closing={t().closing}
+      paused={t().paused}
+      raised={props.raised}
+      durationMs={t().durationMs}
+      onPause={() => props.toasts.pause(id())}
+      onResume={() => props.toasts.resume(id())}
+      onDismiss={() => props.toasts.dismiss(id())}
     >
-      <Show when={t().durationMs}>
-        {(ms) => <div class="toast-progress" style={{ "animation-duration": `${ms()}ms` }}></div>}
+      <Show when={t().undo}>
+        <button class="toast-undo-btn" onClick={() => props.toasts.undo()}>Undo <KeyHint keys="z" /></button>
       </Show>
-      <div class="toast-content">
-        <span class="toast-message">{t().message}</span>
-        <Show when={t().undo}>
-          <button class="toast-undo-btn" onClick={() => props.toasts.undo()}>Undo <span class="shortcut-hint">z</span></button>
-        </Show>
-        <For each={toastActions(t())}>
-          {(action, i) => <button class="toast-undo-btn" onClick={() => props.toasts.runAction(i(), id())}>{action.label}</button>}
-        </For>
-        <button class="toast-close-btn" onClick={() => props.toasts.dismiss(id())} title="Dismiss">
-          <CloseIcon />
-        </button>
-      </div>
-    </div>
+      <For each={toastActions(t())}>
+        {(action, i) => <button class="toast-undo-btn" onClick={() => props.toasts.runAction(i(), id())}>{action.label}</button>}
+      </For>
+    </ToastFrame>
   );
 }
 

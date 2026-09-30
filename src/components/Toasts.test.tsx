@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { fireEvent, render, within } from "@solidjs/testing-library";
 import { createToasts } from "../app/toasts";
-import { Toasts } from "./Toasts";
+import { ToastFrame, Toasts } from "./Toasts";
 
 function setup() {
   let toasts!: ReturnType<typeof createToasts>;
@@ -53,7 +53,7 @@ describe("Toasts", () => {
       toasts = createToasts();
       return (
         <Toasts toasts={toasts} othersShowing>
-          <div class="undo-toast send-toast">Sending…</div>
+          <div class="undo-toast">Sending…</div>
         </Toasts>
       );
     });
@@ -137,5 +137,18 @@ describe("Toasts", () => {
     toasts.show({ message: "Reply sent" });
     fireEvent.click(within(polite).getByTitle("Dismiss"));
     expect(toasts.current()?.closing).toBe(true);
+  });
+
+  it("draws a toast whose time the caller counts with the same frame, its fill following the count and no close button", () => {
+    const { container } = render(() => (
+      <ToastFrame message="Sending message..." percent={40}>
+        <button class="toast-undo-btn">Undo</button>
+      </ToastFrame>
+    ));
+    const toast = container.querySelector(".undo-toast")!;
+    expect(toast.querySelector(".toast-progress")).toHaveStyle({ width: "40%" });
+    expect(toast.querySelector(".toast-progress")).toHaveAttribute("data-driven");
+    expect(within(toast as HTMLElement).getByRole("button", { name: "Undo" })).toBeInTheDocument();
+    expect(within(toast as HTMLElement).queryByTitle("Dismiss")).toBeNull();
   });
 });

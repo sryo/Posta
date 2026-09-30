@@ -95,7 +95,7 @@ describe("EventView keys match the rest of the app", () => {
     expect(props.onOpenCalendars).toHaveBeenCalledTimes(1);
     const move = screen.getByTitle("Move to calendar");
     expect(move.querySelector(".thread-toolbar-label")).toHaveTextContent("Move to…");
-    expect(move.querySelector(".shortcut-hint")).toHaveTextContent("M");
+    expect(move.querySelector(".key-hint")).toHaveTextContent("M");
   });
 
   it("draws Move to… and Google Calendar with different icons", () => {
@@ -190,6 +190,22 @@ describe("EventView actions follow the user's role", () => {
     });
     const names = Array.from(document.querySelectorAll(".label-drawer .label-name")).map(el => el.textContent);
     expect(names).toEqual(["me@example.com", "Team"]);
+  });
+
+  it("opens the calendar drawer as a named dialog holding focus, still closing on m from a calendar choice, and on Escape", () => {
+    const props = renderEvent({}, {
+      calendarDrawerOpen: true,
+      calendars: [{ id: "team", name: "Team", is_primary: false, access_role: "writer" }],
+    });
+    const drawer = screen.getByRole("dialog", { name: "Move to Calendar" });
+    expect(drawer.contains(document.activeElement)).toBe(true);
+    const radio = screen.getByRole("radio", { name: "Team" });
+    fireEvent.keyDown(radio, { key: "m" });
+    expect(props.onCloseCalendarDrawer).toHaveBeenCalledTimes(1);
+    fireEvent.keyDown(radio, { key: "e" });
+    expect(props.onEdit).not.toHaveBeenCalled();
+    fireEvent.keyDown(document.activeElement!, { key: "Escape" });
+    expect(props.onCloseCalendarDrawer).toHaveBeenCalledTimes(2);
   });
 });
 

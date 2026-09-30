@@ -1,6 +1,6 @@
 import { createMemo, createSignal, For, Show } from "solid-js";
+import { Avatar } from "./Avatar";
 import { completeRecipient, currentRecipient } from "../app/contacts";
-import { getAvatarHue } from "../utils";
 import { isImeComposing } from "../shared/keyboard";
 
 export interface RecipientSuggestion {
@@ -95,9 +95,7 @@ export const RecipientInput = (props: {
                 }}
                 onMouseEnter={() => setActive(i())}
               >
-                <div class="compose-autocomplete-avatar" data-hue={getAvatarHue(contact.name || contact.email)}>
-                  {(contact.name || contact.email).charAt(0).toUpperCase()}
-                </div>
+                <Avatar email={contact.email} name={contact.name} size="sm" />
                 <div class="compose-autocomplete-info">
                   <Show when={contact.name}>
                     <div class="compose-autocomplete-name">{contact.name}</div>

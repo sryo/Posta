@@ -13,7 +13,7 @@ describe("RsvpControl", () => {
     render(() => <RsvpControl value="tentative" onAnswer={vi.fn()} />);
     const maybe = screen.getByRole("button", { name: "Maybe" });
     expect(maybe).toHaveAttribute("aria-pressed", "true");
-    expect(maybe).toHaveClass("selected", "rsvp-warning");
+    expect(maybe).toHaveAttribute("data-tone", "warning");
     expect(maybe.querySelector("svg")).not.toBeNull();
     const going = screen.getByRole("button", { name: "Going" });
     expect(going).toHaveAttribute("aria-pressed", "false");
@@ -40,9 +40,9 @@ describe("RsvpControl", () => {
       <RsvpControl value={null} onAnswer={vi.fn()} size="sm" />
       <RsvpControl value={null} onAnswer={vi.fn()} />
     </>);
-    const groups = container.querySelectorAll(".rsvp-control");
-    expect(groups[0]).toHaveClass("rsvp-control-sm");
-    expect(groups[1]).toHaveClass("rsvp-control-md");
+    const groups = container.querySelectorAll(".segmented");
+    expect(groups[0]).toHaveAttribute("data-size", "sm");
+    expect(groups[1]).toHaveAttribute("data-size", "md");
   });
 
   it("shows each answer's key when asked", () => {
@@ -50,6 +50,6 @@ describe("RsvpControl", () => {
     expect(screen.getByRole("button", { name: "Going" })).toHaveAttribute("aria-keyshortcuts", "y");
     expect(screen.getByRole("button", { name: "Maybe" })).toHaveAttribute("aria-keyshortcuts", "Shift+M");
     expect(screen.getByRole("button", { name: "Not going" })).toHaveAttribute("aria-keyshortcuts", "n");
-    expect(screen.getByRole("button", { name: "Maybe" }).querySelector(".shortcut-hint")).toHaveTextContent("⇧M");
+    expect(screen.getByRole("button", { name: "Maybe" }).querySelector(".key-hint")).toHaveTextContent("⇧M");
   });
 });

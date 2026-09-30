@@ -82,11 +82,11 @@ describe("status colour tokens", () => {
   it("fills the selected RSVP segment in its status colour, unlike hover", () => {
     const decls = (selector: string) => new Map(rules.filter(r => r.selectors.includes(selector)).flatMap(r => r.declarations));
     for (const s of STATUSES) {
-      const selected = decls(`.rsvp-segment.rsvp-${s}.selected`);
+      const selected = decls(`.segment[data-tone="${s}"][aria-pressed="true"]`);
       expect(selected.get("background"), s).toBe(`var(--${s})`);
       expect(selected.get("color"), s).toBe("var(--text-on-status)");
     }
-    const hover = decls(".rsvp-segment:hover:not(:disabled):not(.selected)");
+    const hover = decls('.segmented[data-look="divided"] .segment:hover:not(:disabled):not([aria-pressed="true"])');
     expect(hover.get("background")).toBe("var(--surface-hover)");
   });
 
@@ -94,7 +94,7 @@ describe("status colour tokens", () => {
     const decls = (selector: string) => new Map(rules.filter(r => r.selectors.includes(selector)).flatMap(r => r.declarations));
     expect(decls(".invite-block-md .invite-actions").get("align-items")).toBe("stretch");
     const join = decls(".invite-block-md .invite-actions .calendar-join-btn");
-    const segment = decls(".rsvp-control-md .rsvp-segment");
+    const segment = decls('.segmented[data-look="divided"][data-size="md"] .segment');
     expect(join.get("font")).toBe(segment.get("font"));
     expect(join.get("font")).toBeDefined();
     expect(join.get("padding")).toBe(segment.get("padding"));

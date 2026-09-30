@@ -46,11 +46,13 @@ describe("InviteAnswerMenu", () => {
     expect(menuButton()).toHaveTextContent("Y ⇧M N");
   });
 
-  it("opens a menu of the three answers outside the card, without opening the email", () => {
+  it("opens a menu of the three answers outside the card, its click still reaching the board", () => {
+    // The board closes its other popups on the click; the row itself leaves a
+    // click on the answer alone (App regressions)
     const onRowClick = vi.fn();
     render(() => <div class="card"><div class="thread" onClick={onRowClick}><InviteAnswerMenu value="accepted" onAnswer={vi.fn()} /></div></div>);
     fireEvent.click(menuButton());
-    expect(onRowClick).not.toHaveBeenCalled();
+    expect(onRowClick).toHaveBeenCalled();
     expect(menuButton()).toHaveAttribute("aria-expanded", "true");
     const menu = screen.getByRole("menu", { name: "Your response" });
     expect(menu.closest(".card")).toBeNull();
@@ -112,8 +114,19 @@ describe("InviteAnswerMenu", () => {
   it("opens on the first answer when there is none yet", () => {
     render(() => <InviteAnswerMenu value={undefined} onAnswer={vi.fn()} />);
     menuButton().focus();
-    fireEvent.keyDown(menuButton(), { key: "ArrowDown" });
+    fireEvent.keyDown(menuButton(), { key: "Enter" });
     expect(document.activeElement).toBe(items()[0]);
+  });
+
+  it("leaves the arrow keys to the board, which moves between rows with them", () => {
+    const board = vi.fn();
+    document.addEventListener("keydown", board);
+    render(() => <InviteAnswerMenu value={undefined} onAnswer={vi.fn()} />);
+    menuButton().focus();
+    fireEvent.keyDown(menuButton(), { key: "ArrowDown" });
+    document.removeEventListener("keydown", board);
+    expect(screen.queryByRole("menu")).toBeNull();
+    expect(board).toHaveBeenCalled();
   });
 
   it("answers with the answer keys while open, without the board seeing them", () => {
@@ -135,9 +148,14 @@ describe("InviteAnswerMenu", () => {
     expect(screen.queryByRole("menu")).toBeNull();
   });
 
-  it("cannot be opened while an answer is being sent", () => {
+  it("cannot be opened while an answer is being sent, and keeps focus meanwhile", () => {
     render(() => <InviteAnswerMenu value={undefined} onAnswer={vi.fn()} disabled />);
-    expect(menuButton()).toBeDisabled();
+    const button = menuButton();
+    expect(button).toHaveAttribute("aria-disabled", "true");
+    button.focus();
+    fireEvent.click(button);
+    expect(screen.queryByRole("menu")).toBeNull();
+    expect(document.activeElement).toBe(button);
   });
 });
 
@@ -200,10 +218,10 @@ describe("InviteRowLines", () => {
       { title: "Lunch", start: at(1, 13), end: at(1, 14) },
     ], NOW);
     render(() => lines({ strip }));
-    const el = document.querySelector(".invite-strip")!;
+    const el = document.querySelector(".day-strip")!;
     expect(el).toHaveAttribute("aria-hidden", "true");
-    expect(el.querySelectorAll(".invite-strip-busy")).toHaveLength(2);
-    expect(el.querySelectorAll(".invite-strip-busy.overlap")).toHaveLength(1);
+    expect(el.querySelectorAll(".day-strip-busy")).toHaveLength(2);
+    expect(el.querySelectorAll(".day-strip-busy.overlap")).toHaveLength(1);
     expect(document.querySelector(".invite-clash")).toHaveTextContent("Dentist");
   });
 
@@ -234,14 +252,14 @@ describe("InviteRowLines", () => {
   it("hides the strip once answered", () => {
     const strip = stripLayout({ start: at(1, 10, 30), end: at(1, 11, 30) }, [], NOW);
     render(() => lines({ strip, rsvp: "accepted" }));
-    expect(document.querySelector(".invite-strip")).toBeNull();
+    expect(document.querySelector(".day-strip")).toBeNull();
   });
 
   it("draws the now-line and the past on today's strip", () => {
     const strip = stripLayout({ start: NOW + 3_600_000, end: NOW + 7_200_000 }, [], NOW);
     render(() => lines({ strip, invite: invite({ start_time: NOW + 3_600_000, end_time: NOW + 7_200_000 }) }));
-    expect(document.querySelector(".invite-strip-now")).not.toBeNull();
-    expect(document.querySelector(".invite-strip-past")).not.toBeNull();
+    expect(document.querySelector(".day-strip-now")).not.toBeNull();
+    expect(document.querySelector(".day-strip-past")).not.toBeNull();
   });
 
   it("shows a running meeting's progress and a Join button for its call", async () => {

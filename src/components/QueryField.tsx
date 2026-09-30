@@ -1,4 +1,5 @@
-import { For, Show, createEffect, createMemo, createSignal, onCleanup, onMount } from "solid-js";
+import { For, Show, createEffect, createMemo, createSignal, onCleanup, onMount, type JSX } from "solid-js";
+import { Chip } from "./Chip";
 import { Portal } from "solid-js/web";
 import { CALENDAR_RANGES, GMAIL_OPERATORS } from "../shared/constants";
 import { matchContacts, type RecentContact } from "../app/contacts";
@@ -16,7 +17,6 @@ import {
   type QueryDraft,
 } from "../app/queryDraft";
 import { isImeComposing } from "../shared/keyboard";
-import { CloseIcon } from "./Icons";
 
 const ADDRESS_OPERATORS = new Set(["from", "to", "cc", "bcc", "deliveredto", "with", "organizer"]);
 
@@ -190,7 +190,7 @@ export const QueryField = (props: {
     setPickerFilter("");
     if (!open) return;
     if (open.section === "all") {
-      if (refocus) chips?.querySelector<HTMLElement>(`.query-chip-label[data-index="${open.index}"]`)?.focus();
+      if (refocus) chips?.querySelector<HTMLElement>(`.query-chip .chip-label[data-index="${open.index}"]`)?.focus();
     } else if (refocus) {
       focusInput();
     } else if (!chips?.contains(document.activeElement)) {
@@ -273,27 +273,23 @@ export const QueryField = (props: {
         </span>
       }
     >
-      <span class="query-chip" classList={{ negated: word.operator!.negated }}>
-        <button
-          type="button"
-          class="query-chip-label"
-          data-index={section === "all" ? i() : undefined}
-          aria-label={`Change ${word.text}`}
-          aria-haspopup="dialog"
-          onMouseDown={(e) => { if (editing()) e.preventDefault(); }}
-          onClick={(e) => setPicker({ section, index: i(), pos: below(e.currentTarget) })}
-        >
-          <span class="query-chip-op">{word.operator!.negated ? "-" : ""}{word.operator!.op}:</span>
-          <span class="query-chip-value">{chipValue(word)}</span>
-        </button>
-        <button
-          type="button"
-          class="query-chip-remove"
-          aria-label={`Remove ${word.text}`}
-          onMouseDown={(e) => { if (editing()) e.preventDefault(); }}
-          onClick={() => changeWord(section, i(), null)}
-        ><CloseIcon size="meta" /></button>
-      </span>
+      <Chip
+        class="query-chip"
+        classList={{ "negated": word.operator!.negated }}
+        removeLabel={`Remove ${word.text}`}
+        onRemove={() => changeWord(section, i(), null)}
+        removeProps={{ onMouseDown: (e) => { if (editing()) e.preventDefault(); } }}
+        action={{
+          "data-index": section === "all" ? i() : undefined,
+          "aria-label": `Change ${word.text}`,
+          "aria-haspopup": "dialog",
+          onMouseDown: (e) => { if (editing()) e.preventDefault(); },
+          onClick: (e) => setPicker({ section, index: i(), pos: below(e.currentTarget) }),
+        } as JSX.ButtonHTMLAttributes<HTMLButtonElement>}
+      >
+        <span class="query-chip-op">{word.operator!.negated ? "-" : ""}{word.operator!.op}:</span>
+        {chipValue(word)}
+      </Chip>
     </Show>
   );
 

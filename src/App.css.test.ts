@@ -221,7 +221,7 @@ describe("card query field", () => {
   });
 
   it("shows a failed preview in the danger color", () => {
-    expect(declarationsOf(".query-preview-error").get("color")).toBe("var(--danger-text)");
+    expect(declarationsOf('.status-line[data-kind="error"]').get("color")).toBe("var(--danger-text)");
   });
 });
 

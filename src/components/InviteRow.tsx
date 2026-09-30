@@ -1,4 +1,6 @@
-import { createMemo, createSignal, For, type JSX, onCleanup, Show } from "solid-js";
+import { createMemo, createSignal, For, type JSX, onCleanup, Show, createEffect } from "solid-js";
+import { DayStrip } from "./DayStrip";
+import { KeyHint } from "./KeyHint";
 import { Dynamic, Portal } from "solid-js/web";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import type { CalendarEvent } from "../api/tauri";
@@ -45,7 +47,7 @@ export const InviteAnswerMenu = (props: {
   };
 
   const open = () => {
-    if (!button || props.disabled) return;
+    if (!button || props.disabled || at()) return;
     const rect = button.getBoundingClientRect();
     const below = rect.bottom + MENU_GAP;
     const top = below + MENU_HEIGHT <= window.innerHeight - EDGE ? below : Math.max(EDGE, rect.top - MENU_GAP - MENU_HEIGHT);
@@ -58,11 +60,12 @@ export const InviteAnswerMenu = (props: {
 
   const choose = (status: RsvpStatus) => {
     close();
-    if (status !== props.value) props.onAnswer(status);
+    if (status !== props.value && !props.disabled) props.onAnswer(status);
   };
 
+  // Enter and Space open the menu; the arrow keys keep moving between rows
   const onButtonKeyDown = (e: KeyboardEvent) => {
-    if (e.key === "Enter" || e.key === " " || e.key === "ArrowDown" || e.key === "ArrowUp") {
+    if (e.key === "Enter" || e.key === " ") {
       e.preventDefault();
       e.stopPropagation();
       open();
@@ -97,11 +100,15 @@ export const InviteAnswerMenu = (props: {
     if (e.target instanceof Node && menu?.contains(e.target)) return;
     close(false);
   };
-  document.addEventListener("mousedown", dismissOutside);
-  document.addEventListener("scroll", dismissOnScroll, true);
-  onCleanup(() => {
-    document.removeEventListener("mousedown", dismissOutside);
-    document.removeEventListener("scroll", dismissOnScroll, true);
+  // Listened for only while the menu is open, not once per row on the board
+  createEffect(() => {
+    if (!at()) return;
+    document.addEventListener("mousedown", dismissOutside);
+    document.addEventListener("scroll", dismissOnScroll, true);
+    onCleanup(() => {
+      document.removeEventListener("mousedown", dismissOutside);
+      document.removeEventListener("scroll", dismissOnScroll, true);
+    });
   });
 
   return (
@@ -118,8 +125,9 @@ export const InviteAnswerMenu = (props: {
         aria-haspopup="menu"
         aria-expanded={!!at()}
         aria-label={`Your response: ${answer()?.label ?? "not answered"}`}
-        disabled={props.disabled}
-        onClick={(e) => { e.stopPropagation(); if (at()) close(); else open(); }}
+        // Still focusable while an answer sends, so focus stays where it was
+        aria-disabled={props.disabled ? "true" : undefined}
+        onClick={() => { if (at()) close(); else open(); }}
         on:keydown={onButtonKeyDown}
       >
         <Show when={props.value === "accepted"}>
@@ -127,7 +135,7 @@ export const InviteAnswerMenu = (props: {
         </Show>
         {answer()?.label ?? "Going?"}
         <Show when={props.showKeys}>
-          <span class="invite-answer-keys" aria-hidden="true">{RSVP_ANSWERS.map(a => a.keyHint).join(" ")}</span>
+          <KeyHint keys={RSVP_ANSWERS.map(a => a.keyHint).join(" ")} />
         </Show>
         <span class="invite-answer-caret" aria-hidden="true"><ChevronIcon size="meta" /></span>
       </button>
@@ -161,7 +169,7 @@ export const InviteAnswerMenu = (props: {
                     <Show when={props.value === option.status}>
                       <span class="invite-answer-tick" aria-hidden="true"><CheckIcon /></span>
                     </Show>
-                    <kbd aria-hidden="true">{option.keyHint}</kbd>
+                    <KeyHint keys={option.keyHint} />
                   </button>
                 )}
               </For>
@@ -204,29 +212,19 @@ export const InviteWhen = (props: {
   );
 };
 
+// Twelve hours with a tick each, so the invite's hour reads at a glance
+const HOUR_TICKS = Array.from({ length: 11 }, (_, i) => ((i + 1) / 12) * 100);
+
 const InviteStrip = (props: { layout: StripLayout }) => (
-  <div class="invite-strip" aria-hidden="true">
-    <Show when={props.layout.noonAt !== null}>
-      <span class="invite-strip-noon" style={{ left: `${props.layout.noonAt}%` }} />
-    </Show>
-    <Show when={props.layout.past !== null}>
-      <span class="invite-strip-past" style={{ width: `${props.layout.past}%` }} />
-    </Show>
-    <For each={props.layout.busy}>
-      {(block) => (
-        <span
-          class="invite-strip-busy"
-          classList={{ "overlap": block.overlap }}
-          style={{ left: `${block.left}%`, width: `${block.width}%` }}
-          title={block.title}
-        />
-      )}
-    </For>
-    <span class="invite-strip-slot" style={{ left: `${props.layout.slot.left}%`, width: `${props.layout.slot.width}%` }} />
-    <Show when={props.layout.nowAt !== null}>
-      <span class="invite-strip-now" style={{ left: `${props.layout.nowAt}%` }} />
-    </Show>
-  </div>
+  <DayStrip
+    size="sm"
+    ticks={HOUR_TICKS}
+    noonAt={props.layout.noonAt}
+    past={props.layout.past}
+    nowAt={props.layout.nowAt}
+    busy={props.layout.busy}
+    slotBox={props.layout.slot}
+  />
 );
 
 // An invite row's lines under its sender and title: when it is, how long and

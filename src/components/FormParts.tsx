@@ -1,5 +1,6 @@
 import { onCleanup, Show, type JSX } from "solid-js";
-import { getAvatarHue, getInitial } from "../utils";
+import { Avatar } from "./Avatar";
+import { KeyHint } from "./KeyHint";
 import { CloseButton } from "./ComposeAtoms";
 
 // The pieces the compose, event and card forms are built from, so their
@@ -7,10 +8,11 @@ import { CloseButton } from "./ComposeAtoms";
 
 // The top of a compose or event panel: close first, where every view and
 // sheet keeps it, then whose it is and anything else. A panel that closes
-// some other way, such as a message's own reply, passes no onClose
-export function PanelHeader(props: { children: JSX.Element; onClose?: () => void }) {
+// some other way, such as a message's own reply, passes no onClose.
+// A sheet's is roomier, its title in the heading size.
+export function PanelHeader(props: { children: JSX.Element; onClose?: () => void; size?: "panel" | "sheet" }) {
   return (
-    <div class="panel-header">
+    <div class="panel-header" data-size={props.size === "sheet" ? "sheet" : undefined}>
       <Show when={props.onClose}>
         <CloseButton onClick={props.onClose!} />
       </Show>
@@ -24,7 +26,7 @@ export function PanelHeader(props: { children: JSX.Element; onClose?: () => void
 export function PanelAccount(props: { email: string; class?: string; children?: JSX.Element }) {
   return (
     <div class={`panel-account ${props.class ?? ""}`}>
-      <span class="panel-account-avatar" data-hue={getAvatarHue(props.email)} aria-hidden="true">{getInitial(props.email)}</span>
+      <Avatar email={props.email} size="xs" />
       {props.children ?? <span class="panel-account-email">{props.email}</span>}
     </div>
   );
@@ -88,7 +90,7 @@ export function SubmitButton(props: {
       onClick={() => props.onClick()}
       title={props.title ?? `${props.label} (⌘Enter)`}
     >
-      {props.busy ? props.busyLabel ?? props.label : <>{props.label} <span class="shortcut-hint">⌘↵</span></>}
+      {props.busy ? props.busyLabel ?? props.label : <>{props.label} <KeyHint keys="⌘↵" /></>}
     </button>
   );
 }
@@ -96,7 +98,7 @@ export function SubmitButton(props: {
 export function CancelButton(props: { onClick: () => void }) {
   return (
     <button class="btn btn-ghost" onClick={() => props.onClick()} title="Cancel (Esc)">
-      Cancel <span class="shortcut-hint">ESC</span>
+      Cancel <KeyHint keys="ESC" />
     </button>
   );
 }

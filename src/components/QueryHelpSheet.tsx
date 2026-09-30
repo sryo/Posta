@@ -1,6 +1,5 @@
 import { For } from "solid-js";
-import { CloseButton } from "./ComposeAtoms";
-import { Dialog } from "./Dialog";
+import { Sheet } from "./Sheet";
 
 // `insert` is what a row puts into the query when it is clicked, where the
 // row's example value is only a placeholder
@@ -61,17 +60,13 @@ export const QueryHelpSheet = (props: { onInsert: (text: string) => void; onClos
 
   return (
     <>
-      <div class="query-help-overlay" onClick={props.onClose}></div>
-      <Dialog
+      <Sheet
+        title="Query Operators"
+        placement="center"
         class="query-help-sheet"
-        labelledBy="query-help-title"
         onClose={props.onClose}
         initialFocus={(el) => el.querySelector<HTMLElement>(".query-help-body")}
       >
-        <div class="query-help-header">
-          <CloseButton onClick={props.onClose} />
-          <h3 id="query-help-title">Query Operators</h3>
-        </div>
         <div class="query-help-body" tabindex="0">
           <p class="query-help-note">Click an operator to add it to the query.</p>
           <div class="query-help-section">
@@ -90,7 +85,7 @@ export const QueryHelpSheet = (props: { onInsert: (text: string) => void; onClos
             </div>
           </div>
         </div>
-      </Dialog>
+      </Sheet>
     </>
   );
 };
