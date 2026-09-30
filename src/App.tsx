@@ -891,6 +891,8 @@ function App() {
   // but an event's edit never carries into a new one
   // `about` starts the event from an email thread instead
   const openNewEventForm = (about?: { summary: string; attendees: string }) => {
+    // One panel at a time: an email in the compose panel closes, keeping its draft
+    if (composeShownIn() === "panel" && composing() && !closingCompose()) closeCompose();
     const defaults = smartEventDefaults();
     setEventForm(f => about
       ? { ...defaultEventForm(), ...about }
@@ -2529,6 +2531,8 @@ function App() {
     draftKey?: string;
     attachments?: SendAttachment[];
   }) {
+    // One panel at a time: a new event steps aside, keeping what was typed in it
+    if (creatingEvent() && !eventForm().editing) setCreatingEvent(false);
     if (composing() || closingCompose()) resetCompose();
     const accountId = init.accountId ?? selectedAccount()?.id;
     composeOpeningAccountId = accountId;

@@ -233,7 +233,11 @@ export function RadialMenu(props: {
               onPointerEnter={() => { if (!scrubbing) props.onScrub?.(item); }}
               onPointerLeave={() => { if (!scrubbing) props.onScrub?.(null); }}
               onPointerDown={(e) => { if (e.button === 0) beginScrub(i()); }}
-              onClick={(e) => { if (!swallowClick) item.onSelect(e); }}
+              onClick={(e) => {
+                // A release on the petal already chose it; its click goes no further
+                if (swallowClick) e.stopPropagation();
+                else item.onSelect(e);
+              }}
             >
               <Show when={item.icon}>
                 <Dynamic component={item.icon} size="ui" />
