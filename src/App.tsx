@@ -35,6 +35,7 @@ import {
   setGeminiApiKey,
   hasGeminiApiKey,
   fetchThreadsPaginated,
+  fetchQueryThreads,
   searchThreadsPreview,
   modifyThreads,
   type Account,
@@ -145,6 +146,7 @@ import { ActionsWheel } from "./components/ActionsWheel";
 import { ColorFlower } from "./components/ColorFlower";
 import { RADIAL_HOVER_CLOSE_MS, RADIAL_HOVER_OPEN_MS } from "./app/radial";
 import { CardForm } from "./components/CardForm";
+import { QueryField } from "./components/QueryField";
 import { CardAccountQualifier, cardTitleLabel } from "./components/CardAccountQualifier";
 import { Sheet } from "./components/Sheet";
 import { ToastFrame, Toasts } from "./components/Toasts";
@@ -188,6 +190,7 @@ import { cardSyncStatus, cardWaitingMessage, connectionStatus } from "./app/conn
 import { CardEmpty, CardSkeleton, ConnectionStatusBar, PostmarkDefs } from "./components/CardStates";
 import { createPostmarkLedger } from "./app/postmark";
 import { cardTypeForQuery } from "./app/cardType";
+import { SEARCH_CARD_ID, isSearchCard, keptCardName, parseRecentSearches, rememberSearch, searchCard as searchCardFor } from "./app/quickSearch";
 import { discardThreadDrafts, draftToOpen, isDraftThread, prepareDraftCompose, withDraftsDiscarded, type DraftToOpen } from "./app/draftThreads";
 import { createDraftSync, draftKey, findLatestDraft, findUnsentDrafts, hasDraftContent, markDraftClosed, markDraftSending, pruneDrafts, removeAccountDrafts, sessionDraftKey, type DraftFields } from "./app/drafts";
 import { escapeTarget, nextCardFocus, nextItemFocus, type ItemFocus } from "./app/keyboardNav";
@@ -269,10 +272,14 @@ function App() {
   // Settings' account section is about it. Cards show every account.
   const [selectedAccount, setSelectedAccount] = createSignal<Account | null>(null);
   const accountById = (id: string | null | undefined) => (id ? accounts().find(a => a.id === id) ?? null : null);
-  const cardById = (id: string | null | undefined) => (id ? cards().find(c => c.id === id) : undefined);
+  const cardById = (id: string | null | undefined) => (id ? boardCards().find(c => c.id === id) : undefined);
   // Whether this card shows mail of an account that needs signing in again
   const cardExpired = (card: Card) => { const expired = expiredAccountId(); return !!expired && cardCoversAccount(card, expired); };
   const [cards, setCards] = createSignal<Card[]>([]);
+  // The search the filter bar ran, shown ahead of the stored cards until it
+  // is kept or closed
+  const [searchCard, setSearchCard] = createSignal<Card | null>(null);
+  const boardCards = () => { const search = searchCard(); return search ? [search, ...cards()] : cards(); };
   const [authLoading, setAuthLoading] = createSignal(false);
   const [cardThreads, setCardThreads] = createStore<Record<string, ThreadGroup[]>>({});
   const [cardCalendarEvents, setCardCalendarEvents] = createStore<Record<string, GoogleCalendarEvent[]>>({});
@@ -597,7 +604,7 @@ function App() {
   // When each card last went from showing rows to empty, for its postmark
   const postmarks = createPostmarkLedger();
   // A filtered or previewed card that shows nothing says what matched nothing
-  const emptyMeansNoMatch = (cardId: string) => isPreviewingQuery(cardId) || globalFilter().trim() !== "";
+  const emptyMeansNoMatch = (cardId: string) => isPreviewingQuery(cardId) || isSearchCard(cardId) || filterHides();
 
   function effectiveCardType(card: Card): Card["card_type"] {
     if (editingCardId() === card.id) {
@@ -661,6 +668,22 @@ function App() {
   const [globalFilter, setGlobalFilter] = createSignal("");
   const [showGlobalFilter, setShowGlobalFilter] = createSignal(false);
   let filterInputRef: HTMLInputElement | undefined;
+  // Typing narrows the loaded cards; once the typed search has run, the
+  // cards show everything again and fade what the search didn't find
+  const searchShown = () => { const search = searchCard(); return !!search && search.query === globalFilter().trim(); };
+  const filterHides = () => globalFilter().trim() !== "" && !searchShown();
+  const searchFound = createMemo(() => {
+    if (!searchCard()) return null;
+    return new Set([
+      ...(cardThreads[SEARCH_CARD_ID] ?? []).flatMap(g => g.threads.map(t => t.gmail_thread_id)),
+      ...(cardCalendarEvents[SEARCH_CARD_ID] ?? []).map(e => e.id),
+    ]);
+  });
+  const fadedBySearch = (cardId: string, itemId: string) => {
+    const found = searchFound();
+    return !!found && searchShown() && !isSearchCard(cardId) && !loadingThreads[SEARCH_CARD_ID] && !found.has(itemId);
+  };
+  const [recentSearches, setRecentSearches] = createSignal<string[]>(parseRecentSearches((() => { try { return localStorage.getItem("recentSearches"); } catch { return null; } })()));
   // Inserts text at the caret of the query field shown or focused last
   let insertIntoQueryField: ((text: string) => void) | null = null;
   let queryPreviewTimeout: number | undefined;
@@ -1638,8 +1661,7 @@ function App() {
     // Cmd/Ctrl+F to open filter (works even when typing)
     if (e.key === 'f' && (e.metaKey || e.ctrlKey)) {
       e.preventDefault();
-      setShowGlobalFilter(true);
-      setTimeout(() => filterInputRef?.focus(), 0);
+      openSearch();
       return;
     }
 
@@ -1699,8 +1721,14 @@ function App() {
     // / to open filter
     if (e.key === '/') {
       e.preventDefault();
-      setShowGlobalFilter(true);
-      setTimeout(() => filterInputRef?.focus(), 0);
+      openSearch();
+      return;
+    }
+
+    // p keeps the search the focused card shows
+    if (e.key === 'p' && isSearchCard(focusedCardId())) {
+      e.preventDefault();
+      keepSearch();
       return;
     }
 
@@ -1740,7 +1768,7 @@ function App() {
         cardFocus: !!focused,
       });
       switch (target) {
-        case "filter": setShowGlobalFilter(false); setGlobalFilter(""); break;
+        case "filter": closeSearch(); break;
         case "accountChooser": setAccountChooserOpen(false); break;
         case "colorPicker": setColorPickerOpen(false); setEditColorPickerOpen(false); setBgColorPickerOpen(false); break;
         case "batchReply": dismissBatchReply(); break;
@@ -1760,7 +1788,7 @@ function App() {
     // Card navigation - h/l/ArrowLeft/ArrowRight for left/right between cards
     if (e.key === 'h' || e.key === 'l' || e.key === 'ArrowLeft' || e.key === 'ArrowRight') {
       e.preventDefault();
-      const cardIds = cards().filter(c => !collapsedCards[c.id]).map(c => c.id);
+      const cardIds = boardCards().filter(c => !collapsedCards[c.id]).map(c => c.id);
       const move = nextCardFocus(cardIds, focusedCardId(), e.key === 'l' || e.key === 'ArrowRight', addingCard());
       if (!move) return;
       if (move.addingCard && !addingCard()) {
@@ -1784,7 +1812,7 @@ function App() {
     // Item navigation - j/k/ArrowUp/ArrowDown for up/down within cards (threads or events)
     if (e.key === 'j' || e.key === 'k' || e.key === 'ArrowDown' || e.key === 'ArrowUp') {
       e.preventDefault();
-      const visible = cards().filter(c => !collapsedCards[c.id]).map(c => ({
+      const visible = boardCards().filter(c => !collapsedCards[c.id]).map(c => ({
         id: c.id,
         count: (isCalendarCard(c.id) ? getCardEventsFlat(c.id) : getCardThreadsFlat(c.id)).length,
       }));
@@ -2329,6 +2357,69 @@ function App() {
   function refetchCard(card: Card) {
     if (card.card_type === "calendar") refreshCalendarCard(card.id).catch(() => {});
     else fetchAndCacheThreads(card.id);
+  }
+
+  function openSearch() {
+    setShowGlobalFilter(true);
+    setTimeout(() => filterInputRef?.focus(), 0);
+  }
+
+  // One account is searched as itself, so a kept search is that account's card
+  const searchScope = () => { const all = accounts(); return all.length === 1 ? all[0].id : ALL_ACCOUNTS; };
+
+  function runSearch(query = globalFilter()) {
+    const q = query.trim();
+    if (!q) return;
+    setGlobalFilter(q);
+    forgetCardState([SEARCH_CARD_ID]);
+    setCardHasMore(SEARCH_CARD_ID, false);
+    setCardErrors(SEARCH_CARD_ID, null);
+    setSearchCard(searchCardFor(q, searchScope()));
+    setCollapsedCards(SEARCH_CARD_ID, false);
+    const recent = rememberSearch(recentSearches(), q);
+    setRecentSearches(recent);
+    try { localStorage.setItem("recentSearches", JSON.stringify(recent)); } catch { /* the list is a convenience */ }
+    filterInputRef?.blur();
+    setFocusedCardId(SEARCH_CARD_ID);
+    setFocusedThreadIndex(0);
+    setFocusedEventIndex(0);
+    loadCardThreads(SEARCH_CARD_ID, false, true);
+  }
+
+  function closeSearch() {
+    setShowGlobalFilter(false);
+    setGlobalFilter("");
+    if (!searchCard()) return;
+    forgetCardState([SEARCH_CARD_ID]);
+    setSearchCard(null);
+  }
+
+  // Keeps the search as a card named after its query, carrying over what it
+  // already found
+  async function keepSearch() {
+    const q = (searchCard()?.query ?? globalFilter()).trim();
+    if (!q) return;
+    const found = searchCard()?.query === q;
+    try {
+      const card = await createCard(searchCard()?.account_id ?? searchScope(), keptCardName(q), q, null, "date", cardTypeForQuery(q));
+      batch(() => {
+        setCards([...cards(), card]);
+        setCollapsedCards(card.id, false);
+        if (found) {
+          if (cardThreads[SEARCH_CARD_ID]) setCardThreads(card.id, cardThreads[SEARCH_CARD_ID]);
+          if (cardCalendarEvents[SEARCH_CARD_ID]) setCardCalendarEvents(card.id, cardCalendarEvents[SEARCH_CARD_ID]);
+          setCardPageTokens(card.id, cardPageTokens[SEARCH_CARD_ID] ?? null);
+          setCardHasMore(card.id, !!cardHasMore[SEARCH_CARD_ID]);
+          setLastSyncTimes(card.id, lastSyncTimes[SEARCH_CARD_ID] ?? Date.now());
+        }
+        closeSearch();
+      });
+      if (cardThreads[card.id]) saveCardCache(card.id, cardThreads[card.id], cardPageTokens[card.id] ?? null).catch(() => {});
+      else if (!cardCalendarEvents[card.id]) loadCardThreads(card.id);
+      showToast(`Kept “${card.name}”`, { label: "Rename", run: () => startEditCard(card) });
+    } catch (e) {
+      setFailure("Couldn't keep the search", e);
+    }
   }
 
   // Opens the new-card form, making the card in `accountId` (the default
@@ -3542,8 +3633,8 @@ function App() {
     safeSetJSON("collapsedCards", { ...stored, ...collapsed });
   }
 
-  function startEditCard(card: Card, e: MouseEvent) {
-    e.stopPropagation();
+  function startEditCard(card: Card, e?: MouseEvent) {
+    e?.stopPropagation();
     // Close add card form if open
     if (addingCard()) {
       setAddingCard(false);
@@ -3773,6 +3864,7 @@ function App() {
   const cacheSnapshot = (groups: ThreadGroup[], pageToken: string | null) => fingerprint(JSON.stringify([groups, pageToken]));
 
   function saveCardCache(cardId: string, groups: ThreadGroup[], pageToken: string | null): Promise<void> {
+    if (isSearchCard(cardId)) return Promise.resolve();
     const snapshot = cacheSnapshot(groups, pageToken);
     const known = knownCardCache[cardId];
     const now = Date.now();
@@ -3796,7 +3888,7 @@ function App() {
     if (!selectedAccount()) return;
 
     // Check if this is a calendar card
-    const card = cards().find(c => c.id === cardId);
+    const card = cardById(cardId);
 
     // A response for a query or account the card no longer has must not
     // write its threads into the store (dock badge, autocomplete)
@@ -3822,7 +3914,7 @@ function App() {
 
     try {
       // For initial load (not append), try cache first (unless force refresh)
-      if (!append && !forceRefresh) {
+      if (!append && !forceRefresh && !isSearchCard(cardId)) {
         const cached = await getCachedCardThreads(cardId);
         if (stale()) return;
         if (cached && cached.groups.length > 0) {
@@ -3842,7 +3934,9 @@ function App() {
       }
 
       const pageToken = append ? cardPageTokens[cardId] : null;
-      const result = await fetchThreadsPaginated(cardId, pageToken);
+      const result = card && isSearchCard(cardId)
+        ? await fetchQueryThreads(card.account_id, card.query, pageToken)
+        : await fetchThreadsPaginated(cardId, pageToken);
       if (stale()) return;
 
       if (append) {
@@ -3878,7 +3972,7 @@ function App() {
 
   // Load calendar events for calendar cards
   async function loadCalendarEvents(cardId: string, forceRefresh = false) {
-    const card = cards().find(c => c.id === cardId);
+    const card = cardById(cardId);
     if (!card) return;
     const fetched = fetchedFor(card);
     const stale = () => cardQueryChanged(cardId, fetched);
@@ -3891,7 +3985,7 @@ function App() {
 
     try {
       // For initial load (not force refresh), try cache first
-      if (!forceRefresh) {
+      if (!forceRefresh && !isSearchCard(cardId)) {
         const cached = await getCachedCardEvents(cardId);
         if (stale()) return;
         if (cached && cached.events.length > 0) {
@@ -4004,7 +4098,7 @@ function App() {
       const events = (await fetchCalendarEvents(card.account_id, query)).filter(ev => !heldEventDeletes.has(ev.id));
       if (cardQueryChanged(cardId, fetched)) return;
       setCardCalendarEvents(cardId, reconcile(events, { key: "id" }));
-      await saveCachedCardEvents(cardId, events);
+      if (!isSearchCard(cardId)) await saveCachedCardEvents(cardId, events);
       setLastSyncTimes(cardId, Date.now());
       setSyncErrors(cardId, null);
       setOffline(false);
@@ -4187,7 +4281,7 @@ function App() {
 
     // Apply global filter
     const filter = globalFilter().toLowerCase().trim();
-    if (filter) {
+    if (filter && filterHides() && !isSearchCard(cardId)) {
       groups = groups.map(group => ({
         ...group,
         threads: group.threads.filter(thread =>
@@ -4209,7 +4303,7 @@ function App() {
 
     // Apply global filter
     const filter = globalFilter().toLowerCase().trim();
-    if (filter) {
+    if (filter && filterHides() && !isSearchCard(cardId)) {
       groups = groups.map(group => ({
         ...group,
         events: group.events.filter(event =>
@@ -4709,26 +4803,46 @@ function App() {
       <ConnectionStatusBar status={boardStatus()} onRetry={retryConnection} onSignIn={handleReauth} />
       <PostmarkDefs />
 
-      {/* Global filter bar - keyboard activated */}
+      {/* Search bar: typing narrows the loaded cards, Enter searches Gmail */}
       <div class={`global-filter-bar ${showGlobalFilter() ? 'visible' : ''}`}>
         <div class="global-filter-container">
-          <input
-            ref={filterInputRef}
-            type="text"
-            class="global-filter-input"
-            placeholder="Filter threads by subject, sender, or content..."
-            value={globalFilter()}
-            onInput={(e) => setGlobalFilter(e.currentTarget.value)}
-            onKeyDown={(e) => {
-              if (e.key === 'Escape') {
-                e.stopPropagation();
-                setShowGlobalFilter(false);
-                setGlobalFilter("");
-              }
-            }}
-          />
-          <KeyHint keys="ESC" class="global-filter-hint" title="Escape closes the filter" />
+          <Show when={showGlobalFilter()}>
+            <QueryField
+              query={globalFilter()}
+              setQuery={setGlobalFilter}
+              suggest={suggestQuery}
+              contacts={rankedContacts()}
+              labelNames={userLabelNames()}
+              onSave={keepSearch}
+              onCancel={closeSearch}
+              onSubmit={() => runSearch()}
+              placeholder="Search mail and events…"
+              inputRef={(el) => { filterInputRef = el; }}
+              onActive={(insert) => { insertIntoQueryField = insert; }}
+            />
+          </Show>
+          <Show
+            when={searchShown()}
+            fallback={<KeyHint keys="↵" class="global-filter-hint" title="Enter searches, ⌘Enter keeps it as a card, Escape closes" />}
+          >
+            <button type="button" class="btn btn-primary btn-sm global-filter-keep" onClick={keepSearch} title="Keep as a card (⌘Enter)">
+              <CheckIcon size="meta" />
+              Keep as card
+            </button>
+          </Show>
         </div>
+        <Show when={showGlobalFilter() && !globalFilter().trim() && recentSearches().length > 0}>
+          <div class="recent-searches" aria-label="Recent searches">
+            <For each={recentSearches()}>
+              {(query) => (
+                <button type="button" class="recent-search" onMouseDown={(e) => e.preventDefault()} onClick={() => runSearch(query)}>
+                  <SearchIcon size="meta" />
+                  <span>{query}</span>
+                </button>
+              )}
+            </For>
+          </div>
+        </Show>
       </div>
 
       {/* Compose button with contact suggestions - top left */}
@@ -4968,7 +5082,7 @@ function App() {
           <DragDropSensors />
           <div class={`deck ${resizing() ? 'resizing' : ''} ${boardStatus() ? 'has-status' : ''}`} data-board>
             <SortableProvider ids={cardIds()}>
-              <For each={cards()}>
+              <For each={boardCards()}>
                 {(card) => {
                   const sortable = createSortable(card.id);
                   createEffect(() => {
@@ -4988,7 +5102,7 @@ function App() {
                       }}
                     >
                       <div
-                        class={`card ${collapsedCards[card.id] ? 'collapsed' : ''} ${editingCardId() === card.id ? 'editing' : ''} ${(offline() || cardExpired(card)) && (cardThreads[card.id] || cardCalendarEvents[card.id]) ? 'stale' : ''}`}
+                        class={`card ${isSearchCard(card.id) ? 'search' : ''} ${collapsedCards[card.id] ? 'collapsed' : ''} ${editingCardId() === card.id ? 'editing' : ''} ${(offline() || cardExpired(card)) && (cardThreads[card.id] || cardCalendarEvents[card.id]) ? 'stale' : ''}`}
                         classList={{ 'dragging': sortable.isActiveDraggable }}
                         data-id={card.id}
                         data-color={editingCardId() === card.id ? (editCardColor() || undefined) : (card.color || undefined)}
@@ -5028,8 +5142,8 @@ function App() {
                           <div
                             class="card-header"
                             classList={{ "has-problem": !!syncStatus().problem }}
-                            onClick={() => { if (!wasDragging) toggleCardCollapse(card.id); }}
-                            {...sortable.dragActivators}
+                            onClick={() => { if (!wasDragging && !isSearchCard(card.id)) toggleCardCollapse(card.id); }}
+                            {...(isSearchCard(card.id) ? {} : sortable.dragActivators)}
                           >
                             <button
                               class="card-title-btn"
@@ -5046,7 +5160,17 @@ function App() {
                             <Show when={!collapsedCards[card.id] && getCardUnreadCount(card.id) > 0}>
                               <span class="card-unread-badge">{getCardUnreadCount(card.id)}</span>
                             </Show>
-                            <div class="card-actions">
+                            <Show when={isSearchCard(card.id)}>
+                              <div class="card-actions">
+                                <button class="icon-btn" onClick={(e) => { e.stopPropagation(); keepSearch(); }} title="Keep as a card (P)" aria-label="Keep as a card">
+                                  <CheckIcon size="tool" />
+                                </button>
+                                <button class="icon-btn" onClick={(e) => { e.stopPropagation(); closeSearch(); }} title="Close search (Esc)" aria-label="Close search">
+                                  <CloseIcon size="tool" />
+                                </button>
+                              </div>
+                            </Show>
+                            <div class="card-actions" hidden={isSearchCard(card.id)}>
                               <button
                                 class={`icon-btn card-refresh ${loadingThreads[card.id] || loadingMore[card.id] ? 'spinning' : ''} `}
                                 onClick={(e) => refreshCard(card.id, e)}
@@ -5118,7 +5242,7 @@ function App() {
                                     {(event) => (
                                       <>
                                       <div
-                                        class={`calendar-event-item ${event.response_status === "declined" ? "declined" : ""} ${selectedEvents()[card.id]?.has(event.id) ? "selected" : ""} ${isEventFocused(card.id, event.id) ? "focused" : ""} ${isQuickReplyEvent(event.id) ? "replying" : ""}`}
+                                        class={`calendar-event-item ${fadedBySearch(card.id, event.id) ? "faded" : ""} ${event.response_status === "declined" ? "declined" : ""} ${selectedEvents()[card.id]?.has(event.id) ? "selected" : ""} ${isEventFocused(card.id, event.id) ? "focused" : ""} ${isQuickReplyEvent(event.id) ? "replying" : ""}`}
                                         onClick={() => openEvent(event, card.id)}
                                         onMouseEnter={() => showEventHoverActions(event.id)}
                                         onMouseLeave={hideEventHoverActions}
@@ -5269,7 +5393,7 @@ function App() {
                                       return (
                                       <>
                                         <div
-                                          class={`thread ${thread.unread_count > 0 ? 'unread' : ''} ${selectedThreads()[card.id]?.has(thread.gmail_thread_id) ? 'selected' : ''} ${isThreadFocused(card.id, thread.gmail_thread_id) ? 'focused' : ''} ${isQuickReplyThread(thread.gmail_thread_id) ? 'replying' : ''}${thread.calendar_event ? ' invite' : ''}${live() ? ' live' : ''}${inviteIsOver(thread.calendar_event, owner()) ? ' invite-over' : ''}`}
+                                          class={`thread ${fadedBySearch(card.id, thread.gmail_thread_id) ? 'faded' : ''} ${thread.unread_count > 0 ? 'unread' : ''} ${selectedThreads()[card.id]?.has(thread.gmail_thread_id) ? 'selected' : ''} ${isThreadFocused(card.id, thread.gmail_thread_id) ? 'focused' : ''} ${isQuickReplyThread(thread.gmail_thread_id) ? 'replying' : ''}${thread.calendar_event ? ' invite' : ''}${live() ? ' live' : ''}${inviteIsOver(thread.calendar_event, owner()) ? ' invite-over' : ''}`}
                                           onMouseEnter={() => showThreadHoverActions(thread.gmail_thread_id)}
                                           onMouseLeave={() => hideThreadHoverActions()}
                                           onClick={(e) => {
@@ -5599,7 +5723,7 @@ function App() {
 
             {/* Add card button */}
             <Show when={!addingCard()}>
-              <button class="add-card-btn" onClick={() => openAddCard()} aria-label="New card" title="New card">
+              <button class="add-card-btn" onClick={openSearch} aria-label="New search" title="New search (/)">
                 <PlusIcon size="tool" />
               </button>
             </Show>
@@ -6162,8 +6286,9 @@ function App() {
               <div class="shortcut-row"><KeyHint keys="l" look="key" /> <span>Next card</span></div>
               <div class="shortcut-row"><KeyHint keys="Enter" look="key" /> <span>Open thread or event</span></div>
               <div class="shortcut-row"><KeyHint keys="Escape" look="key" /> <span>Close / Go back</span></div>
-              <div class="shortcut-row"><KeyHint keys="/" look="key" /> <span>Open filter</span></div>
-              <div class="shortcut-row"><KeyHint keys="⌘F" look="key" /> <span>Open filter</span></div>
+              <div class="shortcut-row"><KeyHint keys="/" look="key" /> <span>Search</span></div>
+              <div class="shortcut-row"><KeyHint keys="⌘F" look="key" /> <span>Search</span></div>
+              <div class="shortcut-row"><KeyHint keys="p" look="key" /> <span>Keep the search as a card</span></div>
             </div>
             <div class="shortcuts-section">
               <h3>Actions</h3>

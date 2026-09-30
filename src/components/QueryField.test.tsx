@@ -8,7 +8,7 @@ import { QueryField } from "./QueryField";
 const contact = (email: string, name?: string): RecentContact => ({ email, name, frequency: 2, lastContacted: 0, fromGoogle: false });
 const PLACEHOLDER = "e.g. from:boss is:unread newer_than:7d";
 
-function renderField(initial: string, opts: { contacts?: RecentContact[]; labels?: string[]; onActive?: (insert: (text: string) => void) => void } = {}) {
+function renderField(initial: string, opts: { contacts?: RecentContact[]; labels?: string[]; onActive?: (insert: (text: string) => void) => void; onSubmit?: () => void } = {}) {
   const [query, setQuery] = createSignal(initial);
   const contacts = opts.contacts ?? [];
   const labels = opts.labels ?? [];
@@ -22,6 +22,7 @@ function renderField(initial: string, opts: { contacts?: RecentContact[]; labels
       onSave={vi.fn()}
       onCancel={vi.fn()}
       onActive={opts.onActive}
+      onSubmit={opts.onSubmit}
     />
   ));
   const input = screen.getByPlaceholderText(PLACEHOLDER) as HTMLInputElement;
@@ -303,5 +304,26 @@ describe("QueryField insertion", () => {
     insert!("from:");
     expect(query()).toBe("from: is:unread");
     expect(document.activeElement).toBe(input);
+  });
+});
+
+describe("QueryField submit", () => {
+  it("submits on Enter once the typed word is finished", () => {
+    const onSubmit = vi.fn();
+    const { input } = renderField("", { onSubmit });
+    fireEvent.focus(input);
+    fireEvent.input(input, { target: { value: "is:unread ", selectionStart: 10 } });
+    fireEvent.keyDown(input, { key: "Enter" });
+    expect(onSubmit).toHaveBeenCalledTimes(1);
+  });
+
+  it("takes a suggestion on Enter while a word is being typed", () => {
+    const onSubmit = vi.fn();
+    const { query, input } = renderField("", { onSubmit });
+    fireEvent.focus(input);
+    fireEvent.input(input, { target: { value: "is:unr", selectionStart: 6 } });
+    fireEvent.keyDown(input, { key: "Enter" });
+    expect(onSubmit).not.toHaveBeenCalled();
+    expect(query()).toBe("is:unread");
   });
 });

@@ -9,12 +9,11 @@ export const SEARCH_CARD_ID = "search";
 
 export const isSearchCard = (id: string | null | undefined) => id === SEARCH_CARD_ID;
 
-// A search runs across every account
-export function searchCard(query: string): Card {
+export function searchCard(query: string, accountId: string = ALL_ACCOUNTS): Card {
   const q = query.trim();
   return {
     id: SEARCH_CARD_ID,
-    account_id: ALL_ACCOUNTS,
+    account_id: accountId,
     name: q,
     query: q,
     position: -1,

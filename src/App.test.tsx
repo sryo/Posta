@@ -89,6 +89,13 @@ const cardsByAccount: Record<string, Card[]> = {};
 const threadsByCard: Record<string, Thread[]> = {};
 // Saves the open card form with ⌘Enter; a click on its ✓ right after it
 // opens is taken for the double-click that opened it
+// The new-card form sits past the last card, where l moves focus
+function openNewCardForm() {
+  const forms = () => screen.queryAllByPlaceholderText("e.g. Clients").length;
+  const before = forms();
+  for (let i = 0; i < 20 && forms() === before; i++) fireEvent.keyDown(document, { key: "l" });
+}
+
 function saveCardForm() {
   fireEvent.keyDown(screen.getAllByLabelText("Card name").slice(-1)[0], { key: "Enter", metaKey: true });
 }
@@ -802,7 +809,7 @@ describe("App error banner", () => {
     saveCardForm();
     expect(await screen.findByRole("alert")).toHaveTextContent(/^Couldn't save the card\.Details/);
 
-    fireEvent.click(screen.getByTitle("New card"));
+    openNewCardForm();
     fireEvent.input(screen.getAllByPlaceholderText("e.g. Clients").slice(-1)[0], { target: { value: "News" } });
     fireEvent.input(screen.getAllByPlaceholderText("e.g. from:boss is:unread newer_than:7d").slice(-1)[0], { target: { value: "label:news" } });
     saveCardForm();
@@ -2115,7 +2122,7 @@ describe("App calendar", () => {
     expect(screen.getByText("Planning").closest(".calendar-event-item")).toBe(row);
 
     fireEvent.keyDown(document, { key: "/" });
-    const filter = await screen.findByPlaceholderText(/Filter threads/);
+    const filter = await screen.findByPlaceholderText(/Search mail/);
     fireEvent.input(filter, { target: { value: "p" } });
     fireEvent.input(filter, { target: { value: "pl" } });
     expect(screen.queryByText("Review")).not.toBeInTheDocument();
@@ -4066,12 +4073,12 @@ describe("App new card form", () => {
     handlers.search_threads_preview = () => [];
     render(() => <App />);
     await screen.findByText("Mail for A");
-    fireEvent.click(screen.getByTitle("New card"));
+    openNewCardForm();
     fireEvent.input(screen.getByPlaceholderText("e.g. Clients"), { target: { value: "Temp" } });
     fireEvent.click(screen.getByTitle("Cancel (Esc)"));
     await waitFor(() => expect(screen.queryByPlaceholderText("e.g. Clients")).not.toBeInTheDocument());
 
-    fireEvent.click(screen.getByTitle("New card"));
+    openNewCardForm();
     expect(screen.getByPlaceholderText("e.g. Clients")).toHaveValue("");
   });
 });
@@ -4405,7 +4412,7 @@ describe("App thread rows", () => {
     const row = rowOf("Other mail");
 
     fireEvent.keyDown(document, { key: "/" });
-    const filter = await screen.findByPlaceholderText(/Filter/i);
+    const filter = await screen.findByPlaceholderText(/Search mail/);
     fireEvent.input(filter, { target: { value: "o" } });
     await waitFor(() => expect(rowOf("Other mail")).not.toBeNull());
     fireEvent.input(filter, { target: { value: "ot" } });
@@ -4714,7 +4721,7 @@ describe("App card query autocomplete", () => {
     handlers.search_threads_preview = () => [];
     render(() => <App />);
     await screen.findByText("Mail for A");
-    fireEvent.click(screen.getByTitle("New card"));
+    openNewCardForm();
     await waitFor(() => expect(invoke).toHaveBeenCalledWith("list_labels", { accountId: "a" }));
     await new Promise(r => setTimeout(r, 10));
     const query = screen.getAllByPlaceholderText("e.g. from:boss is:unread newer_than:7d").slice(-1)[0];
@@ -4733,7 +4740,7 @@ describe("App card query help and errors", () => {
     handlers.search_threads_preview = () => [];
     render(() => <App />);
     await screen.findByText("Mail for A");
-    fireEvent.click(screen.getByTitle("New card"));
+    openNewCardForm();
     const query = screen.getAllByPlaceholderText("e.g. from:boss is:unread newer_than:7d").slice(-1)[0];
     fireEvent.focus(query);
     fireEvent.input(query, { target: { value: "is:unread" } });
@@ -4749,7 +4756,7 @@ describe("App card query help and errors", () => {
     handlers.search_threads_preview = () => { throw "Search failed: Invalid query"; };
     render(() => <App />);
     await screen.findByText("Mail for A");
-    fireEvent.click(screen.getByTitle("New card"));
+    openNewCardForm();
     const query = screen.getAllByPlaceholderText("e.g. from:boss is:unread newer_than:7d").slice(-1)[0];
     fireEvent.input(query, { target: { value: "larger:huge" } });
 
@@ -4792,7 +4799,7 @@ describe("App new card preview", () => {
     handlers.fetch_calendar_events = () => Array.from({ length: 40 }, (_, i) => calendarEvent(`ev-${i}`, `Meeting ${i}`));
     render(() => <App />);
     await screen.findByText("Mail for A");
-    fireEvent.click(screen.getByTitle("New card"));
+    openNewCardForm();
     const query = screen.getAllByPlaceholderText("e.g. from:boss is:unread newer_than:7d").slice(-1)[0];
     fireEvent.input(query, { target: { value: "calendar:7d" } });
 
@@ -5656,7 +5663,7 @@ describe("App choosing accounts for cards and emails", () => {
     handlers.search_threads_preview = () => [];
     render(() => <App />);
     await screen.findByText("Mail for A");
-    fireEvent.click(screen.getByTitle("New card"));
+    openNewCardForm();
     fireEvent.change(await screen.findByRole("combobox", { name: "Account" }), { target: { value: "b" } });
     fireEvent.input(screen.getAllByPlaceholderText("e.g. Clients").slice(-1)[0], { target: { value: "Work" } });
     fireEvent.input(screen.getAllByPlaceholderText("e.g. from:boss is:unread newer_than:7d").slice(-1)[0], { target: { value: "is:starred" } });
@@ -5664,5 +5671,77 @@ describe("App choosing accounts for cards and emails", () => {
     saveCardForm();
 
     await waitFor(() => expect(invoke).toHaveBeenCalledWith("create_card", expect.objectContaining({ accountId: "b", name: "Work" })));
+  });
+});
+
+describe("App quick search", () => {
+  function searchResults(...threads: Thread[]) {
+    handlers.fetch_query_threads = () => ({ groups: [{ label: "Today", threads }], next_page_token: null, has_more: false });
+  }
+
+  async function search(query: string) {
+    fireEvent.keyDown(document, { key: "/" });
+    const field = await screen.findByPlaceholderText(/Search mail/);
+    fireEvent.input(field, { target: { value: query } });
+    fireEvent.keyDown(field, { key: "Enter" });
+    return field;
+  }
+
+  it("shows what Gmail finds in a card that isn't stored, fading what the other cards hold that it didn't find", async () => {
+    threadsByCard["card-a"] = [thread("t-a", "Mail for A"), thread("t-x", "Invoice from Ana")];
+    searchResults({ ...thread("t-x", "Invoice from Ana"), account_id: "a" }, { ...thread("t-old", "Old invoice"), account_id: "a" });
+    render(() => <App />);
+    await screen.findByText("Mail for A");
+
+    await search("invoice");
+    const results = await waitFor(() => { const el = document.querySelector<HTMLElement>(".card.search"); expect(el).not.toBeNull(); return el!; });
+    expect(await within(results).findByText("Old invoice")).toBeInTheDocument();
+    expect(invoke).toHaveBeenCalledWith("fetch_query_threads", expect.objectContaining({ accountId: "a", query: "invoice" }));
+    expect(invoke).not.toHaveBeenCalledWith("save_cached_card_threads", expect.objectContaining({ cardId: "search" }));
+    expect(invoke).not.toHaveBeenCalledWith("create_card", expect.anything());
+
+    const alpha = document.querySelector('.card[data-id="card-a"]') as HTMLElement;
+    await waitFor(() => expect(within(alpha).getByText("Mail for A").closest(".thread")).toHaveClass("faded"));
+    expect(within(alpha).getByText("Invoice from Ana").closest(".thread")).not.toHaveClass("faded");
+  });
+
+  it("closes the search with Escape, leaving the board as it was", async () => {
+    searchResults({ ...thread("t-old", "Old invoice"), account_id: "a" });
+    render(() => <App />);
+    await screen.findByText("Mail for A");
+
+    const field = await search("invoice");
+    await screen.findByText("Old invoice");
+    fireEvent.keyDown(field, { key: "Escape" });
+    await waitFor(() => expect(document.querySelector(".card.search")).toBeNull());
+    expect(screen.getByText("Mail for A").closest(".thread")).not.toHaveClass("faded");
+  });
+
+  it("keeps a search as a card named after its query, with what it found", async () => {
+    searchResults({ ...thread("t-f", "Report.pdf"), account_id: "a" });
+    handlers.create_card = ({ accountId, name, query }) => ({ ...card("card-new", accountId as string, name as string), query: query as string });
+    render(() => <App />);
+    await screen.findByText("Mail for A");
+
+    await search("has:attachment");
+    await screen.findByText("Report.pdf");
+    fireEvent.click(screen.getByRole("button", { name: "Keep as card" }));
+
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith("create_card", expect.objectContaining({ accountId: "a", name: "With attachments", query: "has:attachment" })));
+    const kept = await waitFor(() => { const el = document.querySelector<HTMLElement>('.card[data-id="card-new"]'); expect(el).not.toBeNull(); return el!; });
+    expect(within(kept).getByText("Report.pdf")).toBeInTheDocument();
+    expect(document.querySelector(".card.search")).toBeNull();
+  });
+
+  it("offers recent searches when the field is empty", async () => {
+    searchResults();
+    render(() => <App />);
+    await screen.findByText("Mail for A");
+
+    const field = await search("from:ana");
+    fireEvent.keyDown(field, { key: "Escape" });
+    fireEvent.keyDown(document, { key: "/" });
+    fireEvent.click(await screen.findByRole("button", { name: "from:ana" }));
+    await waitFor(() => expect(invoke.mock.calls.filter(([cmd]) => cmd === "fetch_query_threads")).toHaveLength(2));
   });
 });
