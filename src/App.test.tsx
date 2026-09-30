@@ -4462,6 +4462,18 @@ describe("App title bar", () => {
 });
 
 describe("App accessibility", () => {
+  it("closes the wheel's settings menu on a press anywhere outside it", async () => {
+    render(() => <App />);
+    const row = (await screen.findByText("Mail for A")).closest(".thread")!;
+    fireEvent.contextMenu(row.querySelector(".thread-checkbox-wrap")!);
+    const menu = document.querySelector(".action-config-menu")!;
+    expect(menu).not.toBeNull();
+    fireEvent.pointerDown(menu);
+    expect(document.querySelector(".action-config-menu")).not.toBeNull();
+    fireEvent.pointerDown(row);
+    await waitFor(() => expect(document.querySelector(".action-config-menu")).toBeNull());
+  });
+
   it("lists every thread-list shortcut in the help", async () => {
     render(() => <App />);
     await screen.findByText("Mail for A");

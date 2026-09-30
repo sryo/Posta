@@ -754,6 +754,16 @@ function App() {
   const [hoveredThread, setHoveredThread] = createSignal<string | null>(null);
   const [actionsWheelOpen, setActionsWheelOpen] = createSignal(false);
   const [actionConfigMenu, setActionConfigMenu] = createSignal<{ x: number; y: number; isEvent?: boolean } | null>(null);
+  // Any press outside the wheel's settings menu closes it; most clicks on the
+  // board stop before they reach the app's own handler
+  createEffect(() => {
+    if (!actionConfigMenu()) return;
+    const onPress = (e: PointerEvent) => {
+      if (!(e.target as Element | null)?.closest?.(".action-config-menu")) setActionConfigMenu(null);
+    };
+    document.addEventListener("pointerdown", onPress, true);
+    onCleanup(() => document.removeEventListener("pointerdown", onPress, true));
+  });
   let hoverActionsTimeout: number | undefined;
 
   // Event actions wheel
