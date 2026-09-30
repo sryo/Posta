@@ -2142,11 +2142,6 @@ a:focus-visible,
     gap: var(--space-sm);
 }
 
-.empty-icon {
-    display: inline-flex;
-    color: var(--text-muted);
-}
-
 .empty-query {
     font: var(--type-code);
     color: var(--text-secondary);
@@ -2177,6 +2172,43 @@ a:focus-visible,
     .postmark {
         opacity: 0.78;
     }
+}
+
+/* Nothing matched: a straight boxed handstamp, and the magnifier over
+   "0 found" in a card at or near its narrowest */
+.empty.returned {
+    container-type: inline-size;
+    gap: var(--space-xs);
+    padding: var(--space-xl) var(--space-lg);
+}
+
+.postmark.returned-wide {
+    transform: rotate(-3deg);
+}
+
+.postmark.returned-narrow {
+    display: none;
+    width: 120px;
+    transform: none;
+}
+
+@container (max-width: 240px) {
+    .postmark.returned-wide {
+        display: none;
+    }
+
+    .postmark.returned-narrow {
+        display: block;
+    }
+}
+
+.returned-actions {
+    display: flex;
+    gap: var(--space-lg);
+}
+
+.returned-actions .link-btn {
+    color: var(--card-ink);
 }
 
 .postmark-text {

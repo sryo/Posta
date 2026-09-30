@@ -4764,7 +4764,7 @@ describe("App card query help and errors", () => {
     expect(screen.queryByText("No matches")).not.toBeInTheDocument();
   });
 
-  it("says nothing matches, not a postmark, when an edited query finds nothing", async () => {
+  it("returns an edited query that finds nothing to sender, not a postmark", async () => {
     handlers.list_labels = () => [];
     handlers.search_threads_preview = () => [];
     render(() => <App />);
@@ -4773,9 +4773,9 @@ describe("App card query help and errors", () => {
     const query = screen.getByPlaceholderText("e.g. from:boss is:unread newer_than:7d");
     fireEvent.input(query, { target: { value: "from:nobody" } });
 
-    const empty = await screen.findByText(/Nothing matches/);
-    expect(empty.closest(".empty")).toHaveTextContent("Nothing matches from:nobody");
-    expect(document.querySelector(".postmark")).toBeNull();
+    const empty = await screen.findByRole("status", { name: "No mail matches from:nobody" });
+    expect(empty).toHaveTextContent("No such address.");
+    expect(document.querySelector(".postmarked")).toBeNull();
   });
 
   it("names an unknown calendar range without asking the calendar", async () => {
@@ -5731,6 +5731,23 @@ describe("App quick search", () => {
     const kept = await waitFor(() => { const el = document.querySelector<HTMLElement>('.card[data-id="card-new"]'); expect(el).not.toBeNull(); return el!; });
     expect(within(kept).getByText("Report.pdf")).toBeInTheDocument();
     expect(document.querySelector(".card.search")).toBeNull();
+  });
+
+  it("returns a card the typed filter empties to sender, naming the filter, and searches all mail from it", async () => {
+    searchResults({ ...thread("t-old", "Old invoice"), account_id: "a" });
+    render(() => <App />);
+    await screen.findByText("Mail for A");
+
+    fireEvent.keyDown(document, { key: "/" });
+    fireEvent.input(await screen.findByPlaceholderText(/Search mail/), { target: { value: "invoice" } });
+    const alpha = document.querySelector('.card[data-id="card-a"]') as HTMLElement;
+    const returned = await within(alpha).findByRole("status", { name: /matches invoice$/ });
+    expect(returned).toHaveTextContent("Nothing loaded for invoice");
+    expect(document.querySelector(".postmarked")).toBeNull();
+
+    fireEvent.click(within(returned).getByRole("button", { name: "Search all mail" }));
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith("fetch_query_threads", expect.objectContaining({ query: "invoice" })));
+    expect(await screen.findByText("Old invoice")).toBeInTheDocument();
   });
 
   it("offers recent searches when the field is empty", async () => {

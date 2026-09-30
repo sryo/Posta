@@ -187,7 +187,7 @@ import { parseMailto } from "./app/mailto";
 import { coalesceByKey } from "./app/coalesce";
 import { batchReplyLoadErrorMessage, cardLoadErrorMessage, isOfflineError, queryPreviewErrorMessage, threadLoadErrorMessage } from "./app/loadErrors";
 import { cardSyncStatus, cardWaitingMessage, connectionStatus } from "./app/connectionStatus";
-import { CardEmpty, CardSkeleton, ConnectionStatusBar, PostmarkDefs } from "./components/CardStates";
+import { CardEmpty, CardSkeleton, ConnectionStatusBar, PostmarkDefs, type NoMatch } from "./components/CardStates";
 import { createPostmarkLedger } from "./app/postmark";
 import { cardTypeForQuery } from "./app/cardType";
 import { SEARCH_CARD_ID, isSearchCard, keptCardName, parseRecentSearches, rememberSearch, searchCard as searchCardFor } from "./app/quickSearch";
@@ -604,7 +604,12 @@ function App() {
   // When each card last went from showing rows to empty, for its postmark
   const postmarks = createPostmarkLedger();
   // A filtered or previewed card that shows nothing says what matched nothing
-  const emptyMeansNoMatch = (cardId: string) => isPreviewingQuery(cardId) || isSearchCard(cardId) || filterHides();
+  const noMatchFor = (cardId: string): NoMatch | null => {
+    if (isPreviewingQuery(cardId)) return { kind: "query" };
+    if (isSearchCard(cardId)) return { kind: "search", term: searchCard()?.query ?? "" };
+    if (filterHides()) return { kind: "filter", term: globalFilter().trim(), onSearch: () => runSearch(), onClear: closeSearch };
+    return null;
+  };
 
   function effectiveCardType(card: Card): Card["card_type"] {
     if (editingCardId() === card.id) {
@@ -5232,7 +5237,7 @@ function App() {
                           {/* Calendar card: show calendar events */}
                           <Show when={effectiveCardType(card) === "calendar" && (isPreviewingQuery(card.id) || cardCalendarEvents[card.id])}>
                             <Show when={getCalendarEventGroups(card.id).length === 0 && !(isPreviewingQuery(card.id) && (queryPreviewLoading() || queryPreviewError()))}>
-                              <CardEmpty cardId={card.id} name={card.name} query={isPreviewingQuery(card.id) ? editCardQuery() : card.query} kind="calendar" plain={emptyMeansNoMatch(card.id)} ledger={postmarks} />
+                              <CardEmpty cardId={card.id} name={card.name} query={isPreviewingQuery(card.id) ? editCardQuery() : card.query} kind="calendar" noMatch={noMatchFor(card.id)} ledger={postmarks} />
                             </Show>
                             <Index each={getCalendarEventGroups(card.id)}>
                               {(group) => (
@@ -5354,7 +5359,7 @@ function App() {
                           {/* Email card: show threads */}
                           <Show when={effectiveCardType(card) !== "calendar" && (isPreviewingQuery(card.id) || cardThreads[card.id])}>
                             <Show when={getDisplayGroups(card.id).length === 0 && !(isPreviewingQuery(card.id) && (queryPreviewLoading() || queryPreviewError()))}>
-                              <CardEmpty cardId={card.id} name={card.name} query={isPreviewingQuery(card.id) ? editCardQuery() : card.query} kind="mail" plain={emptyMeansNoMatch(card.id)} ledger={postmarks} />
+                              <CardEmpty cardId={card.id} name={card.name} query={isPreviewingQuery(card.id) ? editCardQuery() : card.query} kind="mail" noMatch={noMatchFor(card.id)} ledger={postmarks} />
                             </Show>
                             <Index each={getDisplayGroups(card.id)}>
                               {(group) => (
