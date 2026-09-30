@@ -4550,6 +4550,22 @@ describe("App title bar", () => {
 });
 
 describe("App regressions", () => {
+  it("opens a wheel only on the hovered card's row when the same email shows in two cards", async () => {
+    const shared = { ...thread("t-s", "In both cards"), labels: ["INBOX"] };
+    cardsByAccount.a = [card("card-a", "a", "Alpha"), { ...card("card-b", "a", "Beta"), position: 1 }];
+    threadsByCard["card-a"] = [shared];
+    threadsByCard["card-b"] = [shared];
+    render(() => <App />);
+    const alpha = await screen.findByRole("region", { name: "Alpha email card" });
+    const beta = await screen.findByRole("region", { name: "Beta email card" });
+    const rowIn = async (region: HTMLElement) => (await within(region).findByText("In both cards")).closest(".thread") as HTMLElement;
+    const wheelIn = (row: HTMLElement) => row.querySelector('.radial-menu[role="menu"]');
+
+    fireEvent.mouseEnter(await rowIn(beta));
+    await waitFor(() => expect(wheelIn(beta.querySelector(".thread")!)).not.toBeNull());
+    expect(wheelIn(await rowIn(alpha))).toBeNull();
+  });
+
   it("keeps a quick reply open when it is chosen from a row's wheel with a press and release", async () => {
     render(() => <App />);
     const row = (await screen.findByText("Mail for A")).closest(".thread") as HTMLElement;

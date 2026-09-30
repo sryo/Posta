@@ -821,6 +821,7 @@ function App() {
   // Event actions wheel
   const [hoveredEvent, setHoveredEvent] = createSignal<string | null>(null);
   const [eventActionsWheelOpen, setEventActionsWheelOpen] = createSignal(false);
+  // Hover is kept per card (rowKey): an email in two cards is two rows
   const isHoveredThread = createSelector(hoveredThread);
   const isHoveredEvent = createSelector(hoveredEvent);
   let hoverEventActionsTimeout: number | undefined;
@@ -833,8 +834,9 @@ function App() {
   const eventHold = createHoverHold();
   const openWheelIn = (e?: MouseEvent) => (e?.currentTarget as Element | null)?.querySelector(`.radial-menu[role="menu"]`);
 
-  function showThreadHoverActions(threadId: string, e?: MouseEvent) {
-    if (e && threadId !== hoveredThread() && threadHold.wait(threadId, e.clientX, e.clientY, () => showThreadHoverActions(threadId))) return;
+  function showThreadHoverActions(cardId: string, threadId: string, e?: MouseEvent) {
+    const key = rowKey(cardId, threadId);
+    if (e && key !== hoveredThread() && threadHold.wait(key, e.clientX, e.clientY, () => showThreadHoverActions(cardId, threadId))) return;
     threadHold.release();
     eventHold.release();
     clearTimeout(hoverActionsTimeout);
@@ -843,15 +845,16 @@ function App() {
     setHoveredEvent(null);
 
     const open = () => {
-      setHoveredThread(threadId);
+      setHoveredThread(key);
       setActionsWheelOpen(true);
     };
     if (actionsWheelOpen()) open();
     else hoverActionsTimeout = window.setTimeout(open, RADIAL_HOVER_OPEN_MS);
   }
 
-  function hideThreadHoverActions(threadId: string, e?: MouseEvent) {
-    if (threadId !== hoveredThread() && threadHold.leave(threadId)) return;
+  function hideThreadHoverActions(cardId: string, threadId: string, e?: MouseEvent) {
+    const key = rowKey(cardId, threadId);
+    if (key !== hoveredThread() && threadHold.leave(key)) return;
     clearTimeout(hoverActionsTimeout);
     // The answer menu opens outside the row; reaching into it isn't leaving
     if (document.querySelector('.invite-answer[aria-expanded="true"]')) return;
@@ -865,8 +868,9 @@ function App() {
     close();
   }
 
-  function showEventHoverActions(eventId: string, e?: MouseEvent) {
-    if (e && eventId !== hoveredEvent() && eventHold.wait(eventId, e.clientX, e.clientY, () => showEventHoverActions(eventId))) return;
+  function showEventHoverActions(cardId: string, eventId: string, e?: MouseEvent) {
+    const key = rowKey(cardId, eventId);
+    if (e && key !== hoveredEvent() && eventHold.wait(key, e.clientX, e.clientY, () => showEventHoverActions(cardId, eventId))) return;
     eventHold.release();
     threadHold.release();
     clearTimeout(hoverEventActionsTimeout);
@@ -875,15 +879,16 @@ function App() {
     setHoveredThread(null);
 
     const open = () => {
-      setHoveredEvent(eventId);
+      setHoveredEvent(key);
       setEventActionsWheelOpen(true);
     };
     if (eventActionsWheelOpen()) open();
     else hoverEventActionsTimeout = window.setTimeout(open, RADIAL_HOVER_OPEN_MS);
   }
 
-  function hideEventHoverActions(eventId: string, e?: MouseEvent) {
-    if (eventId !== hoveredEvent() && eventHold.leave(eventId)) return;
+  function hideEventHoverActions(cardId: string, eventId: string, e?: MouseEvent) {
+    const key = rowKey(cardId, eventId);
+    if (key !== hoveredEvent() && eventHold.leave(key)) return;
     clearTimeout(hoverEventActionsTimeout);
     const close = () => {
       hoverEventActionsTimeout = window.setTimeout(() => {
@@ -4783,7 +4788,7 @@ function App() {
 
   function toggleThreadSelection(cardId: string, threadId: string, e?: MouseEvent) {
     // Show actions on the selected thread
-    setHoveredThread(threadId);
+    setHoveredThread(rowKey(cardId, threadId));
     setActionsWheelOpen(true);
     const ids = getDisplayGroups(cardId).flatMap(g => g.threads.map(t => t.gmail_thread_id));
     const next = nextSelection(ids, selectedThreads()[cardId] ?? new Set(), lastSelectedThread()[cardId] ?? null, threadId, !!e?.shiftKey);
@@ -4795,7 +4800,7 @@ function App() {
 
   function toggleEventSelection(cardId: string, eventId: string, e?: MouseEvent) {
     // Show actions on the selected event
-    setHoveredEvent(eventId);
+    setHoveredEvent(rowKey(cardId, eventId));
     setEventActionsWheelOpen(true);
     const ids = getCalendarEventGroups(cardId).flatMap(g => g.events.map(ev => ev.id));
     const next = nextSelection(ids, selectedEvents()[cardId] ?? new Set(), lastSelectedEvent()[cardId] ?? null, eventId, !!e?.shiftKey);
@@ -5344,8 +5349,8 @@ function App() {
                                       <div
                                         class={`calendar-event-item ${fadedBySearch(card.id, event.id) ? "faded" : ""} ${event.response_status === "declined" ? "declined" : ""} ${selectedEvents()[card.id]?.has(event.id) ? "selected" : ""} ${isEventFocused(card.id, event.id) ? "focused" : ""} ${isQuickReplyEvent(event.id) ? "replying" : ""}`}
                                         onClick={() => openEvent(event, card.id)}
-                                        onMouseEnter={(e) => showEventHoverActions(event.id, e)}
-                                        onMouseLeave={(e) => hideEventHoverActions(event.id, e)}
+                                        onMouseEnter={(e) => showEventHoverActions(card.id, event.id, e)}
+                                        onMouseLeave={(e) => hideEventHoverActions(card.id, event.id, e)}
                                         tabindex={rowTabIndex(card.id, event.id)}
                                         onFocus={() => onRowFocus(card.id, event.id)}
                                       >
@@ -5381,7 +5386,7 @@ function App() {
                                               toggleEventSelection(card.id, event.id, e);
                                             }}
                                           />
-                                          <Show when={(isHoveredEvent(event.id) && eventActionsWheelOpen()) || isEventFocused(card.id, event.id)}>
+                                          <Show when={(isHoveredEvent(rowKey(card.id, event.id)) && eventActionsWheelOpen()) || isEventFocused(card.id, event.id)}>
                                             <ActionsWheel
                                               cardId={card.id}
                                               event={event}
@@ -5480,8 +5485,8 @@ function App() {
                                       <>
                                         <div
                                           class={`thread ${fadedBySearch(card.id, thread.gmail_thread_id) ? 'faded' : ''} ${thread.unread_count > 0 ? 'unread' : ''} ${selectedThreads()[card.id]?.has(thread.gmail_thread_id) ? 'selected' : ''} ${isThreadFocused(card.id, thread.gmail_thread_id) ? 'focused' : ''} ${isQuickReplyThread(thread.gmail_thread_id) ? 'replying' : ''}${thread.calendar_event ? ' invite' : ''}${live() ? ' live' : ''}${inviteIsOver(thread.calendar_event, owner()) ? ' invite-over' : ''}`}
-                                          onMouseEnter={(e) => showThreadHoverActions(thread.gmail_thread_id, e)}
-                                          onMouseLeave={(e) => hideThreadHoverActions(thread.gmail_thread_id, e)}
+                                          onMouseEnter={(e) => showThreadHoverActions(card.id, thread.gmail_thread_id, e)}
+                                          onMouseLeave={(e) => hideThreadHoverActions(card.id, thread.gmail_thread_id, e)}
                                           onClick={(e) => {
                                             // The answer button is a control of its own, not a way into the thread
                                             if ((e.target as Element).closest(".invite-answer")) return;
@@ -5554,7 +5559,7 @@ function App() {
                                                 toggleThreadSelection(card.id, thread.gmail_thread_id, e);
                                               }}
                                             />
-                                            <Show when={(isHoveredThread(thread.gmail_thread_id) && actionsWheelOpen()) || isThreadFocused(card.id, thread.gmail_thread_id)}>
+                                            <Show when={(isHoveredThread(rowKey(card.id, thread.gmail_thread_id)) && actionsWheelOpen()) || isThreadFocused(card.id, thread.gmail_thread_id)}>
                                               <ActionsWheel
                                                 cardId={card.id}
                                                 threadId={thread.gmail_thread_id}
