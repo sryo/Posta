@@ -19,20 +19,43 @@ export function pointNearWheel(menu: Element, x: number, y: number, pad = RADIAL
 export function createHoverHold() {
   let held: { menu: Element; exit: () => void } | null = null;
   let waiting: { key: string; run: () => void } | null = null;
+  let pointer = { x: 0, y: 0 };
 
-  const move = (e: PointerEvent) => {
-    if (!held || pointNearWheel(held.menu, e.clientX, e.clientY)) return;
+  const letGo = () => {
+    if (!held) return;
     const { exit } = held;
     const next = waiting;
     release();
     if (next) next.run();
     else exit();
   };
+  const move = (e: PointerEvent) => {
+    pointer = { x: e.clientX, y: e.clientY };
+    if (held && !pointNearWheel(held.menu, pointer.x, pointer.y)) letGo();
+  };
+  // A scroll moves the wheel under a pointer that stays still, and sends no move
+  const scroll = () => {
+    if (held && !pointNearWheel(held.menu, pointer.x, pointer.y)) letGo();
+  };
+  // Nor does a pointer that leaves the window, or a window put behind another;
+  // no row is under it then to take the wheel
+  const gone = () => {
+    waiting = null;
+    letGo();
+  };
+
+  function watch(on: boolean) {
+    const toggle = on ? "addEventListener" : "removeEventListener";
+    document[toggle]("pointermove", move as EventListener, true);
+    document[toggle]("scroll", scroll, true);
+    document.documentElement[toggle]("mouseleave", gone);
+    window[toggle]("blur", gone);
+  }
 
   function release() {
+    if (held) watch(false);
     held = null;
     waiting = null;
-    document.removeEventListener("pointermove", move, true);
   }
 
   return {
@@ -42,7 +65,8 @@ export function createHoverHold() {
       release();
       if (!menu || !pointNearWheel(menu, x, y)) return false;
       held = { menu, exit };
-      document.addEventListener("pointermove", move, true);
+      pointer = { x, y };
+      watch(true);
       return true;
     },
     // On entering another row: true when the pointer is still near the held

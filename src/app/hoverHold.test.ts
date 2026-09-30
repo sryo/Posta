@@ -68,12 +68,49 @@ describe("createHoverHold", () => {
     expect(hold.wait("b", 400, 400, vi.fn())).toBe(false);
   });
 
+  it("lets the wheel go when the pointer leaves the window, which it would otherwise never see move away", () => {
+    const hold = createHoverHold();
+    const exit = vi.fn();
+    const run = vi.fn();
+    hold.hold(wheel(), 160, 100, exit);
+    hold.wait("b", 138, 120, run);
+    fireEvent.mouseLeave(document.documentElement);
+    expect(exit).toHaveBeenCalledOnce();
+    // Nor does a row it was over take the wheel once it's gone
+    expect(run).not.toHaveBeenCalled();
+  });
+
+  it("lets the wheel go when the window loses focus", () => {
+    const hold = createHoverHold();
+    const exit = vi.fn();
+    hold.hold(wheel(), 160, 100, exit);
+    fireEvent.blur(window);
+    expect(exit).toHaveBeenCalledOnce();
+  });
+
+  it("lets the wheel go when a scroll carries it away from a still pointer, and keeps it while it stays near", () => {
+    const hold = createHoverHold();
+    const exit = vi.fn();
+    const menu = wheel();
+    hold.hold(menu, 160, 100, exit);
+    fireEvent.scroll(document);
+    expect(exit).not.toHaveBeenCalled();
+    // The row, and its wheel with it, scrolled 200px up
+    menu.getBoundingClientRect = rect(100, -100, 0);
+    menu.querySelector<HTMLElement>(".radial-petal")!.getBoundingClientRect = rect(124, -114, 28);
+    fireEvent.scroll(document);
+    expect(exit).toHaveBeenCalledOnce();
+  });
+
   it("stops watching once released", () => {
     const hold = createHoverHold();
     const exit = vi.fn();
     hold.hold(wheel(), 160, 100, exit);
     hold.release();
     move(500, 500);
+    fireEvent.mouseLeave(document.documentElement);
+    fireEvent.blur(window);
+    fireEvent.scroll(document);
     expect(exit).not.toHaveBeenCalled();
     expect(hold.leave("a")).toBe(false);
   });
