@@ -16,6 +16,7 @@ import {
   type QueryDraft,
 } from "../app/queryDraft";
 import { isImeComposing } from "../shared/keyboard";
+import { CloseIcon } from "./Icons";
 
 const ADDRESS_OPERATORS = new Set(["from", "to", "cc", "bcc", "deliveredto", "with", "organizer"]);
 
@@ -287,9 +288,7 @@ export const QueryField = (props: {
           aria-label={`Remove ${word.text}`}
           onMouseDown={(e) => { if (editing()) e.preventDefault(); }}
           onClick={() => changeWord(section, i(), null)}
-        >
-          ×
-        </button>
+        ><CloseIcon size="meta" /></button>
       </span>
     </Show>
   );

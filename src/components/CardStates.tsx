@@ -45,7 +45,7 @@ export const CardEmpty = (props: CardEmptyProps) => (
     when={!props.plain}
     fallback={
       <div class="empty">
-        <InboxIcon />
+        <span class="empty-icon"><InboxIcon size="tool" /></span>
         <span>Nothing matches <code class="empty-query">{props.query}</code></span>
       </div>
     }

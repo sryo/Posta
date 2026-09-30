@@ -110,6 +110,8 @@ import {
   PaletteIcon,
   CalendarIcon,
   LocationIcon,
+  WarningIcon,
+  CheckIcon,
   MailIcon,
   RepeatIcon,
 } from "./components/Icons";
@@ -4706,7 +4708,7 @@ function App() {
                   title="Compose"
                   aria-label="Compose new email"
                 >
-                  <ComposeIcon />
+                  <ComposeIcon size="tool" />
                 </button>
                 <Show when={fabSuggestions().length > 0}>
                   <div class={`compose-suggestions ${composeFabHovered() ? 'visible' : ''}`}>
@@ -4747,7 +4749,7 @@ function App() {
                   title="New event (E)"
                   aria-label="Create new calendar event"
                 >
-                  <CalendarIcon />
+                  <CalendarIcon size="tool" />
                 </button>
                 <Show when={eventFabSuggestions().length > 0}>
                   <div class={`compose-suggestions ${eventFabHovered() ? 'visible' : ''}`}>
@@ -4865,7 +4867,7 @@ function App() {
                             )}
                             <span class="account-chooser-email">{account.email}</span>
                             {account.id === selectedAccount()?.id && (
-                              <span class="account-chooser-check">✓</span>
+                              <span class="account-chooser-check"><CheckIcon /></span>
                             )}
                           </button>
                         )}
@@ -4907,7 +4909,7 @@ function App() {
               </details>
             )}
           </Show>
-          <button class="btn" onClick={() => setError(null)} aria-label="Dismiss error">×</button>
+          <button class="btn" onClick={() => setError(null)} aria-label="Dismiss error"><CloseIcon /></button>
         </div>
       </Show>
 
@@ -5036,7 +5038,7 @@ function App() {
                                 title={refreshLabel()}
                                 aria-label={refreshLabel()}
                               >
-                                <RefreshIcon />
+                                <RefreshIcon size="tool" />
                               </button>
                               <button
                                 class="icon-btn"
@@ -5044,7 +5046,7 @@ function App() {
                                 title="Edit query"
                                 aria-label={`Edit ${card.name}`}
                               >
-                                <SearchIcon />
+                                <SearchIcon size="tool" />
                               </button>
                             </div>
                           </div>
@@ -5075,7 +5077,7 @@ function App() {
                           </Show>
                           <Show when={!loadingThreads[card.id] && cardErrors[card.id] && !cardThreads[card.id] && !cardCalendarEvents[card.id] && !cardWaitingMessage(cardErrors[card.id]!, syncErrors[card.id], cardExpired(card))}>
                             <div class="card-error">
-                              <span class="error-icon">⚠</span>
+                              <span class="error-icon"><WarningIcon /></span>
                               <span class="error-text">{cardErrors[card.id]}</span>
                               <Show
                                 when={needsSignInAgain(cardErrors[card.id] ?? "")}
@@ -5117,7 +5119,7 @@ function App() {
                                         </Show>
                                         <Show when={event.location}>
                                           <div class="calendar-event-location-compact">
-                                            <LocationIcon />
+                                            <LocationIcon size="meta" />
                                             <span>{event.location}</span>
                                           </div>
                                         </Show>
@@ -5270,7 +5272,7 @@ function App() {
                                             <span class="thread-subject">{thread.subject}</span>
                                             <Show when={thread.has_attachment && !thread.calendar_event}>
                                               <span class="thread-indicator" title="Has attachment">
-                                                <AttachmentIcon />
+                                                <AttachmentIcon size="meta" strong />
                                               </span>
                                             </Show>
                                             <Show when={isDraftThread(thread)}>
@@ -5507,7 +5509,7 @@ function App() {
                                   </Show>
                                   <Show when={event.location}>
                                     <div class="calendar-event-location-compact">
-                                      <LocationIcon />
+                                      <LocationIcon size="meta" />
                                       <span>{event.location}</span>
                                     </div>
                                   </Show>
@@ -5545,7 +5547,7 @@ function App() {
                                     <span class="thread-subject">{thread.subject}</span>
                                     <Show when={thread.has_attachment}>
                                       <span class="thread-indicator" title="Has attachment">
-                                        <AttachmentIcon />
+                                        <AttachmentIcon size="meta" strong />
                                       </span>
                                     </Show>
                                     <span class="thread-time">{threadTime(thread.last_message_date)}</span>
@@ -5595,7 +5597,7 @@ function App() {
             {/* Add card button */}
             <Show when={!addingCard()}>
               <button class="add-card-btn" onClick={() => openAddCard()} aria-label="New card" title="New card">
-                <PlusIcon />
+                <PlusIcon size="tool" />
               </button>
             </Show>
           </div>
@@ -6061,7 +6063,7 @@ function App() {
             <Show when={storedClientId()}>
               {(id) => (
                 <p class="settings-hint">
-                  Using client {shortClientId(id())} ✓ ·{" "}
+                  Using client {shortClientId(id())} <CheckIcon size="meta" /> ·{" "}
                   <button class="link-btn" aria-expanded={googleFormOpen()} onClick={() => setGoogleFormOpen(!googleFormOpen())}>
                     Change credentials
                   </button>

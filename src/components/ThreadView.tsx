@@ -39,6 +39,9 @@ import {
   ChevronLeftIcon,
   ChevronRightIcon,
   CalendarIcon,
+  FileIcon,
+  FileTextIcon,
+  ImageIcon,
 } from "./Icons";
 import { SmartReplies } from "./SmartReplies";
 import { ReactionButton } from "./ReactionButton";
@@ -721,7 +724,7 @@ export const ThreadView = (props: {
                                     />
                                   ) : (
                                     <div class={`attachment-icon ${isImage(att.mimeType) ? 'image' : isPdf(att.mimeType) ? 'pdf' : 'file'}`}>
-                                      {isImage(att.mimeType) ? '🖼️' : isPdf(att.mimeType) ? '📄' : '📎'}
+                                      {isImage(att.mimeType) ? <ImageIcon size="tool" /> : isPdf(att.mimeType) ? <FileTextIcon size="tool" /> : <FileIcon size="tool" />}
                                     </div>
                                   )}
                                   <div class="attachment-info">

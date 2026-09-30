@@ -36,6 +36,8 @@ const UNSTYLED_HOOKS = new Set([
   "time-picker-end",
   "connection-status-region",
   "message-sender-name",
+  // an icon's ink plate, drawn as is in the host's colour
+  "icon-ink",
 ]);
 
 // Class names in `class="..."`, and every string literal or template text

@@ -207,6 +207,30 @@ describe("InviteRowLines", () => {
     expect(document.querySelector(".invite-clash")).toHaveTextContent("Dentist");
   });
 
+  it("warns of a clash with a drawn icon, its title in a span that can ellipsise beside the place", () => {
+    const strip = stripLayout({ start: at(1, 10, 30), end: at(1, 11, 30) }, [
+      { title: "Design review — Posta v3 with the whole product team", start: at(1, 11), end: at(1, 12) },
+    ], NOW);
+    render(() => lines({ strip }));
+    const clash = document.querySelector(".invite-clash")!;
+    expect(clash.textContent).not.toMatch(/⚠/);
+    expect(clash.querySelector("svg.icon-meta[data-icon=warning]")).not.toBeNull();
+    expect(clash.querySelector(".invite-clash-title")).toHaveTextContent("Design review — Posta v3 with the whole product team");
+    expect(document.querySelector(".invite-place svg.icon-meta")).not.toBeNull();
+  });
+
+  it("sets every glyph in the row's metadata, time and answer at the meta size", () => {
+    const strip = stripLayout({ start: at(1, 10, 30), end: at(1, 11, 30) }, [{ title: "Dentist", start: at(1, 11), end: at(1, 12) }], NOW);
+    const { unmount } = render(() => lines({ strip }));
+    const glyphs = () => [...document.querySelectorAll(".invite-meta svg, .invite-when svg, .invite-answer svg")];
+    expect(glyphs().length).toBeGreaterThanOrEqual(2);
+    expect(glyphs().filter(svg => !svg.classList.contains("icon-meta"))).toEqual([]);
+    unmount();
+    render(() => lines({ rsvp: "accepted" }));
+    expect(glyphs().length).toBeGreaterThanOrEqual(2);
+    expect(glyphs().filter(svg => !svg.classList.contains("icon-meta"))).toEqual([]);
+  });
+
   it("hides the strip once answered", () => {
     const strip = stripLayout({ start: at(1, 10, 30), end: at(1, 11, 30) }, [], NOW);
     render(() => lines({ strip, rsvp: "accepted" }));

@@ -1,7 +1,7 @@
 import { Show, For, onCleanup, createUniqueId, createSignal, createEffect } from "solid-js";
 import type { Account, SendAttachment } from "../api/tauri";
 import { truncateMiddle } from "../utils";
-import { CloseIcon, AttachmentIcon } from "./Icons";
+import { CloseIcon, AttachmentIcon, MoreIcon } from "./Icons";
 import { isImeComposing } from "../shared/keyboard";
 import { splitQuotedText } from "../app/quotedHistory";
 import { RecipientInput, type RecipientSuggestion } from "./RecipientInput";
@@ -261,7 +261,7 @@ export const ComposeForm = (props: ComposeFormProps) => {
           aria-label={quoteShown() ? 'Hide quoted text' : 'Show quoted text'}
           title={quoteShown() ? 'Hide quoted text' : 'Show quoted text'}
           onClick={() => setQuoteShown(!quoteShown())}
-        >•••</button>
+        ><MoreIcon /></button>
       </Show>
     </div>
   );
@@ -276,7 +276,7 @@ export const ComposeForm = (props: ComposeFormProps) => {
                 {truncateMiddle(attachment.filename, 20)}
               </span>
               <button class="attachment-remove" onClick={() => props.onRemoveAttachment(i())} title="Remove">
-                <CloseIcon />
+                <CloseIcon size="meta" />
               </button>
             </div>
           )}
@@ -303,7 +303,7 @@ export const ComposeForm = (props: ComposeFormProps) => {
             onClick={() => (document.getElementById(props.fileInputId) as HTMLInputElement)?.click()}
             title="Attach files"
           >
-            <AttachmentIcon />
+            <AttachmentIcon size="tool" />
           </button>
         </>
       }
