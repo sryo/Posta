@@ -55,7 +55,7 @@ describe("App.css cascade", () => {
       <div class="color-picker-selected" role="button" tabindex="0" id="swatch"></div>
       <div class="scheduler-day-card" role="button" tabindex="0" id="day"></div>
       <div class="scheduler-option" role="option" tabindex="0" id="option"></div>
-      <div class="attachment-thumb" role="button" tabindex="0" id="thumb"></div>
+      <div class="attachments" data-size="detail"><button class="attachment" id="thumb"></button></div>
       <div class="message-body"><a href="#" id="email-link">x</a></div>
       <div class="card"><div class="thread" role="article" tabindex="0" id="thread"></div>
       <div class="calendar-event-item" tabindex="0" id="event"></div></div>`;
@@ -95,7 +95,7 @@ describe("App.css cascade", () => {
 
   it("draws a message's dividers in a border token so they show in dark mode too", () => {
     document.body.innerHTML =
-      '<div class="message-card"><div class="message-header" id="header"></div><div class="message-attachments" id="attachments"></div></div>';
+      '<div class="message-card"><div class="message-header" id="header"></div><div class="attachments" data-size="detail" id="attachments"></div></div>';
     const decl = (id: string) => cascadedDeclarations(rules, document.getElementById(id)!);
     expect(decl("header").get("border-bottom")).toMatch(/var\(--border-(subtle|default)\)/);
     expect(decl("attachments").get("border-top")).toMatch(/var\(--border-(subtle|default)\)/);

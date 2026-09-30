@@ -1,7 +1,8 @@
 import { Show, For, onCleanup, createUniqueId, createSignal, createEffect } from "solid-js";
 import type { Account, SendAttachment } from "../api/tauri";
-import { truncateMiddle } from "../utils";
-import { CloseIcon, AttachmentIcon, MoreIcon } from "./Icons";
+import { Chip } from "./Chip";
+import { FileName } from "./Attachments";
+import { AttachmentIcon, MoreIcon } from "./Icons";
 import { isImeComposing } from "../shared/keyboard";
 import { splitQuotedText } from "../app/quotedHistory";
 import { RecipientInput, type RecipientSuggestion } from "./RecipientInput";
@@ -271,14 +272,9 @@ export const ComposeForm = (props: ComposeFormProps) => {
       <div class="compose-attachments">
         <For each={props.attachments}>
           {(attachment, i) => (
-            <div class="compose-attachment">
-              <span class="attachment-name" title={attachment.filename}>
-                {truncateMiddle(attachment.filename, 20)}
-              </span>
-              <button class="attachment-remove" onClick={() => props.onRemoveAttachment(i())} title="Remove">
-                <CloseIcon size="meta" />
-              </button>
-            </div>
+            <Chip class="compose-attachment" title={attachment.filename} removeLabel={`Remove ${attachment.filename}`} onRemove={() => props.onRemoveAttachment(i())}>
+              <FileName filename={attachment.filename} />
+            </Chip>
           )}
         </For>
       </div>

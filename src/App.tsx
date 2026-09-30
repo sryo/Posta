@@ -161,7 +161,7 @@ import { eventReplyRecipients } from "./app/eventReply";
 import { labelDisplayName } from "./app/labels";
 import { nameInThreads, personName } from "./app/people";
 import { afterRemoval, loadAfterArchive, stepThread, threadPosition } from "./app/threadNavigation";
-import { CardAttachments, shownAttachments } from "./components/CardAttachments";
+import { AttachmentList } from "./components/Attachments";
 import { watchScrollFade } from "./app/scrollFade";
 import { createThumbnails } from "./app/thumbnails";
 import { AfterArchiveSetting } from "./components/AfterArchiveSetting";
@@ -172,7 +172,7 @@ import { normalizeActionOrder } from "./app/actionOrder";
 import { parseStoredWidth } from "./app/storedWidth";
 import { isSessionExpiredError, needsSignInAgain } from "./app/authErrors";
 import { signatureBlock, swapSignature, withSignature } from "./app/signature";
-import { isCalendarAttachment, isPreviewable, readFilesAsAttachments } from "./app/attachments";
+import { isPreviewable, readFilesAsAttachments, visibleAttachments } from "./app/attachments";
 import { AttachmentLightbox, type PreviewAttachment } from "./components/AttachmentLightbox";
 import { MessageSender } from "./components/MessageSender";
 import { isForwardSubject } from "./app/quotedHistory";
@@ -5493,16 +5493,14 @@ function App() {
                                           onFocus={() => onRowFocus(card.id, thread.gmail_thread_id)}
                                         >
                                           {(() => {
-                                            const attachments = () => thread.calendar_event
-                                              ? thread.attachments?.filter(a => !isCalendarAttachment(a)) ?? []
-                                              : thread.attachments ?? [];
+                                            const attachments = () => visibleAttachments(thread.attachments ?? [], { hideCalendar: !!thread.calendar_event });
                                             return (
                                               <ThreadRowLines
                                                 thread={thread}
                                                 ownEmails={accounts().map(a => a.email)}
                                                 time={threadTime(thread.last_message_date, group().label)}
                                                 subject={thread.calendar_event ? inviteTitle(thread.subject) : undefined}
-                                                attachmentsShown={shownAttachments(thread.attachments ?? []).length > 0}
+                                                attachmentsShown={attachments().length > 0}
                                                 beforeTime={
                                                   <Show when={isDraftThread(thread)}>
                                                     <button
@@ -5527,7 +5525,7 @@ function App() {
                                                 ) : undefined}
                                                 attachments={
                                                   <Show when={attachments().length > 0}>
-                                                    <CardAttachments
+                                                    <AttachmentList
                                                       attachments={attachments()}
                                                       onOpen={(attachment) => openCardAttachment(owner()?.id ?? "", attachments(), attachment)}
                                                       onMenu={(attachment) => showAttachmentContextMenu({ accountId: owner()?.id ?? "", messageId: attachment.message_id, attachmentId: attachment.attachment_id, filename: attachment.filename, mimeType: attachment.mime_type, inlineData: attachment.inline_data })}
@@ -5730,12 +5728,12 @@ function App() {
                                     thread={thread}
                                     ownEmails={accounts().map(a => a.email)}
                                     time={threadTime(thread.last_message_date, group.label)}
-                                    attachmentsShown={shownAttachments(thread.attachments ?? []).length > 0}
+                                    attachmentsShown={visibleAttachments(thread.attachments ?? [], { hideCalendar: !!thread.calendar_event }).length > 0}
                                     attachments={
                                       <Show when={(thread.attachments ?? []).length > 0}>
-                                        <CardAttachments
-                                          attachments={thread.attachments}
-                                          onOpen={(attachment) => openCardAttachment(thread.account_id, thread.attachments, attachment)}
+                                        <AttachmentList
+                                          attachments={visibleAttachments(thread.attachments ?? [], { hideCalendar: !!thread.calendar_event })}
+                                          onOpen={(attachment) => openCardAttachment(thread.account_id, visibleAttachments(thread.attachments ?? [], { hideCalendar: !!thread.calendar_event }), attachment)}
                                           onMenu={(attachment) => showAttachmentContextMenu({ accountId: thread.account_id, messageId: attachment.message_id, attachmentId: attachment.attachment_id, filename: attachment.filename, mimeType: attachment.mime_type, inlineData: attachment.inline_data })}
                                           loadPreview={(attachment) => thumbnails.preview(thread.account_id, attachment.message_id, attachment.attachment_id)}
                                         />
@@ -5908,6 +5906,7 @@ function App() {
           // Inline compose props
           inlineCompose={composeShownIn() === "thread" ? threadInlineCompose : null}
           threadAttachments={activeListedThread()?.attachments}
+          loadAttachmentPreview={(attachment) => thumbnails.preview(activeThreadAccount()?.id ?? "", attachment.message_id, attachment.attachment_id)}
           invite={(() => {
             const listed = activeListedThread();
             const event = listed?.calendar_event;
