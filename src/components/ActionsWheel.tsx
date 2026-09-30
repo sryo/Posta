@@ -29,7 +29,8 @@ import {
   VideoIcon,
   CheckIcon,
 } from "./Icons";
-import { RadialMenu, type RadialItem } from "./RadialMenu";
+import { ActionWheel } from "./ActionWheel";
+import type { RadialItem } from "./RadialMenu";
 
 // The actions for a row, fanned out on the left of its checkbox
 export const ActionsWheel = (props: {
@@ -286,15 +287,11 @@ export const ActionsWheel = (props: {
 
   return (
     <Show when={actions().length > 0}>
-      <RadialMenu
+      <ActionWheel
+        side="left"
         label={props.event ? "Event actions" : props.selectedCount > 0 ? "Actions for the selected threads" : "Thread actions"}
-        items={items()}
+        actions={items()}
         open={props.open}
-        arc={{ start: 240, span: -120 }}
-        radius={38}
-        itemSize={28}
-        overlap="grow"
-        maxRadius={64}
         center={props.selectedCount > 0 ? <span class="bulk-count">{props.selectedCount}</span> : undefined}
         onEscape={props.onClose}
       />

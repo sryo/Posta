@@ -41,19 +41,23 @@ describe("autoArc", () => {
 
   it("opens toward the asked direction when there is room", () => {
     const bounds = { left: 0, top: 0, right: 200, bottom: 200 };
-    expect(autoArc({ anchor, bounds, toward: 180, maxSpan: 120, reach: 40 })).toEqual({ start: 120, span: 120 });
+    expect(autoArc({ anchor, bounds, toward: 180, maxSpan: 120, radius: 40, itemSize: 20 })).toEqual({ start: 120, span: 120 });
   });
 
-  it("turns away from an edge it would cross", () => {
-    // The anchor hugs the left edge: a left-facing fan swings right
-    const bounds = { left: 80, top: 0, right: 300, bottom: 300 };
-    const arc = autoArc({ anchor, bounds, toward: 180, maxSpan: 120, reach: 40 });
-    for (const deg of petalAngles(5, arc)) {
-      expect(100 + 40 * Math.cos((deg * Math.PI) / 180)).toBeGreaterThanOrEqual(80);
+  it("keeps every petal's whole box inside, turning away from an edge it would cross", () => {
+    // The anchor sits near the top-left corner: a fan toward down-right can't reach up or left
+    const bounds = { left: 70, top: 76, right: 400, bottom: 400 };
+    const arc = autoArc({ anchor, bounds, toward: 45, maxSpan: 240, radius: 40, itemSize: 18 });
+    expect(arc.span).toBeLessThan(240);
+    for (const deg of petalAngles(9, arc)) {
+      const x = 100 + 40 * Math.cos((deg * Math.PI) / 180);
+      const y = 100 + 40 * Math.sin((deg * Math.PI) / 180);
+      expect(x - 9).toBeGreaterThanOrEqual(70);
+      expect(y - 9).toBeGreaterThanOrEqual(76);
     }
   });
 
   it("centres on the asked direction with nothing to measure", () => {
-    expect(autoArc({ anchor: { left: 0, top: 0, right: 0, bottom: 0 }, toward: 0, maxSpan: 120, reach: 40 })).toEqual({ start: -60, span: 120 });
+    expect(autoArc({ anchor: { left: 0, top: 0, right: 0, bottom: 0 }, toward: 0, maxSpan: 120, radius: 40, itemSize: 20 })).toEqual({ start: -60, span: 120 });
   });
 });

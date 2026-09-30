@@ -107,7 +107,6 @@ import {
   CloseIcon,
   AttachmentIcon,
   SearchIcon,
-  PaletteIcon,
   CalendarIcon,
   LocationIcon,
   WarningIcon,
@@ -139,7 +138,7 @@ import { deletedByScope, type RecurrenceScope } from "./app/recurrence";
 import { ThreadView } from "./components/ThreadView";
 import { EventView } from "./components/EventView";
 import { ActionsWheel } from "./components/ActionsWheel";
-import { RadialMenu } from "./components/RadialMenu";
+import { ColorFlower } from "./components/ColorFlower";
 import { RADIAL_HOVER_CLOSE_MS, RADIAL_HOVER_OPEN_MS } from "./app/radial";
 import { CardForm } from "./components/CardForm";
 import { CardAccountQualifier, cardTitleLabel } from "./components/CardAccountQualifier";
@@ -4701,7 +4700,7 @@ function App() {
 
       {/* Compose button with contact suggestions - top left */}
       <Show when={selectedAccount()}>
-        <aside class={`sidebar ${bgColorPickerOpen() ? 'expanded' : ''}`}>
+        <aside class="sidebar">
           <div class="sidebar-content">
             <Show when={!composing()}>
             <div
@@ -4806,39 +4805,16 @@ function App() {
           </Show>
 
           <div class="toolbar-wrapper" data-board>
-            <div class={`color-picker ${bgColorPickerOpen() ? 'open' : ''}`}>
-              <div
-                class={`color-picker-selected ${selectedBgColorIndex() === null ? 'no-color' : ''}`}
-                data-hue={boardHue()}
-                onClick={(e) => { e.stopPropagation(); setBgColorPickerOpen(!bgColorPickerOpen()); }}
-                on:keydown={onActivateKey(() => setBgColorPickerOpen(!bgColorPickerOpen()))}
-                title="Background color"
-                role="button"
-                aria-label="Choose background color"
-                aria-expanded={bgColorPickerOpen()}
-                tabindex="0"
-              >
-                <Show when={selectedBgColorIndex() === null}>
-                  <PaletteIcon />
-                </Show>
-              </div>
-              <RadialMenu
-                label="Background color"
-                open={bgColorPickerOpen()}
-                items={[
-                  { id: "none", label: "No color", hue: null, selected: selectedBgColorIndex() === null, onSelect: () => selectBgColor(null) },
-                  ...BOARD_COLORS.map((color, index) => ({
-                    id: color.hue, label: color.name, hue: color.hue, selected: selectedBgColorIndex() === index,
-                    onSelect: () => selectBgColor(index),
-                  })),
-                ]}
-                arc={{ toward: -90, maxSpan: 240 }}
-                bounds={() => document.body}
-                radius={34}
-                itemSize={20}
-                onEscape={() => setBgColorPickerOpen(false)}
-              />
-            </div>
+            <ColorFlower
+              title="Background color"
+              label="Choose background color"
+              colors={BOARD_COLORS.map(color => ({ hue: color.hue, label: color.name }))}
+              value={boardHue() ?? null}
+              onChange={(hue) => selectBgColor(hue === null ? null : BOARD_COLORS.findIndex(color => color.hue === hue))}
+              open={bgColorPickerOpen()}
+              setOpen={setBgColorPickerOpen}
+              toward={-90}
+            />
             <Show when={selectedAccount()}>
               <div class="account-chooser-container">
                 <button

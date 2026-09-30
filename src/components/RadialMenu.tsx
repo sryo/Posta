@@ -65,7 +65,7 @@ export function RadialMenu(props: {
     if (!root) return null;
     const bounds = props.bounds?.(root)?.getBoundingClientRect();
     const anchor = root.getBoundingClientRect();
-    return autoArc({ anchor, bounds, toward: arc.toward, maxSpan: arc.maxSpan, reach: props.radius + props.itemSize / 2 + 4 });
+    return autoArc({ anchor, bounds, toward: arc.toward, maxSpan: arc.maxSpan, radius: props.radius, itemSize: props.itemSize });
   };
 
   const arc = (): Arc => {

@@ -477,11 +477,6 @@ a:focus-visible,
     align-items: center;
     padding-top: 16px;
     padding-bottom: 20px;
-    transition: width 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
-}
-
-.sidebar.expanded {
-    width: 110px;
 }
 
 .sidebar-content {
@@ -2403,8 +2398,8 @@ a:focus-visible,
     padding: var(--space-md) var(--space-md) var(--space-sm) var(--space-lg);
 }
 
-/* The card's colour flower, smaller than the board's, fanning into the card */
-.card-color-picker {
+/* A compact colour flower, as in a card's header: a smaller swatch, the same flower */
+.color-picker.compact {
     --picker-button-size: 16px;
     z-index: 20;
     flex-shrink: 0;

@@ -56,9 +56,10 @@ export function layoutPetals(opts: {
 }
 
 // The arc to open toward `toward`, at most `maxSpan` wide, kept to the angles
-// where a petal `reach` from the anchor's centre stays inside `bounds`. With
-// nothing to measure (no layout yet) it is simply centred on `toward`.
-export function autoArc(opts: { anchor: Rect; bounds?: Rect; toward: number; maxSpan: number; reach: number; minSpan?: number }): Arc {
+// where a petal of `itemSize` at `radius` from the anchor's centre stays
+// `margin` inside `bounds`. With nothing to measure (no layout yet) it is
+// simply centred on `toward`.
+export function autoArc(opts: { anchor: Rect; bounds?: Rect; toward: number; maxSpan: number; radius: number; itemSize: number; margin?: number; minSpan?: number }): Arc {
   const centred = { start: opts.toward - opts.maxSpan / 2, span: opts.maxSpan };
   const b = opts.bounds;
   const cx = (opts.anchor.left + opts.anchor.right) / 2;
@@ -66,13 +67,14 @@ export function autoArc(opts: { anchor: Rect; bounds?: Rect; toward: number; max
   if (!b || b.right - b.left <= 0 || b.bottom - b.top <= 0 || (cx === 0 && cy === 0 && opts.anchor.right === 0)) return centred;
 
   const STEP = 5;
+  const half = opts.itemSize / 2 + (opts.margin ?? 2);
   const fits = (deg: number) => {
-    const x = cx + opts.reach * Math.cos(rad(deg));
-    const y = cy + opts.reach * Math.sin(rad(deg));
-    return x >= b.left && x <= b.right && y >= b.top && y <= b.bottom;
+    const x = cx + opts.radius * Math.cos(rad(deg));
+    const y = cy + opts.radius * Math.sin(rad(deg));
+    return x - half >= b.left && x + half <= b.right && y - half >= b.top && y + half <= b.bottom;
   };
-  const half = opts.maxSpan / 2;
-  if (fits(opts.toward - half) && fits(opts.toward + half) && everyFits(opts.toward - half, opts.maxSpan, fits, STEP)) return centred;
+  const edge = opts.maxSpan / 2;
+  if (everyFits(opts.toward - edge, opts.maxSpan, fits, STEP) && fits(opts.toward + edge)) return centred;
 
   // Grow a window of room around the nearest free direction to `toward`
   let best: Arc | null = null;

@@ -8,13 +8,13 @@ import {
   type CardColor,
   type GroupBy,
 } from "../shared/constants";
-import { CheckIcon, CloseIcon, PaletteIcon, QuestionCircleIcon, TrashIcon } from "./Icons";
+import { CheckIcon, CloseIcon, QuestionCircleIcon, TrashIcon } from "./Icons";
 import { cardTypeForQuery } from "../app/cardType";
-import { isImeComposing, onActivateKey } from "../shared/keyboard";
+import { isImeComposing } from "../shared/keyboard";
 import type { RecentContact } from "../app/contacts";
 import type { QuerySuggestion } from "../app/querySuggestions";
 import { QueryField } from "./QueryField";
-import { RadialMenu } from "./RadialMenu";
+import { ColorFlower } from "./ColorFlower";
 
 // A click on ✓ this soon after the form opens is the second half of the
 // double-click that opened it, not a save
@@ -81,43 +81,20 @@ export const CardForm = (props: {
   };
   const missing = () => (!props.name.trim() ? "Needs a name" : !props.query.trim() ? "Needs a query" : null);
 
-  const togglePicker = () => props.setColorPickerOpen(!props.colorPickerOpen);
 
   return (
     <div class="card-edit">
       <div class="card-edit-header">
-        <div class={`color-picker card-color-picker ${props.colorPickerOpen ? 'open' : ''}`}>
-          <div
-            class={`color-picker-selected ${props.color === null ? 'no-color' : ''}`}
-            data-hue={props.color ?? undefined}
-            onClick={(e) => { e.stopPropagation(); togglePicker(); }}
-            role="button"
-            tabIndex={0}
-            aria-expanded={props.colorPickerOpen}
-            on:keydown={onActivateKey(togglePicker)}
-            title="Card color"
-          >
-            <Show when={props.color === null}>
-              <PaletteIcon size="meta" />
-            </Show>
-          </div>
-          <RadialMenu
-            label="Card color"
-            open={props.colorPickerOpen}
-            items={([null, ...CARD_COLORS] as CardColor[]).map(color => ({
-              id: color ?? "none",
-              label: color ? color[0].toUpperCase() + color.slice(1) : "No color",
-              hue: color,
-              selected: color === props.color,
-              onSelect: () => { props.setColor(color); props.setColorPickerOpen(false); },
-            }))}
-            arc={{ toward: 45, maxSpan: 240 }}
-            bounds={(menu) => menu.closest(".deck") ?? document.body}
-            radius={34}
-            itemSize={18}
-            onEscape={() => props.setColorPickerOpen(false)}
-          />
-        </div>
+        <ColorFlower
+          title="Card color"
+          colors={CARD_COLORS.map(hue => ({ hue, label: hue[0].toUpperCase() + hue.slice(1) }))}
+          value={props.color}
+          onChange={(hue) => { props.setColor(hue as CardColor); props.setColorPickerOpen(false); }}
+          open={props.colorPickerOpen}
+          setOpen={props.setColorPickerOpen}
+          toward={45}
+          compact
+        />
         <input
           type="text"
           class="card-name-input"

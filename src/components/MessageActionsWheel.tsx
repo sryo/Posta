@@ -1,5 +1,6 @@
 import { ReplyIcon, ReplyAllIcon, ForwardIcon } from "./Icons";
-import { RadialMenu, type RadialItem } from "./RadialMenu";
+import { ActionWheel } from "./ActionWheel";
+import type { RadialItem } from "./RadialMenu";
 
 // Message Actions Wheel Component - shared between ThreadView and EventView
 // A missing handler leaves its action off the wheel
@@ -38,16 +39,12 @@ export const MessageActionsWheel = (props: {
       onMouseEnter={props.onMouseEnter}
       onMouseLeave={props.onMouseLeave}
     >
-      <RadialMenu
+      <ActionWheel
+        side="right"
         label="Reply"
-        items={items()}
+        actions={items()}
         open={props.open}
-        arc={{ start: -60, span: 120 }}
-        radius={38}
-        itemSize={28}
-        overlap="grow"
-        maxRadius={56}
-        hints={props.showHints ? "always" : "hover"}
+        showHints={props.showHints}
       />
     </div>
   );
