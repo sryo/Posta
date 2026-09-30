@@ -4080,6 +4080,20 @@ describe("App new card form", () => {
     openNewCardForm();
     expect(screen.getByPlaceholderText("e.g. Clients")).toHaveValue("");
   });
+
+  it("previews rows as a card draws them, sender first and unread dotted", async () => {
+    handlers.search_threads_preview = () => [{ label: "Today", threads: [{ ...thread("t-p", "Quarterly numbers"), account_id: "a", participants: ["Ana <ana@x.com>"], unread_count: 1, snippet: "See attached" }] }];
+    render(() => <App />);
+    await screen.findByText("Mail for A");
+    openNewCardForm();
+    fireEvent.input(screen.getAllByPlaceholderText("e.g. from:boss is:unread newer_than:7d").slice(-1)[0], { target: { value: "from:ana" } });
+    const row = (await screen.findByText("Quarterly numbers")).closest(".thread") as HTMLElement;
+    expect(row).toHaveClass("unread");
+    const first = row.querySelector(".thread-row")!;
+    expect(first.querySelector(".thread-participants")).toHaveTextContent("Ana");
+    expect(first.querySelector(".unread-dot")).not.toHaveClass("read");
+    expect(row.querySelector(".thread-snippet")).toHaveTextContent("See attached");
+  });
 });
 
 describe("App card order", () => {
