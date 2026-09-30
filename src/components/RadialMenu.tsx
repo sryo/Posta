@@ -205,12 +205,15 @@ export function RadialMenu(props: {
           const style = () => {
             const lift = along(LIFT);
             const hint = along(props.itemSize / 2 + HINT_GAP);
+            // Whole pixels: a petal between pixels draws its ring thicker on
+            // one side than the other
+            const px = (n: number) => `${Math.round(n)}px`;
             return {
               "--i": i(),
-              "--x": `${petal().x}px`,
-              "--y": `${petal().y}px`,
-              "--lx": `${petal().x + lift.x}px`,
-              "--ly": `${petal().y + lift.y}px`,
+              "--x": px(petal().x),
+              "--y": px(petal().y),
+              "--lx": px(petal().x + lift.x),
+              "--ly": px(petal().y + lift.y),
               "--hx": `${hint.x}px`,
               "--hy": `${hint.y}px`,
             };

@@ -5,18 +5,24 @@ import { onActivateKey } from "../shared/keyboard";
 
 export type FlowerColor = { hue: string; label: string };
 
-// The board (or window) below the strip that drags the window: a petal up
-// there would move the window instead of taking the click
+// The board (or window) below the strip that drags the window, a petal up
+// there would move the window instead of taking the click, and right of the
+// board's + column, which petals would cover
 function roomFor(menu: HTMLElement) {
   const board = (menu.closest(".deck") ?? document.body).getBoundingClientRect();
   const dragStrip = document.querySelector(".drag-region")?.getBoundingClientRect();
-  return { left: board.left, right: board.right, bottom: board.bottom, top: Math.max(board.top, dragStrip?.bottom ?? 0) };
+  const plus = document.querySelector(".board-slot-anchor")?.getBoundingClientRect();
+  return { left: Math.max(board.left, plus?.right ?? 0), right: board.right, bottom: board.bottom, top: Math.max(board.top, dragStrip?.bottom ?? 0) };
 }
 
 // Every colour flower is the same size; only the way it opens differs
 const RADIUS = 34;
 const PETAL = 20;
 const MAX_SPAN = 240;
+// Where there is less room than that, the ring grows until the petals clear
+// each other rather than crowding
+const MIN_SPAN = 150;
+const MAX_RADIUS = 60;
 
 // A colour choice: the current colour as a swatch that blooms into a petal per
 // colour, "no colour" first. The flower fans toward `toward` as far round as
@@ -120,10 +126,12 @@ export function ColorFlower(props: {
         label={props.title}
         open={props.open}
         items={petals()}
-        arc={{ toward: props.toward, maxSpan: MAX_SPAN }}
+        arc={{ toward: props.toward, maxSpan: MAX_SPAN, minSpan: MIN_SPAN }}
         bounds={roomFor}
         radius={RADIUS}
         itemSize={PETAL}
+        overlap="grow"
+        maxRadius={MAX_RADIUS}
         onEscape={() => { preview(undefined); props.setOpen(false); }}
         pressed={pressed()}
         onScrub={(item) => preview(item ? item.hue ?? null : undefined)}

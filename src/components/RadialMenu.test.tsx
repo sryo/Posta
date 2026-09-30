@@ -21,13 +21,14 @@ const actions = (onSelect = vi.fn()): RadialItem[] => ["Reply", "Forward", "Arch
 }));
 
 describe("RadialMenu", () => {
-  it("blooms a frame after opening, each petal placed along its angle", async () => {
+  it("blooms a frame after opening, each petal placed along its angle on whole pixels", async () => {
     render(() => <RadialMenu label="Actions" items={actions()} open arc={{ start: -60, span: 120 }} radius={40} itemSize={28} />);
     const menu = screen.getByRole("menu", { name: "Actions" });
     await waitFor(() => expect(menu).toHaveClass("open"));
     const petals = screen.getAllByRole("menuitem");
+    // Between pixels, a petal's ring draws thicker on one side
     expect(petals.map(p => [p.style.getPropertyValue("--x"), p.style.getPropertyValue("--y")])).toEqual([
-      ["20px", "-34.64px"], ["40px", "0px"], ["20px", "34.64px"],
+      ["20px", "-35px"], ["40px", "0px"], ["20px", "35px"],
     ]);
   });
 

@@ -4633,19 +4633,19 @@ button.settings-section-title {
 /* A colour petal: the hue itself, ringed by the surface it floats over */
 .radial-swatch {
     background: var(--card-hue);
-    box-shadow: 0 0 0 1.5px var(--surface-raised), var(--shadow-sm);
+    box-shadow: 0 0 0 2px var(--surface-raised), var(--shadow-sm);
 }
 
 .radial-swatch.no-color {
     background: var(--surface-raised);
-    box-shadow: inset 0 0 0 1px var(--border-strong), 0 0 0 1.5px var(--surface-raised), var(--shadow-sm);
+    box-shadow: inset 0 0 0 1px var(--border-strong), 0 0 0 2px var(--surface-raised), var(--shadow-sm);
 }
 
 .radial-menu.open .radial-swatch:hover,
 .radial-menu.open .radial-swatch.scrubbed,
 .radial-menu.open .radial-swatch:focus-visible {
     background: var(--card-hue);
-    box-shadow: 0 0 0 1.5px var(--surface-raised), var(--shadow-md);
+    box-shadow: 0 0 0 2px var(--surface-raised), var(--shadow-md);
 }
 
 .radial-menu.open .radial-swatch.no-color:hover,
@@ -4655,7 +4655,7 @@ button.settings-section-title {
 }
 
 .radial-swatch.selected {
-    box-shadow: 0 0 0 1.5px var(--surface-raised), 0 0 0 3px var(--border-focus), var(--shadow-sm);
+    box-shadow: 0 0 0 2px var(--surface-raised), 0 0 0 4px var(--border-focus), var(--shadow-sm);
 }
 
 /* An emoji petal: the glyph is its own colour, on the petal's own surface */
