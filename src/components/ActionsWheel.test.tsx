@@ -91,6 +91,14 @@ describe("ActionsWheel key hints", () => {
     expect(hint("Report spam")).toBe("!");
   });
 
+  it("shows Escape as its symbol on Clear, so every hint stays a round pill", () => {
+    render(() => <ActionsWheel {...baseProps} threadId="t1" thread={thread} selectedCount={2} selectedThreads={() => ({ c1: new Set(["t1", "t2"]) })} />);
+    expect(hint("Clear")).toBe("⎋");
+    for (const el of Array.from(document.querySelectorAll(".action-key-hint"))) {
+      expect(el.textContent!.length, el.textContent!).toBeLessThanOrEqual(2);
+    }
+  });
+
   it("does not advertise unbound keys on event actions", () => {
     render(() => <ActionsWheel {...baseProps} event={invite} onDeleteEvent={vi.fn()} />);
     expect(hint("Reply to organizer")).toBe("r");

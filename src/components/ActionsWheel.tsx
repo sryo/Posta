@@ -171,7 +171,7 @@ export const ActionsWheel = (props: {
         actions.push({
           cls: 'bulk-clear',
           title: 'Clear',
-          keyHint: 'ESC',
+          keyHint: '⎋',
           icon: ClearIcon,
           onClick: (e) => { e.stopPropagation(); props.setSelectedEvents({ ...props.selectedEvents(), [cId]: new Set() }); }
         });
@@ -255,7 +255,7 @@ export const ActionsWheel = (props: {
           });
         }
         // Clear at end
-        actions.push({ cls: 'bulk-clear', title: 'Clear', keyHint: 'ESC', icon: ClearIcon, onClick: (e) => { e.stopPropagation(); props.setSelectedThreads({ ...props.selectedThreads(), [cId]: new Set() }); } });
+        actions.push({ cls: 'bulk-clear', title: 'Clear', keyHint: '⎋', icon: ClearIcon, onClick: (e) => { e.stopPropagation(); props.setSelectedThreads({ ...props.selectedThreads(), [cId]: new Set() }); } });
       } else {
         // Single Thread Actions - use order
         for (const key of order) {
