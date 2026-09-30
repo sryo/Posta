@@ -1565,11 +1565,10 @@ describe("App quick reaction", () => {
     fireEvent.keyDown(document, { key: "l" });
     fireEvent.keyDown(document, { key: "r" });
     fireEvent.click(await screen.findByTitle("Add reaction"));
-    const emoji = document.querySelector<HTMLButtonElement>(".emoji-picker .emoji-btn")!;
-    fireEvent.click(emoji);
+    fireEvent.click(document.querySelector<HTMLButtonElement>(".reaction-wheel .radial-petal")!);
 
     await waitFor(() => expect(invoke).toHaveBeenCalledWith("send_reaction", {
-      accountId: "a", threadId: "t-a", messageId: "<m1@x>", emoji: emoji.textContent, toEmail: "ana@x.com",
+      accountId: "a", threadId: "t-a", messageId: "<m1@x>", emoji: "🔥", toEmail: "ana@x.com",
     }));
   });
 });
@@ -1583,7 +1582,7 @@ describe("App thread view reactions", () => {
     await screen.findByText("body m1");
 
     fireEvent.click(screen.getAllByTitle("Add reaction")[0]);
-    fireEvent.click(document.querySelector<HTMLButtonElement>(".emoji-picker .emoji-btn")!);
+    fireEvent.click(document.querySelector<HTMLButtonElement>(".reaction-wheel .radial-petal")!);
 
     expect(await screen.findByText("Couldn't send the reaction.")).toBeInTheDocument();
     expect(screen.queryByText(/quota exceeded/)).not.toBeInTheDocument();
@@ -5024,7 +5023,7 @@ describe("App quick reply feedback", () => {
     await screen.findByText("Mail for A");
     openQuickReply();
     fireEvent.click(await screen.findByTitle("Add reaction"));
-    fireEvent.click(document.querySelector<HTMLButtonElement>(".emoji-picker .emoji-btn")!);
+    fireEvent.click(document.querySelector<HTMLButtonElement>(".reaction-wheel .radial-petal")!);
 
     expect(await screen.findByText("No one else to react to")).toBeInTheDocument();
     expect(invoke).not.toHaveBeenCalledWith("send_reaction", expect.anything());

@@ -4663,6 +4663,12 @@ button.settings-section-title {
     box-shadow: 0 0 0 1.5px var(--surface-raised), 0 0 0 3px var(--border-focus), var(--shadow-sm);
 }
 
+/* An emoji petal: the glyph is its own colour, on the petal's own surface */
+.radial-glyph {
+    font-size: var(--size-20);
+    line-height: var(--leading-tight);
+}
+
 /* A petal's key hint sits just outside it, on the petal's own line */
 .action-key-hint {
     position: absolute;
@@ -6448,6 +6454,40 @@ button.settings-section-title {
 
 .add-reaction-btn:hover {
     background: var(--surface-hover);
+    color: var(--text-primary);
+}
+
+/* The reactions' wheel, centred on the + it came out of; its core, where the
+   + was, opens every emoji */
+.reaction-wheel {
+    position: fixed;
+    width: 0;
+    height: 0;
+    z-index: var(--z-dropdown);
+}
+
+.reaction-wheel-more {
+    position: absolute;
+    left: -14px;
+    top: -14px;
+    width: 28px;
+    height: 28px;
+    padding: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border: none;
+    border-radius: var(--radius-full);
+    background: var(--surface-raised);
+    color: var(--text-muted);
+    box-shadow: 0 0 0 1px var(--border-default), var(--shadow-sm);
+    cursor: pointer;
+    transition: background 140ms ease, color 140ms ease;
+}
+
+.reaction-wheel-more:hover,
+.reaction-wheel-more:focus-visible {
+    background: var(--surface-card);
     color: var(--text-primary);
 }
 
