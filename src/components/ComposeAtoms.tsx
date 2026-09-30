@@ -38,22 +38,6 @@ export const ComposeTextarea = (props: {
   );
 };
 
-export const ComposeSendButton = (props: {
-  onClick: () => void,
-  disabled?: boolean,
-  sending?: boolean,
-}) => {
-  return (
-    <button
-      class="btn btn-primary"
-      disabled={props.disabled || props.sending}
-      onClick={props.onClick}
-    >
-      {props.sending ? 'Sending...' : <>Send<span class="shortcut-hint">⌘↵</span></>}
-    </button>
-  );
-};
-
 export const CloseButton = (props: { onClick: () => void }) => {
   return (
     <button class="close-btn" onClick={props.onClick} title="Close (Esc)">

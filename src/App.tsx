@@ -115,7 +115,8 @@ import {
   RepeatIcon,
 } from "./components/Icons";
 import { ReactionButton } from "./components/ReactionButton";
-import { ComposeTextarea, ComposeSendButton, CloseButton } from "./components/ComposeAtoms";
+import { ComposeTextarea, CloseButton } from "./components/ComposeAtoms";
+import { CancelButton, FormFooter, SubmitButton } from "./components/FormParts";
 import { AuthScreen } from "./components/AuthScreen";
 import { PresetPicker } from "./components/PresetPicker";
 import { EmptyBoard } from "./components/EmptyBoard";
@@ -5196,14 +5197,10 @@ function App() {
                                             disabled={quickReply().sending}
                                             autofocus
                                           />
-                                          <div class="quick-reply-actions">
-                                            <button class="btn" onClick={() => { setQuickReplyEventId(null); setQuickReply(qr => ({ ...qr, text: "" })); }} disabled={quickReply().sending}>Cancel <span class="shortcut-hint">ESC</span></button>
-                                            <ComposeSendButton
-                                              onClick={() => handleEventQuickReply(event)}
-                                              disabled={!quickReply().text.trim()}
-                                              sending={quickReply().sending}
-                                            />
-                                          </div>
+                                          <FormFooter>
+                                            <CancelButton onClick={() => { setQuickReplyEventId(null); setQuickReply(qr => ({ ...qr, text: "" })); }} />
+                                            <SubmitButton label="Send" busy={quickReply().sending} busyLabel="Sending..." disabled={!quickReply().text.trim()} onClick={() => handleEventQuickReply(event)} />
+                                          </FormFooter>
                                         </div>
                                       </Show>
                                       </>
@@ -5390,18 +5387,17 @@ function App() {
                                               disabled={quickReply().sending}
                                               autofocus
                                             />
-                                            <div class="quick-reply-actions">
-                                              <ReactionButton
-                                                onSelect={(emoji) => handleQuickReaction(thread.gmail_thread_id, emoji)}
-                                                sending={quickReactionSending()}
-                                              />
-                                              <button class="btn" onClick={() => setQuickReply({ threadId: null, text: "", sending: false })} disabled={quickReply().sending}>Cancel <span class="shortcut-hint">ESC</span></button>
-                                              <ComposeSendButton
-                                                onClick={handleQuickReply}
-                                                disabled={!quickReply().text.trim()}
-                                                sending={quickReply().sending}
-                                              />
-                                            </div>
+                                            <FormFooter
+                                              leading={
+                                                <ReactionButton
+                                                  onSelect={(emoji) => handleQuickReaction(thread.gmail_thread_id, emoji)}
+                                                  sending={quickReactionSending()}
+                                                />
+                                              }
+                                            >
+                                              <CancelButton onClick={() => setQuickReply({ threadId: null, text: "", sending: false })} />
+                                              <SubmitButton label="Send" busy={quickReply().sending} busyLabel="Sending..." disabled={!quickReply().text.trim()} onClick={handleQuickReply} />
+                                            </FormFooter>
                                           </div>
                                         </Show>
                                       </>
