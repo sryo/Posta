@@ -2663,8 +2663,49 @@ a:focus-visible,
     padding: var(--space-xs) var(--space-lg) var(--space-lg);
 }
 
-.card-edit-body .query-chip {
-    background: var(--surface-subtle);
+.card-edit-body /* Chip: a token in a field, with ✕ to take it out (Chip) */
+.chip {
+    display: inline-flex;
+    align-items: center;
+    max-width: 100%;
+    border-radius: var(--radius-sm);
+    background: var(--surface-hover);
+    color: var(--text-primary);
+    font: var(--type-meta);
+}
+
+.chip-label {
+    display: block;
+    min-width: 0;
+    padding: var(--space-xs) var(--space-xs) var(--space-xs) var(--space-md);
+    border: none;
+    background: none;
+    color: inherit;
+    font: inherit;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+button.chip-label {
+    cursor: pointer;
+}
+
+.chip-remove {
+    display: inline-flex;
+    align-items: center;
+    align-self: stretch;
+    padding: 0 var(--space-md) 0 var(--space-sm);
+    border: none;
+    background: none;
+    color: var(--text-muted);
+    font: inherit;
+    cursor: pointer;
+}
+
+.chip-remove:hover,
+.chip-remove:focus-visible {
+    color: var(--text-primary);
 }
 
 .card-account-select {
@@ -2812,42 +2853,9 @@ a:focus-visible,
     text-decoration-color: var(--text-muted);
 }
 
-.query-chip-label {
-    display: inline-flex;
-    min-width: 0;
-    padding: var(--space-xs) var(--space-xs) var(--space-xs) var(--space-md);
-    border: none;
-    background: none;
-    color: var(--text-primary);
-    font: inherit;
-    cursor: pointer;
-}
-
 .query-chip-op {
     font: var(--type-code);
     color: var(--text-link);
-}
-
-.query-chip-value {
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-}
-
-.query-chip-remove {
-    display: inline-flex;
-    align-items: center;
-    padding: 0 var(--space-md) 0 var(--space-sm);
-    border: none;
-    background: none;
-    color: var(--text-muted);
-    font: inherit;
-    cursor: pointer;
-}
-
-.query-chip-remove:hover,
-.query-chip-remove:focus-visible {
-    color: var(--text-primary);
 }
 
 .query-word {
@@ -6247,36 +6255,7 @@ button.settings-section-title {
 }
 
 .guest-chip {
-    display: inline-flex;
-    align-items: center;
-    gap: var(--space-xs);
     max-width: 220px;
-    padding: var(--space-xs) var(--space-xs) var(--space-xs) var(--space-md);
-    border-radius: var(--radius-lg);
-    background: var(--surface-hover);
-    color: var(--text-primary);
-    font: var(--type-meta);
-}
-
-.guest-chip-label {
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-}
-
-.guest-chip-remove {
-    display: inline-flex;
-    padding: 2px;
-    border: none;
-    border-radius: var(--radius-full);
-    background: transparent;
-    color: var(--text-muted);
-    cursor: pointer;
-}
-
-.guest-chip-remove:hover {
-    background: var(--surface-hover);
-    color: var(--text-primary);
 }
 
 .compose-field .guest-chips-input {

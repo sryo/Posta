@@ -1422,7 +1422,7 @@ describe("App thread view", () => {
     fireEvent.click(await screen.findByTitle("Create event from this thread"));
 
     expect(await screen.findByPlaceholderText("Event title")).toHaveValue("Lunch on Thursday");
-    expect(Array.from(document.querySelectorAll(".guest-chip-label")).map(el => el.textContent)).toEqual(["Ana", "bo@y.com"]);
+    expect(Array.from(document.querySelectorAll(".guest-chip .chip-label")).map(el => el.textContent)).toEqual(["Ana", "bo@y.com"]);
     // The thread moves over to keep its toolbar clear of the form
     expect(document.querySelector(".app")).toHaveClass("side-panel-open");
   });
@@ -2187,7 +2187,7 @@ describe("App calendar", () => {
     const guests = await screen.findByRole("combobox", { name: "Guests" });
     fireEvent.input(guests, { target: { value: "ana" } });
     fireEvent.keyDown(guests, { key: "Enter" });
-    expect(document.querySelector(".guest-chip-label")).toHaveTextContent("Ana Pérez");
+    expect(document.querySelector(".guest-chip .chip-label")).toHaveTextContent("Ana Pérez");
 
     const title = screen.getByPlaceholderText("Event title");
     fireEvent.input(title, { target: { value: "Lunch" } });
@@ -4754,7 +4754,7 @@ describe("App accessibility", () => {
     fireEvent.keyDown(suggestion, { key: "Enter" });
 
     expect(await screen.findByPlaceholderText("Event title")).toHaveValue("Sync next week?");
-    expect(Array.from(document.querySelectorAll(".guest-chip-label")).map(el => el.textContent)).toEqual(["Ana"]);
+    expect(Array.from(document.querySelectorAll(".guest-chip .chip-label")).map(el => el.textContent)).toEqual(["Ana"]);
   });
 
   it("ranks contacts only when suggestions are wanted, not on every mail change", async () => {

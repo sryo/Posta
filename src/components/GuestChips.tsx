@@ -1,7 +1,7 @@
 import { createMemo, createSignal, createUniqueId, For, Show } from "solid-js";
 import { Avatar } from "./Avatar";
+import { Chip } from "./Chip";
 import { extractEmail, extractName, splitEmailList } from "../utils";
-import { CloseIcon } from "./Icons";
 import { isImeComposing } from "../shared/keyboard";
 
 type Contact = { email: string; name?: string };
@@ -130,12 +130,9 @@ export const GuestChips = (props: {
           const email = extractEmail(guest);
           const label = extractName(guest) ?? email;
           return (
-            <span class="guest-chip" title={email}>
-              <span class="guest-chip-label">{label}</span>
-              <button type="button" class="guest-chip-remove" aria-label={`Remove ${label}`} onClick={() => remove(i())}>
-                <CloseIcon size="meta" />
-              </button>
-            </span>
+            <Chip class="guest-chip" title={email} removeLabel={`Remove ${label}`} onRemove={() => remove(i())}>
+              {label}
+            </Chip>
           );
         }}
       </For>
