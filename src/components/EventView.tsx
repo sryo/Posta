@@ -31,6 +31,7 @@ import { createCloseAfterAnimation } from "../shared/closeAfterAnimation";
 import { isTypingTarget, hasCommandModifier } from "../shared/keyboard";
 import type { InlineComposeProps, InlineEditEventProps } from "./types";
 import { useLayer } from "../app/layers";
+import { Sheet } from "./Sheet";
 import { useDialog } from "../app/dialog";
 
 // Event View Component
@@ -76,6 +77,12 @@ export const EventView = (props: {
   // Shortcuts advertised by the toolbar badges (R/V/O/M/E/#), the RSVP control (Y/⇧M/N)
   // and the actions wheel (R/⇧R/F)
   const handleKeyDown = (e: KeyboardEvent) => {
+    // The open drawer holds focus, on its calendar choices, and keeps only the
+    // key its footer promises
+    if (props.calendarDrawerOpen) {
+      if (e.key === 'm' && !hasCommandModifier(e)) { e.preventDefault(); props.onCloseCalendarDrawer(); }
+      return;
+    }
     if (isTypingTarget(e.target) || hasCommandModifier(e) || !props.event || props.inlineCompose || props.inlineEdit) return;
     const event = props.event;
     const can = actions()!;
@@ -87,10 +94,8 @@ export const EventView = (props: {
     if (e.key === 'v' && event.hangout_link) { e.preventDefault(); openUrl(event.hangout_link); return; }
     if (e.key === 'o' && event.html_link) { e.preventDefault(); openUrl(event.html_link); return; }
     if (e.key === 'm' && can.move) {
-      // The drawer footer promises a toggle, so close when already open
       e.preventDefault();
-      if (props.calendarDrawerOpen) props.onCloseCalendarDrawer();
-      else props.onOpenCalendars();
+      props.onOpenCalendars();
       return;
     }
     const answer = can.rsvp ? rsvpForKey(e) : null;
@@ -112,7 +117,6 @@ export const EventView = (props: {
   onCleanup(() => document.removeEventListener('keydown', handleKeyDown));
 
   // Escape closes whichever of these opened last
-  useLayer(() => props.calendarDrawerOpen, () => props.onCloseCalendarDrawer());
   useLayer(() => !!props.inlineCompose, () => props.inlineCompose?.onClose());
   useLayer(() => !!props.inlineEdit, () => props.inlineEdit?.onClose());
 
@@ -412,13 +416,7 @@ export const EventView = (props: {
 
       {/* Calendar Drawer */}
       <Show when={props.calendarDrawerOpen}>
-        <div class="label-drawer-overlay" onClick={props.onCloseCalendarDrawer}></div>
-        <div class="label-drawer">
-          <div class="label-drawer-header">
-            <CloseButton onClick={props.onCloseCalendarDrawer} />
-            <h3>Move to Calendar</h3>
-          </div>
-
+        <Sheet title="Move to Calendar" placement="side" class="label-drawer" onClose={props.onCloseCalendarDrawer}>
           <div class="label-drawer-body">
             <Show when={props.calendarsLoading}>
               <StatusLine kind="loading">Loading calendars...</StatusLine>
@@ -455,7 +453,7 @@ export const EventView = (props: {
           <div class="label-drawer-footer">
             <KeyHint keys="M to close" />
           </div>
-        </div>
+        </Sheet>
       </Show>
     </div>
   );

@@ -119,7 +119,7 @@ import {
 } from "./components/Icons";
 import { ReactionButton } from "./components/ReactionButton";
 import { ComposeTextarea, CloseButton } from "./components/ComposeAtoms";
-import { CancelButton, FormFooter, SubmitButton } from "./components/FormParts";
+import { CancelButton, FormFooter, PanelHeader, SubmitButton } from "./components/FormParts";
 import { AuthScreen } from "./components/AuthScreen";
 import { PresetPicker } from "./components/PresetPicker";
 import { EmptyBoard } from "./components/EmptyBoard";
@@ -146,7 +146,7 @@ import { ColorFlower } from "./components/ColorFlower";
 import { RADIAL_HOVER_CLOSE_MS, RADIAL_HOVER_OPEN_MS } from "./app/radial";
 import { CardForm } from "./components/CardForm";
 import { CardAccountQualifier, cardTitleLabel } from "./components/CardAccountQualifier";
-import { Dialog } from "./components/Dialog";
+import { Sheet } from "./components/Sheet";
 import { ToastFrame, Toasts } from "./components/Toasts";
 import { createToasts, type ToastAction, type ToastTone } from "./app/toasts";
 import { failureMessage, storedCredentialsFailure } from "./app/errorText";
@@ -5766,19 +5766,14 @@ function App() {
 
         {/* Label Drawer */}
         <Show when={labelDrawerOpen()}>
-          <div class="label-drawer-overlay" onClick={closeLabelDrawer}></div>
-          <Dialog
+          <Sheet
+            title="Labels"
+            placement="side"
             class="label-drawer"
-            labelledBy="label-drawer-title"
             onClose={closeLabelDrawer}
             closesFromInputs
             initialFocus={(el) => el.querySelector<HTMLElement>(".label-drawer-search input")}
           >
-            <div class="label-drawer-header">
-              <CloseButton onClick={closeLabelDrawer} />
-              <h3 id="label-drawer-title">Labels</h3>
-            </div>
-
             <div class="label-drawer-search">
               <input
                 type="text"
@@ -5828,7 +5823,7 @@ function App() {
               </Show>
             </div>
 
-          </Dialog>
+          </Sheet>
         </Show>
       </Show>
 
@@ -6056,10 +6051,9 @@ function App() {
         aria-modal="true"
         aria-hidden={settingsOpen() ? undefined : "true"}
       >
-        <div class="settings-header">
-          <CloseButton onClick={() => setSettingsOpen(false)} />
-          <h3>Settings</h3>
-        </div>
+        <PanelHeader size="sheet" onClose={() => setSettingsOpen(false)}>
+          <h2 class="sheet-title">Settings</h2>
+        </PanelHeader>
         <div class="settings-body">
           <div class="settings-section">
             <div class="settings-section-title">Google connection</div>
@@ -6152,17 +6146,13 @@ function App() {
 
       {/* Keyboard shortcuts help modal */}
       <Show when={shortcutsHelpOpen()}>
-        <div class="shortcuts-overlay" onClick={() => setShortcutsHelpOpen(false)}></div>
-        <Dialog
+        <Sheet
+          title="Keyboard Shortcuts"
+          placement="center"
           class="shortcuts-modal"
-          labelledBy="shortcuts-title"
           onClose={() => setShortcutsHelpOpen(false)}
           initialFocus={(el) => el.querySelector<HTMLElement>(".shortcuts-body")}
         >
-          <div class="shortcuts-header">
-            <CloseButton onClick={() => setShortcutsHelpOpen(false)} />
-            <h2 id="shortcuts-title">Keyboard Shortcuts</h2>
-          </div>
           <div class="shortcuts-body" tabindex="0">
             <div class="shortcuts-section">
               <h3>Navigation</h3>
@@ -6243,7 +6233,7 @@ function App() {
               <div class="shortcut-row"><KeyHint keys="?" look="key" /> <span>Show this help</span></div>
             </div>
           </div>
-        </Dialog>
+        </Sheet>
       </Show>
 
       {/* Action config context menu */}

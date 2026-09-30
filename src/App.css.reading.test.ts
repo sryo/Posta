@@ -61,7 +61,7 @@ describe("thread load error", () => {
 
 describe("attachment lightbox", () => {
   it("covers the thread view and the label drawer", () => {
-    document.body.innerHTML = '<div class="thread-overlay" id="thread"></div><div class="label-drawer" id="drawer"></div><div class="lightbox" id="lightbox"></div>';
+    document.body.innerHTML = '<div class="thread-overlay" id="thread"></div><div class="sheet label-drawer" data-placement="side" id="drawer"></div><div class="lightbox" id="lightbox"></div>';
     const z = (id: string) => zIndex(cascadedDeclarations(rules, document.getElementById(id)!).get("z-index"));
     expect(z("lightbox")).toBeGreaterThan(z("thread"));
     expect(z("lightbox")).toBeGreaterThan(z("drawer"));

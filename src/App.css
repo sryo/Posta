@@ -3955,14 +3955,6 @@ button:disabled:hover {
     margin-top: var(--space-xl);
 }
 
-/* A sheet's title fills its header, after the close button */
-.label-drawer-header > h3,
-.settings-header > h3,
-.shortcuts-header > h2,
-.query-help-header > h3 {
-    flex: 1;
-}
-
 .global-filter-hint {
     flex-shrink: 0;
     margin-right: var(--space-lg);
@@ -3971,44 +3963,8 @@ button:disabled:hover {
 }
 
 /* Query help sheet */
-.query-help-overlay {
-    position: fixed;
-    top: 0;
-    left: 0;
-    right: 0;
-    bottom: 0;
-    background: var(--scrim);
-    z-index: 200;
-}
-
 .query-help-sheet {
-    position: fixed;
-    top: 50%;
-    left: 50%;
-    transform: translate(-50%, -50%);
-    width: 420px;
-    max-width: 90vw;
-    max-height: 80vh;
-    background: var(--surface-overlay);
-    border-radius: var(--radius-xl);
-    box-shadow: var(--shadow-xl);
-    z-index: 201;
-    display: flex;
-    flex-direction: column;
-    overflow: hidden;
-}
-
-.query-help-header {
-    display: flex;
-    align-items: center;
-    gap: var(--space-md);
-    padding: var(--space-xl) var(--space-2xl);
-    border-bottom: 1px solid var(--border-default);
-}
-
-.query-help-header h3 {
-    margin: 0;
-    font: var(--type-heading);
+    --sheet-width: 420px;
 }
 
 .query-help-body {
@@ -4125,19 +4081,6 @@ button:disabled:hover {
 
 .settings-sidebar.open {
     transform: translateX(0);
-}
-
-.settings-header {
-    padding: var(--space-lg) var(--space-xl);
-    border-bottom: 1px solid var(--border-subtle);
-    display: flex;
-    align-items: center;
-    gap: var(--space-md);
-}
-
-.settings-header h3 {
-    margin: 0;
-    font: var(--type-heading);
 }
 
 .settings-body {
@@ -4980,28 +4923,67 @@ button.settings-section-title {
 }
 
 /* Label Drawer */
-.label-drawer-overlay {
+/* Sheet: a modal drawer or centred card over a scrim (Sheet) */
+.sheet-scrim {
     position: fixed;
     inset: 0;
-    background: var(--scrim-subtle);
-    z-index: var(--z-drawer);
     animation: fadeIn 0.15s ease;
 }
 
-.label-drawer {
+.sheet-scrim[data-placement="side"] {
+    background: var(--scrim-subtle);
+    z-index: var(--z-drawer);
+}
+
+.sheet-scrim[data-placement="center"] {
+    background: var(--scrim);
+    backdrop-filter: blur(4px);
+    z-index: var(--z-modal);
+}
+
+.sheet {
     position: fixed;
+    width: var(--sheet-width);
+    max-width: 90vw;
+    background: var(--surface-overlay);
+    display: flex;
+    flex-direction: column;
+}
+
+.sheet[data-placement="side"] {
     top: 0;
     right: 0;
     bottom: 0;
-    width: 320px;
-    max-width: 90vw;
-    background: var(--surface-overlay);
     border-left: 1px solid var(--border-default);
     z-index: calc(var(--z-drawer) + 1);
-    transform: translateX(0);
     animation: slideInRight 0.25s cubic-bezier(0.34, 1.56, 0.64, 1);
-    display: flex;
-    flex-direction: column;
+}
+
+.sheet[data-placement="center"] {
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    max-height: 80vh;
+    border-radius: var(--radius-xl);
+    box-shadow: var(--shadow-xl);
+    z-index: calc(var(--z-modal) + 1);
+    overflow: hidden;
+    animation: modalSlideIn 0.2s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+.panel-header[data-size="sheet"] {
+    padding: var(--space-xl) var(--space-2xl);
+}
+
+.sheet-title {
+    flex: 1;
+    margin: 0;
+    font: var(--type-heading);
+    color: var(--text-primary);
+}
+
+.label-drawer {
+    --sheet-width: 320px;
 }
 
 @keyframes slideInRight {
@@ -5012,20 +4994,6 @@ button.settings-section-title {
     to {
         transform: translateX(0);
     }
-}
-
-.label-drawer-header {
-    display: flex;
-    align-items: center;
-    gap: var(--space-md);
-    padding: var(--space-xl) var(--space-2xl);
-    border-bottom: 1px solid var(--border-subtle);
-}
-
-.label-drawer-header h3 {
-    margin: 0;
-    font: var(--type-heading);
-    color: var(--text-primary);
 }
 
 .label-drawer-search {
@@ -5767,36 +5735,13 @@ button.settings-section-title {
    KEYBOARD SHORTCUTS MODAL
    ============================================ */
 
-.shortcuts-overlay {
-    position: fixed;
-    inset: 0;
-    background: var(--scrim);
-    backdrop-filter: blur(4px);
-    z-index: var(--z-modal);
-    animation: fadeIn 0.15s ease;
-}
-
 /* Dialogs take focus as a whole when nothing in them should have it first */
 [role="dialog"][tabindex="-1"]:focus {
     outline: none;
 }
 
 .shortcuts-modal {
-    position: fixed;
-    top: 50%;
-    left: 50%;
-    transform: translate(-50%, -50%);
-    background: var(--surface-overlay);
-    border-radius: var(--radius-xl);
-    box-shadow: var(--shadow-xl);
-    z-index: calc(var(--z-modal) + 1);
-    width: 480px;
-    max-width: 90vw;
-    max-height: 80vh;
-    overflow: hidden;
-    display: flex;
-    flex-direction: column;
-    animation: modalSlideIn 0.2s cubic-bezier(0.34, 1.56, 0.64, 1);
+    --sheet-width: 480px;
 }
 
 @keyframes modalSlideIn {
@@ -5809,20 +5754,6 @@ button.settings-section-title {
         opacity: 1;
         transform: translate(-50%, -50%) scale(1);
     }
-}
-
-.shortcuts-header {
-    display: flex;
-    align-items: center;
-    gap: var(--space-md);
-    padding: var(--space-xl) var(--space-2xl);
-    border-bottom: 1px solid var(--border-subtle);
-}
-
-.shortcuts-header h2 {
-    margin: 0;
-    font: var(--type-heading);
-    color: var(--text-primary);
 }
 
 .shortcuts-body {
