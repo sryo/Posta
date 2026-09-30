@@ -108,4 +108,19 @@ describe("RadialMenu", () => {
     expect(items.every(item => (item.onSelect as ReturnType<typeof vi.fn>).mock.calls.length === 0)).toBe(true);
     under.restore();
   });
+
+  it("tries a petal on hover and on focus, and lets it go when the pointer or focus leaves", () => {
+    const onScrub = vi.fn();
+    const items = ["red", "green"].map(hue => ({ id: hue, label: hue, hue, onSelect: vi.fn() }));
+    render(() => <RadialMenu label="Color" items={items} open arc={{ start: 0, span: 180 }} radius={30} itemSize={20} onScrub={onScrub} />);
+    const [red, green] = screen.getAllByRole("menuitemradio");
+    fireEvent.pointerEnter(red);
+    expect(onScrub).toHaveBeenLastCalledWith(items[0]);
+    fireEvent.pointerLeave(red);
+    expect(onScrub).toHaveBeenLastCalledWith(null);
+    green.focus();
+    expect(onScrub).toHaveBeenLastCalledWith(items[1]);
+    green.blur();
+    expect(onScrub).toHaveBeenLastCalledWith(null);
+  });
 });

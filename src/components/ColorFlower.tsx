@@ -1,4 +1,4 @@
-import { Show, createSignal, onCleanup } from "solid-js";
+import { Show, createEffect, createSignal, onCleanup } from "solid-js";
 import { PaletteIcon } from "./Icons";
 import { RadialMenu } from "./RadialMenu";
 import { onActivateKey } from "../shared/keyboard";
@@ -12,8 +12,9 @@ const MAX_SPAN = 240;
 
 // A colour choice: the current colour as a swatch that blooms into a petal per
 // colour, "no colour" first. The flower fans toward `toward` as far round as
-// the board or window leaves room, floating over whatever is beside it. Press
-// and slide across the petals to try each colour; let go on one to keep it.
+// the board or window leaves room, floating over whatever is beside it. Hover,
+// focus or press and slide across the petals to try each colour; click or let
+// go on one to keep it.
 export function ColorFlower(props: {
   colors: FlowerColor[];
   value: string | null;
@@ -25,8 +26,8 @@ export function ColorFlower(props: {
   label?: string;
   toward: number;
   compact?: boolean;
-  // Shows a colour while a held press slides over its petal, and the colour
-  // it started from when the press slides off or is let go of elsewhere
+  // Shows the colour being tried (hovered, focused or under a held press),
+  // and the colour it started from once none is or the flower closes unchosen
   onPreview?: (hue: string | null) => void;
 }) {
   // A press on the swatch opens the flower at once, so it can slide straight
@@ -65,6 +66,9 @@ export function ColorFlower(props: {
     previewing = true;
     props.onPreview(hue);
   };
+  createEffect(() => {
+    if (!props.open) preview(undefined);
+  });
   const choose = (hue: string | null) => {
     previewing = false;
     props.onChange(hue);

@@ -45,7 +45,8 @@ export function RadialMenu(props: {
   // A press that opened the menu and is still held: sliding onto a petal and
   // letting go chooses it, as a press on a petal does
   pressed?: boolean;
-  // The petal under a held press, or null once it slides off every petal
+  // The petal being tried: under the pointer, under a held press, or focused
+  // by keyboard; null once none is
   onScrub?: (item: RadialItem | null) => void;
 }) {
   let root: HTMLDivElement | undefined;
@@ -214,7 +215,10 @@ export function RadialMenu(props: {
               aria-label={item.label}
               title={item.label}
               tabIndex={props.open && tabStop() === i() ? 0 : -1}
-              onFocus={() => setActive(i())}
+              onFocus={() => { setActive(i()); props.onScrub?.(item); }}
+              onBlur={() => props.onScrub?.(null)}
+              onPointerEnter={() => { if (!scrubbing) props.onScrub?.(item); }}
+              onPointerLeave={() => { if (!scrubbing) props.onScrub?.(null); }}
               onPointerDown={(e) => { if (e.button === 0) beginScrub(); }}
               onClick={(e) => { if (!swallowClick) item.onSelect(e); }}
             >
