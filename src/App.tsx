@@ -141,7 +141,7 @@ import { deletedByScope, type RecurrenceScope } from "./app/recurrence";
 import { ThreadView } from "./components/ThreadView";
 import { EventView } from "./components/EventView";
 import { ActionsWheel } from "./components/ActionsWheel";
-import { ColorFlower } from "./components/ColorFlower";
+import { BoardFlower } from "./components/BoardFlower";
 import { RADIAL_HOVER_CLOSE_MS, RADIAL_HOVER_OPEN_MS } from "./app/radial";
 import { CardForm } from "./components/CardForm";
 import { QueryField } from "./components/QueryField";
@@ -188,7 +188,7 @@ import { cardSyncStatus, cardWaitingMessage, connectionStatus } from "./app/conn
 import { CardEmpty, CardSkeleton, ConnectionStatusBar, PostmarkDefs } from "./components/CardStates";
 import { createPostmarkLedger } from "./app/postmark";
 import { cardTypeForQuery } from "./app/cardType";
-import { SEARCH_CARD_ID, isSearchCard, keptCardName, parseRecentSearches, rememberSearch, searchCard as searchCardFor } from "./app/quickSearch";
+import { SEARCH_CARD_ID, forgetSearch, isSearchCard, keptCardName, parseRecentSearches, rememberSearch, searchCard as searchCardFor } from "./app/quickSearch";
 import { discardThreadDrafts, draftToOpen, isDraftThread, prepareDraftCompose, withDraftsDiscarded, type DraftToOpen } from "./app/draftThreads";
 import { createDraftSync, draftKey, findLatestDraft, findUnsentDrafts, hasDraftContent, markDraftClosed, markDraftSending, pruneDrafts, removeAccountDrafts, sessionDraftKey, type DraftFields } from "./app/drafts";
 import { escapeTarget, nextCardFocus, nextItemFocus, type ItemFocus } from "./app/keyboardNav";
@@ -520,8 +520,16 @@ function App() {
     normalizeActionOrder(safeGetJSON<unknown>("eventActionOrder", null), DEFAULT_EVENT_ACTION_ORDER)
   );
 
-  // Background color picker (stores index, not color value)
-  const [bgColorPickerOpen, setBgColorPickerOpen] = createSignal(false);
+  // Where the board was double-clicked or right-clicked, while its flower is open
+  const [boardFlowerAt, setBoardFlowerAt] = createSignal<{ x: number; y: number } | null>(null);
+  // The corner hint teaching the flower, until it is first opened or dismissed
+  const [boardHintShown, setBoardHintShown] = createSignal(safeGetItem("boardFlowerHintSeen") === null);
+  const retireBoardHint = () => {
+    if (!boardHintShown()) return;
+    setBoardHintShown(false);
+    safeSetItem("boardFlowerHintSeen", "1");
+  };
+  // Background color (stores index, not color value)
   // A stored index can be stale (BOARD_COLORS shrank/reordered) or corrupt;
   // render sites dereference BOARD_COLORS[idx] directly, so validate on load
   function readSavedBgColorIndex(): number | null {
@@ -987,11 +995,11 @@ function App() {
   const [composeSubject, setComposeSubject] = createSignal("");
   const [composeBody, setComposeBody] = createSignal("");
   const [composeIsHtml, setComposeIsHtml] = createSignal(false);
-  // Which sidebar button shows its suggestions; one at a time, since an open
-  // list pushes the buttons below it down
-  const [fabHovered, setFabHovered] = createSignal<"compose" | "event" | null>(null);
-  const composeFabHovered = () => fabHovered() === "compose";
-  const eventFabHovered = () => fabHovered() === "event";
+  // The board's trailing slot, grown into its menu of new things and the
+  // contacts and events to start them from
+  const [slotOpen, setSlotOpen] = createSignal(false);
+  const composeFabHovered = slotOpen;
+  const eventFabHovered = slotOpen;
   const [forwardingThread, setForwardingThread] = createSignal<{ threadId: string; subject: string; body: string } | null>(null);
   const [replyingToThread, setReplyingToThread] = createSignal<{ threadId: string; messageId?: string } | null>(null);
   const [replyingToEvent, setReplyingToEvent] = createSignal<{ eventId: string } | null>(null);
@@ -1008,10 +1016,10 @@ function App() {
   const [focusComposeBody, setFocusComposeBody] = createSignal(false);
   const [composeEmailError, setComposeEmailError] = createSignal<string | null>(null);
   const [composeAttachments, setComposeAttachments] = createSignal<SendAttachment[]>([]);
-  let fabHoverTimeout: number | undefined;
-  const showFabSuggestions = (button: "compose" | "event") => {
-    clearTimeout(fabHoverTimeout);
-    setFabHovered(button);
+  let slotCloseTimeout: number | undefined;
+  const openSlot = () => {
+    clearTimeout(slotCloseTimeout);
+    setSlotOpen(true);
   };
   let draftSaveTimeout: number | undefined;
   const drafts = createDraftSync();
@@ -1754,7 +1762,7 @@ function App() {
       const target = escapeTarget({
         filter: showGlobalFilter(),
         accountChooser: accountChooserOpen(),
-        colorPicker: colorPickerOpen() || editColorPickerOpen() || bgColorPickerOpen(),
+        colorPicker: colorPickerOpen() || editColorPickerOpen(),
         batchReply: batchReplyOpen(),
         compose: composing() && !closingCompose(),
         cardEditor: !!editingCardId(),
@@ -1766,7 +1774,7 @@ function App() {
       switch (target) {
         case "filter": closeSearch(); break;
         case "accountChooser": setAccountChooserOpen(false); break;
-        case "colorPicker": setColorPickerOpen(false); setEditColorPickerOpen(false); setBgColorPickerOpen(false); break;
+        case "colorPicker": setColorPickerOpen(false); setEditColorPickerOpen(false); break;
         case "batchReply": dismissBatchReply(); break;
         case "compose": closeCompose(); break;
         case "cardEditor": setEditingCardId(null); break;
@@ -2358,8 +2366,24 @@ function App() {
     setTimeout(() => filterInputRef?.focus(), 0);
   }
 
+  // Only the bare board opens its flower: cards, the trailing slot and the
+  // empty board's own buttons keep their clicks and menus
+  function openBoardFlower(e: MouseEvent) {
+    const target = e.target as HTMLElement;
+    if (target.closest(".card, .board-slot, .empty-board, button, a, input, textarea, [contenteditable]")) return;
+    e.preventDefault();
+    window.getSelection()?.removeAllRanges();
+    setBoardFlowerAt({ x: e.clientX, y: e.clientY });
+    retireBoardHint();
+  }
+
   // One account is searched as itself, so a kept search is that account's card
   const searchScope = () => { const all = accounts(); return all.length === 1 ? all[0].id : ALL_ACCOUNTS; };
+
+  function saveRecentSearches(recent: string[]) {
+    setRecentSearches(recent);
+    try { localStorage.setItem("recentSearches", JSON.stringify(recent)); } catch { /* the list is a convenience */ }
+  }
 
   function runSearch(query = globalFilter()) {
     const q = query.trim();
@@ -2370,9 +2394,7 @@ function App() {
     setCardErrors(SEARCH_CARD_ID, null);
     setSearchCard(searchCardFor(q, searchScope()));
     setCollapsedCards(SEARCH_CARD_ID, false);
-    const recent = rememberSearch(recentSearches(), q);
-    setRecentSearches(recent);
-    try { localStorage.setItem("recentSearches", JSON.stringify(recent)); } catch { /* the list is a convenience */ }
+    saveRecentSearches(rememberSearch(recentSearches(), q));
     filterInputRef?.blur();
     setFocusedCardId(SEARCH_CARD_ID);
     setFocusedThreadIndex(0);
@@ -4230,7 +4252,6 @@ function App() {
 
   function selectBgColor(colorIndex: number | null) {
     setSelectedBgColorIndex(colorIndex);
-    setBgColorPickerOpen(false);
     if (colorIndex !== null) {
       safeSetItem("bgColorIndex", String(colorIndex));
     } else {
@@ -4411,7 +4432,6 @@ function App() {
     if (!target.closest('.color-picker') && !target.closest('.bg-color-picker')) {
       setColorPickerOpen(false);
       setEditColorPickerOpen(false);
-      setBgColorPickerOpen(false);
     }
     if (!target.closest('.thread')) {
       setActionsWheelOpen(false);
@@ -4829,206 +4849,124 @@ function App() {
           <div class="recent-searches" aria-label="Recent searches">
             <For each={recentSearches()}>
               {(query) => (
-                <button type="button" class="recent-search" onMouseDown={(e) => e.preventDefault()} onClick={() => runSearch(query)}>
-                  <SearchIcon size="meta" />
-                  <span>{query}</span>
-                </button>
+                <div class="recent-search-row">
+                  <button type="button" class="recent-search" onMouseDown={(e) => e.preventDefault()} onClick={() => runSearch(query)}>
+                    <SearchIcon size="meta" />
+                    <span>{query}</span>
+                  </button>
+                  <button
+                    type="button"
+                    class="recent-search-forget"
+                    aria-label={`Forget ${query}`}
+                    title="Forget this search"
+                    onMouseDown={(e) => e.preventDefault()}
+                    onClick={() => saveRecentSearches(forgetSearch(recentSearches(), query))}
+                  >
+                    <CloseIcon size="meta" />
+                  </button>
+                </div>
               )}
             </For>
           </div>
         </Show>
       </div>
 
-      {/* Compose button with contact suggestions - top left */}
+      {/* The account and, until the board's flower is found, how to open it - bottom left */}
       <Show when={selectedAccount()}>
-        <aside class="sidebar">
-          <div class="sidebar-content">
-            <Show when={!composing()}>
-            <div
-              class="compose-toolbar"
-              data-board
-              onMouseLeave={() => {
-                fabHoverTimeout = window.setTimeout(() => setFabHovered(null), 250);
-              }}
-              onFocusOut={(e) => {
-                if (!e.currentTarget.contains(e.relatedTarget as Node | null)) setFabHovered(null);
-              }}
-            >
-              <div
-                class="compose-btn-wrapper"
-                onMouseEnter={() => showFabSuggestions("compose")}
-                onFocusIn={() => showFabSuggestions("compose")}
+        <div class="board-corner" data-board>
+          <Show when={selectedAccount()}>
+            <div class="account-chooser-container">
+              <button
+                class="toolbar-avatar"
+                onClick={(e) => { e.stopPropagation(); setAccountChooserOpen(!accountChooserOpen()); }}
+                title={selectedAccount()?.email || "Account"}
+                aria-haspopup="menu"
+                aria-expanded={accountChooserOpen()}
               >
-                <button
-                  class="compose-btn"
-                  onClick={() => { if (!composing() || closingCompose()) startCompose({}); }}
-                  title="Compose"
-                  aria-label="Compose new email"
-                >
-                  <ComposeIcon size="tool" />
-                </button>
-                <Show when={fabSuggestions().length > 0}>
-                  <div class={`compose-suggestions ${composeFabHovered() ? 'visible' : ''}`}>
-                    <For each={fabSuggestions()}>
-                      {(contact) => {
-                        const writeTo = () => {
-                          startCompose({ to: contact.email, focusBody: true });
-                          setFabHovered(null);
-                        };
-                        return (
-                        <div
-                          class="compose-suggestion-avatar"
-                          role="button"
-                          tabindex={composeFabHovered() ? 0 : -1}
-                          aria-label={`New email to ${contact.name || contact.email}`}
-                          data-hue={getAvatarHue(contact.name || contact.email)}
-                          title={contact.name ? `${contact.name} <${contact.email}>` : contact.email}
-                          onClick={writeTo}
-                          on:keydown={onActivateKey(writeTo)}
+                {selectedAccount()?.picture ? (
+                  <img src={selectedAccount()!.picture!} alt="" class="toolbar-avatar-img" />
+                ) : (
+                  <span class="toolbar-avatar-placeholder">
+                    {getInitial(selectedAccount()?.email || "")}
+                  </span>
+                )}
+              </button>
+              <Show when={accountChooserOpen()}>
+                <div class="account-chooser-dropdown" onClick={(e) => e.stopPropagation()}>
+                  <div class="account-chooser-header">Accounts</div>
+                  <div class="account-chooser-list">
+                    <For each={accounts()}>
+                      {(account) => (
+                        <button
+                          class={`account-chooser-item ${account.id === selectedAccount()?.id ? 'active' : ''}`}
+                          title="New emails, cards and events use the checked account"
+                          aria-pressed={account.id === selectedAccount()?.id}
+                          onClick={() => {
+                            setAccountChooserOpen(false);
+                            chooseDefaultAccount(account);
+                          }}
                         >
-                          {(contact.name || contact.email).charAt(0).toUpperCase()}
-                          <span class="suggestion-label">{contact.name || contact.email}</span>
-                        </div>
-                        );
-                      }}
+                          {account.picture ? (
+                            <img src={account.picture} alt="" class="account-chooser-avatar" />
+                          ) : (
+                            <span class="account-chooser-avatar-placeholder">
+                              {getInitial(account.email)}
+                            </span>
+                          )}
+                          <span class="account-chooser-email">{account.email}</span>
+                          {account.id === selectedAccount()?.id && (
+                            <span class="account-chooser-check"><CheckIcon /></span>
+                          )}
+                        </button>
+                      )}
                     </For>
                   </div>
-                </Show>
-              </div>
-              <div
-                class="compose-btn-wrapper"
-                onMouseEnter={() => showFabSuggestions("event")}
-                onFocusIn={() => showFabSuggestions("event")}
-              >
-                <button
-                  class="new-event-btn"
-                  onClick={() => openNewEventForm()}
-                  title="New event (E)"
-                  aria-label="Create new calendar event"
-                >
-                  <CalendarIcon size="tool" />
-                </button>
-                <Show when={eventFabSuggestions().length > 0}>
-                  <div class={`compose-suggestions ${eventFabHovered() ? 'visible' : ''}`}>
-                    <For each={eventFabSuggestions()}>
-                      {(suggestion) => {
-                        const start = () => {
-                          openNewEventForm({ summary: suggestion.summary, attendees: suggestion.attendees });
-                          setFabHovered(null);
-                        };
-                        const guests = suggestion.names.join(", ");
-                        const detail = suggestion.kind === "thread"
-                          ? `with ${guests}`
-                          : `again with ${guests} · ${formatShortDate(new Date(suggestion.at), undefined, { weekday: true })}`;
-                        return (
-                        <div
-                          class="compose-suggestion-avatar event-suggestion"
-                          role="button"
-                          tabindex={eventFabHovered() ? 0 : -1}
-                          aria-label={`New event: ${suggestion.summary}, ${detail}`}
-                          data-hue={getAvatarHue(suggestion.names[0] ?? suggestion.summary)}
-                          onClick={start}
-                          on:keydown={onActivateKey(start)}
-                        >
-                          {suggestion.kind === "thread" ? <MailIcon /> : <RepeatIcon />}
-                          <span class="suggestion-label">
-                            <span class="event-suggestion-title">{suggestion.summary}</span>
-                            <span class="event-suggestion-detail">{detail}</span>
-                          </span>
-                        </div>
-                        );
-                      }}
-                    </For>
-                  </div>
-                </Show>
-              </div>
+                  <div class="account-chooser-divider"></div>
+                  <button
+                    class="account-chooser-action"
+                    onClick={() => { setAccountChooserOpen(false); handleAddAccount(); }}
+                  >
+                    <PlusIcon />
+                    <span>Add account</span>
+                  </button>
+                  <button
+                    class="account-chooser-action"
+                    onClick={() => { setAccountChooserOpen(false); setSettingsOpen(true); }}
+                  >
+                    <SettingsIcon />
+                    <span>Settings</span>
+                  </button>
+                </div>
+              </Show>
             </div>
           </Show>
+          <Show when={boardHintShown() && cards().length > 0}>
+            <p class="board-hint">
+              Double-click the board for a new email, event, color or search
+              <button type="button" class="board-hint-dismiss" onClick={retireBoardHint}>Got it</button>
+            </p>
+          </Show>
+        </div>
+      </Show>
 
-          <div class="toolbar-wrapper" data-board>
-            <ColorFlower
-              title="Background color"
-              label="Choose background color"
-              colors={BOARD_COLORS.map(color => ({ hue: color.hue, label: color.name }))}
-              value={boardHue() ?? null}
-              onChange={(hue) => selectBgColor(hue === null ? null : BOARD_COLORS.findIndex(color => color.hue === hue))}
-              open={bgColorPickerOpen()}
-              setOpen={setBgColorPickerOpen}
-              toward={-90}
-              onPreview={(hue) => {
-                if (hue) document.documentElement.dataset.boardHue = hue;
-                else delete document.documentElement.dataset.boardHue;
-              }}
-            />
-            <Show when={selectedAccount()}>
-              <div class="account-chooser-container">
-                <button
-                  class="toolbar-avatar"
-                  onClick={(e) => { e.stopPropagation(); setAccountChooserOpen(!accountChooserOpen()); }}
-                  title={selectedAccount()?.email || "Account"}
-                  aria-haspopup="menu"
-                  aria-expanded={accountChooserOpen()}
-                >
-                  {selectedAccount()?.picture ? (
-                    <img src={selectedAccount()!.picture!} alt="" class="toolbar-avatar-img" />
-                  ) : (
-                    <span class="toolbar-avatar-placeholder">
-                      {getInitial(selectedAccount()?.email || "")}
-                    </span>
-                  )}
-                </button>
-                <Show when={accountChooserOpen()}>
-                  <div class="account-chooser-dropdown" onClick={(e) => e.stopPropagation()}>
-                    <div class="account-chooser-header">Accounts</div>
-                    <div class="account-chooser-list">
-                      <For each={accounts()}>
-                        {(account) => (
-                          <button
-                            class={`account-chooser-item ${account.id === selectedAccount()?.id ? 'active' : ''}`}
-                            title="New emails, cards and events use the checked account"
-                            aria-pressed={account.id === selectedAccount()?.id}
-                            onClick={() => {
-                              setAccountChooserOpen(false);
-                              chooseDefaultAccount(account);
-                            }}
-                          >
-                            {account.picture ? (
-                              <img src={account.picture} alt="" class="account-chooser-avatar" />
-                            ) : (
-                              <span class="account-chooser-avatar-placeholder">
-                                {getInitial(account.email)}
-                              </span>
-                            )}
-                            <span class="account-chooser-email">{account.email}</span>
-                            {account.id === selectedAccount()?.id && (
-                              <span class="account-chooser-check"><CheckIcon /></span>
-                            )}
-                          </button>
-                        )}
-                      </For>
-                    </div>
-                    <div class="account-chooser-divider"></div>
-                    <button
-                      class="account-chooser-action"
-                      onClick={() => { setAccountChooserOpen(false); handleAddAccount(); }}
-                    >
-                      <PlusIcon />
-                      <span>Add account</span>
-                    </button>
-                    <button
-                      class="account-chooser-action"
-                      onClick={() => { setAccountChooserOpen(false); setSettingsOpen(true); }}
-                    >
-                      <SettingsIcon />
-                      <span>Settings</span>
-                    </button>
-                  </div>
-                </Show>
-              </div>
-            </Show>
-          </div>
-          </div>
-        </aside>
+      <Show when={boardFlowerAt()}>
+        {(at) => (
+          <BoardFlower
+            at={at()}
+            colors={BOARD_COLORS.map(color => ({ hue: color.hue, label: color.name }))}
+            value={boardHue() ?? null}
+            onCompose={() => { if (!composing() || closingCompose()) startCompose({}); }}
+            onEvent={() => openNewEventForm()}
+            onSearch={openSearch}
+            onColor={(hue) => selectBgColor(hue === null ? null : BOARD_COLORS.findIndex(color => color.hue === hue))}
+            onPreview={(hue) => {
+              const shown = hue === undefined ? boardHue() : hue;
+              if (shown) document.documentElement.dataset.boardHue = shown;
+              else delete document.documentElement.dataset.boardHue;
+            }}
+            onClose={() => setBoardFlowerAt(null)}
+          />
+        )}
       </Show>
 
       {/* Error banner */}
@@ -5086,7 +5024,119 @@ function App() {
       <Show when={!loading() && selectedAccount()}>
         <DragDropProvider onDragStart={onDragStart} onDragEnd={onDragEnd as any} collisionDetector={mostIntersecting}>
           <DragDropSensors />
-          <div class={`deck ${resizing() ? 'resizing' : ''} ${boardStatus() ? 'has-status' : ''}`} data-board>
+          <div
+            class={`deck ${resizing() ? 'resizing' : ''} ${boardStatus() ? 'has-status' : ''}`}
+            data-board
+            onDblClick={openBoardFlower}
+            onContextMenu={openBoardFlower}
+          >
+            {/* The board's first column: a + that grows, over the cards, into what
+                can be started, where the compose and event panels then open */}
+            <Show when={!addingCard()}>
+              <div
+                class="board-slot-anchor"
+                classList={{ "covered": (composeShownIn() === "panel" && !closingCompose()) || (creatingEvent() && !eventForm().closing) }}
+              >
+              <div
+                class="board-slot"
+                classList={{ "open": slotOpen() }}
+                onMouseEnter={openSlot}
+                onMouseLeave={() => { slotCloseTimeout = window.setTimeout(() => setSlotOpen(false), 250); }}
+                onFocusIn={openSlot}
+                onFocusOut={(e) => {
+                  if (!e.currentTarget.contains(e.relatedTarget as Node | null)) setSlotOpen(false);
+                }}
+              >
+                <button class="board-slot-row" onClick={openSearch} aria-label="New search">
+                  <span class="board-slot-icon"><PlusIcon size="tool" /></span>
+                  <span class="board-slot-label">Search</span>
+                  <kbd class="board-slot-key">/</kbd>
+                </button>
+                <div class="board-slot-more">
+                  <button
+                    class="board-slot-row"
+                    tabindex={slotOpen() ? 0 : -1}
+                    onClick={() => { setSlotOpen(false); if (!composing() || closingCompose()) startCompose({}); }}
+                    aria-label="Compose new email"
+                  >
+                    <span class="board-slot-icon"><ComposeIcon size="ui" /></span>
+                    <span class="board-slot-label">Email</span>
+                    <kbd class="board-slot-key">C</kbd>
+                  </button>
+                  <button
+                    class="board-slot-row"
+                    tabindex={slotOpen() ? 0 : -1}
+                    onClick={() => { setSlotOpen(false); openNewEventForm(); }}
+                    aria-label="Create new calendar event"
+                  >
+                    <span class="board-slot-icon"><CalendarIcon size="ui" /></span>
+                    <span class="board-slot-label">Event</span>
+                    <kbd class="board-slot-key">E</kbd>
+                  </button>
+                  <Show when={fabSuggestions().length > 0}>
+                    <div class={`compose-suggestions ${slotOpen() ? 'visible' : ''}`} aria-label="Write to">
+                      <For each={fabSuggestions()}>
+                        {(contact) => {
+                          const writeTo = () => {
+                            startCompose({ to: contact.email, focusBody: true });
+                            setSlotOpen(false);
+                          };
+                          return (
+                          <div
+                            class="compose-suggestion-avatar"
+                            role="button"
+                            tabindex={slotOpen() ? 0 : -1}
+                            aria-label={`New email to ${contact.name || contact.email}`}
+                            data-hue={getAvatarHue(contact.name || contact.email)}
+                            title={contact.name ? `${contact.name} <${contact.email}>` : contact.email}
+                            onClick={writeTo}
+                            on:keydown={onActivateKey(writeTo)}
+                          >
+                            {(contact.name || contact.email).charAt(0).toUpperCase()}
+                            <span class="suggestion-label">{contact.name || contact.email}</span>
+                          </div>
+                          );
+                        }}
+                      </For>
+                    </div>
+                  </Show>
+                  <Show when={eventFabSuggestions().length > 0}>
+                    <div class={`compose-suggestions event-suggestions ${slotOpen() ? 'visible' : ''}`} aria-label="Plan">
+                      <For each={eventFabSuggestions()}>
+                        {(suggestion) => {
+                          const start = () => {
+                            openNewEventForm({ summary: suggestion.summary, attendees: suggestion.attendees });
+                            setSlotOpen(false);
+                          };
+                          const guests = suggestion.names.join(", ");
+                          const detail = suggestion.kind === "thread"
+                            ? `with ${guests}`
+                            : `again with ${guests} · ${formatShortDate(new Date(suggestion.at), undefined, { weekday: true })}`;
+                          return (
+                          <div
+                            class="compose-suggestion-avatar event-suggestion"
+                            role="button"
+                            tabindex={slotOpen() ? 0 : -1}
+                            aria-label={`New event: ${suggestion.summary}, ${detail}`}
+                            data-hue={getAvatarHue(suggestion.names[0] ?? suggestion.summary)}
+                            onClick={start}
+                            on:keydown={onActivateKey(start)}
+                          >
+                            {suggestion.kind === "thread" ? <MailIcon /> : <RepeatIcon />}
+                            <span class="suggestion-label">
+                              <span class="event-suggestion-title">{suggestion.summary}</span>
+                              <span class="event-suggestion-detail">{detail}</span>
+                            </span>
+                          </div>
+                          );
+                        }}
+                      </For>
+                    </div>
+                  </Show>
+                </div>
+              </div>
+              </div>
+            </Show>
             <SortableProvider ids={cardIds()}>
               <For each={boardCards()}>
                 {(card) => {
@@ -5159,9 +5209,9 @@ function App() {
                               <Show when={collapsedCards[card.id] && getCardUnreadCount(card.id) > 0}>
                                 <span class="card-unread-badge" aria-hidden="true">{getCardUnreadCount(card.id)}</span>
                               </Show>
+                              <span class="card-title-chevron" aria-hidden="true"><ChevronIcon size="ui" /></span>
                               <span class="card-title">{card.name}</span>
                               <CardAccountQualifier accountId={card.account_id} accounts={accounts()} shown={namesAccount()} problem={syncStatus().problem} />
-                              <span class="card-title-chevron" aria-hidden="true"><ChevronIcon size="meta" /></span>
                             </button>
                             <Show when={!collapsedCards[card.id] && getCardUnreadCount(card.id) > 0}>
                               <span class="card-unread-badge">{getCardUnreadCount(card.id)}</span>
@@ -5721,13 +5771,6 @@ function App() {
                 onBrowsePresets={openPresetPicker}
                 onSearchOperators={() => setQueryHelpOpen(true)}
               />
-            </Show>
-
-            {/* Add card button */}
-            <Show when={!addingCard()}>
-              <button class="add-card-btn" onClick={openSearch} aria-label="New search" title="New search (/)">
-                <PlusIcon size="tool" />
-              </button>
             </Show>
           </div>
         </DragDropProvider>

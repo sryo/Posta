@@ -439,7 +439,7 @@ describe("App attachments", () => {
     fireEvent.contextMenu(await screen.findByTitle("report.pdf (10 B)"));
     await waitFor(() => expect(lastMenu.some(i => i.text === "Forward")).toBe(true));
 
-    fireEvent.click(screen.getByTitle("Compose"));
+    fireEvent.click(screen.getByRole("button", { name: "Compose new email" }));
     fireEvent.input(await screen.findByPlaceholderText("Subject"), { target: { value: "Old subject" } });
     fireEvent.keyDown(document, { key: "Escape" });
     lastMenu.find(i => i.text === "Forward")!.action!();
@@ -1614,8 +1614,8 @@ describe("App compose autocomplete", () => {
     handlers.fetch_contacts = ({ accountId }) => accountId === "a" ? [contact("Ann"), contact("Me at work", "b@x.com")] : [contact("Bea")];
     render(() => <App />);
     await screen.findByText("Mail for B");
-    // The suggestions show while the pointer is over the compose button
-    fireEvent.mouseEnter(document.querySelector(".compose-btn-wrapper")!);
+    // The suggestions show while the pointer is over the board's trailing slot
+    fireEvent.mouseEnter(document.querySelector(".board-slot")!);
 
     expect(await screen.findByText("Ann")).toBeInTheDocument();
     expect(await screen.findByText("Bea")).toBeInTheDocument();
@@ -1745,7 +1745,7 @@ describe("App compose", () => {
     render(() => <App />);
     await screen.findByText("Mail for A");
 
-    fireEvent.click(screen.getByTitle("Compose"));
+    fireEvent.click(screen.getByRole("button", { name: "Compose new email" }));
     fireEvent.input(await screen.findByPlaceholderText("Recipients"), { target: { value: "bo@y.com" } });
     fireEvent.input(screen.getByPlaceholderText("Subject"), { target: { value: "Hello" } });
 
@@ -4574,18 +4574,79 @@ describe("App accessibility", () => {
     await waitFor(() => expect(screen.getByRole("button", { name: "Alpha. Expand" })).toHaveAttribute("aria-expanded", "false"));
   });
 
-  it("opens the background colour flower from the keyboard", async () => {
+  it("opens the board's flower from a double-click or right-click on the bare board only", async () => {
+    render(() => <App />);
+    const row = await screen.findByText("Mail for A");
+    fireEvent.dblClick(row);
+    expect(document.querySelector(".board-flower")).toBeNull();
+
+    fireEvent.dblClick(document.querySelector(".deck")!, { clientX: 400, clientY: 300 });
+    expect(screen.getByRole("menuitem", { name: "New email" })).toBeInTheDocument();
+    fireEvent.keyDown(document, { key: "Escape" });
+    expect(document.querySelector(".board-flower")).toBeNull();
+
+    fireEvent.contextMenu(document.querySelector(".deck")!, { clientX: 400, clientY: 300 });
+    fireEvent.click(screen.getByRole("menuitem", { name: "New email" }));
+    expect(document.querySelector(".board-flower")).toBeNull();
+    expect(await screen.findByPlaceholderText("Recipients")).toBeInTheDocument();
+  });
+
+  it("chooses the board colour from the flower's Board color petal", async () => {
     render(() => <App />);
     await screen.findByText("Mail for A");
-    const picker = screen.getByRole("button", { name: "Choose background color" });
-    expect(picker).toHaveAttribute("aria-expanded", "false");
-    fireEvent.keyDown(picker, { key: "Enter" });
-    expect(picker).toHaveAttribute("aria-expanded", "true");
+    fireEvent.dblClick(document.querySelector(".deck")!, { clientX: 400, clientY: 300 });
+    fireEvent.click(screen.getByRole("menuitem", { name: "Board color" }));
+
+    // Opened by the pointer, no petal takes focus: a focused one lifts off the
+    // ring and draws a focus outline over its own selection ring
+    await new Promise(r => requestAnimationFrame(r));
+    expect(document.activeElement?.closest(".board-flower")).toBeNull();
 
     fireEvent.click(screen.getByRole("menuitemradio", { name: "Blue" }));
     expect(localStorage.getItem("bgColorIndex")).toBe("5");
-    expect(picker).toHaveAttribute("aria-expanded", "false");
-    expect(screen.getByRole("menuitemradio", { name: "No color", hidden: true })).toBeInTheDocument();
+    expect(document.querySelector(".board-flower")).toBeNull();
+  });
+
+  it("previews a board colour under the pointer and puts the old one back when the flower closes unchosen", async () => {
+    localStorage.setItem("bgColorIndex", "5");
+    render(() => <App />);
+    await screen.findByText("Mail for A");
+    fireEvent.dblClick(document.querySelector(".deck")!, { clientX: 400, clientY: 300 });
+    fireEvent.click(screen.getByRole("menuitem", { name: "Board color" }));
+
+    fireEvent.pointerEnter(screen.getByRole("menuitemradio", { name: "Teal" }));
+    expect(document.documentElement.dataset.boardHue).toBe("cyan");
+    fireEvent.keyDown(document, { key: "Escape" });
+    expect(document.documentElement.dataset.boardHue).toBe("blue");
+    expect(localStorage.getItem("bgColorIndex")).toBe("5");
+  });
+
+  it("shows how to open the board's flower until it is first opened", async () => {
+    render(() => <App />);
+    await screen.findByText("Mail for A");
+    expect(screen.getByText(/Double-click the board/)).toBeInTheDocument();
+    fireEvent.dblClick(document.querySelector(".deck")!, { clientX: 400, clientY: 300 });
+    expect(screen.queryByText(/Double-click the board/)).toBeNull();
+    expect(localStorage.getItem("boardFlowerHintSeen")).toBe("1");
+  });
+
+  it("grows the board's + into new email, new event and search, and hides behind the panel it opens", async () => {
+    render(() => <App />);
+    await screen.findByText("Mail for A");
+    const slot = document.querySelector(".board-slot") as HTMLElement;
+    const email = screen.getByRole("button", { name: "Compose new email" });
+    expect(email).toHaveAttribute("tabindex", "-1");
+    fireEvent.mouseEnter(slot);
+    expect(slot).toHaveClass("open");
+    expect(email).toHaveAttribute("tabindex", "0");
+
+    fireEvent.click(screen.getByRole("button", { name: "Create new calendar event" }));
+    expect(await screen.findByPlaceholderText("Event title")).toBeInTheDocument();
+    expect(slot).not.toHaveClass("open");
+    // The + became the panel, so it doesn't also show behind it
+    expect(document.querySelector(".board-slot-anchor")).toHaveClass("covered");
+    fireEvent.keyDown(document, { key: "Escape" });
+    await waitFor(() => expect(document.querySelector(".board-slot-anchor")).not.toHaveClass("covered"));
   });
 
   it("shows the saved background colour on a deck that appears after the first sign-in", async () => {
@@ -4606,22 +4667,22 @@ describe("App accessibility", () => {
     expect(document.documentElement.style.getPropertyValue("--accent")).toBe("");
   });
 
-  it("names the board colour on the root and its swatch, and clears it for no colour", async () => {
+  it("names the board colour on the root, and clears it for no colour", async () => {
     render(() => <App />);
     await screen.findByText("Mail for A");
-    const picker = screen.getByRole("button", { name: "Choose background color" });
+    const deck = document.querySelector(".deck")!;
     expect(document.documentElement.dataset.boardHue).toBeUndefined();
 
-    fireEvent.click(picker);
+    fireEvent.dblClick(deck, { clientX: 400, clientY: 300 });
+    fireEvent.click(screen.getByRole("menuitem", { name: "Board color" }));
     fireEvent.click(screen.getByRole("menuitemradio", { name: "Teal" }));
     expect(document.documentElement.dataset.boardHue).toBe("cyan");
-    expect(picker).toHaveAttribute("data-hue", "cyan");
-    expect(picker.getAttribute("style")).toBeNull();
 
-    fireEvent.click(picker);
+    fireEvent.dblClick(deck, { clientX: 400, clientY: 300 });
+    fireEvent.click(screen.getByRole("menuitem", { name: "Board color" }));
+    expect(screen.getByRole("menuitemradio", { name: "Teal" })).toHaveAttribute("aria-checked", "true");
     fireEvent.click(screen.getByRole("menuitemradio", { name: "No color" }));
     expect(document.documentElement.dataset.boardHue).toBeUndefined();
-    expect(picker).not.toHaveAttribute("data-hue");
   });
 
   it("says the account button opens a menu and whether it is open", async () => {
@@ -4671,7 +4732,7 @@ describe("App accessibility", () => {
     await new Promise(r => setTimeout(r, 20));
     expect(rankContacts.calls).toBe(0);
 
-    fireEvent.mouseEnter(document.querySelector(".compose-btn-wrapper")!);
+    fireEvent.mouseEnter(document.querySelector(".board-slot")!);
     expect(await screen.findByRole("button", { name: "New email to Ana" })).toBeInTheDocument();
   });
 });
@@ -5707,5 +5768,19 @@ describe("App quick search", () => {
     fireEvent.keyDown(document, { key: "/" });
     fireEvent.click(await screen.findByRole("button", { name: "from:ana" }));
     await waitFor(() => expect(invoke.mock.calls.filter(([cmd]) => cmd === "fetch_query_threads")).toHaveLength(2));
+  });
+
+  it("forgets a recent search, here and after a restart", async () => {
+    searchResults();
+    render(() => <App />);
+    await screen.findByText("Mail for A");
+
+    const field = await search("from:ana");
+    fireEvent.keyDown(field, { key: "Escape" });
+    fireEvent.keyDown(document, { key: "/" });
+    fireEvent.click(await screen.findByRole("button", { name: "Forget from:ana" }));
+
+    expect(screen.queryByRole("button", { name: "from:ana" })).toBeNull();
+    expect(JSON.parse(localStorage.getItem("recentSearches") ?? "[]")).toEqual([]);
   });
 });
