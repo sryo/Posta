@@ -6,8 +6,8 @@ import { CloseButton } from "./ComposeAtoms";
 // fields, titles and footers look and behave alike.
 
 // The top of a compose or event panel: close first, where every view and
-// sheet keeps it, then whose it is and anything else. A panel whose Escape
-// discards work passes no onClose and offers Cancel in its footer instead
+// sheet keeps it, then whose it is and anything else. A panel that closes
+// some other way, such as a message's own reply, passes no onClose
 export function PanelHeader(props: { children: JSX.Element; onClose?: () => void }) {
   return (
     <div class="panel-header">
