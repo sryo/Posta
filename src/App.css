@@ -1964,70 +1964,6 @@ a:focus-visible,
     flex: 1;
 }
 
-/* The day strip: twelve hours of the event's day, noon heavier; the
-   invite's slot, the user's other events, clashes hatched amber */
-.invite-strip {
-    position: relative;
-    height: 16px;
-    margin: 2px 0;
-    border-radius: var(--radius-sm);
-    background-color: var(--surface-hover);
-    background-image: repeating-linear-gradient(90deg, var(--border-subtle) 0 1px, transparent 1px calc(100% / 12));
-    box-shadow: inset 0 0 0 1px var(--border-subtle);
-}
-
-.invite-strip-noon {
-    position: absolute;
-    top: 0;
-    bottom: 0;
-    width: 1px;
-    background: var(--border-default);
-}
-
-.invite-strip-past {
-    position: absolute;
-    top: 0;
-    bottom: 0;
-    left: 0;
-    border-radius: var(--radius-sm) 0 0 var(--radius-sm);
-    background: var(--surface-hover);
-}
-
-.invite-strip-busy {
-    position: absolute;
-    top: 3px;
-    bottom: 3px;
-    border-radius: 3px;
-    background: color-mix(in srgb, var(--text-muted) 35%, transparent);
-}
-
-.invite-strip-busy.overlap {
-    background: repeating-linear-gradient(135deg, color-mix(in srgb, var(--warning) 45%, transparent) 0 2px, transparent 2px 5px);
-    box-shadow: inset 0 0 0 1px var(--warning);
-}
-
-.invite-strip-slot {
-    position: absolute;
-    top: 2px;
-    bottom: 2px;
-    z-index: 1;
-    min-width: 6px;
-    border-radius: 3px;
-    background: color-mix(in srgb, var(--surface-card) 55%, transparent);
-    box-shadow: inset 0 0 0 1.5px var(--border-focus);
-}
-
-.invite-strip-now {
-    position: absolute;
-    top: -2px;
-    bottom: -2px;
-    z-index: 2;
-    width: 2px;
-    margin-left: -1px;
-    border-radius: 1px;
-    background: var(--danger);
-}
-
 /* Now: meetings about to start or running, above the card's date groups */
 .invite-now-header {
     display: flex;
@@ -6545,16 +6481,27 @@ button.settings-section-title {
     min-height: 100px;
 }
 
-/* The day timeline: twelve hours of the day with the user's other events,
-   and the new event as a block to drag */
-.day-timeline {
+/* DayStrip: hours of a day with the user's other events and the event's
+   slot; sm under an invite row, lg as the event form's timeline to drag */
+.day-strip {
     display: flex;
     flex-direction: column;
     gap: var(--space-xs);
 }
 
-.day-timeline-track {
+.day-strip-track {
     position: relative;
+}
+
+.day-strip[data-size="sm"] .day-strip-track {
+    height: 16px;
+    margin: 2px 0;
+    border-radius: var(--radius-sm);
+    background: var(--surface-hover);
+    box-shadow: inset 0 0 0 1px var(--border-subtle);
+}
+
+.day-strip[data-size="lg"] .day-strip-track {
     height: 40px;
     border-radius: var(--radius-md);
     background: var(--surface-subtle);
@@ -6563,7 +6510,7 @@ button.settings-section-title {
     user-select: none;
 }
 
-.day-timeline-tick {
+.day-strip-tick {
     position: absolute;
     top: 0;
     bottom: 0;
@@ -6571,21 +6518,38 @@ button.settings-section-title {
     background: var(--border-subtle);
 }
 
-.day-timeline-past {
+.day-strip-tick.noon {
+    background: var(--border-default);
+}
+
+.day-strip-past {
     position: absolute;
     top: 0;
     bottom: 0;
     left: 0;
-    border-radius: var(--radius-md) 0 0 var(--radius-md);
+    border-radius: inherit;
+    border-top-right-radius: 0;
+    border-bottom-right-radius: 0;
     background: var(--surface-hover);
 }
 
-.day-timeline-busy {
+.day-strip-busy {
     position: absolute;
+    overflow: hidden;
+    pointer-events: none;
+}
+
+.day-strip[data-size="sm"] .day-strip-busy {
+    top: 3px;
+    bottom: 3px;
+    border-radius: 3px;
+    background: color-mix(in srgb, var(--text-muted) 35%, transparent);
+}
+
+.day-strip[data-size="lg"] .day-strip-busy {
     top: 6px;
     bottom: 6px;
     padding: 0 var(--space-sm);
-    overflow: hidden;
     border-radius: var(--radius-sm);
     background: color-mix(in srgb, var(--text-muted) 25%, transparent);
     color: var(--text-secondary);
@@ -6593,20 +6557,31 @@ button.settings-section-title {
     align-items: center;
     font: var(--type-hint);
     white-space: nowrap;
-    pointer-events: none;
 }
 
-.day-timeline-busy.overlap {
-    background: repeating-linear-gradient(135deg, color-mix(in srgb, var(--warning) 35%, transparent) 0 2px, transparent 2px 5px);
+.day-strip-busy.overlap {
+    background: repeating-linear-gradient(135deg, color-mix(in srgb, var(--warning) 40%, transparent) 0 2px, transparent 2px 5px);
     box-shadow: inset 0 0 0 1px var(--warning);
     color: var(--warning-text);
 }
 
-.day-timeline-slot {
+.day-strip-slot {
     position: absolute;
+    z-index: 1;
+}
+
+.day-strip[data-size="sm"] .day-strip-slot {
+    top: 2px;
+    bottom: 2px;
+    min-width: 6px;
+    border-radius: 3px;
+    background: color-mix(in srgb, var(--surface-card) 55%, transparent);
+    box-shadow: inset 0 0 0 1.5px var(--border-focus);
+}
+
+.day-strip[data-size="lg"] .day-strip-slot {
     top: 3px;
     bottom: 3px;
-    z-index: 1;
     min-width: 8px;
     border-radius: var(--radius-sm);
     background: color-mix(in srgb, var(--accent-fill) 80%, transparent);
@@ -6615,15 +6590,15 @@ button.settings-section-title {
     outline: none;
 }
 
-.day-timeline-slot:active {
+.day-strip[data-size="lg"] .day-strip-slot:active {
     cursor: grabbing;
 }
 
-.day-timeline-slot:focus-visible {
+.day-strip[data-size="lg"] .day-strip-slot:focus-visible {
     box-shadow: 0 0 0 2px var(--border-focus);
 }
 
-.day-timeline-handle {
+.day-strip-handle {
     position: absolute;
     top: 0;
     bottom: 0;
@@ -6631,15 +6606,15 @@ button.settings-section-title {
     cursor: ew-resize;
 }
 
-.day-timeline-handle.start {
+.day-strip-handle.start {
     left: -4px;
 }
 
-.day-timeline-handle.end {
+.day-strip-handle.end {
     right: -4px;
 }
 
-.day-timeline-now {
+.day-strip-now {
     position: absolute;
     top: -2px;
     bottom: -2px;
@@ -6651,24 +6626,24 @@ button.settings-section-title {
     pointer-events: none;
 }
 
-.day-timeline-hours {
+.day-strip-hours {
     position: relative;
     height: 14px;
     font: var(--type-hint);
     color: var(--text-muted);
 }
 
-.day-timeline-hours span {
+.day-strip-hours span {
     position: absolute;
     transform: translateX(-50%);
     white-space: nowrap;
 }
 
-.day-timeline-hours span:first-child {
+.day-strip-hours span:first-child {
     transform: none;
 }
 
-.day-timeline-hours span:last-child {
+.day-strip-hours span:last-child {
     transform: translateX(-100%);
 }
 

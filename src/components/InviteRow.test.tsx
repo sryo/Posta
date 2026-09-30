@@ -218,10 +218,10 @@ describe("InviteRowLines", () => {
       { title: "Lunch", start: at(1, 13), end: at(1, 14) },
     ], NOW);
     render(() => lines({ strip }));
-    const el = document.querySelector(".invite-strip")!;
+    const el = document.querySelector(".day-strip")!;
     expect(el).toHaveAttribute("aria-hidden", "true");
-    expect(el.querySelectorAll(".invite-strip-busy")).toHaveLength(2);
-    expect(el.querySelectorAll(".invite-strip-busy.overlap")).toHaveLength(1);
+    expect(el.querySelectorAll(".day-strip-busy")).toHaveLength(2);
+    expect(el.querySelectorAll(".day-strip-busy.overlap")).toHaveLength(1);
     expect(document.querySelector(".invite-clash")).toHaveTextContent("Dentist");
   });
 
@@ -252,14 +252,14 @@ describe("InviteRowLines", () => {
   it("hides the strip once answered", () => {
     const strip = stripLayout({ start: at(1, 10, 30), end: at(1, 11, 30) }, [], NOW);
     render(() => lines({ strip, rsvp: "accepted" }));
-    expect(document.querySelector(".invite-strip")).toBeNull();
+    expect(document.querySelector(".day-strip")).toBeNull();
   });
 
   it("draws the now-line and the past on today's strip", () => {
     const strip = stripLayout({ start: NOW + 3_600_000, end: NOW + 7_200_000 }, [], NOW);
     render(() => lines({ strip, invite: invite({ start_time: NOW + 3_600_000, end_time: NOW + 7_200_000 }) }));
-    expect(document.querySelector(".invite-strip-now")).not.toBeNull();
-    expect(document.querySelector(".invite-strip-past")).not.toBeNull();
+    expect(document.querySelector(".day-strip-now")).not.toBeNull();
+    expect(document.querySelector(".day-strip-past")).not.toBeNull();
   });
 
   it("shows a running meeting's progress and a Join button for its call", async () => {

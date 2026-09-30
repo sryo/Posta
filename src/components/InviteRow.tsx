@@ -1,4 +1,5 @@
 import { createMemo, createSignal, For, type JSX, onCleanup, Show, createEffect } from "solid-js";
+import { DayStrip } from "./DayStrip";
 import { KeyHint } from "./KeyHint";
 import { Dynamic, Portal } from "solid-js/web";
 import { openUrl } from "@tauri-apps/plugin-opener";
@@ -211,29 +212,19 @@ export const InviteWhen = (props: {
   );
 };
 
+// Twelve hours with a tick each, so the invite's hour reads at a glance
+const HOUR_TICKS = Array.from({ length: 11 }, (_, i) => ((i + 1) / 12) * 100);
+
 const InviteStrip = (props: { layout: StripLayout }) => (
-  <div class="invite-strip" aria-hidden="true">
-    <Show when={props.layout.noonAt !== null}>
-      <span class="invite-strip-noon" style={{ left: `${props.layout.noonAt}%` }} />
-    </Show>
-    <Show when={props.layout.past !== null}>
-      <span class="invite-strip-past" style={{ width: `${props.layout.past}%` }} />
-    </Show>
-    <For each={props.layout.busy}>
-      {(block) => (
-        <span
-          class="invite-strip-busy"
-          classList={{ "overlap": block.overlap }}
-          style={{ left: `${block.left}%`, width: `${block.width}%` }}
-          title={block.title}
-        />
-      )}
-    </For>
-    <span class="invite-strip-slot" style={{ left: `${props.layout.slot.left}%`, width: `${props.layout.slot.width}%` }} />
-    <Show when={props.layout.nowAt !== null}>
-      <span class="invite-strip-now" style={{ left: `${props.layout.nowAt}%` }} />
-    </Show>
-  </div>
+  <DayStrip
+    size="sm"
+    ticks={HOUR_TICKS}
+    noonAt={props.layout.noonAt}
+    past={props.layout.past}
+    nowAt={props.layout.nowAt}
+    busy={props.layout.busy}
+    slotBox={props.layout.slot}
+  />
 );
 
 // An invite row's lines under its sender and title: when it is, how long and

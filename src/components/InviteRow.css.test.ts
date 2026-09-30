@@ -46,6 +46,6 @@ describe("invite row styles", () => {
   });
 
   it("hatches an overlapping event amber on the day strip", () => {
-    expect(declarations(".invite-strip-busy.overlap").get("box-shadow")).toContain("var(--warning)");
+    expect(declarations(".day-strip-busy.overlap").get("box-shadow")).toContain("var(--warning)");
   });
 });

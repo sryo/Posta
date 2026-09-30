@@ -2655,11 +2655,11 @@ describe("App calendar", () => {
       render(() => <App />);
       await screen.findByText("Q4 kickoff");
       const row = rowOf("Q4 kickoff");
-      await waitFor(() => expect(row.querySelector(".invite-strip")).not.toBeNull());
+      await waitFor(() => expect(row.querySelector(".day-strip")).not.toBeNull());
       expect(invoke).toHaveBeenCalledWith("fetch_calendar_events", { accountId: "a", query: "calendar:7d" });
-      expect(row.querySelector(".invite-strip")).toHaveAttribute("aria-hidden", "true");
-      expect(row.querySelectorAll(".invite-strip-busy")).toHaveLength(1);
-      expect(row.querySelector(".invite-strip-busy.overlap")).not.toBeNull();
+      expect(row.querySelector(".day-strip")).toHaveAttribute("aria-hidden", "true");
+      expect(row.querySelectorAll(".day-strip-busy")).toHaveLength(1);
+      expect(row.querySelector(".day-strip-busy.overlap")).not.toBeNull();
       expect(row.querySelector(".invite-clash")).toHaveTextContent("Dentist");
       expect(row.getAttribute("aria-label")).toMatch(/Overlaps Dentist, .*\. You have not answered\.$/);
     });
@@ -2672,7 +2672,7 @@ describe("App calendar", () => {
       await screen.findByText("Planning");
       await waitFor(() => expect(invoke).toHaveBeenCalledWith("fetch_calendar_events", expect.anything()));
       await new Promise(r => setTimeout(r, 20));
-      expect(document.querySelector(".invite-strip")).toBeNull();
+      expect(document.querySelector(".day-strip")).toBeNull();
       expect(screen.queryByText("Posta lost access to a@x.com")).toBeNull();
     });
 

@@ -1,4 +1,5 @@
-import { createComputed, createSignal, For, Show } from "solid-js";
+import { createComputed, createSignal } from "solid-js";
+import { DayStrip } from "./DayStrip";
 import type { StripEvent } from "../app/dayStrip";
 import { dragTo, firstHourFor, minuteAt, nudge, panFirstHour, percentOf, VISIBLE_HOURS, type Drag, type MinuteSpan } from "../app/dayTimeline";
 import { formatTime, minutesToTime } from "../app/timeInput";
@@ -29,7 +30,7 @@ export function DayTimeline(props: {
   const dayStart = () => props.day.getTime();
   const minuteOf = (time: number) => (time - dayStart()) / MINUTE_MS;
   const pct = (minutes: number) => percentOf(minutes, view());
-  const box = (span: MinuteSpan) => ({ left: `${pct(span.start)}%`, width: `${pct(span.end) - pct(span.start)}%` });
+  const boxOf = (span: MinuteSpan) => ({ left: pct(span.start), width: pct(span.end) - pct(span.start) });
 
   const hours = () => Array.from({ length: VISIBLE_HOURS / LABEL_EVERY_HOURS + 1 }, (_, i) => view() + i * LABEL_EVERY_HOURS);
   const nowMinute = () => {
@@ -107,34 +108,21 @@ export function DayTimeline(props: {
   const slotText = () => `${formatTime(minutesToTime(props.slot.start % (24 * 60)))} to ${formatTime(minutesToTime(Math.min(props.slot.end, 24 * 60 - 1)))}`;
 
   return (
-    <div class="day-timeline">
-      <div
-        ref={track}
-        class="day-timeline-track"
-        onPointerDown={(e) => startDrag("draw", e)}
-        onWheel={onWheel}
-      >
-        <For each={hours().slice(1, -1)}>
-          {(hour) => <span class="day-timeline-tick" style={{ left: `${pct(hour * 60)}%` }} />}
-        </For>
-        <Show when={pastMinute() !== null}>
-          <span class="day-timeline-past" style={{ width: `${pct(pastMinute()!)}%` }} />
-        </Show>
-        <For each={props.busy ?? []}>
-          {(event) => (
-            <span
-              class="day-timeline-busy"
-              classList={{ overlap: isClash(event) }}
-              style={box({ start: minuteOf(event.start), end: minuteOf(event.end) })}
-              title={event.title}
-            >
-              {event.title}
-            </span>
-          )}
-        </For>
+    <DayStrip
+      size="lg"
+      ticks={hours().slice(1, -1).map(hour => pct(hour * 60))}
+      past={pastMinute() === null ? null : pct(pastMinute()!)}
+      nowAt={nowMinute() === null ? null : pct(nowMinute()!)}
+      busy={(props.busy ?? []).map(event => ({ ...boxOf({ start: minuteOf(event.start), end: minuteOf(event.end) }), title: event.title, overlap: isClash(event) }))}
+      slotBox={boxOf(props.slot)}
+      hours={hours().map(hour => ({ at: pct(hour * 60), label: formatTime(minutesToTime(hour % 24 * 60)).replace(/:00/, "") }))}
+      trackRef={(el) => { track = el; }}
+      onTrackPointerDown={(e) => startDrag("draw", e)}
+      onWheel={onWheel}
+      slot={(style) => (
         <div
-          class="day-timeline-slot"
-          style={box(props.slot)}
+          class="day-strip-slot"
+          style={style}
           tabindex="0"
           role="slider"
           aria-label="Event time. Arrow keys move it, Shift with arrows changes its length, Option with arrows changes the day"
@@ -145,18 +133,10 @@ export function DayTimeline(props: {
           onPointerDown={(e) => startDrag("move", e)}
           on:keydown={onKeyDown}
         >
-          <span class="day-timeline-handle start" onPointerDown={(e) => startDrag("start", e)} />
-          <span class="day-timeline-handle end" onPointerDown={(e) => startDrag("end", e)} />
+          <span class="day-strip-handle start" onPointerDown={(e) => startDrag("start", e)} />
+          <span class="day-strip-handle end" onPointerDown={(e) => startDrag("end", e)} />
         </div>
-        <Show when={nowMinute() !== null}>
-          <span class="day-timeline-now" style={{ left: `${pct(nowMinute()!)}%` }} />
-        </Show>
-      </div>
-      <div class="day-timeline-hours" aria-hidden="true">
-        <For each={hours()}>
-          {(hour) => <span style={{ left: `${pct(hour * 60)}%` }}>{formatTime(minutesToTime(hour % 24 * 60)).replace(/:00/, "")}</span>}
-        </For>
-      </div>
-    </div>
+      )}
+    />
   );
 }
