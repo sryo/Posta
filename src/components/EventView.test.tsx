@@ -95,7 +95,7 @@ describe("EventView keys match the rest of the app", () => {
     expect(props.onOpenCalendars).toHaveBeenCalledTimes(1);
     const move = screen.getByTitle("Move to calendar");
     expect(move.querySelector(".thread-toolbar-label")).toHaveTextContent("Move to…");
-    expect(move.querySelector(".shortcut-hint")).toHaveTextContent("M");
+    expect(move.querySelector(".key-hint")).toHaveTextContent("M");
   });
 
   it("draws Move to… and Google Calendar with different icons", () => {

@@ -1577,11 +1577,6 @@ a:focus-visible,
     display: inline-flex;
 }
 
-.rsvp-segment .shortcut-hint {
-    color: inherit;
-    opacity: 0.6;
-}
-
 .calendar-event-title {
     font: var(--type-subject);
     color: var(--text-primary);
@@ -1949,14 +1944,6 @@ a:focus-visible,
     opacity: 0.8;
 }
 
-.invite-answer-keys {
-    margin-left: 2px;
-    font: var(--type-hint);
-    text-transform: uppercase;
-    letter-spacing: var(--tracking-hint);
-    opacity: 0.6;
-}
-
 .invite-answer-menu {
     position: fixed;
     z-index: var(--z-dropdown);
@@ -2009,13 +1996,6 @@ a:focus-visible,
 
 .invite-answer-label {
     flex: 1;
-}
-
-.invite-answer-item kbd {
-    font: var(--type-hint);
-    text-transform: uppercase;
-    letter-spacing: var(--tracking-hint);
-    color: var(--text-muted);
 }
 
 /* The day strip: twelve hours of the event's day, noon heavier; the
@@ -4281,13 +4261,57 @@ button:disabled:hover {
 }
 
 /* Keyboard shortcut hints */
-.shortcut-hint {
+/* A keyboard shortcut beside what it does (KeyHint): faint small caps inside
+   a button or after a label, a dark pill beside a wheel's petal, or a keycap
+   in the shortcuts sheet */
+.key-hint {
     display: inline-block;
+    margin-left: 4px;
+    vertical-align: middle;
     font: var(--type-hint);
     letter-spacing: var(--tracking-hint);
-    margin-left: 6px;
-    vertical-align: middle;
     text-transform: uppercase;
+    color: inherit;
+    opacity: 0.6;
+}
+
+.close-btn .key-hint {
+    margin-left: 0;
+}
+
+.key-hint.pill {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 16px;
+    height: 16px;
+    margin: 0;
+    padding: 0 var(--space-xs);
+    border-radius: var(--radius-full);
+    background: var(--surface-inverse);
+    color: var(--text-inverse);
+    white-space: nowrap;
+    box-shadow: var(--shadow-sm);
+    opacity: 1;
+}
+
+.key-hint.key {
+    margin: 0;
+    opacity: 1;
+    text-transform: none;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+    min-width: 28px;
+    height: 24px;
+    padding: 0 8px;
+    white-space: nowrap;
+    background: var(--surface-inset);
+    border: 1px solid var(--border-default);
+    border-radius: var(--radius-md);
+    font: var(--type-meta);
+    color: var(--text-secondary);
 }
 
 /* Shared close button */
@@ -4310,16 +4334,6 @@ button:disabled:hover {
 .close-btn:hover {
     background: var(--surface-subtle);
     color: var(--text-primary);
-}
-
-.close-btn .shortcut-hint {
-    margin-left: 0;
-    opacity: 0.6;
-}
-
-.btn .shortcut-hint {
-    margin-left: 4px;
-    opacity: 0.6;
 }
 
 .settings-section-title {
@@ -4572,25 +4586,11 @@ button.settings-section-title {
     box-shadow: 0 0 0 1.5px var(--surface-raised), 0 0 0 3px var(--border-focus), var(--shadow-sm);
 }
 
-/* A key hint: a small pill just outside its petal, on the petal's own line */
+/* A petal's key hint sits just outside it, on the petal's own line */
 .action-key-hint {
     position: absolute;
     left: 50%;
     top: 50%;
-    min-width: 16px;
-    height: 16px;
-    padding: 0 var(--space-xs);
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    border-radius: var(--radius-full);
-    background: var(--surface-inverse);
-    color: var(--text-inverse);
-    font: var(--type-hint);
-    letter-spacing: var(--tracking-hint);
-    text-transform: uppercase;
-    white-space: nowrap;
-    box-shadow: var(--shadow-sm);
     pointer-events: none;
     opacity: 0;
     transform: translate(calc(-50% + var(--hx)), calc(-50% + var(--hy))) scale(0.8);
@@ -4879,11 +4879,6 @@ button.settings-section-title {
     gap: var(--space-sm);
 }
 
-.thread-floating-bar .close-btn .shortcut-hint {
-    font: var(--type-hint);
-    opacity: 0.6;
-}
-
 .thread-floating-bar .close-btn:hover {
     background: var(--surface-subtle);
     color: var(--text-primary);
@@ -4989,12 +4984,6 @@ button.settings-section-title {
     color: var(--danger-text);
 }
 
-.thread-toolbar-btn .shortcut-hint {
-    font: var(--type-hint);
-    opacity: 0.5;
-    margin-left: 4px;
-}
-
 .thread-toolbar-label {
     font: var(--type-meta);
     margin-left: 4px;
@@ -5002,7 +4991,7 @@ button.settings-section-title {
 
 @container (max-width: 760px) {
     .thread-toolbar-label,
-    .thread-toolbar-btn .shortcut-hint {
+    .thread-toolbar-btn .key-hint {
         display: none;
     }
 }
@@ -5127,11 +5116,6 @@ button.settings-section-title {
     padding: var(--space-lg) var(--space-xl);
     border-top: 1px solid var(--border-subtle);
     text-align: center;
-}
-
-.label-drawer-footer .shortcut-hint {
-    font: var(--type-hint);
-    color: var(--text-muted);
 }
 
 .thread-content {
@@ -5947,21 +5931,6 @@ button.settings-section-title {
     padding: 6px 0;
 }
 
-.shortcut-row kbd {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    flex-shrink: 0;
-    min-width: 28px;
-    height: 24px;
-    padding: 0 8px;
-    white-space: nowrap;
-    background: var(--surface-inset);
-    border: 1px solid var(--border-default);
-    border-radius: var(--radius-md);
-    font: var(--type-meta);
-    color: var(--text-secondary);
-}
 
 .shortcut-row span {
     font: var(--type-ui);

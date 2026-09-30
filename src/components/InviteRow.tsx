@@ -1,4 +1,5 @@
 import { createMemo, createSignal, For, type JSX, onCleanup, Show, createEffect } from "solid-js";
+import { KeyHint } from "./KeyHint";
 import { Dynamic, Portal } from "solid-js/web";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import type { CalendarEvent } from "../api/tauri";
@@ -133,7 +134,7 @@ export const InviteAnswerMenu = (props: {
         </Show>
         {answer()?.label ?? "Going?"}
         <Show when={props.showKeys}>
-          <span class="invite-answer-keys" aria-hidden="true">{RSVP_ANSWERS.map(a => a.keyHint).join(" ")}</span>
+          <KeyHint keys={RSVP_ANSWERS.map(a => a.keyHint).join(" ")} />
         </Show>
         <span class="invite-answer-caret" aria-hidden="true"><ChevronIcon size="meta" /></span>
       </button>
@@ -167,7 +168,7 @@ export const InviteAnswerMenu = (props: {
                     <Show when={props.value === option.status}>
                       <span class="invite-answer-tick" aria-hidden="true"><CheckIcon /></span>
                     </Show>
-                    <kbd aria-hidden="true">{option.keyHint}</kbd>
+                    <KeyHint keys={option.keyHint} />
                   </button>
                 )}
               </For>

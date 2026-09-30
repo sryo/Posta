@@ -1,4 +1,5 @@
 import { onCleanup } from "solid-js";
+import { KeyHint } from "./KeyHint";
 import { CloseIcon } from "./Icons";
 import { isImeComposing } from "../shared/keyboard";
 
@@ -42,7 +43,7 @@ export const CloseButton = (props: { onClick: () => void }) => {
   return (
     <button class="close-btn" onClick={props.onClick} title="Close (Esc)">
       <CloseIcon />
-      <span class="shortcut-hint">ESC</span>
+      <KeyHint keys="ESC" />
     </button>
   );
 };

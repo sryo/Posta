@@ -45,7 +45,7 @@ describe("SubmitButton", () => {
     const { getByRole } = render(() => <SubmitButton label="Save" onClick={onClick} />);
     const button = getByRole("button", { name: /Save/ });
     expect(button).toHaveClass("btn", "btn-primary");
-    expect(button.querySelector(".shortcut-hint")).toHaveTextContent("⌘↵");
+    expect(button.querySelector(".key-hint")).toHaveTextContent("⌘↵");
     fireEvent.click(button);
     expect(onClick).toHaveBeenCalledTimes(1);
   });
@@ -67,7 +67,7 @@ describe("CancelButton", () => {
     const onClick = vi.fn();
     const { getByRole } = render(() => <CancelButton onClick={onClick} />);
     const button = getByRole("button", { name: /Cancel/ });
-    expect(button.querySelector(".shortcut-hint")).toHaveTextContent("ESC");
+    expect(button.querySelector(".key-hint")).toHaveTextContent("ESC");
     fireEvent.click(button);
     expect(onClick).toHaveBeenCalledTimes(1);
   });

@@ -23,7 +23,7 @@ describe("dialogs", () => {
   });
 
   it("keep a shortcut's keys on one line however long its description", () => {
-    const key = declarationsOf(".shortcut-row kbd");
+    const key = declarationsOf(".key-hint.key");
     expect(key.get("white-space")).toBe("nowrap");
     expect(key.get("flex-shrink")).toBe("0");
   });

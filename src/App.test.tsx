@@ -3013,7 +3013,7 @@ describe("App batch reply", () => {
     fireEvent.keyDown(document, { key: "x" });
     fireEvent.click(await screen.findByTitle("Batch Reply"));
     fireEvent.input(await screen.findByPlaceholderText(/^Reply to/), { target: { value: "Thanks" } });
-    fireEvent.click(screen.getByRole("button", { name: /^Send ⌘/ }));
+    fireEvent.click(screen.getByRole("button", { name: "Send" }));
 
     await waitFor(() => expect(invoke).toHaveBeenCalledWith("reply_to_thread", expect.objectContaining({ to: "team@x.com" })), { timeout: 8000 });
   });
@@ -3028,7 +3028,7 @@ describe("App batch reply", () => {
     fireEvent.keyDown(document, { key: "x" });
     fireEvent.click(await screen.findByTitle("Batch Reply"));
     fireEvent.input(await screen.findByPlaceholderText(/^Reply to/), { target: { value: "Thanks" } });
-    fireEvent.click(screen.getByRole("button", { name: /^Send ⌘/ }));
+    fireEvent.click(screen.getByRole("button", { name: "Send" }));
 
     await waitFor(() => expect(invoke).toHaveBeenCalledWith("reply_to_thread", expect.objectContaining({ body: "Thanks\n\n-- \nAna" })), { timeout: 8000 });
   });
@@ -3047,7 +3047,7 @@ describe("App batch reply", () => {
     fireEvent.keyDown(document, { key: "x" });
     fireEvent.click(await screen.findByTitle("Batch Reply"));
     fireEvent.input(await screen.findByPlaceholderText(/^Reply to/), { target: { value: "Thanks" } });
-    fireEvent.click(screen.getByRole("button", { name: /^Send ⌘/ }));
+    fireEvent.click(screen.getByRole("button", { name: "Send" }));
 
     await waitFor(() => expect(invoke).toHaveBeenCalledWith("reply_to_thread", expect.objectContaining({ to: "ana@x.com", messageId: "m1" })), { timeout: 8000 });
   });
@@ -3066,7 +3066,7 @@ describe("App batch reply", () => {
     fireEvent.keyDown(document, { key: "x" });
     fireEvent.click(await screen.findByTitle("Batch Reply"));
     fireEvent.input(await screen.findByPlaceholderText(/^Reply to/), { target: { value: "Thanks" } });
-    fireEvent.click(screen.getByRole("button", { name: /^Send ⌘/ }));
+    fireEvent.click(screen.getByRole("button", { name: "Send" }));
 
     expect(await screen.findByText(/No one to reply to/)).toBeInTheDocument();
     expect(invoke).not.toHaveBeenCalledWith("reply_to_thread", expect.anything());

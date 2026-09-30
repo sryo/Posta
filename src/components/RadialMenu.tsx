@@ -1,4 +1,5 @@
 import { For, Show, createEffect, createMemo, createSignal, onCleanup, type JSX } from "solid-js";
+import { KeyHint } from "./KeyHint";
 import { Dynamic } from "solid-js/web";
 import type { IconProps } from "./Icons";
 import { autoArc, fittedRadius, layoutPetals, type Arc, type Overlap, type Rect } from "../app/radial";
@@ -243,7 +244,7 @@ export function RadialMenu(props: {
                 <Dynamic component={item.icon} size="ui" />
               </Show>
               <Show when={item.hint}>
-                <span class="action-key-hint" aria-hidden="true">{item.hint}</span>
+                <KeyHint keys={item.hint} look="pill" class="action-key-hint" />
               </Show>
             </button>
           );

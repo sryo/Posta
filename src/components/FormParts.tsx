@@ -1,4 +1,5 @@
 import { onCleanup, Show, type JSX } from "solid-js";
+import { KeyHint } from "./KeyHint";
 import { getAvatarHue, getInitial } from "../utils";
 import { CloseButton } from "./ComposeAtoms";
 
@@ -88,7 +89,7 @@ export function SubmitButton(props: {
       onClick={() => props.onClick()}
       title={props.title ?? `${props.label} (⌘Enter)`}
     >
-      {props.busy ? props.busyLabel ?? props.label : <>{props.label} <span class="shortcut-hint">⌘↵</span></>}
+      {props.busy ? props.busyLabel ?? props.label : <>{props.label} <KeyHint keys="⌘↵" /></>}
     </button>
   );
 }
@@ -96,7 +97,7 @@ export function SubmitButton(props: {
 export function CancelButton(props: { onClick: () => void }) {
   return (
     <button class="btn btn-ghost" onClick={() => props.onClick()} title="Cancel (Esc)">
-      Cancel <span class="shortcut-hint">ESC</span>
+      Cancel <KeyHint keys="ESC" />
     </button>
   );
 }

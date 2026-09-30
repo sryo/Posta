@@ -1,4 +1,5 @@
 import { RADIAL_HOVER_CLOSE_MS } from "../app/radial";
+import { KeyHint } from "./KeyHint";
 import { createSignal, createEffect, createMemo, on, onMount, onCleanup, Show, For } from "solid-js";
 import { MessageBody } from './MessageBody';
 import { sendReaction, type FullThread, type FullMessage, type Attachment, type CalendarEvent } from "../api/tauri";
@@ -459,25 +460,25 @@ export const ThreadView = (props: {
             <button class="thread-toolbar-btn" onClick={() => props.onAction(props.isInInbox ? 'archive' : 'inbox')} title={props.isInInbox ? 'Archive' : 'Move to Inbox'}>
               {props.isInInbox ? <ArchiveIcon /> : <InboxIcon />}
               <span class="thread-toolbar-label">{props.isInInbox ? 'Archive' : 'Move to Inbox'}</span>
-              <span class="shortcut-hint">A</span>
+              <KeyHint keys="A" />
             </button>
 
             <button class="thread-toolbar-btn" onClick={() => props.onAction(props.isStarred ? 'unstar' : 'star')} title={props.isStarred ? "Unstar" : "Star"}>
               {props.isStarred ? <StarFilledIcon /> : <StarIcon />}
               <span class="thread-toolbar-label">{props.isStarred ? 'Unstar' : 'Star'}</span>
-              <span class="shortcut-hint">S</span>
+              <KeyHint keys="S" />
             </button>
 
             <button class="thread-toolbar-btn" onClick={() => props.onAction(props.isRead ? 'unread' : 'read')} title={props.isRead ? "Mark unread" : "Mark read"}>
               {props.isRead ? <EyeClosedIcon /> : <EyeOpenIcon />}
               <span class="thread-toolbar-label">{props.isRead ? 'Mark unread' : 'Mark read'}</span>
-              <span class="shortcut-hint">U</span>
+              <KeyHint keys="U" />
             </button>
 
             <button class="thread-toolbar-btn" onClick={() => props.onAction(props.isImportant ? 'notImportant' : 'important')} title={props.isImportant ? "Mark not important" : "Mark important"}>
               {props.isImportant ? <ThumbsUpFilledIcon /> : <ThumbsUpIcon />}
               <span class="thread-toolbar-label">{props.isImportant ? 'Not important' : 'Important'}</span>
-              <span class="shortcut-hint">I</span>
+              <KeyHint keys="I" />
             </button>
 
             <div class="thread-toolbar-divider" />
@@ -485,7 +486,7 @@ export const ThreadView = (props: {
             <button class="thread-toolbar-btn" onClick={props.onOpenLabels} title="Manage labels">
               <LabelIcon />
               <span class="thread-toolbar-label">Labels{props.labelCount > 0 ? ` (${props.labelCount})` : ''}</span>
-              <span class="shortcut-hint">L</span>
+              <KeyHint keys="L" />
             </button>
 
             <Show when={props.onUnsubscribe && unsubscribe()}>
@@ -501,7 +502,7 @@ export const ThreadView = (props: {
               <button class="thread-toolbar-btn" onClick={() => props.onCreateEvent!()} title="Create event from this thread">
                 <CalendarIcon />
                 <span class="thread-toolbar-label">Create event…</span>
-                <span class="shortcut-hint">E</span>
+                <KeyHint keys="E" />
               </button>
             </Show>
 
@@ -510,13 +511,13 @@ export const ThreadView = (props: {
             <button class="thread-toolbar-btn thread-toolbar-btn-danger" onClick={() => props.onAction('spam')} title="Report spam">
               <SpamIcon />
               <span class="thread-toolbar-label">Spam</span>
-              <span class="shortcut-hint">!</span>
+              <KeyHint keys="!" />
             </button>
 
             <button class="thread-toolbar-btn thread-toolbar-btn-danger" onClick={() => props.onAction('trash')} title="Delete">
               <TrashIcon />
               <span class="thread-toolbar-label">Delete</span>
-              <span class="shortcut-hint">#</span>
+              <KeyHint keys="#" />
             </button>
           </div>
         </Show>

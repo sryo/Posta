@@ -1,4 +1,5 @@
 import { batch, createSignal, onMount, onCleanup, Show, For, Index, createMemo, createEffect, createComputed, createSelector, mapArray, on, untrack } from "solid-js";
+import { KeyHint } from "./components/KeyHint";
 import { createStore, produce, reconcile, unwrap } from "solid-js/store";
 import { MessageBody } from './components/MessageBody';
 import { getCurrentWindow } from '@tauri-apps/api/window';
@@ -4725,7 +4726,7 @@ function App() {
               }
             }}
           />
-          <span class="shortcut-hint global-filter-hint" title="Escape closes the filter">ESC</span>
+          <KeyHint keys="ESC" class="global-filter-hint" title="Escape closes the filter" />
         </div>
       </div>
 
@@ -6099,7 +6100,7 @@ function App() {
                 onClick={handleSaveSettings}
                 disabled={!credentialsValid(clientId(), clientSecret())}
               >
-                Save and sign in <span class="shortcut-hint">↵</span>
+                Save and sign in <KeyHint keys="↵" />
               </button>
             </Show>
           </div>
@@ -6176,81 +6177,81 @@ function App() {
           <div class="shortcuts-body" tabindex="0">
             <div class="shortcuts-section">
               <h3>Navigation</h3>
-              <div class="shortcut-row"><kbd>j</kbd> <span>Next thread</span></div>
-              <div class="shortcut-row"><kbd>k</kbd> <span>Previous thread</span></div>
-              <div class="shortcut-row"><kbd>h</kbd> <span>Previous card</span></div>
-              <div class="shortcut-row"><kbd>l</kbd> <span>Next card</span></div>
-              <div class="shortcut-row"><kbd>Enter</kbd> <span>Open thread or event</span></div>
-              <div class="shortcut-row"><kbd>Escape</kbd> <span>Close / Go back</span></div>
-              <div class="shortcut-row"><kbd>/</kbd> <span>Open filter</span></div>
-              <div class="shortcut-row"><kbd>⌘F</kbd> <span>Open filter</span></div>
+              <div class="shortcut-row"><KeyHint keys="j" look="key" /> <span>Next thread</span></div>
+              <div class="shortcut-row"><KeyHint keys="k" look="key" /> <span>Previous thread</span></div>
+              <div class="shortcut-row"><KeyHint keys="h" look="key" /> <span>Previous card</span></div>
+              <div class="shortcut-row"><KeyHint keys="l" look="key" /> <span>Next card</span></div>
+              <div class="shortcut-row"><KeyHint keys="Enter" look="key" /> <span>Open thread or event</span></div>
+              <div class="shortcut-row"><KeyHint keys="Escape" look="key" /> <span>Close / Go back</span></div>
+              <div class="shortcut-row"><KeyHint keys="/" look="key" /> <span>Open filter</span></div>
+              <div class="shortcut-row"><KeyHint keys="⌘F" look="key" /> <span>Open filter</span></div>
             </div>
             <div class="shortcuts-section">
               <h3>Actions</h3>
-              <div class="shortcut-row"><kbd>a</kbd> <span>Archive thread</span></div>
-              <div class="shortcut-row"><kbd>s</kbd> <span>Star thread</span></div>
-              <div class="shortcut-row"><kbd>d</kbd> <span>Delete thread</span></div>
-              <div class="shortcut-row"><kbd>#</kbd> <span>Delete thread</span></div>
-              <div class="shortcut-row"><kbd>r</kbd> <span>Reply to thread</span></div>
-              <div class="shortcut-row"><kbd>f</kbd> <span>Forward thread</span></div>
-              <div class="shortcut-row"><kbd>u</kbd> <span>Toggle read</span></div>
-              <div class="shortcut-row"><kbd>i</kbd> <span>Toggle important</span></div>
-              <div class="shortcut-row"><kbd>!</kbd> <span>Report spam</span></div>
-              <div class="shortcut-row"><kbd>y ⇧M n</kbd> <span>Answer a focused invite: Going, Maybe, Not going</span></div>
-              <div class="shortcut-row"><kbd>z</kbd> <span>Undo last action</span></div>
+              <div class="shortcut-row"><KeyHint keys="a" look="key" /> <span>Archive thread</span></div>
+              <div class="shortcut-row"><KeyHint keys="s" look="key" /> <span>Star thread</span></div>
+              <div class="shortcut-row"><KeyHint keys="d" look="key" /> <span>Delete thread</span></div>
+              <div class="shortcut-row"><KeyHint keys="#" look="key" /> <span>Delete thread</span></div>
+              <div class="shortcut-row"><KeyHint keys="r" look="key" /> <span>Reply to thread</span></div>
+              <div class="shortcut-row"><KeyHint keys="f" look="key" /> <span>Forward thread</span></div>
+              <div class="shortcut-row"><KeyHint keys="u" look="key" /> <span>Toggle read</span></div>
+              <div class="shortcut-row"><KeyHint keys="i" look="key" /> <span>Toggle important</span></div>
+              <div class="shortcut-row"><KeyHint keys="!" look="key" /> <span>Report spam</span></div>
+              <div class="shortcut-row"><KeyHint keys="y ⇧M n" look="key" /> <span>Answer a focused invite: Going, Maybe, Not going</span></div>
+              <div class="shortcut-row"><KeyHint keys="z" look="key" /> <span>Undo last action</span></div>
             </div>
             <div class="shortcuts-section">
               <h3>Open thread</h3>
-              <div class="shortcut-row"><kbd>j</kbd> <span>Next message</span></div>
-              <div class="shortcut-row"><kbd>k</kbd> <span>Previous message</span></div>
-              <div class="shortcut-row"><kbd>]</kbd> <span>Next thread in the card (or ⇧J)</span></div>
-              <div class="shortcut-row"><kbd>[</kbd> <span>Previous thread in the card (or ⇧K)</span></div>
-              <div class="shortcut-row"><kbd>r</kbd> <span>Reply to message</span></div>
-              <div class="shortcut-row"><kbd>⇧R</kbd> <span>Reply all</span></div>
-              <div class="shortcut-row"><kbd>f</kbd> <span>Forward message</span></div>
-              <div class="shortcut-row"><kbd>l</kbd> <span>Labels</span></div>
-              <div class="shortcut-row"><kbd>e</kbd> <span>Create event from thread</span></div>
-              <div class="shortcut-row"><kbd>a</kbd> <span>Archive</span></div>
-              <div class="shortcut-row"><kbd>s</kbd> <span>Star</span></div>
-              <div class="shortcut-row"><kbd>u</kbd> <span>Toggle read</span></div>
-              <div class="shortcut-row"><kbd>i</kbd> <span>Toggle important</span></div>
-              <div class="shortcut-row"><kbd>!</kbd> <span>Report spam</span></div>
-              <div class="shortcut-row"><kbd>d</kbd> <span>Delete</span></div>
+              <div class="shortcut-row"><KeyHint keys="j" look="key" /> <span>Next message</span></div>
+              <div class="shortcut-row"><KeyHint keys="k" look="key" /> <span>Previous message</span></div>
+              <div class="shortcut-row"><KeyHint keys="]" look="key" /> <span>Next thread in the card (or ⇧J)</span></div>
+              <div class="shortcut-row"><KeyHint keys="[" look="key" /> <span>Previous thread in the card (or ⇧K)</span></div>
+              <div class="shortcut-row"><KeyHint keys="r" look="key" /> <span>Reply to message</span></div>
+              <div class="shortcut-row"><KeyHint keys="⇧R" look="key" /> <span>Reply all</span></div>
+              <div class="shortcut-row"><KeyHint keys="f" look="key" /> <span>Forward message</span></div>
+              <div class="shortcut-row"><KeyHint keys="l" look="key" /> <span>Labels</span></div>
+              <div class="shortcut-row"><KeyHint keys="e" look="key" /> <span>Create event from thread</span></div>
+              <div class="shortcut-row"><KeyHint keys="a" look="key" /> <span>Archive</span></div>
+              <div class="shortcut-row"><KeyHint keys="s" look="key" /> <span>Star</span></div>
+              <div class="shortcut-row"><KeyHint keys="u" look="key" /> <span>Toggle read</span></div>
+              <div class="shortcut-row"><KeyHint keys="i" look="key" /> <span>Toggle important</span></div>
+              <div class="shortcut-row"><KeyHint keys="!" look="key" /> <span>Report spam</span></div>
+              <div class="shortcut-row"><KeyHint keys="d" look="key" /> <span>Delete</span></div>
             </div>
             <div class="shortcuts-section">
               <h3>Open event</h3>
-              <div class="shortcut-row"><kbd>r</kbd> <span>Reply to organizer</span></div>
-              <div class="shortcut-row"><kbd>⇧R</kbd> <span>Reply all</span></div>
-              <div class="shortcut-row"><kbd>f</kbd> <span>Forward</span></div>
-              <div class="shortcut-row"><kbd>v</kbd> <span>Join meeting</span></div>
-              <div class="shortcut-row"><kbd>o</kbd> <span>Open in Google Calendar</span></div>
-              <div class="shortcut-row"><kbd>m</kbd> <span>Move to calendar</span></div>
-              <div class="shortcut-row"><kbd>y</kbd> <span>Going</span></div>
-              <div class="shortcut-row"><kbd>⇧M</kbd> <span>Maybe</span></div>
-              <div class="shortcut-row"><kbd>n</kbd> <span>Not going</span></div>
-              <div class="shortcut-row"><kbd>e</kbd> <span>Edit</span></div>
-              <div class="shortcut-row"><kbd>d</kbd> <span>Delete</span></div>
+              <div class="shortcut-row"><KeyHint keys="r" look="key" /> <span>Reply to organizer</span></div>
+              <div class="shortcut-row"><KeyHint keys="⇧R" look="key" /> <span>Reply all</span></div>
+              <div class="shortcut-row"><KeyHint keys="f" look="key" /> <span>Forward</span></div>
+              <div class="shortcut-row"><KeyHint keys="v" look="key" /> <span>Join meeting</span></div>
+              <div class="shortcut-row"><KeyHint keys="o" look="key" /> <span>Open in Google Calendar</span></div>
+              <div class="shortcut-row"><KeyHint keys="m" look="key" /> <span>Move to calendar</span></div>
+              <div class="shortcut-row"><KeyHint keys="y" look="key" /> <span>Going</span></div>
+              <div class="shortcut-row"><KeyHint keys="⇧M" look="key" /> <span>Maybe</span></div>
+              <div class="shortcut-row"><KeyHint keys="n" look="key" /> <span>Not going</span></div>
+              <div class="shortcut-row"><KeyHint keys="e" look="key" /> <span>Edit</span></div>
+              <div class="shortcut-row"><KeyHint keys="d" look="key" /> <span>Delete</span></div>
             </div>
             <div class="shortcuts-section">
               <h3>Compose</h3>
-              <div class="shortcut-row"><kbd>c</kbd> <span>New email</span></div>
-              <div class="shortcut-row"><kbd>e</kbd> <span>New event</span></div>
-              <div class="shortcut-row"><kbd>⌘Enter</kbd> <span>Send email</span></div>
-              <div class="shortcut-row"><kbd>Escape</kbd> <span>Close compose</span></div>
+              <div class="shortcut-row"><KeyHint keys="c" look="key" /> <span>New email</span></div>
+              <div class="shortcut-row"><KeyHint keys="e" look="key" /> <span>New event</span></div>
+              <div class="shortcut-row"><KeyHint keys="⌘Enter" look="key" /> <span>Send email</span></div>
+              <div class="shortcut-row"><KeyHint keys="Escape" look="key" /> <span>Close compose</span></div>
             </div>
             <div class="shortcuts-section">
               <h3>Selection</h3>
-              <div class="shortcut-row"><kbd>x</kbd> <span>Select thread or event</span></div>
-              <div class="shortcut-row"><kbd>⇧J</kbd> <span>Extend selection down</span></div>
-              <div class="shortcut-row"><kbd>⇧K</kbd> <span>Extend selection up</span></div>
-              <div class="shortcut-row"><kbd>*a</kbd> <span>Select all in card</span></div>
-              <div class="shortcut-row"><kbd>a s u i d !</kbd> <span>Act on the selection</span></div>
-              <div class="shortcut-row"><kbd>r</kbd> <span>Batch reply to the selection</span></div>
-              <div class="shortcut-row"><kbd>Escape</kbd> <span>Clear selection</span></div>
+              <div class="shortcut-row"><KeyHint keys="x" look="key" /> <span>Select thread or event</span></div>
+              <div class="shortcut-row"><KeyHint keys="⇧J" look="key" /> <span>Extend selection down</span></div>
+              <div class="shortcut-row"><KeyHint keys="⇧K" look="key" /> <span>Extend selection up</span></div>
+              <div class="shortcut-row"><KeyHint keys="*a" look="key" /> <span>Select all in card</span></div>
+              <div class="shortcut-row"><KeyHint keys="a s u i d !" look="key" /> <span>Act on the selection</span></div>
+              <div class="shortcut-row"><KeyHint keys="r" look="key" /> <span>Batch reply to the selection</span></div>
+              <div class="shortcut-row"><KeyHint keys="Escape" look="key" /> <span>Clear selection</span></div>
             </div>
             <div class="shortcuts-section">
               <h3>Help</h3>
-              <div class="shortcut-row"><kbd>?</kbd> <span>Show this help</span></div>
+              <div class="shortcut-row"><KeyHint keys="?" look="key" /> <span>Show this help</span></div>
             </div>
           </div>
         </Dialog>

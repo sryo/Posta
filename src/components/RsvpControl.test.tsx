@@ -50,6 +50,6 @@ describe("RsvpControl", () => {
     expect(screen.getByRole("button", { name: "Going" })).toHaveAttribute("aria-keyshortcuts", "y");
     expect(screen.getByRole("button", { name: "Maybe" })).toHaveAttribute("aria-keyshortcuts", "Shift+M");
     expect(screen.getByRole("button", { name: "Not going" })).toHaveAttribute("aria-keyshortcuts", "n");
-    expect(screen.getByRole("button", { name: "Maybe" }).querySelector(".shortcut-hint")).toHaveTextContent("⇧M");
+    expect(screen.getByRole("button", { name: "Maybe" }).querySelector(".key-hint")).toHaveTextContent("⇧M");
   });
 });

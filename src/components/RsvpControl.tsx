@@ -1,4 +1,5 @@
 import { For, Show } from "solid-js";
+import { KeyHint } from "./KeyHint";
 import { CheckIcon } from "./Icons";
 import { RSVP_ANSWERS, type RsvpStatus } from "../app/rsvp";
 
@@ -42,7 +43,7 @@ export const RsvpControl = (props: {
             </Show>
             {answer.label}
             <Show when={props.showKeys}>
-              <span class="shortcut-hint" aria-hidden="true">{answer.keyHint}</span>
+              <KeyHint keys={answer.keyHint} />
             </Show>
           </button>
         );

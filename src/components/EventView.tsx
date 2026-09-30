@@ -1,4 +1,5 @@
 import { createEffect, createMemo, createSignal, on, onMount, onCleanup, Show, For } from "solid-js";
+import { KeyHint } from "./KeyHint";
 import DOMPurify from 'dompurify';
 import { DOMPURIFY_CONFIG } from './MessageBody';
 import { openUrl } from '@tauri-apps/plugin-opener';
@@ -141,7 +142,7 @@ export const EventView = (props: {
               >
                 <ReplyIcon />
                 <span class="thread-toolbar-label">Reply</span>
-                <span class="shortcut-hint">R</span>
+                <KeyHint keys="R" />
               </button>
             </Show>
 
@@ -153,7 +154,7 @@ export const EventView = (props: {
               >
                 <ReplyAllIcon />
                 <span class="thread-toolbar-label">Email guests</span>
-                <span class="shortcut-hint">R</span>
+                <KeyHint keys="R" />
               </button>
             </Show>
 
@@ -166,7 +167,7 @@ export const EventView = (props: {
               >
                 <VideoIcon />
                 <span class="thread-toolbar-label">Join</span>
-                <span class="shortcut-hint">V</span>
+                <KeyHint keys="V" />
               </button>
             </Show>
 
@@ -178,7 +179,7 @@ export const EventView = (props: {
               >
                 <CalendarIcon />
                 <span class="thread-toolbar-label">Google Calendar</span><ExternalIcon size="meta" />
-                <span class="shortcut-hint">O</span>
+                <KeyHint keys="O" />
               </button>
             </Show>
 
@@ -186,7 +187,7 @@ export const EventView = (props: {
               <button class="thread-toolbar-btn" onClick={props.onOpenCalendars} title="Move to calendar">
                 <MoveToCalendarIcon />
                 <span class="thread-toolbar-label">Move to…</span>
-                <span class="shortcut-hint">M</span>
+                <KeyHint keys="M" />
               </button>
             </Show>
 
@@ -202,7 +203,7 @@ export const EventView = (props: {
               >
                 <EditIcon />
                 <span class="thread-toolbar-label">Edit</span>
-                <span class="shortcut-hint">E</span>
+                <KeyHint keys="E" />
               </button>
             </Show>
 
@@ -215,7 +216,7 @@ export const EventView = (props: {
               >
                 <TrashIcon />
                 <span class="thread-toolbar-label">Delete</span>
-                <span class="shortcut-hint">#</span>
+                <KeyHint keys="#" />
               </button>
               <Show when={choosingDeleteScope()}>
                 <ScopeMenu
@@ -451,7 +452,7 @@ export const EventView = (props: {
           </div>
 
           <div class="label-drawer-footer">
-            <span class="shortcut-hint">M to close</span>
+            <KeyHint keys="M to close" />
           </div>
         </div>
       </Show>

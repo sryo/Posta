@@ -385,7 +385,7 @@ describe("CreateEventForm fields and footer", () => {
     const footer = container.querySelector(".form-footer.event-form-footer")!;
     const cancel = getByRole("button", { name: /Cancel/ });
     expect(footer.contains(cancel)).toBe(true);
-    expect(cancel.querySelector(".shortcut-hint")).toHaveTextContent("ESC");
+    expect(cancel.querySelector(".key-hint")).toHaveTextContent("ESC");
     fireEvent.click(cancel);
     expect(onClose).toHaveBeenCalledTimes(1);
   });
