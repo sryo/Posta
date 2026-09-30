@@ -131,20 +131,6 @@
     --danger-tint: color-mix(in srgb, var(--red-600) 10%, transparent);
     --text-on-status: var(--neutral-0);
 
-    /* icon wash: the body plate of a two-tone icon, a strength of the colour
-       where it sits. Capped so every ink keeps 3:1 where it crosses the wash */
-    --icon-wash-mix: 22%;
-    --icon-wash-card-mix: 26%;
-    --icon-wash-status-mix: 24%;
-    --icon-wash-on-accent-mix: 28%;
-    --icon-fill-accent: color-mix(in srgb, var(--accent) var(--icon-wash-mix), transparent);
-    --icon-fill-success: color-mix(in srgb, var(--success) var(--icon-wash-status-mix), transparent);
-    --icon-fill-warning: color-mix(in srgb, var(--warning) var(--icon-wash-status-mix), transparent);
-    --icon-fill-danger: color-mix(in srgb, var(--danger) var(--icon-wash-status-mix), transparent);
-    --icon-fill-neutral: var(--surface-hover);
-    --icon-fill-on-accent: color-mix(in srgb, var(--text-on-accent) var(--icon-wash-on-accent-mix), transparent);
-    --icon-fill: var(--icon-fill-accent);
-
     /* card-derived strengths (the hue comes from the card) */
     --card-tint-mix: 20%;
     --card-ring-mix: 50%;
@@ -188,6 +174,10 @@
 
     /* Color picker dimensions */
     --picker-radius: 32px;
+    /* Where the flower's first petal sits and how far apart the petals are:
+       a full circle by default, a fan where the space runs out */
+    --picker-start: 180deg;
+    --picker-step: 40deg;
     --picker-option-size: 22px;
     --picker-button-size: 24px;
     --app-edge-margin: 12px;
@@ -265,11 +255,6 @@
     /* an icon-only button of 28px or more, an empty state, a file tile */
     --icon-tool: var(--size-20);
     --icon-gap-meta: var(--space-sm);
-    /* How far the wash plate prints down-right of the ink, in the icon's own
-       16-unit grid. In register at 12px, where a shift reads as blur */
-    --icon-offset-meta: 0px;
-    --icon-offset-ui: 1px;
-    --icon-offset-tool: 1.25px;
 }
 
 /* ---- Tier 2: semantic, dark ---------------------------------------------
@@ -316,10 +301,6 @@
         --danger-text: var(--red-200);
         --danger-tint: color-mix(in srgb, var(--red-300) 15%, transparent);
         --text-on-status: var(--neutral-950);
-
-        --icon-wash-mix: 30%;
-        --icon-wash-card-mix: 36%;
-        --icon-wash-status-mix: 26%;
 
         --card-tint-mix: 30%;
         --card-ring-mix: 60%;
@@ -386,21 +367,17 @@
 @media (prefers-color-scheme: dark) {
     .card[data-color] { --card-band-text: var(--neutral-0); }
     .card[data-color="yellow"], .card[data-color="orange"] { --card-band-text: var(--neutral-950); }
-    /* yellow is the one tint light enough to crowd muted text on unread rows.
-       The icon wash lifts a dark card, so the pale hues take less of it */
-    .card[data-color="yellow"] { --card-tint-mix: 27%; --icon-wash-card-mix: 16%; }
-    .card[data-color="orange"] { --icon-wash-card-mix: 28%; }
+    /* yellow is the one tint light enough to crowd muted text on unread rows */
+    .card[data-color="yellow"] { --card-tint-mix: 27%; }
 }
 
 /* Accent text on a coloured card sits on its tint */
 .card[data-color] { --text-link: var(--text-link-on-tint); }
 
 /* ---- Icons ---------------------------------------------------------------
-   Two plates per icon, like a two-colour stamp. The ink (outline and
-   details) is currentColor, the host's text token; an icon's colour is set
-   on its host, never on the svg. The wash (the object's body) is
-   --icon-fill, printed --icon-offset down-right of the ink. The wash is
-   decoration: every icon reads from its ink alone. */
+   Line icons at one weight per size, drawn in currentColor, the host's text
+   token: an icon's colour is set on its host, never on the svg. An on state
+   (a filled star, a raised thumb) fills the icon's body with that colour. */
 svg.icon {
     flex-shrink: 0;
     overflow: visible;
@@ -409,64 +386,9 @@ svg.icon {
     vertical-align: calc(0.35em - var(--icon-size) / 2);
 }
 
-svg.icon-meta { --icon-size: var(--icon-meta); --icon-offset: var(--icon-offset-meta); }
-svg.icon-ui { --icon-size: var(--icon-ui); --icon-offset: var(--icon-offset-ui); }
-svg.icon-tool { --icon-size: var(--icon-tool); --icon-offset: var(--icon-offset-tool); }
-
-svg.icon .icon-wash {
-    fill: var(--icon-fill);
-    stroke: none;
-    transform: translate(var(--icon-offset), var(--icon-offset));
-}
-
-/* An on state (StarFilled, ThumbsUpFilled): the plates snap into register
-   and the wash prints in ink */
-svg.icon.icon-on { --icon-offset: 0px; --icon-fill: currentColor; }
-
-/* At 12px the wash prints only on glyphs whose body is at least 4px across */
-svg.icon-meta:not([data-icon="calendar"], [data-icon="clock"], [data-icon="location"], [data-icon="video"], [data-icon="warning"], [data-icon$="-circle"]) .icon-wash {
-    fill: none;
-}
-
-@media (forced-colors: active) {
-    svg.icon .icon-wash { fill: none; }
-    svg.icon.icon-on .icon-wash { fill: CanvasText; }
-}
-
-/* Pressing a button brings its icon's plates into register, like a stamp
-   coming down */
-@media (prefers-reduced-motion: no-preference) {
-    svg.icon .icon-wash { transition: transform 120ms ease-out; }
-}
-
-.thread-toolbar-btn:active svg.icon,
-.compose-btn:active svg.icon,
-button:active > svg.icon-tool {
-    --icon-offset: 0px;
-}
-
-/* Where the wash comes from. The accent by default (on :root); the card's hue
-   inside a card, a preset or a file tile */
-.card[data-color], .preset-card, .attachment-icon {
-    --icon-fill: color-mix(in srgb, var(--card-hue) var(--icon-wash-card-mix), transparent);
-}
-/* floating chrome keeps the accent, even over a card */
-.thread-floating-bar, .compose-panel, .account-chooser-dropdown, .undo-toast {
-    --icon-fill: var(--icon-fill-accent);
-}
-/* the solid accent buttons wash in their label colour */
-.compose-btn, .new-event-btn { --icon-fill: var(--icon-fill-on-accent); }
-/* an answer's wash says the answer; the ink keeps its text colour */
-.invite-answer.accepted, .invite-answer-item.accepted, .rsvp-segment.rsvp-success {
-    --icon-fill: var(--icon-fill-success);
-}
-.invite-answer.tentative, .invite-answer-item.tentative, .rsvp-segment.rsvp-warning, .invite-clash, .card-error {
-    --icon-fill: var(--icon-fill-warning);
-}
-.invite-answer.declined, .invite-answer-item.declined { --icon-fill: var(--icon-fill-neutral); }
-.thread-toolbar-btn-danger:hover, .invite-when.live { --icon-fill: var(--icon-fill-danger); }
-/* a past or struck time goes ink only */
-.invite-when.past, .invite-when.struck { --icon-fill: transparent; }
+svg.icon-meta { --icon-size: var(--icon-meta); }
+svg.icon-ui { --icon-size: var(--icon-ui); }
+svg.icon-tool { --icon-size: var(--icon-tool); }
 
 html,
 body {
@@ -1041,8 +963,6 @@ a:focus-visible,
 
 .card[data-color="yellow"] {
     background: var(--card-tint);
-    /* pale enough to need more icon wash to show on its tint */
-    --icon-wash-card-mix: 40%;
 }
 
 .card[data-color="green"] {
@@ -2453,14 +2373,6 @@ a:focus-visible,
     background: transparent;
 }
 
-.card-form {
-    padding: var(--space-lg);
-    display: flex;
-    flex-direction: column;
-    gap: var(--space-lg);
-    width: 100%;
-}
-
 /* Edit mode - ensure card is full size */
 .card.editing {
     min-width: var(--card-width, 320px);
@@ -2468,54 +2380,150 @@ a:focus-visible,
     overflow: visible;
 }
 
-.card.editing .card-form {
-    display: flex;
-}
-
-.card-form-group {
+/* A card's header while it is added or edited: the colour, the name typed
+   where the title shows, then cancel and ✓ where refresh and edit sit */
+.card-edit {
     display: flex;
     flex-direction: column;
-    gap: 3px;
+    flex-shrink: 0;
 }
 
-.card-form-group label {
-    font: var(--type-label);
-    letter-spacing: var(--tracking-label);
-    color: var(--text-secondary);
-    text-transform: uppercase;
+.card-edit-header {
+    display: flex;
+    align-items: center;
+    gap: var(--space-md);
+    padding: var(--space-md) var(--space-md) var(--space-sm) var(--space-lg);
 }
 
-.card-form-group input,
-.card-form-group select {
-    padding: var(--space-md) var(--space-md);
-    border: 1px solid var(--border-default);
+/* The colour flower, smaller than the board's. At the card's top-left
+   corner it fans out into the card, from up-right round to down-left */
+.card-color-picker {
+    --picker-button-size: 16px;
+    --picker-option-size: 14px;
+    --picker-radius: 48px;
+    --picker-start: -30deg;
+    --picker-step: 22.5deg;
+    z-index: 20;
+    flex-shrink: 0;
+}
+
+.card-name-input {
+    flex: 1;
+    min-width: 0;
+    height: 32px;
+    padding: 0 var(--space-md);
+    border: 1.5px solid transparent;
     border-radius: var(--radius-md);
-    font: var(--type-ui);
-    background: var(--surface-card);
+    background: transparent;
     color: var(--text-primary);
+    font: var(--type-title);
+    outline: none;
 }
 
-.card-form-group select {
-    width: 100%;
+.card-name-input:hover {
+    background: var(--surface-hover);
+}
+
+/* The ring is the field's own border, so the global focus outline stays off */
+.card-name-input:focus {
+    outline: none;
+    border-color: var(--border-focus);
+    background: var(--surface-card);
+}
+
+.card-name-input::placeholder {
+    color: var(--text-muted);
+    font-weight: var(--weight-regular);
+}
+
+.card-edit-actions {
+    display: flex;
+    gap: var(--space-xs);
+    flex-shrink: 0;
+}
+
+.card-edit-done {
+    background: var(--surface-hover);
+    color: var(--text-secondary);
+}
+
+.card-edit-done.saves {
+    background: var(--accent-fill);
+    color: var(--text-on-accent);
+}
+
+.card-edit-done.saves:hover {
+    background: var(--accent-hover);
+    color: var(--text-on-accent);
+}
+
+.card-edit-done:disabled {
+    opacity: 0.45;
+    cursor: default;
+}
+
+.card-edit-body {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-md);
+    padding: var(--space-xs) var(--space-lg) var(--space-lg);
+}
+
+.card-edit-body .query-chips {
+    border: none;
+    border-radius: var(--radius-lg);
+    background: var(--surface-card);
+    box-shadow: inset 0 0 0 1px var(--border-subtle);
+}
+
+.card-edit-body .query-chips:focus-within {
+    box-shadow: inset 0 0 0 1.5px var(--border-focus);
+}
+
+.card-edit-body .query-chip {
+    background: var(--surface-subtle);
+}
+
+.card-account-select {
+    align-self: flex-start;
+    max-width: 100%;
+    padding: var(--space-xs) var(--space-md);
+    border: none;
+    border-radius: var(--radius-sm);
+    background: var(--surface-subtle);
+    color: var(--text-primary);
+    font: var(--type-meta);
     cursor: pointer;
 }
 
-.card-form-group input:focus,
-.card-form-group select:focus {
-    outline: none;
-    border-color: var(--border-focus);
-}
-
-/* Name + color picker inline row */
-.name-color-row {
+.card-edit-controls {
     display: flex;
-    gap: var(--space-md);
     align-items: center;
+    gap: var(--space-sm);
 }
 
-.name-color-row input {
-    flex: 1;
-    min-width: 0;
+.card-edit-help {
+    width: 26px;
+    height: 26px;
+    margin-left: auto;
+}
+
+.card-delete-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--space-xs);
+    padding: var(--space-xs) var(--space-md);
+    border: none;
+    border-radius: var(--radius-sm);
+    background: none;
+    color: var(--danger-text);
+    font: var(--type-meta);
+    cursor: pointer;
+}
+
+.card-delete-btn:hover,
+.card-delete-btn:focus-visible {
+    background: var(--danger-tint);
 }
 
 /* Query autocomplete dropdown */
@@ -2801,14 +2809,6 @@ a:focus-visible,
 
 .action-config-item:active .drag-handle {
     cursor: grabbing;
-}
-
-.card-form-actions {
-    display: flex;
-    gap: var(--space-md);
-    justify-content: flex-end;
-    padding-top: 8px;
-    border-top: 1px solid var(--border-subtle);
 }
 
 .btn {
@@ -3225,50 +3225,51 @@ button:disabled:hover {
 }
 
 /* Color option radial layout using CSS trig functions */
-/* 9 options (8 colors + no-color) = 360/9 = 40deg per option */
+/* 9 options (8 colors + no-color), --picker-step apart from --picker-start */
 .color-picker.open .color-option {
     opacity: 1;
     pointer-events: auto;
-    --angle: calc(180deg + (var(--i, 0) * 40deg));
+    --angle: calc(var(--picker-start) + (var(--i, 0) * var(--picker-step)));
     --center-offset: calc((var(--picker-button-size) - var(--picker-option-size)) / 2);
     left: calc(var(--center-offset) + cos(var(--angle)) * var(--picker-radius));
     top: calc(var(--center-offset) + sin(var(--angle)) * var(--picker-radius));
     transition-delay: calc(var(--i, 0) * 15ms);
 }
 
-.color-option:nth-child(1) {
+/* The first child is the chosen colour; the petals follow it */
+.color-option:nth-child(2) {
     --i: 0;
 }
 
-.color-option:nth-child(2) {
+.color-option:nth-child(3) {
     --i: 1;
 }
 
-.color-option:nth-child(3) {
+.color-option:nth-child(4) {
     --i: 2;
 }
 
-.color-option:nth-child(4) {
+.color-option:nth-child(5) {
     --i: 3;
 }
 
-.color-option:nth-child(5) {
+.color-option:nth-child(6) {
     --i: 4;
 }
 
-.color-option:nth-child(6) {
+.color-option:nth-child(7) {
     --i: 5;
 }
 
-.color-option:nth-child(7) {
+.color-option:nth-child(8) {
     --i: 6;
 }
 
-.color-option:nth-child(8) {
+.color-option:nth-child(9) {
     --i: 7;
 }
 
-.color-option:nth-child(9) {
+.color-option:nth-child(10) {
     --i: 8;
 }
 
@@ -4143,36 +4144,7 @@ button:disabled:hover {
     margin-top: var(--space-xl);
 }
 
-/* Query help button and sheet */
-.query-label {
-    display: flex;
-    align-items: center;
-    gap: var(--space-md);
-}
-
-.query-help-btn {
-    width: 16px;
-    height: 16px;
-    padding: 0;
-    border: 1px solid var(--border-default);
-    border-radius: var(--radius-full);
-    background: var(--surface-inset);
-    color: var(--text-muted);
-    font-size: var(--size-10);
-    font-weight: var(--weight-strong);
-    cursor: pointer;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    transition: all 0.15s ease;
-}
-
-.query-help-btn:hover {
-    background: var(--surface-hover);
-    color: var(--text-primary);
-    border-color: var(--border-strong);
-}
-
+/* Query help sheet */
 .query-help-overlay {
     position: fixed;
     top: 0;
@@ -4472,48 +4444,35 @@ button.settings-section-title {
     text-transform: uppercase;
 }
 
+/* Grouping: a quiet segmented control, the chosen one raised */
 .group-by-buttons {
     display: flex;
-    gap: 0;
-    isolation: isolate;
+    gap: 2px;
+    padding: 2px;
+    border-radius: var(--radius-md);
+    background: var(--surface-hover);
 }
 
 .group-by-btn {
-    flex: 1;
-    padding: var(--space-md) var(--space-md);
-    border: 1px solid var(--border-default);
-    background: var(--surface-card);
+    padding: var(--space-xs) var(--space-md);
+    border: none;
+    border-radius: var(--radius-sm);
+    background: transparent;
     color: var(--text-secondary);
-    border-radius: 0;
-    font: var(--type-ui);
+    font: var(--type-meta);
     cursor: pointer;
-    transition: all 0.2s ease;
-    margin-left: -1px;
-    position: relative;
-}
-
-.group-by-btn:first-child {
-    border-top-left-radius: 4px;
-    border-bottom-left-radius: 4px;
-    margin-left: 0;
-}
-
-.group-by-btn:last-child {
-    border-top-right-radius: 4px;
-    border-bottom-right-radius: 4px;
+    transition: background 0.15s ease, color 0.15s ease;
 }
 
 .group-by-btn:hover {
-    background: var(--surface-hover);
     color: var(--text-primary);
-    z-index: 1;
 }
 
 .group-by-btn.active {
-    background: var(--accent-fill);
-    color: var(--text-on-accent);
-    border-color: var(--accent-fill);
-    z-index: 2;
+    background: var(--surface-card);
+    color: var(--text-primary);
+    font-weight: var(--weight-strong);
+    box-shadow: var(--shadow-sm);
 }
 
 .settings-form-group input,

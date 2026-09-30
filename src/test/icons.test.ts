@@ -65,20 +65,14 @@ describe("one source for icons", () => {
 });
 
 type Size = "meta" | "ui" | "tool";
-type IconComponent = (props?: { size?: Size; strong?: boolean; on?: boolean; class?: string }) => JSX.Element;
+type IconComponent = (props?: { size?: Size; strong?: boolean; class?: string }) => JSX.Element;
 
 const icons = Object.entries(Icons).filter(([name]) => name.endsWith("Icon")) as [string, IconComponent][];
 const SIZES: Size[] = ["meta", "ui", "tool"];
-// Stroke in 16-grid units at each size; strong adds 0.3, heavy details are 1.4x
-const STROKE: Record<Size, number> = { meta: 1.75, ui: 1.6, tool: 1.5 };
-const heavy = (s: number) => Math.round(s * 1.4 * 100) / 100;
-
-// Glyphs with no body, drawn in ink alone
-const LINE_GLYPHS = [
-  "ChevronIcon", "ChevronLeftIcon", "ChevronRightIcon", "CloseIcon", "ClearIcon", "PlusIcon", "MoreIcon",
-  "CheckIcon", "RefreshIcon", "RepeatIcon", "AttachmentIcon", "EyeClosedIcon",
-];
-const ON_STATES = ["StarFilledIcon", "ThumbsUpFilledIcon"];
+// Stroke in 16-grid units at each size; strong adds 0.25
+const STROKE: Record<Size, number> = { meta: 1.6, ui: 1.45, tool: 1.35 };
+// The icons with an active version, which fill their body
+const FILLED = ["StarFilledIcon", "ThumbsUpFilledIcon"];
 
 function draw(Icon: IconComponent, props: Parameters<IconComponent>[0] = {}): SVGSVGElement {
   const { container, unmount } = render(() => Icon(props));
@@ -130,65 +124,32 @@ describe("the icon family", () => {
     }
   });
 
-  it("steps the stroke with the size, adds weight in strong text, and keeps heavy details at 1.4x", () => {
+  it("draws every line at one weight, stepping with the size and in strong text", () => {
     for (const [name, Icon] of icons) {
       for (const size of SIZES) {
         for (const strong of [false, true]) {
           const svg = draw(Icon, { size, strong });
-          const s = STROKE[size] + (strong ? 0.3 : 0);
-          expect(Number(svg.getAttribute("stroke-width")), `${name} ${size}`).toBeCloseTo(s, 5);
-          for (const el of svg.querySelectorAll("[stroke-width]")) {
-            if (el === svg) continue;
-            expect(Number(el.getAttribute("stroke-width")), `${name} ${size} detail`).toBeCloseTo(heavy(s), 5);
-          }
+          expect(Number(svg.getAttribute("stroke-width")), `${name} ${size}`).toBeCloseTo(STROKE[size] + (strong ? 0.25 : 0), 5);
+          expect(svg.querySelectorAll("[stroke-width]:not(svg)").length, `${name} ${size} detail`).toBe(0);
         }
       }
     }
   });
 
-  it("prints in two plates: an optional wash under exactly one ink layer", () => {
+  it("fills solid details with currentColor only", () => {
     for (const [name, Icon] of icons) {
-      const svg = draw(Icon);
-      const groups = [...svg.children];
-      const wash = svg.querySelectorAll(":scope > g.icon-wash");
-      expect(svg.querySelectorAll(":scope > g.icon-ink").length, name).toBe(1);
-      expect(wash.length, name).toBeLessThanOrEqual(1);
-      expect(groups[groups.length - 1]?.classList.contains("icon-ink"), name).toBe(true);
-      expect(groups.length, name).toBe(1 + wash.length);
-    }
-  });
-
-  it("leaves the wash's colour to --icon-fill, never a colour of its own", () => {
-    for (const [name, Icon] of icons) {
-      const wash = draw(Icon).querySelector("g.icon-wash");
-      if (!wash) continue;
-      for (const el of [wash, ...wash.querySelectorAll("*")]) {
-        expect(el.getAttribute("fill"), name).toBeNull();
-        expect(el.getAttribute("stroke"), name).toBeNull();
-        expect(el.getAttribute("style"), name).toBeNull();
-      }
-    }
-  });
-
-  it("fills ink details with currentColor only", () => {
-    for (const [name, Icon] of icons) {
-      for (const el of draw(Icon).querySelectorAll("g.icon-ink [fill]")) {
+      for (const el of draw(Icon).querySelectorAll("[fill]:not(svg)")) {
         expect(el.getAttribute("fill"), name).toBe("currentColor");
       }
     }
   });
 
-  it("gives a wash to glyphs with a body and none to line glyphs", () => {
+  it("fills a body only on an icon's active version, under its outline", () => {
     for (const [name, Icon] of icons) {
-      const hasWash = draw(Icon).querySelector("g.icon-wash") !== null;
-      expect(hasWash, name).toBe(!LINE_GLYPHS.includes(name));
-    }
-  });
-
-  it("prints an on state in register, as a filled export or through the prop", () => {
-    for (const [name, Icon] of icons) {
-      expect(draw(Icon).classList.contains("icon-on"), name).toBe(ON_STATES.includes(name));
-      expect(draw(Icon, { on: true }).classList.contains("icon-on"), name).toBe(true);
+      const svg = draw(Icon);
+      const body = svg.querySelector(':scope > g[fill="currentColor"]');
+      expect(body !== null, name).toBe(FILLED.includes(name));
+      if (body) expect(svg.firstElementChild, name).toBe(body);
     }
   });
 

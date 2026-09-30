@@ -87,6 +87,11 @@ const thread = (id: string, subject: string): Thread => ({
 
 const cardsByAccount: Record<string, Card[]> = {};
 const threadsByCard: Record<string, Thread[]> = {};
+// Saves the open card form with ⌘Enter; a click on its ✓ right after it
+// opens is taken for the double-click that opened it
+function saveCardForm() {
+  fireEvent.keyDown(screen.getAllByLabelText("Card name").slice(-1)[0], { key: "Enter", metaKey: true });
+}
 // The account chooser's button, titled with the default account's email
 function avatar(email: string): HTMLElement {
   const button = document.querySelector<HTMLElement>(`.toolbar-avatar[title="${email}"]`);
@@ -794,13 +799,13 @@ describe("App error banner", () => {
     render(() => <App />);
     await screen.findByText("Mail for A");
     fireEvent.click(screen.getByTitle("Edit query"));
-    fireEvent.click(screen.getByTitle("Save (⌘Enter)"));
+    saveCardForm();
     expect(await screen.findByRole("alert")).toHaveTextContent(/^Couldn't save the card\.Details/);
 
     fireEvent.click(screen.getByTitle("New card"));
     fireEvent.input(screen.getAllByPlaceholderText("e.g. Clients").slice(-1)[0], { target: { value: "News" } });
     fireEvent.input(screen.getAllByPlaceholderText("e.g. from:boss is:unread newer_than:7d").slice(-1)[0], { target: { value: "label:news" } });
-    fireEvent.click(screen.getByTitle("Add (⌘Enter)"));
+    saveCardForm();
     await waitFor(() => expect(screen.getByRole("alert")).toHaveTextContent(/^Couldn't add the card\.Details/));
     expect(screen.getByRole("alert").querySelector("details")).toHaveTextContent("disk full");
   });
@@ -4097,7 +4102,7 @@ describe("App card query edits", () => {
     await waitFor(() => expect(calls).toBe(2));
     fireEvent.click(screen.getByTitle("Edit query"));
     fireEvent.input(screen.getByPlaceholderText("e.g. from:boss is:unread newer_than:7d"), { target: { value: "is:starred" } });
-    fireEvent.click(screen.getByTitle("Save (⌘Enter)"));
+    saveCardForm();
     await screen.findByText("New query result");
 
     releaseOld();
@@ -4127,7 +4132,7 @@ describe("App card editor and iCloud", () => {
     expect(screen.getByPlaceholderText("e.g. Clients")).toHaveValue("Alpha renamed");
     await new Promise(r => setTimeout(r, 20));
     invoke.mockClear();
-    fireEvent.click(screen.getByTitle("Save (⌘Enter)"));
+    saveCardForm();
 
     await waitFor(() => expect(invoke).toHaveBeenCalledWith("update_card", {
       card: expect.objectContaining({ id: "card-a", name: "Alpha renamed", query: "is:starred" }),
@@ -5553,7 +5558,7 @@ describe("App choosing accounts for cards and emails", () => {
     fireEvent.click(within(alpha).getByTitle("Edit query"));
     fireEvent.change(await screen.findByRole("combobox", { name: "Account" }), { target: { value: "all" } });
     invoke.mockClear();
-    fireEvent.click(screen.getByTitle("Save (⌘Enter)"));
+    saveCardForm();
 
     await waitFor(() => expect(invoke).toHaveBeenCalledWith("update_card", { card: expect.objectContaining({ id: "card-a", account_id: "all" }) }));
     await waitFor(() => expect(invoke).toHaveBeenCalledWith("fetch_threads_paginated", { cardId: "card-a", pageToken: null }));
@@ -5571,7 +5576,7 @@ describe("App choosing accounts for cards and emails", () => {
     fireEvent.input(screen.getAllByPlaceholderText("e.g. Clients").slice(-1)[0], { target: { value: "Work" } });
     fireEvent.input(screen.getAllByPlaceholderText("e.g. from:boss is:unread newer_than:7d").slice(-1)[0], { target: { value: "is:starred" } });
     await waitFor(() => expect(invoke).toHaveBeenCalledWith("search_threads_preview", { accountId: "b", query: "is:starred" }));
-    fireEvent.click(screen.getByTitle("Add (⌘Enter)"));
+    saveCardForm();
 
     await waitFor(() => expect(invoke).toHaveBeenCalledWith("create_card", expect.objectContaining({ accountId: "b", name: "Work" })));
   });

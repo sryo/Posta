@@ -554,6 +554,13 @@ function App() {
   // doesn't write the pulled change back over
   let editCardStart: Pick<Card, "account_id" | "name" | "query" | "color" | "group_by"> | null = null;
   const editStartOf = (card: Card) => ({ account_id: card.account_id, name: card.name, query: card.query, color: card.color || null, group_by: card.group_by || "date" });
+  // Whether the card being edited differs from where its edit started
+  const editCardDirty = () => {
+    const start = editCardStart;
+    if (!start) return true;
+    return start.name !== editCardName() || start.query !== editCardQuery() || start.color !== (editCardColor() || null)
+      || start.group_by !== editCardGroupBy() || start.account_id !== editCardAccountId();
+  };
 
   // The account (or ALL_ACCOUNTS) of the card being edited or added, which
   // its query preview searches
@@ -4998,6 +5005,7 @@ function App() {
                             onCancel={cancelEditCard}
                             onDelete={() => handleDeleteCard(card.id)}
                             saveDisabled={!editCardName() || !editCardQuery()}
+                            dirty={editCardDirty()}
                             setQueryHelpOpen={setQueryHelpOpen}
                             suggestQuery={suggestQuery}
                             contacts={rankedContacts()}

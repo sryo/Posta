@@ -1,4 +1,4 @@
-import { Show, For, createEffect, createUniqueId } from "solid-js";
+import { Show, For, createEffect } from "solid-js";
 import type { Account } from "../api/tauri";
 import { ALL_ACCOUNTS } from "../app/accountScope";
 import {
@@ -8,15 +8,20 @@ import {
   type CardColor,
   type GroupBy,
 } from "../shared/constants";
-import { PaletteIcon, TrashIcon } from "./Icons";
+import { CheckIcon, CloseIcon, PaletteIcon, QuestionCircleIcon, TrashIcon } from "./Icons";
 import { cardTypeForQuery } from "../app/cardType";
 import { isImeComposing, onActivateKey } from "../shared/keyboard";
 import type { RecentContact } from "../app/contacts";
 import type { QuerySuggestion } from "../app/querySuggestions";
 import { QueryField } from "./QueryField";
-import { CancelButton, FormFooter, SubmitButton } from "./FormParts";
 
-// Shared card form component for new and edit modes
+// A click on ✓ this soon after the form opens is the second half of the
+// double-click that opened it, not a save
+const SAVE_GUARD_MS = 300;
+
+// A card's header while it is added or edited: the name typed where the title
+// shows, and ✓ where the edit button was, so the same spot opens and closes
+// the form. The query, grouping and delete sit below it, above the preview.
 export const CardForm = (props: {
   mode: 'new' | 'edit';
   name: string;
@@ -33,6 +38,9 @@ export const CardForm = (props: {
   onCancel: () => void;
   onDelete?: () => void;
   saveDisabled: boolean;
+  // Whether anything differs from the saved card; with nothing to save, ✓
+  // just closes the form
+  dirty?: boolean;
   setQueryHelpOpen: (v: boolean) => void;
   suggestQuery: (query: string, caret: number) => QuerySuggestion[];
   contacts: RecentContact[];
@@ -46,7 +54,9 @@ export const CardForm = (props: {
   accountId?: string;
   setAccountId?: (id: string) => void;
 }) => {
-  const accountFieldId = createUniqueId();
+  const openedAt = Date.now();
+  let queryInput: HTMLInputElement | undefined;
+
   const setQuery = (query: string) => {
     props.setQuery(query);
     props.debounceQueryPreview(query);
@@ -61,64 +71,94 @@ export const CardForm = (props: {
     if (!groupByOptions().some(o => o.value === props.groupBy)) props.setGroupBy("date");
   });
 
+  const saves = () => props.mode === 'new' || props.dirty !== false;
+  const doneLabel = () => (props.mode === 'new' ? "Add" : saves() ? "Save" : "Done");
+  const done = () => {
+    if (Date.now() - openedAt < SAVE_GUARD_MS) return;
+    if (!saves()) props.onCancel();
+    else if (!props.saveDisabled) props.onSave();
+  };
+  const missing = () => (!props.name.trim() ? "Needs a name" : !props.query.trim() ? "Needs a query" : null);
+
+  const togglePicker = () => props.setColorPickerOpen(!props.colorPickerOpen);
+
   return (
-    <div class="card-form">
-      <div class="card-form-group">
-        <label>Name</label>
-        <div class="name-color-row">
-          <input
-            type="text"
-            value={props.name}
-            onInput={(e) => props.setName(e.currentTarget.value)}
-            onKeyDown={(e) => {
-              if (isImeComposing(e)) return;
-              if (e.key === 'Escape') props.onCancel();
-              else if (e.key === 'Enter' && (e.metaKey || e.ctrlKey) && !props.saveDisabled) {
-                e.preventDefault();
-                props.onSave();
-              }
-            }}
-            placeholder="e.g. Clients"
-            ref={(el) => setTimeout(() => el.focus(), 50)}
-          />
-          <div class={`color-picker ${props.colorPickerOpen ? 'open' : ''}`}>
-            <div
-              class={`color-picker-selected ${props.color === null ? 'no-color' : ''}`}
-              data-hue={props.color ?? undefined}
-              onClick={(e) => { e.stopPropagation(); props.setColorPickerOpen(!props.colorPickerOpen); }}
-              role="button"
-              tabIndex={0}
-              aria-expanded={props.colorPickerOpen}
-              on:keydown={onActivateKey(() => props.setColorPickerOpen(!props.colorPickerOpen))}
-              title="Card color"
-            >
-              <Show when={props.color === null}>
-                <PaletteIcon />
-              </Show>
-            </div>
-            <For each={[null, ...CARD_COLORS] as CardColor[]}>
-              {(color) => {
-                const pick = () => { props.setColor(color); props.setColorPickerOpen(false); };
-                return (
-                  <div
-                    class={color ? `color-option ${color}` : "color-option no-color-option"}
-                    role="button"
-                    tabIndex={props.colorPickerOpen ? 0 : -1}
-                    aria-label={color ?? "No color"}
-                    onClick={pick}
-                    on:keydown={onActivateKey(pick)}
-                  ></div>
-                );
-              }}
-            </For>
+    <div class="card-edit">
+      <div class="card-edit-header">
+        <div class={`color-picker card-color-picker ${props.colorPickerOpen ? 'open' : ''}`}>
+          <div
+            class={`color-picker-selected ${props.color === null ? 'no-color' : ''}`}
+            data-hue={props.color ?? undefined}
+            onClick={(e) => { e.stopPropagation(); togglePicker(); }}
+            role="button"
+            tabIndex={0}
+            aria-expanded={props.colorPickerOpen}
+            on:keydown={onActivateKey(togglePicker)}
+            title="Card color"
+          >
+            <Show when={props.color === null}>
+              <PaletteIcon size="meta" />
+            </Show>
           </div>
+          <For each={[null, ...CARD_COLORS] as CardColor[]}>
+            {(color) => {
+              const pick = () => { props.setColor(color); props.setColorPickerOpen(false); };
+              return (
+                <div
+                  class={color ? `color-option ${color}` : "color-option no-color-option"}
+                  role="button"
+                  tabIndex={props.colorPickerOpen ? 0 : -1}
+                  aria-label={color ?? "No color"}
+                  onClick={pick}
+                  on:keydown={onActivateKey(pick)}
+                />
+              );
+            }}
+          </For>
+        </div>
+        <input
+          type="text"
+          class="card-name-input"
+          aria-label="Card name"
+          value={props.name}
+          onInput={(e) => props.setName(e.currentTarget.value)}
+          onKeyDown={(e) => {
+            if (isImeComposing(e)) return;
+            if (e.key === 'Escape') props.onCancel();
+            else if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
+              e.preventDefault();
+              if (!props.saveDisabled) props.onSave();
+            } else if (e.key === 'Enter') {
+              e.preventDefault();
+              queryInput?.focus();
+            }
+          }}
+          placeholder="e.g. Clients"
+          ref={(el) => setTimeout(() => el.focus(), 50)}
+        />
+        <div class="card-edit-actions">
+          <button type="button" class="icon-btn" onClick={() => props.onCancel()} title="Cancel (Esc)" aria-label="Cancel">
+            <CloseIcon size="tool" />
+          </button>
+          <button
+            type="button"
+            class="icon-btn card-edit-done"
+            classList={{ "saves": saves() }}
+            disabled={saves() && props.saveDisabled}
+            onClick={done}
+            title={saves() && props.saveDisabled ? missing() ?? doneLabel() : `${doneLabel()} (⌘Enter)`}
+            aria-label={doneLabel()}
+          >
+            <CheckIcon size="tool" />
+          </button>
         </div>
       </div>
-      <Show when={(props.accounts?.length ?? 0) > 1}>
-        <div class="card-form-group">
-          <label for={accountFieldId}>Account</label>
+
+      <div class="card-edit-body">
+        <Show when={(props.accounts?.length ?? 0) > 1}>
           <select
-            id={accountFieldId}
+            class="card-account-select"
+            aria-label="Account"
             value={props.accountId}
             onChange={(e) => props.setAccountId?.(e.currentTarget.value)}
           >
@@ -127,67 +167,61 @@ export const CardForm = (props: {
               {(account) => <option value={account.id}>{account.email}</option>}
             </For>
           </select>
+        </Show>
+        <div ref={(el) => setTimeout(() => { queryInput = el.querySelector("input") ?? undefined; }, 0)}>
+          <QueryField
+            query={props.query}
+            setQuery={setQuery}
+            suggest={props.suggestQuery}
+            contacts={props.contacts}
+            labelNames={props.labelNames}
+            onSave={() => { if (!props.saveDisabled) props.onSave(); }}
+            onCancel={props.onCancel}
+            onActive={props.onQueryFieldActive}
+          />
         </div>
-      </Show>
-      <div class="card-form-group">
-        <label class="query-label">
-          Query
+        <div class="card-edit-controls">
+          <div class="group-by-buttons" role="group" aria-label="Group by">
+            <For each={groupByOptions()}>
+              {(option) => (
+                <button
+                  class={`group-by-btn ${props.groupBy === option.value ? 'active' : ''}`}
+                  aria-pressed={props.groupBy === option.value}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    props.setGroupBy(option.value);
+                  }}
+                  type="button"
+                >
+                  {option.label}
+                </button>
+              )}
+            </For>
+          </div>
           <button
             type="button"
-            class="query-help-btn"
+            class="icon-btn card-edit-help"
             onClick={() => props.setQueryHelpOpen(true)}
             title="Query operators help"
+            aria-label="Query operators help"
           >
-            ?
+            <QuestionCircleIcon />
           </button>
-        </label>
-        <QueryField
-          query={props.query}
-          setQuery={setQuery}
-          suggest={props.suggestQuery}
-          contacts={props.contacts}
-          labelNames={props.labelNames}
-          onSave={() => { if (!props.saveDisabled) props.onSave(); }}
-          onCancel={props.onCancel}
-          onActive={props.onQueryFieldActive}
-        />
-      </div>
-      <div class="card-form-group">
-        <label>Group</label>
-        <div class="group-by-buttons">
-          <For each={groupByOptions()}>
-            {(option) => (
-              <button
-                class={`group-by-btn ${props.groupBy === option.value ? 'active' : ''}`}
-                onClick={(e) => {
-                  e.stopPropagation();
-                  props.setGroupBy(option.value);
-                }}
-                type="button"
-              >
-                {option.label}
-              </button>
-            )}
-          </For>
-        </div>
-      </div>
-      <FormFooter
-        class="card-form-actions"
-        leading={
           <Show when={props.onDelete}>
-            <button class="btn btn-danger" onClick={(e) => {
-              e.preventDefault();
-              e.stopPropagation();
-              props.onDelete?.();
-            }}>
+            <button
+              type="button"
+              class="card-delete-btn"
+              onClick={(e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                props.onDelete?.();
+              }}
+            >
               <TrashIcon /> Delete
             </button>
           </Show>
-        }
-      >
-        <CancelButton onClick={props.onCancel} />
-        <SubmitButton label={props.mode === 'new' ? 'Add' : 'Save'} disabled={props.saveDisabled} onClick={props.onSave} />
-      </FormFooter>
+        </div>
+      </div>
     </div>
   );
 };

@@ -4,7 +4,7 @@ import { createSignal } from "solid-js";
 import type { GroupBy } from "../shared/constants";
 import { CardForm } from "./CardForm";
 
-function renderCardForm(mode: "new" | "edit", init: { query?: string; groupBy?: GroupBy; setColor?: (c: any) => void; setColorPickerOpen?: (v: boolean) => void; onCancel?: () => void; debounceQueryPreview?: (q: string) => void } = {}) {
+function renderCardForm(mode: "new" | "edit", init: { query?: string; groupBy?: GroupBy; setColor?: (c: any) => void; setColorPickerOpen?: (v: boolean) => void; colorPickerOpen?: boolean; onCancel?: () => void; onSave?: () => void; dirty?: () => boolean; debounceQueryPreview?: (q: string) => void } = {}) {
   const [query, setQuery] = createSignal(init.query ?? "is:inbox");
   const [groupBy, setGroupBy] = createSignal<GroupBy>(init.groupBy ?? "date");
   render(() => (
@@ -18,11 +18,12 @@ function renderCardForm(mode: "new" | "edit", init: { query?: string; groupBy?: 
       setColor={init.setColor ?? vi.fn()}
       groupBy={groupBy()}
       setGroupBy={setGroupBy}
-      colorPickerOpen={false}
+      colorPickerOpen={init.colorPickerOpen ?? false}
       setColorPickerOpen={init.setColorPickerOpen ?? vi.fn()}
-      onSave={vi.fn()}
+      onSave={init.onSave ?? vi.fn()}
       onCancel={init.onCancel ?? vi.fn()}
       saveDisabled={false}
+      dirty={init.dirty?.()}
       setQueryHelpOpen={vi.fn()}
       suggestQuery={() => []}
       contacts={[]}
@@ -72,25 +73,23 @@ describe("CardForm grouping", () => {
   });
 });
 
-describe("CardForm color picker keyboard access", () => {
-  it("opens the picker and picks a color from the keyboard", () => {
+describe("CardForm color", () => {
+  it("opens the swatches from the header's dot and picks a color from the keyboard", () => {
     const setColor = vi.fn();
     const setColorPickerOpen = vi.fn();
-    renderCardForm("new", { setColor, setColorPickerOpen });
-    const selected = document.querySelector<HTMLElement>(".color-picker-selected")!;
-    expect(selected.tabIndex).toBe(0);
+    renderCardForm("new", { setColor, setColorPickerOpen, colorPickerOpen: true });
+    const dot = screen.getByRole("button", { name: "Card color" });
+    expect(dot.closest(".card-edit-header")).not.toBeNull();
     // App-level shortcuts (Enter opens the focused thread) must not see it
     const globalShortcut = vi.fn();
     document.addEventListener("keydown", globalShortcut);
-    fireEvent.keyDown(selected, { key: "Enter" });
+    fireEvent.keyDown(dot, { key: "Enter" });
     document.removeEventListener("keydown", globalShortcut);
-    expect(setColorPickerOpen).toHaveBeenCalledWith(true);
+    expect(setColorPickerOpen).toHaveBeenCalledWith(false);
     expect(globalShortcut).not.toHaveBeenCalled();
-    const blue = document.querySelector<HTMLElement>(".color-option.blue")!;
-    expect(blue.getAttribute("role")).toBe("button");
-    fireEvent.keyDown(blue, { key: " " });
+    fireEvent.keyDown(screen.getByRole("button", { name: "blue" }), { key: " " });
     expect(setColor).toHaveBeenCalledWith("blue");
-    fireEvent.keyDown(document.querySelector<HTMLElement>(".no-color-option")!, { key: "Enter" });
+    fireEvent.keyDown(screen.getByRole("button", { name: "No color" }), { key: "Enter" });
     expect(setColor).toHaveBeenLastCalledWith(null);
   });
 });
@@ -113,15 +112,48 @@ describe("CardForm query", () => {
   });
 });
 
-describe("CardForm footer", () => {
-  it("ends in the shared footer: Delete leading, then Cancel and Save", () => {
+describe("CardForm header", () => {
+  const wait = (ms: number) => new Promise(r => setTimeout(r, ms));
+
+  it("puts cancel and ✓ where refresh and edit sit, ✓ last", () => {
     renderCardForm("edit");
-    const footer = document.querySelector(".form-footer")!;
-    expect(footer).not.toBeNull();
-    const cancel = screen.getByRole("button", { name: /Cancel/ });
-    const save = screen.getByRole("button", { name: /Save/ });
-    expect(footer.querySelector(".form-footer-actions")!.contains(cancel)).toBe(true);
-    expect(footer.querySelector(".form-footer-actions")!.contains(save)).toBe(true);
+    const actions = document.querySelector(".card-edit-header .card-edit-actions")!;
+    expect([...actions.querySelectorAll("button")].map(b => b.getAttribute("aria-label"))).toEqual(["Cancel", "Save"]);
+  });
+
+  it("closes with ✓ when nothing changed, and saves once something has", async () => {
+    const onSave = vi.fn();
+    const onCancel = vi.fn();
+    const [dirty, setDirty] = createSignal(false);
+    renderCardForm("edit", { onSave, onCancel, dirty });
+    await wait(350);
+    fireEvent.click(screen.getByRole("button", { name: "Done" }));
+    expect(onCancel).toHaveBeenCalledTimes(1);
+    setDirty(true);
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    expect(onSave).toHaveBeenCalledTimes(1);
+  });
+
+  it("ignores ✓ right after opening, so the double-click that opened it doesn't save", async () => {
+    const onSave = vi.fn();
+    renderCardForm("edit", { onSave });
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    expect(onSave).not.toHaveBeenCalled();
+    await wait(350);
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    expect(onSave).toHaveBeenCalledTimes(1);
+  });
+
+  it("names a new card's ✓ Add", () => {
+    renderCardForm("new");
+    expect(screen.getByRole("button", { name: "Add" })).toBeInTheDocument();
+  });
+
+  it("moves from the name to the query on Enter", async () => {
+    renderCardForm("edit");
+    await wait(10);
+    fireEvent.keyDown(screen.getByPlaceholderText("e.g. Clients"), { key: "Enter" });
+    expect(document.activeElement).toBe(screen.getByPlaceholderText("e.g. from:boss is:unread newer_than:7d"));
   });
 });
 
