@@ -127,7 +127,7 @@ import { GoogleCredentialsForm } from "./components/GoogleCredentialsForm";
 import { credentialsValid, shortClientId } from "./app/googleCredentials";
 import { ComposeForm } from "./components/ComposeForm";
 import { CreateEventForm } from "./components/CreateEventForm";
-import { InviteRowLines, InviteWhen } from "./components/InviteRow";
+import { InviteRowLines } from "./components/InviteRow";
 import { inviteEnd, inviteState, inviteSummary, inviteTitle } from "./app/inviteRow";
 import { dayOtherEvents, stripLayout } from "./app/dayStrip";
 import { createInviteDayLookups, rangeDaysFor, type DayEvents } from "./app/inviteDays";
@@ -5276,7 +5276,9 @@ function App() {
                                         >
                                           <div class="thread-row">
                                             <div class="unread-dot" classList={{ "read": thread.unread_count === 0 }} aria-hidden="true"></div>
-                                            <span class="thread-subject" title={thread.subject}>{thread.calendar_event ? inviteTitle(thread.subject) : thread.subject}</span>
+                                            <span class="thread-participants" title={thread.participants.join(", ")}>
+                                              {participantNames(thread.participants, accounts().map(a => a.email))}
+                                            </span>
                                             <Show when={thread.has_attachment && !thread.calendar_event && shownAttachments(thread.attachments ?? []).length === 0}>
                                               <span class="thread-indicator" title="Has attachment">
                                                 <AttachmentIcon size="meta" strong />
@@ -5290,32 +5292,18 @@ function App() {
                                                 on:keydown={(e) => { if (e.key === 'Enter' || e.key === ' ') e.stopPropagation(); }}
                                               >Discard</button>
                                             </Show>
-                                            <Show when={thread.calendar_event} fallback={<span class="thread-time">{threadTime(thread.last_message_date, group().label)}</span>}>
-                                              {(invite) => (
-                                                <InviteWhen
-                                                  invite={invite()}
-                                                  state={inviteState(invite(), inviteRsvp(owner(), invite().uid), minuteNow())}
-                                                  now={minuteNow()}
-                                                  live={live()}
-                                                />
-                                              )}
-                                            </Show>
+                                            <span class="thread-time">{threadTime(thread.last_message_date, group().label)}</span>
                                           </div>
+                                          <div class="thread-subject" title={thread.subject}>{thread.calendar_event ? inviteTitle(thread.subject) : thread.subject}</div>
                                           <Show
                                             when={thread.calendar_event}
-                                            fallback={<>
-                                              <div class="thread-snippet">{decodeHtmlEntities(thread.snippet)}</div>
-                                              <div class="thread-participants" title={thread.participants.join(", ")}>
-                                                {participantNames(thread.participants, accounts().map(a => a.email))}
-                                              </div>
-                                            </>}
+                                            fallback={<div class="thread-snippet">{decodeHtmlEntities(thread.snippet)}</div>}
                                           >
                                             {(invite) => (
                                               <InviteRowLines
                                                 invite={invite()}
                                                 rsvp={inviteRsvp(owner(), invite().uid)}
                                                 now={minuteNow()}
-                                                participants={participantNames(thread.participants, accounts().map(a => a.email))}
                                                 disabled={rsvpLoading[thread.gmail_thread_id]}
                                                 showKeys={isThreadFocused(card.id, thread.gmail_thread_id)}
                                                 strip={inviteStrip()}

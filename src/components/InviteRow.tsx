@@ -229,13 +229,13 @@ const InviteStrip = (props: { layout: StripLayout }) => (
   </div>
 );
 
-// Lines two and three of an invite row, with the day strip on an unanswered
-// invite and the progress and Join button of a meeting happening now
+// An invite row's lines under its sender and title: when it is, how long and
+// where, then the answer; with the day strip on an unanswered invite and the
+// progress and Join button of a meeting happening now
 export const InviteRowLines = (props: {
   invite: CalendarEvent;
   rsvp: string | null | undefined;
   now: number;
-  participants: JSX.Element;
   onAnswer: (status: RsvpStatus) => void;
   disabled?: boolean;
   showKeys?: boolean;
@@ -265,12 +265,13 @@ export const InviteRowLines = (props: {
           <span style={{ width: `${progress().percent}%` }} />
         </div>
       </Show>
-      <Show when={duration() || place() || clashes().length > 0}>
-        <div class="invite-meta">
+      <div class="invite-meta">
+          <InviteWhen invite={props.invite} state={state()} now={props.now} live={props.live} />
           <Show when={duration()}>
+            <span class="invite-sep" aria-hidden="true">·</span>
             <span class="invite-duration">{duration()}</span>
           </Show>
-          <Show when={duration() && place()}>
+          <Show when={place()}>
             <span class="invite-sep" aria-hidden="true">·</span>
           </Show>
           <Show when={place()}>
@@ -287,8 +288,7 @@ export const InviteRowLines = (props: {
               <span class="invite-clash-title">{clashes()[0].title}{clashes().length > 1 ? ` +${clashes().length - 1}` : ""}</span>
             </span>
           </Show>
-        </div>
-      </Show>
+      </div>
       <Show when={strip()}>
         {(layout) => <InviteStrip layout={layout()} />}
       </Show>
@@ -302,15 +302,16 @@ export const InviteRowLines = (props: {
           {joinLabel(props.invite.conference_url!)}
         </button>
       </Show>
-      <div class="invite-foot">
-        <div class="thread-participants">{props.participants}</div>
-        <Show when={answerable()}>
-          <InviteAnswerMenu value={props.rsvp} onAnswer={props.onAnswer} disabled={props.disabled} showKeys={props.showKeys} />
-        </Show>
-        <Show when={state() === "cancelled"}>
-          <span class="invite-answer-static">Cancelled</span>
-        </Show>
-      </div>
+      <Show when={answerable() || state() === "cancelled"}>
+        <div class="invite-foot">
+          <Show when={answerable()}>
+            <InviteAnswerMenu value={props.rsvp} onAnswer={props.onAnswer} disabled={props.disabled} showKeys={props.showKeys} />
+          </Show>
+          <Show when={state() === "cancelled"}>
+            <span class="invite-answer-static">Cancelled</span>
+          </Show>
+        </div>
+      </Show>
     </>
   );
 };

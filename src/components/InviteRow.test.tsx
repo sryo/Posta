@@ -142,7 +142,7 @@ describe("InviteAnswerMenu", () => {
 });
 
 describe("InviteWhen", () => {
-  it("shows when the event is, in the accent", () => {
+  it("shows when the event is", () => {
     render(() => <InviteWhen invite={invite()} state="unanswered" now={NOW} locale="en-GB" />);
     const chip = screen.getByText("Thu 1 Oct, 10:30").closest(".invite-when")!;
     expect(chip).not.toHaveClass("struck");
@@ -169,14 +169,14 @@ describe("InviteWhen", () => {
 
 describe("InviteRowLines", () => {
   const lines = (over: Partial<Parameters<typeof InviteRowLines>[0]> = {}) => (
-    <InviteRowLines invite={invite()} rsvp={undefined} now={NOW} participants="Sofía Gómez" onAnswer={vi.fn()} {...over} />
+    <InviteRowLines invite={invite()} rsvp={undefined} now={NOW} onAnswer={vi.fn()} {...over} />
   );
 
-  it("puts the length and place where the snippet goes, and the sender beside the answer", () => {
+  it("puts when, how long and where under the title, and the answer under them", () => {
     render(() => lines());
-    expect(document.querySelector(".invite-meta")).toHaveTextContent("1 hr·Studio 2");
+    expect(document.querySelector(".invite-meta")).toHaveTextContent(/·1 hr·Studio 2$/);
+    expect(document.querySelector(".invite-meta .invite-when")).not.toBeNull();
     expect(document.querySelector(".invite-place-call")).toBeNull();
-    expect(document.querySelector(".invite-foot")).toHaveTextContent("Sofía Gómez");
     expect(within(document.querySelector(".invite-foot") as HTMLElement).getByRole("button", { name: "Your response: not answered" })).toBeInTheDocument();
   });
 
@@ -267,7 +267,7 @@ describe("InviteRowLines", () => {
 
   it("follows the answer as it changes", () => {
     const [rsvp, setRsvp] = createSignal<string | undefined>(undefined);
-    render(() => <InviteRowLines invite={invite()} rsvp={rsvp()} now={NOW} participants="Sofía" onAnswer={vi.fn()} />);
+    render(() => <InviteRowLines invite={invite()} rsvp={rsvp()} now={NOW} onAnswer={vi.fn()} />);
     expect(menuButton()).toHaveAccessibleName("Your response: not answered");
     setRsvp("declined");
     expect(menuButton()).toHaveAccessibleName("Your response: Not going");

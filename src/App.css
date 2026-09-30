@@ -1318,12 +1318,20 @@ a:focus-visible,
     gap: var(--space-md);
 }
 
+/* A row reads sender, then subject, then snippet: who first, then what */
+.thread-row > .thread-participants {
+    flex: 1;
+    min-width: 0;
+    font: var(--type-subject);
+    color: var(--text-primary);
+}
+
 .thread-subject {
-    flex-grow: 1;
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
-    font: var(--type-subject);
+    font: var(--type-meta);
+    color: var(--text-primary);
 }
 
 .thread-time {
@@ -1742,7 +1750,7 @@ a:focus-visible,
     font-weight: var(--weight-strong);
     font-variant-numeric: tabular-nums;
     white-space: nowrap;
-    color: var(--text-link);
+    color: var(--text-primary);
 }
 
 .invite-when.past {
@@ -1797,11 +1805,10 @@ a:focus-visible,
 }
 
 .invite-place-call {
-    color: var(--text-link);
+    color: var(--text-secondary);
 }
 
-.invite-place span,
-.thread.invite .invite-foot .thread-participants {
+.invite-place span {
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
@@ -1831,9 +1838,9 @@ a:focus-visible,
     min-height: 18px;
 }
 
-.thread.invite .invite-foot .thread-participants {
-    flex: 1;
-    min-width: 0;
+/* The answer keeps to the right, where the eye finds it row after row */
+.thread.invite .invite-foot {
+    justify-content: flex-end;
 }
 
 /* The answer: quiet text at rest, a bordered menu button on hover or focus */

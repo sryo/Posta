@@ -2573,17 +2573,17 @@ describe("App calendar", () => {
     });
     const rowOf = (subject: string) => screen.getByText(subject).closest(".thread") as HTMLElement;
 
-    it("puts the event's time where the arrival time goes, its length and place under it, and the answer by the sender", async () => {
+    it("leads with the sender and arrival time, then the title, then when, how long and where, then the answer", async () => {
       threadsByCard["card-a"] = [inviteMail("t-inv", "Design review")];
       handlers.get_calendar_rsvp_status = () => null;
       handlers.rsvp_calendar_event = () => null;
       render(() => <App />);
       await screen.findByText("Design review");
       const row = rowOf("Design review");
-      expect(row.querySelector(".thread-row .invite-when")).toHaveTextContent(/^Tomorrow/);
-      expect(row.querySelector(".thread-time")).toBeNull();
-      expect(row.querySelector(".invite-meta")).toHaveTextContent("1 hr·Studio 2");
-      expect(row.querySelector(".invite-foot")).toHaveTextContent("Jules Martin");
+      expect(row.querySelector(".thread-row .thread-participants")).toHaveTextContent("Jules Martin");
+      expect(row.querySelector(".thread-row .thread-time")).not.toBeNull();
+      expect(row.querySelector(".invite-meta .invite-when")).toHaveTextContent(/^Tomorrow/);
+      expect(row.querySelector(".invite-meta")).toHaveTextContent(/·1 hr·Studio 2$/);
       expect(row.querySelector(".calendar-event-preview")).toBeNull();
       expect(row.getAttribute("aria-label")).toMatch(/^Design review from Jules Martin\. .*, tomorrow\. You have not answered\.$/);
 

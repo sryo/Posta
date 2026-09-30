@@ -15,8 +15,8 @@ describe("invite row styles", () => {
     expect(menu.get("z-index")).toBe("var(--z-dropdown)");
   });
 
-  it("writes the event's time in the accent, muted once past and struck through when not going", () => {
-    expect(declarations(".invite-when").get("color")).toBe("var(--text-link)");
+  it("writes the event's time plainly, muted once past and struck through when not going", () => {
+    expect(declarations(".invite-when").get("color")).toBe("var(--text-primary)");
     expect(declarations(".invite-when.past").get("color")).toBe("var(--text-muted)");
     expect(declarations(".invite-when.struck").get("text-decoration")).toBe("line-through");
   });
