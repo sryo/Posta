@@ -59,3 +59,32 @@ describe("CardAttachments", () => {
     expect(container.querySelector(".thread-attachment-more")?.textContent).toBe("+2");
   });
 });
+
+describe("CardAttachments embedded images", () => {
+  const embedded = (filename: string, size: number, content_id: string) => ({ ...attachment(filename, "image/png", size, "iVBOR"), content_id });
+
+  it("leaves logos and signature images to the message, and keeps photos sent inline", () => {
+    render(() => (
+      <CardAttachments
+        attachments={[
+          embedded("ii_abc.png", 60000, "ii_abc"),
+          embedded("image001.png", 60000, "x@y"),
+          embedded("logo.png", 3000, "x@y"),
+          { ...attachment("IMG_2041.jpeg", "image/jpeg", 900000), content_id: "B1C2@apple" },
+          attachment("layout.pdf", "application/pdf", 240 * 1024),
+        ]}
+        onOpen={vi.fn()}
+        onMenu={vi.fn()}
+      />
+    ));
+    expect(screen.getAllByRole("button").map(b => b.getAttribute("title")?.split(" (")[0])).toEqual(["IMG_2041.jpeg", "layout.pdf"]);
+  });
+
+  it("cuts a long name short but always shows its extension", () => {
+    render(() => <CardAttachments attachments={[attachment("80431_EXPENSAS_OCTUBRE.pdf", "application/pdf", 1000)]} onOpen={vi.fn()} onMenu={vi.fn()} />);
+    const chip = screen.getByRole("button");
+    expect(chip.querySelector(".file-stem")).toHaveTextContent("80431_EXPENSAS_OCTUBRE");
+    expect(chip.querySelector(".file-ext")).toHaveTextContent(".pdf");
+  });
+});
+

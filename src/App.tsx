@@ -64,6 +64,7 @@ import {
   type Contact,
   fetchCalendarEvents,
   type GoogleCalendarEvent,
+  type CalendarEvent,
   type CalendarInfo,
   listCalendars,
   moveCalendarEvent,
@@ -83,7 +84,6 @@ import {
   formatFileSize,
   formatTime,
   formatSyncTime,
-  truncateMiddle,
   getInitial,
   extractEmail,
   extractMessageText,
@@ -128,7 +128,7 @@ import { credentialsValid, shortClientId } from "./app/googleCredentials";
 import { ComposeForm } from "./components/ComposeForm";
 import { CreateEventForm } from "./components/CreateEventForm";
 import { InviteRowLines, InviteWhen } from "./components/InviteRow";
-import { inviteEnd, inviteState, inviteSummary } from "./app/inviteRow";
+import { inviteEnd, inviteState, inviteSummary, inviteTitle } from "./app/inviteRow";
 import { dayOtherEvents, stripLayout } from "./app/dayStrip";
 import { createInviteDayLookups, rangeDaysFor, type DayEvents } from "./app/inviteDays";
 import type { DayBusy } from "./app/dayTimeline";
@@ -158,7 +158,8 @@ import { eventReplyRecipients } from "./app/eventReply";
 import { labelDisplayName } from "./app/labels";
 import { nameInThreads, participantNames, personName } from "./app/people";
 import { afterRemoval, loadAfterArchive, stepThread, threadPosition } from "./app/threadNavigation";
-import { CardAttachments } from "./components/CardAttachments";
+import { CardAttachments, FileName, shownAttachments } from "./components/CardAttachments";
+import { watchScrollFade } from "./app/scrollFade";
 import { AfterArchiveSetting } from "./components/AfterArchiveSetting";
 import { runUnsubscribe, type UnsubscribeMethod } from "./app/unsubscribe";
 import { actionFailureLabel, actionLabel, actionRemovesFromCard, applyThreadAction, labelChangeFor, threadMayJoinCard, undoLabelChanges, type LabelReversal } from "./app/threadActions";
@@ -302,8 +303,11 @@ function App() {
   // and today's times move on at midnight without re-rendering every tick
   const today = createMemo(() => new Date(currentTime()).setHours(0, 0, 0, 0));
   // formatTime reads the clock itself; reading today() re-runs it at midnight
-  const threadTime = (timestamp: number) => {
+  // A row's time: the clock inside the Today and Yesterday groups, whose
+  // headers already name the day, else the date
+  const threadTime = (timestamp: number, groupLabel?: string) => {
     today();
+    if (groupLabel === "Today" || groupLabel === "Yesterday") return formatClock(new Date(timestamp));
     return formatTime(timestamp);
   };
 
@@ -318,6 +322,12 @@ function App() {
   const rsvpLookups = createRsvpLookups({ lookup: getCalendarRsvpStatus, onStatus: setRsvpStatus });
   const inviteRsvp = (account: Account | null, uid: string | null) =>
     account && uid ? rsvpStatus[rsvpLookups.key(account.id, uid)] : undefined;
+  // An invite that has happened or been called off steps back in its row
+  const inviteIsOver = (invite: CalendarEvent | null, account: Account | null) => {
+    if (!invite) return false;
+    const state = inviteState(invite, inviteRsvp(account, invite.uid), minuteNow());
+    return state === "past" || state === "cancelled";
+  };
 
   // Invite rows move on by the minute: the Now section, progress, now-lines
   const minuteNow = createMemo(() => currentTime(), undefined, { equals: (a, b) => Math.floor(a / 60_000) === Math.floor(b / 60_000) });
@@ -5055,6 +5065,7 @@ function App() {
                         </Show>
                         <div
                           class="card-body"
+                          ref={(el) => onCleanup(watchScrollFade(el))}
                           onScroll={(e) => {
                             if (editingCardId() === card.id) return; // No scroll loading during edit
                             const target = e.currentTarget;
@@ -5254,7 +5265,7 @@ function App() {
                                       return (
                                       <>
                                         <div
-                                          class={`thread ${thread.unread_count > 0 ? 'unread' : ''} ${selectedThreads()[card.id]?.has(thread.gmail_thread_id) ? 'selected' : ''} ${isThreadFocused(card.id, thread.gmail_thread_id) ? 'focused' : ''} ${isQuickReplyThread(thread.gmail_thread_id) ? 'replying' : ''}${thread.calendar_event ? ' invite' : ''}${live() ? ' live' : ''}`}
+                                          class={`thread ${thread.unread_count > 0 ? 'unread' : ''} ${selectedThreads()[card.id]?.has(thread.gmail_thread_id) ? 'selected' : ''} ${isThreadFocused(card.id, thread.gmail_thread_id) ? 'focused' : ''} ${isQuickReplyThread(thread.gmail_thread_id) ? 'replying' : ''}${thread.calendar_event ? ' invite' : ''}${live() ? ' live' : ''}${inviteIsOver(thread.calendar_event, owner()) ? ' invite-over' : ''}`}
                                           onMouseEnter={() => showThreadHoverActions(thread.gmail_thread_id)}
                                           onMouseLeave={() => hideThreadHoverActions()}
                                           onClick={() => openThread(thread.gmail_thread_id, card.id)}
@@ -5264,11 +5275,9 @@ function App() {
                                           onFocus={() => onRowFocus(card.id, thread.gmail_thread_id)}
                                         >
                                           <div class="thread-row">
-                                            <Show when={thread.unread_count > 0}>
-                                              <div class="unread-dot"></div>
-                                            </Show>
-                                            <span class="thread-subject">{thread.subject}</span>
-                                            <Show when={thread.has_attachment && !thread.calendar_event}>
+                                            <div class="unread-dot" classList={{ "read": thread.unread_count === 0 }} aria-hidden="true"></div>
+                                            <span class="thread-subject" title={thread.subject}>{thread.calendar_event ? inviteTitle(thread.subject) : thread.subject}</span>
+                                            <Show when={thread.has_attachment && !thread.calendar_event && shownAttachments(thread.attachments ?? []).length === 0}>
                                               <span class="thread-indicator" title="Has attachment">
                                                 <AttachmentIcon size="meta" strong />
                                               </span>
@@ -5281,7 +5290,7 @@ function App() {
                                                 on:keydown={(e) => { if (e.key === 'Enter' || e.key === ' ') e.stopPropagation(); }}
                                               >Discard</button>
                                             </Show>
-                                            <Show when={thread.calendar_event} fallback={<span class="thread-time">{threadTime(thread.last_message_date)}</span>}>
+                                            <Show when={thread.calendar_event} fallback={<span class="thread-time">{threadTime(thread.last_message_date, group().label)}</span>}>
                                               {(invite) => (
                                                 <InviteWhen
                                                   invite={invite()}
@@ -5296,7 +5305,7 @@ function App() {
                                             when={thread.calendar_event}
                                             fallback={<>
                                               <div class="thread-snippet">{decodeHtmlEntities(thread.snippet)}</div>
-                                              <div class="thread-participants">
+                                              <div class="thread-participants" title={thread.participants.join(", ")}>
                                                 {participantNames(thread.participants, accounts().map(a => a.email))}
                                               </div>
                                             </>}
@@ -5565,7 +5574,7 @@ function App() {
                                       <For each={thread.attachments?.filter(a => !a.inline_data || !a.mime_type.startsWith("image/")).slice(0, 2)}>
                                         {(attachment) => (
                                           <div class="thread-file-item" title={`${attachment.filename} (${formatFileSize(attachment.size)})`}>
-                                            <span class="file-name">{truncateMiddle(attachment.filename, 14)}</span>
+                                            <FileName filename={attachment.filename} />
                                           </div>
                                         )}
                                       </For>

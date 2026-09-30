@@ -2080,7 +2080,7 @@ describe("App calendar", () => {
     expect(invoke.mock.calls.some(([cmd, args]) => cmd === "fetch_calendar_events" && args?.query === "calendar:month")).toBe(false);
   });
 
-  it("moves the day labels and thread times on at midnight", async () => {
+  it("moves the day labels on at midnight, rows under a day's band keeping their clock time", async () => {
     const lateEvening = new Date();
     lateEvening.setHours(23, 59, 0, 0);
     vi.useFakeTimers({ shouldAdvanceTime: true, now: lateEvening });
@@ -2098,7 +2098,8 @@ describe("App calendar", () => {
 
     await vi.advanceTimersByTimeAsync(2 * 60_000);
     await waitFor(() => expect(within(week).getByText("Today")).toBeInTheDocument());
-    expect(time.textContent).not.toBe(eveningText);
+    // Under a day's band the row keeps its clock time; the band names the day
+    expect(time.textContent).toBe(eveningText);
   });
 
   it("keeps an event's row when a refresh or the filter leaves it unchanged", async () => {
@@ -2448,7 +2449,7 @@ describe("App calendar", () => {
     handlers.get_calendar_rsvp_status = () => null;
     handlers.rsvp_calendar_event = () => null;
     render(() => <App />);
-    fireEvent.click(await screen.findByText("Invitation: Planning"));
+    fireEvent.click(await screen.findByTitle("Invitation: Planning"));
 
     const block = await waitFor(() => {
       const el = document.querySelector(".thread-overlay .message-card .calendar-event-preview");
@@ -2472,10 +2473,10 @@ describe("App calendar", () => {
     handlers.get_calendar_rsvp_status = () => null;
     handlers.rsvp_calendar_event = () => null;
     render(() => <App />);
-    await screen.findByText("Invitation: Planning");
+    await screen.findByTitle("Invitation: Planning");
 
     fireEvent.keyDown(document, { key: "l" });
-    const row = screen.getByText("Invitation: Planning").closest(".thread") as HTMLElement;
+    const row = screen.getByTitle("Invitation: Planning").closest(".thread") as HTMLElement;
     expect(within(row).getByRole("button", { name: /^Your response/ })).toHaveTextContent("Y ⇧M N");
     fireEvent.keyDown(document, { key: "M", shiftKey: true });
     await waitFor(() => expect(invoke).toHaveBeenCalledWith("rsvp_calendar_event", { accountId: "a", eventUid: "ev-1@google.com", status: "tentative" }));
@@ -2492,8 +2493,8 @@ describe("App calendar", () => {
     handlers.get_calendar_rsvp_status = () => "tentative";
     handlers.rsvp_calendar_event = () => null;
     render(() => <App />);
-    await screen.findByText("Invitation: Planning");
-    const row = screen.getByText("Invitation: Planning").closest(".thread") as HTMLElement;
+    await screen.findByTitle("Invitation: Planning");
+    const row = screen.getByTitle("Invitation: Planning").closest(".thread") as HTMLElement;
     await waitFor(() => expect(within(row).getByRole("button", { name: "Your response: Maybe" })).toBeInTheDocument());
 
     fireEvent.keyDown(document, { key: "l" });
@@ -2516,10 +2517,10 @@ describe("App calendar", () => {
     handlers.get_calendar_rsvp_status = () => null;
     handlers.rsvp_calendar_event = () => null;
     render(() => <App />);
-    await screen.findByText("Invitation: Planning");
+    await screen.findByTitle("Invitation: Planning");
     await screen.findByText("Going?", { selector: ".calendar-event-response" });
 
-    const invite = screen.getByText("Invitation: Planning").closest(".thread") as HTMLElement;
+    const invite = screen.getByTitle("Invitation: Planning").closest(".thread") as HTMLElement;
     fireEvent.click(within(invite).getByRole("button", { name: "Your response: not answered" }));
     fireEvent.click(screen.getByRole("menuitemradio", { name: /Going/ }));
 
@@ -2581,7 +2582,7 @@ describe("App calendar", () => {
       const row = rowOf("Design review");
       expect(row.querySelector(".thread-row .invite-when")).toHaveTextContent(/^Tomorrow/);
       expect(row.querySelector(".thread-time")).toBeNull();
-      expect(row.querySelector(".invite-meta")).toHaveTextContent("1 h·Studio 2");
+      expect(row.querySelector(".invite-meta")).toHaveTextContent("1 hr·Studio 2");
       expect(row.querySelector(".invite-foot")).toHaveTextContent("Jules Martin");
       expect(row.querySelector(".calendar-event-preview")).toBeNull();
       expect(row.getAttribute("aria-label")).toMatch(/^Design review from Jules Martin\. .*, tomorrow\. You have not answered\.$/);
@@ -5039,11 +5040,11 @@ describe("App reading view", () => {
     expect(within(drawer).getByText("Important")).toBeInTheDocument();
   });
 
-  it("names a thread's participants in its row, by address when there is no name", async () => {
+  it("names a thread's participants in its row, by the part before @ when there is no name", async () => {
     threadsByCard["card-a"] = [{ ...thread("t-a", "Mail for A"), participants: ["Ana Pérez <ana@x.com>", "bob@x.com"] }];
     render(() => <App />);
     const row = (await screen.findByText("Mail for A")).closest(".thread") as HTMLElement;
-    expect(row.querySelector(".thread-participants")?.textContent?.trim()).toBe("Ana Pérez, bob@x.com");
+    expect(row.querySelector(".thread-participants")?.textContent?.trim()).toBe("Ana Pérez, bob");
     expect(row.getAttribute("aria-label")).toContain("from Ana Pérez, bob@x.com");
   });
 

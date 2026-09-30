@@ -7,11 +7,15 @@ const RADIUS = 38;
 const PETAL = 28;
 const MAX_RADIUS = 64;
 
-// The arc on each side of the anchor, first action at the top
+// The fan on each side of the anchor, first action at the top. Where the
+// scrolling area it sits in would cut it off, as on a card's first row, the
+// fan turns away from that edge
 const ARCS = {
-  left: { start: 240, span: -120 },
-  right: { start: -60, span: 120 },
+  left: { toward: 180, maxSpan: 120, reverse: true },
+  right: { toward: 0, maxSpan: 120 },
 } as const;
+
+const scrollArea = (menu: HTMLElement) => menu.closest(".card-body, .thread-overlay") ?? document.body;
 
 // Actions fanned out beside what they act on: a row's checkbox, a message
 export function ActionWheel(props: {
@@ -30,6 +34,7 @@ export function ActionWheel(props: {
       items={props.actions}
       open={props.open}
       arc={ARCS[props.side]}
+      bounds={scrollArea}
       radius={RADIUS}
       itemSize={PETAL}
       overlap="grow"

@@ -76,7 +76,7 @@ describe("nudge", () => {
 describe("formatDuration", () => {
   it("reads minutes and hours", () => {
     expect(formatDuration(45)).toBe("45 min");
-    expect(formatDuration(60)).toBe("1 h");
-    expect(formatDuration(90)).toBe("1 h 30 min");
+    expect(formatDuration(60)).toBe("1 hr");
+    expect(formatDuration(90)).toBe("1 hr 30 min");
   });
 });

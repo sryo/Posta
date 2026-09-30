@@ -46,13 +46,24 @@ export function inviteWhen(invite: Timing, now: Date, locale?: string): string {
   return capitalise(text, locale);
 }
 
-// "30 m", "1 h", "1 h 30 m", "1 d 2 h"
+// "30 min", "1 hr", "1 hr 30 min", "1 day 2 hr"
 export function formatDuration(minutes: number): string {
   const days = Math.floor(minutes / (24 * 60));
   const hours = Math.floor((minutes % (24 * 60)) / 60);
   const mins = minutes % 60;
-  const parts = [days && `${days} d`, hours && `${hours} h`, mins && `${mins} m`].filter(Boolean);
-  return parts.length > 0 ? parts.join(" ") : "0 m";
+  const parts = [days && `${days} ${days === 1 ? "day" : "days"}`, hours && `${hours} hr`, mins && `${mins} min`].filter(Boolean);
+  return parts.length > 0 ? parts.join(" ") : "0 min";
+}
+
+// What Google wraps an invite's title in, in English and Spanish: "Invitation:",
+// "Accepted:" and the like before it, and " @ <when> (<zone>) (<address>)"
+// after it. The row shows the time on its own, so only the title is left.
+const INVITE_PREFIX = /^\s*(updated invitation|invitation|accepted|declined|tentatively accepted|canceled event|cancelled event|invitación actualizada|invitación|aceptado|aceptada|rechazado|rechazada|aceptado provisionalmente|evento cancelado)(\s+with note|\s+con nota)?\s*:\s*/i;
+const INVITE_SUFFIX = /\s+@\s+.*\((?:GMT|UTC)[^)]*\).*$/i;
+
+export function inviteTitle(subject: string): string {
+  const title = subject.replace(INVITE_PREFIX, "").replace(INVITE_SUFFIX, "").trim();
+  return title || subject;
 }
 
 export function inviteDuration(invite: Timing): string | null {

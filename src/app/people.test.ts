@@ -1,5 +1,15 @@
 import { describe, expect, it } from "vitest";
-import { nameInThreads, organizerName, participantNames, personName } from "./people";
+import { nameInThreads, organizerName, participantNames, personName, shortName } from "./people";
+
+describe("shortName", () => {
+  it("reads a person by name, else by the part before @, and a robot by its domain", () => {
+    expect(shortName("Ana Pérez <ana@x.com>")).toBe("Ana Pérez");
+    expect(shortName("ana.perez@x.com")).toBe("ana.perez");
+    expect(shortName("NoReply@fullgestion.com.ar")).toBe("fullgestion.com.ar");
+    expect(shortName("notifications@mail.github.com")).toBe("github.com");
+    expect(shortName("noreply-dmarc-support@google.com")).toBe("google.com");
+  });
+});
 
 describe("personName", () => {
   it("prefers a display name, falling back to the address", () => {
@@ -15,7 +25,7 @@ describe("participantNames", () => {
   });
 
   it("counts the people past the first three", () => {
-    expect(participantNames(["a@x.com", "Bo <b@x.com>", "c@x.com", "d@x.com", "e@x.com"], [])).toBe("a@x.com, Bo, c@x.com + 2");
+    expect(participantNames(["a@x.com", "Bo <b@x.com>", "c@x.com", "d@x.com", "e@x.com"], [])).toBe("a, Bo, c + 2");
   });
 });
 

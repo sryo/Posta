@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { CalendarEvent } from "../api/tauri";
-import { formatDuration, inviteDuration, inviteEnd, invitePlace, inviteState, inviteSummary, inviteWhen } from "./inviteRow";
+import { formatDuration, inviteDuration, inviteTitle, inviteEnd, invitePlace, inviteState, inviteSummary, inviteWhen } from "./inviteRow";
 
 const now = new Date(2026, 8, 29, 10, 0);
 const at = (month: number, day: number, hour = 0, minute = 0) => new Date(2026, month, day, hour, minute).getTime();
@@ -48,24 +48,38 @@ describe("inviteWhen", () => {
   });
 });
 
+describe("inviteTitle", () => {
+  it("leaves only the event's title from Google's invite subjects", () => {
+    expect(inviteTitle("Invitation: Catch Up @ Tue Oct 1, 2026 10am - 11am (GMT-3) (teo@x.com)")).toBe("Catch Up");
+    expect(inviteTitle("Updated invitation with note: Design sync @ Mon Oct 19 12:20pm (GMT-3) (a@b.c)")).toBe("Design sync");
+    expect(inviteTitle("Accepted: Standup @ Wed Oct 2 9am (GMT-3) (ana@y.com)")).toBe("Standup");
+    expect(inviteTitle("Invitación: Turno médico @ lun 19 oct 2026 12:20 - 12:35 (GMT-3) (teo@x.com)")).toBe("Turno médico");
+  });
+
+  it("keeps a subject that is not Google's, and an @ that is part of the title", () => {
+    expect(inviteTitle("Sanatorio Allende - turno confirmado")).toBe("Sanatorio Allende - turno confirmado");
+    expect(inviteTitle("Coffee @ the office")).toBe("Coffee @ the office");
+  });
+});
+
 describe("formatDuration", () => {
   it("writes minutes and hours short", () => {
-    expect(formatDuration(30)).toBe("30 m");
-    expect(formatDuration(60)).toBe("1 h");
-    expect(formatDuration(90)).toBe("1 h 30 m");
-    expect(formatDuration(120)).toBe("2 h");
+    expect(formatDuration(30)).toBe("30 min");
+    expect(formatDuration(60)).toBe("1 hr");
+    expect(formatDuration(90)).toBe("1 hr 30 min");
+    expect(formatDuration(120)).toBe("2 hr");
   });
 
   it("counts days for events longer than a day", () => {
-    expect(formatDuration(24 * 60)).toBe("1 d");
-    expect(formatDuration(26 * 60)).toBe("1 d 2 h");
+    expect(formatDuration(24 * 60)).toBe("1 day");
+    expect(formatDuration(26 * 60)).toBe("1 day 2 hr");
   });
 });
 
 describe("inviteDuration", () => {
   it("measures a timed event from start to end", () => {
-    expect(inviteDuration(invite({ start_time: at(8, 30, 15), end_time: at(8, 30, 15, 30) }))).toBe("30 m");
-    expect(inviteDuration(invite({ start_time: at(8, 30, 15), end_time: at(8, 30, 16, 30) }))).toBe("1 h 30 m");
+    expect(inviteDuration(invite({ start_time: at(8, 30, 15), end_time: at(8, 30, 15, 30) }))).toBe("30 min");
+    expect(inviteDuration(invite({ start_time: at(8, 30, 15), end_time: at(8, 30, 16, 30) }))).toBe("1 hr 30 min");
   });
 
   it("says nothing when the invite has no end", () => {

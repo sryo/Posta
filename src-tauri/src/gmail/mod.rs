@@ -1397,7 +1397,7 @@ fn attachment_fetches(threads: &[Thread]) -> Vec<AttachmentFetch> {
                 .attachments
                 .iter()
                 .enumerate()
-                .filter(|(_, a)| a.mime_type.starts_with("image/") && a.size < MAX_INLINE_IMAGE_SIZE)
+                .filter(|(_, a)| a.mime_type.starts_with("image/") && a.size < MAX_INLINE_IMAGE_SIZE && !a.looks_embedded())
                 .take(MAX_INLINE_IMAGES);
             let invites = t.attachments.iter().enumerate().filter(|(_, a)| a.is_calendar());
             images

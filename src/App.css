@@ -98,7 +98,6 @@
     --surface-hover: color-mix(in srgb, var(--neutral-1000) 5%, transparent);
     --surface-selected: color-mix(in srgb, var(--accent) 8%, transparent);
     --surface-unread: color-mix(in srgb, var(--neutral-0) 50%, transparent);
-    --surface-unread-hover: color-mix(in srgb, var(--neutral-0) 70%, transparent);
     --surface-inverse: var(--neutral-800);
     --surface-inverse-hover: color-mix(in srgb, var(--neutral-0) 10%, transparent);
     --surface-document: var(--neutral-0);
@@ -293,7 +292,6 @@
         --surface-hover: color-mix(in srgb, var(--neutral-0) 8%, transparent);
         --surface-selected: color-mix(in srgb, var(--accent) 15%, transparent);
         --surface-unread: color-mix(in srgb, var(--neutral-0) 6%, transparent);
-        --surface-unread-hover: color-mix(in srgb, var(--neutral-0) 10%, transparent);
         --surface-inverse: var(--neutral-150);
         --surface-inverse-hover: color-mix(in srgb, var(--neutral-1000) 8%, transparent);
 
@@ -1238,6 +1236,11 @@ a:focus-visible,
     position: relative;
 }
 
+/* More mail below the card's edge: the last rows fade into it */
+.card-body.more-below {
+    mask-image: linear-gradient(to bottom, var(--surface-card) calc(100% - 24px), transparent);
+}
+
 /* Hide the last border by masking it */
 .card-body > .thread:last-child,
 .card-body > .calendar-event-item:last-child {
@@ -1274,7 +1277,7 @@ a:focus-visible,
 
 .thread {
     position: relative;
-    padding: var(--space-md) var(--space-lg);
+    padding: var(--space-md) var(--space-lg) var(--space-md) var(--space-xl);
     border-bottom: 1px solid var(--card-divider);
     cursor: pointer;
     display: flex;
@@ -1294,12 +1297,19 @@ a:focus-visible,
     background: var(--surface-unread);
 }
 
-.thread.unread:hover {
-    background: var(--surface-unread-hover);
+/* Unread: sender, subject and time in the strong weight, and the dot; read
+   subjects step back to the secondary colour. Selection and focus change the
+   background only, so a selected unread row still reads as unread */
+.thread.unread :is(.thread-subject, .thread-participants, .thread-time) {
+    font-weight: var(--weight-strong);
 }
 
-.thread.unread .thread-subject {
-    font-weight: var(--weight-strong);
+.thread.unread .thread-time {
+    color: var(--text-primary);
+}
+
+.thread:not(.unread) .thread-subject {
+    color: var(--text-secondary);
 }
 
 .thread-row {
@@ -1317,8 +1327,10 @@ a:focus-visible,
 }
 
 .thread-time {
+    min-width: 5ch;
     font: var(--type-meta);
     font-variant-numeric: tabular-nums;
+    text-align: end;
     color: var(--text-muted);
     flex-shrink: 0;
 }
@@ -1345,29 +1357,25 @@ a:focus-visible,
     align-items: center;
     color: var(--text-muted);
     flex-shrink: 0;
-    margin-left: 4px;
 }
 
 .thread-attachments {
     display: flex;
-    gap: var(--space-md);
-    margin-top: 6px;
+    gap: var(--space-sm);
+    margin-top: var(--space-sm);
     flex-wrap: wrap;
     align-items: center;
 }
 
+/* Thumbnails and file chips are quiet on the card: a hairline in the text's
+   own colour, filled only under the pointer */
 .thread-image-thumb {
-    width: 40px;
-    height: 40px;
+    width: 28px;
+    height: 28px;
     object-fit: cover;
-    border-radius: var(--radius-sm);
-    box-shadow: inset 0 0 0 1px var(--border-default);
+    border-radius: var(--radius-xs);
+    box-shadow: inset 0 0 0 1px color-mix(in srgb, currentColor 18%, transparent);
     cursor: pointer;
-    transition: transform 0.15s ease;
-}
-
-.thread-image-thumb:hover {
-    transform: scale(1.05);
 }
 
 .thread-image-btn {
@@ -1375,42 +1383,49 @@ a:focus-visible,
     padding: 0;
     border: none;
     background: none;
-    border-radius: var(--radius-sm);
+    border-radius: var(--radius-xs);
+    color: var(--text-secondary);
     cursor: pointer;
 }
 
 .thread-file-item {
     display: flex;
     align-items: center;
-    gap: var(--space-sm);
-    padding: var(--space-sm) var(--space-md);
+    height: 22px;
+    max-width: 160px;
+    padding: 0 var(--space-md);
     border: none;
-    font: var(--type-meta);
-    background: var(--surface-inset);
-    box-shadow: inset 0 0 0 1px var(--border-default);
     border-radius: var(--radius-sm);
+    background: transparent;
+    box-shadow: inset 0 0 0 1px color-mix(in srgb, currentColor 18%, transparent);
+    color: var(--text-secondary);
+    font: var(--type-meta);
     cursor: pointer;
     transition: background 0.15s ease;
-    max-width: 120px;
 }
 
-.thread-file-item:hover {
-    background: var(--surface-subtle);
+.thread-file-item:hover,
+.thread-image-btn:hover {
+    background: var(--surface-hover);
 }
 
-.file-name {
-    color: var(--text-secondary);
+/* The name is cut short; its extension never is */
+.file-stem {
+    min-width: 0;
     overflow: hidden;
     text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.file-ext {
+    flex-shrink: 0;
     white-space: nowrap;
 }
 
 .thread-attachment-more {
     font: var(--type-meta);
     color: var(--text-muted);
-    padding: var(--space-sm) var(--space-md);
-    background: var(--surface-inset);
-    border-radius: var(--radius-sm);
+    padding: 0 var(--space-sm);
 }
 
 .thread-snippet {
@@ -1706,14 +1721,18 @@ a:focus-visible,
 .thread-participants {
     font: var(--type-meta);
     color: var(--text-muted);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+/* A past or cancelled invite steps back as a whole */
+.thread.invite-over :is(.thread-subject, .invite-meta, .invite-foot) {
+    color: var(--text-muted);
 }
 
 /* Invite rows: the event's time takes the arrival time's slot, its length
    and place the snippet's line, and the answer sits by the sender */
-.thread.invite:is(:hover, .focused, .selected) .thread-row {
-    padding-right: 24px;
-}
-
 .invite-when {
     display: inline-flex;
     align-items: center;
@@ -1851,8 +1870,9 @@ a:focus-visible,
     cursor: not-allowed;
 }
 
+/* Going is settled: it reads quietly, and colour stays for what needs an answer */
 .invite-answer.accepted {
-    color: var(--success-text);
+    color: var(--text-secondary);
 }
 
 .invite-answer.tentative {
@@ -2080,6 +2100,17 @@ a:focus-visible,
     background: var(--accent-fill);
     border-radius: var(--radius-full);
     flex-shrink: 0;
+}
+
+/* In a row the dot sits in the left margin, so the subject starts at the
+   same edge as the lines under it, read or unread */
+.thread-row > .unread-dot {
+    margin-left: calc(var(--space-sm) - var(--space-xl));
+    margin-right: calc(var(--space-sm) - var(--space-md));
+}
+
+.unread-dot.read {
+    visibility: hidden;
 }
 
 .loading,
@@ -3574,10 +3605,6 @@ button:disabled:hover {
     transition: opacity 100ms;
 }
 
-.thread:hover .thread-checkbox-wrap {
-    background: var(--surface-hover);
-}
-
 .thread:hover .thread-checkbox-wrap,
 .thread.selected .thread-checkbox-wrap,
 .thread.focused .thread-checkbox-wrap,
@@ -3597,6 +3624,7 @@ button:disabled:hover {
 
 .thread.selected {
     background: var(--surface-selected);
+    box-shadow: inset 3px 0 0 var(--accent-fill);
 }
 
 .thread.focused {
@@ -3605,14 +3633,9 @@ button:disabled:hover {
     outline-offset: -2px;
 }
 
-/* Hide time and attachment icon when showing checkbox */
-.thread:hover .thread-time,
-.thread.selected .thread-time,
-.thread.focused .thread-time,
-.thread:hover .thread-indicator,
-.thread.selected .thread-indicator,
-.thread.focused .thread-indicator {
-    opacity: 0;
+/* The checkbox takes a place of its own beside the time, which stays */
+.thread:is(:hover, .selected, .focused) .thread-row {
+    padding-right: 24px;
 }
 
 /* Hide event time when showing checkbox */

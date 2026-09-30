@@ -21,8 +21,8 @@ describe("invite row styles", () => {
     expect(declarations(".invite-when.struck").get("text-decoration")).toBe("line-through");
   });
 
-  it("colours the answer by its status token", () => {
-    expect(declarations(".invite-answer.accepted").get("color")).toBe("var(--success-text)");
+  it("colours the answer by its status token, going quietly", () => {
+    expect(declarations(".invite-answer.accepted").get("color")).toBe("var(--text-secondary)");
     expect(declarations(".invite-answer.tentative").get("color")).toBe("var(--warning-text)");
     expect(declarations(".invite-answer-item.accepted .invite-answer-icon").get("color")).toBe("var(--success-text)");
     expect(declarations(".invite-answer-item.tentative .invite-answer-icon").get("color")).toBe("var(--warning-text)");
@@ -30,7 +30,7 @@ describe("invite row styles", () => {
   });
 
   it("keeps the event's time clear of the row's checkbox on hover and focus", () => {
-    expect(declarations(".thread.invite:is(:hover, .focused, .selected) .thread-row").get("padding-right")).toBe("24px");
+    expect(declarations(".thread:is(:hover, .selected, .focused) .thread-row").get("padding-right")).toBe("24px");
   });
 
   it("lets a long clash shrink to an ellipsis beside the place, which keeps its icon and a few letters", () => {

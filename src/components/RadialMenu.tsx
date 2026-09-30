@@ -1,7 +1,7 @@
 import { For, Show, createEffect, createMemo, createSignal, onCleanup, type JSX } from "solid-js";
 import { Dynamic } from "solid-js/web";
 import type { IconProps } from "./Icons";
-import { autoArc, layoutPetals, type Arc, type Overlap, type Rect } from "../app/radial";
+import { autoArc, fittedRadius, layoutPetals, type Arc, type Overlap, type Rect } from "../app/radial";
 
 // One petal: an action with an icon, or a colour swatch (`hue`, null for none)
 export type RadialItem = {
@@ -15,8 +15,12 @@ export type RadialItem = {
   onSelect: (e: MouseEvent) => void;
 };
 
-// Opens toward a direction, as wide as the room around it allows
-export type ArcToward = { toward: number; maxSpan: number };
+// Opens toward a direction, as wide as the room around it allows; `reverse`
+// lays the petals out counterclockwise, as a left-hand fan that starts at
+// its top does
+export type ArcToward = { toward: number; maxSpan: number; reverse?: boolean };
+
+const reversed = (arc: Arc, reverse?: boolean): Arc => (reverse ? { start: arc.start + arc.span, span: -arc.span } : arc);
 
 // How far a hovered petal lifts outward, and how far outside it its key hint sits
 const LIFT = 3;
@@ -72,12 +76,16 @@ export function RadialMenu(props: {
     const found = props.bounds?.(root);
     const bounds = found instanceof Element ? found.getBoundingClientRect() : found ?? undefined;
     const anchor = root.getBoundingClientRect();
-    return autoArc({ anchor, bounds, toward: arc.toward, maxSpan: arc.maxSpan, radius: props.radius, itemSize: props.itemSize });
+    // The ring a growing menu will have, so the room is measured at its size
+    const radius = props.overlap === "grow"
+      ? fittedRadius(props.items.length, { start: 0, span: arc.maxSpan }, props.radius, props.itemSize, 2, props.maxRadius ?? props.radius * 2)
+      : props.radius;
+    return reversed(autoArc({ anchor, bounds, toward: arc.toward, maxSpan: arc.maxSpan, radius, itemSize: props.itemSize }), arc.reverse);
   };
 
   const arc = (): Arc => {
     const a = props.arc;
-    return measured() ?? ("start" in a ? a : { start: a.toward - a.maxSpan / 2, span: a.maxSpan });
+    return measured() ?? ("start" in a ? a : reversed({ start: a.toward - a.maxSpan / 2, span: a.maxSpan }, a.reverse));
   };
   const layout = createMemo(() => layoutPetals({
     count: props.items.length,

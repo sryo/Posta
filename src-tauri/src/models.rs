@@ -90,7 +90,26 @@ pub struct Attachment {
     pub content_id: Option<String>,
 }
 
+/// Below this an image with a Content-ID is a logo or a signature, not a photo
+const EMBEDDED_IMAGE_MAX_SIZE: i32 = 15_000;
+
 impl Attachment {
+    /// An image the message body draws in place, such as a logo or a signature,
+    /// rather than a file sent along. Photos from Apple Mail carry a Content-ID
+    /// too, so it also takes an unnamed part (named after its Content-ID), an
+    /// Outlook-style "image001.png", or a small size.
+    pub fn looks_embedded(&self) -> bool {
+        let Some(cid) = self.content_id.as_deref() else { return false };
+        if !self.mime_type.starts_with("image/") {
+            return false;
+        }
+        let stem = self.filename.rsplit_once('.').map_or(self.filename.as_str(), |(stem, _)| stem);
+        let outlook = stem.len() == 8
+            && stem.get(..5).is_some_and(|p| p.eq_ignore_ascii_case("image"))
+            && stem[5..].bytes().all(|b| b.is_ascii_digit());
+        stem == cid || outlook || self.size < EMBEDDED_IMAGE_MAX_SIZE
+    }
+
     pub fn is_calendar(&self) -> bool {
         let has_ics_extension = self
             .filename
@@ -212,5 +231,31 @@ mod tests {
         assert!(attachment("", "application/ics").is_calendar());
         assert!(!attachment("notes.txt", "text/plain").is_calendar());
         assert!(!attachment("topics", "text/plain").is_calendar());
+    }
+}
+
+#[cfg(test)]
+mod embedded_image_tests {
+    use super::Attachment;
+
+    fn image(filename: &str, size: i32, content_id: Option<&str>) -> Attachment {
+        Attachment {
+            message_id: "m".into(),
+            attachment_id: "a".into(),
+            filename: filename.into(),
+            mime_type: "image/png".into(),
+            size,
+            inline_data: None,
+            content_id: content_id.map(Into::into),
+        }
+    }
+
+    #[test]
+    fn looks_embedded_takes_logos_and_leaves_photos() {
+        assert!(image("ii_abc123.png", 90_000, Some("ii_abc123")).looks_embedded());
+        assert!(image("image001.png", 90_000, Some("x@y")).looks_embedded());
+        assert!(image("logo.png", 4_000, Some("x@y")).looks_embedded());
+        assert!(!image("IMG_2041.jpeg", 900_000, Some("B1C2@apple")).looks_embedded());
+        assert!(!image("photo.png", 4_000, None).looks_embedded());
     }
 }

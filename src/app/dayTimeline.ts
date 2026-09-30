@@ -78,12 +78,12 @@ export function nudge(slot: MinuteSpan, steps: number, resize = false): MinuteSp
     : dragTo("move", slot, slot.start, slot.start + delta);
 }
 
-// "45 min", "1 h", "1 h 30 min"
+// "45 min", "1 hr", "1 hr 30 min"
 export function formatDuration(minutes: number): string {
   const hours = Math.floor(minutes / 60);
   const rest = minutes % 60;
   if (hours === 0) return `${rest} min`;
-  return rest === 0 ? `${hours} h` : `${hours} h ${rest} min`;
+  return rest === 0 ? `${hours} hr` : `${hours} hr ${rest} min`;
 }
 
 // What the timeline knows of the user's other events that day: the events,

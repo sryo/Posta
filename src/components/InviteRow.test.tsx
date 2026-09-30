@@ -174,7 +174,7 @@ describe("InviteRowLines", () => {
 
   it("puts the length and place where the snippet goes, and the sender beside the answer", () => {
     render(() => lines());
-    expect(document.querySelector(".invite-meta")).toHaveTextContent("1 h·Studio 2");
+    expect(document.querySelector(".invite-meta")).toHaveTextContent("1 hr·Studio 2");
     expect(document.querySelector(".invite-place-call")).toBeNull();
     expect(document.querySelector(".invite-foot")).toHaveTextContent("Sofía Gómez");
     expect(within(document.querySelector(".invite-foot") as HTMLElement).getByRole("button", { name: "Your response: not answered" })).toBeInTheDocument();
