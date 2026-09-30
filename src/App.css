@@ -544,10 +544,12 @@ a:focus-visible,
     top: var(--drag-region-height);
     left: 0;
     right: 0;
-    z-index: var(--z-modal);
+    /* Under the field's autocomplete and pickers, which open on the body */
+    z-index: calc(var(--z-overlay) - 1);
     padding: var(--space-lg) var(--space-2xl);
     display: flex;
-    justify-content: center;
+    flex-direction: column;
+    align-items: center;
     opacity: 0;
     transform: translateY(-8px);
     pointer-events: none;
@@ -577,23 +579,72 @@ a:focus-visible,
     box-shadow: 0 4px 24px var(--shadow-color), 0 0 0 2px var(--border-focus);
 }
 
-.global-filter-input {
+.global-filter-container .query-field {
     flex: 1;
-    background: transparent;
+    min-width: 0;
+}
+
+/* The bar is the field: its own ring shows focus */
+.global-filter-container .query-chips,
+.global-filter-container .query-chips:focus-within {
+    min-height: 0;
+    padding: 0;
     border: none;
+    background: none;
+    box-shadow: none;
+}
+
+.global-filter-container .query-chips input {
     font: var(--type-body);
-    color: var(--text-primary);
-    outline: none;
-    box-shadow: none;
 }
 
-.global-filter-input:focus {
-    outline: none;
-    box-shadow: none;
-}
-
-.global-filter-input::placeholder {
+.global-filter-container .query-chips input::placeholder {
     color: var(--text-muted);
+}
+
+.global-filter-keep {
+    flex-shrink: 0;
+    display: inline-flex;
+    align-items: center;
+    gap: var(--space-xs);
+}
+
+.recent-searches {
+    display: flex;
+    flex-direction: column;
+    width: 100%;
+    max-width: 600px;
+    margin-top: var(--space-sm);
+    padding: var(--space-sm);
+    background: var(--surface-card);
+    border-radius: var(--radius-xl);
+    box-shadow: 0 4px 24px var(--shadow-color), 0 0 0 1px var(--border-default);
+}
+
+.recent-search {
+    display: flex;
+    align-items: center;
+    gap: var(--space-md);
+    padding: var(--space-sm) var(--space-md);
+    border: none;
+    border-radius: var(--radius-md);
+    background: none;
+    font: var(--type-ui);
+    color: var(--text-secondary);
+    text-align: left;
+    cursor: pointer;
+}
+
+.recent-search:hover,
+.recent-search:focus-visible {
+    background: var(--surface-hover);
+    color: var(--text-primary);
+}
+
+.recent-search > span {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
 }
 
 /* Toolbar (settings + bg color) - Now at bottom of sidebar */
@@ -1632,6 +1683,20 @@ a:focus-visible,
 
 .calendar-event-item.declined {
     opacity: 0.5;
+}
+
+/* What the search on the board didn't find */
+.thread.faded,
+.calendar-event-item.faded {
+    opacity: 0.35;
+    transition: opacity 0.15s;
+}
+
+/* A search that isn't kept yet */
+.card.search {
+    box-shadow: none;
+    outline: 2px dashed var(--border-default);
+    outline-offset: -2px;
 }
 
 .calendar-event-row {
