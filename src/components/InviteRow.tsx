@@ -1,13 +1,13 @@
-import { createMemo, createSignal, For, type JSX, onCleanup, Show, createEffect } from "solid-js";
+import { createMemo, createSignal, For, type JSX, Show } from "solid-js";
 import { DayStrip } from "./DayStrip";
 import { KeyHint } from "./KeyHint";
+import { Menu } from "./Menu";
 import { Dynamic, Portal } from "solid-js/web";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import type { CalendarEvent } from "../api/tauri";
 import { formatClock } from "../app/dateFormat";
 import type { StripLayout } from "../app/dayStrip";
 import { inviteDuration, invitePlace, inviteState, inviteWhen, type InviteState } from "../app/inviteRow";
-import { useLayer } from "../app/layers";
 import { joinLabel, meetingProgress } from "../app/nowSection";
 import { RSVP_ANSWERS, rsvpForKey, type RsvpStatus } from "../app/rsvp";
 import { WarningIcon, CalendarIcon, CheckCircleIcon, CheckIcon, ChevronIcon, CrossCircleIcon, LocationIcon, QuestionCircleIcon, VideoIcon } from "./Icons";
@@ -36,15 +36,9 @@ export const InviteAnswerMenu = (props: {
 }) => {
   const [at, setAt] = createSignal<{ top: number; right: number } | null>(null);
   let button: HTMLButtonElement | undefined;
-  let menu: HTMLDivElement | undefined;
   const answer = () => RSVP_ANSWERS.find(a => a.status === props.value) ?? null;
-  const items = () => Array.from(menu?.querySelectorAll<HTMLElement>('[role="menuitemradio"]') ?? []);
 
-  const close = (refocus = true) => {
-    if (!at()) return;
-    setAt(null);
-    if (refocus) button?.focus();
-  };
+  const close = () => setAt(null);
 
   const open = () => {
     if (!button || props.disabled || at()) return;
@@ -52,11 +46,7 @@ export const InviteAnswerMenu = (props: {
     const below = rect.bottom + MENU_GAP;
     const top = below + MENU_HEIGHT <= window.innerHeight - EDGE ? below : Math.max(EDGE, rect.top - MENU_GAP - MENU_HEIGHT);
     setAt({ top, right: Math.max(EDGE, window.innerWidth - rect.right) });
-    const checked = RSVP_ANSWERS.findIndex(a => a.status === props.value);
-    items()[Math.max(0, checked)]?.focus();
   };
-
-  useLayer(() => !!at(), () => close());
 
   const choose = (status: RsvpStatus) => {
     close();
@@ -72,44 +62,15 @@ export const InviteAnswerMenu = (props: {
     }
   };
 
-  const onMenuKeyDown = (e: KeyboardEvent) => {
-    e.stopPropagation();
-    const all = items();
-    const i = all.indexOf(document.activeElement as HTMLElement);
-    const move = (to: number) => { e.preventDefault(); all[(to + all.length) % all.length]?.focus(); };
-    if (e.key === "ArrowDown") move(i + 1);
-    else if (e.key === "ArrowUp") move(i - 1);
-    else if (e.key === "Home") move(0);
-    else if (e.key === "End") move(all.length - 1);
-    else if (e.key === "Tab") close(false);
-    else if (!e.metaKey && !e.ctrlKey && !e.altKey) {
-      const status = rsvpForKey(e);
-      if (status) {
-        e.preventDefault();
-        choose(status);
-      }
-    }
+  // An answer's letter chooses it from inside the menu too
+  const onMenuKey = (e: KeyboardEvent) => {
+    if (e.metaKey || e.ctrlKey || e.altKey) return false;
+    const status = rsvpForKey(e);
+    if (!status) return false;
+    e.preventDefault();
+    choose(status);
+    return true;
   };
-
-  const dismissOutside = (e: MouseEvent) => {
-    const target = e.target as Node;
-    if (menu?.contains(target) || button?.contains(target)) return;
-    close(false);
-  };
-  const dismissOnScroll = (e: Event) => {
-    if (e.target instanceof Node && menu?.contains(e.target)) return;
-    close(false);
-  };
-  // Listened for only while the menu is open, not once per row on the board
-  createEffect(() => {
-    if (!at()) return;
-    document.addEventListener("mousedown", dismissOutside);
-    document.addEventListener("scroll", dismissOnScroll, true);
-    onCleanup(() => {
-      document.removeEventListener("mousedown", dismissOutside);
-      document.removeEventListener("scroll", dismissOnScroll, true);
-    });
-  });
 
   return (
     <>
@@ -142,21 +103,23 @@ export const InviteAnswerMenu = (props: {
       <Show when={at()}>
         {(position) => (
           <Portal>
-            <div
-              ref={menu}
+            <Menu
               class="invite-answer-menu"
-              role="menu"
-              aria-label="Your response"
+              label="Your response"
               style={{ top: `${position().top}px`, right: `${position().right}px` }}
+              initialIndex={Math.max(0, RSVP_ANSWERS.findIndex(a => a.status === props.value))}
+              opener={() => button}
+              closeOnScroll
+              onKey={onMenuKey}
               onClick={(e) => e.stopPropagation()}
-              on:keydown={onMenuKeyDown}
+              onClose={close}
             >
               <For each={RSVP_ANSWERS}>
                 {(option) => (
                   <button
                     type="button"
                     role="menuitemradio"
-                    class={`invite-answer-item ${option.status}`}
+                    class={`menu-item invite-answer-item ${option.status}`}
                     aria-checked={props.value === option.status}
                     aria-keyshortcuts={option.ariaKey}
                     tabindex="-1"
@@ -173,7 +136,7 @@ export const InviteAnswerMenu = (props: {
                   </button>
                 )}
               </For>
-            </div>
+            </Menu>
           </Portal>
         )}
       </Show>

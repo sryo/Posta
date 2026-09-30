@@ -731,9 +731,6 @@ a:focus-visible,
     top: var(--drag-region-height);
     right: 8px;
     width: 280px;
-    background: var(--surface-raised);
-    border-radius: var(--radius-xl);
-    box-shadow: var(--shadow-lg), 0 0 0 1px var(--border-default);
     overflow: hidden;
     z-index: var(--z-dropdown);
     animation: dropdown-slide-in 0.15s ease;
@@ -2109,34 +2106,7 @@ a:focus-visible,
 .invite-answer-menu {
     position: fixed;
     z-index: var(--z-dropdown);
-    display: flex;
-    flex-direction: column;
     min-width: 148px;
-    padding: var(--space-sm);
-    border-radius: var(--radius-lg);
-    background: var(--surface-raised);
-    box-shadow: 0 0 0 1px var(--border-default), 0 8px 24px var(--shadow-color);
-}
-
-.invite-answer-item {
-    display: flex;
-    align-items: center;
-    gap: var(--space-md);
-    height: 26px;
-    padding: 0 var(--space-md);
-    border: none;
-    border-radius: var(--radius-md);
-    background: none;
-    font: var(--type-ui);
-    color: var(--text-primary);
-    text-align: left;
-    cursor: pointer;
-}
-
-.invite-answer-item:hover,
-.invite-answer-item:focus-visible {
-    background: var(--surface-hover);
-    outline: none;
 }
 
 .invite-answer-icon {
@@ -2881,10 +2851,6 @@ button.chip-label {
     min-width: 200px;
     max-width: 280px;
     padding: var(--space-sm);
-    background: var(--surface-card);
-    border: 1px solid var(--border-default);
-    border-radius: var(--radius-md);
-    box-shadow: 0 4px 12px var(--shadow-color);
     z-index: var(--z-dropdown);
 }
 
@@ -2926,10 +2892,7 @@ button.chip-label {
 /* Action config context menu */
 .action-config-menu {
     position: fixed;
-    background: var(--surface-raised);
-    border-radius: var(--radius-lg);
-    box-shadow: 0 4px 16px var(--shadow-color);
-    padding: 6px 0;
+    padding: var(--space-sm) 0;
     min-width: 120px;
     z-index: var(--z-dropdown);
 }
@@ -6170,6 +6133,53 @@ button.settings-section-title {
 }
 
 /* ScopeMenu: anchored above the Save or Delete button that opened it */
+/* Popovers: every short-lived surface over the page shares one look */
+.menu,
+.query-picker,
+.action-config-menu,
+.account-chooser-dropdown {
+    border-radius: var(--radius-lg);
+    background: var(--surface-raised);
+    box-shadow: 0 0 0 1px var(--border-default), 0 8px 24px var(--shadow-color);
+}
+
+/* Menu: a short list of choices (Menu) */
+.menu {
+    z-index: var(--z-dropdown);
+    display: flex;
+    flex-direction: column;
+    padding: var(--space-sm);
+}
+
+.menu-title {
+    padding: var(--space-sm) var(--space-md);
+    font: var(--type-label);
+    text-transform: uppercase;
+    letter-spacing: var(--tracking-label);
+    color: var(--text-secondary);
+}
+
+.menu-item {
+    display: flex;
+    align-items: center;
+    gap: var(--space-md);
+    min-height: 28px;
+    padding: 0 var(--space-md);
+    border: none;
+    border-radius: var(--radius-md);
+    background: none;
+    font: var(--type-ui);
+    color: var(--text-primary);
+    text-align: left;
+    cursor: pointer;
+}
+
+.menu-item:hover,
+.menu-item:focus-visible {
+    background: var(--surface-hover);
+    outline: none;
+}
+
 .scope-menu-anchor {
     position: relative;
     display: inline-flex;
@@ -6179,15 +6189,7 @@ button.settings-section-title {
     position: absolute;
     right: 0;
     bottom: calc(100% + 6px);
-    z-index: var(--z-dropdown);
-    display: flex;
-    flex-direction: column;
     min-width: 200px;
-    padding: var(--space-sm);
-    border: 1px solid var(--border-default);
-    border-radius: var(--radius-lg);
-    background: var(--surface-raised);
-    box-shadow: 0 4px 16px var(--shadow-color);
 }
 
 .thread-bar-actions .scope-menu {
@@ -6210,30 +6212,6 @@ button.settings-section-title {
 
 .scope-prompt .scope-menu {
     position: static;
-}
-
-.scope-menu-title {
-    padding: var(--space-sm) var(--space-md);
-    font: var(--type-label);
-    text-transform: uppercase;
-    letter-spacing: var(--tracking-label);
-    color: var(--text-secondary);
-}
-
-.scope-menu-item {
-    padding: var(--space-md);
-    border: none;
-    border-radius: var(--radius-md);
-    background: transparent;
-    color: var(--text-primary);
-    font: var(--type-ui);
-    text-align: left;
-    cursor: pointer;
-}
-
-.scope-menu-item:hover,
-.scope-menu-item:focus-visible {
-    background: var(--surface-hover);
 }
 
 .event-meet-field {
