@@ -145,6 +145,7 @@ import { EventView } from "./components/EventView";
 import { ActionsWheel } from "./components/ActionsWheel";
 import { BoardFlower } from "./components/BoardFlower";
 import { RADIAL_HOVER_CLOSE_MS, RADIAL_HOVER_OPEN_MS } from "./app/radial";
+import { createHoverHold } from "./app/hoverHold";
 import { CardForm } from "./components/CardForm";
 import { QueryField } from "./components/QueryField";
 import { CardAccountQualifier, cardTitleLabel } from "./components/CardAccountQualifier";
@@ -829,7 +830,16 @@ function App() {
 
   // A row's wheel opens once the pointer rests on it, so passing over a list
   // doesn't bloom a wheel on every row; moving on from an open one is instant
-  function showThreadHoverActions(threadId: string) {
+  // Leaving a row for somewhere near its open wheel keeps the wheel; another
+  // row entered there waits until the pointer moves away from it
+  const threadHold = createHoverHold();
+  const eventHold = createHoverHold();
+  const openWheelIn = (e?: MouseEvent) => (e?.currentTarget as Element | null)?.querySelector(`.radial-menu[role="menu"]`);
+
+  function showThreadHoverActions(threadId: string, e?: MouseEvent) {
+    if (e && threadId !== hoveredThread() && threadHold.wait(threadId, e.clientX, e.clientY, () => showThreadHoverActions(threadId))) return;
+    threadHold.release();
+    eventHold.release();
     clearTimeout(hoverActionsTimeout);
     // Close event wheel when showing thread wheel
     setEventActionsWheelOpen(false);
@@ -843,17 +853,25 @@ function App() {
     else hoverActionsTimeout = window.setTimeout(open, RADIAL_HOVER_OPEN_MS);
   }
 
-  function hideThreadHoverActions() {
+  function hideThreadHoverActions(threadId: string, e?: MouseEvent) {
+    if (threadId !== hoveredThread() && threadHold.leave(threadId)) return;
     clearTimeout(hoverActionsTimeout);
     // The answer menu opens outside the row; reaching into it isn't leaving
     if (document.querySelector('.invite-answer[aria-expanded="true"]')) return;
-    hoverActionsTimeout = window.setTimeout(() => {
-      setActionsWheelOpen(false);
-      setHoveredThread(null);
-    }, RADIAL_HOVER_CLOSE_MS);
+    const close = () => {
+      hoverActionsTimeout = window.setTimeout(() => {
+        setActionsWheelOpen(false);
+        setHoveredThread(null);
+      }, RADIAL_HOVER_CLOSE_MS);
+    };
+    if (e && threadHold.hold(openWheelIn(e), e.clientX, e.clientY, close)) return;
+    close();
   }
 
-  function showEventHoverActions(eventId: string) {
+  function showEventHoverActions(eventId: string, e?: MouseEvent) {
+    if (e && eventId !== hoveredEvent() && eventHold.wait(eventId, e.clientX, e.clientY, () => showEventHoverActions(eventId))) return;
+    eventHold.release();
+    threadHold.release();
     clearTimeout(hoverEventActionsTimeout);
     // Close thread wheel when showing event wheel
     setActionsWheelOpen(false);
@@ -867,12 +885,17 @@ function App() {
     else hoverEventActionsTimeout = window.setTimeout(open, RADIAL_HOVER_OPEN_MS);
   }
 
-  function hideEventHoverActions() {
+  function hideEventHoverActions(eventId: string, e?: MouseEvent) {
+    if (eventId !== hoveredEvent() && eventHold.leave(eventId)) return;
     clearTimeout(hoverEventActionsTimeout);
-    hoverEventActionsTimeout = window.setTimeout(() => {
-      setEventActionsWheelOpen(false);
-      setHoveredEvent(null);
-    }, RADIAL_HOVER_CLOSE_MS);
+    const close = () => {
+      hoverEventActionsTimeout = window.setTimeout(() => {
+        setEventActionsWheelOpen(false);
+        setHoveredEvent(null);
+      }, RADIAL_HOVER_CLOSE_MS);
+    };
+    if (e && eventHold.hold(openWheelIn(e), e.clientX, e.clientY, close)) return;
+    close();
   }
 
   const [selectedThreads, setSelectedThreads] = createSignal<Record<string, Set<string>>>({});
@@ -5301,8 +5324,8 @@ function App() {
                                       <div
                                         class={`calendar-event-item ${fadedBySearch(card.id, event.id) ? "faded" : ""} ${event.response_status === "declined" ? "declined" : ""} ${selectedEvents()[card.id]?.has(event.id) ? "selected" : ""} ${isEventFocused(card.id, event.id) ? "focused" : ""} ${isQuickReplyEvent(event.id) ? "replying" : ""}`}
                                         onClick={() => openEvent(event, card.id)}
-                                        onMouseEnter={() => showEventHoverActions(event.id)}
-                                        onMouseLeave={hideEventHoverActions}
+                                        onMouseEnter={(e) => showEventHoverActions(event.id, e)}
+                                        onMouseLeave={(e) => hideEventHoverActions(event.id, e)}
                                         tabindex={rowTabIndex(card.id, event.id)}
                                         onFocus={() => onRowFocus(card.id, event.id)}
                                       >
@@ -5451,8 +5474,8 @@ function App() {
                                       <>
                                         <div
                                           class={`thread ${fadedBySearch(card.id, thread.gmail_thread_id) ? 'faded' : ''} ${thread.unread_count > 0 ? 'unread' : ''} ${selectedThreads()[card.id]?.has(thread.gmail_thread_id) ? 'selected' : ''} ${isThreadFocused(card.id, thread.gmail_thread_id) ? 'focused' : ''} ${isQuickReplyThread(thread.gmail_thread_id) ? 'replying' : ''}${thread.calendar_event ? ' invite' : ''}${live() ? ' live' : ''}${inviteIsOver(thread.calendar_event, owner()) ? ' invite-over' : ''}`}
-                                          onMouseEnter={() => showThreadHoverActions(thread.gmail_thread_id)}
-                                          onMouseLeave={() => hideThreadHoverActions()}
+                                          onMouseEnter={(e) => showThreadHoverActions(thread.gmail_thread_id, e)}
+                                          onMouseLeave={(e) => hideThreadHoverActions(thread.gmail_thread_id, e)}
                                           onClick={(e) => {
                                             // The answer button is a control of its own, not a way into the thread
                                             if ((e.target as Element).closest(".invite-answer")) return;

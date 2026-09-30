@@ -284,6 +284,50 @@ describe("ThreadView keyboard shortcuts", () => {
   });
 });
 
+describe("ThreadView message wheel", () => {
+  const settle = () => new Promise(resolve => setTimeout(resolve, 200));
+  const wheelOf = (row: Element) => row.querySelector(`.radial-menu[role="menu"]`);
+
+  // jsdom lays nothing out: the wheel and its petals all sit at (0, 0)
+  it("stays open while the pointer rests near it after leaving the message, and closes once it moves away", async () => {
+    renderThread();
+    const row = document.querySelectorAll(".message-row")[0];
+    fireEvent.mouseEnter(row, { clientX: 5, clientY: 5 });
+    expect(wheelOf(row)).not.toBeNull();
+
+    fireEvent.mouseLeave(row, { clientX: 5, clientY: 5 });
+    await settle();
+    expect(wheelOf(row)).not.toBeNull();
+
+    fireEvent.pointerMove(document, { clientX: 400, clientY: 400 });
+    await settle();
+    expect(wheelOf(row)).toBeNull();
+  });
+
+  it("keeps the wheel from a message entered near it until the pointer moves away", async () => {
+    renderThread({ focusedMessageIndex: -1 });
+    const [first, second] = Array.from(document.querySelectorAll(".message-row"));
+    fireEvent.mouseEnter(first, { clientX: 5, clientY: 5 });
+    fireEvent.mouseLeave(first, { clientX: 5, clientY: 5 });
+    fireEvent.mouseEnter(second, { clientX: 6, clientY: 6 });
+    expect(wheelOf(first)).not.toBeNull();
+    expect(wheelOf(second)).toBeNull();
+
+    fireEvent.pointerMove(document, { clientX: 400, clientY: 400 });
+    expect(wheelOf(first)).toBeNull();
+    expect(wheelOf(second)).not.toBeNull();
+  });
+
+  it("closes as before when the pointer leaves far from the wheel", async () => {
+    renderThread();
+    const row = document.querySelectorAll(".message-row")[0];
+    fireEvent.mouseEnter(row, { clientX: 400, clientY: 400 });
+    fireEvent.mouseLeave(row, { clientX: 400, clientY: 400 });
+    await settle();
+    expect(wheelOf(row)).toBeNull();
+  });
+});
+
 describe("ThreadView reactions", () => {
   it("shows a received reaction on the message it reacts to instead of as a message body", () => {
     const thread = makeThread([

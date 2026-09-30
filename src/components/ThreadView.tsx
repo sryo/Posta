@@ -1,4 +1,5 @@
 import { RADIAL_HOVER_CLOSE_MS } from "../app/radial";
+import { createHoverHold } from "../app/hoverHold";
 import { StatusLine } from "./StatusLine";
 import { KeyHint } from "./KeyHint";
 import { createSignal, createEffect, createMemo, on, onMount, onCleanup, Show, For } from "solid-js";
@@ -304,18 +305,31 @@ export const ThreadView = (props: {
     }
   };
 
-  const showMessageWheel = (msgId: string) => {
+  // Leaving a message for somewhere near its open wheel keeps the wheel;
+  // another message entered there waits until the pointer moves away from it
+  const wheelHold = createHoverHold();
+
+  const showMessageWheel = (msgId: string, e?: MouseEvent) => {
+    if (e && msgId !== hoveredMessageId() && wheelHold.wait(msgId, e.clientX, e.clientY, () => showMessageWheel(msgId))) return;
+    wheelHold.release();
     if (hoverTimeout) clearTimeout(hoverTimeout);
     setHoveredMessageId(msgId);
     setWheelOpen(true);
   };
 
-  const hideMessageWheel = () => {
-    hoverTimeout = window.setTimeout(() => {
-      setWheelOpen(false);
-      setHoveredMessageId(null);
-    }, RADIAL_HOVER_CLOSE_MS);
+  const hideMessageWheel = (msgId: string, e?: MouseEvent) => {
+    if (msgId !== hoveredMessageId() && wheelHold.leave(msgId)) return;
+    const close = () => {
+      hoverTimeout = window.setTimeout(() => {
+        setWheelOpen(false);
+        setHoveredMessageId(null);
+      }, RADIAL_HOVER_CLOSE_MS);
+    };
+    const wheel = (e?.currentTarget as Element | null)?.querySelector(`.radial-menu[role="menu"]`);
+    if (e && wheelHold.hold(wheel, e.clientX, e.clientY, close)) return;
+    close();
   };
+  onCleanup(() => wheelHold.release());
 
   // Reply / reply-all / forward for one message; shared by the per-message
   // actions wheel and the r / R / f shortcuts on the focused message
@@ -612,8 +626,8 @@ export const ThreadView = (props: {
                 return (
                   <div
                     class={`message-row ${showInlineCompose() ? 'with-compose' : ''} ${props.inlineCompose?.resizing ? 'resizing' : ''}`}
-                    onMouseEnter={() => showMessageWheel(msg.id)}
-                    onMouseLeave={hideMessageWheel}
+                    onMouseEnter={(e) => showMessageWheel(msg.id, e)}
+                    onMouseLeave={(e) => hideMessageWheel(msg.id, e)}
                   >
                     <div
                       class={`message-card ${props.focusedMessageIndex === index() ? 'message-focused' : ''}`}
@@ -642,8 +656,6 @@ export const ThreadView = (props: {
                           onForward={actions.forward}
                           open={true}
                           showHints={props.focusedMessageIndex === index()}
-                          onMouseEnter={() => showMessageWheel(msg.id)}
-                          onMouseLeave={hideMessageWheel}
                         />
                       </Show>
                       <Show when={props.invite && inviteMessageId() === msg.id}>

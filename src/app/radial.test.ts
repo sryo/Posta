@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { autoArc, fittedRadius, layoutPetals, petalAngles } from "./radial";
+import { autoArc, fittedRadius, layoutPetals, nearWheel, petalAngles } from "./radial";
 
 describe("petalAngles", () => {
   it("spreads petals from one end of the arc to the other", () => {
@@ -66,5 +66,36 @@ describe("autoArc", () => {
     const bounds = { left: 60, top: 80, right: 140, bottom: 115 };
     const arc = autoArc({ anchor, bounds, toward: 180, maxSpan: 120, minSpan: 90, radius: 38, itemSize: 28 });
     expect(Math.abs(arc.span)).toBeGreaterThanOrEqual(90);
+  });
+});
+
+describe("nearWheel", () => {
+  // A right-hand fan: petals of radius 14 at 38 from the anchor, up, right and down
+  const anchor = { x: 0, y: 0 };
+  const fan = [{ x: 0, y: -38, r: 14 }, { x: 38, y: 0, r: 14 }, { x: 0, y: 38, r: 14 }];
+
+  it("holds just past a petal's edge, and not beyond the pad", () => {
+    expect(nearWheel(anchor, fan, { x: 38 + 14 + 11, y: 0 }, 12)).toBe(true);
+    expect(nearWheel(anchor, fan, { x: 38 + 14 + 13, y: 0 }, 12)).toBe(false);
+  });
+
+  it("holds on the way out from the anchor to a petal", () => {
+    expect(nearWheel(anchor, fan, { x: 19, y: 0 }, 12)).toBe(true);
+  });
+
+  it("holds in the wedge between two neighbouring petals", () => {
+    expect(nearWheel(anchor, fan, { x: 16, y: -16 }, 0)).toBe(true);
+  });
+
+  it("does not hold on the fan's open side", () => {
+    expect(nearWheel(anchor, fan, { x: -30, y: 0 }, 12)).toBe(false);
+  });
+
+  it("holds all round a full ring, the seam included", () => {
+    const ring = petalAngles(8, { start: -90, span: 360 }).map(a => ({ x: 44 * Math.cos((a * Math.PI) / 180), y: 44 * Math.sin((a * Math.PI) / 180), r: 16 }));
+    for (let a = 0; a < 360; a += 15) {
+      const p = { x: 30 * Math.cos((a * Math.PI) / 180), y: 30 * Math.sin((a * Math.PI) / 180) };
+      expect(nearWheel(anchor, ring, p, 0), `${a}°`).toBe(true);
+    }
   });
 });

@@ -11,8 +11,6 @@ export const MessageActionsWheel = (props: {
   onForward: () => void;
   open: boolean;
   showHints?: boolean;
-  onMouseEnter?: () => void;
-  onMouseLeave?: () => void;
 }) => {
   const actions = () => [
     props.onReply && { title: 'Reply', keyHint: 'R', icon: ReplyIcon, onClick: props.onReply },
@@ -34,11 +32,7 @@ export const MessageActionsWheel = (props: {
   }));
 
   return (
-    <div
-      class="message-actions-wheel"
-      onMouseEnter={props.onMouseEnter}
-      onMouseLeave={props.onMouseLeave}
-    >
+    <div class="message-actions-wheel">
       <ActionWheel
         side="right"
         label="Reply"

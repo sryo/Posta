@@ -5,6 +5,8 @@
 // after it leaves, so crossing over it or the gap to it doesn't flicker
 export const RADIAL_HOVER_OPEN_MS = 150;
 export const RADIAL_HOVER_CLOSE_MS = 120;
+// How far past a hover wheel's petals the pointer may stray and keep it open
+export const RADIAL_HOVER_PAD = 12;
 
 export type Arc = { start: number; span: number };
 export type Rect = { left: number; top: number; right: number; bottom: number };
@@ -106,4 +108,40 @@ function widened(arc: Arc, minSpan?: number): Arc {
 function everyFits(start: number, span: number, fits: (deg: number) => boolean, step: number): boolean {
   for (let a = start; a <= start + span; a += step) if (!fits(a)) return false;
   return true;
+}
+
+export type Point = { x: number; y: number };
+export type Circle = Point & { r: number };
+
+function distanceToSegment(p: Point, a: Point, b: Point): number {
+  const dx = b.x - a.x;
+  const dy = b.y - a.y;
+  const length2 = dx * dx + dy * dy;
+  const t = length2 === 0 ? 0 : Math.max(0, Math.min(1, ((p.x - a.x) * dx + (p.y - a.y) * dy) / length2));
+  return Math.hypot(p.x - (a.x + t * dx), p.y - (a.y + t * dy));
+}
+
+function inTriangle(p: Point, a: Point, b: Point, c: Point): boolean {
+  const side = (u: Point, v: Point) => (v.x - u.x) * (p.y - u.y) - (v.y - u.y) * (p.x - u.x);
+  const [d1, d2, d3] = [side(a, b), side(b, c), side(c, a)];
+  const negative = d1 < 0 || d2 < 0 || d3 < 0;
+  const positive = d1 > 0 || d2 > 0 || d3 > 0;
+  return !(negative && positive);
+}
+
+// Whether a point is near a wheel: within `pad` of a petal or of the path out
+// to it from the anchor, or in the wedge between two neighbouring petals, so
+// a fan or a ring is one place to rest in rather than islands with gaps
+export function nearWheel(anchor: Point, petals: Circle[], point: Point, pad: number): boolean {
+  if (petals.some(petal => distanceToSegment(point, anchor, petal) <= petal.r + pad)) return true;
+  if (petals.length < 2) return false;
+  const around = petals
+    .map(petal => ({ petal, angle: (Math.atan2(petal.y - anchor.y, petal.x - anchor.x) * 180) / Math.PI }))
+    .sort((a, b) => a.angle - b.angle);
+  return around.some(({ petal, angle }, i) => {
+    const next = around[(i + 1) % around.length];
+    // Neighbours only: the open side of a fan is no wedge of it
+    const gap = (next.angle - angle + 360) % 360;
+    return gap > 0 && gap < 180 && inTriangle(point, anchor, petal, next.petal);
+  });
 }
