@@ -37,7 +37,7 @@ describe("SmartReplies", () => {
     const { container } = render(() => <SmartReplies accountId="acc" threadId="t1" onSelect={vi.fn()} />);
     expect(await screen.findByText(/API key was rejected/)).toBeInTheDocument();
     expect(screen.queryByText("Retry suggestions")).toBeNull();
-    expect(container.querySelector(".smart-replies-error")?.getAttribute("title")).toBe(raw);
+    expect(container.querySelector('.status-line[data-kind="error"]')?.getAttribute("title")).toBe(raw);
   });
 
   it("links a key problem to Settings", async () => {

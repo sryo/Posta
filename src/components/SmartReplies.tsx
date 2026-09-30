@@ -1,4 +1,5 @@
 import { createSignal, createEffect, createMemo, on, onMount, Show, For } from "solid-js";
+import { StatusLine } from "./StatusLine";
 import { hasGeminiApiKey, suggestReplies } from "../api/tauri";
 
 interface SmartRepliesProps {
@@ -87,16 +88,16 @@ export const SmartReplies = (props: SmartRepliesProps) => {
         <Show when={enabled()}>
         <div class="smart-replies-container">
             <Show when={loading()}>
-                <div class="smart-replies-loading">
+                <StatusLine kind="loading" size="inline">
                     <div class="spinner-sm"></div>
-                </div>
+                </StatusLine>
             </Show>
 
             <Show when={error()}>
                 {(raw) => {
                     const described = () => describeSuggestionError(raw());
                     return (
-                        <div class="smart-replies-error" title={raw()}>
+                        <StatusLine kind="error" size="inline" title={raw()}>
                             <span>{described().message}</span>
                             <Show when={described().retryable}>
                                 <button class="link-btn" onClick={fetchSuggestions}>Retry suggestions</button>
@@ -104,7 +105,7 @@ export const SmartReplies = (props: SmartRepliesProps) => {
                             <Show when={!described().retryable && props.onOpenSettings}>
                                 <button class="link-btn" onClick={() => props.onOpenSettings?.()}>Open Settings</button>
                             </Show>
-                        </div>
+                        </StatusLine>
                     );
                 }}
             </Show>

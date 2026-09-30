@@ -1,4 +1,5 @@
 import { RADIAL_HOVER_CLOSE_MS } from "../app/radial";
+import { StatusLine } from "./StatusLine";
 import { KeyHint } from "./KeyHint";
 import { createSignal, createEffect, createMemo, on, onMount, onCleanup, Show, For } from "solid-js";
 import { MessageBody } from './MessageBody';
@@ -544,12 +545,12 @@ export const ThreadView = (props: {
         </Show>
 
         <Show when={props.error}>
-          <div class="error-message">
+          <StatusLine kind="error" size="block">
             {props.error}
             <Show when={props.onRetry}>
               <button class="retry-btn" onClick={() => props.onRetry?.()}>Try again</button>
             </Show>
-          </div>
+          </StatusLine>
         </Show>
 
         <Show when={props.thread}>

@@ -1,4 +1,5 @@
 import { batch, createSignal, onMount, onCleanup, Show, For, Index, createMemo, createEffect, createComputed, createSelector, mapArray, on, untrack } from "solid-js";
+import { StatusLine } from "./components/StatusLine";
 import { Avatar } from "./components/Avatar";
 import { KeyHint } from "./components/KeyHint";
 import { createStore, produce, reconcile, unwrap } from "solid-js/store";
@@ -5083,10 +5084,10 @@ function App() {
                             <CardSkeleton />
                           </Show>
                           <Show when={isPreviewingQuery(card.id) && queryPreviewLoading()}>
-                            <div class="loading">Searching...</div>
+                            <StatusLine kind="loading">Searching...</StatusLine>
                           </Show>
                           <Show when={isPreviewingQuery(card.id) && !queryPreviewLoading() && queryPreviewError()}>
-                            <div class="query-preview-error" aria-live="polite">{queryPreviewError()}</div>
+                            <StatusLine kind="error">{queryPreviewError()}</StatusLine>
                           </Show>
                           <Show when={!loadingThreads[card.id] && cardErrors[card.id] && !cardThreads[card.id] && !cardCalendarEvents[card.id] && cardWaitingMessage(cardErrors[card.id]!, syncErrors[card.id], cardExpired(card))}>
                             {(waiting) => <div class="card-waiting">{waiting()}</div>}
@@ -5415,7 +5416,7 @@ function App() {
                             </Index>
                             {/* Loading more indicator for infinite scroll */}
                             <Show when={loadingMore[card.id]}>
-                              <div class="loading">Loading more...</div>
+                              <StatusLine kind="loading">Loading more...</StatusLine>
                             </Show>
                           </Show>
                         </div>
@@ -5483,15 +5484,15 @@ function App() {
                   {/* Query preview for new card */}
                   <div class="card-body">
                     <Show when={queryPreviewLoading()}>
-                      <div class="loading">Searching...</div>
+                      <StatusLine kind="loading">Searching...</StatusLine>
                     </Show>
                     <Show when={!queryPreviewLoading() && queryPreviewError()}>
-                      <div class="query-preview-error" aria-live="polite">{queryPreviewError()}</div>
+                      <StatusLine kind="error">{queryPreviewError()}</StatusLine>
                     </Show>
                     {/* Calendar events preview */}
                     <Show when={!queryPreviewLoading() && cardTypeForQuery(newCardQuery()) === "calendar"}>
                       <Show when={queryPreviewCalendarEvents().length === 0 && !queryPreviewError()}>
-                        <div class="empty">No events</div>
+                        <StatusLine kind="empty">No events</StatusLine>
                       </Show>
                       <For each={groupCalendarEvents(queryPreviewCalendarEvents().slice(0, NEW_CARD_PREVIEW_EVENTS), newCardGroupBy())}>
                         {(group) => (
@@ -5527,12 +5528,12 @@ function App() {
                         )}
                       </For>
                       <Show when={queryPreviewCalendarEvents().length > NEW_CARD_PREVIEW_EVENTS}>
-                        <div class="empty">+{queryPreviewCalendarEvents().length - NEW_CARD_PREVIEW_EVENTS} more</div>
+                        <StatusLine kind="empty">+{queryPreviewCalendarEvents().length - NEW_CARD_PREVIEW_EVENTS} more</StatusLine>
                       </Show>
                     </Show>
                     {/* Email threads preview */}
                     <Show when={!queryPreviewLoading() && !queryPreviewError() && queryPreviewThreads().length === 0 && newCardQuery().trim() && cardTypeForQuery(newCardQuery()) !== "calendar"}>
-                      <div class="empty">No matches</div>
+                      <StatusLine kind="empty">No matches</StatusLine>
                     </Show>
                     <Show when={!queryPreviewLoading() && queryPreviewThreads().length > 0}>
                       <For each={regroupThreads(queryPreviewThreads(), newCardGroupBy(), cardLabelNames(undefined))}>
@@ -5790,7 +5791,7 @@ function App() {
 
             <div class="label-drawer-body">
               <Show when={labelsLoading()}>
-                <div class="label-drawer-loading">Loading labels...</div>
+                <StatusLine kind="loading">Loading labels...</StatusLine>
               </Show>
 
               <Show when={!labelsLoading()}>
@@ -5816,13 +5817,13 @@ function App() {
                 </For>
 
                 <Show when={labelsFailed()}>
-                  <div class="label-drawer-empty">
+                  <StatusLine kind="error">
                     Couldn't load labels.{" "}
                     <button class="retry-btn" onClick={() => fetchAccountLabels(activeThreadAccountId() ?? undefined)}>Try again</button>
-                  </div>
+                  </StatusLine>
                 </Show>
                 <Show when={!labelsLoading() && !labelsFailed() && filteredLabels().length === 0}>
-                  <div class="label-drawer-empty">No labels found</div>
+                  <StatusLine kind="empty">No labels found</StatusLine>
                 </Show>
               </Show>
             </div>
@@ -5974,21 +5975,21 @@ function App() {
           </div>
           <div class="thread-content">
             <Show when={batchReplyLoading()}>
-              <div class="batch-reply-loading">
+              <StatusLine kind="loading" size="block">
                 <div class="loading-spinner"></div>
                 Loading threads...
-              </div>
+              </StatusLine>
             </Show>
             <Show when={!batchReplyLoading() && batchReplyError()}>
               {(failed) => (
-                <div class="batch-reply-empty" role="alert">
+                <StatusLine kind="error" size="block">
                   {failed().message}{" "}
                   <button class="retry-btn" onClick={() => startBatchReply(batchReplyCardId() ?? "", failed().threadIds)}>Try again</button>
-                </div>
+                </StatusLine>
               )}
             </Show>
             <Show when={!batchReplyLoading() && !batchReplyError() && batchReplyThreads().length === 0}>
-              <div class="batch-reply-empty">No threads to reply to</div>
+              <StatusLine kind="empty" size="block">No threads to reply to</StatusLine>
             </Show>
             <div class="messages-list">
               <For each={batchReplyThreads()}>

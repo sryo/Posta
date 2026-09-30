@@ -1,4 +1,5 @@
 import { createEffect, createMemo, createSignal, on, onMount, onCleanup, Show, For } from "solid-js";
+import { StatusLine } from "./StatusLine";
 import { KeyHint } from "./KeyHint";
 import DOMPurify from 'dompurify';
 import { DOMPURIFY_CONFIG } from './MessageBody';
@@ -420,7 +421,7 @@ export const EventView = (props: {
 
           <div class="label-drawer-body">
             <Show when={props.calendarsLoading}>
-              <div class="label-drawer-loading">Loading calendars...</div>
+              <StatusLine kind="loading">Loading calendars...</StatusLine>
             </Show>
 
             <Show when={!props.calendarsLoading}>
@@ -446,7 +447,7 @@ export const EventView = (props: {
               </For>
 
               <Show when={!props.calendarsLoading && moveTargets().length === 0}>
-                <div class="label-drawer-empty">No calendars found</div>
+                <StatusLine kind="empty">No calendars found</StatusLine>
               </Show>
             </Show>
           </div>

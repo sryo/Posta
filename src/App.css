@@ -2109,15 +2109,44 @@ a:focus-visible,
     visibility: hidden;
 }
 
-.loading,
+/* What a list or panel says instead of content (StatusLine) */
+.status-line {
+    padding: var(--space-2xl);
+    text-align: center;
+    color: var(--text-muted);
+    font: var(--type-meta);
+}
+
+.status-line[data-kind="error"] {
+    color: var(--danger-text);
+}
+
+.status-line[data-size="block"] {
+    box-sizing: border-box;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: var(--space-xl);
+    max-width: 800px;
+    margin: 0 auto;
+    padding: 48px;
+    font: var(--type-ui);
+}
+
+.status-line[data-size="inline"] {
+    display: flex;
+    align-items: center;
+    gap: var(--space-md);
+    padding: 0;
+    text-align: start;
+}
+
 .empty {
     padding: var(--space-2xl);
     text-align: center;
     color: var(--text-secondary);
     font: var(--type-meta);
-}
-
-.empty {
     display: flex;
     flex-direction: column;
     align-items: center;
@@ -2704,13 +2733,6 @@ a:focus-visible,
     margin-top: var(--space-sm);
     font: var(--type-meta);
     color: var(--text-muted);
-}
-
-.query-preview-error {
-    padding: var(--space-lg);
-    font: var(--type-meta);
-    color: var(--danger-text);
-    text-align: center;
 }
 
 .query-picker {
@@ -5027,14 +5049,6 @@ button.settings-section-title {
     padding: 8px 0;
 }
 
-.label-drawer-loading,
-.label-drawer-empty {
-    padding: var(--space-2xl);
-    text-align: center;
-    color: var(--text-muted);
-    font: var(--type-ui);
-}
-
 .label-item {
     display: flex;
     align-items: center;
@@ -5092,25 +5106,7 @@ button.settings-section-title {
 }
 
 .thread-content .loading-spinner,
-.thread-content .error-message {
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    padding: 48px;
-    color: var(--text-secondary);
-    font: var(--type-ui);
-}
-
-.thread-content .error-message {
-    flex-direction: column;
-    gap: var(--space-sm);
-    color: var(--danger-text);
-    box-sizing: border-box;
-    max-width: 800px;
-    margin: 0 auto;
-}
-
-/* Thread loading skeleton */
+.thread-content /* Thread loading skeleton */
 .thread-skeleton {
     max-width: 720px;
     margin: 0 auto;
@@ -5631,14 +5627,6 @@ button.settings-section-title {
     color: var(--text-muted);
 }
 
-.error-message {
-    color: var(--danger-text);
-    text-align: center;
-    padding: var(--space-2xl);
-    background: var(--danger-tint);
-    border-radius: var(--radius-lg);
-}
-
 /* Undo Toast */
 .undo-toast {
     position: fixed;
@@ -5755,18 +5743,6 @@ button.settings-section-title {
     font: var(--type-meta);
     font-variant-numeric: tabular-nums;
     color: var(--text-muted);
-}
-
-.batch-reply-loading,
-.batch-reply-empty {
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    justify-content: center;
-    gap: var(--space-xl);
-    padding: 60px;
-    color: var(--text-muted);
-    font: var(--type-ui);
 }
 
 .batch-reply-subject {
@@ -6276,22 +6252,6 @@ button.settings-section-title {
     background: var(--surface-subtle);
     margin: 12px;
     border-radius: var(--radius-lg);
-}
-
-.smart-replies-loading {
-    display: flex;
-    align-items: center;
-    gap: var(--space-md);
-    font: var(--type-meta);
-    color: var(--text-muted);
-}
-
-.smart-replies-error {
-    font: var(--type-meta);
-    color: var(--danger-text);
-    display: flex;
-    gap: var(--space-md);
-    align-items: center;
 }
 
 .smart-replies-chips {
