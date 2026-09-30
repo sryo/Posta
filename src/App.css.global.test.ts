@@ -156,3 +156,11 @@ describe("floating controls", () => {
     expect(lightness(over(color("dark", "--surface-floating"), page))).toBeGreaterThan(lightness(color("dark", "--surface-card")));
   });
 });
+
+describe("hover wheels", () => {
+  it("keep a row's wheel visible while it is open, though the pointer rests off the row near it", () => {
+    // The wheel lives in the checkbox's holder, which fades out when the row isn't hovered
+    expect(declarationsOf(".thread-checkbox-wrap").get("opacity")).toBe("0");
+    expect(declarationsOf('.thread-checkbox-wrap:has(.radial-menu[role="menu"])').get("opacity")).toBe("1");
+  });
+});

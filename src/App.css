@@ -3698,7 +3698,8 @@ button:disabled:hover {
     color: var(--text-on-status);
 }
 
-/* Thread checkbox on hover */
+/* Thread checkbox on hover, and while its wheel is open: the wheel lives in
+   it, and stays open while the pointer rests near it off the row */
 .thread-checkbox-wrap {
     position: absolute;
     right: 8px;
@@ -3717,7 +3718,8 @@ button:disabled:hover {
 .thread.focused .thread-checkbox-wrap,
 .calendar-event-item:hover .thread-checkbox-wrap,
 .calendar-event-item.selected .thread-checkbox-wrap,
-.calendar-event-item.focused .thread-checkbox-wrap {
+.calendar-event-item.focused .thread-checkbox-wrap,
+.thread-checkbox-wrap:has(.radial-menu[role="menu"]) {
     opacity: 1;
 }
 
