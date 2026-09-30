@@ -339,3 +339,19 @@ describe("card header", () => {
     expect(order(".card.collapsed .card-title")).toBeLessThan(order(".card.collapsed .card-account-qualifier"));
   });
 });
+
+describe("title bar account", () => {
+  const declarationsOf = (selector: string) =>
+    new Map(rules.filter((rule) => !rule.context && rule.selectors.includes(selector)).flatMap((rule) => [...rule.declarations]));
+
+  it("sizes and places the avatar as the window controls across from it, with nothing drawn around it", () => {
+    const button = declarationsOf(".toolbar-avatar");
+    expect(button.get("width")).toBe("14px");
+    expect(button.get("height")).toBe("14px");
+    expect(button.get("background")).toBe("transparent");
+    expect(button.get("box-shadow")).toBeUndefined();
+    const corner = declarationsOf(".titlebar-account");
+    expect(corner.get("top")).toBe("9px");
+    expect(corner.get("right")).toBe("9px");
+  });
+});

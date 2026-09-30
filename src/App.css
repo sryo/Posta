@@ -665,10 +665,12 @@ a:focus-visible,
 /* The account and the flower's hint, in the board's bottom-left corner */
 /* Mirrors the window controls: their size, their height, as far in from the
    right as they are from the left, and over the strip that drags the window */
+/* Sized and placed as the window controls across from it: 14px circles,
+   9px from the top and from the window's edge */
 .titlebar-account {
     position: fixed;
-    top: 8px;
-    right: 13px;
+    top: 9px;
+    right: 9px;
     z-index: calc(var(--z-drag-region) + 1);
     display: flex;
 }
@@ -697,11 +699,11 @@ a:focus-visible,
 }
 
 .toolbar-avatar {
-    width: 12px;
-    height: 12px;
+    width: 14px;
+    height: 14px;
     border-radius: var(--radius-full);
     border: none;
-    background: var(--surface-card);
+    background: transparent;
     cursor: pointer;
     padding: 0;
     display: flex;
