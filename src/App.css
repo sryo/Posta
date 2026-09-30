@@ -1865,9 +1865,10 @@ a:focus-visible,
     min-height: 18px;
 }
 
-/* The answer keeps to the right, where the eye finds it row after row */
+/* The answer sits on the left under the time and place, where it reads row
+   after row and stays clear of the action wheel on the right */
 .thread.invite .invite-foot {
-    justify-content: flex-end;
+    justify-content: flex-start;
 }
 
 /* The answer: quiet text at rest, a bordered menu button on hover or focus */
@@ -1877,8 +1878,8 @@ a:focus-visible,
     gap: 3px;
     flex-shrink: 0;
     height: 18px;
-    margin-right: calc(-1 * var(--space-sm));
-    padding: 0 var(--space-sm) 0 6px;
+    margin-left: calc(-1 * var(--space-sm));
+    padding: 0 var(--space-sm);
     border: none;
     border-radius: var(--radius-sm);
     background: none;
@@ -1887,7 +1888,10 @@ a:focus-visible,
     cursor: pointer;
 }
 
-.thread:is(:hover, .focused) .invite-answer,
+/* Its box shows under the pointer, on the focused row or while its menu is
+   open, not on any hover of the row, which also opens the wheel */
+.invite-answer:hover,
+.thread.focused .invite-answer,
 .invite-answer:focus-visible,
 .invite-answer[aria-expanded="true"] {
     background: var(--surface-card);
@@ -1899,7 +1903,7 @@ a:focus-visible,
     outline-offset: 1px;
 }
 
-.invite-answer:disabled {
+.invite-answer[aria-disabled="true"] {
     opacity: 0.5;
     cursor: not-allowed;
 }
@@ -1938,7 +1942,8 @@ a:focus-visible,
     transition: opacity 0.1s ease;
 }
 
-.thread:is(:hover, .focused) .invite-answer-caret,
+.invite-answer:hover .invite-answer-caret,
+.thread.focused .invite-answer-caret,
 .invite-answer:focus-visible .invite-answer-caret,
 .invite-answer[aria-expanded="true"] .invite-answer-caret {
     opacity: 0.8;

@@ -807,6 +807,8 @@ function App() {
 
   function hideThreadHoverActions() {
     clearTimeout(hoverActionsTimeout);
+    // The answer menu opens outside the row; reaching into it isn't leaving
+    if (document.querySelector('.invite-answer[aria-expanded="true"]')) return;
     hoverActionsTimeout = window.setTimeout(() => {
       setActionsWheelOpen(false);
       setHoveredThread(null);
@@ -1857,7 +1859,9 @@ function App() {
     const thread = getFocusedThread();
     if (thread && cardId) {
       const invite = thread.calendar_event;
-      const answer = invite?.method === "REQUEST" && invite.uid ? rsvpForKey(e) : null;
+      // Only an invite still open to an answer takes one: not a past or cancelled one
+      const answerable = !!invite && invite.method === "REQUEST" && !!invite.uid && !inviteIsOver(invite, threadOwner(thread.gmail_thread_id, cardId));
+      const answer = answerable ? rsvpForKey(e) : null;
       if (answer) {
         e.preventDefault();
         const owner = threadOwner(thread.gmail_thread_id, cardId);
@@ -5278,7 +5282,11 @@ function App() {
                                           class={`thread ${thread.unread_count > 0 ? 'unread' : ''} ${selectedThreads()[card.id]?.has(thread.gmail_thread_id) ? 'selected' : ''} ${isThreadFocused(card.id, thread.gmail_thread_id) ? 'focused' : ''} ${isQuickReplyThread(thread.gmail_thread_id) ? 'replying' : ''}${thread.calendar_event ? ' invite' : ''}${live() ? ' live' : ''}${inviteIsOver(thread.calendar_event, owner()) ? ' invite-over' : ''}`}
                                           onMouseEnter={() => showThreadHoverActions(thread.gmail_thread_id)}
                                           onMouseLeave={() => hideThreadHoverActions()}
-                                          onClick={() => openThread(thread.gmail_thread_id, card.id)}
+                                          onClick={(e) => {
+                                            // The answer button is a control of its own, not a way into the thread
+                                            if ((e.target as Element).closest(".invite-answer")) return;
+                                            openThread(thread.gmail_thread_id, card.id);
+                                          }}
                                           role="article"
                                           aria-label={`${thread.unread_count > 0 ? 'Unread: ' : ''}${thread.subject} from ${thread.participants.slice(0, 2).map(personName).join(', ')}${inviteLabel()}`}
                                           tabindex={rowTabIndex(card.id, thread.gmail_thread_id)}

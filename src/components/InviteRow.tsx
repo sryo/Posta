@@ -1,4 +1,4 @@
-import { createMemo, createSignal, For, type JSX, onCleanup, Show } from "solid-js";
+import { createMemo, createSignal, For, type JSX, onCleanup, Show, createEffect } from "solid-js";
 import { Dynamic, Portal } from "solid-js/web";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import type { CalendarEvent } from "../api/tauri";
@@ -45,7 +45,7 @@ export const InviteAnswerMenu = (props: {
   };
 
   const open = () => {
-    if (!button || props.disabled) return;
+    if (!button || props.disabled || at()) return;
     const rect = button.getBoundingClientRect();
     const below = rect.bottom + MENU_GAP;
     const top = below + MENU_HEIGHT <= window.innerHeight - EDGE ? below : Math.max(EDGE, rect.top - MENU_GAP - MENU_HEIGHT);
@@ -58,11 +58,12 @@ export const InviteAnswerMenu = (props: {
 
   const choose = (status: RsvpStatus) => {
     close();
-    if (status !== props.value) props.onAnswer(status);
+    if (status !== props.value && !props.disabled) props.onAnswer(status);
   };
 
+  // Enter and Space open the menu; the arrow keys keep moving between rows
   const onButtonKeyDown = (e: KeyboardEvent) => {
-    if (e.key === "Enter" || e.key === " " || e.key === "ArrowDown" || e.key === "ArrowUp") {
+    if (e.key === "Enter" || e.key === " ") {
       e.preventDefault();
       e.stopPropagation();
       open();
@@ -97,11 +98,15 @@ export const InviteAnswerMenu = (props: {
     if (e.target instanceof Node && menu?.contains(e.target)) return;
     close(false);
   };
-  document.addEventListener("mousedown", dismissOutside);
-  document.addEventListener("scroll", dismissOnScroll, true);
-  onCleanup(() => {
-    document.removeEventListener("mousedown", dismissOutside);
-    document.removeEventListener("scroll", dismissOnScroll, true);
+  // Listened for only while the menu is open, not once per row on the board
+  createEffect(() => {
+    if (!at()) return;
+    document.addEventListener("mousedown", dismissOutside);
+    document.addEventListener("scroll", dismissOnScroll, true);
+    onCleanup(() => {
+      document.removeEventListener("mousedown", dismissOutside);
+      document.removeEventListener("scroll", dismissOnScroll, true);
+    });
   });
 
   return (
@@ -118,8 +123,9 @@ export const InviteAnswerMenu = (props: {
         aria-haspopup="menu"
         aria-expanded={!!at()}
         aria-label={`Your response: ${answer()?.label ?? "not answered"}`}
-        disabled={props.disabled}
-        onClick={(e) => { e.stopPropagation(); if (at()) close(); else open(); }}
+        // Still focusable while an answer sends, so focus stays where it was
+        aria-disabled={props.disabled ? "true" : undefined}
+        onClick={() => { if (at()) close(); else open(); }}
         on:keydown={onButtonKeyDown}
       >
         <Show when={props.value === "accepted"}>

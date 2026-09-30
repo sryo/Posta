@@ -2482,6 +2482,42 @@ describe("App calendar", () => {
     await waitFor(() => expect(invoke).toHaveBeenCalledWith("rsvp_calendar_event", { accountId: "a", eventUid: "ev-1@google.com", status: "tentative" }));
   });
 
+  it("sends no answer from the keyboard to an invite that has passed", async () => {
+    threadsByCard["card-a"] = [{
+      ...thread("t-inv", "Invitation: Planning"),
+      calendar_event: {
+        uid: "ev-1@google.com", title: "Planning", start_time: Date.now() - 2 * 3600_000, end_time: Date.now() - 3600_000, all_day: false,
+        location: null, description: null, organizer: "org@x.com", attendees: [], method: "REQUEST", status: null, response_status: null,
+      },
+    }];
+    handlers.get_calendar_rsvp_status = () => null;
+    handlers.rsvp_calendar_event = () => null;
+    render(() => <App />);
+    await screen.findByTitle("Invitation: Planning");
+    fireEvent.keyDown(document, { key: "l" });
+    fireEvent.keyDown(document, { key: "y" });
+    await new Promise(r => setTimeout(r, 20));
+    expect(invoke).not.toHaveBeenCalledWith("rsvp_calendar_event", expect.anything());
+  });
+
+  it("opens the answer menu from an invite row without opening the email", async () => {
+    threadsByCard["card-a"] = [{
+      ...thread("t-inv", "Invitation: Planning"),
+      calendar_event: {
+        uid: "ev-1@google.com", title: "Planning", start_time: Date.now() + 3600_000, end_time: null, all_day: false,
+        location: null, description: null, organizer: "org@x.com", attendees: [], method: "REQUEST", status: null, response_status: null,
+      },
+    }];
+    handlers.get_calendar_rsvp_status = () => null;
+    handlers.get_thread_details = () => ({ id: "t-inv", messages: [] });
+    render(() => <App />);
+    const row = (await screen.findByTitle("Invitation: Planning")).closest(".thread") as HTMLElement;
+    fireEvent.click(within(row).getByRole("button", { name: /^Your response/ }));
+    expect(screen.getByRole("menu", { name: "Your response" })).toBeInTheDocument();
+    await new Promise(r => setTimeout(r, 20));
+    expect(invoke).not.toHaveBeenCalledWith("get_thread_details", expect.anything());
+  });
+
   it("does not send an answer again for a focused invite email the user already gave", async () => {
     threadsByCard["card-a"] = [{
       ...thread("t-inv", "Invitation: Planning"),
