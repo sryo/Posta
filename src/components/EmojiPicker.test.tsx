@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { fireEvent, render } from "@solidjs/testing-library";
 import { EmojiPicker } from "./EmojiPicker";
+import { EMOJI_NAMES } from "../app/emojiNames";
 
 const emojiTexts = (root: Element) =>
   Array.from(root.querySelectorAll(".emoji-btn")).map((b) => b.textContent);
@@ -19,6 +20,26 @@ describe("EmojiPicker", () => {
       const category = sections[sections.length - 1];
       expect(duplicates(emojiTexts(category)), tab.getAttribute("title")!).toEqual([]);
     }
+  });
+
+  it("has a name for every emoji, so search can find each one", () => {
+    const { container } = render(() => <EmojiPicker onSelect={vi.fn()} onClose={vi.fn()} />);
+    const unnamed = new Set<string>();
+    for (const tab of Array.from(container.querySelectorAll(".emoji-category-tab"))) {
+      fireEvent.click(tab);
+      for (const emoji of emojiTexts(container)) if (!EMOJI_NAMES[emoji!]) unnamed.add(emoji!);
+    }
+    expect([...unnamed]).toEqual([]);
+  });
+
+  it("finds an emoji by what it's called, and Enter picks the first", () => {
+    const onSelect = vi.fn();
+    const { container } = render(() => <EmojiPicker onSelect={onSelect} onClose={vi.fn()} />);
+    const input = container.querySelector<HTMLInputElement>(".emoji-search")!;
+    fireEvent.input(input, { target: { value: "fire" } });
+    expect(emojiTexts(container)[0]).toBe("🔥");
+    fireEvent.keyDown(input, { key: "Enter" });
+    expect(onSelect).toHaveBeenCalledWith("🔥");
   });
 
   it("does not repeat an emoji that appears in several matching categories", () => {

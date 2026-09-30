@@ -3,6 +3,7 @@
 import { createSignal, For, Show, onCleanup, onMount } from "solid-js";
 import { hasCommandModifier, isImeComposing } from "../shared/keyboard";
 import { useLayer } from "../app/layers";
+import { searchEmoji } from "../app/emojiSearch";
 
 // Emoji data organized by category
 const EMOJI_CATEGORIES: { name: string; icon: string; emojis: string[] }[] = [
@@ -33,6 +34,7 @@ const EMOJI_CATEGORIES: { name: string; icon: string; emojis: string[] }[] = [
       "\ud83e\udd1f", "\ud83e\udd18", "\ud83d\udc4c", "\ud83e\udd0c", "\ud83e\udd0f", "\ud83d\udc48", "\ud83d\udc49", "\ud83d\udc46", "\ud83d\udc47",
       "\u261d\ufe0f", "\u270b", "\ud83e\udd1a", "\ud83d\udd90\ufe0f", "\ud83d\udd96", "\ud83d\udc4b", "\ud83e\udd19", "\ud83d\udcaa",
       "\ud83d\ude4f", "\u270d\ufe0f", "\ud83d\udc85", "\ud83e\udd33", "\ud83d\udc4f", "\ud83d\ude4c", "\ud83d\udc50", "\ud83e\udd32",
+      "\ud83d\udc40", "\ud83e\udd1d",
     ],
   },
   {
@@ -63,6 +65,7 @@ const EMOJI_CATEGORIES: { name: string; icon: string; emojis: string[] }[] = [
       "\u26c8\ufe0f", "\ud83c\udf29\ufe0f", "\ud83c\udf28\ufe0f", "\u2744\ufe0f", "\u2603\ufe0f", "\u26c4", "\ud83c\udf2c\ufe0f", "\ud83c\udf2b\ufe0f",
       "\ud83c\udf08", "\ud83c\udf3a", "\ud83c\udf39", "\ud83c\udf3b", "\ud83c\udf3c", "\ud83c\udf37", "\ud83c\udf38", "\ud83c\udf32",
       "\ud83c\udf33", "\ud83c\udf34", "\ud83c\udf35", "\ud83c\udf31", "\ud83c\udf3f", "\u2618\ufe0f", "\ud83c\udf40", "\ud83c\udf41",
+      "\ud83d\udd25",
     ],
   },
   {
@@ -89,6 +92,7 @@ const EMOJI_CATEGORIES: { name: string; icon: string; emojis: string[] }[] = [
       "\ud83d\uddd3\ufe0f", "\ud83d\udcc7", "\ud83d\udccb", "\ud83d\udcd3", "\ud83d\udcd4", "\ud83d\udcd2", "\ud83d\udcd5", "\ud83d\udcd7",
       "\ud83d\udcd8", "\ud83d\udcd9", "\ud83d\udcda", "\ud83d\udcd6", "\ud83d\udd17", "\ud83d\udcce", "\ud83d\udd87\ufe0f", "\u2702\ufe0f",
       "\ud83d\udccc", "\ud83d\udccd", "\ud83d\udd12", "\ud83d\udd13", "\ud83d\udd10", "\ud83d\udd11", "\ud83d\udee0\ufe0f", "\ud83d\udd28",
+      "\ud83d\ude80", "\ud83d\udca1",
     ],
   },
   {
@@ -101,6 +105,7 @@ const EMOJI_CATEGORIES: { name: string; icon: string; emojis: string[] }[] = [
       "\ud83c\udd70\ufe0f", "\ud83c\udd71\ufe0f", "\ud83c\udd8e", "\ud83c\udd91", "\ud83c\udd92", "\ud83c\udd93", "\ud83c\udd94", "\ud83c\udd95",
       "\ud83c\udd96", "\ud83c\udd97", "\ud83c\udd98", "\ud83c\udd99", "\ud83c\udd9a", "\ud83c\ude01", "\ud83c\ude02\ufe0f", "\ud83c\ude32",
       "\ud83c\ude33", "\ud83c\ude34", "\ud83c\ude35", "\ud83c\ude36", "\ud83c\ude37\ufe0f", "\ud83c\ude38", "\ud83c\ude39", "\ud83c\ude3a",
+      "\ud83d\udcaf", "\u26a0\ufe0f",
     ],
   },
 ];
@@ -163,22 +168,8 @@ export const EmojiPicker = (props: EmojiPickerProps) => {
     document.removeEventListener("keydown", handleKeyDown, true);
   });
 
-  // Filter emojis based on search. Without per-emoji keyword data, the query
-  // matches category names ("heart", "food", ...) — honest empty results beat
-  // returning 50 unrelated emojis
   const query = () => search().toLowerCase().trim();
-  const filteredEmojis = () => {
-    const q = query();
-    const results = new Set<string>();
-    for (const cat of EMOJI_CATEGORIES) {
-      if (!cat.name.toLowerCase().includes(q)) continue;
-      for (const emoji of cat.emojis) {
-        if (results.size >= 50) break;
-        results.add(emoji);
-      }
-    }
-    return [...results];
-  };
+  const filteredEmojis = () => searchEmoji(query(), EMOJI_CATEGORIES);
 
   const handleEmojiClick = (emoji: string) => {
     props.onSelect(emoji);
