@@ -139,6 +139,8 @@ import { deletedByScope, type RecurrenceScope } from "./app/recurrence";
 import { ThreadView } from "./components/ThreadView";
 import { EventView } from "./components/EventView";
 import { ActionsWheel } from "./components/ActionsWheel";
+import { RadialMenu } from "./components/RadialMenu";
+import { RADIAL_HOVER_CLOSE_MS, RADIAL_HOVER_OPEN_MS } from "./app/radial";
 import { CardForm } from "./components/CardForm";
 import { CardAccountQualifier, cardTitleLabel } from "./components/CardAccountQualifier";
 import { Dialog } from "./components/Dialog";
@@ -762,46 +764,50 @@ function App() {
   const isHoveredEvent = createSelector(hoveredEvent);
   let hoverEventActionsTimeout: number | undefined;
 
+  // A row's wheel opens once the pointer rests on it, so passing over a list
+  // doesn't bloom a wheel on every row; moving on from an open one is instant
   function showThreadHoverActions(threadId: string) {
-    if (hoverActionsTimeout) {
-      clearTimeout(hoverActionsTimeout);
-      hoverActionsTimeout = undefined;
-    }
-
+    clearTimeout(hoverActionsTimeout);
     // Close event wheel when showing thread wheel
     setEventActionsWheelOpen(false);
     setHoveredEvent(null);
 
-    setHoveredThread(threadId);
-    setActionsWheelOpen(true);
+    const open = () => {
+      setHoveredThread(threadId);
+      setActionsWheelOpen(true);
+    };
+    if (actionsWheelOpen()) open();
+    else hoverActionsTimeout = window.setTimeout(open, RADIAL_HOVER_OPEN_MS);
   }
 
   function hideThreadHoverActions() {
+    clearTimeout(hoverActionsTimeout);
     hoverActionsTimeout = window.setTimeout(() => {
       setActionsWheelOpen(false);
       setHoveredThread(null);
-    }, 100);
+    }, RADIAL_HOVER_CLOSE_MS);
   }
 
   function showEventHoverActions(eventId: string) {
-    if (hoverEventActionsTimeout) {
-      clearTimeout(hoverEventActionsTimeout);
-      hoverEventActionsTimeout = undefined;
-    }
-
+    clearTimeout(hoverEventActionsTimeout);
     // Close thread wheel when showing event wheel
     setActionsWheelOpen(false);
     setHoveredThread(null);
 
-    setHoveredEvent(eventId);
-    setEventActionsWheelOpen(true);
+    const open = () => {
+      setHoveredEvent(eventId);
+      setEventActionsWheelOpen(true);
+    };
+    if (eventActionsWheelOpen()) open();
+    else hoverEventActionsTimeout = window.setTimeout(open, RADIAL_HOVER_OPEN_MS);
   }
 
   function hideEventHoverActions() {
+    clearTimeout(hoverEventActionsTimeout);
     hoverEventActionsTimeout = window.setTimeout(() => {
       setEventActionsWheelOpen(false);
       setHoveredEvent(null);
-    }, 100);
+    }, RADIAL_HOVER_CLOSE_MS);
   }
 
   const [selectedThreads, setSelectedThreads] = createSignal<Record<string, Set<string>>>({});
@@ -4288,6 +4294,10 @@ function App() {
       setActionsWheelOpen(false);
       setHoveredThread(null);
     }
+    if (!target.closest('.calendar-event-item')) {
+      setEventActionsWheelOpen(false);
+      setHoveredEvent(null);
+    }
     if (!target.closest('.quick-reply-box') && !quickReply().text.trim()) {
       setQuickReply(qr => ({ ...qr, threadId: null }));
       setQuickReplyEventId(null);
@@ -4812,26 +4822,22 @@ function App() {
                   <PaletteIcon />
                 </Show>
               </div>
-              <div
-                class="color-option no-color-option"
-                role="button"
-                tabIndex={bgColorPickerOpen() ? 0 : -1}
-                aria-label="No color"
-                onClick={() => selectBgColor(null)}
-                on:keydown={onActivateKey(() => selectBgColor(null))}
-              ></div>
-              <For each={BOARD_COLORS}>
-                {(color, index) => (
-                  <div
-                    class={`color-option ${color.hue}`}
-                    role="button"
-                    tabIndex={bgColorPickerOpen() ? 0 : -1}
-                    aria-label={color.name}
-                    onClick={() => selectBgColor(index())}
-                    on:keydown={onActivateKey(() => selectBgColor(index()))}
-                  ></div>
-                )}
-              </For>
+              <RadialMenu
+                label="Background color"
+                open={bgColorPickerOpen()}
+                items={[
+                  { id: "none", label: "No color", hue: null, selected: selectedBgColorIndex() === null, onSelect: () => selectBgColor(null) },
+                  ...BOARD_COLORS.map((color, index) => ({
+                    id: color.hue, label: color.name, hue: color.hue, selected: selectedBgColorIndex() === index,
+                    onSelect: () => selectBgColor(index),
+                  })),
+                ]}
+                arc={{ toward: -90, maxSpan: 240 }}
+                bounds={() => document.body}
+                radius={34}
+                itemSize={20}
+                onEscape={() => setBgColorPickerOpen(false)}
+              />
             </div>
             <Show when={selectedAccount()}>
               <div class="account-chooser-container">

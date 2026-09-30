@@ -14,6 +14,7 @@ import { isImeComposing, onActivateKey } from "../shared/keyboard";
 import type { RecentContact } from "../app/contacts";
 import type { QuerySuggestion } from "../app/querySuggestions";
 import { QueryField } from "./QueryField";
+import { RadialMenu } from "./RadialMenu";
 
 // A click on ✓ this soon after the form opens is the second half of the
 // double-click that opened it, not a save
@@ -100,21 +101,22 @@ export const CardForm = (props: {
               <PaletteIcon size="meta" />
             </Show>
           </div>
-          <For each={[null, ...CARD_COLORS] as CardColor[]}>
-            {(color) => {
-              const pick = () => { props.setColor(color); props.setColorPickerOpen(false); };
-              return (
-                <div
-                  class={color ? `color-option ${color}` : "color-option no-color-option"}
-                  role="button"
-                  tabIndex={props.colorPickerOpen ? 0 : -1}
-                  aria-label={color ?? "No color"}
-                  onClick={pick}
-                  on:keydown={onActivateKey(pick)}
-                />
-              );
-            }}
-          </For>
+          <RadialMenu
+            label="Card color"
+            open={props.colorPickerOpen}
+            items={([null, ...CARD_COLORS] as CardColor[]).map(color => ({
+              id: color ?? "none",
+              label: color ? color[0].toUpperCase() + color.slice(1) : "No color",
+              hue: color,
+              selected: color === props.color,
+              onSelect: () => { props.setColor(color); props.setColorPickerOpen(false); },
+            }))}
+            arc={{ toward: 45, maxSpan: 240 }}
+            bounds={(menu) => menu.closest(".deck") ?? document.body}
+            radius={34}
+            itemSize={18}
+            onEscape={() => props.setColorPickerOpen(false)}
+          />
         </div>
         <input
           type="text"

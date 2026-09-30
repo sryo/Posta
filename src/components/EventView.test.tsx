@@ -330,9 +330,9 @@ describe("EventView deleting a repeating event", () => {
   it("asks from the keyboard too, and Escape keeps the event", () => {
     const props = renderEvent(occurrence);
     fireEvent.keyDown(document, { key: "d" });
-    const menu = screen.getByRole("menu");
+    const menu = screen.getByRole("menu", { name: "Delete repeating event" });
     fireEvent.keyDown(menu, { key: "Escape" });
-    expect(screen.queryByRole("menu")).toBeNull();
+    expect(screen.queryByRole("menu", { name: "Delete repeating event" })).toBeNull();
     expect(props.onDelete).not.toHaveBeenCalled();
     expect(props.container.querySelector(".thread-overlay.closing")).toBeNull();
   });

@@ -74,7 +74,7 @@ describe("CardForm grouping", () => {
 });
 
 describe("CardForm color", () => {
-  it("opens the swatches from the header's dot and picks a color from the keyboard", () => {
+  it("opens the flower from the header's dot and picks a color from it", () => {
     const setColor = vi.fn();
     const setColorPickerOpen = vi.fn();
     renderCardForm("new", { setColor, setColorPickerOpen, colorPickerOpen: true });
@@ -87,9 +87,11 @@ describe("CardForm color", () => {
     document.removeEventListener("keydown", globalShortcut);
     expect(setColorPickerOpen).toHaveBeenCalledWith(false);
     expect(globalShortcut).not.toHaveBeenCalled();
-    fireEvent.keyDown(screen.getByRole("button", { name: "blue" }), { key: " " });
+    const blue = screen.getByRole("menuitemradio", { name: "Blue" });
+    fireEvent.keyDown(blue, { key: "ArrowRight" });
+    fireEvent.click(blue);
     expect(setColor).toHaveBeenCalledWith("blue");
-    fireEvent.keyDown(screen.getByRole("button", { name: "No color" }), { key: "Enter" });
+    fireEvent.click(screen.getByRole("menuitemradio", { name: "No color" }));
     expect(setColor).toHaveBeenLastCalledWith(null);
   });
 });

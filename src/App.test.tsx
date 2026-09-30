@@ -4518,7 +4518,7 @@ describe("App accessibility", () => {
     await waitFor(() => expect(screen.getByRole("button", { name: "Alpha. Expand" })).toHaveAttribute("aria-expanded", "false"));
   });
 
-  it("picks a background colour from the keyboard", async () => {
+  it("opens the background colour flower from the keyboard", async () => {
     render(() => <App />);
     await screen.findByText("Mail for A");
     const picker = screen.getByRole("button", { name: "Choose background color" });
@@ -4526,10 +4526,10 @@ describe("App accessibility", () => {
     fireEvent.keyDown(picker, { key: "Enter" });
     expect(picker).toHaveAttribute("aria-expanded", "true");
 
-    fireEvent.keyDown(screen.getByRole("button", { name: "Blue" }), { key: " " });
+    fireEvent.click(screen.getByRole("menuitemradio", { name: "Blue" }));
     expect(localStorage.getItem("bgColorIndex")).toBe("5");
     expect(picker).toHaveAttribute("aria-expanded", "false");
-    expect(screen.getByRole("button", { name: "No color", hidden: true })).toBeInTheDocument();
+    expect(screen.getByRole("menuitemradio", { name: "No color", hidden: true })).toBeInTheDocument();
   });
 
   it("shows the saved background colour on a deck that appears after the first sign-in", async () => {
@@ -4557,13 +4557,13 @@ describe("App accessibility", () => {
     expect(document.documentElement.dataset.boardHue).toBeUndefined();
 
     fireEvent.click(picker);
-    fireEvent.click(screen.getByRole("button", { name: "Teal" }));
+    fireEvent.click(screen.getByRole("menuitemradio", { name: "Teal" }));
     expect(document.documentElement.dataset.boardHue).toBe("cyan");
     expect(picker).toHaveAttribute("data-hue", "cyan");
     expect(picker.getAttribute("style")).toBeNull();
 
     fireEvent.click(picker);
-    fireEvent.click(screen.getByRole("button", { name: "No color" }));
+    fireEvent.click(screen.getByRole("menuitemradio", { name: "No color" }));
     expect(document.documentElement.dataset.boardHue).toBeUndefined();
     expect(picker).not.toHaveAttribute("data-hue");
   });

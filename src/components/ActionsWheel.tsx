@@ -1,4 +1,4 @@
-import { For, Show, createMemo, type JSX } from "solid-js";
+import { Show, createMemo, type JSX } from "solid-js";
 import { openUrl } from '@tauri-apps/plugin-opener';
 import {
   rsvpListedCalendarEvent,
@@ -29,8 +29,9 @@ import {
   VideoIcon,
   CheckIcon,
 } from "./Icons";
+import { RadialMenu, type RadialItem } from "./RadialMenu";
 
-// Half Pie Menu Component
+// The actions for a row, fanned out on the left of its checkbox
 export const ActionsWheel = (props: {
   cardId: string;
   threadId?: string | null;
@@ -64,11 +65,6 @@ export const ActionsWheel = (props: {
   // "Couldn't …", with the error that caused it
   showFailure: (failure: string, error: unknown) => void;
 }) => {
-  const containerRef = (el: HTMLDivElement) => {
-    // Simple animation trigger
-    setTimeout(() => el.classList.add('open'), 10);
-  };
-
   // One response at a time: a double click would otherwise send two
   let rsvpInFlight = false;
   const rsvp = async (evt: GoogleCalendarEvent, status: RsvpStatus) => {
@@ -278,48 +274,30 @@ export const ActionsWheel = (props: {
     return actions;
   });
 
-  // Positioning Logic
-  const innerRadius = 38;
+  const items = (): RadialItem[] => actions().map(action => ({
+    id: action.cls + action.title,
+    label: action.title,
+    hint: action.keyHint,
+    icon: action.icon,
+    danger: action.cls === 'bulk-danger',
+    selected: action.cls === 'event-rsvp-active',
+    onSelect: action.onClick,
+  }));
 
   return (
     <Show when={actions().length > 0}>
-      <div class={`bulk-actions-wheel ${props.open ? 'open' : ''}`} ref={containerRef}>
-        {props.selectedCount > 0 && <span class="bulk-count">{props.selectedCount}</span>}
-        <For each={actions()}>
-          {(action, i) => {
-            const numActions = actions().length;
-            let x = -innerRadius;
-            let y = 0;
-            if (numActions > 1) {
-              // 120 degree arc from 4pi/3 down to 2pi/3.
-              // In DOM coords (y increases downward):
-              // i=0 -> 4pi/3 (240 deg) -> top-left
-              // i=max -> 2pi/3 (120 deg) -> bottom-left
-              // This matches context menu order: first item at top
-              const angle = (4 * Math.PI / 3) - (i() / (numActions - 1)) * (2 * Math.PI / 3);
-              x = innerRadius * Math.cos(angle);
-              y = innerRadius * Math.sin(angle);
-            }
-
-            return (
-              <button
-                class={`bulk-btn ${action.cls}`}
-                style={{
-                  left: `calc(50% + ${x.toFixed(1)}px - 14px)`,
-                  top: `calc(50% + ${y.toFixed(1)}px - 14px)`
-                }}
-                onClick={(e) => action.onClick(e)}
-                title={action.title}
-              >
-                <div style={{ width: '14px', height: '14px' }}>
-                  <action.icon />
-                </div>
-                {action.keyHint && <span class="action-key-hint">{action.keyHint}</span>}
-              </button>
-            );
-          }}
-        </For>
-      </div>
+      <RadialMenu
+        label={props.event ? "Event actions" : props.selectedCount > 0 ? "Actions for the selected threads" : "Thread actions"}
+        items={items()}
+        open={props.open}
+        arc={{ start: 240, span: -120 }}
+        radius={38}
+        itemSize={28}
+        overlap="grow"
+        maxRadius={64}
+        center={props.selectedCount > 0 ? <span class="bulk-count">{props.selectedCount}</span> : undefined}
+        onEscape={props.onClose}
+      />
     </Show>
   );
 };

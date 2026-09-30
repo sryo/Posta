@@ -129,7 +129,7 @@ describe("floating controls", () => {
   });
 
   it("use it for the wheel buttons, the emoji picker and the autocomplete lists, ringed by a hairline", () => {
-    const wheel = declarationsOf(".bulk-btn");
+    const wheel = declarationsOf(".radial-petal");
     expect(wheel.get("background")).toBe("var(--surface-raised)");
     expect(wheel.get("color")).toBe("var(--text-secondary)");
     expect(wheel.get("box-shadow")).toContain("0 0 0 1px var(--border-default)");

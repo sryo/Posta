@@ -1,3 +1,4 @@
+import { RADIAL_HOVER_CLOSE_MS } from "../app/radial";
 import { createSignal, createEffect, createMemo, on, onMount, onCleanup, Show, For } from "solid-js";
 import { MessageBody } from './MessageBody';
 import { sendReaction, type FullThread, type FullMessage, type Attachment, type CalendarEvent } from "../api/tauri";
@@ -311,7 +312,7 @@ export const ThreadView = (props: {
     hoverTimeout = window.setTimeout(() => {
       setWheelOpen(false);
       setHoveredMessageId(null);
-    }, 150);
+    }, RADIAL_HOVER_CLOSE_MS);
   };
 
   // Reply / reply-all / forward for one message; shared by the per-message

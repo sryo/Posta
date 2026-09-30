@@ -172,14 +172,22 @@
     --z-modal: 1200;
     --z-toast: 10000;
 
-    /* Color picker dimensions */
-    --picker-radius: 32px;
-    /* Where the flower's first petal sits and how far apart the petals are:
-       a full circle by default, a fan where the space runs out */
-    --picker-start: 180deg;
-    --picker-step: 40deg;
-    --picker-option-size: 22px;
+    /* The colour flowers' centre button */
     --picker-button-size: 24px;
+
+    /* Radial menus: one bloom for every pie. Petals travel out on the
+       spring, a few ms apart, and fold back faster with no overshoot */
+    --radial-spring: cubic-bezier(0.34, 1.56, 0.64, 1);
+    --radial-exit: cubic-bezier(0.4, 0, 1, 1);
+    --radial-open: 240ms;
+    --radial-fade: 120ms;
+    --radial-stagger: 18ms;
+    --radial-stagger-max: 120ms;
+    --radial-close: 140ms;
+    --radial-close-stagger: 8ms;
+    --radial-from-scale: 0.4;
+    --radial-hover-scale: 1.15;
+    --radial-press-scale: 0.92;
     --app-edge-margin: 12px;
 
     /* Layout dimensions */
@@ -342,14 +350,14 @@
 /* ---- Tier 2: card-derived -----------------------------------------------
    Anything that wears a card hue sets --card-hue; everything else derives.
    Uncoloured cards keep the defaults on :root, the plain surfaces. */
-.card[data-color="red"], .preset-card.red, .color-option.red, .attachment-icon.pdf, [data-hue="red"] { --card-hue: var(--hue-red); }
-.card[data-color="orange"], .preset-card.orange, .color-option.orange, [data-hue="orange"] { --card-hue: var(--hue-orange); }
-.card[data-color="yellow"], .preset-card.yellow, .color-option.yellow, [data-hue="yellow"] { --card-hue: var(--hue-yellow); }
-.card[data-color="green"], .preset-card.green, .color-option.green, .attachment-icon.image, [data-hue="green"] { --card-hue: var(--hue-green); }
-.card[data-color="cyan"], .color-option.cyan, [data-hue="cyan"] { --card-hue: var(--hue-cyan); }
-.card[data-color="blue"], .preset-card.blue, .color-option.blue, .attachment-icon.file, [data-hue="blue"] { --card-hue: var(--hue-blue); }
-.card[data-color="purple"], .preset-card.purple, .color-option.purple, [data-hue="purple"] { --card-hue: var(--hue-purple); }
-.card[data-color="pink"], .color-option.pink, [data-hue="pink"] { --card-hue: var(--hue-pink); }
+.card[data-color="red"], .preset-card.red, .attachment-icon.pdf, [data-hue="red"] { --card-hue: var(--hue-red); }
+.card[data-color="orange"], .preset-card.orange, [data-hue="orange"] { --card-hue: var(--hue-orange); }
+.card[data-color="yellow"], .preset-card.yellow, [data-hue="yellow"] { --card-hue: var(--hue-yellow); }
+.card[data-color="green"], .preset-card.green, .attachment-icon.image, [data-hue="green"] { --card-hue: var(--hue-green); }
+.card[data-color="cyan"], [data-hue="cyan"] { --card-hue: var(--hue-cyan); }
+.card[data-color="blue"], .preset-card.blue, .attachment-icon.file, [data-hue="blue"] { --card-hue: var(--hue-blue); }
+.card[data-color="purple"], .preset-card.purple, [data-hue="purple"] { --card-hue: var(--hue-purple); }
+.card[data-color="pink"], [data-hue="pink"] { --card-hue: var(--hue-pink); }
 
 .card[data-color], .preset-card, .attachment-icon, .thread-bar-card[data-hue] {
     --card-tint: color-mix(in srgb, var(--card-hue) var(--card-tint-mix), transparent);
@@ -2395,14 +2403,9 @@ a:focus-visible,
     padding: var(--space-md) var(--space-md) var(--space-sm) var(--space-lg);
 }
 
-/* The colour flower, smaller than the board's. At the card's top-left
-   corner it fans out into the card, from up-right round to down-left */
+/* The card's colour flower, smaller than the board's, fanning into the card */
 .card-color-picker {
     --picker-button-size: 16px;
-    --picker-option-size: 14px;
-    --picker-radius: 48px;
-    --picker-start: -30deg;
-    --picker-step: 22.5deg;
     z-index: 20;
     flex-shrink: 0;
 }
@@ -3194,116 +3197,6 @@ button:disabled:hover {
 
 .color-picker-selected.no-color {
     background: var(--surface-raised);
-}
-
-.color-option {
-    position: absolute;
-    width: var(--picker-option-size);
-    height: var(--picker-option-size);
-    border-radius: var(--radius-full);
-    border: 2px solid var(--border-default);
-    cursor: pointer;
-    box-shadow: var(--shadow-sm);
-    opacity: 0;
-    pointer-events: none;
-    transition: left 0.25s cubic-bezier(0.34, 1.56, 0.64, 1),
-        top 0.25s cubic-bezier(0.34, 1.56, 0.64, 1),
-        opacity 0.15s, transform 0.15s;
-    /* Start centered */
-    left: calc((var(--picker-button-size) - var(--picker-option-size)) / 2);
-    top: calc((var(--picker-button-size) - var(--picker-option-size)) / 2);
-}
-
-.color-option:hover {
-    transform: scale(1.2);
-    z-index: 20;
-}
-
-.color-option.no-color-option {
-    background: var(--surface-raised);
-    border: 2px solid var(--border-default);
-}
-
-/* Color option radial layout using CSS trig functions */
-/* 9 options (8 colors + no-color), --picker-step apart from --picker-start */
-.color-picker.open .color-option {
-    opacity: 1;
-    pointer-events: auto;
-    --angle: calc(var(--picker-start) + (var(--i, 0) * var(--picker-step)));
-    --center-offset: calc((var(--picker-button-size) - var(--picker-option-size)) / 2);
-    left: calc(var(--center-offset) + cos(var(--angle)) * var(--picker-radius));
-    top: calc(var(--center-offset) + sin(var(--angle)) * var(--picker-radius));
-    transition-delay: calc(var(--i, 0) * 15ms);
-}
-
-/* The first child is the chosen colour; the petals follow it */
-.color-option:nth-child(2) {
-    --i: 0;
-}
-
-.color-option:nth-child(3) {
-    --i: 1;
-}
-
-.color-option:nth-child(4) {
-    --i: 2;
-}
-
-.color-option:nth-child(5) {
-    --i: 3;
-}
-
-.color-option:nth-child(6) {
-    --i: 4;
-}
-
-.color-option:nth-child(7) {
-    --i: 5;
-}
-
-.color-option:nth-child(8) {
-    --i: 6;
-}
-
-.color-option:nth-child(9) {
-    --i: 7;
-}
-
-.color-option:nth-child(10) {
-    --i: 8;
-}
-
-/* Color backgrounds */
-.color-option.red {
-    background: var(--card-hue);
-}
-
-.color-option.orange {
-    background: var(--card-hue);
-}
-
-.color-option.yellow {
-    background: var(--card-hue);
-}
-
-.color-option.green {
-    background: var(--card-hue);
-}
-
-.color-option.cyan {
-    background: var(--card-hue);
-}
-
-.color-option.blue {
-    background: var(--card-hue);
-}
-
-.color-option.purple {
-    background: var(--card-hue);
-}
-
-.color-option.pink {
-    background: var(--card-hue);
 }
 
 /* A swatch or an avatar that names its hue with data-hue */
@@ -4545,62 +4438,144 @@ button.settings-section-title {
     color: var(--text-muted);
 }
 
-/* Wheel button base */
-.bulk-btn,
-.message-action-btn {
-    position: absolute;
-    border: none;
-    background: var(--surface-raised);
-    cursor: pointer;
-    border-radius: var(--radius-full);
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    color: var(--text-secondary);
-    box-shadow: 0 0 0 1px var(--border-default), var(--shadow-md);
-    opacity: 0;
-    pointer-events: none;
-    transition:
-        left 0.2s cubic-bezier(0.34, 1.56, 0.64, 1),
-        top 0.2s cubic-bezier(0.34, 1.56, 0.64, 1),
-        opacity 0.15s,
-        transform 0.15s;
-    z-index: 10;
-}
-
-.bulk-btn:hover,
-.message-action-btn:hover {
-    z-index: 20;
-    background: var(--surface-subtle);
-}
-
-/* Bulk actions wheel */
-.bulk-actions-wheel {
+/* ---- Radial menus -------------------------------------------------------
+   A 0×0 box at the anchor's centre. Each petal sits on it and, once the
+   menu opens, travels to --x/--y along its angle; later petals overlap
+   earlier ones, and the hovered or focused one comes to the front. */
+.radial-menu {
     position: absolute;
     left: 50%;
     top: 50%;
-    transform: translate(-50%, -50%);
-    pointer-events: none;
-    z-index: 50;
     width: 0;
     height: 0;
+    z-index: 50;
+    pointer-events: none;
 }
 
-.bulk-actions-wheel .bulk-btn {
-    width: 28px;
-    height: 28px;
-    left: calc(50% - 14px);
-    top: calc(50% - 14px);
-    overflow: visible;
+.radial-petal {
+    position: absolute;
+    left: calc(var(--petal) / -2);
+    top: calc(var(--petal) / -2);
+    width: var(--petal);
+    height: var(--petal);
+    padding: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border: none;
+    border-radius: var(--radius-full);
+    background: var(--surface-raised);
+    color: var(--text-secondary);
+    box-shadow: 0 0 0 1px var(--border-default), var(--shadow-sm);
+    cursor: pointer;
+    opacity: 0;
+    pointer-events: none;
+    z-index: calc(10 + var(--i));
+    transform: translate(0, 0) scale(var(--radial-from-scale));
+    transition:
+        transform var(--radial-close) var(--radial-exit),
+        opacity 100ms linear;
+    transition-delay: calc((var(--n) - 1 - var(--i)) * var(--radial-close-stagger));
 }
 
-.bulk-actions-wheel.open .bulk-btn {
+.radial-menu.open .radial-petal {
     opacity: 1;
     pointer-events: auto;
+    transform: translate(var(--x), var(--y)) scale(1);
+    transition:
+        transform var(--radial-open) var(--radial-spring),
+        opacity var(--radial-fade) ease-out,
+        background 140ms ease,
+        box-shadow 140ms ease;
+    transition-delay: min(calc(var(--i) * var(--radial-stagger)), var(--radial-stagger-max));
 }
 
-.bulk-btn:hover {
-    transform: scale(1.2);
+.radial-menu.open .radial-petal:hover,
+.radial-menu.open .radial-petal:focus-visible {
+    z-index: 40;
+    background: var(--surface-card);
+    color: var(--text-primary);
+    box-shadow: 0 0 0 1px var(--border-strong), var(--shadow-md);
+    transform: translate(var(--lx), var(--ly)) scale(var(--radial-hover-scale));
+    transition-delay: 0ms;
+}
+
+.radial-menu.open .radial-petal:active {
+    transform: translate(var(--x), var(--y)) scale(var(--radial-press-scale));
+    transition-duration: 80ms;
+}
+
+.radial-menu.open .radial-petal.danger:hover,
+.radial-menu.open .radial-petal.danger:focus-visible {
+    color: var(--danger-text);
+}
+
+.radial-petal.selected {
+    color: var(--text-link);
+}
+
+/* A colour petal: the hue itself, ringed by the surface it floats over */
+.radial-swatch {
+    background: var(--card-hue);
+    box-shadow: 0 0 0 1.5px var(--surface-raised), var(--shadow-sm);
+}
+
+.radial-swatch.no-color {
+    background: var(--surface-raised);
+    box-shadow: inset 0 0 0 1px var(--border-strong), 0 0 0 1.5px var(--surface-raised), var(--shadow-sm);
+}
+
+.radial-menu.open .radial-swatch:hover,
+.radial-menu.open .radial-swatch:focus-visible {
+    background: var(--card-hue);
+    box-shadow: 0 0 0 1.5px var(--surface-raised), var(--shadow-md);
+}
+
+.radial-menu.open .radial-swatch.no-color:hover,
+.radial-menu.open .radial-swatch.no-color:focus-visible {
+    background: var(--surface-raised);
+}
+
+.radial-swatch.selected {
+    box-shadow: 0 0 0 1.5px var(--surface-raised), 0 0 0 3px var(--border-focus), var(--shadow-sm);
+}
+
+/* A key hint: a small pill just outside its petal, on the petal's own line */
+.action-key-hint {
+    position: absolute;
+    left: 50%;
+    top: 50%;
+    min-width: 16px;
+    height: 16px;
+    padding: 0 var(--space-xs);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: var(--radius-full);
+    background: var(--surface-inverse);
+    color: var(--text-inverse);
+    font: var(--type-hint);
+    letter-spacing: var(--tracking-hint);
+    text-transform: uppercase;
+    white-space: nowrap;
+    box-shadow: var(--shadow-sm);
+    pointer-events: none;
+    opacity: 0;
+    transform: translate(calc(-50% + var(--hx)), calc(-50% + var(--hy))) scale(0.8);
+    transition: opacity 120ms ease-out, transform 120ms ease-out;
+}
+
+.radial-menu.open .radial-petal:hover .action-key-hint,
+.radial-menu.open .radial-petal:focus-visible .action-key-hint,
+.radial-menu.open.hints-always .action-key-hint,
+.thread.focused .radial-menu.open .action-key-hint,
+.calendar-event-item.focused .radial-menu.open .action-key-hint {
+    opacity: 1;
+    transform: translate(calc(-50% + var(--hx)), calc(-50% + var(--hy))) scale(1);
+}
+
+.radial-menu.open.hints-always .action-key-hint {
+    transition-delay: 250ms;
 }
 
 .bulk-count {
@@ -4623,52 +4598,13 @@ button.settings-section-title {
     z-index: 30;
 }
 
-.action-key-hint {
-    position: absolute;
-    top: 50%;
-    right: auto;
-    left: 100%;
-    margin-left: -2px;
-    transform: translateY(-50%) scale(0.8);
-    background: var(--surface-inverse);
-    color: var(--text-inverse);
-    font: var(--type-hint);
-    letter-spacing: var(--tracking-hint);
-    width: 14px;
-    height: 14px;
-    border-radius: var(--radius-full);
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    box-shadow: var(--shadow-sm);
-    z-index: 40;
-    pointer-events: none;
-    text-transform: uppercase;
-    opacity: 0;
-    transition: all 0.2s cubic-bezier(0.34, 1.56, 0.64, 1);
-}
-
-.thread.focused .action-key-hint,
-.calendar-event-item.focused .action-key-hint {
-    opacity: 1;
-    transform: translateY(-50%) scale(1);
-}
-
-/* Staggered animation for bulk actions */
-.bulk-actions-wheel .bulk-btn:nth-child(2) {
-    transition-delay: 0ms;
-}
-
-.bulk-actions-wheel .bulk-btn:nth-child(3) {
-    transition-delay: 30ms;
-}
-
-.bulk-actions-wheel .bulk-btn:nth-child(4) {
-    transition-delay: 60ms;
-}
-
-.bulk-actions-wheel .bulk-btn:nth-child(5) {
-    transition-delay: 90ms;
+@media (prefers-reduced-motion: reduce) {
+    .radial-petal,
+    .radial-menu.open .radial-petal {
+        transform: translate(var(--x), var(--y)) !important;
+        transition: opacity 120ms linear !important;
+        transition-delay: 0ms !important;
+    }
 }
 
 /* Thread View Overlay */
@@ -5402,7 +5338,7 @@ button.settings-section-title {
     cursor: default;
 }
 
-/* Message Actions Wheel - Right side arc */
+/* A message's replies, fanning out on its right */
 .message-actions-wheel {
     position: sticky;
     top: 100px;
@@ -5413,58 +5349,6 @@ button.settings-section-title {
     height: 80px;
     pointer-events: auto;
     z-index: 100;
-}
-
-.message-actions-wheel .message-action-btn {
-    width: 26px;
-    height: 26px;
-}
-
-.message-actions-wheel.open .message-action-btn {
-    opacity: 1;
-    pointer-events: auto;
-}
-
-.message-action-btn:hover {
-    transform: scale(1.15);
-}
-
-.message-action-btn .action-key-hint {
-    position: absolute;
-    top: 50%;
-    left: 100%;
-    margin-left: 2px;
-    transform: translateY(-50%);
-    background: var(--surface-inverse);
-    color: var(--text-inverse);
-    font: var(--type-hint);
-    width: 14px;
-    height: 14px;
-    border-radius: var(--radius-full);
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    opacity: 0;
-    transition: opacity 0.15s, transform 0.15s;
-    pointer-events: none;
-}
-
-.message-action-btn:hover .action-key-hint,
-.message-action-btn:focus-visible .action-key-hint {
-    opacity: 1;
-}
-
-/* Staggered animation for message wheel */
-.message-actions-wheel .message-action-btn:nth-child(1) {
-    transition-delay: 0ms;
-}
-
-.message-actions-wheel .message-action-btn:nth-child(2) {
-    transition-delay: 30ms;
-}
-
-.message-actions-wheel .message-action-btn:nth-child(3) {
-    transition-delay: 60ms;
 }
 
 .message-body {
