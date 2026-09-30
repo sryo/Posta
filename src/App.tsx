@@ -147,7 +147,7 @@ import { RADIAL_HOVER_CLOSE_MS, RADIAL_HOVER_OPEN_MS } from "./app/radial";
 import { CardForm } from "./components/CardForm";
 import { CardAccountQualifier, cardTitleLabel } from "./components/CardAccountQualifier";
 import { Dialog } from "./components/Dialog";
-import { Toasts } from "./components/Toasts";
+import { ToastFrame, Toasts } from "./components/Toasts";
 import { createToasts, type ToastAction, type ToastTone } from "./app/toasts";
 import { failureMessage, storedCredentialsFailure } from "./app/errorText";
 import { formatClock, formatShortDate, formatWhen, threadGroupLabel } from "./app/dateFormat";
@@ -6299,15 +6299,15 @@ function App() {
       <Toasts toasts={toasts} othersShowing={undoableSend.toastVisible()}>
         {/* Send Toast with Undo */}
         <Show when={undoableSend.toastVisible()}>
-          <div class={`undo-toast send-toast ${undoableSend.toastClosing() ? 'closing' : ''}`}>
-            <div class="toast-progress send-progress" style={{ width: `${undoableSend.progress()}%` }}></div>
-            <div class="toast-content">
-              <span class="toast-message">{inAccount("Sending message", [accountById(undoableSend.pending()?.accountId)?.email ?? ""].filter(Boolean), accounts().length, "from")}...</span>
-              <Show when={undoableSend.pending()}>
-                <button class="toast-undo-btn" onClick={undoSend}>Undo</button>
-              </Show>
-            </div>
-          </div>
+          <ToastFrame
+            message={`${inAccount("Sending message", [accountById(undoableSend.pending()?.accountId)?.email ?? ""].filter(Boolean), accounts().length, "from")}...`}
+            closing={undoableSend.toastClosing()}
+            percent={undoableSend.progress()}
+          >
+            <Show when={undoableSend.pending()}>
+              <button class="toast-undo-btn" onClick={undoSend}>Undo</button>
+            </Show>
+          </ToastFrame>
         </Show>
       </Toasts>
 
