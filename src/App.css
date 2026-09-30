@@ -263,6 +263,10 @@
     /* an icon-only button of 28px or more, an empty state, a file tile */
     --icon-tool: var(--size-20);
     --icon-gap-meta: var(--space-sm);
+
+    /* A boxed field's height and resting border: strong enough to find */
+    --field-height: 32px;
+    --field-border: var(--border-strong);
 }
 
 /* ---- Tier 2: semantic, dark ---------------------------------------------
@@ -422,19 +426,68 @@ body {
     box-shadow: 0 0 0 1px var(--border-default);
 }
 
-/* Global focus ring styles for accessibility */
-input:focus,
-textarea:focus,
-select:focus {
+/* A field's fallback focus ring, drawn inside its edge so a clipping
+   container can't cut it and following its corners. :where() keeps it at
+   no specificity, so each kind of field below draws its own instead */
+:where(input, textarea, select):focus-visible {
     outline: 2px solid var(--border-focus);
-    outline-offset: 1px;
+    outline-offset: -2px;
 }
 
-/* Remove default outline for mouse users, keep for keyboard */
-input:focus:not(:focus-visible),
-textarea:focus:not(:focus-visible),
-select:focus:not(:focus-visible) {
+:where(input, textarea)::placeholder {
+    color: var(--text-muted);
+}
+
+/* ---- Text fields ----------------------------------------------------------
+   Four kinds, one per job:
+   - Row: a labelled field among others (.compose-field, FieldRow): no box,
+     a hairline under it that becomes a 2px bar while it has focus.
+   - Title: the heading a panel or card editor starts with
+     (.form-title-field, .card-name-input): no box, the same 2px bar.
+   - Box: anything typed on its own (search, quick reply, settings, the
+     query): a 1px border that thickens to 2px in the focus colour.
+   - Chips: a list of values, drawn as whichever of the above it sits in;
+     the container shows focus, never the input inside it. */
+.quick-reply-input,
+.settings-form-group input,
+.settings-form-group textarea,
+.settings-form-group select,
+.label-drawer-search input,
+.emoji-search,
+.query-picker-filter,
+.query-chips {
+    min-height: var(--field-height);
+    border: 1px solid var(--field-border);
+    border-radius: var(--radius-md);
+    background: var(--surface-card);
+    color: var(--text-primary);
+    font: var(--type-ui);
+}
+
+.quick-reply-input:focus,
+.settings-form-group input:focus,
+.settings-form-group textarea:focus,
+.settings-form-group select:focus,
+.label-drawer-search input:focus,
+.emoji-search:focus,
+.query-picker-filter:focus,
+.query-chips:focus-within {
     outline: none;
+    border-color: var(--border-focus);
+    box-shadow: inset 0 0 0 1px var(--border-focus);
+}
+
+.settings-form-group [aria-invalid="true"] {
+    border-color: var(--danger);
+}
+
+.compose-field:focus-within {
+    border-bottom-color: var(--border-focus);
+    box-shadow: 0 1px 0 var(--border-focus);
+}
+
+.compose-field:focus-within > label {
+    color: var(--text-primary);
 }
 
 button:focus-visible,
@@ -2405,33 +2458,13 @@ a:focus-visible,
     flex-shrink: 0;
 }
 
+/* A title field in the card's header, at the card title's size */
 .card-name-input {
     flex: 1;
     min-width: 0;
     height: 32px;
-    padding: 0 var(--space-md);
-    border: 1.5px solid transparent;
-    border-radius: var(--radius-md);
-    background: transparent;
-    color: var(--text-primary);
+    padding: 0 var(--space-xs);
     font: var(--type-title);
-    outline: none;
-}
-
-.card-name-input:hover {
-    background: var(--surface-hover);
-}
-
-/* The ring is the field's own border, so the global focus outline stays off */
-.card-name-input:focus {
-    outline: none;
-    border-color: var(--border-focus);
-    background: var(--surface-card);
-}
-
-.card-name-input::placeholder {
-    color: var(--text-muted);
-    font-weight: var(--weight-regular);
 }
 
 .card-edit-actions {
@@ -2465,17 +2498,6 @@ a:focus-visible,
     flex-direction: column;
     gap: var(--space-md);
     padding: var(--space-xs) var(--space-lg) var(--space-lg);
-}
-
-.card-edit-body .query-chips {
-    border: none;
-    border-radius: var(--radius-lg);
-    background: var(--surface-card);
-    box-shadow: inset 0 0 0 1px var(--border-subtle);
-}
-
-.card-edit-body .query-chips:focus-within {
-    box-shadow: inset 0 0 0 1.5px var(--border-focus);
 }
 
 .card-edit-body .query-chip {
@@ -2591,16 +2613,8 @@ a:focus-visible,
     flex-wrap: wrap;
     align-items: center;
     gap: var(--space-sm);
-    min-height: 34px;
     padding: var(--space-sm) var(--space-md);
-    border: 1px solid var(--border-default);
-    border-radius: var(--radius-md);
-    background: var(--surface-card);
     cursor: text;
-}
-
-.query-chips:focus-within {
-    border-color: var(--border-focus);
 }
 
 /* As wide as its text between chips, taking the rest of the row at the end */
@@ -2711,11 +2725,6 @@ a:focus-visible,
 .query-picker-filter {
     margin-bottom: var(--space-sm);
     padding: var(--space-sm) var(--space-md);
-    border: 1px solid var(--border-default);
-    border-radius: var(--radius-sm);
-    background: var(--surface-card);
-    color: var(--text-primary);
-    font: var(--type-ui);
 }
 
 .query-picker-options {
@@ -3672,20 +3681,9 @@ button:disabled:hover {
 
 .quick-reply-input {
     width: 100%;
-    min-height: 60px;
     padding: var(--space-md);
-    border: 1px solid var(--border-default);
-    border-radius: var(--radius-md);
-    background: var(--surface-card);
-    color: var(--text-primary);
-    font: var(--type-ui);
     margin-bottom: 8px;
     resize: vertical;
-}
-
-.quick-reply-input:focus {
-    outline: none;
-    border-color: var(--border-focus);
 }
 
 .quick-reply-actions {
@@ -4368,23 +4366,11 @@ button.settings-section-title {
 .settings-form-group select {
     width: 100%;
     padding: var(--space-md) var(--space-lg);
-    border: 1px solid var(--border-default);
-    border-radius: var(--radius-md);
-    font: var(--type-ui);
-    background: var(--surface-card);
-    color: var(--text-primary);
 }
 
 .settings-form-group textarea {
     font-family: inherit;
     resize: vertical;
-}
-
-.settings-form-group input:focus,
-.settings-form-group textarea:focus,
-.settings-form-group select:focus {
-    outline: none;
-    border-color: var(--border-focus);
 }
 
 /* Settings hint */
@@ -4816,6 +4802,7 @@ button.settings-section-title {
     z-index: 200;
     width: 800px;
     max-width: calc(100% - 32px);
+    container-type: inline-size;
     animation: floatingBarSlideIn 0.25s ease-out;
 }
 
@@ -4886,16 +4873,20 @@ button.settings-section-title {
 }
 
 .thread-bar-actions {
+    flex-wrap: wrap;
     justify-content: flex-start;
     gap: var(--space-xs);
     padding-top: 4px;
     border-top: 1px solid var(--border-default);
 }
 
+/* A button keeps its label on one line; a narrow bar drops the labels instead */
 .thread-toolbar-btn {
     display: flex;
+    flex-shrink: 0;
     align-items: center;
     justify-content: center;
+    white-space: nowrap;
     padding: 5px;
     border: none;
     background: transparent;
@@ -4958,6 +4949,13 @@ button.settings-section-title {
     margin-left: 4px;
 }
 
+@container (max-width: 760px) {
+    .thread-toolbar-label,
+    .thread-toolbar-btn .shortcut-hint {
+        display: none;
+    }
+}
+
 /* Label Drawer */
 .label-drawer-overlay {
     position: fixed;
@@ -5015,16 +5013,6 @@ button.settings-section-title {
 .label-drawer-search input {
     width: 100%;
     padding: var(--space-md) var(--space-lg);
-    border: 1px solid var(--border-default);
-    border-radius: var(--radius-md);
-    background: var(--surface-inset);
-    color: var(--text-primary);
-    font: var(--type-ui);
-}
-
-.label-drawer-search input:focus {
-    outline: none;
-    border-color: var(--border-focus);
 }
 
 .label-drawer-body {
@@ -6137,14 +6125,27 @@ button.settings-section-title {
     flex: 1;
     min-width: 0;
     padding: var(--space-xs) 0;
+    font: var(--type-heading);
+}
+
+/* Title fields: no box, a 2px bar under the text while it has focus */
+.form-title-field,
+.card-name-input {
     border: none;
+    border-radius: 0;
     background: transparent;
     color: var(--text-primary);
-    font: var(--type-heading);
     outline: none;
 }
 
-.form-title-field::placeholder {
+.form-title-field:focus,
+.card-name-input:focus {
+    outline: none;
+    box-shadow: inset 0 -2px 0 var(--border-focus);
+}
+
+.form-title-field::placeholder,
+.card-name-input::placeholder {
     color: var(--text-muted);
     font-weight: var(--weight-regular);
 }
@@ -6397,16 +6398,6 @@ button.settings-section-title {
 .emoji-search {
     width: 100%;
     padding: var(--space-md) var(--space-lg);
-    border: 1px solid var(--border-default);
-    border-radius: var(--radius-md);
-    background: var(--surface-inset);
-    color: var(--text-primary);
-    font: var(--type-ui);
-    outline: none;
-}
-
-.emoji-search:focus {
-    border-color: var(--border-focus);
 }
 
 .emoji-categories-tabs {
