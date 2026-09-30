@@ -231,6 +231,7 @@ pub fn run() {
             commands::delete_card,
             commands::reorder_cards,
             commands::fetch_threads_paginated,
+            commands::fetch_query_threads,
             commands::sync_threads_incremental,
             commands::search_threads_preview,
             commands::modify_threads,

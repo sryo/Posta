@@ -167,6 +167,15 @@ export async function fetchThreadsPaginated(
   return invoke("fetch_threads_paginated", { cardId, pageToken });
 }
 
+// A search that isn't kept as a card, in one account or every account
+export async function fetchQueryThreads(
+  accountId: string,
+  query: string,
+  pageToken?: string | null
+): Promise<SearchResult> {
+  return invoke("fetch_query_threads", { accountId, query, pageToken });
+}
+
 interface IncrementalSyncResult {
   modified_threads: Thread[];
   deleted_thread_ids: string[];

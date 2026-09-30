@@ -381,8 +381,10 @@
     .card[data-color="yellow"] { --card-tint-mix: 27%; }
 }
 
-/* Accent text on a coloured card sits on its tint */
-.card[data-color] { --text-link: var(--text-link-on-tint); }
+/* Accent text on a coloured card sits on its tint. Focus there is drawn in
+   the card's own colour, darkened enough to hold 3:1 on the tint, where the
+   accent and the card's ring can't */
+.card[data-color] { --text-link: var(--text-link-on-tint); --border-focus: var(--card-ink-text); }
 
 /* ---- Icons ---------------------------------------------------------------
    Line icons at one weight per size, drawn in currentColor, the host's text

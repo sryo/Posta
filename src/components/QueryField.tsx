@@ -66,6 +66,10 @@ export const QueryField = (props: {
   labelNames: string[];
   onSave: () => void;
   onCancel: () => void;
+  // Enter with nothing being typed, or with no suggestion to take
+  onSubmit?: () => void;
+  placeholder?: string;
+  inputRef?: (el: HTMLInputElement) => void;
   // Receives the function that inserts text at this field's caret, whenever
   // the field appears or gains focus
   onActive?: (insert: (text: string) => void) => void;
@@ -320,11 +324,11 @@ export const QueryField = (props: {
           <For each={headWords()}>{(word, i) => renderWord(editing() ? "head" : "all")(word, i)}</For>
           <input
             type="text"
-            ref={input}
+            ref={(el) => { input = el; props.inputRef?.(el); }}
             value={editing() ? view().draft : props.query}
             aria-label="Query"
             size={Math.max(4, (editing() ? view().draft.length : 0) + 1)}
-            placeholder="e.g. from:boss is:unread newer_than:7d"
+            placeholder={props.placeholder ?? "e.g. from:boss is:unread newer_than:7d"}
             onInput={(e) => {
               if (!editing()) {
                 props.setQuery(e.currentTarget.value);
@@ -366,6 +370,12 @@ export const QueryField = (props: {
               }
               if (editing() && navigate(e)) {
                 e.preventDefault();
+                return;
+              }
+              if (e.key === "Enter" && props.onSubmit && (list.length === 0 || !view().draft.trim())) {
+                e.preventDefault();
+                setMenuOpen(false);
+                props.onSubmit();
                 return;
               }
               if (list.length === 0) return;

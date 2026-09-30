@@ -1,4 +1,4 @@
-import { Show, createEffect, createSignal, onCleanup } from "solid-js";
+import { Show, createEffect, createMemo, createSignal, onCleanup } from "solid-js";
 import { PaletteIcon } from "./Icons";
 import { RadialMenu } from "./RadialMenu";
 import { onActivateKey } from "../shared/keyboard";
@@ -77,6 +77,21 @@ export function ColorFlower(props: {
   createEffect(() => {
     if (!props.open) preview(undefined);
   });
+
+  // The petals are made once per set of colours: previewing a colour changes
+  // which one is chosen, and replacing the petals then would pull the one
+  // under the pointer out from under it, which reads as leaving and entering
+  // it over and over
+  const petals = createMemo(() => [null, ...props.colors].map(color => {
+    const hue = color?.hue ?? null;
+    return {
+      id: hue ?? "none",
+      label: color?.label ?? "No color",
+      hue,
+      get selected() { return props.value === hue; },
+      onSelect: () => choose(hue),
+    };
+  }));
   const choose = (hue: string | null) => {
     previewing = false;
     props.onChange(hue);
@@ -104,13 +119,7 @@ export function ColorFlower(props: {
       <RadialMenu
         label={props.title}
         open={props.open}
-        items={[
-          { id: "none", label: "No color", hue: null, selected: props.value === null, onSelect: () => choose(null) },
-          ...props.colors.map(color => ({
-            id: color.hue, label: color.label, hue: color.hue, selected: props.value === color.hue,
-            onSelect: () => choose(color.hue),
-          })),
-        ]}
+        items={petals()}
         arc={{ toward: props.toward, maxSpan: MAX_SPAN }}
         bounds={roomFor}
         radius={RADIUS}

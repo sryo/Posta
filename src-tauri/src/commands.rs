@@ -1189,29 +1189,49 @@ pub async fn fetch_threads_paginated(
     tracing::info!("fetch_threads_paginated for card: {}, page_token: {:?}", card_id, page_token);
 
     let card = find_card(&state, &card_id).await?;
-    if card.account_id == ALL_ACCOUNTS {
-        let accounts = blocking(&state, |state| with_db(state, |db| db.get_accounts().map_err(|e| e.to_string()))).await?;
+    threads_page(&state, &app_handle, &card.account_id, &card.query, page_token.as_deref()).await
+}
+
+/// A page of threads for a search that isn't kept as a card
+#[tauri::command]
+pub async fn fetch_query_threads(
+    account_id: String,
+    query: String,
+    page_token: Option<String>,
+    app_handle: tauri::AppHandle, state: State<'_, AppState>,
+) -> Result<SearchResult, String> {
+    tracing::info!("fetch_query_threads for account: {}, page_token: {:?}", account_id, page_token);
+    threads_page(&state, &app_handle, &account_id, &query, page_token.as_deref()).await
+}
+
+/// A page of `query`'s threads in one account, or in every account for `ALL_ACCOUNTS`
+async fn threads_page(
+    state: &AppState,
+    app_handle: &tauri::AppHandle,
+    account_id: &str,
+    query: &str,
+    page_token: Option<&str>,
+) -> Result<SearchResult, String> {
+    if account_id == ALL_ACCOUNTS {
+        let accounts = blocking(state, |state| with_db(state, |db| db.get_accounts().map_err(|e| e.to_string()))).await?;
         let open = |account: &Account| {
-            let (state, app_handle, account_id) = (state.inner().clone(), app_handle.clone(), account.id.clone());
+            let (state, app_handle, account_id) = (state.clone(), app_handle.clone(), account.id.clone());
             async move { get_access_token(&state, &app_handle, &account_id).await.map(GmailClient::new) }
         };
-        return all_inboxes_page(&accounts, &card.query, page_token.as_deref(), open)
+        return all_inboxes_page(&accounts, query, page_token, open)
             .await
-            .map_err(|(account_id, e)| evict_token_on_auth_error::<()>(&state, &account_id, Err(e)).unwrap_err());
+            .map_err(|(account_id, e)| evict_token_on_auth_error::<()>(state, &account_id, Err(e)).unwrap_err());
     }
-    let account_id = card.account_id.clone();
-    let access_token = account_access_token(&state, &app_handle, &account_id).await?;
+    let access_token = account_access_token(state, app_handle, account_id).await?;
 
     let gmail = GmailClient::new(access_token);
     let mut result = evict_token_on_auth_error(
-        &state,
-        &account_id,
-        gmail
-            .search_threads_paginated(&card.query, page_token.as_deref())
-            .await,
+        state,
+        account_id,
+        gmail.search_threads_paginated(query, page_token).await,
     )
     .map_err(|e| format!("Search failed: {}", e))?;
-    tag_thread_groups(&mut result.groups, &account_id);
+    tag_thread_groups(&mut result.groups, account_id);
 
     tracing::info!("Found {} groups, has_more: {}", result.groups.len(), result.has_more);
 
