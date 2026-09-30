@@ -663,20 +663,14 @@ a:focus-visible,
 }
 
 /* The account and the flower's hint, in the board's bottom-left corner */
-/* Centred under the + and level with the cards' bottoms */
-.board-corner {
+/* Mirrors the window controls: their size, their height, as far in from the
+   right as they are from the left, and over the strip that drags the window */
+.titlebar-account {
     position: fixed;
-    left: calc(var(--sidebar-width) + 32px + 8px);
-    bottom: 24px;
-    z-index: var(--z-sidebar);
+    top: 8px;
+    right: 13px;
+    z-index: calc(var(--z-drag-region) + 1);
     display: flex;
-    align-items: center;
-    gap: var(--space-lg);
-    pointer-events: none;
-}
-
-.board-corner > * {
-    pointer-events: auto;
 }
 
 /* Under the first card, in the strip below the cards */
@@ -703,8 +697,8 @@ a:focus-visible,
 }
 
 .toolbar-avatar {
-    width: 24px;
-    height: 24px;
+    width: 12px;
+    height: 12px;
     border-radius: var(--radius-full);
     border: none;
     background: var(--surface-card);
@@ -714,9 +708,8 @@ a:focus-visible,
     align-items: center;
     justify-content: center;
     overflow: hidden;
-    opacity: 0.55;
+    opacity: 0.75;
     transition: opacity 0.2s ease, transform 0.2s ease;
-    box-shadow: 0 0 0 2px var(--app-bg, var(--surface-app));
 }
 
 .toolbar-avatar:hover,
@@ -733,8 +726,8 @@ a:focus-visible,
 
 .account-chooser-dropdown {
     position: fixed;
-    bottom: 56px;
-    left: calc(var(--sidebar-width) + 32px);
+    top: var(--drag-region-height);
+    right: 8px;
     width: 280px;
     background: var(--surface-raised);
     border-radius: var(--radius-xl);
@@ -747,7 +740,7 @@ a:focus-visible,
 @keyframes dropdown-slide-in {
     from {
         opacity: 0;
-        transform: translateY(8px);
+        transform: translateY(-4px);
     }
 
     to {

@@ -4879,9 +4879,9 @@ function App() {
         </Show>
       </div>
 
-      {/* The account and, until the board's flower is found, how to open it - bottom left */}
+      {/* The account, in the title bar across from the window controls */}
       <Show when={selectedAccount()}>
-        <div class="board-corner" data-board>
+        <div class="titlebar-account" data-board>
           <Show when={selectedAccount()}>
             <div class="account-chooser-container">
               <button
@@ -4936,13 +4936,15 @@ function App() {
               </Show>
             </div>
           </Show>
-          <Show when={boardHintShown() && cards().length > 0}>
-            <p class="board-hint">
-              Double-click the board for a new email, event, color or search
-              <button type="button" class="board-hint-dismiss" onClick={retireBoardHint}>Got it</button>
-            </p>
-          </Show>
         </div>
+      </Show>
+
+      {/* Until the board's flower is found, how to open it */}
+      <Show when={selectedAccount() && boardHintShown() && cards().length > 0}>
+        <p class="board-hint">
+          Double-click the board for a new email, event, color or search
+          <button type="button" class="board-hint-dismiss" onClick={retireBoardHint}>Got it</button>
+        </p>
       </Show>
 
       <Show when={boardFlowerAt()}>
