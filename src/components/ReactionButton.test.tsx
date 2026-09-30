@@ -88,6 +88,30 @@ describe("ReactionButton", () => {
     expect(petals().map(p => p.textContent)).toEqual(["🔥1", "✅2", "👌3", "🤌4", "🫡5", "👀6", "💀7", `${chosen}8`]);
   });
 
+  it("pins a petal on right-click so a more used emoji takes another place, and lets it go on another", () => {
+    const onSelect = vi.fn();
+    render(() => <ReactionButton onSelect={onSelect} />);
+    const button = screen.getByTitle("Add reaction");
+    fireEvent.click(button);
+    fireEvent.contextMenu(petals()[7]);
+    expect(petals()[7]).toHaveAttribute("aria-label", "Love, pinned");
+    expect(petals()[7]).toHaveClass("selected");
+    expect(wheel()).not.toBeNull();
+    fireEvent.click(button);
+
+    for (let i = 0; i < 2; i++) {
+      fireEvent.click(button);
+      fireEvent.keyDown(document, { key: "h" });
+      fireEvent.click(picker()!.querySelector<HTMLButtonElement>(".emoji-btn")!);
+    }
+    const chosen = onSelect.mock.calls[0][0];
+    fireEvent.click(button);
+    expect(petals().map(p => p.textContent)).toEqual(["🔥1", "✅2", "👌3", "🤌4", "🫡5", "👀6", `${chosen}7`, "🫶8"]);
+
+    fireEvent.contextMenu(petals()[7]);
+    expect(petals()[7]).toHaveAttribute("aria-label", "Love");
+  });
+
   it("closes the wheel when its button is clicked again, or on a press elsewhere", () => {
     render(() => <ReactionButton onSelect={() => {}} />);
     const button = screen.getByTitle("Add reaction");

@@ -6,7 +6,7 @@ import { EMOJI_PICKER_SIZE, EmojiPicker } from "./EmojiPicker";
 import { RadialMenu, type RadialItem } from "./RadialMenu";
 import { placeBelowAnchor } from "../app/popoverPlacement";
 import { useLayer } from "../app/layers";
-import { loadReactionState, recordReaction, saveReactionState, wheelReactions } from "../app/reactions";
+import { loadReactionState, recordReaction, saveReactionState, togglePin, wheelReactions } from "../app/reactions";
 import { hasCommandModifier, isImeComposing, isTypingTarget } from "../shared/keyboard";
 import { MoreIcon, PlusIcon } from "./Icons";
 
@@ -72,13 +72,26 @@ export const ReactionButton = (props: ReactionButtonProps) => {
     return o?.kind === "grid" ? o : null;
   };
 
+  // A pinned reaction is ringed and never gives its place up
   const items = (): RadialItem[] => wheelReactions(reactions()).map((r, i) => ({
     id: r.emoji,
-    label: r.label,
+    label: r.pinned ? `${r.label}, pinned` : r.label,
     hint: String(i + 1),
     glyph: r.emoji,
+    selected: r.pinned,
     onSelect: () => choose(r.emoji),
   }));
+
+  // Right-click, or the menu key, pins a petal or lets it go
+  const pinAt = (e: MouseEvent) => {
+    e.preventDefault();
+    const petal = (e.target as Element).closest(".radial-petal");
+    const i = petal ? Array.from(host?.querySelectorAll(".radial-petal") ?? []).indexOf(petal) : -1;
+    if (i < 0) return;
+    const next = togglePin(loadReactionState(), items()[i].id);
+    saveReactionState(next);
+    setReactions(next);
+  };
 
   // The grid holds its own Escape; the wheel's closes it alone
   useLayer(() => !!wheel(), close);
@@ -132,7 +145,7 @@ export const ReactionButton = (props: ReactionButtonProps) => {
       <Show when={wheel()}>
         {(at) => (
           <Portal ref={host}>
-            <div class="reaction-wheel" style={{ left: `${at().x}px`, top: `${at().y}px` }}>
+            <div class="reaction-wheel" style={{ left: `${at().x}px`, top: `${at().y}px` }} onContextMenu={pinAt}>
               <button type="button" class="reaction-wheel-more" title="Every emoji" aria-label="Every emoji" onClick={() => openGrid()}>
                 <MoreIcon size="ui" />
               </button>

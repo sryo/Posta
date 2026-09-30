@@ -2,7 +2,7 @@
 // so a reach becomes habit; an emoji used more takes over the least used
 // place, and only that one.
 
-export type Reaction = { emoji: string; label: string };
+export type Reaction = { emoji: string; label: string; pinned?: boolean };
 
 // Clockwise from the top
 export const DEFAULT_REACTIONS: Reaction[] = [
@@ -24,7 +24,8 @@ const TAKEOVER_MARGIN = 2;
 const FADE_TOLERANCE = 0.01;
 
 type Tally = { score: number; at: number };
-export type ReactionState = { slots: string[]; tallies: Record<string, Tally> };
+// A pinned place is never given up
+export type ReactionState = { slots: string[]; tallies: Record<string, Tally>; pinned: string[] };
 
 const STORAGE_KEY = "posta.reactions";
 
@@ -32,7 +33,7 @@ const decayed = (tally: Tally | undefined, now: number) =>
   tally ? tally.score * Math.pow(0.5, (now - tally.at) / HALF_LIFE_MS) : 0;
 
 export function initialReactionState(): ReactionState {
-  return { slots: DEFAULT_REACTIONS.map(r => r.emoji), tallies: {} };
+  return { slots: DEFAULT_REACTIONS.map(r => r.emoji), tallies: {}, pinned: [] };
 }
 
 // Counts one use; the emoji takes the least used place once it is clearly
@@ -42,18 +43,27 @@ export function recordReaction(state: ReactionState, emoji: string, now = Date.n
   const slots = [...state.slots];
   if (!slots.includes(emoji)) {
     // Of places used as little, the last goes first: the top is the easiest reach
-    let weakest = 0;
-    for (let i = 1; i < slots.length; i++) {
-      if (decayed(tallies[slots[i]], now) <= decayed(tallies[slots[weakest]], now)) weakest = i;
+    let weakest = -1;
+    for (let i = 0; i < slots.length; i++) {
+      if (state.pinned.includes(slots[i])) continue;
+      if (weakest < 0 || decayed(tallies[slots[i]], now) <= decayed(tallies[slots[weakest]], now)) weakest = i;
     }
-    if (tallies[emoji].score + FADE_TOLERANCE >= decayed(tallies[slots[weakest]], now) + TAKEOVER_MARGIN) slots[weakest] = emoji;
+    if (weakest >= 0 && tallies[emoji].score + FADE_TOLERANCE >= decayed(tallies[slots[weakest]], now) + TAKEOVER_MARGIN) slots[weakest] = emoji;
   }
-  return { slots, tallies };
+  return { ...state, slots, tallies };
+}
+
+export function togglePin(state: ReactionState, emoji: string): ReactionState {
+  const pinned = state.pinned.includes(emoji) ? state.pinned.filter(e => e !== emoji) : [...state.pinned, emoji];
+  return { ...state, pinned };
 }
 
 // An emoji that took a place has no word of its own; it is its own name
 export function wheelReactions(state: ReactionState): Reaction[] {
-  return state.slots.map(emoji => DEFAULT_REACTIONS.find(r => r.emoji === emoji) ?? { emoji, label: emoji });
+  return state.slots.map(emoji => ({
+    ...(DEFAULT_REACTIONS.find(r => r.emoji === emoji) ?? { emoji, label: emoji }),
+    pinned: state.pinned.includes(emoji),
+  }));
 }
 
 export function loadReactionState(): ReactionState {
@@ -62,7 +72,7 @@ export function loadReactionState(): ReactionState {
     if (!raw) return initialReactionState();
     const parsed = JSON.parse(raw) as ReactionState;
     if (!Array.isArray(parsed.slots) || parsed.slots.length !== DEFAULT_REACTIONS.length) return initialReactionState();
-    return { slots: parsed.slots, tallies: parsed.tallies ?? {} };
+    return { slots: parsed.slots, tallies: parsed.tallies ?? {}, pinned: Array.isArray(parsed.pinned) ? parsed.pinned : [] };
   } catch {
     return initialReactionState();
   }

@@ -6461,6 +6461,11 @@ button.settings-section-title {
     z-index: var(--z-dropdown);
 }
 
+/* A pinned reaction: ringed, as a chosen colour is */
+.reaction-wheel .radial-petal.selected {
+    box-shadow: 0 0 0 1.5px var(--surface-raised), 0 0 0 3px var(--border-focus), var(--shadow-sm);
+}
+
 .reaction-wheel-more {
     position: absolute;
     left: -14px;
