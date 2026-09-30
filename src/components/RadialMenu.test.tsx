@@ -4,6 +4,18 @@ import { createSignal } from "solid-js";
 import { RadialMenu, type RadialItem } from "./RadialMenu";
 import { ReplyIcon } from "./Icons";
 
+// jsdom has no layout, so which element sits under the pointer is set by hand
+function stubElementFromPoint() {
+  let el: Element | null = null;
+  const doc = document as unknown as Record<string, unknown>;
+  const original = doc.elementFromPoint;
+  doc.elementFromPoint = () => el;
+  return {
+    mockReturnValue: (next: Element | null) => { el = next; },
+    restore: () => { if (original) doc.elementFromPoint = original; else delete doc.elementFromPoint; },
+  };
+}
+
 const actions = (onSelect = vi.fn()): RadialItem[] => ["Reply", "Forward", "Archive"].map((label, i) => ({
   id: label, label, hint: "rfa"[i], icon: ReplyIcon, onSelect,
 }));
@@ -59,5 +71,41 @@ describe("RadialMenu", () => {
     expect(screen.getByRole("menuitemradio", { name: "No color" })).toHaveClass("no-color");
     fireEvent.click(screen.getByRole("menuitemradio", { name: "red" }));
     expect(screen.getByRole("menuitemradio", { name: "red" })).toHaveAttribute("aria-checked", "true");
+  });
+
+  it("lets a held press slide across petals, previewing each, and chooses the one it is let go on", () => {
+    const chosen = vi.fn();
+    const onScrub = vi.fn();
+    const items = ["red", "green", "blue"].map(hue => ({ id: hue, label: hue, hue, onSelect: () => chosen(hue) }));
+    render(() => <RadialMenu label="Color" items={items} open arc={{ start: 0, span: 180 }} radius={30} itemSize={20} onScrub={onScrub} />);
+    const [red, green, blue] = screen.getAllByRole("menuitemradio");
+    const under = stubElementFromPoint();
+    fireEvent.pointerDown(red, { button: 0 });
+    under.mockReturnValue(green);
+    fireEvent.pointerMove(document, { clientX: 1, clientY: 1 });
+    expect(onScrub).toHaveBeenLastCalledWith(items[1]);
+    expect(green).toHaveClass("scrubbed");
+    under.mockReturnValue(blue);
+    fireEvent.pointerMove(document, { clientX: 2, clientY: 2 });
+    fireEvent.pointerUp(document, { clientX: 2, clientY: 2 });
+    fireEvent.click(blue);
+    expect(chosen.mock.calls).toEqual([["blue"]]);
+    under.restore();
+  });
+
+  it("puts back what it previewed when the press is let go off every petal", () => {
+    const onScrub = vi.fn();
+    const items = ["red", "green"].map(hue => ({ id: hue, label: hue, hue, onSelect: vi.fn() }));
+    render(() => <RadialMenu label="Color" items={items} open arc={{ start: 0, span: 180 }} radius={30} itemSize={20} onScrub={onScrub} />);
+    const [red, green] = screen.getAllByRole("menuitemradio");
+    const under = stubElementFromPoint();
+    fireEvent.pointerDown(red, { button: 0 });
+    under.mockReturnValue(green);
+    fireEvent.pointerMove(document, { clientX: 1, clientY: 1 });
+    under.mockReturnValue(document.body);
+    fireEvent.pointerUp(document, { clientX: 99, clientY: 99 });
+    expect(onScrub).toHaveBeenLastCalledWith(null);
+    expect(items.every(item => (item.onSelect as ReturnType<typeof vi.fn>).mock.calls.length === 0)).toBe(true);
+    under.restore();
   });
 });

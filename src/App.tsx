@@ -4825,6 +4825,10 @@ function App() {
               open={bgColorPickerOpen()}
               setOpen={setBgColorPickerOpen}
               toward={-90}
+              onPreview={(hue) => {
+                if (hue) document.documentElement.dataset.boardHue = hue;
+                else delete document.documentElement.dataset.boardHue;
+              }}
             />
             <Show when={selectedAccount()}>
               <div class="account-chooser-container">

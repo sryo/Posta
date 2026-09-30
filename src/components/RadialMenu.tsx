@@ -42,6 +42,11 @@ export function RadialMenu(props: {
   class?: string;
   center?: JSX.Element;
   onEscape?: () => void;
+  // A press that opened the menu and is still held: sliding onto a petal and
+  // letting go chooses it, as a press on a petal does
+  pressed?: boolean;
+  // The petal under a held press, or null once it slides off every petal
+  onScrub?: (item: RadialItem | null) => void;
 }) {
   let root: HTMLDivElement | undefined;
   const petalEls: HTMLButtonElement[] = [];
@@ -80,6 +85,48 @@ export function RadialMenu(props: {
     overlap: props.overlap,
     maxRadius: props.maxRadius,
   }));
+
+  // Pressing and sliding: the petal under the pointer lights up as it would on
+  // hover, and letting go on one chooses it. The click that follows a release
+  // on a petal is the same choice, so it is let pass
+  const [scrubbed, setScrubbed] = createSignal(-1);
+  let scrubbing = false;
+  let swallowClick = false;
+  const petalAt = (x: number, y: number) => {
+    const el = document.elementFromPoint(x, y)?.closest(".radial-petal");
+    return el ? petalEls.indexOf(el as HTMLButtonElement) : -1;
+  };
+  const beginScrub = () => {
+    if (scrubbing) return;
+    scrubbing = true;
+    let previewed = false;
+    const move = (e: PointerEvent) => {
+      const i = petalAt(e.clientX, e.clientY);
+      if (i === scrubbed()) return;
+      setScrubbed(i);
+      if (i >= 0 || previewed) props.onScrub?.(i >= 0 ? props.items[i] : null);
+      previewed = previewed || i >= 0;
+    };
+    const up = (e: PointerEvent) => {
+      document.removeEventListener("pointermove", move, true);
+      document.removeEventListener("pointerup", up, true);
+      scrubbing = false;
+      const i = petalAt(e.clientX, e.clientY);
+      setScrubbed(-1);
+      if (i >= 0) {
+        swallowClick = true;
+        setTimeout(() => { swallowClick = false; }, 0);
+        props.items[i].onSelect(e);
+      } else if (previewed) {
+        props.onScrub?.(null);
+      }
+    };
+    document.addEventListener("pointermove", move, true);
+    document.addEventListener("pointerup", up, true);
+  };
+  createEffect(() => {
+    if (props.open && props.pressed) beginScrub();
+  });
 
   // One tab stop: the chosen petal, else the first; arrows move among the rest
   const [active, setActive] = createSignal(-1);
@@ -158,6 +205,7 @@ export function RadialMenu(props: {
                 "no-color": item.hue === null,
                 "selected": !!item.selected,
                 "danger": !!item.danger,
+                "scrubbed": scrubbed() === i(),
               }}
               data-hue={item.hue ?? undefined}
               style={style()}
@@ -167,7 +215,8 @@ export function RadialMenu(props: {
               title={item.label}
               tabIndex={props.open && tabStop() === i() ? 0 : -1}
               onFocus={() => setActive(i())}
-              onClick={(e) => item.onSelect(e)}
+              onPointerDown={(e) => { if (e.button === 0) beginScrub(); }}
+              onClick={(e) => { if (!swallowClick) item.onSelect(e); }}
             >
               <Show when={item.icon}>
                 <Dynamic component={item.icon} size="ui" />

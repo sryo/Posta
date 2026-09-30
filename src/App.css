@@ -4463,6 +4463,7 @@ button.settings-section-title {
 }
 
 .radial-menu.open .radial-petal:hover,
+.radial-menu.open .radial-petal.scrubbed,
 .radial-menu.open .radial-petal:focus-visible {
     z-index: 40;
     background: var(--surface-card);
@@ -4498,12 +4499,14 @@ button.settings-section-title {
 }
 
 .radial-menu.open .radial-swatch:hover,
+.radial-menu.open .radial-swatch.scrubbed,
 .radial-menu.open .radial-swatch:focus-visible {
     background: var(--card-hue);
     box-shadow: 0 0 0 1.5px var(--surface-raised), var(--shadow-md);
 }
 
 .radial-menu.open .radial-swatch.no-color:hover,
+.radial-menu.open .radial-swatch.no-color.scrubbed,
 .radial-menu.open .radial-swatch.no-color:focus-visible {
     background: var(--surface-raised);
 }

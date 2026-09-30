@@ -93,6 +93,7 @@ export const CardForm = (props: {
           open={props.colorPickerOpen}
           setOpen={props.setColorPickerOpen}
           toward={45}
+          onPreview={(hue) => props.setColor(hue as CardColor)}
           compact
         />
         <input
