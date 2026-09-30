@@ -5,6 +5,7 @@ import { createSignal, createEffect, createMemo, on, onMount, onCleanup, Show, F
 import { MessageBody } from './MessageBody';
 import { sendReaction, type FullThread, type FullMessage, type Attachment, type CalendarEvent } from "../api/tauri";
 import type { RsvpStatus } from "../app/rsvp";
+import type { StripLayout } from "../app/dayStrip";
 import { isCalendarAttachment } from "../app/attachments";
 import { InviteBlock } from "./InviteBlock";
 import { createCloseAfterAnimation } from "../shared/closeAfterAnimation";
@@ -115,7 +116,7 @@ export const ThreadView = (props: {
   position?: { index: number; total: number } | null,
   onStepThread?: (direction: 1 | -1) => void,
   // The event of an invite email, shown above the body of the message carrying it
-  invite?: { event: CalendarEvent; rsvp: string | null | undefined; onAnswer: (status: RsvpStatus) => void; disabled: boolean } | null,
+  invite?: { event: CalendarEvent; rsvp: string | null | undefined; onAnswer: (status: RsvpStatus) => void; disabled: boolean; strip?: StripLayout | null } | null,
   // Opens a new event named after the thread, with its people as guests
   onCreateEvent?: () => void,
   // A panel over the thread (the new-event form) owns the keyboard
@@ -652,6 +653,7 @@ export const ThreadView = (props: {
                           rsvp={props.invite!.rsvp}
                           onAnswer={props.invite!.onAnswer}
                           disabled={props.invite!.disabled}
+                          strip={props.invite!.strip}
                           showTitle
                           size="md"
                         />

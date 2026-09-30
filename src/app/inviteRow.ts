@@ -109,6 +109,15 @@ export function invitePlace(invite: Pick<CalendarEvent, "location" | "conference
   return null;
 }
 
+// The location to show beside a Join button: none when it is only the
+// meeting's own link, which Join already opens
+export function shownLocation(invite: Pick<CalendarEvent, "location" | "conference_url">): string | null {
+  const location = invite.location?.trim() || null;
+  if (!location) return null;
+  if (invite.conference_url?.trim() && callHost(location)) return null;
+  return location;
+}
+
 export type InviteState = "unanswered" | RsvpStatus | "past" | "cancelled" | "info";
 
 type Answerable = Timing & Pick<CalendarEvent, "uid" | "method" | "status">;

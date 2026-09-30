@@ -93,3 +93,15 @@ export function stripLayout(slot: Span, others: StripEvent[], now: number): Stri
     past: nowInWindow ? pct(now) : null,
   };
 }
+
+const LABEL_EVERY_HOURS = 3;
+
+// Hour labels under a strip, every three hours across its window, in percent
+export function stripHours(window: Span, label: (hour: number) => string): { at: number; label: string }[] {
+  const length = window.end - window.start;
+  const first = new Date(window.start).getHours();
+  const hours = Math.round(length / 3_600_000);
+  const out: { at: number; label: string }[] = [];
+  for (let h = 0; h <= hours; h += LABEL_EVERY_HOURS) out.push({ at: (h / hours) * 100, label: label((first + h) % 24) });
+  return out;
+}

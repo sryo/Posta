@@ -4813,6 +4813,29 @@ function App() {
     viewOpen: !!activeThreadId() || !!activeEvent(),
   });
 
+  // The opened invite's day, for the strip above the email: answered or not,
+  // while the event is still ahead
+  const openedInvite = () => {
+    const invite = activeListedThread()?.calendar_event;
+    const account = activeThreadAccount();
+    if (!invite || !account || invite.all_day) return null;
+    const state = inviteState(invite, inviteRsvp(account, invite.uid), minuteNow());
+    return state === "past" || state === "cancelled" ? null : { invite, account };
+  };
+  createEffect(() => {
+    const opened = openedInvite();
+    if (opened) inviteDayLookups.request(opened.account.id, inviteEnd(opened.invite));
+  });
+  const openedInviteStrip = createMemo(() => {
+    const opened = openedInvite();
+    if (!opened) return null;
+    const { invite, account } = opened;
+    const known = inviteDays[account.id];
+    if (!known || known.until < inviteEnd(invite)) return null;
+    const slot = { start: invite.start_time, end: inviteEnd(invite) };
+    return stripLayout(slot, dayOtherEvents(known.events, { ...slot, uid: invite.uid }), minuteNow());
+  });
+
   return (
     <div
       class="app"
@@ -5871,6 +5894,7 @@ function App() {
               rsvp: inviteRsvp(activeThreadAccount(), event.uid),
               onAnswer: (status: RsvpStatus) => handleRsvp(activeThreadAccount(), listed.gmail_thread_id, event.uid, status),
               disabled: !!rsvpLoading[listed.gmail_thread_id],
+              strip: openedInviteStrip(),
             };
           })()}
           cidAttachmentData={cidAttachmentData()}
