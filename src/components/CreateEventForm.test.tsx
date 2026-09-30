@@ -264,6 +264,11 @@ describe("CreateEventForm header", () => {
     expect(container.querySelector('input[placeholder="Event title"]')).toHaveClass("form-title-field");
   });
 
+  it("names the address once when the calendar is named after it", () => {
+    const { container } = renderForm({ startDate: "2031-03-03", extra: { calendars, calendarId: "me@x.test", setCalendarId: vi.fn(), accountEmail: "me@x.test" } });
+    expect(container.querySelector(".panel-account-email")).toBeNull();
+  });
+
   it("offers only calendars the user can write to", () => {
     const setCalendarId = vi.fn();
     const { getByRole } = renderForm({ startDate: "2031-03-03", extra: { calendars, calendarId: "me@x.test", setCalendarId } });

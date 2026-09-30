@@ -185,6 +185,11 @@ export const CreateEventForm = (props: {
   };
 
   const writableCalendars = () => (props.calendars ?? []).filter(isWritableCalendar);
+  // A primary calendar is named after its address; the header then says it once
+  const chosenCalendarName = () => {
+    const shown = !props.isEditing && props.setCalendarId && writableCalendars().length > 0;
+    return shown ? writableCalendars().find(c => c.id === props.calendarId)?.name : undefined;
+  };
 
   const calendarSelect = () => (
     <Show when={!props.isEditing && props.setCalendarId && writableCalendars().length > 0}>
@@ -208,7 +213,9 @@ export const CreateEventForm = (props: {
           <Show when={props.accountEmail} fallback={<div class="panel-account">{calendarSelect()}</div>}>
             <PanelAccount email={props.accountEmail!}>
               {calendarSelect()}
-              <span class="panel-account-email">{props.accountEmail}</span>
+              <Show when={chosenCalendarName() !== props.accountEmail}>
+                <span class="panel-account-email">{props.accountEmail}</span>
+              </Show>
             </PanelAccount>
           </Show>
         </PanelHeader>
