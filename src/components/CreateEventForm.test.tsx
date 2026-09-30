@@ -254,7 +254,7 @@ describe("CreateEventForm header", () => {
   it("names the account and calendar above the title, leaving Cancel to the footer", () => {
     const { container, getByRole } = renderForm({ startDate: "2031-03-03", extra: { calendars, calendarId: "team", setCalendarId: vi.fn(), accountEmail: "me@x.test" } });
     const header = container.querySelector(".panel-header")!;
-    expect(header.querySelector(".panel-account-avatar")).toHaveAttribute("data-hue");
+    expect(header.querySelector(".avatar")).toHaveAttribute("data-hue");
     expect(header).toHaveTextContent("me@x.test");
     const select = getByRole("combobox", { name: "Calendar" }) as HTMLSelectElement;
     expect(header.contains(select)).toBe(true);

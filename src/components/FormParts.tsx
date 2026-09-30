@@ -1,6 +1,6 @@
 import { onCleanup, Show, type JSX } from "solid-js";
+import { Avatar } from "./Avatar";
 import { KeyHint } from "./KeyHint";
-import { getAvatarHue, getInitial } from "../utils";
 import { CloseButton } from "./ComposeAtoms";
 
 // The pieces the compose, event and card forms are built from, so their
@@ -25,7 +25,7 @@ export function PanelHeader(props: { children: JSX.Element; onClose?: () => void
 export function PanelAccount(props: { email: string; class?: string; children?: JSX.Element }) {
   return (
     <div class={`panel-account ${props.class ?? ""}`}>
-      <span class="panel-account-avatar" data-hue={getAvatarHue(props.email)} aria-hidden="true">{getInitial(props.email)}</span>
+      <Avatar email={props.email} size="xs" />
       {props.children ?? <span class="panel-account-email">{props.email}</span>}
     </div>
   );

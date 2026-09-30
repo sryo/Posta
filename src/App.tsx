@@ -1,4 +1,5 @@
 import { batch, createSignal, onMount, onCleanup, Show, For, Index, createMemo, createEffect, createComputed, createSelector, mapArray, on, untrack } from "solid-js";
+import { Avatar } from "./components/Avatar";
 import { KeyHint } from "./components/KeyHint";
 import { createStore, produce, reconcile, unwrap } from "solid-js/store";
 import { MessageBody } from './components/MessageBody';
@@ -85,7 +86,6 @@ import {
   formatFileSize,
   formatTime,
   formatSyncTime,
-  getInitial,
   extractEmail,
   extractMessageText,
   getAvatarHue,
@@ -4860,13 +4860,7 @@ function App() {
                   aria-haspopup="menu"
                   aria-expanded={accountChooserOpen()}
                 >
-                  {selectedAccount()?.picture ? (
-                    <img src={selectedAccount()!.picture!} alt="" class="toolbar-avatar-img" />
-                  ) : (
-                    <span class="toolbar-avatar-placeholder">
-                      {getInitial(selectedAccount()?.email || "")}
-                    </span>
-                  )}
+                  <Avatar email={selectedAccount()?.email || ""} picture={selectedAccount()?.picture} size="lg" />
                 </button>
                 <Show when={accountChooserOpen()}>
                   <div class="account-chooser-dropdown" onClick={(e) => e.stopPropagation()}>
@@ -4883,13 +4877,7 @@ function App() {
                               chooseDefaultAccount(account);
                             }}
                           >
-                            {account.picture ? (
-                              <img src={account.picture} alt="" class="account-chooser-avatar" />
-                            ) : (
-                              <span class="account-chooser-avatar-placeholder">
-                                {getInitial(account.email)}
-                              </span>
-                            )}
+                            <Avatar email={account.email} picture={account.picture} size="md" />
                             <span class="account-chooser-email">{account.email}</span>
                             {account.id === selectedAccount()?.id && (
                               <span class="account-chooser-check"><CheckIcon /></span>

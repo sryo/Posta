@@ -1,5 +1,6 @@
 import { createMemo, createSignal, createUniqueId, For, Show } from "solid-js";
-import { extractEmail, extractName, getAvatarHue, splitEmailList } from "../utils";
+import { Avatar } from "./Avatar";
+import { extractEmail, extractName, splitEmailList } from "../utils";
 import { CloseIcon } from "./Icons";
 import { isImeComposing } from "../shared/keyboard";
 
@@ -165,9 +166,7 @@ export const GuestChips = (props: {
                 onMouseDown={(e) => { e.preventDefault(); add(asRecipient(contact)); }}
                 onMouseEnter={() => setActive(i())}
               >
-                <div class="compose-autocomplete-avatar" data-hue={getAvatarHue(contact.name || contact.email)}>
-                  {(contact.name || contact.email).charAt(0).toUpperCase()}
-                </div>
+                <Avatar email={contact.email} name={contact.name} size="sm" />
                 <div class="compose-autocomplete-info">
                   <Show when={contact.name}>
                     <div class="compose-autocomplete-name">{contact.name}</div>
