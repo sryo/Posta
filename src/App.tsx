@@ -108,6 +108,7 @@ import {
   AttachmentIcon,
   SearchIcon,
   CalendarIcon,
+  ChevronIcon,
   LocationIcon,
   WarningIcon,
   CheckIcon,
@@ -160,6 +161,7 @@ import { nameInThreads, participantNames, personName } from "./app/people";
 import { afterRemoval, loadAfterArchive, stepThread, threadPosition } from "./app/threadNavigation";
 import { CardAttachments, FileName, shownAttachments } from "./components/CardAttachments";
 import { watchScrollFade } from "./app/scrollFade";
+import { createThumbnails } from "./app/thumbnails";
 import { AfterArchiveSetting } from "./components/AfterArchiveSetting";
 import { runUnsubscribe, type UnsubscribeMethod } from "./app/unsubscribe";
 import { actionFailureLabel, actionLabel, actionRemovesFromCard, applyThreadAction, labelChangeFor, threadMayJoinCard, undoLabelChanges, type LabelReversal } from "./app/threadActions";
@@ -328,6 +330,9 @@ function App() {
     const state = inviteState(invite, inviteRsvp(account, invite.uid), minuteNow());
     return state === "past" || state === "cancelled";
   };
+
+  // Previews of image attachments too big to come with the thread list
+  const thumbnails = createThumbnails(downloadAttachmentApi);
 
   // Invite rows move on by the minute: the Now section, progress, now-lines
   const minuteNow = createMemo(() => currentTime(), undefined, { equals: (a, b) => Math.floor(a / 60_000) === Math.floor(b / 60_000) });
@@ -5042,6 +5047,7 @@ function App() {
                               </Show>
                               <span class="card-title">{card.name}</span>
                               <CardAccountQualifier accountId={card.account_id} accounts={accounts()} shown={namesAccount()} problem={syncStatus().problem} />
+                              <span class="card-title-chevron" aria-hidden="true"><ChevronIcon size="meta" /></span>
                             </button>
                             <Show when={!collapsedCards[card.id] && getCardUnreadCount(card.id) > 0}>
                               <span class="card-unread-badge">{getCardUnreadCount(card.id)}</span>
@@ -5327,6 +5333,7 @@ function App() {
                                                   attachments={attachments()}
                                                   onOpen={(attachment) => openCardAttachment(owner()?.id ?? "", attachments(), attachment)}
                                                   onMenu={(attachment) => showAttachmentContextMenu({ accountId: owner()?.id ?? "", messageId: attachment.message_id, attachmentId: attachment.attachment_id, filename: attachment.filename, mimeType: attachment.mime_type, inlineData: attachment.inline_data })}
+                                                  loadPreview={(attachment) => thumbnails.preview(owner()?.id ?? "", attachment.message_id, attachment.attachment_id)}
                                                 />
                                               </Show>
                                             );

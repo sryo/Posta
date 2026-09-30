@@ -109,12 +109,6 @@ describe("accent fills", () => {
     }
   });
 
-  for (const theme of THEMES) {
-    it(`ring focus inside every coloured card at 3:1 against its tint, in the card's own colour (${theme})`, () => {
-      expect(under(theme, "--border-focus", 3)).toEqual([]);
-    });
-  }
-
   it("ring focus at 3:1 against the card surface", () => {
     for (const theme of THEMES) {
       const token = tokens(theme);

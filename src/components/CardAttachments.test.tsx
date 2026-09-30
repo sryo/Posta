@@ -49,14 +49,28 @@ describe("CardAttachments", () => {
     expect(boardKey).not.toHaveBeenCalled();
   });
 
-  it("shows up to four thumbnails and three files, counting the rest", () => {
+  it("shows up to six thumbnails and three files, counting the rest", () => {
     const many = [
-      ...Array.from({ length: 5 }, (_, i) => attachment(`p${i}.png`, "image/png", 10, "iVBOR")),
+      ...Array.from({ length: 7 }, (_, i) => attachment(`p${i}.png`, "image/png", 10, "iVBOR")),
       ...Array.from({ length: 4 }, (_, i) => attachment(`f${i}.txt`, "text/plain", 10)),
     ];
     const { container } = render(() => <CardAttachments attachments={many} onOpen={vi.fn()} onMenu={vi.fn()} />);
-    expect(screen.getAllByRole("button")).toHaveLength(7);
+    expect(screen.getAllByRole("button")).toHaveLength(9);
     expect(container.querySelector(".thread-attachment-more")?.textContent).toBe("+2");
+  });
+
+  it("downloads a big image's preview when it has none, and falls back to its chip when it can't", async () => {
+    const big = attachment("escupido.jpg", "image/jpeg", 900000);
+    const load = vi.fn(async () => "iVBOR");
+    const shown: IntersectionObserverCallback[] = [];
+    const IO = vi.fn(function (this: unknown, cb: IntersectionObserverCallback) { shown.push(cb); return { observe: vi.fn(), disconnect: vi.fn() }; });
+    vi.stubGlobal("IntersectionObserver", IO);
+    const { container } = render(() => <CardAttachments attachments={[big]} onOpen={vi.fn()} onMenu={vi.fn()} loadPreview={load} />);
+    expect(container.querySelector(".thread-image-thumb.pending")).not.toBeNull();
+    shown[0]([{ isIntersecting: true } as IntersectionObserverEntry], {} as IntersectionObserver);
+    await vi.waitFor(() => expect(container.querySelector("img.thread-image-thumb")).not.toBeNull());
+    expect(load).toHaveBeenCalledWith(big);
+    vi.unstubAllGlobals();
   });
 });
 

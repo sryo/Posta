@@ -60,4 +60,11 @@ describe("autoArc", () => {
   it("centres on the asked direction with nothing to measure", () => {
     expect(autoArc({ anchor: { left: 0, top: 0, right: 0, bottom: 0 }, toward: 0, maxSpan: 120, radius: 40, itemSize: 20 })).toEqual({ start: -60, span: 120 });
   });
+
+  it("never closes below its narrowest arc, where petals would hide one another", () => {
+    // A row at a card's bottom corner: barely any room anywhere
+    const bounds = { left: 60, top: 80, right: 140, bottom: 115 };
+    const arc = autoArc({ anchor, bounds, toward: 180, maxSpan: 120, minSpan: 90, radius: 38, itemSize: 28 });
+    expect(Math.abs(arc.span)).toBeGreaterThanOrEqual(90);
+  });
 });

@@ -4462,6 +4462,42 @@ describe("App title bar", () => {
   });
 });
 
+describe("App regressions", () => {
+  it("keeps a quick reply open when it is chosen from a row's wheel with a press and release", async () => {
+    render(() => <App />);
+    const row = (await screen.findByText("Mail for A")).closest(".thread") as HTMLElement;
+    fireEvent.mouseEnter(row);
+    const reply = await within(row).findByRole("menuitem", { name: "Reply" });
+    const doc = document as unknown as Record<string, unknown>;
+    const original = doc.elementFromPoint;
+    doc.elementFromPoint = () => reply;
+    try {
+      fireEvent.pointerDown(reply, { button: 0 });
+      fireEvent.pointerUp(document, { clientX: 1, clientY: 1 });
+      fireEvent.click(reply);
+    } finally {
+      if (original) doc.elementFromPoint = original; else delete doc.elementFromPoint;
+    }
+    await waitFor(() => expect(document.querySelector(".quick-reply-box")).not.toBeNull());
+    await new Promise(r => setTimeout(r, 50));
+    expect(document.querySelector(".quick-reply-box")).not.toBeNull();
+  });
+
+  it("shows one of the compose and new event panels at a time", async () => {
+    render(() => <App />);
+    await screen.findByText("Mail for A");
+    fireEvent.click(screen.getByRole("button", { name: "Compose new email" }));
+    await screen.findByPlaceholderText("Recipients");
+    (document.activeElement as HTMLElement | null)?.blur();
+    fireEvent.keyDown(document.body, { key: "e" });
+    await screen.findByPlaceholderText("Event title");
+    await waitFor(() => expect(screen.queryByPlaceholderText("Recipients")).toBeNull());
+    fireEvent.click(screen.getByRole("button", { name: "Compose new email" }));
+    await screen.findByPlaceholderText("Recipients");
+    expect(screen.queryByPlaceholderText("Event title")).toBeNull();
+  });
+});
+
 describe("App accessibility", () => {
   it("closes the wheel's settings menu on a press anywhere outside it", async () => {
     render(() => <App />);

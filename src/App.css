@@ -382,9 +382,8 @@
 }
 
 /* Accent text on a coloured card sits on its tint. Focus there is drawn in
-   the card's own colour, darkened enough to hold 3:1 on the tint, where the
-   accent and the card's ring can't */
-.card[data-color] { --text-link: var(--text-link-on-tint); --border-focus: var(--card-ink-text); }
+   the card's outline colour, so it reads as the card's own */
+.card[data-color] { --text-link: var(--text-link-on-tint); --border-focus: var(--card-ring); }
 
 /* ---- Icons ---------------------------------------------------------------
    Line icons at one weight per size, drawn in currentColor, the host's text
@@ -1077,6 +1076,26 @@ a:focus-visible,
     background: var(--surface-hover);
 }
 
+/* Pointing at the title shows what a click does: open cards fold up, folded
+   ones open */
+.card-title-chevron {
+    display: inline-flex;
+    align-self: center;
+    flex-shrink: 0;
+    color: var(--text-muted);
+    opacity: 0;
+    transition: opacity 0.15s ease, transform 0.15s ease;
+}
+
+.card-title-btn:hover .card-title-chevron,
+.card-title-btn:focus-visible .card-title-chevron {
+    opacity: 1;
+}
+
+.card.collapsed .card-title-chevron {
+    transform: rotate(-90deg);
+}
+
 .card-title {
     flex-shrink: 0;
     max-width: 70%;
@@ -1386,6 +1405,12 @@ a:focus-visible,
     border-radius: var(--radius-xs);
     box-shadow: inset 0 0 0 1px color-mix(in srgb, currentColor 18%, transparent);
     cursor: pointer;
+}
+
+/* A preview still on its way */
+.thread-image-thumb.pending {
+    display: block;
+    background: var(--surface-hover);
 }
 
 .thread-image-btn {

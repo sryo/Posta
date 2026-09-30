@@ -18,7 +18,7 @@ export type RadialItem = {
 // Opens toward a direction, as wide as the room around it allows; `reverse`
 // lays the petals out counterclockwise, as a left-hand fan that starts at
 // its top does
-export type ArcToward = { toward: number; maxSpan: number; reverse?: boolean };
+export type ArcToward = { toward: number; maxSpan: number; minSpan?: number; reverse?: boolean };
 
 const reversed = (arc: Arc, reverse?: boolean): Arc => (reverse ? { start: arc.start + arc.span, span: -arc.span } : arc);
 
@@ -80,7 +80,7 @@ export function RadialMenu(props: {
     const radius = props.overlap === "grow"
       ? fittedRadius(props.items.length, { start: 0, span: arc.maxSpan }, props.radius, props.itemSize, 2, props.maxRadius ?? props.radius * 2)
       : props.radius;
-    return reversed(autoArc({ anchor, bounds, toward: arc.toward, maxSpan: arc.maxSpan, radius, itemSize: props.itemSize }), arc.reverse);
+    return reversed(autoArc({ anchor, bounds, toward: arc.toward, maxSpan: arc.maxSpan, minSpan: arc.minSpan, radius, itemSize: props.itemSize }), arc.reverse);
   };
 
   const arc = (): Arc => {

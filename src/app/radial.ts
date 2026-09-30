@@ -89,9 +89,18 @@ export function autoArc(opts: { anchor: Rect; bounds?: Rect; toward: number; max
       if (!best || span > best.span) best = { start: lo, span };
       if (span >= (opts.minSpan ?? opts.maxSpan)) return best;
     }
-    if (best) return best;
+    if (best) return widened(best, opts.minSpan);
   }
   return centred;
+}
+
+// A window narrower than `minSpan` piles its petals on one spot; it opens to
+// that width round its middle, crossing the edge a little rather than
+// hiding every petal behind the next
+function widened(arc: Arc, minSpan?: number): Arc {
+  if (!minSpan || arc.span >= minSpan) return arc;
+  const middle = arc.start + arc.span / 2;
+  return { start: middle - minSpan / 2, span: minSpan };
 }
 
 function everyFits(start: number, span: number, fits: (deg: number) => boolean, step: number): boolean {

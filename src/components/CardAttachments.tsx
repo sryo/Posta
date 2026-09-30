@@ -1,11 +1,44 @@
-import { For, Show } from "solid-js";
+import { For, Show, createSignal, onCleanup } from "solid-js";
 import type { Attachment } from "../api/tauri";
+import type { JSX } from "solid-js";
 import { formatFileSize, normalizeBase64Url } from "../utils";
+import { MAX_PREVIEW_BYTES } from "../app/thumbnails";
 
-const MAX_THUMBNAILS = 4;
+const MAX_THUMBNAILS = 6;
 const MAX_FILES = 3;
 
-const hasThumbnail = (a: Attachment) => !!a.inline_data && a.mime_type.startsWith("image/");
+// Images the webview can draw: a thumbnail comes with the thread when the image
+// is small, and is downloaded when the row first shows it otherwise
+const DRAWABLE = /^image\/(png|jpe?g|gif|webp|bmp)$/i;
+const hasThumbnail = (a: Attachment) =>
+  DRAWABLE.test(a.mime_type) && (!!a.inline_data || a.size <= MAX_PREVIEW_BYTES);
+
+const dataUrl = (a: Attachment, data: string) => `data:${a.mime_type};base64,${normalizeBase64Url(data)}`;
+
+// One thumbnail: the data that came with the thread, else a quiet square that
+// fills in once the row is on screen and the preview has downloaded. A preview
+// that can't be had becomes the file's chip
+function Thumbnail(props: { attachment: Attachment; load?: (a: Attachment) => Promise<string>; chip: () => JSX.Element }) {
+  const [src, setSrc] = createSignal(props.attachment.inline_data ? dataUrl(props.attachment, props.attachment.inline_data) : null);
+  const [failed, setFailed] = createSignal(!props.attachment.inline_data && !props.load);
+  const watch = (el: HTMLElement) => {
+    if (src() || !props.load || typeof IntersectionObserver === "undefined") return;
+    const seen = new IntersectionObserver((entries) => {
+      if (!entries.some(e => e.isIntersecting)) return;
+      seen.disconnect();
+      props.load!(props.attachment).then(data => setSrc(dataUrl(props.attachment, data)), () => setFailed(true));
+    }, { rootMargin: "200px" });
+    seen.observe(el);
+    onCleanup(() => seen.disconnect());
+  };
+  return (
+    <Show when={!failed()} fallback={props.chip()}>
+      <Show when={src()} fallback={<span ref={watch} class="thread-image-thumb pending" aria-hidden="true" />}>
+        {(url) => <img class="thread-image-thumb" src={url()} alt="" />}
+      </Show>
+    </Show>
+  );
+}
 
 // An image the message body shows in place (a logo, a signature) rather than a
 // file sent along: the thread view draws it inside the mail. Photos from Apple
@@ -43,6 +76,8 @@ export const CardAttachments = (props: {
   attachments: Attachment[];
   onOpen: (attachment: Attachment, index: number) => void;
   onMenu: (attachment: Attachment) => void;
+  // Downloads an image's preview when it didn't come with the thread
+  loadPreview?: (attachment: Attachment) => Promise<string>;
 }) => {
   const shown = () => shownAttachments(props.attachments);
   const images = () => shown().filter(hasThumbnail);
@@ -75,15 +110,20 @@ export const CardAttachments = (props: {
   return (
     <div class="thread-attachments">
       <For each={images().slice(0, MAX_THUMBNAILS)}>
-        {(attachment) => (
-          <button type="button" class="thread-image-btn" {...handlers(attachment)}>
-            <img
-              class="thread-image-thumb"
-              src={`data:${attachment.mime_type};base64,${normalizeBase64Url(attachment.inline_data || "")}`}
-              alt=""
-            />
-          </button>
-        )}
+        {(attachment) => {
+          const chip = () => (
+            <button type="button" class="thread-file-item" {...handlers(attachment)}>
+              <FileName filename={attachment.filename} />
+            </button>
+          );
+          return (
+            <Show when={attachment.inline_data || props.loadPreview} fallback={chip()}>
+              <button type="button" class="thread-image-btn" {...handlers(attachment)}>
+                <Thumbnail attachment={attachment} load={props.loadPreview} chip={() => <span class="thread-file-item"><FileName filename={attachment.filename} /></span>} />
+              </button>
+            </Show>
+          );
+        }}
       </For>
       <For each={files().slice(0, MAX_FILES)}>
         {(attachment) => (
