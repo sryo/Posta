@@ -278,7 +278,7 @@ describe("accounts on the board", () => {
   it("shows a compose's sender like the fields below it", () => {
     const from = declarationsOf(".compose-from select");
     const field = declarationsOf(".compose-field input");
-    for (const prop of ["flex", "border", "background", "font", "color"]) expect(from.get(prop)).toBe(field.get(prop));
+    for (const prop of ["border", "background", "font", "color"]) expect(from.get(prop)).toBe(field.get(prop));
     expect(field.get("font")).toBe("var(--type-ui)");
     expect(declarationsOf(".compose-from-email").get("font")).toBe(field.get("font"));
   });

@@ -9,19 +9,10 @@ const decls = (selector: string) =>
   new Map(rules.filter(r => !r.context && r.selectors.includes(selector)).flatMap(r => r.declarations));
 
 describe("event form layout", () => {
-  it("keeps the title and calendar in view however far the form scrolls", () => {
-    const header = decls(".event-form-header");
-    expect(header.get("position")).toBe("sticky");
-    expect(header.get("top")).toBe("0");
-    // The form's own surface, so the sticky header doesn't show as a band
-    expect(header.get("background")).toBe(decls(".inline-event-form").get("background"));
-  });
-
-  it("shares the day strip's width among its seven days rather than clipping the last", () => {
-    const day = decls(".scheduler-day-card");
-    expect(day.get("flex")).toBe("1 1 0");
-    expect(day.get("min-width")).toBe("0");
-    expect(day.has("width")).toBe(false);
+  it("lets the timeline take a drag without scrolling or selecting text", () => {
+    const track = decls(".day-timeline-track");
+    expect(track.get("touch-action")).toBe("none");
+    expect(track.get("user-select")).toBe("none");
   });
 
   it("sets the title as a heading", () => {

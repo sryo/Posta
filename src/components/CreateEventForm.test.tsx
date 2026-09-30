@@ -41,8 +41,7 @@ function renderForm(init: { startDate: string; endDate?: string; startTime?: str
   return { ...result, startDate, endDate, startTime, endTime };
 }
 
-const selects = (container: HTMLElement) => container.querySelectorAll<HTMLSelectElement>(".scheduler-header select");
-const firstDayCard = (container: HTMLElement) => container.querySelector(".scheduler-day-card")!.textContent;
+const slider = (container: HTMLElement) => container.querySelector<HTMLElement>('[role="slider"]')!;
 
 const timeField = (container: HTMLElement, label: "Start" | "End") =>
   container.querySelector<HTMLInputElement>(`input[role="combobox"][aria-label="${label}"]`)!;
@@ -75,17 +74,17 @@ describe("CreateEventForm closing", () => {
   });
 
   // Outside text fields the view hosting the form owns Escape
-  it("leaves Escape on a focused day to the hosting view", () => {
+  it("leaves Escape on the focused timeline to the hosting view", () => {
     const onClose = vi.fn();
     const { container } = renderForm({ startDate: "2025-03-10", onClose });
-    fireEvent.keyDown(container.querySelector(".scheduler-day-card")!, { key: "Escape" });
+    fireEvent.keyDown(slider(container), { key: "Escape" });
     expect(onClose).not.toHaveBeenCalled();
   });
 
-  it("leaves Escape in the month picker to the picker", () => {
+  it("leaves Escape in the repeat menu to the menu", () => {
     const onClose = vi.fn();
-    const { container } = renderForm({ startDate: "2025-03-10", onClose });
-    fireEvent.keyDown(selects(container)[0], { key: "Escape" });
+    const { getByRole } = renderForm({ startDate: "2025-03-10", onClose });
+    fireEvent.keyDown(getByRole("combobox", { name: "Repeat" }), { key: "Escape" });
     expect(onClose).not.toHaveBeenCalled();
   });
 });
@@ -132,52 +131,79 @@ describe("CreateEventForm focus", () => {
   });
 });
 
-describe("CreateEventForm date navigation", () => {
-  it("jumps to the chosen month even from the 31st", () => {
-    const { container } = renderForm({ startDate: "2031-01-31" });
-    const [month] = selects(container);
-    fireEvent.change(month, { target: { value: "1" } });
-    expect(month.value).toBe("1");
-    // February 1st, 2031 is a Saturday
-    expect(firstDayCard(container)).toBe("Sat1");
+describe("CreateEventForm day", () => {
+  it("steps a day at a time, and picks one from the date field", () => {
+    const { getByRole, getByLabelText, startDate, endDate } = renderForm({ startDate: "2031-01-31" });
+    fireEvent.click(getByRole("button", { name: "Next day" }));
+    expect(startDate()).toBe("2031-02-01");
+    expect(endDate()).toBe("2031-02-01");
+    fireEvent.click(getByRole("button", { name: "Previous day" }));
+    fireEvent.click(getByRole("button", { name: "Previous day" }));
+    expect(startDate()).toBe("2031-01-30");
+    fireEvent.change(getByLabelText("Day"), { target: { value: "2031-06-10" } });
+    expect(startDate()).toBe("2031-06-10");
   });
 
-  it("jumps to the chosen year even from Feb 29", () => {
-    const { container } = renderForm({ startDate: "2028-02-29" });
-    const [month, year] = selects(container);
-    fireEvent.change(year, { target: { value: "2029" } });
-    expect(month.value).toBe("1");
-    // February 1st, 2029 is a Thursday
-    expect(firstDayCard(container)).toBe("Thu1");
+  it("keeps a multi-day event's length when its day moves", () => {
+    const { getByRole, startDate, endDate } = renderForm({ startDate: "2031-03-03", endDate: "2031-03-05", isEditing: true });
+    fireEvent.click(getByRole("button", { name: "Next day" }));
+    expect(startDate()).toBe("2031-03-04");
+    expect(endDate()).toBe("2031-03-06");
   });
 
-  it("shows the year of an event outside the default range", () => {
-    const { container } = renderForm({ startDate: "2019-06-10", isEditing: true });
-    const [month, year] = selects(container);
-    expect(year.value).toBe("2019");
-    expect(month.value).toBe("5");
+  it("goes back to today", () => {
+    const today = new Date();
+    const iso = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, "0")}-${String(today.getDate()).padStart(2, "0")}`;
+    const { getByRole, queryByRole, startDate } = renderForm({ startDate: "2031-03-03" });
+    fireEvent.click(getByRole("button", { name: "Today" }));
+    expect(startDate()).toBe(iso);
+    expect(queryByRole("button", { name: "Today" })).toBeNull();
   });
 });
 
-describe("CreateEventForm keyboard access", () => {
-  it("picks a day with Enter or Space and types a time", () => {
-    const { container, startDate, startTime } = renderForm({ startDate: "2031-03-03", startTime: "10:00", endTime: "11:00" });
-    const days = container.querySelectorAll<HTMLElement>(".scheduler-day-card");
-    expect(days[2].tabIndex).toBe(0);
-    fireEvent.keyDown(days[2], { key: "Enter" });
-    expect(startDate()).toBe("2031-03-05");
-    typeTime(container, "Start", "9am");
-    expect(startTime()).toBe("09:00");
+describe("CreateEventForm timeline", () => {
+  it("moves the event a step with the arrow keys, and resizes it with Shift", () => {
+    const { container, startTime, endTime } = renderForm({ startDate: "2031-03-03", startTime: "10:00", endTime: "11:00" });
+    expect(slider(container)).toHaveAttribute("aria-valuetext");
+    fireEvent.keyDown(slider(container), { key: "ArrowRight" });
+    expect([startTime(), endTime()]).toEqual(["10:15", "11:15"]);
+    fireEvent.keyDown(slider(container), { key: "ArrowLeft", shiftKey: true });
+    expect([startTime(), endTime()]).toEqual(["10:15", "11:00"]);
   });
 
-  it("still saves with Cmd+Enter while a day or time is focused", () => {
+  it("changes the day with Option and the arrow keys", () => {
+    const { container, startDate } = renderForm({ startDate: "2031-03-03" });
+    fireEvent.keyDown(slider(container), { key: "ArrowRight", altKey: true });
+    expect(startDate()).toBe("2031-03-04");
+  });
+
+  it("types a time too, and saves with Cmd+Enter from the timeline or a time", () => {
     const onSave = vi.fn();
-    const { container, startDate } = renderForm({ startDate: "2031-03-03", onSave });
-    const days = container.querySelectorAll<HTMLElement>(".scheduler-day-card");
-    fireEvent.keyDown(days[2], { key: "Enter", metaKey: true });
+    const { container, startTime } = renderForm({ startDate: "2031-03-03", onSave });
+    typeTime(container, "Start", "9am");
+    expect(startTime()).toBe("09:00");
+    fireEvent.keyDown(slider(container), { key: "Enter", metaKey: true });
     fireEvent.keyDown(timeField(container, "Start"), { key: "Enter", ctrlKey: true });
     expect(onSave).toHaveBeenCalledTimes(2);
-    expect(startDate()).toBe("2031-03-03");
+  });
+
+  it("shows the day's other events and says which ones the event clashes with", () => {
+    const at = (h: number) => new Date(2031, 2, 3, h).getTime();
+    const dayBusy = [{ title: "Standup", start: at(9), end: at(10) }, { title: "Design sync", start: at(10), end: at(12) }];
+    const { container } = renderForm({ startDate: "2031-03-03", startTime: "11:00", endTime: "12:30", extra: { dayBusy } });
+    expect(Array.from(container.querySelectorAll(".day-timeline-busy")).map(b => [b.textContent, b.classList.contains("overlap")]))
+      .toEqual([["Standup", false], ["Design sync", true]]);
+    expect(container.querySelector(".event-when-note")).toHaveTextContent("Clashes with Design sync");
+  });
+
+  it("says the calendar is still being read instead of showing a free day", () => {
+    const { container } = renderForm({ startDate: "2031-03-03", extra: { dayBusy: "loading" } });
+    expect(container.querySelector(".event-when-note")).toHaveTextContent("Checking calendar…");
+  });
+
+  it("leaves the timeline out of an all-day event", () => {
+    const { container } = renderForm({ startDate: "2031-03-03", allDay: true });
+    expect(container.querySelector(".day-timeline")).toBeNull();
   });
 });
 
@@ -225,13 +251,17 @@ describe("CreateEventForm header", () => {
     { id: "team", name: "Team", is_primary: false, access_role: "writer" },
   ];
 
-  it("keeps the title and the calendar together in a header that stays in view", () => {
-    const { container, getByRole } = renderForm({ startDate: "2031-03-03", extra: { calendars, calendarId: "team", setCalendarId: vi.fn() } });
-    const header = container.querySelector(".event-form-header")!;
-    expect(header.querySelector('input[placeholder="Event title"]')).toHaveClass("form-title-field");
+  it("names the account and calendar above the title, with close", () => {
+    const { container, getByRole } = renderForm({ startDate: "2031-03-03", extra: { calendars, calendarId: "team", setCalendarId: vi.fn(), accountEmail: "me@x.test" } });
+    const header = container.querySelector(".panel-header")!;
+    expect(header.querySelector(".panel-account-avatar")).toHaveAttribute("data-hue");
+    expect(header).toHaveTextContent("me@x.test");
     const select = getByRole("combobox", { name: "Calendar" }) as HTMLSelectElement;
     expect(header.contains(select)).toBe(true);
     expect(select.value).toBe("team");
+    expect(header.querySelector(".close-btn")).not.toBeNull();
+    expect(header.querySelector('input[placeholder="Event title"]')).toBeNull();
+    expect(container.querySelector('input[placeholder="Event title"]')).toHaveClass("form-title-field");
   });
 
   it("offers only calendars the user can write to", () => {

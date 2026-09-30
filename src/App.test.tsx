@@ -2211,14 +2211,14 @@ describe("App calendar", () => {
     await waitFor(() => expect(screen.queryByPlaceholderText("Event title")).not.toBeInTheDocument());
   });
 
-  it("leaves Escape pressed in the event form's month picker to the picker", async () => {
+  it("leaves Escape pressed in the event form's repeat menu to the menu", async () => {
     render(() => <App />);
     await screen.findByText("Mail for A");
     fireEvent.keyDown(document, { key: "e" });
     await screen.findByPlaceholderText("Event title");
-    const month = document.querySelector(".scheduler-header select") as HTMLSelectElement;
-    month.focus();
-    fireEvent.keyDown(month, { key: "Escape" });
+    const repeat = screen.getByRole("combobox", { name: "Repeat" });
+    repeat.focus();
+    fireEvent.keyDown(repeat, { key: "Escape" });
     await new Promise(r => setTimeout(r, 300));
 
     expect(screen.getByPlaceholderText("Event title")).toBeInTheDocument();

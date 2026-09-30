@@ -2,12 +2,11 @@ import { Show, For, onCleanup, createUniqueId, createSignal, createEffect } from
 import type { Account, SendAttachment } from "../api/tauri";
 import { truncateMiddle } from "../utils";
 import { CloseIcon, AttachmentIcon } from "./Icons";
-import { CloseButton } from "./ComposeAtoms";
 import { isImeComposing } from "../shared/keyboard";
 import { splitQuotedText } from "../app/quotedHistory";
 import { RecipientInput, type RecipientSuggestion } from "./RecipientInput";
 import { carriesFiles, transferredFiles } from "../app/fileDrop";
-import { FieldRow, FormFooter, SubmitButton } from "./FormParts";
+import { FieldRow, FormFooter, PanelAccount, PanelHeader, SubmitButton } from "./FormParts";
 
 // Shared Compose Form component
 interface ComposeFormProps {
@@ -119,28 +118,33 @@ export const ComposeForm = (props: ComposeFormProps) => {
     }
   };
 
-  // Shared field components (only rendered when showFields !== false)
+  // The address it goes out from: the chosen account's, or a reply's
+  const fromAddress = () => props.fromAccounts?.find(a => a.id === props.fromAccountId)?.email ?? props.fromEmail;
+  const choosesFrom = () => (props.fromAccounts?.length ?? 0) > 1 && !!props.setFromAccountId;
+
+  const FromChoice = (p: { id?: string }) => (
+    <Show when={choosesFrom()} fallback={<span class="compose-from-email">{fromAddress()}</span>}>
+      <select
+        id={p.id}
+        aria-label="From"
+        value={props.fromAccountId}
+        onChange={(e) => props.setFromAccountId!(e.currentTarget.value)}
+      >
+        <For each={props.fromAccounts}>
+          {(account) => <option value={account.id}>{account.email}</option>}
+        </For>
+      </select>
+    </Show>
+  );
+
+  // Shared field components (only rendered when showFields !== false); the
+  // account shows in the header when there is one
   const FromField = () => (
-    <>
-      <Show when={(props.fromAccounts?.length ?? 0) > 1 && props.setFromAccountId}>
-        <FieldRow label="From" for={`${fieldId}-from`} class="compose-from">
-          <select
-            id={`${fieldId}-from`}
-            value={props.fromAccountId}
-            onChange={(e) => props.setFromAccountId!(e.currentTarget.value)}
-          >
-            <For each={props.fromAccounts}>
-              {(account) => <option value={account.id}>{account.email}</option>}
-            </For>
-          </select>
-        </FieldRow>
-      </Show>
-      <Show when={props.fromEmail}>
-        <FieldRow label="From" class="compose-from">
-          <span class="compose-from-email">{props.fromEmail}</span>
-        </FieldRow>
-      </Show>
-    </>
+    <Show when={props.showHeader === false && fromAddress()}>
+      <FieldRow label="From" for={`${fieldId}-from`} class="compose-from">
+        <FromChoice id={`${fieldId}-from`} />
+      </FieldRow>
+    </Show>
   );
 
   const ToField = () => (
@@ -324,17 +328,21 @@ export const ComposeForm = (props: ComposeFormProps) => {
         <div class="compose-drop-overlay">Drop to attach</div>
       </Show>
       <Show when={props.showHeader !== false}>
-        <div class="compose-header">
-          <h3>{props.title || defaultTitle}</h3>
+        <PanelHeader onClose={props.onSkip ? undefined : props.onClose}>
+          <Show when={props.showFields !== false && fromAddress()} fallback={<h3 class="panel-title">{props.title || defaultTitle}</h3>}>
+            <PanelAccount email={fromAddress()!} class="compose-from">
+              <FromChoice />
+            </PanelAccount>
+            <Show when={props.mode !== 'new'}>
+              <span class="panel-mode">{props.title || defaultTitle}</span>
+            </Show>
+          </Show>
           <Show when={props.onSkip}>
-            <button class="btn btn-sm batch-reply-skip" onClick={props.onSkip} title="Skip this thread">
+            <button class="btn btn-sm btn-ghost batch-reply-skip" onClick={props.onSkip} title="Skip this thread">
               Skip
             </button>
           </Show>
-          <Show when={!props.onSkip}>
-            <CloseButton onClick={props.onClose} />
-          </Show>
-        </div>
+        </PanelHeader>
       </Show>
       <div class="compose-body">
         <Show when={props.showFields !== false}>

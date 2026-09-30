@@ -128,7 +128,8 @@ import { CreateEventForm } from "./components/CreateEventForm";
 import { InviteRowLines, InviteWhen } from "./components/InviteRow";
 import { inviteEnd, inviteState, inviteSummary } from "./app/inviteRow";
 import { dayOtherEvents, stripLayout } from "./app/dayStrip";
-import { createInviteDayLookups, type DayEvents } from "./app/inviteDays";
+import { createInviteDayLookups, rangeDaysFor, type DayEvents } from "./app/inviteDays";
+import type { DayBusy } from "./app/dayTimeline";
 import { isHappeningNow, isNowGroup, withNowSection } from "./app/nowSection";
 import { deletePrompt, eventActions } from "./app/eventActions";
 import { defaultCalendarId, lastUsedCalendar, rememberCalendar } from "./app/eventCalendars";
@@ -869,6 +870,30 @@ function App() {
     const editing = eventForm().editing;
     return editing ? accountById(editing.accountId) : selectedAccount();
   };
+  // The user's other events on the event form's day, for its timeline, read
+  // with the invite strips' calendar lookups; a past day isn't looked up
+  const eventFormDay = () => {
+    const start = new Date(eventForm().startDate + "T00:00");
+    return { start: start.getTime(), end: new Date(start.getFullYear(), start.getMonth(), start.getDate() + 1).getTime() };
+  };
+  createEffect(() => {
+    const account = eventFormAccount();
+    if (!creatingEvent() || !account || eventForm().allDay) return;
+    const { end } = eventFormDay();
+    if (end > Date.now()) inviteDayLookups.request(account.id, end);
+  });
+  const eventFormDayBusy = createMemo<DayBusy | undefined>(() => {
+    const account = eventFormAccount();
+    if (!creatingEvent() || !account) return undefined;
+    const { start, end } = eventFormDay();
+    const now = minuteNow();
+    if (end <= now) return undefined;
+    if (rangeDaysFor(end, now) === null) return "unavailable";
+    const known = inviteDays[account.id];
+    if (!known || known.until < end) return "loading";
+    const editingId = eventForm().editing?.id;
+    return dayOtherEvents(known.events.filter(e => e.id !== editingId), { start, end: start, uid: null });
+  });
   const newEventCalendarId = () => {
     const account = eventFormAccount();
     return eventForm().calendarId ?? (account ? defaultCalendarId(calendarsFor(account.id), lastUsedCalendar(account.id)) : null);
@@ -5644,6 +5669,9 @@ function App() {
           setRecurrence={(v: string | null) => setEventForm(f => ({ ...f, recurrence: v }))}
           calendars={calendarsFor(eventFormAccount()?.id)}
           calendarId={newEventCalendarId()}
+          accountEmail={eventFormAccount()?.email}
+          dayBusy={eventFormDayBusy()}
+          now={minuteNow()}
           guestSuggestions={guestSuggestions}
           addMeet={eventForm().addMeet}
           setAddMeet={(v: boolean) => setEventForm(f => ({ ...f, addMeet: v }))}

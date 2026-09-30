@@ -1,14 +1,18 @@
 import { createSignal, createUniqueId, Show, For } from "solid-js";
-import { ChevronLeftIcon, ChevronRightIcon, VideoIcon } from "./Icons";
-import { CloseButton } from "./ComposeAtoms";
-import { isImeComposing, isTypingTarget, onActivateKey } from "../shared/keyboard";
-import { monthNames, shortWeekday } from "../app/dateFormat";
+import { ChevronLeftIcon, ChevronRightIcon } from "./Icons";
+import { isImeComposing, isTypingTarget } from "../shared/keyboard";
+import { relativeDayName } from "../app/dateFormat";
+import { clashesWith } from "../app/dayStrip";
+import { formatDuration, type DayBusy, type MinuteSpan } from "../app/dayTimeline";
+import { DayTimeline } from "./DayTimeline";
 import { isWritableCalendar } from "../app/eventActions";
 import { minutesToTime, timeToMinutes } from "../app/timeInput";
 import { TimeCombobox } from "./TimeCombobox";
 import { GuestChips } from "./GuestChips";
 import { ScopeMenu, type RecurrenceScope } from "./ScopeMenu";
-import { CancelButton, FieldRow, FormFooter, SubmitButton, TitleField } from "./FormParts";
+import { CancelButton, FieldRow, FormFooter, PanelAccount, PanelHeader, SubmitButton, TitleField } from "./FormParts";
+
+const LAST_MINUTE = 23 * 60 + 59;
 
 export const CreateEventForm = (props: {
   closing?: boolean;
@@ -51,30 +55,12 @@ export const CreateEventForm = (props: {
   setAddMeet?: (v: boolean) => void;
   // The event being edited already has a Meet link
   hasMeet?: boolean;
+  // The account the event is saved to, shown with the calendar
+  accountEmail?: string;
+  // The user's other events on the chosen day, for the timeline
+  dayBusy?: DayBusy;
+  now?: number;
 }) => {
-  // Snapshot is safe: both call sites mount this inside a <Show>, so a fresh
-  // instance is created each time the form opens.
-  // "T00:00" forces local-time parsing; bare "YYYY-MM-DD" parses as UTC
-  // midnight, which is the previous day west of UTC
-  const [viewDate, setViewDate] = createSignal(new Date(props.startDate + "T00:00"));
-
-  const getDaysInWindow = () => {
-    const days = [];
-    const start = new Date(viewDate());
-    for (let i = 0; i < 7; i++) {
-      const day = new Date(start);
-      day.setDate(start.getDate() + i);
-      days.push(day);
-    }
-    return days;
-  };
-
-  const shiftViewDate = (days: number) => {
-    const newDate = new Date(viewDate());
-    newDate.setDate(newDate.getDate() + days);
-    setViewDate(newDate);
-  }
-
   // Recurrence options
   const recurrenceOptions = [
     { label: "No repeat", value: null },
@@ -137,40 +123,12 @@ export const CreateEventForm = (props: {
     }
   };
 
-  // Move to the 1st before changing month/year: from the 31st (or Feb 29),
-  // setMonth/setFullYear would overflow into the following month
-  const handleMonthSelect = (month: number) => {
-    const newDate = new Date(viewDate());
-    newDate.setDate(1);
-    newDate.setMonth(month);
-    setViewDate(newDate);
-  };
-
-  const handleYearSelect = (year: number) => {
-    const newDate = new Date(viewDate());
-    newDate.setDate(1);
-    newDate.setFullYear(year);
-    setViewDate(newDate);
-  };
-
-  const months = monthNames();
-  const currentYear = new Date().getFullYear();
-  // Next five years, widened to include the viewed year (e.g. editing a past event)
-  const years = () => {
-    const viewYear = viewDate().getFullYear();
-    const first = Math.min(currentYear, viewYear);
-    const last = Math.max(currentYear + 4, viewYear);
-    return Array.from({ length: last - first + 1 }, (_, i) => first + i);
-  };
-
   const formatDateStr = (d: Date) => {
     const year = d.getFullYear();
     const month = String(d.getMonth() + 1).padStart(2, '0');
     const day = String(d.getDate()).padStart(2, '0');
     return `${year}-${month}-${day}`;
   };
-
-  const isSelectedDate = (d: Date) => formatDateStr(d) === props.startDate;
 
   const handleDateSelect = (d: Date) => {
     const dateStr = formatDateStr(d);
@@ -190,96 +148,109 @@ export const CreateEventForm = (props: {
     }
   };
 
-  const formatDateDisplay = (d: Date) => {
-    return {
-      day: shortWeekday(d),
-      date: d.getDate()
-    };
+  const day = () => new Date(props.startDate + "T00:00");
+  const shiftDay = (days: number) => {
+    const next = day();
+    next.setDate(next.getDate() + days);
+    handleDateSelect(next);
+  };
+  const goToday = () => handleDateSelect(new Date());
+  const isToday = () => props.startDate === formatDateStr(new Date());
+
+  // The timeline shows a timed event within one day
+  const slot = (): MinuteSpan | null => {
+    const start = timeToMinutes(props.startTime);
+    const end = timeToMinutes(props.endTime);
+    if (props.allDay || isMultiDay() || start === null || end === null || end <= start) return null;
+    return { start, end: end === LAST_MINUTE ? 24 * 60 : end };
+  };
+  const setSlot = (next: MinuteSpan) => {
+    props.setStartTime(minutesToTime(next.start));
+    props.setEndTime(minutesToTime(Math.min(next.end, LAST_MINUTE)));
+  };
+  const busy = () => (Array.isArray(props.dayBusy) ? props.dayBusy : undefined);
+  const clashes = () => {
+    const span = slot();
+    const events = busy();
+    if (!span || !events) return [];
+    const at = (minutes: number) => day().getTime() + minutes * 60_000;
+    return clashesWith({ start: at(span.start), end: at(span.end) }, events);
+  };
+  const calendarNote = () => {
+    if (!slot()) return null;
+    if (props.dayBusy === "loading") return "Checking calendar…";
+    if (props.dayBusy === "unavailable") return "Your calendar isn't shown this far ahead";
+    const titles = clashes().map(e => e.title || "an event");
+    return titles.length ? `Clashes with ${titles.join(", ")}` : null;
   };
 
   const writableCalendars = () => (props.calendars ?? []).filter(isWritableCalendar);
 
+  const calendarSelect = () => (
+    <Show when={!props.isEditing && props.setCalendarId && writableCalendars().length > 0}>
+      <select
+        class="event-calendar-select"
+        aria-label="Calendar"
+        value={props.calendarId ?? ""}
+        onChange={(e) => props.setCalendarId!(e.currentTarget.value)}
+      >
+        <For each={writableCalendars()}>
+          {(cal) => <option value={cal.id} selected={cal.id === props.calendarId}>{cal.name}</option>}
+        </For>
+      </select>
+    </Show>
+  );
+
   const formContent = () => (
     <>
-      <div class="event-form-header">
+      <Show when={!props.inline}>
+        <PanelHeader onClose={props.onClose}>
+          <Show when={props.accountEmail} fallback={<div class="panel-account">{calendarSelect()}</div>}>
+            <PanelAccount email={props.accountEmail!}>
+              {calendarSelect()}
+              <span class="panel-account-email">{props.accountEmail}</span>
+            </PanelAccount>
+          </Show>
+        </PanelHeader>
+      </Show>
+      <div class={props.inline ? "inline-event-body" : "compose-body"}>
         <TitleField value={props.summary} onInput={props.setSummary} placeholder="Event title" autofocus />
-        <Show when={!props.isEditing && props.setCalendarId && writableCalendars().length > 0}>
-          <select
-            class="event-calendar-select"
-            aria-label="Calendar"
-            value={props.calendarId ?? ""}
-            onChange={(e) => props.setCalendarId!(e.currentTarget.value)}
-          >
-            <For each={writableCalendars()}>
-              {(cal) => <option value={cal.id} selected={cal.id === props.calendarId}>{cal.name}</option>}
-            </For>
-          </select>
-        </Show>
-        <Show when={!props.inline}>
-          <CloseButton onClick={props.onClose} />
-        </Show>
-      </div>
-      <div class={props.inline ? "inline-event-body" : "compose-body"} style={{ flex: 1, "overflow-y": "auto" }}>
 
-        {/* Custom Scheduler UI */}
-        <div class="scheduler-ui">
-
-          {/* Month Header */}
-          <div class="scheduler-header">
-            <div class="scheduler-header-group">
-              <select
-                value={viewDate().getMonth()}
-                onChange={(e) => handleMonthSelect(parseInt(e.currentTarget.value))}
-              >
-                <For each={months}>
-                  {(m, i) => <option value={i()}>{m}</option>}
-                </For>
-              </select>
-              <select
-                value={viewDate().getFullYear()}
-                onChange={(e) => handleYearSelect(parseInt(e.currentTarget.value))}
-              >
-                <For each={years()}>
-                  {(y) => <option value={y}>{y}</option>}
-                </For>
-              </select>
-            </div>
-            <div class="scheduler-header-group">
-              <button class="btn btn-sm btn-ghost" onClick={() => shiftViewDate(-7)} title="Previous Week"><ChevronLeftIcon /></button>
-              <button class="btn btn-sm btn-ghost" onClick={() => shiftViewDate(7)} title="Next Week"><ChevronRightIcon /></button>
-            </div>
+        <div class="event-when">
+          <div class="event-day-line">
+            <button type="button" class="event-day-step" onClick={() => shiftDay(-1)} title="Previous day (⌥←)" aria-label="Previous day"><ChevronLeftIcon /></button>
+            <input
+              type="date"
+              class="event-day-input"
+              aria-label="Day"
+              value={props.startDate}
+              onChange={(e) => { if (e.currentTarget.value) handleDateSelect(new Date(e.currentTarget.value + "T00:00")); }}
+            />
+            <button type="button" class="event-day-step" onClick={() => shiftDay(1)} title="Next day (⌥→)" aria-label="Next day"><ChevronRightIcon /></button>
+            <Show when={relativeDayName(day(), new Date())}>
+              {(name) => <span class="event-day-relative">{name()}</span>}
+            </Show>
+            <Show when={!isToday()}>
+              <button type="button" class="event-chip" onClick={goToday}>Today</button>
+            </Show>
           </div>
 
-          {/* Horizontal Days */}
-          <div class="scheduler-days">
-            <For each={getDaysInWindow()}>
-              {(day) => {
-                const info = formatDateDisplay(day);
-                return (
-                  <div
-                    class={`scheduler-day-card ${isSelectedDate(day) ? 'selected' : ''}`}
-                    role="button"
-                    tabIndex={0}
-                    aria-pressed={isSelectedDate(day)}
-                    onClick={() => handleDateSelect(day)}
-                    on:keydown={onActivateKey(() => handleDateSelect(day))}
-                  >
-                    <span class="scheduler-day-name">{info.day}</span>
-                    <span class="scheduler-day-number">{info.date}</span>
-                  </div>
-                );
-              }}
-            </For>
-          </div>
+          <Show when={slot()}>
+            {(span) => (
+              <DayTimeline
+                day={day()}
+                slot={span()}
+                onChange={setSlot}
+                busy={busy()}
+                clashing={clashes()}
+                now={props.now ?? Date.now()}
+                onDayShift={shiftDay}
+                onToday={goToday}
+              />
+            )}
+          </Show>
 
-          {/* All day toggle */}
-          <label class="scheduler-all-day">
-            <input type="checkbox" checked={props.allDay} onChange={(e) => props.setAllDay(e.currentTarget.checked)} />
-            All day
-          </label>
-
-          {/* Times, then Repeat; all-day events only repeat */}
-          <div class="scheduler-times">
+          <div class="event-when-summary">
             <Show when={!props.allDay}>
               <TimeCombobox
                 label="Start"
@@ -294,13 +265,24 @@ export const CreateEventForm = (props: {
                 value={props.endTime}
                 onChange={handleEndTimeChange}
               />
+              <Show when={slot()}>
+                {(span) => <span class="event-when-length">{formatDuration(span().end - span().start)}</span>}
+              </Show>
             </Show>
+            <span class="event-when-note" classList={{ "clash": clashes().length > 0 }} aria-live="polite">{calendarNote()}</span>
+          </div>
+
+          <div class="event-when-options">
+            <label class="event-chip">
+              <input type="checkbox" checked={props.allDay} onChange={(e) => props.setAllDay(e.currentTarget.checked)} />
+              All day
+            </label>
             <Show
               when={!props.occurrenceOnly}
               fallback={<p class="scheduler-occurrence-note">Repeats</p>}
             >
               <select
-                class="scheduler-repeat"
+                class="event-chip"
                 aria-label="Repeat"
                 value={props.recurrence ?? ""}
                 onChange={(e) => props.setRecurrence(e.currentTarget.value || null)}
@@ -323,8 +305,7 @@ export const CreateEventForm = (props: {
           />
         </FieldRow>
         <Show when={props.setAddMeet}>
-          <FieldRow class="event-meet-field">
-            <VideoIcon />
+          <FieldRow label="Video" class="event-meet-field">
             <Show when={!props.hasMeet} fallback={<span>Has a Google Meet link</span>}>
               <label class="event-meet-toggle">
                 <input type="checkbox" checked={!!props.addMeet} onChange={(e) => props.setAddMeet!(e.currentTarget.checked)} />
@@ -336,12 +317,11 @@ export const CreateEventForm = (props: {
         <FieldRow label="Guests" for={`${fieldId}-guests`}>
           <GuestChips id={`${fieldId}-guests`} value={props.attendees} onChange={props.setAttendees} suggest={props.guestSuggestions} />
         </FieldRow>
-        <div class="compose-content">
+        <div class="compose-content event-description">
           <textarea
             value={props.description}
             onInput={(e) => props.setDescription(e.currentTarget.value)}
             placeholder="Description"
-            style={{ "min-height": "100px" }}
           />
         </div>
       </div>
@@ -382,7 +362,6 @@ export const CreateEventForm = (props: {
       role="dialog"
       aria-label={props.isEditing ? "Edit event" : "New event"}
       onKeyDown={handleKeyDown}
-      style={{ height: "auto", display: "flex", "flex-direction": "column" }}
     >
       {formContent()}
     </div>

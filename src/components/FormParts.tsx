@@ -1,7 +1,33 @@
 import { onCleanup, Show, type JSX } from "solid-js";
+import { getAvatarHue, getInitial } from "../utils";
+import { CloseButton } from "./ComposeAtoms";
 
 // The pieces the compose, event and card forms are built from, so their
 // fields, titles and footers look and behave alike.
+
+// The top of a compose or event panel: whose it is on the left, then
+// anything else, then close
+export function PanelHeader(props: { children: JSX.Element; onClose?: () => void }) {
+  return (
+    <div class="panel-header">
+      {props.children}
+      <Show when={props.onClose}>
+        <CloseButton onClick={props.onClose!} />
+      </Show>
+    </div>
+  );
+}
+
+// The account a panel writes as, with its avatar; `children` replaces the
+// plain address, such as with a menu to choose another
+export function PanelAccount(props: { email: string; class?: string; children?: JSX.Element }) {
+  return (
+    <div class={`panel-account ${props.class ?? ""}`}>
+      <span class="panel-account-avatar" data-hue={getAvatarHue(props.email)} aria-hidden="true">{getInitial(props.email)}</span>
+      {props.children ?? <span class="panel-account-email">{props.email}</span>}
+    </div>
+  );
+}
 
 // A row of a form: its label on the left, the control filling the rest
 export function FieldRow(props: { label?: string; for?: string; class?: string; children: JSX.Element }) {
@@ -68,7 +94,7 @@ export function SubmitButton(props: {
 
 export function CancelButton(props: { onClick: () => void }) {
   return (
-    <button class="btn" onClick={() => props.onClick()} title="Cancel (Esc)">
+    <button class="btn btn-ghost" onClick={() => props.onClick()} title="Cancel (Esc)">
       Cancel <span class="shortcut-hint">ESC</span>
     </button>
   );

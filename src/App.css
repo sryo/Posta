@@ -3245,7 +3245,8 @@ button:disabled:hover {
 /* A swatch or an avatar that names its hue with data-hue */
 .color-picker-selected[data-hue],
 .compose-suggestion-avatar[data-hue],
-.compose-autocomplete-avatar[data-hue] {
+.compose-autocomplete-avatar[data-hue],
+.panel-account-avatar[data-hue] {
     background: var(--card-hue);
 }
 
@@ -3258,9 +3259,8 @@ button:disabled:hover {
     width: 480px;
     max-width: calc(100vw - 48px);
     background: var(--surface-overlay);
-    border: 1px solid var(--border-default);
-    border-radius: var(--radius-lg);
-    box-shadow: 0 4px 20px var(--shadow-color);
+    border-radius: var(--radius-xl);
+    box-shadow: 0 0 0 1px var(--border-default), var(--shadow-lg);
     /* A new email opens over an open thread or event */
     z-index: calc(var(--z-dropdown) + 1);
     display: flex;
@@ -3366,18 +3366,55 @@ button:disabled:hover {
     }
 }
 
-.compose-header {
+/* A panel's top: whose it is, then close */
+.panel-header {
     display: flex;
     align-items: center;
-    padding: var(--space-lg) var(--space-xl);
+    gap: var(--space-md);
+    padding: var(--space-md) var(--space-md) var(--space-md) var(--space-xl);
     border-bottom: 1px solid var(--border-subtle);
-    gap: var(--space-lg);
 }
 
-.compose-header h3 {
-    flex-grow: 1;
+.panel-title {
+    flex: 1;
     margin: 0;
-    font: var(--type-heading);
+    font: var(--type-ui);
+    color: var(--text-secondary);
+}
+
+.panel-account {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    align-items: center;
+    gap: var(--space-md);
+}
+
+.panel-account-avatar {
+    width: 22px;
+    height: 22px;
+    flex-shrink: 0;
+    border-radius: var(--radius-full);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: var(--text-on-accent);
+    font: var(--type-meta);
+    font-weight: var(--weight-strong);
+}
+
+.panel-account-email {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font: var(--type-meta);
+    color: var(--text-muted);
+}
+
+.panel-mode {
+    font: var(--type-meta);
+    color: var(--text-muted);
 }
 
 .compose-body {
@@ -3420,11 +3457,12 @@ button:disabled:hover {
 
 /* The account a compose goes out from */
 .compose-from select {
-    flex: 1;
+    min-width: 0;
     border: none;
     background: none;
     font: var(--type-ui);
     color: var(--text-primary);
+    cursor: pointer;
 }
 
 .compose-from-email {
@@ -3446,8 +3484,8 @@ button:disabled:hover {
 .cc-bcc-toggle {
     font: var(--type-meta);
     color: var(--text-muted);
-    background: var(--surface-inset);
-    border: 1px solid var(--border-default);
+    background: transparent;
+    border: none;
     cursor: pointer;
     padding: var(--space-sm) var(--space-md);
     border-radius: var(--radius-sm);
@@ -3457,9 +3495,8 @@ button:disabled:hover {
 }
 
 .cc-bcc-toggle:hover {
-    background: var(--surface-hover);
+    background: var(--surface-subtle);
     color: var(--text-primary);
-    border-color: var(--border-strong);
 }
 
 .compose-content {
@@ -4296,11 +4333,11 @@ button:disabled:hover {
 
 /* Shared close button */
 .close-btn {
-    height: 32px;
-    padding: 0 10px;
-    border-radius: var(--radius-lg);
+    height: 28px;
+    padding: 0 var(--space-md);
+    border-radius: var(--radius-md);
     color: var(--text-secondary);
-    background: var(--surface-hover);
+    background: transparent;
     border: none;
     cursor: pointer;
     display: flex;
@@ -4312,16 +4349,23 @@ button:disabled:hover {
 }
 
 .close-btn:hover {
-    background: var(--surface-hover);
+    background: var(--surface-subtle);
     color: var(--text-primary);
+}
+
+.close-btn svg {
+    width: 14px;
+    height: 14px;
 }
 
 .close-btn .shortcut-hint {
     margin-left: 0;
+    opacity: 0.6;
 }
 
 .btn .shortcut-hint {
     margin-left: 4px;
+    opacity: 0.6;
 }
 
 .settings-section-title {
@@ -6197,8 +6241,8 @@ button.settings-section-title {
 /* Inline Event Edit Form */
 .inline-event-form {
     background: var(--surface-overlay);
-    border: 1px solid var(--border-default);
-    border-radius: var(--radius-lg);
+    border-radius: var(--radius-xl);
+    box-shadow: 0 0 0 1px var(--border-default);
     overflow: hidden;
     animation: inlineComposeSlide 0.2s ease-out;
 }
@@ -6216,21 +6260,7 @@ button.settings-section-title {
     display: flex;
     align-items: center;
     padding: var(--space-lg) var(--space-xl);
-    border-top: 1px solid var(--border-default);
-    background: var(--surface-inset);
-}
-
-/* Event form: title and calendar above the scrolling body, actions below */
-.event-form-header {
-    position: sticky;
-    top: 0;
-    z-index: 1;
-    display: flex;
-    align-items: center;
-    gap: var(--space-md);
-    padding: var(--space-lg) var(--space-lg) var(--space-lg) var(--space-xl);
-    border-bottom: 1px solid var(--border-default);
-    background: var(--surface-overlay);
+    border-top: 1px solid var(--border-subtle);
 }
 
 .form-title-field {
@@ -6250,13 +6280,13 @@ button.settings-section-title {
 }
 
 .event-calendar-select {
-    max-width: 40%;
-    padding: var(--space-sm) var(--space-md);
-    border: 1px solid var(--border-default);
-    border-radius: var(--radius-md);
-    background: var(--surface-card);
+    min-width: 0;
+    max-width: 50%;
+    border: none;
+    background: none;
     color: var(--text-primary);
-    font: var(--type-meta);
+    font: var(--type-ui);
+    cursor: pointer;
 }
 
 .event-form-footer {
@@ -6334,11 +6364,6 @@ button.settings-section-title {
 .event-meet-field {
     color: var(--text-secondary);
     font: var(--type-ui);
-}
-
-.event-meet-field svg {
-    flex-shrink: 0;
-    color: var(--text-muted);
 }
 
 .event-meet-toggle {
@@ -6621,94 +6646,101 @@ button.settings-section-title {
     background: var(--surface-hover);
     color: var(--text-primary);
 }
-/* Event scheduler */
-.scheduler-ui {
-    padding: 10px 0;
-    border-bottom: 1px solid var(--border-default);
-}
-
-.scheduler-header {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    padding: 0 15px 10px;
-}
-
-.scheduler-header-group {
-    display: flex;
-    gap: 5px;
-    align-items: center;
-}
-
-.scheduler-header select {
-    font: var(--type-title);
-    background: transparent;
-    border: none;
-    color: var(--text-primary);
-    cursor: pointer;
-}
-
-.scheduler-days {
-    display: flex;
-    gap: 10px;
-    overflow-x: auto;
-    padding: 0 15px 15px;
-    scrollbar-width: none;
-}
-
-.scheduler-day-card {
+/* When: the day, its timeline, the times and how the event repeats */
+.event-when {
     display: flex;
     flex-direction: column;
+    gap: var(--space-md);
+    padding-bottom: var(--space-md);
+    border-bottom: 1px solid var(--border-subtle);
+}
+
+.event-day-line {
+    display: flex;
+    align-items: center;
+    gap: var(--space-xs);
+}
+
+.event-day-step {
+    width: 26px;
+    height: 26px;
+    display: flex;
     align-items: center;
     justify-content: center;
-    flex: 1 1 0;
-    min-width: 0;
-    max-width: 60px;
-    height: 70px;
-    border: 1px solid var(--border-default);
-    border-radius: 8px;
-    background-color: var(--surface-card);
+    border: none;
+    border-radius: var(--radius-md);
+    background: transparent;
+    color: var(--text-secondary);
     cursor: pointer;
 }
 
-.scheduler-day-card.selected {
-    border: 2px solid var(--accent-fill);
-    background-color: var(--accent-fill);
-}
-
-.scheduler-day-name {
-    font: var(--type-meta);
-    color: var(--text-secondary);
-}
-
-.scheduler-day-number {
-    font: var(--type-display);
+.event-day-step:hover {
+    background: var(--surface-subtle);
     color: var(--text-primary);
 }
 
-.scheduler-day-card.selected .scheduler-day-name,
-.scheduler-day-card.selected .scheduler-day-number {
-    color: var(--text-on-accent);
-}
-
-.scheduler-all-day {
-    display: flex;
-    align-items: center;
-    gap: 5px;
-    width: fit-content;
-    padding: 0 15px;
-    margin-bottom: 8px;
+.event-day-input {
+    border: none;
+    background: none;
+    color: var(--text-primary);
+    font: var(--type-ui);
+    font-weight: var(--weight-strong);
     cursor: pointer;
-    font: var(--type-meta);
-    color: var(--text-secondary);
 }
 
-.scheduler-times {
+.event-day-relative {
+    font: var(--type-meta);
+    color: var(--text-muted);
+}
+
+/* A quiet control on the form's own surface: Today, All day, Repeat */
+.event-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--space-sm);
+    padding: var(--space-xs) var(--space-md);
+    border: none;
+    border-radius: var(--radius-sm);
+    background: var(--surface-subtle);
+    color: var(--text-secondary);
+    font: var(--type-meta);
+    cursor: pointer;
+}
+
+.event-chip:hover {
+    background: var(--surface-hover);
+    color: var(--text-primary);
+}
+
+.event-day-line .event-chip {
+    margin-left: auto;
+}
+
+.event-when-summary {
     display: flex;
     flex-wrap: wrap;
     align-items: center;
-    gap: var(--space-md);
-    padding: 0 15px;
+    gap: var(--space-sm);
+}
+
+.event-when-length {
+    font: var(--type-meta);
+    color: var(--text-muted);
+}
+
+.event-when-note {
+    font: var(--type-meta);
+    color: var(--text-muted);
+}
+
+.event-when-note.clash {
+    color: var(--warning-text);
+}
+
+.event-when-options {
+    display: flex;
+    align-items: center;
+    gap: var(--space-sm);
 }
 
 .scheduler-time-separator {
@@ -6721,14 +6753,135 @@ button.settings-section-title {
     color: var(--text-secondary);
 }
 
-.scheduler-repeat {
-    margin-left: auto;
-    padding: 6px 10px;
-    border: 1px solid var(--border-default);
+.event-description textarea {
+    min-height: 100px;
+}
+
+/* The day timeline: twelve hours of the day with the user's other events,
+   and the new event as a block to drag */
+.day-timeline {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-xs);
+}
+
+.day-timeline-track {
+    position: relative;
+    height: 40px;
     border-radius: var(--radius-md);
-    background: var(--surface-card);
-    color: var(--text-primary);
-    font: var(--type-ui);
+    background: var(--surface-subtle);
+    cursor: crosshair;
+    touch-action: none;
+    user-select: none;
+}
+
+.day-timeline-tick {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    width: 1px;
+    background: var(--border-subtle);
+}
+
+.day-timeline-past {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    left: 0;
+    border-radius: var(--radius-md) 0 0 var(--radius-md);
+    background: var(--surface-hover);
+}
+
+.day-timeline-busy {
+    position: absolute;
+    top: 6px;
+    bottom: 6px;
+    padding: 0 var(--space-sm);
+    overflow: hidden;
+    border-radius: var(--radius-sm);
+    background: color-mix(in srgb, var(--text-muted) 25%, transparent);
+    color: var(--text-secondary);
+    display: flex;
+    align-items: center;
+    font: var(--type-hint);
+    white-space: nowrap;
+    pointer-events: none;
+}
+
+.day-timeline-busy.overlap {
+    background: repeating-linear-gradient(135deg, color-mix(in srgb, var(--warning) 35%, transparent) 0 2px, transparent 2px 5px);
+    box-shadow: inset 0 0 0 1px var(--warning);
+    color: var(--warning-text);
+}
+
+.day-timeline-slot {
+    position: absolute;
+    top: 3px;
+    bottom: 3px;
+    z-index: 1;
+    min-width: 8px;
+    border-radius: var(--radius-sm);
+    background: color-mix(in srgb, var(--accent-fill) 80%, transparent);
+    box-shadow: var(--shadow-sm);
+    cursor: grab;
+    outline: none;
+}
+
+.day-timeline-slot:active {
+    cursor: grabbing;
+}
+
+.day-timeline-slot:focus-visible {
+    box-shadow: 0 0 0 2px var(--border-focus);
+}
+
+.day-timeline-handle {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    width: 8px;
+    cursor: ew-resize;
+}
+
+.day-timeline-handle.start {
+    left: -4px;
+}
+
+.day-timeline-handle.end {
+    right: -4px;
+}
+
+.day-timeline-now {
+    position: absolute;
+    top: -2px;
+    bottom: -2px;
+    z-index: 2;
+    width: 2px;
+    margin-left: -1px;
+    border-radius: 1px;
+    background: var(--danger);
+    pointer-events: none;
+}
+
+.day-timeline-hours {
+    position: relative;
+    height: 14px;
+    font: var(--type-hint);
+    color: var(--text-muted);
+}
+
+.day-timeline-hours span {
+    position: absolute;
+    transform: translateX(-50%);
+    white-space: nowrap;
+}
+
+.day-timeline-hours span:first-child {
+    transform: none;
+}
+
+.day-timeline-hours span:last-child {
+    transform: translateX(-100%);
 }
 
 /* TimeCombobox: a typeable time with the day's steps below it */
@@ -6737,11 +6890,11 @@ button.settings-section-title {
 }
 
 .time-combobox-input {
-    width: 104px;
-    padding: 6px 10px;
-    border: 1px solid var(--border-default);
-    border-radius: var(--radius-md);
-    background: var(--surface-card);
+    width: 96px;
+    padding: var(--space-xs) var(--space-md);
+    border: none;
+    border-radius: var(--radius-sm);
+    background: var(--surface-subtle);
     color: var(--text-primary);
     font: var(--type-ui);
     font-variant-numeric: tabular-nums;

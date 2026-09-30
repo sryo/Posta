@@ -271,7 +271,9 @@ describe("ComposeForm sender", () => {
 
   it("names the account a reply goes out from", () => {
     render(() => <ComposeForm mode="reply" {...base} fromEmail="b@x.com" />);
-    expect(screen.getByText("b@x.com").closest(".compose-from")).toHaveTextContent("Fromb@x.com");
+    const from = screen.getByText("b@x.com").closest(".compose-from")!;
+    expect(from.closest(".panel-header")).toHaveTextContent("b@x.comReply");
+    expect(from.querySelector(".panel-account-avatar")).toHaveAttribute("data-hue");
     expect(screen.queryByRole("combobox", { name: "From" })).not.toBeInTheDocument();
   });
 });
