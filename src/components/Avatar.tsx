@@ -4,12 +4,12 @@ import { getAvatarHue, getInitial } from "../utils";
 // A person or account: their picture, else their initial on a colour of their
 // own, taken from their name or address so it stays the same everywhere.
 //   xs 22px (a panel's header)  sm 28px (a suggestion list)
-//   md 32px (the account list)  lg the toolbar button's size
+//   md 32px (the account list)  fill its button (the account corner)
 export function Avatar(props: {
   email: string;
   name?: string;
   picture?: string | null;
-  size?: "xs" | "sm" | "md" | "lg";
+  size?: "xs" | "sm" | "md" | "fill";
 }) {
   const label = () => props.name || props.email;
   return (

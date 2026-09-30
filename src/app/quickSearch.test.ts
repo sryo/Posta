@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { ALL_ACCOUNTS } from "./accountScope";
-import { RECENT_SEARCHES_MAX, keptCardName, parseRecentSearches, rememberSearch, searchCard, SEARCH_CARD_ID } from "./quickSearch";
+import { RECENT_SEARCHES_MAX, forgetSearch, keptCardName, parseRecentSearches, rememberSearch, searchCard, SEARCH_CARD_ID } from "./quickSearch";
 
 describe("searchCard", () => {
   it("searches every account under the reserved id", () => {
@@ -28,6 +28,13 @@ describe("keptCardName", () => {
     const name = keptCardName("x".repeat(80));
     expect(name.length).toBeLessThanOrEqual(40);
     expect(name.endsWith("…")).toBe(true);
+  });
+});
+
+describe("forgetSearch", () => {
+  it("drops only the search asked to be forgotten, keeping the others' order", () => {
+    expect(forgetSearch(["a", "b", "c"], "b")).toEqual(["a", "c"]);
+    expect(forgetSearch(["a"], "z")).toEqual(["a"]);
   });
 });
 

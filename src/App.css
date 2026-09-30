@@ -191,8 +191,7 @@
     /* Layout dimensions */
     --drag-region-height: 28px;
     --status-bar-height: 32px;
-    --toolbar-btn-size: 40px;
-    --sidebar-width: 80px;
+    --sidebar-width: 12px;
 
     /* Type primitives: five sizes, two weights, three leadings. Rules pick a
        role below rather than a primitive; glyphs set as text (icons, emoji)
@@ -515,28 +514,6 @@ a:focus-visible,
     -webkit-user-select: none;
 }
 
-/* Sidebar Container */
-.sidebar {
-    position: fixed;
-    top: 0;
-    left: 0;
-    bottom: 0;
-    width: var(--sidebar-width);
-    z-index: var(--z-sidebar);
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    padding-top: 16px;
-    padding-bottom: 20px;
-}
-
-.sidebar-content {
-    position: relative;
-    display: flex;
-    flex-direction: column;
-    flex: 1;
-}
-
 /* Global filter bar - keyboard activated spotlight */
 .global-filter-bar {
     position: fixed;
@@ -620,7 +597,41 @@ a:focus-visible,
     box-shadow: 0 4px 24px var(--shadow-color), 0 0 0 1px var(--border-default);
 }
 
+.recent-search-row {
+    position: relative;
+    display: flex;
+}
+
+/* Forgetting a search: shown on the row being pointed at or focused */
+.recent-search-forget {
+    position: absolute;
+    right: var(--space-sm);
+    top: 50%;
+    transform: translateY(-50%);
+    display: flex;
+    padding: var(--space-sm);
+    border: none;
+    border-radius: var(--radius-md);
+    background: none;
+    color: var(--text-muted);
+    cursor: pointer;
+    opacity: 0;
+}
+
+.recent-search-row:hover .recent-search-forget,
+.recent-search-row:focus-within .recent-search-forget {
+    opacity: 1;
+}
+
+.recent-search-forget:hover,
+.recent-search-forget:focus-visible {
+    background: var(--surface-hover);
+    color: var(--text-primary);
+}
+
 .recent-search {
+    flex: 1;
+    min-width: 0;
     display: flex;
     align-items: center;
     gap: var(--space-md);
@@ -632,6 +643,11 @@ a:focus-visible,
     color: var(--text-secondary);
     text-align: left;
     cursor: pointer;
+}
+
+/* Room for the forget button, so a long search ends before it */
+.recent-search-row .recent-search {
+    padding-right: 32px;
 }
 
 .recent-search:hover,
@@ -646,31 +662,49 @@ a:focus-visible,
     white-space: nowrap;
 }
 
-/* Toolbar (settings + bg color) - Now at bottom of sidebar */
-.toolbar-wrapper {
-    position: relative;
-    margin-top: auto;
+/* The account and the flower's hint, in the board's bottom-left corner */
+/* Centred under the + and level with the cards' bottoms */
+.board-corner {
+    position: fixed;
+    left: calc(var(--sidebar-width) + 32px + 8px);
+    bottom: 24px;
+    z-index: var(--z-sidebar);
     display: flex;
-    flex-direction: column;
     align-items: center;
-    gap: var(--space-2xl);
-    padding: var(--space-2xl);
-    width: 100%;
-    left: 8px;
+    gap: var(--space-lg);
+    pointer-events: none;
 }
 
-.toolbar-wrapper::before {
-    content: '';
-    position: absolute;
-    inset: 12px;
-    backdrop-filter: blur(40px);
-    border-radius: var(--radius-2xl);
-    z-index: -1;
+.board-corner > * {
+    pointer-events: auto;
+}
+
+/* Under the first card, in the strip below the cards */
+.board-hint {
+    position: fixed;
+    left: calc(var(--sidebar-width) + 32px + 40px + 20px);
+    bottom: 4px;
+    margin: 0;
+    display: flex;
+    align-items: center;
+    gap: var(--space-md);
+    font: var(--type-meta);
+    color: var(--text-muted);
+}
+
+.board-hint-dismiss {
+    padding: 0;
+    border: none;
+    background: none;
+    font: inherit;
+    color: var(--text-secondary);
+    text-decoration: underline;
+    cursor: pointer;
 }
 
 .toolbar-avatar {
-    width: var(--toolbar-btn-size);
-    height: var(--toolbar-btn-size);
+    width: 24px;
+    height: 24px;
     border-radius: var(--radius-full);
     border: none;
     background: var(--surface-card);
@@ -680,13 +714,16 @@ a:focus-visible,
     align-items: center;
     justify-content: center;
     overflow: hidden;
-    transition: all 0.2s ease;
-    box-shadow: var(--shadow-sm);
+    opacity: 0.55;
+    transition: opacity 0.2s ease, transform 0.2s ease;
+    box-shadow: 0 0 0 2px var(--app-bg, var(--surface-app));
 }
 
-.toolbar-avatar:hover {
-    box-shadow: var(--shadow-md);
-    transform: scale(1.05);
+.toolbar-avatar:hover,
+.toolbar-avatar:focus-visible,
+.toolbar-avatar[aria-expanded="true"] {
+    opacity: 1;
+    transform: scale(1.08);
 }
 
 /* Account Chooser Dropdown */
@@ -696,8 +733,8 @@ a:focus-visible,
 
 .account-chooser-dropdown {
     position: fixed;
-    bottom: 20px;
-    left: calc(var(--sidebar-width) + 8px);
+    bottom: 56px;
+    left: calc(var(--sidebar-width) + 32px);
     width: 280px;
     background: var(--surface-raised);
     border-radius: var(--radius-xl);
@@ -710,12 +747,12 @@ a:focus-visible,
 @keyframes dropdown-slide-in {
     from {
         opacity: 0;
-        transform: translateX(-8px);
+        transform: translateY(8px);
     }
 
     to {
         opacity: 1;
-        transform: translateX(0);
+        transform: translateY(0);
     }
 }
 
@@ -796,94 +833,201 @@ a:focus-visible,
     background: var(--surface-hover);
 }
 
-/* Compose toolbar - Now at top of sidebar */
-.compose-toolbar {
+/* The trailing slot: a + at the board's end that grows, in place, into a
+   card-shaped menu of what can be started and who or what to start it from */
+.board-slot-anchor {
     position: relative;
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    gap: var(--space-sm);
-    padding: var(--space-2xl);
-    width: 100%;
-    left: 8px;
+    z-index: var(--z-sidebar);
+    align-self: flex-start;
+    flex-shrink: 0;
+    width: 40px;
+    height: 40px;
+    /* The width of the resize handle that parts one card from the next */
+    margin-right: 20px;
+    /* Back once a panel has shrunk into it */
+    transition: opacity 0.1s ease 0.12s;
 }
 
-.compose-toolbar::before {
-    content: '';
+/* The + became the open email or event panel; its ring would show around
+   the panel's corner */
+.board-slot-anchor.covered {
+    visibility: hidden;
+    opacity: 0;
+    transition: none;
+}
+
+/* The + grows to the menu's width and, row by row, to its height in one
+   motion; the ring and shadow follow the box as it grows */
+.board-slot {
     position: absolute;
-    inset: 12px;
-    backdrop-filter: blur(40px);
-    border-radius: var(--radius-2xl);
-    z-index: -1;
+    top: 0;
+    left: 0;
+    width: 40px;
+    display: grid;
+    grid-template-rows: 40px 0fr;
+    overflow: hidden;
+    background: var(--surface-card);
+    box-shadow: 0 0 0 3px var(--border-default);
+    border-radius: var(--radius-xl);
+    transition:
+        width 0.22s cubic-bezier(0.2, 0.8, 0.2, 1),
+        grid-template-rows 0.22s cubic-bezier(0.2, 0.8, 0.2, 1),
+        box-shadow 0.2s ease;
 }
 
-.compose-btn-wrapper {
+.board-slot:hover {
+    box-shadow: 0 0 0 3px var(--border-strong);
+}
+
+.board-slot.open {
+    width: 232px;
+    grid-template-rows: 40px 1fr;
+    box-shadow: 0 0 0 3px var(--border-strong), var(--shadow-lg);
+}
+
+.board-slot-more {
+    min-height: 0;
+    width: 232px;
     display: flex;
     flex-direction: column;
-    align-items: center;
-    width: 100%;
 }
 
-.compose-btn {
-    width: var(--toolbar-btn-size);
-    height: var(--toolbar-btn-size);
-    border-radius: var(--radius-lg);
+.board-slot-more > :last-child {
+    margin-bottom: var(--space-sm);
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .board-slot {
+        transition: none;
+    }
+}
+
+.board-slot-row {
+    flex-shrink: 0;
+    display: flex;
+    align-items: center;
+    gap: var(--space-md);
+    width: 232px;
+    min-width: 0;
+    height: 40px;
+    padding: 0;
     border: none;
-    background: var(--accent-fill);
-    color: var(--text-on-accent);
+    border-radius: var(--radius-xl);
+    background: none;
+    color: var(--text-muted);
+    font: var(--type-ui);
+    text-align: left;
+    white-space: nowrap;
     cursor: pointer;
+}
+
+.board-slot-row:hover,
+.board-slot-row:focus-visible {
+    background: var(--surface-hover);
+    color: var(--text-primary);
+}
+
+.board-slot-icon {
+    flex-shrink: 0;
+    width: 40px;
     display: flex;
     align-items: center;
     justify-content: center;
-    transition: all 0.2s ease;
-    box-shadow: var(--shadow-sm);
 }
 
-.compose-btn:hover {
-    opacity: 0.9;
-    box-shadow: var(--shadow-md);
+.board-slot-label {
+    flex: 1;
+    color: var(--text-primary);
 }
 
-.new-event-btn {
-    width: var(--toolbar-btn-size);
-    height: var(--toolbar-btn-size);
-    border-radius: var(--radius-lg);
-    border: none;
-    background: var(--accent-fill);
-    color: var(--text-on-accent);
-    cursor: pointer;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    transition: all 0.2s ease;
-    box-shadow: var(--shadow-sm);
-    margin-top: 8px;
+.board-slot-key {
+    margin-right: var(--space-lg);
+    padding: 0 var(--space-xs);
+    border: 1px solid var(--border-default);
+    border-radius: var(--radius-sm);
+    font: var(--type-meta);
+    color: var(--text-muted);
 }
 
-.new-event-btn:hover {
-    opacity: 0.9;
-    box-shadow: var(--shadow-md);
+.board-slot-label,
+.board-slot-key {
+    opacity: 0;
+    transition: opacity 0.15s ease;
+}
+
+.board-slot.open .board-slot-label,
+.board-slot.open .board-slot-key {
+    opacity: 1;
+    transition-delay: 0.08s;
 }
 
 .compose-suggestions {
     display: flex;
-    flex-direction: column;
-    gap: var(--space-md);
-    align-items: center;
-    width: 100%;
+    flex-wrap: wrap;
+    gap: var(--space-sm);
+    margin: var(--space-sm) var(--space-md) 0;
+    padding-top: var(--space-md);
+    border-top: 1px solid var(--border-default);
     opacity: 0;
-    max-height: 0;
-    overflow: hidden;
     pointer-events: none;
-    transition: opacity 0.2s ease, max-height 0.2s ease, padding 0.2s ease;
+    transition: opacity 0.2s ease;
 }
 
 .compose-suggestions.visible {
     opacity: 1;
-    max-height: 300px;
-    padding-top: 12px;
     pointer-events: auto;
-    overflow: visible;
+}
+
+/* Faces name themselves on a caption line under them, inside the menu */
+.compose-suggestions:not(.event-suggestions) {
+    position: relative;
+    padding-bottom: 22px;
+}
+
+.compose-suggestions:not(.event-suggestions)::after {
+    content: "Write to someone recent";
+    position: absolute;
+    left: 0;
+    bottom: 2px;
+    font: var(--type-meta);
+    color: var(--text-muted);
+    transition: opacity 0.15s ease;
+}
+
+.compose-suggestions:not(.event-suggestions):has(.compose-suggestion-avatar:hover, .compose-suggestion-avatar:focus-visible)::after {
+    opacity: 0;
+}
+
+/* No growing on hover here: a transformed face would pull its name up to
+   itself instead of the caption line */
+.compose-suggestions:not(.event-suggestions) .compose-suggestion-avatar {
+    position: static;
+    transition: box-shadow 0.15s ease;
+}
+
+.compose-suggestions:not(.event-suggestions) .compose-suggestion-avatar:hover,
+.compose-suggestions:not(.event-suggestions) .compose-suggestion-avatar:focus-visible {
+    transform: none;
+    box-shadow: 0 0 0 2px var(--surface-card), 0 0 0 4px var(--border-strong);
+}
+
+.compose-suggestions:not(.event-suggestions) .suggestion-label {
+    left: 0;
+    right: 0;
+    bottom: 2px;
+    transform: none;
+    padding: 0;
+    background: none;
+    box-shadow: none;
+    color: var(--text-primary);
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+/* Events to start read as rows, their title over their guests */
+.compose-suggestions.event-suggestions {
+    flex-direction: column;
+    flex-wrap: nowrap;
 }
 
 /* Compose Suggestion Avatar */
@@ -916,9 +1060,9 @@ a:focus-visible,
 
 .suggestion-label {
     position: absolute;
-    left: calc(100% + 8px);
-    top: 50%;
-    transform: translateY(-50%);
+    left: 50%;
+    bottom: calc(100% + 6px);
+    transform: translateX(-50%);
     background: var(--surface-raised);
     color: var(--text-primary);
     padding: var(--space-sm) var(--space-lg);
@@ -931,12 +1075,41 @@ a:focus-visible,
     white-space: nowrap;
 }
 
-/* An event to start from a thread or a past meeting: a glyph in the pill, and
-   the title over its guests in the label */
+/* An event to start from a thread or a past meeting: a glyph, then the
+   title over its guests */
+.compose-suggestion-avatar.event-suggestion {
+    width: 100%;
+    height: auto;
+    justify-content: flex-start;
+    gap: var(--space-md);
+    padding: var(--space-xs);
+    border-radius: var(--radius-md);
+    background: none;
+    color: var(--text-secondary);
+    box-shadow: none;
+}
+
+.compose-suggestion-avatar.event-suggestion:hover,
+.compose-suggestion-avatar.event-suggestion:focus-visible {
+    transform: none;
+    background: var(--surface-hover);
+}
+
+.compose-suggestion-avatar.event-suggestion > svg {
+    flex-shrink: 0;
+}
+
 .event-suggestion .suggestion-label {
+    position: static;
+    transform: none;
     display: flex;
     flex-direction: column;
-    max-width: 240px;
+    min-width: 0;
+    padding: 0;
+    background: none;
+    box-shadow: none;
+    opacity: 1;
+    font-weight: var(--weight-regular);
 }
 
 .event-suggestion-title,
@@ -1089,23 +1262,42 @@ a:focus-visible,
 }
 
 /* Pointing at the title shows what a click does: open cards fold up, folded
-   ones open */
+   ones open. The chevron opens a place for itself before the title, so at
+   rest the title keeps the rows' left edge */
 .card-title-chevron {
     display: inline-flex;
     align-self: center;
     flex-shrink: 0;
+    width: 0;
+    margin-right: calc(-1 * var(--space-md));
+    overflow: hidden;
     color: var(--text-muted);
     opacity: 0;
-    transition: opacity 0.15s ease, transform 0.15s ease;
+    transition: width 0.15s ease, margin-right 0.15s ease, opacity 0.15s ease, transform 0.15s ease;
 }
 
 .card-title-btn:hover .card-title-chevron,
 .card-title-btn:focus-visible .card-title-chevron {
+    width: 14px;
+    margin-right: 0;
     opacity: 1;
 }
 
+/* On a folded strip it opens its place at the strip's foot, under the title */
 .card.collapsed .card-title-chevron {
+    order: 3;
+    width: 14px;
+    height: 0;
+    margin-right: 0;
+    margin-top: -6px;
     transform: rotate(-90deg);
+    transition: height 0.15s ease, margin-top 0.15s ease, opacity 0.15s ease;
+}
+
+.card.collapsed .card-title-btn:hover .card-title-chevron,
+.card.collapsed .card-title-btn:focus-visible .card-title-chevron {
+    height: 14px;
+    margin-top: 0;
 }
 
 .card-title {
@@ -2316,28 +2508,6 @@ a:focus-visible,
     border-color: var(--border-strong);
 }
 
-/* Add Card Button */
-.add-card-btn {
-    min-width: 40px;
-    height: 40px;
-    flex-shrink: 0;
-    background: var(--surface-card);
-    border: none;
-    box-shadow: 0 0 0 3px var(--border-default);
-    border-radius: var(--radius-xl);
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    cursor: pointer;
-    color: var(--text-muted);
-    transition: background 0.2s, color 0.2s;
-}
-
-.add-card-btn:hover {
-    color: var(--text-secondary);
-    box-shadow: 0 0 0 3px var(--border-strong);
-}
-
 /* Add card form - morphs from button */
 .card.form-mode {
     min-width: var(--card-width, 320px);
@@ -3205,7 +3375,7 @@ button:disabled:hover {
 
 .avatar[data-size="xs"] { --avatar-size: 22px; }
 .avatar[data-size="md"] { --avatar-size: 32px; font: var(--type-title); }
-.avatar[data-size="lg"] { --avatar-size: var(--toolbar-btn-size); font: var(--type-heading); }
+.avatar[data-size="fill"] { --avatar-size: 100%; }
 
 .avatar img {
     width: 100%;
@@ -3221,11 +3391,12 @@ button:disabled:hover {
 }
 
 /* Compose Panel */
+/* A new email or event opens where the board's + is, growing out of its menu */
 .compose-panel {
-    --panel-top: 40px;
+    --panel-top: var(--drag-region-height);
     position: fixed;
     top: var(--panel-top);
-    left: 24px;
+    left: calc(var(--sidebar-width) + 32px);
     width: 480px;
     max-width: calc(100vw - 48px);
     background: var(--surface-overlay);
@@ -3236,27 +3407,20 @@ button:disabled:hover {
     display: flex;
     flex-direction: column;
     max-height: calc(100vh - var(--panel-top) - var(--app-edge-margin));
-    animation: composePanelExpand 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
+    animation: composePanelExpand 0.28s cubic-bezier(0.2, 0.8, 0.2, 1);
     transform-origin: top left;
 }
 
 @keyframes composePanelExpand {
+    /* The + menu's open size, the panel revealed from there */
     from {
-        width: var(--toolbar-btn-size);
-        height: var(--toolbar-btn-size);
-        border-radius: var(--radius-lg);
-        opacity: 0;
-        transform: scale(0.95);
-        filter: blur(8px);
+        clip-path: inset(0 calc(100% - 232px) calc(100% - 160px) 0 round var(--radius-xl));
+        opacity: 0.6;
     }
 
     to {
-        width: 480px;
-        height: auto;
-        border-radius: var(--radius-lg);
+        clip-path: inset(0 round var(--radius-xl));
         opacity: 1;
-        transform: scale(1);
-        filter: blur(0);
     }
 }
 
@@ -3266,74 +3430,20 @@ button:disabled:hover {
 }
 
 @keyframes composePanelCollapse {
+    /* Back into the + */
     from {
-        width: 480px;
-        max-height: calc(100vh - var(--panel-top) - var(--app-edge-margin));
-        border-radius: var(--radius-lg);
+        clip-path: inset(0 round var(--radius-xl));
         opacity: 1;
-        transform: scale(1);
-        filter: blur(0);
     }
 
     to {
-        width: var(--toolbar-btn-size);
-        max-height: var(--toolbar-btn-size);
-        border-radius: var(--radius-lg);
+        clip-path: inset(0 calc(100% - 40px) calc(100% - 40px) 0 round var(--radius-xl));
         opacity: 0;
-        transform: scale(0.95);
-        filter: blur(8px);
     }
 }
 
-/* Event Compose Panel - positioned at new-event button */
 .compose-panel.event-compose {
-    --panel-top: 84px;
-    animation: eventPanelExpand 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
-}
-
-@keyframes eventPanelExpand {
-    from {
-        width: var(--toolbar-btn-size);
-        height: var(--toolbar-btn-size);
-        border-radius: var(--radius-lg);
-        opacity: 0;
-        transform: scale(0.95);
-        filter: blur(8px);
-    }
-
-    to {
-        width: 480px;
-        height: auto;
-        border-radius: var(--radius-lg);
-        opacity: 1;
-        transform: scale(1);
-        filter: blur(0);
-    }
-}
-
-.compose-panel.event-compose.closing {
-    animation: eventPanelCollapse 0.2s ease-out forwards;
-    overflow: hidden;
-}
-
-@keyframes eventPanelCollapse {
-    from {
-        width: 480px;
-        max-height: calc(100vh - var(--panel-top) - var(--app-edge-margin));
-        border-radius: var(--radius-lg);
-        opacity: 1;
-        transform: scale(1);
-        filter: blur(0);
-    }
-
-    to {
-        width: var(--toolbar-btn-size);
-        max-height: var(--toolbar-btn-size);
-        border-radius: var(--radius-lg);
-        opacity: 0;
-        transform: scale(0.95);
-        filter: blur(8px);
-    }
+    animation: composePanelExpand 0.28s cubic-bezier(0.2, 0.8, 0.2, 1);
 }
 
 /* A panel's top: whose it is, then close */
@@ -5823,28 +5933,8 @@ button.settings-section-title {
    RESPONSIVE BREAKPOINTS
    ============================================ */
 
-/* Tablet: Reduce sidebar width */
-@media (max-width: 1024px) {
-    :root {
-        --sidebar-width: 60px;
-    }
-}
-
-/* Small tablet: Compact sidebar */
+/* Small tablet */
 @media (max-width: 768px) {
-    :root {
-        --sidebar-width: 50px;
-    }
-
-    .sidebar {
-        width: var(--sidebar-width);
-    }
-
-    .toolbar-avatar {
-        width: 36px;
-        height: 36px;
-    }
-
     .thread-toolbar-label {
         display: none;
     }
@@ -5854,12 +5944,6 @@ button.settings-section-title {
 @media (max-width: 480px) {
     :root {
         --drag-region-height: 24px;
-        --sidebar-width: 44px;
-    }
-
-    .toolbar-avatar {
-        width: 32px;
-        height: 32px;
     }
 
     .deck {
@@ -6706,4 +6790,22 @@ button.settings-section-title {
         animation-iteration-count: 1 !important;
         transition-duration: 0.01ms !important;
     }
+}
+
+/* The board's own flower, where it was double-clicked or right-clicked */
+.board-flower {
+    position: fixed;
+    width: 0;
+    height: 0;
+    z-index: var(--z-dropdown);
+}
+
+.board-flower-core {
+    position: absolute;
+    left: -4px;
+    top: -4px;
+    width: 8px;
+    height: 8px;
+    border-radius: var(--radius-full);
+    background: var(--text-muted);
 }

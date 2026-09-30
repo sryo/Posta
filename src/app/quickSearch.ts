@@ -43,6 +43,10 @@ export function rememberSearch(recent: string[], query: string): string[] {
   return [q, ...recent.filter(r => r !== q)].slice(0, RECENT_SEARCHES_MAX);
 }
 
+export function forgetSearch(recent: string[], query: string): string[] {
+  return recent.filter(r => r !== query);
+}
+
 export function parseRecentSearches(raw: string | null): string[] {
   try {
     const parsed = JSON.parse(raw ?? "[]");

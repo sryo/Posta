@@ -12,7 +12,7 @@ describe("Avatar", () => {
   });
 
   it("shows a picture when there is one, with no hue behind it", () => {
-    const { container } = render(() => <Avatar email="ana@x.com" picture="https://x/a.png" size="lg" />);
+    const { container } = render(() => <Avatar email="ana@x.com" picture="https://x/a.png" size="fill" />);
     expect(container.querySelector(".avatar img")).toHaveAttribute("src", "https://x/a.png");
     expect(container.querySelector(".avatar")).not.toHaveAttribute("data-hue");
   });
