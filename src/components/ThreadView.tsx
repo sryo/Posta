@@ -7,18 +7,16 @@ import { MessageBody } from './MessageBody';
 import { sendReaction, type FullThread, type FullMessage, type Attachment, type CalendarEvent } from "../api/tauri";
 import type { RsvpStatus } from "../app/rsvp";
 import type { StripLayout } from "../app/dayStrip";
-import { isCalendarAttachment } from "../app/attachments";
+import { isCalendarAttachment, isPreviewable, visibleAttachments } from "../app/attachments";
+import { AttachmentList } from "./Attachments";
 import { InviteBlock } from "./InviteBlock";
 import { createCloseAfterAnimation } from "../shared/closeAfterAnimation";
-import { isTypingTarget, hasCommandModifier, onActivateKey } from "../shared/keyboard";
+import { isTypingTarget, hasCommandModifier } from "../shared/keyboard";
 import {
   findContent,
-  formatFileSize,
-  truncateMiddle,
   extractEmail,
   extractName,
   formatEmailDate,
-  normalizeBase64Url,
   extractMessageHtml,
   extractMessageText,
   buildQuotedBody,
@@ -44,9 +42,6 @@ import {
   ChevronLeftIcon,
   ChevronRightIcon,
   CalendarIcon,
-  FileIcon,
-  FileTextIcon,
-  ImageIcon,
 } from "./Icons";
 import { SmartReplies } from "./SmartReplies";
 import { ReactionButton } from "./ReactionButton";
@@ -56,7 +51,6 @@ import { MessageActionsWheel } from "./MessageActionsWheel";
 import { MessageRecipients } from "./MessageRecipients";
 import { MessageSender } from "./MessageSender";
 import type { PreviewAttachment } from "./AttachmentLightbox";
-import { isPreviewable } from "../app/attachments";
 import { isForwardSubject } from "../app/quotedHistory";
 import { isMailingList, unsubscribeMethod, type UnsubscribeMethod } from "../app/unsubscribe";
 import { personName } from "../app/people";
@@ -66,7 +60,6 @@ import { findHeader, lastMessageFromOthers, nearestShownIndex, normalizeMessageI
 import { useLayer } from "../app/layers";
 import { useDialog } from "../app/dialog";
 
-type MessageAttachment = { filename: string; mimeType: string; size: number; attachmentId?: string; inlineData?: string };
 
 export const ThreadView = (props: {
   thread: FullThread | null,
@@ -83,6 +76,8 @@ export const ThreadView = (props: {
   // Opens the lightbox on the thread's images and PDFs; without it every
   // attachment opens in another app
   onPreviewAttachments?: (items: PreviewAttachment[], index: number) => void,
+  // Downloads an image attachment's preview when it didn't come with the thread
+  loadAttachmentPreview?: (attachment: Attachment) => Promise<string>,
   // messageId is the RFC 2822 Message-ID header value (undefined when the
   // header is missing; the backend resolves missing ids itself)
   onReply: (to: string, cc: string, subject: string, quotedBody: string, messageId: string | undefined, isHtml: boolean) => void,
@@ -212,9 +207,11 @@ export const ThreadView = (props: {
     }
   };
 
-  // Extract attachments from message parts, enriched with inline_data from threadAttachments
-  const attachmentsOf = (msg: FullMessage): MessageAttachment[] => {
-    const attachments: MessageAttachment[] = [];
+  // A message's attachments from its parts, enriched with inline_data from
+  // threadAttachments; the calendar file is left out of the message whose
+  // invite shows above it, and embedded images and repeats are left out too
+  const attachmentsOf = (msg: FullMessage): Attachment[] => {
+    const attachments: Attachment[] = [];
     const payload = msg.payload;
     const fileParts: any[] = [];
     const findFileParts = (parts: any[]) => {
@@ -238,26 +235,30 @@ export const ThreadView = (props: {
         const i = unpaired.findIndex(a => a.filename === part.filename);
         if (i !== -1) threadAtt = unpaired.splice(i, 1)[0];
       }
+      const contentId = (part.headers as { name: string; value: string }[] | undefined)
+        ?.find(h => h.name.toLowerCase() === "content-id")?.value.replace(/^<|>$/g, "") ?? null;
       attachments.push({
+        message_id: msg.id,
+        attachment_id: attachmentId ?? "",
         filename: part.filename,
-        mimeType: part.mimeType || 'application/octet-stream',
+        mime_type: part.mimeType || 'application/octet-stream',
         size: part.body?.size || 0,
-        attachmentId,
-        inlineData: threadAtt?.inline_data || part.body?.data,
+        inline_data: threadAtt?.inline_data || part.body?.data || null,
+        content_id: contentId ?? threadAtt?.content_id ?? null,
       });
     }
-    return attachments;
+    return visibleAttachments(attachments, { hideCalendar: !!props.invite && msg.id === inviteMessageId() });
   };
 
   // Every image and PDF in the thread, in order, for the lightbox
   const previewItems = createMemo(() => messages().flatMap(msg =>
-    attachmentsOf(msg).filter(a => isPreviewable(a.mimeType)).map(a => ({
+    attachmentsOf(msg).filter(a => isPreviewable(a.mime_type)).map(a => ({
       messageId: msg.id,
-      attachmentId: a.attachmentId || "",
+      attachmentId: a.attachment_id,
       filename: a.filename,
-      mimeType: a.mimeType,
+      mimeType: a.mime_type,
       size: a.size,
-      inlineData: a.inlineData || null,
+      inlineData: a.inline_data,
     }))));
 
   const chipReactions = createMemo(() => reactionsShownAsChips(props.thread?.messages ?? []));
@@ -586,8 +587,6 @@ export const ThreadView = (props: {
                 // mounts must re-render the thumbnails (same reason MessageBody
                 // wraps its lookup in createMemo)
                 const attachments = createMemo(() => attachmentsOf(msg));
-                const isImage = (mime: string) => mime.startsWith('image/');
-                const isPdf = (mime: string) => mime === 'application/pdf';
 
                 const actions = messageActions(msg);
                 const getRfcMessageId = () => findHeader(headers, 'Message-ID');
@@ -692,68 +691,24 @@ export const ThreadView = (props: {
                           </For>
                         </div>
                       </Show>
-                      <Show when={attachments().length > 0}>
-                        <div class="message-attachments">
-                          <For each={attachments()}>
-                            {(att) => {
-                              const handleContextMenu = (e: MouseEvent) => {
-                                e.preventDefault();
-                                props.onShowAttachmentMenu({
-                                  messageId: msg.id,
-                                  attachmentId: att.attachmentId || "",
-                                  filename: att.filename,
-                                  mimeType: att.mimeType,
-                                  inlineData: att.inlineData || null
-                                });
-                              };
-                              const hasThumb = att.inlineData && isImage(att.mimeType);
-                              const open = () => {
-                                const index = previewItems().findIndex(p =>
-                                  p.messageId === msg.id && p.filename === att.filename && p.attachmentId === (att.attachmentId || ""));
-                                if (props.onPreviewAttachments && index !== -1) props.onPreviewAttachments(previewItems(), index);
-                                else props.onOpenAttachment(msg.id, att.attachmentId, att.filename, att.mimeType, att.inlineData);
-                              };
-                              const activate = onActivateKey(open);
-                              const handleKeyDown = (e: KeyboardEvent) => {
-                                if (e.key === 'F10' && e.shiftKey) {
-                                  e.stopPropagation();
-                                  handleContextMenu(e as unknown as MouseEvent);
-                                  return;
-                                }
-                                activate(e);
-                              };
-                              return (
-                                <div
-                                  class="attachment-thumb"
-                                  role="button"
-                                  tabIndex={0}
-                                  aria-label={`${att.filename}, ${formatFileSize(att.size)}`}
-                                  title={`${att.filename} (${formatFileSize(att.size)})`}
-                                  onClick={open}
-                                  on:keydown={handleKeyDown}
-                                  onContextMenu={handleContextMenu}
-                                >
-                                  {hasThumb ? (
-                                    <img
-                                      class="attachment-preview"
-                                      src={`data:${att.mimeType};base64,${normalizeBase64Url(att.inlineData!)}`}
-                                      alt={att.filename}
-                                    />
-                                  ) : (
-                                    <div class={`attachment-icon ${isImage(att.mimeType) ? 'image' : isPdf(att.mimeType) ? 'pdf' : 'file'}`}>
-                                      {isImage(att.mimeType) ? <ImageIcon size="tool" /> : isPdf(att.mimeType) ? <FileTextIcon size="tool" /> : <FileIcon size="tool" />}
-                                    </div>
-                                  )}
-                                  <div class="attachment-info">
-                                    <div class="attachment-name">{truncateMiddle(att.filename, 20)}</div>
-                                    <div class="attachment-size">{formatFileSize(att.size)}</div>
-                                  </div>
-                                </div>
-                              );
-                            }}
-                          </For>
-                        </div>
-                      </Show>
+                      <AttachmentList
+                        size="detail"
+                        attachments={attachments()}
+                        loadPreview={props.loadAttachmentPreview}
+                        onOpen={(att) => {
+                          const index = previewItems().findIndex(p =>
+                            p.messageId === msg.id && p.filename === att.filename && p.attachmentId === att.attachment_id);
+                          if (props.onPreviewAttachments && index !== -1) props.onPreviewAttachments(previewItems(), index);
+                          else props.onOpenAttachment(msg.id, att.attachment_id || undefined, att.filename, att.mime_type, att.inline_data ?? undefined);
+                        }}
+                        onMenu={(att) => props.onShowAttachmentMenu({
+                          messageId: msg.id,
+                          attachmentId: att.attachment_id,
+                          filename: att.filename,
+                          mimeType: att.mime_type,
+                          inlineData: att.inline_data,
+                        })}
+                      />
                     </div>
                     {/* Resize handle and inline compose form */}
                     <Show when={showInlineCompose() && props.inlineCompose}>

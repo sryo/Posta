@@ -350,16 +350,16 @@
 /* ---- Tier 2: card-derived -----------------------------------------------
    Anything that wears a card hue sets --card-hue; everything else derives.
    Uncoloured cards keep the defaults on :root, the plain surfaces. */
-.card[data-color="red"], .preset-card.red, .attachment-icon.pdf, [data-hue="red"] { --card-hue: var(--hue-red); }
+.card[data-color="red"], .preset-card.red, [data-hue="red"] { --card-hue: var(--hue-red); }
 .card[data-color="orange"], .preset-card.orange, [data-hue="orange"] { --card-hue: var(--hue-orange); }
 .card[data-color="yellow"], .preset-card.yellow, [data-hue="yellow"] { --card-hue: var(--hue-yellow); }
-.card[data-color="green"], .preset-card.green, .attachment-icon.image, [data-hue="green"] { --card-hue: var(--hue-green); }
+.card[data-color="green"], .preset-card.green, [data-hue="green"] { --card-hue: var(--hue-green); }
 .card[data-color="cyan"], [data-hue="cyan"] { --card-hue: var(--hue-cyan); }
-.card[data-color="blue"], .preset-card.blue, .attachment-icon.file, [data-hue="blue"] { --card-hue: var(--hue-blue); }
+.card[data-color="blue"], .preset-card.blue, [data-hue="blue"] { --card-hue: var(--hue-blue); }
 .card[data-color="purple"], .preset-card.purple, [data-hue="purple"] { --card-hue: var(--hue-purple); }
 .card[data-color="pink"], [data-hue="pink"] { --card-hue: var(--hue-pink); }
 
-.card[data-color], .preset-card, .attachment-icon, .thread-bar-card[data-hue] {
+.card[data-color], .preset-card, .thread-bar-card[data-hue] {
     --card-tint: color-mix(in srgb, var(--card-hue) var(--card-tint-mix), transparent);
     --card-ring: color-mix(in srgb, var(--card-hue) var(--card-ring-mix), transparent);
     --card-band: color-mix(in srgb, var(--card-hue) var(--card-band-mix), transparent);
@@ -731,9 +731,6 @@ a:focus-visible,
     top: var(--drag-region-height);
     right: 8px;
     width: 280px;
-    background: var(--surface-raised);
-    border-radius: var(--radius-xl);
-    box-shadow: var(--shadow-lg), 0 0 0 1px var(--border-default);
     overflow: hidden;
     z-index: var(--z-dropdown);
     animation: dropdown-slide-in 0.15s ease;
@@ -1603,60 +1600,127 @@ a:focus-visible,
     flex-shrink: 0;
 }
 
-.thread-attachments {
-    display: flex;
-    gap: var(--space-sm);
-    margin-top: var(--space-sm);
-    flex-wrap: wrap;
-    align-items: center;
-}
-
 /* Thumbnails and file chips are quiet on the card: a hairline in the text's
    own colour, filled only under the pointer */
-.thread-image-thumb {
-    width: 28px;
-    height: 28px;
-    object-fit: cover;
-    border-radius: var(--radius-xs);
-    box-shadow: inset 0 0 0 1px color-mix(in srgb, currentColor 18%, transparent);
-    cursor: pointer;
-}
-
 /* A preview still on its way */
-.thread-image-thumb.pending {
-    display: block;
-    background: var(--surface-hover);
-}
-
-.thread-image-btn {
+/* Attachments (AttachmentList): quiet, a hairline in the text's own colour
+   filled only under the pointer, so a coloured card tints them itself.
+   row: previews and names in a line; detail: each with its size */
+.attachments {
     display: flex;
-    padding: 0;
-    border: none;
-    background: none;
-    border-radius: var(--radius-xs);
-    color: var(--text-secondary);
-    cursor: pointer;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--space-sm);
 }
 
-.thread-file-item {
+.attachments[data-size="row"] {
+    margin-top: var(--space-sm);
+}
+
+.attachments[data-size="detail"] {
+    gap: var(--space-md);
+    margin-top: var(--space-xl);
+    padding-top: var(--space-xl);
+    border-top: 1px solid var(--border-subtle);
+}
+
+.attachment {
     display: flex;
     align-items: center;
-    height: 22px;
-    max-width: 160px;
-    padding: 0 var(--space-md);
+    gap: var(--space-md);
+    min-width: 0;
+    padding: 0;
     border: none;
     border-radius: var(--radius-sm);
     background: transparent;
     box-shadow: inset 0 0 0 1px color-mix(in srgb, currentColor 18%, transparent);
     color: var(--text-secondary);
     font: var(--type-meta);
+    text-align: left;
     cursor: pointer;
     transition: background 0.15s ease;
 }
 
-.thread-file-item:hover,
-.thread-image-btn:hover {
+.attachment:hover {
     background: var(--surface-hover);
+}
+
+.attachments[data-size="row"] .attachment {
+    height: 22px;
+    max-width: 160px;
+    padding: 0 var(--space-md);
+}
+
+.attachments[data-size="row"] .attachment[data-preview] {
+    width: 28px;
+    height: 28px;
+    padding: 0;
+    overflow: hidden;
+    border-radius: var(--radius-xs);
+}
+
+.attachments[data-size="detail"] .attachment {
+    max-width: 240px;
+    padding: var(--space-md) var(--space-lg) var(--space-md) var(--space-md);
+    border-radius: var(--radius-lg);
+}
+
+.attachment-media {
+    display: grid;
+    place-items: center;
+    flex-shrink: 0;
+    overflow: hidden;
+}
+
+.attachments[data-size="row"] .attachment-media {
+    width: 100%;
+    height: 100%;
+}
+
+.attachments[data-size="detail"] .attachment-media {
+    width: 36px;
+    height: 36px;
+    border-radius: var(--radius-md);
+    background: var(--surface-hover);
+}
+
+.attachment-media img,
+.attachment-pending {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+}
+
+/* A preview still on its way */
+.attachment-pending {
+    display: block;
+    background: var(--surface-hover);
+}
+
+.attachment-body {
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+}
+
+.attachment-name {
+    display: flex;
+    min-width: 0;
+}
+
+.attachments[data-size="detail"] .attachment-name {
+    font: var(--type-ui);
+    color: var(--text-primary);
+}
+
+.attachment-meta {
+    color: var(--text-muted);
+}
+
+.attachments-more {
+    font: var(--type-meta);
+    color: var(--text-muted);
+    padding: 0 var(--space-sm);
 }
 
 /* The name is cut short; its extension never is */
@@ -1670,12 +1734,6 @@ a:focus-visible,
 .file-ext {
     flex-shrink: 0;
     white-space: nowrap;
-}
-
-.thread-attachment-more {
-    font: var(--type-meta);
-    color: var(--text-muted);
-    padding: 0 var(--space-sm);
 }
 
 .thread-snippet {
@@ -2109,34 +2167,7 @@ a:focus-visible,
 .invite-answer-menu {
     position: fixed;
     z-index: var(--z-dropdown);
-    display: flex;
-    flex-direction: column;
     min-width: 148px;
-    padding: var(--space-sm);
-    border-radius: var(--radius-lg);
-    background: var(--surface-raised);
-    box-shadow: 0 0 0 1px var(--border-default), 0 8px 24px var(--shadow-color);
-}
-
-.invite-answer-item {
-    display: flex;
-    align-items: center;
-    gap: var(--space-md);
-    height: 26px;
-    padding: 0 var(--space-md);
-    border: none;
-    border-radius: var(--radius-md);
-    background: none;
-    font: var(--type-ui);
-    color: var(--text-primary);
-    text-align: left;
-    cursor: pointer;
-}
-
-.invite-answer-item:hover,
-.invite-answer-item:focus-visible {
-    background: var(--surface-hover);
-    outline: none;
 }
 
 .invite-answer-icon {
@@ -2881,10 +2912,6 @@ button.chip-label {
     min-width: 200px;
     max-width: 280px;
     padding: var(--space-sm);
-    background: var(--surface-card);
-    border: 1px solid var(--border-default);
-    border-radius: var(--radius-md);
-    box-shadow: 0 4px 12px var(--shadow-color);
     z-index: var(--z-dropdown);
 }
 
@@ -2926,10 +2953,7 @@ button.chip-label {
 /* Action config context menu */
 .action-config-menu {
     position: fixed;
-    background: var(--surface-raised);
-    border-radius: var(--radius-lg);
-    box-shadow: 0 4px 16px var(--shadow-color);
-    padding: 6px 0;
+    padding: var(--space-sm) 0;
     min-width: 120px;
     z-index: var(--z-dropdown);
 }
@@ -3666,36 +3690,6 @@ button:disabled:hover {
     gap: var(--space-md);
     padding: var(--space-md) var(--space-lg);
     border-top: 1px solid var(--border-subtle);
-}
-
-.compose-attachment {
-    display: flex;
-    align-items: center;
-    gap: var(--space-md);
-    padding: 4px 8px 4px 10px;
-    background: var(--surface-hover);
-    border-radius: var(--radius-sm);
-    font: var(--type-meta);
-}
-
-.attachment-remove {
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    width: 16px;
-    height: 16px;
-    padding: 0;
-    background: transparent;
-    border: none;
-    color: var(--text-muted);
-    cursor: pointer;
-    border-radius: var(--radius-full);
-    transition: all 0.15s;
-}
-
-.attachment-remove:hover {
-    background: var(--danger);
-    color: var(--text-on-status);
 }
 
 /* Thread checkbox on hover, and while its wheel is open: the wheel lives in
@@ -5678,83 +5672,6 @@ button.settings-section-title {
 }
 
 /* Message Attachments */
-.message-attachments {
-    display: flex;
-    flex-wrap: wrap;
-    gap: var(--space-md);
-    margin-top: 16px;
-    padding-top: 16px;
-    border-top: 1px solid var(--border-subtle);
-}
-
-.attachment-thumb {
-    display: flex;
-    align-items: center;
-    gap: var(--space-lg);
-    padding: var(--space-lg) var(--space-lg);
-    background: var(--surface-inset);
-    border-radius: var(--radius-lg);
-    cursor: pointer;
-    transition: background 0.15s;
-    max-width: 220px;
-}
-
-.attachment-thumb:hover {
-    background: var(--surface-hover);
-}
-
-.attachment-icon {
-    width: 36px;
-    height: 36px;
-    border-radius: var(--radius-md);
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    flex-shrink: 0;
-    /* icons take text ink, never the decorative --card-ink */
-    color: var(--card-ink-text);
-}
-
-.attachment-icon.image {
-    background: var(--card-tint);
-}
-
-.attachment-icon.pdf {
-    background: var(--card-tint);
-}
-
-.attachment-icon.file {
-    background: var(--card-tint);
-}
-
-.attachment-preview {
-    width: 36px;
-    height: 36px;
-    border-radius: var(--radius-md);
-    object-fit: cover;
-    flex-shrink: 0;
-}
-
-.attachment-info {
-    min-width: 0;
-    flex: 1;
-}
-
-.attachment-name {
-    font: var(--type-ui);
-    color: var(--text-primary);
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    max-width: 160px;
-}
-
-.attachment-size {
-    font: var(--type-meta);
-    color: var(--text-muted);
-    margin-top: 2px;
-}
-
 .loading-spinner {
     display: flex;
     justify-content: center;
@@ -6181,6 +6098,53 @@ button.settings-section-title {
 }
 
 /* ScopeMenu: anchored above the Save or Delete button that opened it */
+/* Popovers: every short-lived surface over the page shares one look */
+.menu,
+.query-picker,
+.action-config-menu,
+.account-chooser-dropdown {
+    border-radius: var(--radius-lg);
+    background: var(--surface-raised);
+    box-shadow: 0 0 0 1px var(--border-default), 0 8px 24px var(--shadow-color);
+}
+
+/* Menu: a short list of choices (Menu) */
+.menu {
+    z-index: var(--z-dropdown);
+    display: flex;
+    flex-direction: column;
+    padding: var(--space-sm);
+}
+
+.menu-title {
+    padding: var(--space-sm) var(--space-md);
+    font: var(--type-label);
+    text-transform: uppercase;
+    letter-spacing: var(--tracking-label);
+    color: var(--text-secondary);
+}
+
+.menu-item {
+    display: flex;
+    align-items: center;
+    gap: var(--space-md);
+    min-height: 28px;
+    padding: 0 var(--space-md);
+    border: none;
+    border-radius: var(--radius-md);
+    background: none;
+    font: var(--type-ui);
+    color: var(--text-primary);
+    text-align: left;
+    cursor: pointer;
+}
+
+.menu-item:hover,
+.menu-item:focus-visible {
+    background: var(--surface-hover);
+    outline: none;
+}
+
 .scope-menu-anchor {
     position: relative;
     display: inline-flex;
@@ -6190,15 +6154,7 @@ button.settings-section-title {
     position: absolute;
     right: 0;
     bottom: calc(100% + 6px);
-    z-index: var(--z-dropdown);
-    display: flex;
-    flex-direction: column;
     min-width: 200px;
-    padding: var(--space-sm);
-    border: 1px solid var(--border-default);
-    border-radius: var(--radius-lg);
-    background: var(--surface-raised);
-    box-shadow: 0 4px 16px var(--shadow-color);
 }
 
 .thread-bar-actions .scope-menu {
@@ -6221,30 +6177,6 @@ button.settings-section-title {
 
 .scope-prompt .scope-menu {
     position: static;
-}
-
-.scope-menu-title {
-    padding: var(--space-sm) var(--space-md);
-    font: var(--type-label);
-    text-transform: uppercase;
-    letter-spacing: var(--tracking-label);
-    color: var(--text-secondary);
-}
-
-.scope-menu-item {
-    padding: var(--space-md);
-    border: none;
-    border-radius: var(--radius-md);
-    background: transparent;
-    color: var(--text-primary);
-    font: var(--type-ui);
-    text-align: left;
-    cursor: pointer;
-}
-
-.scope-menu-item:hover,
-.scope-menu-item:focus-visible {
-    background: var(--surface-hover);
 }
 
 .event-meet-field {
@@ -6275,7 +6207,8 @@ button.settings-section-title {
     min-height: 28px;
 }
 
-.guest-chip {
+.guest-chip,
+.compose-attachment {
     max-width: 220px;
 }
 

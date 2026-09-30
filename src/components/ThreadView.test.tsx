@@ -512,7 +512,7 @@ describe("ThreadView attachments", () => {
       body: { attachmentId: "att-1", size: 2048 },
     };
     const { container, props } = renderThread({ thread, focusedMessageIndex: 0 });
-    const thumb = container.querySelector(".attachment-thumb") as HTMLElement;
+    const thumb = container.querySelector(".attachment") as HTMLElement;
     expect(thumb).not.toBeNull();
     expect(thumb).toHaveTextContent("invoice.pdf");
     fireEvent.click(thumb);
@@ -535,7 +535,7 @@ describe("ThreadView attachments", () => {
       focusedMessageIndex: 0,
       threadAttachments: [listed("list-1", "Rmlyc3Q"), listed("list-2", "U2Vjb25k")],
     });
-    const thumbs = container.querySelectorAll<HTMLElement>(".attachment-thumb");
+    const thumbs = container.querySelectorAll<HTMLElement>(".attachment");
     expect(thumbs).toHaveLength(2);
     fireEvent.click(thumbs[0]);
     fireEvent.click(thumbs[1]);
@@ -559,7 +559,7 @@ describe("ThreadView attachments", () => {
       focusedMessageIndex: 0,
       threadAttachments: [listed("id-2", "U2Vjb25k"), listed("id-1", "Rmlyc3Q")],
     });
-    const thumbs = container.querySelectorAll<HTMLElement>(".attachment-thumb");
+    const thumbs = container.querySelectorAll<HTMLElement>(".attachment");
     fireEvent.click(thumbs[0]);
     fireEvent.click(thumbs[1]);
     const inlineData = (props.onOpenAttachment as any).mock.calls.map((c: unknown[]) => c[4]);
@@ -575,10 +575,10 @@ describe("ThreadView attachments", () => {
       body: { attachmentId: "att-1", size: 2048 },
     };
     const { container, props } = renderThread({ thread, focusedMessageIndex: 0 });
-    const thumb = container.querySelector(".attachment-thumb") as HTMLElement;
-    expect(thumb.tabIndex).toBe(0);
-    expect(thumb.getAttribute("role")).toBe("button");
-    fireEvent.keyDown(thumb, { key: "Enter" });
+    const thumb = container.querySelector(".attachment") as HTMLElement;
+    // A native button: Enter and Space open it
+    expect(thumb.tagName).toBe("BUTTON");
+    fireEvent.click(thumb);
     expect(props.onOpenAttachment).toHaveBeenCalledTimes(1);
   });
 
@@ -598,7 +598,7 @@ describe("ThreadView attachments", () => {
   it("previews the thread's images and PDFs together, starting at the one clicked", () => {
     const onPreviewAttachments = vi.fn();
     const { container, props } = renderThread({ thread: withFiles(), onPreviewAttachments });
-    const thumbs = container.querySelectorAll<HTMLElement>(".attachment-thumb");
+    const thumbs = container.querySelectorAll<HTMLElement>(".attachment");
     fireEvent.click(thumbs[2]);
     const [items, index] = onPreviewAttachments.mock.calls[0];
     expect(items.map((i: { filename: string }) => i.filename)).toEqual(["plan.pdf", "hotel.png"]);
@@ -609,9 +609,29 @@ describe("ThreadView attachments", () => {
     expect(props.onOpenAttachment).toHaveBeenCalledWith("m0", "a2", "notes.txt", "text/plain", undefined);
   });
 
+  const withInviteFile = () => {
+    const thread = makeThread([{ from: "Org <org@example.com>", body: "" }]);
+    const ics = (mimeType: string, id: string) => ({ filename: "invite.ics", mimeType, body: { attachmentId: id, size: 1400 } });
+    thread.messages[0].payload = { ...thread.messages[0].payload, mimeType: "multipart/mixed", parts: [
+      { mimeType: "multipart/alternative", parts: [{ mimeType: "text/plain", body: { data: b64("hi") } }, ics("text/calendar", "c1")] },
+      ics("application/ics", "c2"),
+    ] };
+    return thread;
+  };
+  const invite = { event: { uid: "u@google.com", title: "Catch Up", start_time: Date.now() + 86400_000, end_time: null, all_day: false, location: null, description: null, organizer: "org@example.com", attendees: [], method: "REQUEST", status: null, response_status: null }, rsvp: null, onAnswer: vi.fn(), disabled: false };
+
+  it("shows an invite's calendar file once, though Google sends it twice, and not at all under the invite that shows it", () => {
+    const plain = renderThread({ thread: withInviteFile() });
+    expect(plain.container.querySelectorAll(".attachment")).toHaveLength(1);
+    plain.unmount();
+    const { container } = renderThread({ thread: withInviteFile(), invite: invite as any });
+    expect(container.querySelector(".calendar-event-preview")).not.toBeNull();
+    expect(container.querySelector(".attachment")).toBeNull();
+  });
+
   it("names attachments with their size and opens their menu with Shift+F10", () => {
     const { container, props } = renderThread({ thread: withFiles() });
-    const thumb = container.querySelector<HTMLElement>(".attachment-thumb")!;
+    const thumb = container.querySelector<HTMLElement>(".attachment")!;
     expect(thumb.getAttribute("aria-label")).toBe("plan.pdf, 2.0 KB");
     fireEvent.keyDown(thumb, { key: "F10", shiftKey: true });
     expect(props.onShowAttachmentMenu).toHaveBeenCalledWith(expect.objectContaining({ filename: "plan.pdf", attachmentId: "a1" }));
