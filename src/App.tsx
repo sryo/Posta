@@ -108,7 +108,6 @@ import {
   SearchIcon,
   CalendarIcon,
   ChevronIcon,
-  LocationIcon,
   WarningIcon,
   CheckIcon,
   MailIcon,
@@ -128,6 +127,7 @@ import { credentialsValid, shortClientId } from "./app/googleCredentials";
 import { ComposeForm } from "./components/ComposeForm";
 import { CreateEventForm } from "./components/CreateEventForm";
 import { ThreadRowLines } from "./components/ThreadRowLines";
+import { EventRowLines } from "./components/EventRowLines";
 import { InviteRowLines } from "./components/InviteRow";
 import { inviteEnd, inviteState, inviteSummary, inviteTitle } from "./app/inviteRow";
 import { dayOtherEvents, stripLayout } from "./app/dayStrip";
@@ -197,7 +197,7 @@ import { querySuggestions, type QuerySuggestion } from "./app/querySuggestions";
 import { calendarRangeError } from "./app/queryTokens";
 import { useLayer } from "./app/layers";
 import { QueryHelpSheet } from "./components/QueryHelpSheet";
-import { inviteNamesEvent, ownResponseLabel, rsvpForKey, rsvpSentMessage, withOwnResponse, type RsvpStatus } from "./app/rsvp";
+import { inviteNamesEvent, rsvpForKey, rsvpSentMessage, withOwnResponse, type RsvpStatus } from "./app/rsvp";
 import { createRsvpLookups } from "./app/rsvpLookups";
 import { nextSelection } from "./app/selection";
 import { bulkActionForKey, extendSelection, keyTargets } from "./app/bulkKeys";
@@ -5303,34 +5303,20 @@ function App() {
                                         tabindex={rowTabIndex(card.id, event.id)}
                                         onFocus={() => onRowFocus(card.id, event.id)}
                                       >
-                                        <div class="calendar-event-row">
-                                          <span class="calendar-event-title">{event.title}</span>
-                                          <span class="calendar-event-time-compact">
-                                            {getSmartEventTime(event, currentTime())}
-                                          </span>
-                                        </div>
-                                        <Show when={event.description}>
-                                          <div class="calendar-event-description">{event.description}</div>
-                                        </Show>
-                                        <Show when={event.location}>
-                                          <div class="calendar-event-location-compact">
-                                            <LocationIcon size="meta" />
-                                            <span>{event.location}</span>
-                                          </div>
-                                        </Show>
-                                        <Show when={event.response_status && eventActions(event, eventOwner(event, card.id)?.email ?? '').rsvp}>
-                                          <div class={`calendar-event-response ${event.response_status}`}>
-                                            {ownResponseLabel(event.response_status)}
-                                          </div>
-                                        </Show>
-                                        <Show when={event.hangout_link}>
-                                          <button
-                                            class="calendar-join-btn"
-                                            onClick={(e) => { e.stopPropagation(); event.hangout_link && openUrl(event.hangout_link); }}
-                                          >
-                                            Join meeting
-                                          </button>
-                                        </Show>
+                                        <EventRowLines
+                                          event={event}
+                                          time={getSmartEventTime(event, currentTime())}
+                                          showResponse={eventActions(event, eventOwner(event, card.id)?.email ?? '').rsvp}
+                                        >
+                                          <Show when={event.hangout_link}>
+                                            <button
+                                              class="calendar-join-btn"
+                                              onClick={(e) => { e.stopPropagation(); event.hangout_link && openUrl(event.hangout_link); }}
+                                            >
+                                              Join meeting
+                                            </button>
+                                          </Show>
+                                        </EventRowLines>
                                         {/* Event Checkbox and Actions Wheel */}
                                         <div
                                           class="thread-checkbox-wrap"
@@ -5671,26 +5657,7 @@ function App() {
                             <For each={group.events}>
                               {(event) => (
                                 <div class={`calendar-event-item ${event.response_status === "declined" ? "declined" : ""}`}>
-                                  <div class="calendar-event-row">
-                                    <span class="calendar-event-title">{event.title}</span>
-                                    <span class="calendar-event-time-compact">
-                                      {getSmartEventTime(event, currentTime())}
-                                    </span>
-                                  </div>
-                                  <Show when={event.description}>
-                                    <div class="calendar-event-description">{event.description}</div>
-                                  </Show>
-                                  <Show when={event.location}>
-                                    <div class="calendar-event-location-compact">
-                                      <LocationIcon size="meta" />
-                                      <span>{event.location}</span>
-                                    </div>
-                                  </Show>
-                                  <Show when={event.response_status}>
-                                    <div class={`calendar-event-response ${event.response_status}`}>
-                                      {ownResponseLabel(event.response_status)}
-                                    </div>
-                                  </Show>
+                                  <EventRowLines event={event} time={getSmartEventTime(event, currentTime())} showResponse />
                                 </div>
                               )}
                             </For>
