@@ -1,4 +1,5 @@
 import { For, Show, type JSX } from "solid-js";
+import { IconButton } from "./IconButton";
 import { KeyHint } from "./KeyHint";
 import { toastActions, type createToasts, type ShownToast } from "../app/toasts";
 import { CloseIcon } from "./Icons";
@@ -31,9 +32,9 @@ function Toast(props: { toast: ShownToast; toasts: ToastStore; raised?: boolean 
         <For each={toastActions(t())}>
           {(action, i) => <button class="toast-undo-btn" onClick={() => props.toasts.runAction(i(), id())}>{action.label}</button>}
         </For>
-        <button class="toast-close-btn" onClick={() => props.toasts.dismiss(id())} title="Dismiss">
+        <IconButton label="Dismiss" size="sm" tone="inverse" onClick={() => props.toasts.dismiss(id())}>
           <CloseIcon />
-        </button>
+        </IconButton>
       </div>
     </div>
   );

@@ -1,4 +1,5 @@
 import { createSignal, createUniqueId, Show, For } from "solid-js";
+import { IconButton } from "./IconButton";
 import { ChevronLeftIcon, ChevronRightIcon } from "./Icons";
 import { isImeComposing, isTypingTarget } from "../shared/keyboard";
 import { relativeDayName } from "../app/dateFormat";
@@ -225,7 +226,7 @@ export const CreateEventForm = (props: {
 
         <div class="event-when">
           <div class="event-day-line">
-            <button type="button" class="event-day-step" onClick={() => shiftDay(-1)} title="Previous day (⌥←)" aria-label="Previous day"><ChevronLeftIcon /></button>
+            <IconButton label="Previous day" title="Previous day (⌥←)" size="sm" onClick={() => shiftDay(-1)}><ChevronLeftIcon /></IconButton>
             <input
               type="date"
               class="event-day-input"
@@ -233,7 +234,7 @@ export const CreateEventForm = (props: {
               value={props.startDate}
               onChange={(e) => { if (e.currentTarget.value) handleDateSelect(new Date(e.currentTarget.value + "T00:00")); }}
             />
-            <button type="button" class="event-day-step" onClick={() => shiftDay(1)} title="Next day (⌥→)" aria-label="Next day"><ChevronRightIcon /></button>
+            <IconButton label="Next day" title="Next day (⌥→)" size="sm" onClick={() => shiftDay(1)}><ChevronRightIcon /></IconButton>
             <Show when={relativeDayName(day(), new Date())}>
               {(name) => <span class="event-day-relative">{name()}</span>}
             </Show>

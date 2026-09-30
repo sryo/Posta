@@ -1200,6 +1200,22 @@ a:focus-visible,
     color: var(--text-secondary);
 }
 
+/* IconButton's small size sits beside a line of text; the inverse tone on a toast */
+.icon-btn[data-size="sm"] {
+    width: 26px;
+    height: 26px;
+    border-radius: var(--radius-md);
+}
+
+.icon-btn[data-tone="inverse"] {
+    color: var(--text-inverse-muted);
+}
+
+.icon-btn[data-tone="inverse"]:hover {
+    background: var(--surface-inverse-hover);
+    color: var(--text-inverse);
+}
+
 .icon-btn.spinning svg {
     animation: spin 1s linear infinite;
 }
@@ -2514,8 +2530,6 @@ a:focus-visible,
 }
 
 .card-edit-help {
-    width: 26px;
-    height: 26px;
     margin-left: auto;
 }
 
@@ -5736,24 +5750,6 @@ button.settings-section-title {
     background: var(--surface-inverse-hover);
 }
 
-.toast-close-btn {
-    background: transparent;
-    border: none;
-    color: var(--text-inverse-muted);
-    cursor: pointer;
-    padding: var(--space-sm);
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    border-radius: var(--radius-sm);
-    transition: background 0.15s, color 0.15s;
-}
-
-.toast-close-btn:hover {
-    background: var(--surface-inverse-hover);
-    color: var(--text-inverse);
-}
-
 /* Batch Reply Panel - Uses thread-overlay and thread-floating-bar */
 .batch-reply-count {
     font: var(--type-meta);
@@ -6487,24 +6483,6 @@ button.settings-section-title {
     display: flex;
     align-items: center;
     gap: var(--space-xs);
-}
-
-.event-day-step {
-    width: 26px;
-    height: 26px;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    border: none;
-    border-radius: var(--radius-md);
-    background: transparent;
-    color: var(--text-secondary);
-    cursor: pointer;
-}
-
-.event-day-step:hover {
-    background: var(--surface-subtle);
-    color: var(--text-primary);
 }
 
 .event-day-input {
