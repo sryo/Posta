@@ -2000,6 +2000,15 @@ a:focus-visible,
     color: var(--warning-text);
 }
 
+.invite-block-clash {
+    display: flex;
+    align-items: center;
+    gap: var(--icon-gap-meta);
+    min-width: 0;
+    font: var(--type-meta);
+    color: var(--warning-text);
+}
+
 .invite-clash-title {
     overflow: hidden;
     text-overflow: ellipsis;

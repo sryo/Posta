@@ -2468,6 +2468,37 @@ describe("App calendar", () => {
     await waitFor(() => expect(invoke).toHaveBeenCalledWith("rsvp_calendar_event", { accountId: "a", eventUid: "ev-1@google.com", status: "accepted" }));
   });
 
+  it("lays an opened invite on the user's day even once answered, naming a clash, and leaves out a location that is only its call link", async () => {
+    const d = new Date(); d.setDate(d.getDate() + 1); d.setHours(11, 30, 0, 0);
+    const start = d.getTime();
+    threadsByCard["card-a"] = [{
+      ...thread("t-inv", "Updated invitation: Catch Up"),
+      calendar_event: {
+        uid: "ev-2@google.com", title: "Catch Up", start_time: start, end_time: start + 3600_000, all_day: false,
+        location: "https://meet.google.com/qqz-ixno-zwy", conference_url: "https://meet.google.com/qqz-ixno-zwy",
+        description: null, organizer: "org@x.com", attendees: [], method: "REQUEST", status: null, response_status: null,
+      },
+    }];
+    handlers.get_thread_details = ({ threadId }) => ({ id: threadId, messages: [fullMessage("m1", "Org <org@x.com>")] });
+    handlers.get_calendar_rsvp_status = () => "accepted";
+    handlers.fetch_calendar_events = () => [
+      { ...calendarEvent("review", "Design review"), start_time: start + 1800_000, end_time: start + 5400_000 },
+    ];
+    render(() => <App />);
+    fireEvent.click(await screen.findByTitle("Updated invitation: Catch Up"));
+
+    const block = await waitFor(() => {
+      const el = document.querySelector<HTMLElement>(".thread-overlay .message-card .calendar-event-preview .day-strip");
+      expect(el).not.toBeNull();
+      return el!.closest(".calendar-event-preview") as HTMLElement;
+    });
+    expect(block.querySelector(".day-strip-busy.overlap")).not.toBeNull();
+    expect(block.querySelector(".day-strip-hours")).not.toBeNull();
+    expect(block.querySelector(".invite-block-clash")).toHaveTextContent("Clashes with Design review");
+    expect(block.querySelector(".calendar-event-location")).toBeNull();
+    expect(within(block).getByRole("button", { name: /Join/ })).toBeInTheDocument();
+  });
+
   it("answers a focused invite email with ⇧M and shows the keys on its row", async () => {
     threadsByCard["card-a"] = [{
       ...thread("t-inv", "Invitation: Planning"),
@@ -4079,6 +4110,20 @@ describe("App new card form", () => {
 
     openNewCardForm();
     expect(screen.getByPlaceholderText("e.g. Clients")).toHaveValue("");
+  });
+
+  it("previews rows as a card draws them, sender first and unread dotted", async () => {
+    handlers.search_threads_preview = () => [{ label: "Today", threads: [{ ...thread("t-p", "Quarterly numbers"), account_id: "a", participants: ["Ana <ana@x.com>"], unread_count: 1, snippet: "See attached" }] }];
+    render(() => <App />);
+    await screen.findByText("Mail for A");
+    openNewCardForm();
+    fireEvent.input(screen.getAllByPlaceholderText("e.g. from:boss is:unread newer_than:7d").slice(-1)[0], { target: { value: "from:ana" } });
+    const row = (await screen.findByText("Quarterly numbers")).closest(".thread") as HTMLElement;
+    expect(row).toHaveClass("unread");
+    const first = row.querySelector(".thread-row")!;
+    expect(first.querySelector(".thread-participants")).toHaveTextContent("Ana");
+    expect(first.querySelector(".unread-dot")).not.toHaveClass("read");
+    expect(row.querySelector(".thread-snippet")).toHaveTextContent("See attached");
   });
 });
 

@@ -85,7 +85,6 @@ import {
 } from "./api/tauri";
 import { Menu, MenuItem, PredefinedMenuItem } from "@tauri-apps/api/menu";
 import {
-  formatFileSize,
   formatTime,
   formatSyncTime,
   extractEmail,
@@ -93,8 +92,6 @@ import {
   getAvatarHue,
   validateEmailList,
   splitEmailList,
-  decodeHtmlEntities,
-  normalizeBase64Url,
   addReplyPrefix,
   addForwardPrefix,
   buildForwardBody,
@@ -108,11 +105,9 @@ import {
   SettingsIcon,
   ComposeIcon,
   CloseIcon,
-  AttachmentIcon,
   SearchIcon,
   CalendarIcon,
   ChevronIcon,
-  LocationIcon,
   WarningIcon,
   CheckIcon,
   MailIcon,
@@ -131,6 +126,8 @@ import { GoogleCredentialsForm } from "./components/GoogleCredentialsForm";
 import { credentialsValid, shortClientId } from "./app/googleCredentials";
 import { ComposeForm } from "./components/ComposeForm";
 import { CreateEventForm } from "./components/CreateEventForm";
+import { ThreadRowLines } from "./components/ThreadRowLines";
+import { EventRowLines } from "./components/EventRowLines";
 import { InviteRowLines } from "./components/InviteRow";
 import { inviteEnd, inviteState, inviteSummary, inviteTitle } from "./app/inviteRow";
 import { dayOtherEvents, stripLayout } from "./app/dayStrip";
@@ -162,9 +159,9 @@ import { batchReplyEntry, type BatchReplyThread } from "./app/batchReply";
 import { matchContacts, rankContacts, type RecentContact } from "./app/contacts";
 import { eventReplyRecipients } from "./app/eventReply";
 import { labelDisplayName } from "./app/labels";
-import { nameInThreads, participantNames, personName } from "./app/people";
+import { nameInThreads, personName } from "./app/people";
 import { afterRemoval, loadAfterArchive, stepThread, threadPosition } from "./app/threadNavigation";
-import { CardAttachments, FileName, shownAttachments } from "./components/CardAttachments";
+import { CardAttachments, shownAttachments } from "./components/CardAttachments";
 import { watchScrollFade } from "./app/scrollFade";
 import { createThumbnails } from "./app/thumbnails";
 import { AfterArchiveSetting } from "./components/AfterArchiveSetting";
@@ -201,7 +198,7 @@ import { querySuggestions, type QuerySuggestion } from "./app/querySuggestions";
 import { calendarRangeError } from "./app/queryTokens";
 import { useLayer } from "./app/layers";
 import { QueryHelpSheet } from "./components/QueryHelpSheet";
-import { inviteNamesEvent, ownResponseLabel, rsvpForKey, rsvpSentMessage, withOwnResponse, type RsvpStatus } from "./app/rsvp";
+import { inviteNamesEvent, rsvpForKey, rsvpSentMessage, withOwnResponse, type RsvpStatus } from "./app/rsvp";
 import { createRsvpLookups } from "./app/rsvpLookups";
 import { nextSelection } from "./app/selection";
 import { bulkActionForKey, extendSelection, keyTargets } from "./app/bulkKeys";
@@ -4839,6 +4836,29 @@ function App() {
     viewOpen: !!activeThreadId() || !!activeEvent(),
   });
 
+  // The opened invite's day, for the strip above the email: answered or not,
+  // while the event is still ahead
+  const openedInvite = () => {
+    const invite = activeListedThread()?.calendar_event;
+    const account = activeThreadAccount();
+    if (!invite || !account || invite.all_day) return null;
+    const state = inviteState(invite, inviteRsvp(account, invite.uid), minuteNow());
+    return state === "past" || state === "cancelled" ? null : { invite, account };
+  };
+  createEffect(() => {
+    const opened = openedInvite();
+    if (opened) inviteDayLookups.request(opened.account.id, inviteEnd(opened.invite));
+  });
+  const openedInviteStrip = createMemo(() => {
+    const opened = openedInvite();
+    if (!opened) return null;
+    const { invite, account } = opened;
+    const known = inviteDays[account.id];
+    if (!known || known.until < inviteEnd(invite)) return null;
+    const slot = { start: invite.start_time, end: inviteEnd(invite) };
+    return stripLayout(slot, dayOtherEvents(known.events, { ...slot, uid: invite.uid }), minuteNow());
+  });
+
   return (
     <div
       class="app"
@@ -5329,34 +5349,20 @@ function App() {
                                         tabindex={rowTabIndex(card.id, event.id)}
                                         onFocus={() => onRowFocus(card.id, event.id)}
                                       >
-                                        <div class="calendar-event-row">
-                                          <span class="calendar-event-title">{event.title}</span>
-                                          <span class="calendar-event-time-compact">
-                                            {getSmartEventTime(event, currentTime())}
-                                          </span>
-                                        </div>
-                                        <Show when={event.description}>
-                                          <div class="calendar-event-description">{event.description}</div>
-                                        </Show>
-                                        <Show when={event.location}>
-                                          <div class="calendar-event-location-compact">
-                                            <LocationIcon size="meta" />
-                                            <span>{event.location}</span>
-                                          </div>
-                                        </Show>
-                                        <Show when={event.response_status && eventActions(event, eventOwner(event, card.id)?.email ?? '').rsvp}>
-                                          <div class={`calendar-event-response ${event.response_status}`}>
-                                            {ownResponseLabel(event.response_status)}
-                                          </div>
-                                        </Show>
-                                        <Show when={event.hangout_link}>
-                                          <button
-                                            class="calendar-join-btn"
-                                            onClick={(e) => { e.stopPropagation(); event.hangout_link && openUrl(event.hangout_link); }}
-                                          >
-                                            Join meeting
-                                          </button>
-                                        </Show>
+                                        <EventRowLines
+                                          event={event}
+                                          time={getSmartEventTime(event, currentTime())}
+                                          showResponse={eventActions(event, eventOwner(event, card.id)?.email ?? '').rsvp}
+                                        >
+                                          <Show when={event.hangout_link}>
+                                            <button
+                                              class="calendar-join-btn"
+                                              onClick={(e) => { e.stopPropagation(); event.hangout_link && openUrl(event.hangout_link); }}
+                                            >
+                                              Join meeting
+                                            </button>
+                                          </Show>
+                                        </EventRowLines>
                                         {/* Event Checkbox and Actions Wheel */}
                                         <div
                                           class="thread-checkbox-wrap"
@@ -5486,58 +5492,50 @@ function App() {
                                           tabindex={rowTabIndex(card.id, thread.gmail_thread_id)}
                                           onFocus={() => onRowFocus(card.id, thread.gmail_thread_id)}
                                         >
-                                          <div class="thread-row">
-                                            <div class="unread-dot" classList={{ "read": thread.unread_count === 0 }} aria-hidden="true"></div>
-                                            <span class="thread-participants" title={thread.participants.join(", ")}>
-                                              {participantNames(thread.participants, accounts().map(a => a.email))}
-                                            </span>
-                                            <Show when={thread.has_attachment && !thread.calendar_event && shownAttachments(thread.attachments ?? []).length === 0}>
-                                              <span class="thread-indicator" title="Has attachment">
-                                                <AttachmentIcon size="meta" strong />
-                                              </span>
-                                            </Show>
-                                            <Show when={isDraftThread(thread)}>
-                                              <button
-                                                class="thread-draft-discard"
-                                                aria-label="Discard draft"
-                                                onClick={(e) => { e.stopPropagation(); discardDraftRow(thread.gmail_thread_id, card.id); }}
-                                                on:keydown={(e) => { if (e.key === 'Enter' || e.key === ' ') e.stopPropagation(); }}
-                                              >Discard</button>
-                                            </Show>
-                                            <span class="thread-time">{threadTime(thread.last_message_date, group().label)}</span>
-                                          </div>
-                                          <div class="thread-subject" title={thread.subject}>{thread.calendar_event ? inviteTitle(thread.subject) : thread.subject}</div>
-                                          <Show
-                                            when={thread.calendar_event}
-                                            fallback={<div class="thread-snippet">{decodeHtmlEntities(thread.snippet)}</div>}
-                                          >
-                                            {(invite) => (
-                                              <InviteRowLines
-                                                invite={invite()}
-                                                rsvp={inviteRsvp(owner(), invite().uid)}
-                                                now={minuteNow()}
-                                                disabled={rsvpLoading[thread.gmail_thread_id]}
-                                                showKeys={isThreadFocused(card.id, thread.gmail_thread_id)}
-                                                strip={inviteStrip()}
-                                                live={live()}
-                                                onAnswer={(status) => handleRsvp(owner(), thread.gmail_thread_id, invite().uid, status)}
-                                              />
-                                            )}
-                                          </Show>
-                                          {/* Attachment previews (filter out .ics when calendar event is shown) */}
                                           {(() => {
                                             const attachments = () => thread.calendar_event
                                               ? thread.attachments?.filter(a => !isCalendarAttachment(a)) ?? []
                                               : thread.attachments ?? [];
                                             return (
-                                              <Show when={attachments().length > 0}>
-                                                <CardAttachments
-                                                  attachments={attachments()}
-                                                  onOpen={(attachment) => openCardAttachment(owner()?.id ?? "", attachments(), attachment)}
-                                                  onMenu={(attachment) => showAttachmentContextMenu({ accountId: owner()?.id ?? "", messageId: attachment.message_id, attachmentId: attachment.attachment_id, filename: attachment.filename, mimeType: attachment.mime_type, inlineData: attachment.inline_data })}
-                                                  loadPreview={(attachment) => thumbnails.preview(owner()?.id ?? "", attachment.message_id, attachment.attachment_id)}
-                                                />
-                                              </Show>
+                                              <ThreadRowLines
+                                                thread={thread}
+                                                ownEmails={accounts().map(a => a.email)}
+                                                time={threadTime(thread.last_message_date, group().label)}
+                                                subject={thread.calendar_event ? inviteTitle(thread.subject) : undefined}
+                                                attachmentsShown={shownAttachments(thread.attachments ?? []).length > 0}
+                                                beforeTime={
+                                                  <Show when={isDraftThread(thread)}>
+                                                    <button
+                                                      class="thread-draft-discard"
+                                                      aria-label="Discard draft"
+                                                      onClick={(e) => { e.stopPropagation(); discardDraftRow(thread.gmail_thread_id, card.id); }}
+                                                      on:keydown={(e) => { if (e.key === 'Enter' || e.key === ' ') e.stopPropagation(); }}
+                                                    >Discard</button>
+                                                  </Show>
+                                                }
+                                                invite={thread.calendar_event ? (
+                                                  <InviteRowLines
+                                                    invite={thread.calendar_event}
+                                                    rsvp={inviteRsvp(owner(), thread.calendar_event.uid)}
+                                                    now={minuteNow()}
+                                                    disabled={rsvpLoading[thread.gmail_thread_id]}
+                                                    showKeys={isThreadFocused(card.id, thread.gmail_thread_id)}
+                                                    strip={inviteStrip()}
+                                                    live={live()}
+                                                    onAnswer={(status) => handleRsvp(owner(), thread.gmail_thread_id, thread.calendar_event!.uid, status)}
+                                                  />
+                                                ) : undefined}
+                                                attachments={
+                                                  <Show when={attachments().length > 0}>
+                                                    <CardAttachments
+                                                      attachments={attachments()}
+                                                      onOpen={(attachment) => openCardAttachment(owner()?.id ?? "", attachments(), attachment)}
+                                                      onMenu={(attachment) => showAttachmentContextMenu({ accountId: owner()?.id ?? "", messageId: attachment.message_id, attachmentId: attachment.attachment_id, filename: attachment.filename, mimeType: attachment.mime_type, inlineData: attachment.inline_data })}
+                                                      loadPreview={(attachment) => thumbnails.preview(owner()?.id ?? "", attachment.message_id, attachment.attachment_id)}
+                                                    />
+                                                  </Show>
+                                                }
+                                              />
                                             );
                                           })()}
                                           {/* Thread Checkbox on hover */}
@@ -5705,26 +5703,7 @@ function App() {
                             <For each={group.events}>
                               {(event) => (
                                 <div class={`calendar-event-item ${event.response_status === "declined" ? "declined" : ""}`}>
-                                  <div class="calendar-event-row">
-                                    <span class="calendar-event-title">{event.title}</span>
-                                    <span class="calendar-event-time-compact">
-                                      {getSmartEventTime(event, currentTime())}
-                                    </span>
-                                  </div>
-                                  <Show when={event.description}>
-                                    <div class="calendar-event-description">{event.description}</div>
-                                  </Show>
-                                  <Show when={event.location}>
-                                    <div class="calendar-event-location-compact">
-                                      <LocationIcon size="meta" />
-                                      <span>{event.location}</span>
-                                    </div>
-                                  </Show>
-                                  <Show when={event.response_status}>
-                                    <div class={`calendar-event-response ${event.response_status}`}>
-                                      {ownResponseLabel(event.response_status)}
-                                    </div>
-                                  </Show>
+                                  <EventRowLines event={event} time={getSmartEventTime(event, currentTime())} showResponse />
                                 </div>
                               )}
                             </For>
@@ -5746,41 +5725,23 @@ function App() {
                             <div class="date-header">{group.label}</div>
                             <For each={group.threads}>
                               {(thread) => (
-                                <div class="thread">
-                                  <div class="thread-row">
-                                    <Show when={thread.unread_count > 0}>
-                                      <div class="unread-dot"></div>
-                                    </Show>
-                                    <span class="thread-subject">{thread.subject}</span>
-                                    <Show when={thread.has_attachment}>
-                                      <span class="thread-indicator" title="Has attachment">
-                                        <AttachmentIcon size="meta" strong />
-                                      </span>
-                                    </Show>
-                                    <span class="thread-time">{threadTime(thread.last_message_date)}</span>
-                                  </div>
-                                  <div class="thread-snippet">{decodeHtmlEntities(thread.snippet)}</div>
-                                  <Show when={thread.attachments?.length > 0}>
-                                    <div class="thread-attachments">
-                                      <For each={thread.attachments?.filter(a => a.inline_data && a.mime_type.startsWith("image/")).slice(0, 3)}>
-                                        {(attachment) => (
-                                          <img
-                                            class="thread-image-thumb"
-                                            src={`data:${attachment.mime_type};base64,${normalizeBase64Url(attachment.inline_data || '')}`}
-                                            alt={attachment.filename}
-                                            title={attachment.filename}
-                                          />
-                                        )}
-                                      </For>
-                                      <For each={thread.attachments?.filter(a => !a.inline_data || !a.mime_type.startsWith("image/")).slice(0, 2)}>
-                                        {(attachment) => (
-                                          <div class="thread-file-item" title={`${attachment.filename} (${formatFileSize(attachment.size)})`}>
-                                            <FileName filename={attachment.filename} />
-                                          </div>
-                                        )}
-                                      </For>
-                                    </div>
-                                  </Show>
+                                <div class="thread" classList={{ "unread": thread.unread_count > 0 }}>
+                                  <ThreadRowLines
+                                    thread={thread}
+                                    ownEmails={accounts().map(a => a.email)}
+                                    time={threadTime(thread.last_message_date, group.label)}
+                                    attachmentsShown={shownAttachments(thread.attachments ?? []).length > 0}
+                                    attachments={
+                                      <Show when={(thread.attachments ?? []).length > 0}>
+                                        <CardAttachments
+                                          attachments={thread.attachments}
+                                          onOpen={(attachment) => openCardAttachment(thread.account_id, thread.attachments, attachment)}
+                                          onMenu={(attachment) => showAttachmentContextMenu({ accountId: thread.account_id, messageId: attachment.message_id, attachmentId: attachment.attachment_id, filename: attachment.filename, mimeType: attachment.mime_type, inlineData: attachment.inline_data })}
+                                          loadPreview={(attachment) => thumbnails.preview(thread.account_id, attachment.message_id, attachment.attachment_id)}
+                                        />
+                                      </Show>
+                                    }
+                                  />
                                 </div>
                               )}
                             </For>
@@ -5956,6 +5917,7 @@ function App() {
               rsvp: inviteRsvp(activeThreadAccount(), event.uid),
               onAnswer: (status: RsvpStatus) => handleRsvp(activeThreadAccount(), listed.gmail_thread_id, event.uid, status),
               disabled: !!rsvpLoading[listed.gmail_thread_id],
+              strip: openedInviteStrip(),
             };
           })()}
           cidAttachmentData={cidAttachmentData()}

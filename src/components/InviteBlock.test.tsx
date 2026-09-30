@@ -63,4 +63,26 @@ describe("InviteBlock", () => {
     render(() => <InviteBlock invite={{ ...invite, conference_url: null }} rsvp={undefined} onAnswer={vi.fn()} />);
     expect(screen.queryByRole("button", { name: "Join" })).toBeNull();
   });
+
+  it("leaves out a location that is only the call Join opens, and keeps a real place", () => {
+    const { container, unmount } = render(() => <InviteBlock invite={{ ...invite, location: "https://meet.google.com/abc" }} rsvp={undefined} onAnswer={vi.fn()} />);
+    expect(container.querySelector(".calendar-event-location")).toBeNull();
+    unmount();
+    render(() => <InviteBlock invite={{ ...invite, location: "https://meet.google.com/abc", conference_url: null }} rsvp={undefined} onAnswer={vi.fn()} />);
+    expect(screen.getByText("https://meet.google.com/abc")).toBeInTheDocument();
+  });
+
+  it("draws the day strip it is given, with hour labels and what the invite clashes with", () => {
+    const strip = {
+      window: { start: new Date(2030, 0, 1, 8).getTime(), end: new Date(2030, 0, 1, 20).getTime() },
+      slot: { left: 50, width: 10 },
+      busy: [{ left: 55, width: 10, title: "Dentist", overlap: true }, { left: 80, width: 5, title: "Gym", overlap: false }],
+      clashes: [{ start: 0, end: 1, title: "Dentist" }, { start: 0, end: 1, title: "Lunch" }],
+      noonAt: 33.3, nowAt: null, past: null,
+    };
+    const { container } = render(() => <InviteBlock invite={invite} rsvp="accepted" onAnswer={vi.fn()} strip={strip} />);
+    expect(container.querySelectorAll(".day-strip-busy")).toHaveLength(2);
+    expect(container.querySelector(".day-strip-hours")?.children).toHaveLength(5);
+    expect(container.querySelector(".invite-block-clash")).toHaveTextContent("Clashes with Dentist and 1 more");
+  });
 });
