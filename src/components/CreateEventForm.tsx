@@ -210,7 +210,7 @@ export const CreateEventForm = (props: {
   const formContent = () => (
     <>
       <Show when={!props.inline}>
-        <PanelHeader>
+        <PanelHeader onClose={props.onClose}>
           <Show when={props.accountEmail} fallback={<div class="panel-account">{calendarSelect()}</div>}>
             <PanelAccount email={props.accountEmail!}>
               {calendarSelect()}
@@ -334,7 +334,9 @@ export const CreateEventForm = (props: {
         </div>
       </div>
       <FormFooter class={`event-form-footer ${props.inline ? "inline-event-footer" : "compose-footer"}`} error={props.error}>
-        <CancelButton onClick={props.onClose} />
+        <Show when={props.inline}>
+          <CancelButton onClick={props.onClose} />
+        </Show>
         <div class="scope-menu-anchor">
           <SubmitButton
             label={props.isEditing ? "Update" : "Save"}

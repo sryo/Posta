@@ -259,9 +259,9 @@ describe("CreateEventForm header", () => {
     const select = getByRole("combobox", { name: "Calendar" }) as HTMLSelectElement;
     expect(header.contains(select)).toBe(true);
     expect(select.value).toBe("team");
-    // Escape discards the event, so it is Cancel in the footer, not a close up here
-    expect(header.querySelector(".close-btn")).toBeNull();
-    expect(container.querySelector(".event-form-footer")).toHaveTextContent("Cancel");
+    // Closed from the top, as the compose panel is, not from a footer Cancel
+    expect(header.querySelector(".close-btn")).not.toBeNull();
+    expect(container.querySelector(".event-form-footer")).not.toHaveTextContent("Cancel");
     expect(header.querySelector('input[placeholder="Event title"]')).toBeNull();
     expect(container.querySelector('input[placeholder="Event title"]')).toHaveClass("form-title-field");
   });
@@ -379,13 +379,20 @@ describe("CreateEventForm fields and footer", () => {
     expect((getByLabelText("Guests") as HTMLElement).closest(".form-field-row")).not.toBeNull();
   });
 
-  it("ends in the shared footer, with Cancel showing Escape", () => {
+  it("closes from its header, showing Escape, as the compose panel does", () => {
     const onClose = vi.fn();
-    const { container, getByRole } = renderForm({ startDate: "2031-03-03", onClose });
-    const footer = container.querySelector(".form-footer.event-form-footer")!;
+    const { container } = renderForm({ startDate: "2031-03-03", onClose });
+    const close = container.querySelector(".panel-header .close-btn") as HTMLElement;
+    expect(close).toHaveTextContent("ESC");
+    fireEvent.click(close);
+    expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
+  it("ends an inline editor, which has no header, with Cancel in the footer", () => {
+    const onClose = vi.fn();
+    const { container, getByRole } = renderForm({ startDate: "2031-03-03", onClose, extra: { inline: true } });
     const cancel = getByRole("button", { name: /Cancel/ });
-    expect(footer.contains(cancel)).toBe(true);
-    expect(cancel.querySelector(".key-hint")).toHaveTextContent("ESC");
+    expect(container.querySelector(".event-form-footer")!.contains(cancel)).toBe(true);
     fireEvent.click(cancel);
     expect(onClose).toHaveBeenCalledTimes(1);
   });
