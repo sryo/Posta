@@ -163,4 +163,10 @@ describe("hover wheels", () => {
     expect(declarationsOf(".thread-checkbox-wrap").get("opacity")).toBe("0");
     expect(declarationsOf('.thread-checkbox-wrap:has(.radial-menu[role="menu"])').get("opacity")).toBe("1");
   });
+
+  it("draw each petal on a layer of its own, so a closed wheel leaves no stale petals behind in WebKit", () => {
+    expect(declarationsOf(".radial-petal").get("will-change")).toBe("transform, opacity");
+    // A fading holder is repainted only over its own 20px box, not the petals spilling out of it
+    expect(declarationsOf('.thread-checkbox-wrap:has(.radial-menu[role="menu"])').get("transition")).toBe("none");
+  });
 });

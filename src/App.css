@@ -3713,6 +3713,12 @@ button:disabled:hover {
     transition: opacity 100ms;
 }
 
+/* WebKit repaints a fading holder only over its own 20px box, leaving the
+   petals that spill out of it behind as stale pixels */
+.thread-checkbox-wrap:has(.radial-menu[role="menu"]) {
+    transition: none;
+}
+
 .thread:hover .thread-checkbox-wrap,
 .thread.selected .thread-checkbox-wrap,
 .thread.focused .thread-checkbox-wrap,
@@ -4597,6 +4603,9 @@ button.settings-section-title {
     opacity: 0;
     pointer-events: none;
     z-index: calc(10 + var(--i));
+    /* A layer of its own, dropped whole when the wheel closes; painted into
+       the row's, WebKit can leave stale petals behind */
+    will-change: transform, opacity;
     transform: translate(0, 0) scale(var(--radial-from-scale));
     transition:
         transform var(--radial-close) var(--radial-exit),
