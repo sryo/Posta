@@ -177,8 +177,11 @@ import { AttachmentList } from "./components/Attachments";
 import { watchScrollFade } from "./app/scrollFade";
 import { createThumbnails } from "./app/thumbnails";
 import { AfterArchiveSetting } from "./components/AfterArchiveSetting";
+import { SoundSettings } from "./components/SoundSettings";
+import { cue, listenForAudioGesture, watchNewMail } from "./app/sounds";
 import { runUnsubscribe, type UnsubscribeMethod } from "./app/unsubscribe";
-import { actionFailureLabel, actionLabel, actionRemovesFromCard, applyThreadAction, labelChangeFor, threadMayJoinCard, undoLabelChanges, type LabelReversal } from "./app/threadActions";
+import { eventName, quoted } from "./app/quoted";
+import { actionFailureMessage, actionMessage, actionRemovesFromCard, actionUndoneMessage, applyThreadAction, backInPlace, labelChangeFor, labelChangeMessage, restoreThreads, threadMayJoinCard, undoFailureMessage, undoLabelChanges, type DescribeScope, type LabelReversal, type NamedThread } from "./app/threadActions";
 import { PRESETS } from "./app/presets";
 import { normalizeActionOrder } from "./app/actionOrder";
 import { parseStoredWidth } from "./app/storedWidth";
@@ -215,7 +218,7 @@ import { querySuggestions, type QuerySuggestion } from "./app/querySuggestions";
 import { calendarRangeError } from "./app/queryTokens";
 import { useLayer } from "./app/layers";
 import { QueryHelpSheet } from "./components/QueryHelpSheet";
-import { inviteNamesEvent, rsvpForKey, rsvpSentMessage, withOwnResponse, type RsvpStatus } from "./app/rsvp";
+import { inviteNamesEvent, rsvpFailureMessage, rsvpForKey, rsvpSentMessage, withOwnResponse, type RsvpStatus } from "./app/rsvp";
 import { createRsvpLookups } from "./app/rsvpLookups";
 import { nextSelection } from "./app/selection";
 import { bulkActionForKey, extendSelection, keyTargets } from "./app/bulkKeys";
@@ -393,13 +396,16 @@ function App() {
     try {
       await rsvpListedCalendarEvent(account.id, event.calendar_id, event.id, status);
       markEventRsvp(event.id, status, account);
-      showToast(rsvpSentMessage(status));
+      showToast(rsvpSentMessage(status, event.title));
     } catch (e) {
-      showFailure("Couldn't send your RSVP", e);
+      showFailure(rsvpFailureMessage(event.title), e);
     } finally {
       setRsvpLoading(event.id, false);
     }
   };
+
+  const invitedEventTitle = (threadId: string) =>
+    Object.values(cardThreads).flatMap(groups => groups.flatMap(g => g.threads)).find(t => t.gmail_thread_id === threadId)?.calendar_event?.title ?? "";
 
   // Answers an invite from its email; the calendar cards showing the event
   // pick up the answer too
@@ -412,9 +418,9 @@ function App() {
       const eventIds = new Set(Object.values(cardCalendarEvents).flatMap(events =>
         (events ?? []).filter(ev => inviteNamesEvent(eventUid, ev.id) && (!ev.account_id || ev.account_id === account.id)).map(ev => ev.id)));
       for (const eventId of eventIds) markEventRsvp(eventId, status, account);
-      showToast(rsvpSentMessage(status));
+      showToast(rsvpSentMessage(status, invitedEventTitle(threadId)));
     } catch (e) {
-      showFailure("Couldn't send your RSVP", e);
+      showFailure(rsvpFailureMessage(invitedEventTitle(threadId)), e);
     } finally {
       setRsvpLoading(threadId, false);
     }
@@ -428,6 +434,12 @@ function App() {
     cardIds: string[]; // every card the optimistic update touched
     reversals: LabelReversal[];
     timestamp: number;
+    // The touched cards as they were, to put the threads back in their slots
+    before: Record<string, ThreadGroup[]>;
+    // Each thread's account
+    owners: Map<string, string>;
+    named: NamedThread[];
+    scope: DescribeScope;
   }
   // The latest thread action, which a refresh landing just after it must not undo
   const [lastAction, setLastAction] = createSignal<UndoableAction | null>(null);
@@ -453,6 +465,7 @@ function App() {
       console.error("Failed to send email:", e);
       putBackSend(pending, failureMessage(`Couldn't send “${pending.subject || "(no subject)"}”`, e).message, "error");
     },
+    onSent: () => cue("sent"),
   });
 
   // Whether an open compose holds something replacing it would lose;
@@ -1476,6 +1489,9 @@ function App() {
     }
   };
 
+  watchNewMail(cardId => cardThreads[cardId]);
+  onCleanup(listenForAudioGesture(document));
+
   // Dock badge: unread threads across cards. The memo only notifies when the
   // total changes, so refreshes that change nothing don't touch the badge.
   const totalUnread = createMemo(() => {
@@ -1799,10 +1815,16 @@ function App() {
       return;
     }
 
-    // z undoes what the toast offers to undo, even with overlays open
-    if (e.key === 'z' && toasts.hasUndo()) {
+    // z undoes the session's latest change still undoable, then each one
+    // before it, and ⇧Z redoes; even with overlays open
+    if (e.key === 'z' && toasts.canUndo()) {
       e.preventDefault();
       toasts.undo();
+      return;
+    }
+    if (e.key === 'Z' && toasts.canRedo()) {
+      e.preventDefault();
+      toasts.redo();
       return;
     }
 
@@ -2897,7 +2919,7 @@ function App() {
         }
       });
 
-      showToast(editing ? "Event updated" : "Event created");
+      showToast(`${editing ? "Updated" : "Created"} ${eventName({ title: form.summary })}`);
 
     } catch (e) {
       const failure = editing ? "Couldn't update the event" : "Couldn't create the event";
@@ -3046,11 +3068,11 @@ function App() {
         setQuickReply({ threadId: null, text: "", sending: false });
         setQuickReplyCardId(null);
       }
-      showToast("Reply sent");
+      showToast(`Replied to ${quoted(thread.subject) ?? "the thread"}`);
       fetchAndCacheThreads(cardId);
     } catch (e) {
       console.error("Failed to send reply:", e);
-      setFailure("Couldn't send the reply", e);
+      setFailure(`Couldn't send the reply to ${quoted(thread.subject) ?? "the thread"}`, e);
     } finally {
       if (stillOpen()) setQuickReply(qr => ({ ...qr, sending: false }));
     }
@@ -3076,10 +3098,10 @@ function App() {
         setQuickReplyEventId(null);
         setQuickReply(qr => ({ ...qr, text: "", sending: false }));
       }
-      showToast("Reply sent");
+      showToast(`Replied to ${eventName(event)}`);
     } catch (e) {
       console.error("Failed to send reply:", e);
-      setFailure("Couldn't send the reply", e);
+      setFailure(`Couldn't send the reply to ${eventName(event)}`, e);
     } finally {
       if (stillOpen()) setQuickReply(qr => ({ ...qr, sending: false }));
     }
@@ -3186,7 +3208,7 @@ function App() {
       const outcome = await runUnsubscribe(account.id, method, { sendEmail, postOneClick: unsubscribeOneClick, openUrl });
       showToast(outcome === "done" ? `Unsubscribed from ${listName}` : `Finish unsubscribing from ${listName} on its page`);
     } catch (e) {
-      showFailure("Couldn't unsubscribe", e);
+      showFailure(`Couldn't unsubscribe from ${listName}`, e);
       throw e;
     }
   }
@@ -3340,11 +3362,11 @@ function App() {
       try {
         await deleteCalendarEvent(account.id, event.calendar_id, event.id, scope);
         removeDeletedEvents(event, scope);
-        showToast("Event deleted");
+        showToast(`Deleted ${eventName(event)}`);
         if (activeEvent()?.id === event.id) { closeEvent(); restoreOpenedRowFocus(); }
       } catch (e) {
         console.error('Failed to delete event:', e);
-        showFailure("Couldn't delete the event", e);
+        showFailure(`Couldn't delete ${eventName(event)}`, e);
       }
       return;
     }
@@ -3369,9 +3391,10 @@ function App() {
     updateEventInCards(event.id, () => null);
     if (activeEvent()?.id === event.id) { closeEvent(); restoreOpenedRowFocus(); }
     toasts.show({
-      message: inAccount(`Deleted “${event.title || "(No title)"}”`, [account.email], accounts().length),
+      message: inAccount(`Deleted ${eventName(event)}`, [account.email], accounts().length),
       tag: accountToastTag(account.id),
       undo: putBack,
+      undone: `Restored ${eventName(event)}`,
       onExpire: async () => {
         try {
           await deleteCalendarEvent(account.id, event.calendar_id, event.id);
@@ -3379,7 +3402,7 @@ function App() {
         } catch (e) {
           console.error('Failed to delete event:', e);
           putBack();
-          showFailure("Couldn't delete the event", e);
+          showFailure(`Couldn't delete ${eventName(event)}`, e);
         }
       },
     });
@@ -3494,12 +3517,18 @@ function App() {
       // Find the destination calendar name
       const destCal = calendarsFor(account.id).find(c => c.id === destinationCalendarId);
       const where = destCal?.name || 'calendar';
-      showToast(event.recurring_event_id ? `Moved all its events to ${where}` : `Moved to ${where}`);
+      showToast(`Moved ${event.recurring_event_id ? "all of " : ""}${eventName(event)} to ${where}`);
       setCalendarDrawerOpen(false);
     } catch (e) {
       console.error("Failed to move event:", e);
-      showFailure("Couldn't move the event", e);
+      showFailure(`Couldn't move ${eventName(event)}`, e);
     }
+  }
+
+  // The open thread as its toasts name it: by the subject it shows
+  function openThreadNamed(thread: FullThread): NamedThread {
+    const headers = (name: string) => thread.messages.map(m => findHeader(m.payload?.headers, name)).filter((h): h is string => !!h);
+    return { subject: headers('Subject')[0] ?? activeListedThread()?.subject ?? "", participants: headers('From') };
   }
 
   function getCurrentThreadLabels(): string[] {
@@ -3542,7 +3571,7 @@ function App() {
     const leavesView = ['archive', 'trash', 'spam'].includes(action);
     const order = cardId ? cardThreadOrder(cardId) : [];
 
-    await handleThreadAction(action, [thread.id], cardId || '', { accountId: account.id });
+    await handleThreadAction(action, [thread.id], cardId || '', { accountId: account.id, named: [openThreadNamed(thread)] });
     if (activeThreadId() !== thread.id) return;
 
     if (leavesView) {
@@ -3593,26 +3622,36 @@ function App() {
 
     const addLabels = isAdding ? [labelId] : [];
     const removeLabels = isAdding ? [] : [labelId];
+    const named = openThreadNamed(thread);
 
     try {
       await modifyThreads(account.id, [thread.id], addLabels, removeLabels);
       await refreshActiveThread(account.id, thread.id);
       toasts.show({
-        message: inAccount(`${isAdding ? 'Added' : 'Removed'} the label “${labelName}”`, [account.email], accounts().length),
+        message: inAccount(labelChangeMessage(isAdding, labelName, named), [account.email], accounts().length),
         tag: accountToastTag(account.id),
+        undone: labelChangeMessage(!isAdding, labelName, named),
         undo: async () => {
           try {
             await modifyThreads(account.id, [thread.id], removeLabels, addLabels);
             if (activeThreadId() === thread.id) await refreshActiveThread(account.id, thread.id);
           } catch (e) {
             console.error("Failed to undo label change:", e);
-            setFailure("Couldn't undo", e);
+            setFailure(labelChangeMessage(!isAdding, labelName, named, "failed"), e);
+          }
+        },
+        redo: async () => {
+          try {
+            await modifyThreads(account.id, [thread.id], addLabels, removeLabels);
+            if (activeThreadId() === thread.id) await refreshActiveThread(account.id, thread.id);
+          } catch (e) {
+            setFailure(labelChangeMessage(isAdding, labelName, named, "failed"), e);
           }
         },
       });
     } catch (e) {
       console.error("Failed to modify labels:", e);
-      setFailure(`Couldn't ${isAdding ? 'add' : 'remove'} the label “${labelName}”`, e);
+      setFailure(labelChangeMessage(isAdding, labelName, named, "failed"), e);
     }
   }
 
@@ -3969,6 +4008,7 @@ function App() {
     toasts.show({
       message: `Deleted the card “${name}”`,
       undo: putBack,
+      undone: `Restored the card “${name}”`,
       onExpire: async () => {
         try {
           await deleteCard(cardId);
@@ -4755,7 +4795,8 @@ function App() {
     try {
       await discardThreadDrafts(account.id, threadId, { listThreadDrafts, deleteDraft });
     } catch (e) {
-      showFailure("Couldn't discard the draft", e);
+      const subject = quoted(namedThreads(cardId, [threadId])[0].subject);
+      showFailure(subject ? `Couldn't discard the draft in ${subject}` : "Couldn't discard the draft", e);
       return;
     }
     if (!accountById(account.id)) return;
@@ -4849,11 +4890,49 @@ function App() {
     }
   }
 
+  // The threads a toast names, as the card lists them
+  function namedThreads(cardId: string, threadIds: string[]): NamedThread[] {
+    const listed = new Map((cardThreads[cardId] ?? []).flatMap(g => g.threads).map(t => [t.gmail_thread_id, t]));
+    return threadIds.map(id => listed.get(id) ?? { subject: "", participants: [] });
+  }
+
+  // The card an action was taken in, and all it holds when it has no more
+  // to load
+  function describeScope(cardId: string): DescribeScope {
+    const card = cardById(cardId);
+    const total = (cardThreads[cardId] ?? []).reduce((n, g) => n + g.threads.length, 0);
+    return {
+      card: card && { name: card.name, total: cardHasMore[cardId] ? null : total },
+      ownEmails: accounts().map(a => a.email),
+    };
+  }
+
   function showToast(message: string, action?: ToastAction | ToastAction[]) {
     toasts.show({ message, action });
   }
 
-  async function undoThreadAction(action: UndoableAction) {
+  // Puts the threads back where they were at once, then asks Gmail to;
+  // says what it did and, for one thread its card dropped, where it is back
+  function undoThreadAction(action: UndoableAction): string {
+    batch(() => {
+      for (const cId of action.cardIds) {
+        const card = cardById(cId);
+        const groups = cardThreads[cId];
+        if (!card || !groups || !action.before[cId]) continue;
+        const isTarget = (t: Thread) => action.owners.get(t.gmail_thread_id) === threadAccountId(t, card);
+        setCardThreads(cId, reconcile(restoreThreads(unwrap(groups), action.before[cId], isTarget), { key: "gmail_thread_id" }));
+      }
+    });
+    void reverseThreadAction(action);
+    const undone = actionUndoneMessage(action.action, action.named, action.scope);
+    const card = cardById(action.cardId);
+    const backIn = action.threadIds.length === 1 && card && actionRemovesFromCard(action.action, card.query)
+      ? backInPlace(cardThreads[card.id] ?? [], action.threadIds[0], card.name)
+      : "";
+    return undone + backIn;
+  }
+
+  async function reverseThreadAction(action: UndoableAction) {
     if (lastAction() === action) setLastAction(null);
     try {
       // An account signed out of since has nothing left to undo
@@ -4867,14 +4946,16 @@ function App() {
       }
     } catch (e) {
       console.error("Failed to undo action", e);
-      setFailure("Couldn't undo", e);
+      for (const cId of action.cardIds) if (cardById(cId)) fetchAndCacheThreads(cId);
+      setFailure(undoFailureMessage(action.action, action.named, action.scope), e);
     }
   }
 
   // silent: a change the user didn't ask for directly (marking a thread
   // read on open) gets no undo toast. `accountId` names the threads' account
-  // when the card may no longer list them (the open thread).
-  async function handleThreadAction(action: string, threadIds: string[], cardId: string, { silent = false, accountId }: { silent?: boolean; accountId?: string } = {}) {
+  // when the card may no longer list them (the open thread), and `named` the
+  // threads its toasts name then.
+  async function handleThreadAction(action: string, threadIds: string[], cardId: string, { silent = false, accountId, named }: { silent?: boolean; accountId?: string; named?: NamedThread[] } = {}) {
     const byAccount = accountId
       ? new Map([[accountId, threadIds]])
       : threadIdsByAccount(cardThreads[cardId] ?? [], threadIds, cardById(cardId) ?? { account_id: "" });
@@ -4886,6 +4967,8 @@ function App() {
     const isTarget = (t: Thread, card: Card) => ownerOf.get(t.gmail_thread_id) === threadAccountId(t, card);
 
     const { add: addLabels, remove: removeLabels } = labelChangeFor(action);
+    const acted = named ?? namedThreads(cardId, threadIds);
+    const scope = describeScope(cardId);
 
     // Optimistic Update - update ALL cards that contain these threads.
     // Snapshot the affected cards first so the update can be rolled back
@@ -4937,7 +5020,7 @@ function App() {
       if (results.some(r => r.status === "fulfilled")) {
         for (const cId of affectedCardIds) if (cardById(cId)) fetchAndCacheThreads(cId);
       }
-      setFailure(actionFailureLabel(action, threadIds.length), failure.reason);
+      setFailure(actionFailureMessage(action, acted, scope), failure.reason);
       return;
     }
 
@@ -4954,14 +5037,19 @@ function App() {
       cardId,
       cardIds: affectedCardIds,
       reversals: [...byAccount].flatMap(([acc, ids]) => undoLabelChanges(acc, ids, change, labelsBefore.get(acc) ?? new Map())),
-      timestamp: Date.now()
+      timestamp: Date.now(),
+      before: snapshot,
+      owners: ownerOf,
+      named: acted,
+      scope,
     };
     setLastAction(done);
     const emails = owners.map(a => a!.email);
     toasts.show({
-      message: inAccount(actionLabel(action, threadIds.length), emails, accounts().length),
+      message: inAccount(actionMessage(action, acted, scope), emails, accounts().length),
       tag: owners.length === 1 ? accountToastTag(owners[0]!.id) : undefined,
       undo: () => undoThreadAction(done),
+      redo: () => { void handleThreadAction(action, threadIds, cardId, { silent: true, accountId, named: acted }); },
     });
   }
 
@@ -6422,6 +6510,7 @@ function App() {
             )}
           </Show>
           <AfterArchiveSetting />
+          <SoundSettings cards={cards().filter(c => c.card_type !== "calendar")} />
           <SmartRepliesSettings
             open={smartRepliesOpen()}
             onToggle={() => setSmartRepliesOpen(!smartRepliesOpen())}
@@ -6509,7 +6598,8 @@ function App() {
               <div class="shortcut-row"><KeyHint keys="!" look="key" /> <span>Report spam</span></div>
               <div class="shortcut-row"><KeyHint keys="y ⇧M n" look="key" /> <span>Answer a focused invite: Going, Maybe, Not going</span></div>
               <div class="shortcut-row"><KeyHint keys="⌥↓ ⌥↑" look="key" /> <span>Move a focused event a day on or back</span></div>
-              <div class="shortcut-row"><KeyHint keys="z" look="key" /> <span>Undo last action</span></div>
+              <div class="shortcut-row"><KeyHint keys="z" look="key" /> <span>Undo, again for each earlier action</span></div>
+              <div class="shortcut-row"><KeyHint keys="⇧Z" look="key" /> <span>Redo</span></div>
             </div>
             <div class="shortcuts-section">
               <h3>Open thread</h3>

@@ -171,7 +171,7 @@ describe("ActionsWheel event RSVP", () => {
     fireEvent.click(screen.getByTitle("Going"));
     await vi.waitFor(() => expect(onRsvped).toHaveBeenCalledWith("e1_20260928T150000Z", "accepted"));
     expect(rsvpListedCalendarEvent).toHaveBeenCalledWith("acc", "team@x.com", "e1_20260928T150000Z", "accepted");
-    expect(showToast).toHaveBeenCalledWith("You're going");
+    expect(showToast).toHaveBeenCalledWith(`You're going to “${invite.title}”`);
   });
 
   it("reports the new response once the RSVP succeeds", async () => {
@@ -190,7 +190,7 @@ describe("ActionsWheel event RSVP", () => {
     const showFailure = vi.fn();
     render(() => <ActionsWheel {...baseProps} showFailure={showFailure} selectedAccount={() => ({ id: "acc" } as any)} event={invite} onRsvped={onRsvped} />);
     fireEvent.click(screen.getByTitle("Going"));
-    await vi.waitFor(() => expect(showFailure).toHaveBeenCalledWith("Couldn't send your RSVP", new Error("offline")));
+    await vi.waitFor(() => expect(showFailure).toHaveBeenCalledWith(`Couldn't send your RSVP to “${invite.title}”`, new Error("offline")));
     expect(onRsvped).not.toHaveBeenCalled();
   });
 

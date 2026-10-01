@@ -6,7 +6,7 @@ import {
   type Thread,
   type GoogleCalendarEvent,
 } from "../api/tauri";
-import { rsvpSentMessage, type RsvpStatus } from "../app/rsvp";
+import { rsvpFailureMessage, rsvpSentMessage, type RsvpStatus } from "../app/rsvp";
 import { eventActions, meetingOver } from "../app/eventActions";
 import type { ScopeAnchor } from "../app/scopePrompt";
 import {
@@ -75,10 +75,10 @@ export const ActionsWheel = (props: {
     try {
       await rsvpListedCalendarEvent(account.id, evt.calendar_id, evt.id, status);
       props.onRsvped?.(evt.id, status);
-      props.showToast(rsvpSentMessage(status));
+      props.showToast(rsvpSentMessage(status, evt.title));
       props.onClose();
     } catch (err) {
-      props.showFailure("Couldn't send your RSVP", err);
+      props.showFailure(rsvpFailureMessage(evt.title), err);
     } finally {
       rsvpInFlight = false;
     }

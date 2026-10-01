@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { Thread, ThreadGroup } from "../api/tauri";
-import { actionFailureLabel, actionLabel, actionRemovesFromCard, applyThreadAction, labelChangeFor, threadMayJoinCard, undoLabelChanges } from "./threadActions";
+import { actionFailureMessage, actionMessage, actionRemovesFromCard, actionUndoneMessage, backInPlace, undoFailureMessage, labelChangeMessage, restoreThreads, applyThreadAction, labelChangeFor, threadMayJoinCard, undoLabelChanges } from "./threadActions";
 
 const thread = (id: string, labels: string[], unread = 0): Thread => ({
   gmail_thread_id: id, account_id: "a", subject: id, snippet: "", last_message_date: 0,
@@ -18,25 +18,88 @@ describe("labelChangeFor", () => {
   });
 });
 
-describe("actionFailureLabel", () => {
-  it("says which action failed on how many threads", () => {
-    expect(actionFailureLabel("archive", 1)).toBe("Couldn't archive 1 thread");
-    expect(actionFailureLabel("trash", 3)).toBe("Couldn't delete 3 threads");
-    expect(actionFailureLabel("notImportant", 1)).toBe("Couldn't mark 1 thread as not important");
-    expect(actionFailureLabel("unknown", 2)).toBe("Couldn't change 2 threads");
+const mail = (subject: string, ...participants: string[]) => ({ subject, participants });
+
+describe("actionMessage", () => {
+  it("names one thread by its subject", () => {
+    expect(actionMessage("archive", [mail("Venue for the offsite", "Ana <ana@x.com>")])).toBe("Archived “Venue for the offsite”");
+    expect(actionMessage("trash", [mail("Venue for the offsite")])).toBe("Moved “Venue for the offsite” to Trash");
+    expect(actionMessage("read", [mail("Venue for the offsite")])).toBe("Marked “Venue for the offsite” as read");
+  });
+
+  it("names the sender's message when the subject is empty", () => {
+    expect(actionMessage("archive", [mail("", "Ana Pérez <ana@x.com>")])).toBe("Archived Ana Pérez's message");
+    expect(actionMessage("star", [mail(" ")])).toBe("Starred a message with no subject");
+  });
+
+  it("names the sender, not the user, of a thread they replied to", () => {
+    expect(actionMessage("archive", [mail("", "me@x.com", "Ben <ben@x.com>")], { ownEmails: ["me@x.com"] })).toBe("Archived Ben's message");
+  });
+
+  it("names both senders of two threads", () => {
+    expect(actionMessage("archive", [mail("One", "Ana <ana@x.com>"), mail("Two", "Ben <ben@x.com>")])).toBe("Archived 2, from Ana and Ben");
+    expect(actionMessage("trash", [mail("One", "Ana <ana@x.com>"), mail("Two", "Ben <ben@x.com>")])).toBe("Moved 2, from Ana and Ben, to Trash");
+  });
+
+  it("names the one sender of several threads", () => {
+    const threads = Array.from({ length: 6 }, (_, i) => mail(`Issue ${i}`, "GitHub <notifications@github.com>"));
+    expect(actionMessage("archive", threads)).toBe("Archived 6 from GitHub");
+    expect(actionMessage("read", threads)).toBe("Marked 6 from GitHub as read");
+  });
+
+  it("says all when the action took every thread in the card", () => {
+    const threads = Array.from({ length: 14 }, (_, i) => mail(`News ${i}`, `List ${i} <l${i}@x.com>`));
+    expect(actionMessage("archive", threads, { card: { name: "Newsletters", total: 14 } })).toBe("Archived all 14 in Newsletters");
+    expect(actionMessage("archive", threads.slice(0, 2), { card: { name: "Newsletters", total: 2 } })).toBe("Archived both in Newsletters");
+  });
+
+  it("doesn't say all when the card holds more than it has loaded", () => {
+    const threads = Array.from({ length: 3 }, (_, i) => mail(`News ${i}`, `List ${i} <l${i}@x.com>`));
+    expect(actionMessage("archive", threads, { card: { name: "Newsletters", total: null } })).toBe("Archived 3 threads");
+  });
+
+  it("counts several threads from several senders", () => {
+    const threads = [mail("A", "Ana <a@x.com>"), mail("B", "Ben <b@x.com>"), mail("C", "Cy <c@x.com>")];
+    expect(actionMessage("spam", threads)).toBe("Moved 3 threads to spam");
+    expect(actionMessage("bogus", threads)).toBe("Changed 3 threads");
   });
 });
 
-describe("actionLabel", () => {
-  it("describes one or several threads", () => {
-    expect(actionLabel("archive", 1)).toBe("Archived 1 thread");
-    expect(actionLabel("spam", 3)).toBe("Moved 3 threads to spam");
-    expect(actionLabel("bogus", 2)).toBe("Modified 2 threads");
+describe("actionFailureMessage", () => {
+  it("names the thread that couldn't be changed", () => {
+    expect(actionFailureMessage("archive", [mail("Venue for the offsite")])).toBe("Couldn't archive “Venue for the offsite”");
+    expect(actionFailureMessage("trash", [mail("A", "Ana <a@x.com>"), mail("B", "Ana <a@x.com>"), mail("C", "Ana <a@x.com>")])).toBe("Couldn't delete 3 from Ana");
+    expect(actionFailureMessage("notImportant", [mail("Venue")])).toBe("Couldn't mark “Venue” as not important");
+  });
+});
+
+describe("actionUndoneMessage", () => {
+  it("says what undoing the action did", () => {
+    expect(actionUndoneMessage("archive", [mail("Contract v3, two redlines")])).toBe("Unarchived “Contract v3, two redlines”");
+    expect(actionUndoneMessage("trash", [mail("Venue")])).toBe("Restored “Venue” from Trash");
+    expect(actionUndoneMessage("read", [mail("Venue")])).toBe("Marked “Venue” as unread");
+    expect(actionUndoneMessage("spam", [mail("Venue")])).toBe("Moved “Venue” out of spam");
+  });
+});
+
+describe("undoFailureMessage", () => {
+  it("names what couldn't be undone, as what undoing would have done", () => {
+    expect(undoFailureMessage("archive", [mail("Venue")])).toBe("Couldn't unarchive “Venue”");
+    expect(undoFailureMessage("trash", [mail("Venue")])).toBe("Couldn't restore “Venue” from Trash");
+    expect(undoFailureMessage("read", [mail("Venue")])).toBe("Couldn't mark “Venue” as unread");
+    expect(undoFailureMessage("bogus", [mail("Venue")])).toBe("Couldn't undo changes to “Venue”");
+  });
+});
+
+describe("labelChangeMessage", () => {
+  it("names the label and the thread", () => {
+    expect(labelChangeMessage(true, "Receipts", mail("Venue"))).toBe("Added “Receipts” to “Venue”");
+    expect(labelChangeMessage(false, "Receipts", mail("", "Ana <a@x.com>"))).toBe("Removed “Receipts” from Ana's message");
   });
 
-  it("says deleted threads went to Trash, where they can still be recovered", () => {
-    expect(actionLabel("trash", 1)).toBe("Moved 1 thread to Trash");
-    expect(actionLabel("trash", 2)).toBe("Moved 2 threads to Trash");
+  it("names them when the change failed", () => {
+    expect(labelChangeMessage(true, "Receipts", mail("Venue"), "failed")).toBe("Couldn't add “Receipts” to “Venue”");
+    expect(labelChangeMessage(false, "Receipts", mail("Venue"), "failed")).toBe("Couldn't remove “Receipts” from “Venue”");
   });
 });
 
@@ -139,5 +202,52 @@ describe("threadMayJoinCard", () => {
 
   it("lets any other thread in", () => {
     expect(threadMayJoinCard(thread("t", ["SENT"]), "is:inbox")).toBe(true);
+  });
+});
+
+describe("restoreThreads", () => {
+  const byId = (...ids: string[]) => (t: Thread) => ids.includes(t.gmail_thread_id);
+
+  it("puts a removed thread back in the slot it left", () => {
+    const before = groups(thread("a", ["INBOX"]), thread("b", ["INBOX"]), thread("c", ["INBOX"]));
+    const after = groups(thread("a", ["INBOX"]), thread("c", ["INBOX"]));
+    expect(restoreThreads(after, before, byId("b"))[0].threads.map(t => t.gmail_thread_id)).toEqual(["a", "b", "c"]);
+  });
+
+  it("gives a thread still shown its labels back", () => {
+    const before = groups(thread("a", ["INBOX", "UNREAD"], 1));
+    const after = groups(thread("a", ["INBOX"], 0));
+    expect(restoreThreads(after, before, byId("a"))[0].threads[0]).toMatchObject({ labels: ["INBOX", "UNREAD"], unread_count: 1 });
+  });
+
+  it("brings back a group that emptied, where it was", () => {
+    const before: ThreadGroup[] = [
+      { label: "Today", threads: [thread("a", ["INBOX"])] },
+      { label: "Yesterday", threads: [thread("b", ["INBOX"])] },
+      { label: "Older", threads: [thread("c", ["INBOX"])] },
+    ];
+    const after: ThreadGroup[] = [before[0], before[2]];
+    expect(restoreThreads(after, before, byId("b")).map(g => g.label)).toEqual(["Today", "Yesterday", "Older"]);
+  });
+
+  it("leaves other threads as they are now", () => {
+    const before = groups(thread("a", ["INBOX"]), thread("b", ["INBOX"]));
+    const after = groups(thread("a", ["INBOX", "STARRED"]));
+    const restored = restoreThreads(after, before, byId("b"))[0].threads;
+    expect(restored.map(t => [t.gmail_thread_id, t.labels])).toEqual([["a", ["INBOX", "STARRED"]], ["b", ["INBOX"]]]);
+  });
+});
+
+describe("backInPlace", () => {
+  it("says where in the card the thread is back", () => {
+    const shown = groups(thread("a", []), thread("b", []), thread("c", []));
+    expect(backInPlace(shown, "a", "Inbox")).toBe(" · back 1st in Inbox");
+    expect(backInPlace(shown, "b", "Inbox")).toBe(" · back 2nd in Inbox");
+    expect(backInPlace(groups(...Array.from({ length: 23 }, (_, i) => thread(`t${i}`, []))), "t22", "Inbox")).toBe(" · back 23rd in Inbox");
+    expect(backInPlace(groups(...Array.from({ length: 12 }, (_, i) => thread(`t${i}`, []))), "t10", "Inbox")).toBe(" · back 11th in Inbox");
+  });
+
+  it("says nothing of a thread the card doesn't show", () => {
+    expect(backInPlace(groups(thread("a", [])), "z", "Inbox")).toBe("");
   });
 });

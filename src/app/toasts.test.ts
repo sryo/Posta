@@ -45,7 +45,7 @@ describe("toasts", () => {
     expect(message()).toBe("Archived 1 thread");
     expect(toasts.undo()).toBe(true);
     expect(undo).toHaveBeenCalledTimes(1);
-    vi.advanceTimersByTime(200);
+    vi.advanceTimersByTime(5200);
     expect(message()).toBe("Reply sent");
   });
 
@@ -169,5 +169,79 @@ describe("toasts", () => {
     expect(toasts.current()?.closing).toBe(false);
     toasts.dismissTag("draft:1");
     expect(toasts.current()?.closing).toBe(true);
+  });
+});
+
+describe("undo through the session", () => {
+  const archive = (subject: string) => ({ message: `Archived “${subject}”`, undone: `Unarchived “${subject}”`, undo: vi.fn(), redo: vi.fn() });
+
+  it("undoes an earlier action after its toast has gone, newest first", () => {
+    const one = archive("One");
+    const two = archive("Two");
+    toasts.show(one);
+    toasts.show(two);
+    vi.advanceTimersByTime(10000);
+    expect(toasts.current()).toBeNull();
+
+    expect(toasts.canUndo()).toBe(true);
+    expect(toasts.undo()).toBe(true);
+    expect(two.undo).toHaveBeenCalledTimes(1);
+    expect(toasts.undo()).toBe(true);
+    expect(one.undo).toHaveBeenCalledTimes(1);
+    expect(toasts.canUndo()).toBe(false);
+    expect(toasts.undo()).toBe(false);
+  });
+
+  it("says what it undid and what the next z will undo", () => {
+    toasts.show(archive("One"));
+    toasts.show(archive("Two"));
+    toasts.undo();
+    expect(message()).toBe("Unarchived “Two”");
+    expect(toasts.current()?.note).toBe("z next: Archived “One”");
+    toasts.undo();
+    expect(message()).toBe("Unarchived “One”");
+    expect(toasts.current()?.note).toBe("Nothing earlier to undo this session");
+  });
+
+  it("redoes the last undone action, offering to undo it again", () => {
+    const one = archive("One");
+    toasts.show(one);
+    toasts.undo();
+    expect(toasts.canRedo()).toBe(true);
+    expect(toasts.redo()).toBe(true);
+    expect(one.redo).toHaveBeenCalledTimes(1);
+    expect(message()).toBe("Archived “One”");
+    expect(toasts.current()?.undo).toBeTruthy();
+    expect(toasts.redo()).toBe(false);
+    toasts.undo();
+    expect(one.undo).toHaveBeenCalledTimes(2);
+  });
+
+  it("offers Redo on the toast saying what was undone", () => {
+    const one = archive("One");
+    toasts.show(one);
+    toasts.undo();
+    expect(toasts.current()?.action).toEqual(expect.objectContaining({ label: "Redo" }));
+    toasts.runAction();
+    expect(one.redo).toHaveBeenCalledTimes(1);
+  });
+
+  it("can't undo a held change once its toast committed it", () => {
+    const older = archive("One");
+    const undoDelete = vi.fn();
+    toasts.show(older);
+    toasts.show({ message: "Deleted “Planning”", undo: undoDelete, onExpire: () => {} });
+    vi.advanceTimersByTime(10000);
+    toasts.undo();
+    expect(undoDelete).not.toHaveBeenCalled();
+    expect(older.undo).toHaveBeenCalledTimes(1);
+  });
+
+  it("forgets the actions of an account signed out of", () => {
+    const one = { ...archive("One"), tag: "account:a" };
+    toasts.show(one);
+    vi.advanceTimersByTime(10000);
+    toasts.dismissTag("account:a");
+    expect(toasts.canUndo()).toBe(false);
   });
 });

@@ -1,10 +1,13 @@
 import { createSignal, onCleanup } from "solid-js";
+import { createUndoStack, type UndoEntry } from "./undoStack";
 
 export type ToastTone = "info" | "error";
 
 export interface ToastAction {
   label: string;
   run: () => void;
+  // Its shortcut, shown beside it
+  keys?: string;
 }
 
 export interface ToastInput {
@@ -12,13 +15,20 @@ export interface ToastInput {
   tone?: ToastTone;
   // Buttons besides Undo: Open, Discard, Retry
   action?: ToastAction | ToastAction[];
-  // Makes it an undo toast, with an Undo button that z presses too
-  undo?: () => void;
+  // Makes it an undo toast, with an Undo button that z presses too, now or
+  // later in the session. It may say what it did, as `undone` does.
+  undo?: UndoEntry["undo"];
+  // What undoing did: "Unarchived “Contract v3”"
+  undone?: string;
+  // Does it again after an undo; without it ⇧Z can't
+  redo?: () => void;
   // Runs when the toast goes without its Undo: commits a change held back
   // until then
   onExpire?: () => void;
   // Lets whoever showed it close it again
   tag?: string;
+  // A second line: what the next z will undo
+  note?: string;
 }
 
 export function toastActions(toast: ToastInput): ToastAction[] {
@@ -90,13 +100,10 @@ function createSlot(durationFor: (input: ToastInput) => number | null, closeMs: 
     display(input);
   }
 
-  function undo(): boolean {
+  // Closes an undo toast without committing its change, which is being undone
+  function closeForUndo() {
     const toast = current();
-    if (!toast || toast.closing || !toast.undo) return false;
-    const run = toast.undo;
-    close(false);
-    run();
-    return true;
+    if (toast && !toast.closing && toast.undo) close(false);
   }
 
   function runAction(index: number) {
@@ -128,7 +135,7 @@ function createSlot(durationFor: (input: ToastInput) => number | null, closeMs: 
     clearTimeout(closeTimer);
   });
 
-  return { current, show, undo, runAction, pause, resume, close };
+  return { current, show, closeForUndo, runAction, pause, resume, close };
 }
 
 type Slot = ReturnType<typeof createSlot>;
@@ -138,6 +145,9 @@ type Slot = ReturnType<typeof createSlot>;
 // takes over and commits the change of the one it replaces. An error shows
 // at once, raised over whatever toast is already showing, and replaces only
 // an earlier error.
+// Each undo toast's change joins the session's undo stack, which z walks
+// back through after its toast has gone, and ⇧Z forward again. A change held
+// until its toast goes (onExpire) leaves the stack once committed.
 export function createToasts({ infoMs = 5000, errorMs = 10000, closeMs = 200 } = {}) {
   let lastId = 0;
   const nextId = () => ++lastId;
@@ -153,17 +163,55 @@ export function createToasts({ infoMs = 5000, errorMs = 10000, closeMs = 200 } =
     return null;
   };
 
+  const stack = createUndoStack();
+
+  function show(input: ToastInput) {
+    if (!input.undo || input.tone === "error") return (input.tone === "error" ? errors : info).show(input);
+    const entry: UndoEntry = { label: input.message, undo: input.undo, undone: input.undone, redo: input.redo, tag: input.tag };
+    stack.push(entry);
+    const commit = input.onExpire;
+    info.show({ ...input, onExpire: commit && (() => { stack.drop(entry); commit(); }) });
+  }
+
+  // The undo toast of the latest change, with Undo taking it off the stack
+  const showLatest = (input: Omit<ToastInput, "undo">) =>
+    info.show({ ...input, undo: stack.canUndo() ? () => {} : undefined });
+
+  function undo(): boolean {
+    if (!stack.canUndo()) return false;
+    info.closeForUndo();
+    const result = stack.undo()!;
+    const next = stack.peek();
+    showLatest({
+      message: result.message,
+      note: next ? `z next: ${next.label}` : "Nothing earlier to undo this session",
+      action: stack.canRedo() ? { label: "Redo", keys: "⇧Z", run: () => { redo(); } } : undefined,
+    });
+    return true;
+  }
+
+  function redo(): boolean {
+    const entry = stack.redo();
+    if (!entry) return false;
+    showLatest({ message: entry.label, tag: entry.tag });
+    return true;
+  }
+
   return {
     current: info.current,
     error: errors.current,
-    show: (input: ToastInput) => (input.tone === "error" ? errors : info).show(input),
-    undo: info.undo,
+    show,
+    undo,
+    redo,
+    canUndo: stack.canUndo,
+    canRedo: stack.canRedo,
     runAction: (index = 0, id?: number) => slotOf(id)?.runAction(index),
     pause: (id?: number) => slotOf(id)?.pause(),
     resume: (id?: number) => slotOf(id)?.resume(),
     dismiss: (id?: number) => slotOf(id)?.close(true),
     dismissTag: (tag: string) => {
       for (const slot of [info, errors]) if (slot.current()?.tag === tag) slot.close(true);
+      stack.dropTag(tag);
     },
     hasUndo: () => { const t = info.current(); return !!t && !t.closing && !!t.undo; },
   };
