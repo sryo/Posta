@@ -184,3 +184,86 @@ describe("Focus ring", () => {
     await waitFor(() => expect(document.querySelector(".focus-ring")).toBeNull());
   });
 });
+
+describe("New mail waits for the pointer", () => {
+  const fetches = () => invoke.mock.calls.filter(([cmd, args]) => cmd === "fetch_threads_paginated" && (args as { cardId: string }).cardId === "inbox").length;
+  const subjects = () => Array.from(cardRegion("Inbox").querySelectorAll(".thread"), row => row.querySelector(".thread-subject")?.textContent ?? row.textContent);
+  async function mailArrives() {
+    const before = fetches();
+    const arrived = thread("t-new", "Fresh mail", { unread_count: 1 });
+    threadsByCard.inbox = [arrived, ...threadsByCard.inbox];
+    handlers.sync_threads_incremental = () => ({ modified_threads: [arrived], deleted_thread_ids: [], is_full_sync: false });
+    window.dispatchEvent(new Event("focus"));
+    await waitFor(() => expect(fetches()).toBeGreaterThan(before));
+    await new Promise(r => setTimeout(r, 20));
+  }
+
+  it("keeps the rows still under a resting pointer, and lets the new ones in once it leaves the card", async () => {
+    render(() => <App />);
+    await screen.findByText("Second");
+    await new Promise(r => setTimeout(r, 20));
+    fireEvent.pointerEnter(cardRegion("Inbox"));
+    await mailArrives();
+
+    expect(screen.queryByText("Fresh mail")).toBeNull();
+    expect(subjects()).toEqual(["First", "Second"]);
+    expect(cardRegion("Inbox")).not.toHaveTextContent(/new|waiting|appear/i);
+
+    fireEvent.pointerLeave(cardRegion("Inbox"));
+    expect(screen.queryByText("Fresh mail")).toBeNull();
+    await screen.findByText("Fresh mail");
+    expect(subjects()).toEqual(["Fresh mail", "First", "Second"]);
+  });
+
+  it("counts the waiting mail as unread in the card's badge", async () => {
+    render(() => <App />);
+    await screen.findByText("Second");
+    await new Promise(r => setTimeout(r, 20));
+    fireEvent.pointerEnter(cardRegion("Inbox"));
+    await mailArrives();
+    expect(within(cardRegion("Inbox")).getAllByText("1").some(el => el.classList.contains("card-unread-badge"))).toBe(true);
+  });
+
+  it("holds while the keyboard focus is in the card, and lets go as the focus leaves it", async () => {
+    render(() => <App />);
+    await screen.findByText("Receipt two");
+    await new Promise(r => setTimeout(r, 20));
+    setInputMode("keyboard");
+    row("Second").focus();
+    await mailArrives();
+    expect(screen.queryByText("Fresh mail")).toBeNull();
+    expect(row("Second")).toHaveClass("focused");
+
+    row("Receipt one").focus();
+    await screen.findByText("Fresh mail");
+  });
+
+  it("doesn't hold for a row a click left focused once the pointer is gone", async () => {
+    render(() => <App />);
+    await screen.findByText("Second");
+    await new Promise(r => setTimeout(r, 20));
+    row("Second").focus();
+    await mailArrives();
+    await screen.findByText("Fresh mail");
+  });
+
+  it("lets go of the keyboard's hold when the pointer takes over", async () => {
+    render(() => <App />);
+    await screen.findByText("Second");
+    await new Promise(r => setTimeout(r, 20));
+    setInputMode("keyboard");
+    row("Second").focus();
+    await mailArrives();
+    expect(screen.queryByText("Fresh mail")).toBeNull();
+    setInputMode("pointer");
+    await screen.findByText("Fresh mail");
+  });
+
+  it("lets new mail straight in when nothing rests on the card", async () => {
+    render(() => <App />);
+    await screen.findByText("Second");
+    await new Promise(r => setTimeout(r, 20));
+    await mailArrives();
+    await screen.findByText("Fresh mail");
+  });
+});

@@ -199,6 +199,8 @@ import { discardThreadDrafts, draftToOpen, isDraftThread, prepareDraftCompose, w
 import { createDraftSync, draftKey, findLatestDraft, findUnsentDrafts, hasDraftContent, markDraftClosed, markDraftSending, pruneDrafts, removeAccountDrafts, sessionDraftKey, type DraftFields } from "./app/drafts";
 import { escapeTarget, focusEdgeHint, isFocusEdge, nextCardFocus, nextItemFocus, type FocusEdge, type ItemFocus } from "./app/keyboardNav";
 import { createFocusMemory } from "./app/focusMemory";
+import { createNewMailHold } from "./app/rowHold";
+import { measureRows, slideRows } from "./app/rowMotion";
 import { FocusRing, type RingBump } from "./components/FocusRing";
 import { getSmartEventTime, groupCalendarEvents, isUserLabel, mergeThreadGroups, regroupThreads, type CalendarEventGroup } from "./app/grouping";
 import { pullLayoutWithRetry } from "./app/icloudRestore";
@@ -290,6 +292,26 @@ function App() {
   const boardCards = () => { const search = searchCard(); return search ? [search, ...cards()] : cards(); };
   const [authLoading, setAuthLoading] = createSignal(false);
   const [cardThreads, setCardThreads] = createStore<Record<string, ThreadGroup[]>>({});
+  // Synced mail waits while the pointer rests on its card or the keyboard
+  // focus is in it, then slides in
+  const newMail = createNewMailHold({
+    read: (cardId) => cardThreads[cardId] && unwrap(cardThreads[cardId]),
+    write: (cardId, groups) => setCardThreads(cardId, reconcile(groups, { key: "gmail_thread_id" })),
+    fetchedFor: (cardId) => fetchedFor(cardById(cardId)),
+    onRelease: (cardId, entering, letIn) => {
+      const list = document.querySelector<HTMLElement>(`.card[data-id="${CSS.escape(cardId)}"] .card-body`);
+      const before = list ? measureRows(list) : null;
+      letIn();
+      if (list && before) slideRows(list, before, { entering });
+    },
+  });
+  // Only focus moved from the keyboard holds; a row a click left focused
+  // doesn't, nor does the focus once the pointer takes over
+  createEffect(() => {
+    if (inputMode() === "pointer") untrack(cards).forEach(card => newMail.focus(card.id, false));
+  });
+  // A card's threads with any mail waiting in it, for counting
+  const countedThreads = (cardId: string) => newMail.waiting(cardId) ?? cardThreads[cardId];
   const [cardCalendarEvents, setCardCalendarEvents] = createStore<Record<string, GoogleCalendarEvent[]>>({});
   const [loadingThreads, setLoadingThreads] = createStore<Record<string, boolean>>({});
   const [cardErrors, setCardErrors] = createStore<Record<string, string | null>>({});
@@ -1317,7 +1339,7 @@ function App() {
     // cards holding a change are touched
     batch(() => {
       for (const [cardId, groups] of Object.entries(updatedCardThreads)) {
-        setCardThreads(cardId, reconcile(groups, { key: "gmail_thread_id" }));
+        newMail.show(cardId, groups);
       }
     });
 
@@ -1459,7 +1481,7 @@ function App() {
     // A thread can match several cards; count it once in each account
     const unreadThreads = new Set<string>();
     for (const card of cards()) {
-      for (const group of cardThreads[card.id] ?? []) {
+      for (const group of countedThreads(card.id) ?? []) {
         for (const thread of group.threads) {
           if (thread.unread_count > 0) unreadThreads.add(threadKey(thread, card));
         }
@@ -3833,7 +3855,10 @@ function App() {
   // cache by thread actions.
   function forgetCardState(cardIds: string[]) {
     if (cardIds.length === 0) return;
-    for (const id of cardIds) delete knownCardCache[id];
+    for (const id of cardIds) {
+      delete knownCardCache[id];
+      newMail.forget(id);
+    }
     batch(() => {
       setCardThreads(produce(s => { for (const id of cardIds) delete s[id]; }));
       setCardPageTokens(produce(s => { for (const id of cardIds) delete s[id]; }));
@@ -4279,7 +4304,7 @@ function App() {
         await saveCardCache(cardId, result.groups, result.next_page_token);
         return;
       }
-      setCardThreads(cardId, reconcile(result.groups, { key: "gmail_thread_id" }));
+      newMail.show(cardId, result.groups);
       setCardPageTokens(cardId, result.next_page_token);
       setCardHasMore(cardId, result.has_more);
       await saveCardCache(cardId, result.groups, result.next_page_token);
@@ -4436,7 +4461,7 @@ function App() {
   }
 
   function getCardUnreadCount(cardId: string): number {
-    const groups = cardThreads[cardId];
+    const groups = countedThreads(cardId);
     if (!groups) return 0;
     return groups.reduce((total, group) =>
       total + group.threads.filter(t => t.unread_count > 0).length, 0);
@@ -5257,6 +5282,10 @@ function App() {
                         classList={{ 'dragging': sortable.isActiveDraggable }}
                         data-id={card.id}
                         data-color={editingCardId() === card.id ? (editCardColor() || undefined) : (card.color || undefined)}
+                        onPointerEnter={() => newMail.enter(card.id)}
+                        onPointerLeave={() => newMail.leave(card.id)}
+                        onFocusIn={() => newMail.focus(card.id, inputMode() === "keyboard")}
+                        onFocusOut={(e) => { if (!e.currentTarget.contains(e.relatedTarget as Node | null)) newMail.focus(card.id, false); }}
                         role="region"
                         aria-label={`${card.name} ${card.card_type === "calendar" ? "calendar" : "email"} card`}
                       >
@@ -5549,6 +5578,7 @@ function App() {
                                             openThread(thread.gmail_thread_id, card.id);
                                           }}
                                           role="article"
+                                          data-thread-id={thread.gmail_thread_id}
                                           aria-label={`${thread.unread_count > 0 ? 'Unread: ' : ''}${thread.subject} from ${thread.participants.slice(0, 2).map(personName).join(', ')}${inviteLabel()}`}
                                           tabindex={rowTabIndex(card.id, thread.gmail_thread_id)}
                                           onFocus={() => onRowFocus(card.id, thread.gmail_thread_id)}

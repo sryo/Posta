@@ -39,6 +39,7 @@ const NO_DOM = [
   "src/app/pendingSend.test.ts",
   "src/app/postmark.test.ts",
   "src/app/ringPlacement.test.ts",
+  "src/app/rowHold.test.ts",
   "src/app/signature.test.ts",
   "src/app/storedWidth.test.ts",
   "src/app/threadActions.test.ts",
