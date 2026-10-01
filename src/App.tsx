@@ -153,7 +153,8 @@ import { Sheet } from "./components/Sheet";
 import { ToastFrame, Toasts } from "./components/Toasts";
 import { createToasts, type ToastAction, type ToastTone } from "./app/toasts";
 import { failureMessage, storedCredentialsFailure } from "./app/errorText";
-import { formatClock, formatDayLabel, formatShortDate, formatWhen, threadGroupLabel } from "./app/dateFormat";
+import { formatClock, formatDayLabel, formatShortDate, formatWhen } from "./app/dateFormat";
+import { threadGroupHeading, type GroupHeading } from "./app/groupHeading";
 import { safeGetItem, safeSetItem, safeRemoveItem, safeGetJSON, safeSetJSON } from "./shared/storage";
 import { BOARD_COLORS, type ActionSettings, type CardColor, type GroupBy } from "./shared/constants";
 import { createUndoableSend } from "./app/undoableSend";
@@ -324,12 +325,26 @@ function App() {
   // Local midnight of the current day; notifies once a day, so "Today" labels
   // and today's times move on at midnight without re-rendering every tick
   const today = createMemo(() => new Date(currentTime()).setHours(0, 0, 0, 0));
+  // A group's heading, named from its rows' days as of today. It depends only
+  // on the newest and oldest day, so rows of the same group share one.
+  const groupHeadings = new Map<string, GroupHeading>();
+  const groupHeading = (group: ThreadGroup) => {
+    const dates = group.threads.map(t => t.last_message_date);
+    const key = `${group.label}|${today()}|${Math.min(...dates)}|${Math.max(...dates)}`;
+    let heading = groupHeadings.get(key);
+    if (!heading) {
+      if (groupHeadings.size > 200) groupHeadings.clear();
+      heading = threadGroupHeading(group.label, dates, new Date(today()));
+      groupHeadings.set(key, heading);
+    }
+    return heading;
+  };
   // formatTime reads the clock itself; reading today() re-runs it at midnight
-  // A row's time: the clock inside the Today and Yesterday groups, whose
-  // headers already name the day, else the date
-  const threadTime = (timestamp: number, groupLabel?: string) => {
+  // A row's time: the clock under a heading that already names the day,
+  // else the date
+  const threadTime = (timestamp: number, group: ThreadGroup) => {
     today();
-    if (groupLabel === "Today" || groupLabel === "Yesterday") return formatClock(new Date(timestamp));
+    if (groupHeading(group).oneDay) return formatClock(new Date(timestamp));
     return formatTime(timestamp);
   };
 
@@ -5464,7 +5479,7 @@ function App() {
                             <Index each={getDisplayGroups(card.id)}>
                               {(group) => (
                                 <>
-                                  <Show when={isNowGroup(group())} fallback={<div class="date-header">{threadGroupLabel(group().label)}</div>}>
+                                  <Show when={isNowGroup(group())} fallback={<div class="date-header">{groupHeading(group()).text}</div>}>
                                     <div class="date-header invite-now-header"><span class="invite-live-dot" aria-hidden="true" />Now</div>
                                   </Show>
                                   <For each={group().threads}>
@@ -5517,7 +5532,7 @@ function App() {
                                               <ThreadRowLines
                                                 thread={thread}
                                                 ownEmails={accounts().map(a => a.email)}
-                                                time={threadTime(thread.last_message_date, group().label)}
+                                                time={threadTime(thread.last_message_date, group())}
                                                 subject={thread.calendar_event ? inviteTitle(thread.subject) : undefined}
                                                 attachmentsShown={attachments().length > 0}
                                                 beforeTime={
@@ -5742,14 +5757,14 @@ function App() {
                       <For each={regroupThreads(queryPreviewThreads(), newCardGroupBy(), cardLabelNames(undefined))}>
                         {(group) => (
                           <>
-                            <div class="date-header">{group.label}</div>
+                            <div class="date-header">{groupHeading(group).text}</div>
                             <For each={group.threads}>
                               {(thread) => (
                                 <div class="thread" classList={{ "unread": thread.unread_count > 0 }}>
                                   <ThreadRowLines
                                     thread={thread}
                                     ownEmails={accounts().map(a => a.email)}
-                                    time={threadTime(thread.last_message_date, group.label)}
+                                    time={threadTime(thread.last_message_date, group)}
                                     attachmentsShown={visibleAttachments(thread.attachments ?? [], { hideCalendar: !!thread.calendar_event }).length > 0}
                                     attachments={
                                       <Show when={(thread.attachments ?? []).length > 0}>
