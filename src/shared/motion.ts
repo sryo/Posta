@@ -31,3 +31,40 @@ export function play(
   if (!reducedMotion()) return el.animate(keyframes, options);
   return reduced ? el.animate(reduced, { duration: reducedMs, fill: options.fill }) : null;
 }
+
+export const FOLD_MS = 240;
+
+// Folds a part of a form away to nothing (App.css [data-folded]), out of
+// reach of focus and screen readers, or opens it to its own height again.
+// Starts from wherever a fold under way got to.
+export function fold(el: HTMLElement, open: boolean, ms = FOLD_MS) {
+  const from = el.getBoundingClientRect().height;
+  const style = typeof getComputedStyle === "function" ? getComputedStyle(el) : null;
+  const padding = (s: CSSStyleDeclaration | null) => ({ paddingTop: s?.paddingTop || "0px", paddingBottom: s?.paddingBottom || "0px" });
+  const fromPadding = padding(style);
+  el.getAnimations?.().forEach(a => a.cancel());
+  if (open) {
+    el.removeAttribute("data-folded");
+    el.removeAttribute("aria-hidden");
+  } else {
+    el.setAttribute("data-folded", "");
+    el.setAttribute("aria-hidden", "true");
+  }
+  el.inert = !open;
+  const to = el.getBoundingClientRect().height;
+  const toPadding = open ? padding(style) : { paddingTop: "0px", paddingBottom: "0px" };
+  if (ms <= 0) return;
+  play(el, [
+    { height: `${from}px`, opacity: open ? 0 : 1, overflow: "hidden", ...fromPadding },
+    { height: `${to}px`, opacity: open ? 1 : 0, overflow: "hidden", ...toPadding },
+  ], { duration: ms, easing: EASE_OUT });
+}
+
+// Eases an element from its height before `change` to the one after
+export function morphHeight(el: HTMLElement, change: () => void, ms = FOLD_MS) {
+  const from = el.getBoundingClientRect().height;
+  el.getAnimations?.().forEach(a => a.cancel());
+  change();
+  const to = el.getBoundingClientRect().height;
+  if (ms > 0 && from !== to) play(el, [{ height: `${from}px` }, { height: `${to}px` }], { duration: ms, easing: EASE_OUT });
+}

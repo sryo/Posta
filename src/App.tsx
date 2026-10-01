@@ -157,6 +157,8 @@ import { formatClock, formatDayLabel, formatShortDate, formatWhen, threadGroupLa
 import { safeGetItem, safeSetItem, safeRemoveItem, safeGetJSON, safeSetJSON } from "./shared/storage";
 import { BOARD_COLORS, type ActionSettings, type CardColor, type GroupBy } from "./shared/constants";
 import { createUndoableSend } from "./app/undoableSend";
+import { createSentReplies } from "./app/sentReplies";
+import type { SentReply } from "./components/types";
 import { findHeader, lastMessageFromOthers, messageDate } from "./app/messages";
 import { lastLetterLine, latestDate } from "./app/transit";
 import { batchReplyEntry, type BatchReplyThread } from "./app/batchReply";
@@ -412,10 +414,17 @@ function App() {
   const discardDraftTag = (key: string) => `discard-draft:${key}`;
 
   // Undo send state
+  const SEND_UNDO_MS = 5000;
+  // Inline replies, kept in their box in the thread until it holds them
+  const sentReplies = createSentReplies<PendingSend>();
   const undoableSend = createUndoableSend<PendingSend>({
-    delayMs: 5000,
+    delayMs: SEND_UNDO_MS,
     send: async pending => {
       await sendPending(pending);
+      if (pending.reply) {
+        sentReplies.settle(pending);
+        if (activeThreadId() === pending.reply.threadId) refreshActiveThread(pending.accountId, pending.reply.threadId);
+      }
       const fromBatch = batchReplyOrigins.get(pending);
       if (fromBatch?.cardId) fetchAndCacheThreads(fromBatch.cardId);
       const draft = pending.draft;
@@ -445,8 +454,15 @@ function App() {
     else open();
   }
 
-  // A failed send says so even when its email opens again by itself
+  // A failed send says so even when its email opens again by itself. A reply
+  // still in its box turns back into the compose it was.
   function putBackSend(pending: PendingSend, message: string, tone: ToastTone = "info") {
+    batch(() => {
+      sentReplies.drop(pending);
+      restoreUnsent(pending, message, tone);
+    });
+  }
+  function restoreUnsent(pending: PendingSend, message: string, tone: ToastTone) {
     const fromBatch = batchReplyOrigins.get(pending);
     if (fromBatch && accountById(pending.accountId)) {
       restoreBatchReply(fromBatch);
@@ -2928,9 +2944,36 @@ function App() {
     markDraftSending(composeDraftKey, account.id);
     pending.draft = { key: composeDraftKey, gmailDraftId: drafts.gmailDraftId() ?? undefined };
     sendingDraftKeys.add(composeDraftKey);
-    closeComposeAfterSend();
+    // An inline reply's box stays, becoming the reply; it isn't the compose
+    // any more, so that goes at once
+    if (pending.reply && composeShownIn() === "thread") {
+      batch(() => {
+        sentReplies.add(pending.reply!.threadId, pending, activeThread()?.messages.map(m => m.id) ?? []);
+        drafts.detach();
+        resetCompose();
+      });
+    } else {
+      closeComposeAfterSend();
+    }
     undoableSend.queue(pending);
   }
+
+  createEffect(() => {
+    const thread = activeThread();
+    if (thread) sentReplies.arrived(thread.id, thread.messages);
+  });
+  const activeSentReplies = createMemo((): SentReply[] => {
+    const threadId = activeThreadId();
+    if (!threadId) return [];
+    return sentReplies.inThread(threadId).flatMap(({ item: pending, state, queuedAt, sentAt }) => pending.reply?.messageId ? [{
+      replyToMessageId: pending.reply.messageId,
+      to: pending.to, cc: pending.cc, bcc: pending.bcc, body: pending.body, attachments: pending.attachments,
+      fromEmail: accounts().length > 1 ? accountById(pending.accountId)?.email : undefined,
+      state, sentAt,
+      undoUntil: queuedAt + SEND_UNDO_MS,
+      onUndo: () => { if (undoableSend.withdraw(pending)) putBackSend(pending, `"${pending.subject || "(no subject)"}" wasn't sent`); },
+    }] : []);
+  });
 
   // Compose closed when the send was queued, so an undone or failed send puts
   // the email back, continuing its saved draft
@@ -5952,6 +5995,7 @@ function App() {
           // Inline compose props
           inlineCompose={composeShownIn() === "thread" ? threadInlineCompose : null}
           threadAttachments={activeListedThread()?.attachments}
+          sentReplies={activeSentReplies()}
           loadAttachmentPreview={(attachment) => thumbnails.preview(activeThreadAccount()?.id ?? "", attachment.message_id, attachment.attachment_id)}
           invite={(() => {
             const listed = activeListedThread();

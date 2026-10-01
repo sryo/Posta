@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { insetClip, play, reducedMotion } from "./motion";
+import { EASE_OUT, fold, insetClip, morphHeight, play, reducedMotion } from "./motion";
 
 const original = window.matchMedia;
 afterEach(() => { window.matchMedia = original; });
@@ -50,5 +50,51 @@ describe("play", () => {
     expect(animate).not.toHaveBeenCalled();
     stubMotion(false);
     expect(play(document.createElement("div"), [{ opacity: 0 }], { duration: 300 })).toBeNull();
+  });
+});
+
+describe("fold", () => {
+  it("folds a part away out of reach, and opens it again", () => {
+    stubMotion(false);
+    const el = document.createElement("div");
+    fold(el, false);
+    expect(el).toHaveAttribute("data-folded");
+    expect(el).toHaveAttribute("aria-hidden", "true");
+    expect(el.inert).toBe(true);
+    fold(el, true);
+    expect(el).not.toHaveAttribute("data-folded");
+    expect(el).not.toHaveAttribute("aria-hidden");
+    expect(el.inert).toBe(false);
+  });
+
+  it("closes from its height to none, and swaps at once under reduced motion", () => {
+    const el = document.createElement("div");
+    el.getBoundingClientRect = () => ({ height: el.hasAttribute("data-folded") ? 0 : 40 }) as DOMRect;
+    const animate = vi.fn(() => ({}) as Animation);
+    el.animate = animate;
+    stubMotion(false);
+    fold(el, false);
+    expect(animate).toHaveBeenCalledTimes(1);
+    const [[keyframes, options]] = animate.mock.calls as unknown as [Keyframe[], KeyframeAnimationOptions][];
+    expect(keyframes[0]).toMatchObject({ height: "40px", opacity: 1 });
+    expect(keyframes[1]).toMatchObject({ height: "0px", opacity: 0 });
+    expect(options).toMatchObject({ duration: 240, easing: EASE_OUT });
+    stubMotion(true);
+    fold(el, true);
+    expect(animate).toHaveBeenCalledTimes(1);
+    expect(el).not.toHaveAttribute("data-folded");
+  });
+});
+
+describe("morphHeight", () => {
+  it("eases an element from its old height to the one a change gives it", () => {
+    stubMotion(false);
+    const el = document.createElement("div");
+    let height = 150;
+    el.getBoundingClientRect = () => ({ height }) as DOMRect;
+    const animate = vi.fn(() => ({}) as Animation);
+    el.animate = animate;
+    morphHeight(el, () => { height = 40; });
+    expect(animate).toHaveBeenCalledWith([{ height: "150px" }, { height: "40px" }], expect.objectContaining({ duration: 240, easing: EASE_OUT }));
   });
 });

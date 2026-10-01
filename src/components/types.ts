@@ -72,3 +72,20 @@ export interface InlineEditEventProps {
   resizing: boolean;
   onResizeStart: (e: MouseEvent) => void;
 }
+
+// An inline reply sent from the thread view, kept where it was written until
+// the thread holds it
+export interface SentReply {
+  replyToMessageId: string;
+  to: string;
+  cc: string;
+  bcc: string;
+  body: string;
+  attachments: SendAttachment[];
+  fromEmail?: string;
+  state: "sending" | "sent";
+  sentAt?: number;
+  // When the undo window closes
+  undoUntil: number;
+  onUndo: () => void;
+}

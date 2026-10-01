@@ -1,9 +1,11 @@
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { createSignal } from "solid-js";
-import { cleanup, fireEvent, render } from "@solidjs/testing-library";
+import { cleanup, fireEvent, render, within } from "@solidjs/testing-library";
 import { ThreadView } from "./ThreadView";
 import { setInputMode } from "../app/inputMode";
 import type { FullThread } from "../api/tauri";
+import type { SentReply } from "./types";
+import { formatWhen } from "../app/dateFormat";
 import { EASE_IN_OUT, EASE_OUT, insetClip } from "../shared/motion";
 
 const smartRepliesProps = vi.hoisted(() => ({ last: null as any }));
@@ -510,6 +512,98 @@ describe("ThreadView inline forward", () => {
     const { container, setCompose } = renderWithCompose(0);
     setCompose(composeStub(true));
     expect(rowWithCompose(container)).toBe(2);
+  });
+});
+
+describe("ThreadView reply in place", () => {
+  const replyCompose = (body: string) => ({
+    replyToMessageId: "<msg1@example.com>", isForward: false, to: "bob@example.com", setTo: vi.fn(), cc: "", setCc: vi.fn(), bcc: "", setBcc: vi.fn(),
+    showCcBcc: false, setShowCcBcc: vi.fn(), body, setBody: vi.fn(), attachments: [], onRemoveAttachment: vi.fn(),
+    onFileSelect: vi.fn(), error: null, draftSaving: false, draftSaved: false, onSend: vi.fn(), onClose: vi.fn(),
+    onInput: vi.fn(), focusBody: false, resizing: false, onResizeStart: vi.fn(),
+  });
+  const sentReply = (over: Partial<SentReply> = {}): SentReply => ({
+    replyToMessageId: "<msg1@example.com>", to: "bob@example.com", cc: "", bcc: "", body: "On my way",
+    attachments: [], state: "sending", undoUntil: Date.now() + 5000, onUndo: vi.fn(), ...over,
+  });
+
+  const renderReply = () => {
+    const [compose, setCompose] = createSignal<ReturnType<typeof replyCompose> | null>(replyCompose("On my way"));
+    const [sent, setSent] = createSignal<SentReply[]>([]);
+    const result = renderThreadWith(() => ({ inlineCompose: compose(), sentReplies: sent() }));
+    return { ...result, setCompose, setSent };
+  };
+  const renderThreadWith = (dynamic: () => { inlineCompose: any; sentReplies: SentReply[] }) => {
+    const props: any = {
+      thread: makeThread([{ from: "Alice <alice@example.com>", body: "first" }, { from: "Bob <bob@example.com>", body: "second" }]),
+      loading: false, error: null, card: null, onClose: vi.fn(), focusedMessageIndex: 1, onFocusChange: vi.fn(),
+      onOpenAttachment: vi.fn(), onDownloadAttachment: vi.fn(), onShowAttachmentMenu: vi.fn(), onReply: vi.fn(), onForward: vi.fn(),
+      onAction: vi.fn(), onOpenLabels: vi.fn(), accountId: "acc", currentUserEmail: "me@example.com",
+      isStarred: false, isRead: true, isImportant: false, isInInbox: true, labelCount: 0,
+    };
+    return render(() => <ThreadView {...props} inlineCompose={dynamic().inlineCompose} sentReplies={dynamic().sentReplies} />);
+  };
+  const box = () => document.querySelector<HTMLElement>(".inline-compose")!;
+  const textarea = () => box().querySelector("textarea")!;
+
+  it("keeps the reply where it was written once sent, reading Sending around the same words, its controls folded away", () => {
+    const { setCompose, setSent } = renderReply();
+    const written = textarea();
+    expect(within(box()).getByRole("button", { name: /^Send/ })).toBeInTheDocument();
+    setSent([sentReply()]);
+    setCompose(null);
+
+    expect(textarea()).toBe(written);
+    expect(written).toHaveValue("On my way");
+    expect(written).toHaveAttribute("readonly");
+    expect(box()).toHaveClass("sent");
+    expect(within(box()).getByText("You")).toBeInTheDocument();
+    expect(within(box()).getByText("Sending")).toBeInTheDocument();
+    expect(within(box()).queryByRole("button", { name: /^Send/ })).toBeNull();
+    expect(within(box()).queryByRole("textbox", { name: "To" })).toBeNull();
+  });
+
+  it("undoes the send from the box itself", () => {
+    const onUndo = vi.fn();
+    renderThreadWith(() => ({ inlineCompose: null, sentReplies: [sentReply({ onUndo })] }));
+    fireEvent.click(within(box()).getByRole("button", { name: "Undo" }));
+    expect(onUndo).toHaveBeenCalledTimes(1);
+  });
+
+  it("turns back into the compose box on undo, with the caret where it was", () => {
+    const { setCompose, setSent } = renderReply();
+    const written = textarea();
+    written.focus();
+    written.setSelectionRange(3, 3);
+    setSent([sentReply()]);
+    setCompose(null);
+    written.blur();
+
+    setCompose(replyCompose("On my way"));
+    setSent([]);
+    expect(textarea()).toBe(written);
+    expect(written).not.toHaveAttribute("readonly");
+    expect(document.activeElement).toBe(written);
+    expect(written.selectionStart).toBe(3);
+    expect(written.selectionEnd).toBe(3);
+    expect(box()).not.toHaveClass("sent");
+    expect(within(box()).getByText("Sending").closest("[data-folded]")).toHaveAttribute("aria-hidden", "true");
+    expect(within(box()).getByRole("button", { name: /^Send/ })).toBeInTheDocument();
+  });
+
+  it("says when it went once sent, with no Undo", () => {
+    const sentAt = Date.now();
+    renderThreadWith(() => ({ inlineCompose: null, sentReplies: [sentReply({ state: "sent", sentAt })] }));
+    expect(within(box()).queryByText("Sending")).toBeNull();
+    expect(within(box()).getByText(formatWhen(new Date(sentAt), new Date()))).toBeInTheDocument();
+    expect(within(box()).queryByRole("button", { name: "Undo" })).toBeNull();
+  });
+
+  it("puts the box beside the message it answers", () => {
+    renderThreadWith(() => ({ inlineCompose: null, sentReplies: [sentReply()] }));
+    const rows = Array.from(document.querySelectorAll(".message-row"));
+    expect(rows.findIndex(r => r.querySelector(".inline-compose"))).toBe(1);
+    expect(rows[1]).toHaveClass("with-compose");
   });
 });
 

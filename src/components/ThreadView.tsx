@@ -57,13 +57,33 @@ import { isForwardSubject } from "../app/quotedHistory";
 import { isMailingList, unsubscribeMethod, type UnsubscribeMethod } from "../app/unsubscribe";
 import { personName } from "../app/people";
 import { CardPill } from "./CardPill";
-import type { InlineComposeProps } from "./types";
+import type { InlineComposeProps, SentReply } from "./types";
+import { SentInPlace } from "./SentInPlace";
 import { findHeader, lastMessageFromOthers, messageDate, nearestShownIndex, normalizeMessageId, reactionsShownAsChips, stepShownIndex } from "../app/messages";
 import { useLayer } from "../app/layers";
 import { useDialog } from "../app/dialog";
 import { lastLetterLine, latestDate, transitGaps } from "../app/transit";
 import { TransitGap } from "./TransitGap";
 
+// A sent reply's compose, as it was sent, that nothing can change
+const sentCompose = (reply: SentReply): InlineComposeProps => {
+  const ignore = () => {};
+  return {
+    replyToMessageId: reply.replyToMessageId,
+    isForward: false,
+    to: reply.to, setTo: ignore,
+    cc: reply.cc, setCc: ignore,
+    bcc: reply.bcc, setBcc: ignore,
+    showCcBcc: !!(reply.cc || reply.bcc), setShowCcBcc: ignore,
+    body: reply.body, setBody: ignore,
+    attachments: reply.attachments, onRemoveAttachment: ignore, onFileSelect: ignore,
+    error: null, draftSaving: false, draftSaved: false,
+    onSend: ignore, onClose: ignore, onInput: ignore,
+    focusBody: false,
+    fromEmail: reply.fromEmail,
+    resizing: false, onResizeStart: ignore,
+  };
+};
 
 export const ThreadView = (props: {
   thread: FullThread | null,
@@ -127,6 +147,8 @@ export const ThreadView = (props: {
   // Hands over a way to close with the closing motion, then run `then`
   // instead of onClose
   closeRef?: (close: (then?: () => void) => void) => void,
+  // Inline replies sent from this thread that it doesn't hold yet
+  sentReplies?: SentReply[],
 }) => {
   let messageRefs: (HTMLDivElement | undefined)[] = [];
   let contentRef: HTMLDivElement | undefined;
@@ -644,6 +666,15 @@ export const ThreadView = (props: {
                   return sourceShown ? source === msg.id : index() === nearestShownIndex(props.thread!.messages.length - 1, hiddenMessages());
                 };
                 const showInlineCompose = () => isReplyingToThis() || isForwardingFromThis();
+                // A reply sent from here stays in its box until the thread has it
+                const sentHere = () => showInlineCompose() ? undefined : props.sentReplies?.find(r =>
+                  r.replyToMessageId === msg.id || r.replyToMessageId === getRfcMessageId());
+                const composeHere = () => showInlineCompose() || !!sentHere();
+                const compose = createMemo<InlineComposeProps | null>((last) => {
+                  if (showInlineCompose()) return props.inlineCompose;
+                  const sent = sentHere();
+                  return sent ? sentCompose(sent) : last;
+                }, null);
 
                 return (
                   <>
@@ -651,7 +682,7 @@ export const ThreadView = (props: {
                     {(transit) => <TransitGap transit={transit()} hue={props.card?.color} />}
                   </Show>
                   <div
-                    class={`message-row ${showInlineCompose() ? 'with-compose' : ''} ${props.inlineCompose?.resizing ? 'resizing' : ''}`}
+                    class={`message-row ${composeHere() ? 'with-compose' : ''} ${props.inlineCompose?.resizing ? 'resizing' : ''}`}
                     onMouseEnter={(e) => showMessageWheel(msg.id, e)}
                     onMouseLeave={(e) => hideMessageWheel(msg.id, e)}
                   >
@@ -675,7 +706,7 @@ export const ThreadView = (props: {
                         </div>
                       </div>
                       {/* Message Actions Wheel - show for focused or hovered message */}
-                      <Show when={((hoveredMessageId() === msg.id && wheelOpen()) || (props.focusedMessageIndex === index() && inputMode() === "keyboard")) && !showInlineCompose()}>
+                      <Show when={((hoveredMessageId() === msg.id && wheelOpen()) || (props.focusedMessageIndex === index() && inputMode() === "keyboard")) && !composeHere()}>
                         <MessageActionsWheel
                           onReply={() => actions.reply()}
                           onReplyAll={actions.replyAll}
@@ -737,42 +768,42 @@ export const ThreadView = (props: {
                       />
                     </div>
                     {/* Resize handle and inline compose form */}
-                    <Show when={showInlineCompose() && props.inlineCompose}>
+                    <Show when={composeHere()}>
                       <div
                         class="inline-resize-handle"
-                        onMouseDown={props.inlineCompose!.onResizeStart}
+                        onMouseDown={(e) => compose()!.onResizeStart(e)}
                       />
-                      <div class="inline-compose">
+                      <SentInPlace class="inline-compose" sent={sentHere()}>
                         <ComposeForm
-                          mode={props.inlineCompose!.isForward ? 'forward' : 'reply'}
-                          to={props.inlineCompose!.to}
-                          setTo={props.inlineCompose!.setTo}
-                          cc={props.inlineCompose!.cc}
-                          setCc={props.inlineCompose!.setCc}
-                          bcc={props.inlineCompose!.bcc}
-                          setBcc={props.inlineCompose!.setBcc}
-                          showCcBcc={props.inlineCompose!.showCcBcc}
-                          setShowCcBcc={props.inlineCompose!.setShowCcBcc}
-                          suggestContacts={props.inlineCompose!.suggestContacts}
-                          fromEmail={props.inlineCompose!.fromEmail}
-                          body={props.inlineCompose!.body}
-                          setBody={props.inlineCompose!.setBody}
-                          attachments={props.inlineCompose!.attachments}
-                          onRemoveAttachment={props.inlineCompose!.onRemoveAttachment}
-                          onFileSelect={props.inlineCompose!.onFileSelect}
-                          onAddFiles={props.inlineCompose!.onAddFiles}
+                          mode={compose()!.isForward ? 'forward' : 'reply'}
+                          to={compose()!.to}
+                          setTo={compose()!.setTo}
+                          cc={compose()!.cc}
+                          setCc={compose()!.setCc}
+                          bcc={compose()!.bcc}
+                          setBcc={compose()!.setBcc}
+                          showCcBcc={compose()!.showCcBcc}
+                          setShowCcBcc={compose()!.setShowCcBcc}
+                          suggestContacts={compose()!.suggestContacts}
+                          fromEmail={compose()!.fromEmail}
+                          body={compose()!.body}
+                          setBody={compose()!.setBody}
+                          attachments={compose()!.attachments}
+                          onRemoveAttachment={compose()!.onRemoveAttachment}
+                          onFileSelect={compose()!.onFileSelect}
+                          onAddFiles={compose()!.onAddFiles}
                           fileInputId={`inline-file-input-${msg.id}`}
-                          error={props.inlineCompose!.error}
-                          draftSaving={props.inlineCompose!.draftSaving}
-                          draftSaved={props.inlineCompose!.draftSaved}
-                          sending={props.inlineCompose!.sending}
-                          onSend={props.inlineCompose!.onSend}
-                          onClose={props.inlineCompose!.onClose}
-                          onInput={props.inlineCompose!.onInput}
-                          focusBody={props.inlineCompose!.focusBody}
-                          lastLetter={props.inlineCompose!.isForward ? null : lastLetterLine(latestDate(messageDates()), new Date())}
+                          error={compose()!.error}
+                          draftSaving={compose()!.draftSaving}
+                          draftSaved={compose()!.draftSaved}
+                          sending={compose()!.sending}
+                          onSend={compose()!.onSend}
+                          onClose={compose()!.onClose}
+                          onInput={compose()!.onInput}
+                          focusBody={compose()!.focusBody}
+                          lastLetter={compose()!.isForward ? null : lastLetterLine(latestDate(messageDates()), new Date())}
                         />
-                      </div>
+                      </SentInPlace>
                     </Show>
                   </div>
                   </>

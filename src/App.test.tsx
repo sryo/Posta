@@ -3848,6 +3848,78 @@ describe("App inline reply", () => {
     expect(body.isConnected).toBe(true);
     expect(screen.getByPlaceholderText("Write your reply...")).toBe(body);
   });
+
+  const box = () => document.querySelector<HTMLElement>(".inline-compose")!;
+  const replyText = () => box().querySelector("textarea")!;
+  async function sendReply(text: string, caret: number) {
+    fireEvent.click(await screen.findByText("Mail for A"));
+    await screen.findByText("body m1");
+    fireEvent.keyDown(document, { key: "r" });
+    await waitFor(() => expect(document.querySelector(".inline-compose textarea")).not.toBeNull());
+    const written = replyText();
+    fireEvent.input(written, { target: { value: text } });
+    written.focus();
+    written.setSelectionRange(caret, caret);
+    fireEvent.click(within(box()).getByRole("button", { name: /^Send/ }));
+    return written;
+  }
+
+  it("keeps a sent reply where it was written, reading Sending, and turns it back into the reply with the caret where it was on Undo", async () => {
+    handlers.get_thread_details = () => ({ id: "t-a", messages: [fullMessage("m1", "Ana <ana@x.com>")] });
+    handlers.reply_to_thread = () => null;
+    render(() => <App />);
+    const written = await sendReply("On my way", 2);
+    await new Promise(r => setTimeout(r, 300));
+
+    expect(box()).toHaveClass("sent");
+    expect(replyText()).toBe(written);
+    expect(written).toHaveValue("On my way");
+    expect(within(box()).getByText("Sending")).toBeInTheDocument();
+
+    fireEvent.click(within(box()).getByRole("button", { name: "Undo" }));
+    await waitFor(() => expect(box()).not.toHaveClass("sent"));
+    expect(replyText()).toBe(written);
+    expect(document.activeElement).toBe(written);
+    expect(written.selectionStart).toBe(2);
+    expect(within(box()).getByRole("button", { name: /^Send/ })).toBeInTheDocument();
+    await new Promise(r => setTimeout(r, 5200));
+    expect(invoke).not.toHaveBeenCalledWith("reply_to_thread", expect.anything());
+  });
+
+  it("turns a sent reply back into the reply from the toast's Undo too", async () => {
+    handlers.get_thread_details = () => ({ id: "t-a", messages: [fullMessage("m1", "Ana <ana@x.com>")] });
+    render(() => <App />);
+    const written = await sendReply("On my way", 4);
+    await waitFor(() => expect(box()).toHaveClass("sent"));
+    fireEvent.click(document.querySelector(".toast-undo-btn")!);
+    await waitFor(() => expect(box()).not.toHaveClass("sent"));
+    expect(replyText()).toBe(written);
+    expect(written.selectionStart).toBe(4);
+  });
+
+  it("says when a sent reply went, and gives way to the message once the thread has it", async () => {
+    let sent = false;
+    let showReply!: () => void;
+    const shown = () => ({
+      id: "t-a",
+      messages: [fullMessage("m1", "Ana <ana@x.com>"), ...(sent ? [fullMessage("m2", "Me <a@x.com>", { labelIds: ["SENT"] })] : [])],
+    });
+    handlers.get_thread_details = () => (sent ? new Promise(resolve => { showReply = () => resolve(shown()); }) : shown());
+    let finishSend!: () => void;
+    handlers.reply_to_thread = () => new Promise<null>(resolve => { finishSend = () => { sent = true; resolve(null); }; });
+    render(() => <App />);
+    await sendReply("On my way", 0);
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith("reply_to_thread", expect.anything()), { timeout: 8000 });
+    expect(within(box()).getByText("Sending")).toBeInTheDocument();
+    expect(within(box()).queryByRole("button", { name: "Undo" })).toBeNull();
+    finishSend();
+    await waitFor(() => expect(within(box()).queryByText("Sending")).toBeNull());
+    expect(box()).toHaveClass("sent");
+    expect(within(box()).getByText(/^Today, /)).toBeInTheDocument();
+    showReply();
+    await screen.findByText("body m2");
+    expect(document.querySelector(".inline-compose")).toBeNull();
+  });
 });
 
 describe("App layout removal", () => {
