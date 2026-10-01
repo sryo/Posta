@@ -205,7 +205,6 @@ import { cardSyncStatus, cardWaitingMessage, connectionStatus } from "./app/conn
 import { CardEmpty, CardSkeleton, ConnectionStatusBar, PostmarkDefs, type NoMatch } from "./components/CardStates";
 import { createPostmarkLedger } from "./app/postmark";
 import { calendarDayMarks, firstStartOn, gutterDay, type DayNote, type Gutter } from "./app/gutters";
-import { noticesEnabled } from "./app/notices";
 import { CalendarDayNote, CalendarGutter } from "./components/CalendarGutter";
 import { cardTypeForQuery } from "./app/cardType";
 import { SEARCH_CARD_ID, forgetSearch, isSearchCard, keptCardName, parseRecentSearches, rememberSearch, searchCard as searchCardFor } from "./app/quickSearch";
