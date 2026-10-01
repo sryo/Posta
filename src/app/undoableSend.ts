@@ -5,11 +5,14 @@ const TOAST_EXIT_MS = 200;
 // Delays each send so it can be undone. Several sends can overlap: each keeps
 // its own timer, only the most recent one is offered for undo, and the toast
 // stays up until nothing is queued or still going out. Sends queued together
-// are undone together.
+// are undone together, and onSent hears of them once they have all gone.
 export function createUndoableSend<T>(opts: {
   delayMs: number;
   send: (item: T) => Promise<void>;
   onFailed: (item: T, error: unknown) => void;
+  // Once Gmail has taken the sends queued together, or those of them that
+  // didn't fail
+  onSent?: () => void;
 }) {
   interface Entry { item: T; timeoutId: number; queuedAt: number; group: object }
   const [queued, setQueued] = createSignal<Entry[]>([]);
@@ -19,6 +22,18 @@ export function createUndoableSend<T>(opts: {
   let inFlight = 0;
   let progressIntervalId: number | undefined;
   let hideTimeoutId: number | undefined;
+  // Each group's sends not yet done, and how many of them went
+  const groups = new Map<object, { left: number; sent: number }>();
+
+  function finish(group: object, sent: boolean, count = 1) {
+    const g = groups.get(group);
+    if (!g) return;
+    g.left -= count;
+    if (sent) g.sent++;
+    if (g.left > 0) return;
+    groups.delete(group);
+    if (g.sent > 0) opts.onSent?.();
+  }
 
   const latest = () => {
     const q = queued();
@@ -51,6 +66,9 @@ export function createUndoableSend<T>(opts: {
     setProgress(0);
 
     const entry: Entry = { item, timeoutId: 0, queuedAt: Date.now(), group };
+    const g = groups.get(group) ?? { left: 0, sent: 0 };
+    g.left++;
+    groups.set(group, g);
     entry.timeoutId = window.setTimeout(async () => {
       // Leave the undo window before the network call so a late undo can't
       // reopen compose while the mail still goes out
@@ -59,8 +77,10 @@ export function createUndoableSend<T>(opts: {
       if (queued().length === 0) setProgress(100);
       try {
         await opts.send(item);
+        finish(group, true);
       } catch (e) {
         opts.onFailed(item, e);
+        finish(group, false);
       } finally {
         inFlight--;
         settle();
@@ -85,6 +105,7 @@ export function createUndoableSend<T>(opts: {
     if (!entry) return null;
     clearTimeout(entry.timeoutId);
     setQueued(q => q.filter(e => e !== entry));
+    finish(entry.group, false);
     settle();
     return entry.item;
   }
@@ -101,6 +122,7 @@ export function createUndoableSend<T>(opts: {
     const entries = queued().filter(e => e.group === group);
     for (const entry of entries) clearTimeout(entry.timeoutId);
     setQueued(q => q.filter(e => e.group !== group));
+    finish(group, false, entries.length);
     settle();
     return entries.map(e => e.item);
   }

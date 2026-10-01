@@ -169,6 +169,8 @@ import { AttachmentList } from "./components/Attachments";
 import { watchScrollFade } from "./app/scrollFade";
 import { createThumbnails } from "./app/thumbnails";
 import { AfterArchiveSetting } from "./components/AfterArchiveSetting";
+import { SoundSettings } from "./components/SoundSettings";
+import { cue, listenForAudioGesture, watchNewMail } from "./app/sounds";
 import { runUnsubscribe, type UnsubscribeMethod } from "./app/unsubscribe";
 import { eventName, quoted } from "./app/quoted";
 import { actionFailureMessage, actionMessage, actionRemovesFromCard, actionUndoneMessage, applyThreadAction, backInPlace, labelChangeFor, labelChangeMessage, restoreThreads, threadMayJoinCard, undoFailureMessage, undoLabelChanges, type DescribeScope, type LabelReversal, type NamedThread } from "./app/threadActions";
@@ -438,6 +440,7 @@ function App() {
       console.error("Failed to send email:", e);
       putBackSend(pending, failureMessage(`Couldn't send “${pending.subject || "(no subject)"}”`, e).message, "error");
     },
+    onSent: () => cue("sent"),
   });
 
   // Whether an open compose holds something replacing it would lose;
@@ -1458,6 +1461,9 @@ function App() {
       showFailure("Couldn't save the card order", err);
     }
   };
+
+  watchNewMail(cardId => cardThreads[cardId]);
+  onCleanup(listenForAudioGesture(document));
 
   // Dock badge: unread threads across cards. The memo only notifies when the
   // total changes, so refreshes that change nothing don't touch the badge.
@@ -6356,6 +6362,7 @@ function App() {
             )}
           </Show>
           <AfterArchiveSetting />
+          <SoundSettings cards={cards().filter(c => c.card_type !== "calendar")} />
           <SmartRepliesSettings
             open={smartRepliesOpen()}
             onToggle={() => setSmartRepliesOpen(!smartRepliesOpen())}

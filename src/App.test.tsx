@@ -6248,3 +6248,89 @@ describe("App quick search", () => {
     expect(JSON.parse(localStorage.getItem("recentSearches") ?? "[]")).toEqual([]);
   });
 });
+
+describe("App sounds", () => {
+  // The frequencies of the notes played, oldest first
+  const played: number[] = [];
+  class RecordingAudioContext {
+    state = "running";
+    currentTime = 0;
+    destination = {};
+    resume = async () => {};
+    createGain() { return { gain: { value: 0, setValueAtTime() {}, linearRampToValueAtTime() {}, exponentialRampToValueAtTime() {} }, connect() {} }; }
+    createBiquadFilter() { return { type: "", frequency: { value: 0 }, Q: { value: 0 }, connect() {} }; }
+    createOscillator() {
+      const osc = { type: "", frequency: { value: 0 }, connect() {}, start() { played.push(osc.frequency.value); }, stop() {} };
+      return osc;
+    }
+  }
+  const notes = () => played.filter(f => [784, 1175, 523.25].includes(f));
+
+  beforeEach(() => {
+    played.length = 0;
+    vi.stubGlobal("AudioContext", RecordingAudioContext);
+  });
+  afterEach(async () => {
+    const sounds = await import("./app/sounds");
+    sounds.setSoundsEnabled(false);
+    sounds.setArrivalCard("card-a", false);
+    vi.unstubAllGlobals();
+  });
+
+  it("plays two notes once a sent email has actually gone, not on Send", async () => {
+    (await import("./app/sounds")).setSoundsEnabled(true);
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    handlers.send_email = () => null;
+    render(() => <App />);
+    await screen.findByText("Mail for A");
+    fireEvent.keyDown(document, { key: "c" });
+    fireEvent.input(await screen.findByPlaceholderText("Recipients"), { target: { value: "bo@y.com" } });
+    fireEvent.click(screen.getByRole("button", { name: /^Send/ }));
+    await vi.advanceTimersByTimeAsync(4000);
+    expect(notes()).toEqual([]);
+
+    await vi.advanceTimersByTimeAsync(1500);
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith("send_email", expect.anything()));
+    await waitFor(() => expect(notes()).toEqual([784, 1175]));
+  });
+
+  it("plays nothing for a sent email while sounds are off", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    handlers.send_email = () => null;
+    render(() => <App />);
+    await screen.findByText("Mail for A");
+    fireEvent.keyDown(document, { key: "c" });
+    fireEvent.input(await screen.findByPlaceholderText("Recipients"), { target: { value: "bo@y.com" } });
+    fireEvent.click(screen.getByRole("button", { name: /^Send/ }));
+    await vi.advanceTimersByTimeAsync(5500);
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith("send_email", expect.anything()));
+    await new Promise(r => setTimeout(r, 20));
+    expect(notes()).toEqual([]);
+  });
+
+  it("plays a lower note when new mail comes into a card chosen for it", async () => {
+    const sounds = await import("./app/sounds");
+    sounds.setSoundsEnabled(true);
+    sounds.setArrivalCard("card-a", true);
+    render(() => <App />);
+    await screen.findByText("Mail for A");
+    expect(notes()).toEqual([]);
+
+    const fresh = { ...thread("t-new", "Contract signed"), labels: ["INBOX", "UNREAD"], unread_count: 1, last_message_date: Date.now() + 1000 };
+    threadsByCard["card-a"] = [fresh, thread("t-a", "Mail for A")];
+    handlers.sync_threads_incremental = () => ({ modified_threads: [{ ...fresh, account_id: "a" }], deleted_thread_ids: [], is_full_sync: false });
+    window.dispatchEvent(new Event("focus"));
+
+    await screen.findByText("Contract signed");
+    await waitFor(() => expect(notes()).toEqual([523.25]));
+  });
+
+  it("offers Sounds in Settings, off at first", async () => {
+    render(() => <App />);
+    await screen.findByText("Mail for A");
+    fireEvent.click(avatar("a@x.com"));
+    fireEvent.click(within(document.querySelector(".account-chooser-container") as HTMLElement).getByText("Settings"));
+    const group = await screen.findByRole("group", { name: "Sounds" });
+    expect(within(group).getByRole("switch", { name: "Sounds" })).toHaveAttribute("aria-checked", "false");
+  });
+});
