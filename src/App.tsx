@@ -197,7 +197,9 @@ import { cardTypeForQuery } from "./app/cardType";
 import { SEARCH_CARD_ID, forgetSearch, isSearchCard, keptCardName, parseRecentSearches, rememberSearch, searchCard as searchCardFor } from "./app/quickSearch";
 import { discardThreadDrafts, draftToOpen, isDraftThread, prepareDraftCompose, withDraftsDiscarded, type DraftToOpen } from "./app/draftThreads";
 import { createDraftSync, draftKey, findLatestDraft, findUnsentDrafts, hasDraftContent, markDraftClosed, markDraftSending, pruneDrafts, removeAccountDrafts, sessionDraftKey, type DraftFields } from "./app/drafts";
-import { escapeTarget, nextCardFocus, nextItemFocus, type ItemFocus } from "./app/keyboardNav";
+import { escapeTarget, focusEdgeHint, isFocusEdge, nextCardFocus, nextItemFocus, type FocusEdge, type ItemFocus } from "./app/keyboardNav";
+import { createFocusMemory } from "./app/focusMemory";
+import { FocusRing, type RingBump } from "./components/FocusRing";
 import { getSmartEventTime, groupCalendarEvents, isUserLabel, mergeThreadGroups, regroupThreads, type CalendarEventGroup } from "./app/grouping";
 import { pullLayoutWithRetry } from "./app/icloudRestore";
 import { querySuggestions, type QuerySuggestion } from "./app/querySuggestions";
@@ -217,6 +219,8 @@ import { moveCard, reuseUnchanged } from "./app/cardOrder";
 
 // As many as the backend's preview of an email query returns
 const NEW_CARD_PREVIEW_EVENTS = 5;
+// How long the line saying the focus reached an edge stays
+const FOCUS_EDGE_MS = 2600;
 
 function App() {
   const [loading, setLoading] = createSignal(true);
@@ -1650,6 +1654,9 @@ function App() {
   // Focus a card and the item at `index` in it (-1 focuses the card only).
   // The row takes keyboard focus too, so Tab and j/k agree.
   function focusCardItem(cardId: string, index: number) {
+    setFocusEdge(null);
+    const itemId = cardItemIds(cardId)[index];
+    if (itemId) focusMemory.remember(cardId, itemId, index);
     setFocusedCardId(cardId);
     const calendar = isCalendarCard(cardId);
     setFocusedEventIndex(calendar ? index : -1);
@@ -1659,6 +1666,28 @@ function App() {
     const row = document.querySelector<HTMLElement>(`${card} .thread.focused, ${card} .calendar-event-item.focused`);
     if (row && document.activeElement !== row) row.focus({ preventScroll: true });
   }
+
+  const cardItemIds = (cardId: string) => isCalendarCard(cardId)
+    ? getCardEventsFlat(cardId).map(ev => ev.id)
+    : getCardThreadsFlat(cardId).map(t => t.gmail_thread_id);
+  // The row each card was left on, for h and l to come back to
+  const focusMemory = createFocusMemory();
+  // Where j/k/h last stopped at the end of the way, said in that card for a while
+  const [focusEdge, setFocusEdge] = createSignal<FocusEdge | null>(null);
+  const [ringBump, setRingBump] = createSignal<RingBump | null>(null);
+  let focusEdgeTimer: number | undefined;
+  function showFocusEdge(edge: FocusEdge, toward: RingBump["toward"]) {
+    setFocusEdge(edge);
+    setRingBump({ toward, at: Date.now() });
+    clearTimeout(focusEdgeTimer);
+    focusEdgeTimer = window.setTimeout(() => setFocusEdge(null), FOCUS_EDGE_MS);
+  }
+  const focusEdgeLine = (cardId: string) => {
+    const edge = focusEdge();
+    if (edge?.cardId !== cardId) return null;
+    const shown = boardCards().filter(c => !collapsedCards[c.id]);
+    return focusEdgeHint(edge, shown.map(c => ({ id: c.id, name: c.name, count: cardItemIds(c.id).length })));
+  };
 
   // Roving tab stop: one row per card, the focused one or else the first
   const tabStopKeys = createMemo(() => {
@@ -1850,6 +1879,10 @@ function App() {
       const cardIds = boardCards().filter(c => !collapsedCards[c.id]).map(c => c.id);
       const move = nextCardFocus(cardIds, focusedCardId(), e.key === 'l' || e.key === 'ArrowRight', addingCard());
       if (!move) return;
+      if (isFocusEdge(move)) {
+        showFocusEdge(move, "side");
+        return;
+      }
       if (move.addingCard && !addingCard()) {
         setNewCardColor(null);
         setNewCardAccountId(null);
@@ -1859,7 +1892,7 @@ function App() {
       }
       setAddingCard(move.addingCard);
       if (move.cardId) {
-        focusCardItem(move.cardId, 0);
+        focusCardItem(move.cardId, focusMemory.recall(move.cardId, cardItemIds(move.cardId)));
       } else {
         setFocusedCardId(null);
         setFocusedThreadIndex(-1);
@@ -1878,7 +1911,8 @@ function App() {
       const cardId = focusedCardId();
       const current = cardId ? { cardId, index: isCalendarCard(cardId) ? focusedEventIndex() : focusedThreadIndex() } : null;
       const next = nextItemFocus(visible, current, e.key === 'j' || e.key === 'ArrowDown');
-      if (next) focusCardItem(next.cardId, next.index);
+      if (next && isFocusEdge(next)) showFocusEdge(next, next.edge === "last" ? "down" : "up");
+      else if (next) focusCardItem(next.cardId, next.index);
       return;
     }
 
@@ -5051,6 +5085,14 @@ function App() {
         )}
       </Show>
 
+      <Show when={inputMode() === "keyboard" && focusedCardId() && selectedAccount() && !activeThreadId() && !activeEvent()}>
+        <FocusRing
+          target={() => document.querySelector<HTMLElement>(".thread.focused, .calendar-event-item.focused")}
+          hue={cardById(focusedCardId())?.color ?? undefined}
+          bump={ringBump()}
+        />
+      </Show>
+
       {/* Error banner */}
       <Show when={error()}>
         <div class="auth-error" role="alert">
@@ -5642,6 +5684,16 @@ function App() {
                             </Show>
                           </Show>
                         </div>
+                        <Show when={focusEdgeLine(card.id)}>
+                          {(line) => (
+                            <p class="focus-edge" role="status">
+                              {line().text}
+                              <Show when={line().key}>
+                                {(key) => <> · <KeyHint keys={key()} look="key" /> {line().next}</>}
+                              </Show>
+                            </p>
+                          )}
+                        </Show>
                       </div>
                       {/* Resize handle - outside card, inside wrapper */}
                       <div
