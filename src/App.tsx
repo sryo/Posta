@@ -82,7 +82,9 @@ import {
   createCalendarEvent,
   type EventInput,
   sendReaction,
+  setDockIcon,
 } from "./api/tauri";
+import { createDockIconSync, dockIconForHue, renderIconPng } from "./app/dockIcon";
 import { Menu, MenuItem, PredefinedMenuItem } from "@tauri-apps/api/menu";
 import {
   formatTime,
@@ -550,6 +552,13 @@ function App() {
     const hue = boardHue();
     if (hue) document.documentElement.dataset.boardHue = hue;
     else delete document.documentElement.dataset.boardHue;
+  });
+  // The Dock icon's "p." wears the board's hue too, while the app runs
+  const syncDockIcon = createDockIconSync(setDockIcon, svg => renderIconPng(svg, 512));
+  createEffect(() => {
+    const styles = getComputedStyle(document.documentElement);
+    const svg = dockIconForHue(boardHue(), name => styles.getPropertyValue(name));
+    syncDockIcon(svg).catch(e => console.error("Failed to set the dock icon:", e));
   });
 
   // Add card form

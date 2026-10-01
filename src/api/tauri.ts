@@ -443,6 +443,11 @@ export async function takePendingMailtos(): Promise<MailtoData[]> {
   return invoke("take_pending_mailtos");
 }
 
+/** Shows a PNG as the Dock icon while the app runs; null restores the bundled icon */
+export async function setDockIcon(png: Uint8Array | null): Promise<void> {
+  return invoke("set_dock_icon", { png: png && Array.from(png) });
+}
+
 // iCloud sync
 
 export async function pullFromICloud(): Promise<boolean> {

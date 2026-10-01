@@ -148,6 +148,47 @@ fn take_pending_mailtos(app_handle: tauri::AppHandle) -> Vec<MailtoData> {
     pending_mailtos(&app_handle).drain()
 }
 
+/// Shows `png` as the Dock icon while the app runs, or the bundled icon again
+/// when it is None. Finder and Launchpad keep the bundled icon either way.
+#[tauri::command]
+fn set_dock_icon(app_handle: tauri::AppHandle, png: Option<Vec<u8>>) -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    {
+        app_handle
+            .run_on_main_thread(move || dock_icon::set(png.as_deref()))
+            .map_err(|e| e.to_string())
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = (app_handle, png);
+        Ok(())
+    }
+}
+
+#[cfg(target_os = "macos")]
+mod dock_icon {
+    use objc2::rc::{Allocated, Retained};
+    use objc2::runtime::AnyObject;
+    use objc2::{class, msg_send};
+
+    /// Must run on the main thread, which owns NSApplication
+    pub fn set(png: Option<&[u8]>) {
+        unsafe {
+            let image: Option<Retained<AnyObject>> = png.and_then(|bytes| {
+                let data: Retained<AnyObject> = msg_send![
+                    class!(NSData),
+                    dataWithBytes: bytes.as_ptr().cast::<std::ffi::c_void>(),
+                    length: bytes.len()
+                ];
+                let image: Allocated<AnyObject> = msg_send![class!(NSImage), alloc];
+                msg_send![image, initWithData: &*data]
+            });
+            let app: Retained<AnyObject> = msg_send![class!(NSApplication), sharedApplication];
+            let _: () = msg_send![&*app, setApplicationIconImage: image.as_deref()];
+        }
+    }
+}
+
 /// `RUST_LOG`'s directives, or warnings and errors when it is unset or
 /// empty; tracing's own default drops warnings such as a failed iCloud write
 fn log_filter(rust_log: Option<&str>) -> tracing_subscriber::EnvFilter {
@@ -268,6 +309,7 @@ pub fn run() {
             commands::set_gemini_api_key,
             commands::has_gemini_api_key,
             take_pending_mailtos,
+            set_dock_icon,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application");
