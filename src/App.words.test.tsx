@@ -101,3 +101,20 @@ describe("Headings that name the days", () => {
     expect(rowOf("Newer old").querySelector(".thread-time")).not.toHaveTextContent(formatClock(new Date(a)));
   });
 });
+
+describe("Unanswered since Friday", () => {
+  const ana = "Ana Pérez <ana@acme.co>";
+
+  it("says under a read thread a person wrote last how long it has gone unanswered, and tells screen readers", async () => {
+    groupsByCard["card-a"] = [{ label: "Last 30 days", threads: [
+      thread("t-1", "Venue for the offsite", { last_message_date: daysAgoAt(10, 16), participants: [ana], last_sender: ana }),
+      thread("t-2", "Answered already", { last_message_date: daysAgoAt(10, 17), participants: [ana, "a@x.com"], last_sender: "a@x.com" }),
+    ] }];
+    render(() => <App />);
+    await screen.findByText("Venue for the offsite");
+    const row = rowOf("Venue for the offsite");
+    expect(row.querySelector(".thread-aside")).toHaveTextContent("Unanswered for a week");
+    expect(row.getAttribute("aria-label")).toMatch(/\. Unanswered for a week$/);
+    expect(rowOf("Answered already").querySelector(".thread-aside")).toBeNull();
+  });
+});

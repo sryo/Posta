@@ -2662,6 +2662,8 @@ mod tests {
             has_attachment: false,
             attachments: Vec::new(),
             calendar_event: None,
+            last_sender: None,
+            last_from_list: false,
         }
     }
 

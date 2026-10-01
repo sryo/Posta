@@ -1613,6 +1613,15 @@ a:focus-visible,
     -webkit-line-clamp: var(--snippet-lines);
 }
 
+/* A quiet fact about the thread, under its snippet */
+.thread-aside {
+    font: var(--type-meta);
+    color: var(--text-muted);
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+}
+
 /* Calendar Event Preview */
 .calendar-event-preview {
     display: flex;

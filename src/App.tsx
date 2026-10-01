@@ -155,6 +155,7 @@ import { createToasts, type ToastAction, type ToastTone } from "./app/toasts";
 import { failureMessage, storedCredentialsFailure } from "./app/errorText";
 import { formatClock, formatDayLabel, formatShortDate, formatWhen } from "./app/dateFormat";
 import { threadGroupHeading, type GroupHeading } from "./app/groupHeading";
+import { unansweredLine } from "./app/unanswered";
 import { safeGetItem, safeSetItem, safeRemoveItem, safeGetJSON, safeSetJSON } from "./shared/storage";
 import { BOARD_COLORS, type ActionSettings, type CardColor, type GroupBy } from "./shared/constants";
 import { createUndoableSend } from "./app/undoableSend";
@@ -5510,6 +5511,7 @@ function App() {
                                         const clashes = inviteState(invite, rsvp, minuteNow()) === "unanswered" ? inviteStrip()?.clashes : undefined;
                                         return `. ${inviteSummary(invite, new Date(minuteNow()), { rsvp, clashes })}`;
                                       };
+                                      const unanswered = () => unansweredLine(thread, accounts().map(a => a.email), new Date(today()));
                                       return (
                                       <>
                                         <div
@@ -5522,7 +5524,7 @@ function App() {
                                             openThread(thread.gmail_thread_id, card.id);
                                           }}
                                           role="article"
-                                          aria-label={`${thread.unread_count > 0 ? 'Unread: ' : ''}${thread.subject} from ${thread.participants.slice(0, 2).map(personName).join(', ')}${inviteLabel()}`}
+                                          aria-label={`${thread.unread_count > 0 ? 'Unread: ' : ''}${thread.subject} from ${thread.participants.slice(0, 2).map(personName).join(', ')}${inviteLabel()}${unanswered() ? `. ${unanswered()}` : ''}`}
                                           tabindex={rowTabIndex(card.id, thread.gmail_thread_id)}
                                           onFocus={() => onRowFocus(card.id, thread.gmail_thread_id)}
                                         >
@@ -5535,6 +5537,7 @@ function App() {
                                                 time={threadTime(thread.last_message_date, group())}
                                                 subject={thread.calendar_event ? inviteTitle(thread.subject) : undefined}
                                                 attachmentsShown={attachments().length > 0}
+                                                aside={unanswered()}
                                                 beforeTime={
                                                   <Show when={isDraftThread(thread)}>
                                                     <button

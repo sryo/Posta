@@ -78,6 +78,10 @@ export interface Thread {
   has_attachment: boolean;
   attachments: Attachment[];
   calendar_event: CalendarEvent | null;
+  // The From of the latest message that isn't a reaction, and whether a
+  // mailing list sent it
+  last_sender?: string | null;
+  last_from_list?: boolean;
 }
 
 export interface ThreadGroup {
