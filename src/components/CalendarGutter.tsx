@@ -1,5 +1,5 @@
 import { Show } from "solid-js";
-import { gutterText, type Gutter } from "../app/gutters";
+import { dayNoteText, gutterText, type DayNote, type Gutter } from "../app/gutters";
 
 // A free stretch between a day's events, perforated above and below like the
 // gutter between two panes of a stamp sheet. Not a row: it takes no focus and
@@ -18,3 +18,9 @@ export const CalendarGutter = (props: { gutter: Gutter; now: number; locale?: st
     </div>
   );
 };
+
+// The first one of the morning, the last one, or the day being over: a line
+// between rows like a gutter's, without its perforations
+export const CalendarDayNote = (props: { note: DayNote; locale?: string }) => (
+  <div class="calendar-day-note" role="note">{dayNoteText(props.note, props.locale)}</div>
+);

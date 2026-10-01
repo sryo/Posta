@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { render, screen } from "@solidjs/testing-library";
-import { CalendarGutter } from "./CalendarGutter";
+import { CalendarDayNote, CalendarGutter } from "./CalendarGutter";
 import type { Gutter } from "../app/gutters";
 
 const at = (h: number, m = 0) => new Date(2026, 9, 1, h, m).getTime();
@@ -10,14 +10,14 @@ describe("CalendarGutter", () => {
   it("names a free stretch ahead and its length, with no now-mark", () => {
     render(() => <CalendarGutter gutter={lunch} now={at(9, 15)} locale="en-US" />);
     const note = screen.getByRole("note");
-    expect(note).toHaveTextContent("Free 12:00 – 3:30 PM3 h 30 m");
+    expect(note).toHaveTextContent("Free 12:00 – 3:30 PM3 and a half hours");
     expect(note.querySelector(".calendar-gutter-now")).toBeNull();
   });
 
   it("slides a now-mark along the gap now is inside", () => {
     render(() => <CalendarGutter gutter={{ ...lunch, nowAt: 0.25 }} now={at(12, 52)} locale="en-US" />);
     const note = screen.getByRole("note");
-    expect(note).toHaveTextContent("Free until 3:30 PM2 h 38 m left");
+    expect(note).toHaveTextContent("Free until 3:30 PM2 hours and 40 minutes left");
     expect(note.querySelector<HTMLElement>(".calendar-gutter-now")?.style.left).toBe("25%");
   });
 
@@ -31,5 +31,16 @@ describe("CalendarGutter", () => {
     const note = screen.getByRole("note");
     expect(note).toHaveClass("ending");
     expect(note).toHaveTextContent(/^Afternoon's free\.$/);
+  });
+});
+
+describe("CalendarDayNote", () => {
+  it("says the note plainly, as a note keyboard navigation passes over", () => {
+    render(() => <CalendarDayNote note={{ beforeIndex: 0, kind: "first", at: at(9, 30) }} locale="en-US" />);
+    const note = screen.getByRole("note");
+    expect(note).toHaveTextContent(/^First one at 9:30 AM$/);
+    expect(note).toHaveClass("calendar-day-note");
+    expect(note).not.toHaveClass("calendar-gutter");
+    expect(note.hasAttribute("tabindex")).toBe(false);
   });
 });

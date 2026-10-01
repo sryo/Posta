@@ -1757,6 +1757,14 @@ a:focus-visible,
     }
 }
 
+.calendar-day-note {
+    padding: var(--space-sm) var(--space-lg);
+    font: var(--type-meta);
+    font-variant-numeric: tabular-nums;
+    color: var(--text-secondary);
+    border-bottom: 1px solid var(--card-divider);
+}
+
 /* A search that isn't kept yet */
 .card.search {
     box-shadow: none;

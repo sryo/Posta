@@ -191,8 +191,9 @@ import { batchReplyLoadErrorMessage, cardLoadErrorMessage, isOfflineError, query
 import { cardSyncStatus, cardWaitingMessage, connectionStatus } from "./app/connectionStatus";
 import { CardEmpty, CardSkeleton, ConnectionStatusBar, PostmarkDefs, type NoMatch } from "./components/CardStates";
 import { createPostmarkLedger } from "./app/postmark";
-import { dayGutters, gutterDay, type Gutter } from "./app/gutters";
-import { CalendarGutter } from "./components/CalendarGutter";
+import { calendarDayMarks, firstStartOn, gutterDay, type DayNote, type Gutter } from "./app/gutters";
+import { noticesEnabled } from "./app/notices";
+import { CalendarDayNote, CalendarGutter } from "./components/CalendarGutter";
 import { cardTypeForQuery } from "./app/cardType";
 import { SEARCH_CARD_ID, forgetSearch, isSearchCard, keptCardName, parseRecentSearches, rememberSearch, searchCard as searchCardFor } from "./app/quickSearch";
 import { discardThreadDrafts, draftToOpen, isDraftThread, prepareDraftCompose, withDraftsDiscarded, type DraftToOpen } from "./app/draftThreads";
@@ -4367,15 +4368,18 @@ function App() {
     return groups;
   }
 
-  // A today or tomorrow card's free stretches in its own day's group; none
-  // while the board's filter hides rows, which would open false gaps
-  function calendarGutters(cardId: string, group: CalendarEventGroup): Gutter[] {
+  // A today or tomorrow card's free stretches and notes in its own day's
+  // group; none while the board's filter hides rows, which would open false gaps
+  function calendarDayMarksFor(cardId: string, group: CalendarEventGroup): { gutters: Gutter[]; notes: DayNote[] } {
+    const none = { gutters: [], notes: [] };
     const query = isPreviewingQuery(cardId) ? editCardQuery() : cardById(cardId)?.query ?? "";
     const now = minuteNow();
     const day = gutterDay(query, new Date(now));
-    if (!day || group.label !== formatDayLabel(day, new Date(today()))) return [];
-    if (globalFilter().trim() && filterHides() && !isSearchCard(cardId)) return [];
-    return dayGutters(group.events, day, now);
+    if (!day || group.label !== formatDayLabel(day, new Date(today()))) return none;
+    if (globalFilter().trim() && filterHides() && !isSearchCard(cardId)) return none;
+    const tomorrow = new Date(day.getFullYear(), day.getMonth(), day.getDate() + 1);
+    const tomorrowStart = firstStartOn(Object.values(cardCalendarEvents).flatMap(events => events ?? []), tomorrow);
+    return calendarDayMarks(group.events, day, now, { tomorrowStart, notices: noticesEnabled() });
   }
 
   function computeCalendarEventGroups(cardId: string): CalendarEventGroup[] {
@@ -5345,8 +5349,9 @@ function App() {
                             </Show>
                             <Index each={getCalendarEventGroups(card.id)}>
                               {(group) => {
-                                const gutters = createMemo(() => calendarGutters(card.id, group()));
-                                const gutterAbove = (index: number) => gutters().find(g => g.beforeIndex === index);
+                                const marks = createMemo(() => calendarDayMarksFor(card.id, group()));
+                                const gutterAbove = (index: number) => marks().gutters.find(g => g.beforeIndex === index);
+                                const noteAbove = (index: number) => marks().notes.find(n => n.beforeIndex === index);
                                 return (
                                 <>
                                   <div class="date-header">{group().label}</div>
@@ -5355,6 +5360,9 @@ function App() {
                                       <>
                                       <Show when={gutterAbove(index())}>
                                         {(gutter) => <CalendarGutter gutter={gutter()} now={minuteNow()} />}
+                                      </Show>
+                                      <Show when={noteAbove(index())}>
+                                        {(note) => <CalendarDayNote note={note()} />}
                                       </Show>
                                       <div
                                         class={`calendar-event-item ${fadedBySearch(card.id, event.id) ? "faded" : ""} ${event.response_status === "declined" ? "declined" : ""} ${selectedEvents()[card.id]?.has(event.id) ? "selected" : ""} ${isEventFocused(card.id, event.id) ? "focused" : ""} ${isQuickReplyEvent(event.id) ? "replying" : ""}`}
@@ -5449,6 +5457,9 @@ function App() {
                                   </For>
                                   <Show when={gutterAbove(group().events.length)}>
                                     {(gutter) => <CalendarGutter gutter={gutter()} now={minuteNow()} />}
+                                  </Show>
+                                  <Show when={noteAbove(group().events.length)}>
+                                    {(note) => <CalendarDayNote note={note()} />}
                                   </Show>
                                 </>
                                 );

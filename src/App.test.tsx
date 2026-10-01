@@ -1873,7 +1873,7 @@ describe("App calendar", () => {
 
       const gutter = (await screen.findByText("Free 12:00 – 3:30 PM")).closest(".calendar-gutter") as HTMLElement;
       expect(gutter).toHaveAttribute("role", "note");
-      expect(within(gutter).getByText("3 h 30 m")).toBeInTheDocument();
+      expect(within(gutter).getByText("3 and a half hours")).toBeInTheDocument();
       expect(gutter.hasAttribute("tabindex")).toBe(false);
       expect(gutter.nextElementSibling).toHaveTextContent("1:1 with Sam");
       expect(document.querySelectorAll(".calendar-gutter")).toHaveLength(1);
