@@ -32,7 +32,8 @@ const event: GoogleCalendarEvent = {
   title: "Sync",
   description: null,
   location: null,
-  start_time: 0,
+  // Tomorrow: a meeting still to come offers to join it
+  start_time: Date.now() + 24 * 60 * 60 * 1000,
   end_time: null,
   all_day: false,
   status: "confirmed",
@@ -207,5 +208,12 @@ describe("ActionsWheel event RSVP", () => {
     rsvpListedCalendarEvent.mockResolvedValue(null);
     fireEvent.click(screen.getByTitle("Not going"));
     await vi.waitFor(() => expect(onRsvped).toHaveBeenLastCalledWith(invite.id, "declined"));
+  });
+});
+
+describe("ActionsWheel join", () => {
+  it("offers no join once the meeting is over", () => {
+    render(() => <ActionsWheel {...baseProps} event={{ ...event, hangout_link: "https://meet.google.com/x", start_time: Date.now() - 2 * 3_600_000 }} onDeleteEvent={vi.fn()} />);
+    expect(screen.queryByTitle("Join meeting")).toBeNull();
   });
 });
