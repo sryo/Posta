@@ -26,6 +26,14 @@ describe("CalendarGutter", () => {
     expect(screen.getByRole("note").querySelector<HTMLElement>(".calendar-gutter-now")?.style.left).toBe("0%");
   });
 
+  it("says whether an event held over it is free there, in place of its length", () => {
+    render(() => <CalendarGutter gutter={lunch} now={at(9)} locale="en-US" verdict={{ free: false, text: "clashes with Lunch, 12:30 PM" }} />);
+    const note = screen.getByRole("note");
+    expect(note).toHaveTextContent(/^Free 12:00 – 3:30 PMclashes with Lunch, 12:30 PM$/);
+    expect(note).toHaveClass("move-over");
+    expect(screen.getByRole("status")).toHaveClass("clash");
+  });
+
   it("says the afternoon is free, alone, at the end of the day", () => {
     render(() => <CalendarGutter gutter={{ ...lunch, end: at(18), ending: true }} now={at(9)} locale="en-US" />);
     const note = screen.getByRole("note");

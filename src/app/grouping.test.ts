@@ -137,6 +137,15 @@ describe("groupCalendarEvents", () => {
     ]);
   });
 
+  it("gives each day's group the midnight it stands for, and other groups none", () => {
+    const events = [
+      event("today", { start_time: at(11, 15), end_time: at(11, 16) }),
+      event("later", { start_time: at(13, 10), end_time: at(13, 11) }),
+    ];
+    expect(groupCalendarEvents(events, "date", now).map(g => g.day)).toEqual([new Date(2026, 2, 11).getTime(), new Date(2026, 2, 13).getTime()]);
+    expect(groupCalendarEvents(events, "calendar", now).map(g => g.day)).toEqual([undefined]);
+  });
+
   it("names the days in the app's locale, the language of the rest of its copy", () => {
     const language = vi.spyOn(navigator, "language", "get").mockReturnValue("es-AR");
     try {

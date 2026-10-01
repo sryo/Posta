@@ -81,7 +81,8 @@ export function spokenDuration(minutes: number): string {
   return `${hours} and ${m} minutes`;
 }
 
-function clock(ms: number, locale?: string): string {
+// "3:30 PM", or "15:30" where the locale keeps a 24-hour clock
+export function clock(ms: number, locale?: string): string {
   const { time, meridiem } = stampClock(new Date(ms), locale);
   return meridiem ? `${time} ${meridiem}` : time;
 }

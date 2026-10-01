@@ -220,3 +220,182 @@ describe("everyone else declined", () => {
     expect(document.querySelector(".calendar-event-alone")).toBeNull();
   });
 });
+
+describe("moving an event to another time or day", () => {
+  const guests = () => [me({ is_organizer: true }), person("b@x.com", "accepted"), person("c@x.com", "accepted"), person("d@x.com", "accepted"), person("e@x.com", "accepted")];
+  const week = () => [
+    event("Standup", at(10), at(10, 30), { attendees: guests() }),
+    event("Dentist", at(9, 30, 2), at(10, 30, 2)),
+    event("Lunch with Tomás", at(13, 0, 5), at(14, 0, 5)),
+  ];
+  const row = (title: string) => screen.getAllByText(title).map(el => el.closest(".calendar-event-item")).find(Boolean) as HTMLElement;
+  const heading = (label: string) => screen.getByText(label).closest(".date-header") as HTMLElement;
+  let under: Element | null = null;
+
+  beforeEach(() => {
+    cards = [calendarCard("week", "This week", "calendar:7d")];
+    under = null;
+    document.elementFromPoint = () => under;
+    handlers.update_calendar_event = (args) => ({
+      ...week()[0], start_time: args.startTime as number, end_time: args.endTime as number,
+    });
+  });
+
+  // Picks the row up and holds it over `target`
+  function dragOver(source: HTMLElement, target: HTMLElement) {
+    fireEvent.pointerDown(source, { clientX: 10, clientY: 10, button: 0 });
+    under = target;
+    fireEvent.pointerMove(window, { clientX: 10, clientY: 80 });
+  }
+
+  it("says on another day's heading, before letting go, whether that time is free or what it clashes with", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true, now: at(8) });
+    eventsByQuery["calendar:7d"] = week();
+    render(() => <App />);
+    await screen.findByText("Standup");
+
+    dragOver(row("Standup"), heading("Tomorrow"));
+    expect(within(heading("Tomorrow")).getByRole("status")).toHaveTextContent("clashes with Dentist, 9:30 AM");
+    expect(row("Standup")).toHaveClass("drag-source");
+    expect(document.querySelector(".event-drag-ghost")).toHaveTextContent("Standup");
+
+    under = heading("Monday, Oct 5");
+    fireEvent.pointerMove(window, { clientX: 10, clientY: 120 });
+    expect(within(heading("Monday, Oct 5")).getByRole("status")).toHaveTextContent("10:00 AM is free");
+    expect(within(heading("Tomorrow")).queryByRole("status")).toBeNull();
+    fireEvent.keyDown(window, { key: "Escape" });
+    expect(document.querySelector(".event-drag-ghost")).toBeNull();
+  });
+
+  it("moves it on letting go, says how many guests hear of it, and writes it once the toast goes", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true, now: at(8) });
+    eventsByQuery["calendar:7d"] = week();
+    render(() => <App />);
+    await screen.findByText("Standup");
+
+    dragOver(row("Standup"), heading("Monday, Oct 5"));
+    fireEvent.pointerUp(window, { clientX: 10, clientY: 120 });
+
+    expect(await screen.findByText("Moved Standup to Mon 10:00 AM · 4 guests get an update")).toBeInTheDocument();
+    expect(heading("Monday, Oct 5").nextElementSibling).toHaveTextContent("Standup");
+    expect(invoke.mock.calls.some(([cmd]) => cmd === "update_calendar_event")).toBe(false);
+
+    await vi.advanceTimersByTimeAsync(6000);
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith("update_calendar_event", expect.objectContaining({
+      accountId: "a", calendarId: "primary", eventId: "Standup", startTime: at(10, 0, 5), endTime: at(10, 30, 5), attendees: null, scope: "this",
+    })));
+  });
+
+  it("puts it back on Undo without telling anyone", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true, now: at(8) });
+    eventsByQuery["calendar:7d"] = week();
+    render(() => <App />);
+    await screen.findByText("Standup");
+
+    dragOver(row("Standup"), heading("Monday, Oct 5"));
+    fireEvent.pointerUp(window, { clientX: 10, clientY: 120 });
+    fireEvent.click(await screen.findByRole("button", { name: /Undo/ }));
+
+    await waitFor(() => expect(heading("Today").nextElementSibling).toHaveTextContent("Standup"));
+    await vi.advanceTimersByTimeAsync(6000);
+    expect(invoke.mock.calls.some(([cmd]) => cmd === "update_calendar_event")).toBe(false);
+  });
+
+  it("moves the focused event a day on with ⌥↓, and back with ⌥↑", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true, now: at(8) });
+    eventsByQuery["calendar:7d"] = week();
+    render(() => <App />);
+    await screen.findByText("Standup");
+
+    fireEvent.keyDown(document, { key: "l" });
+    fireEvent.keyDown(document, { key: "ArrowDown", altKey: true });
+    expect(await screen.findByText("Moved Standup to Fri 10:00 AM · 4 guests get an update · overlaps Dentist")).toBeInTheDocument();
+    expect(row("Standup")).toHaveClass("focused");
+
+    fireEvent.keyDown(document, { key: "ArrowUp", altKey: true });
+    expect(await screen.findByText("Moved Standup to Thu 10:00 AM · 4 guests get an update")).toBeInTheDocument();
+  });
+
+  it("keeps the latest of two quick moves while the first is written", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true, now: at(8) });
+    eventsByQuery["calendar:7d"] = week();
+    render(() => <App />);
+    await screen.findByText("Standup");
+
+    fireEvent.keyDown(document, { key: "l" });
+    fireEvent.keyDown(document, { key: "ArrowDown", altKey: true });
+    fireEvent.keyDown(document, { key: "ArrowDown", altKey: true });
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith("update_calendar_event", expect.objectContaining({ startTime: at(10, 0, 2) })));
+    await vi.advanceTimersByTimeAsync(50);
+    expect(heading("Saturday, Oct 3").nextElementSibling).toHaveTextContent("Standup");
+
+    await vi.advanceTimersByTimeAsync(6000);
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith("update_calendar_event", expect.objectContaining({ startTime: at(10, 0, 3) })));
+  });
+
+  it("puts it back and says so when Google won't take the move", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true, now: at(8) });
+    eventsByQuery["calendar:7d"] = week();
+    handlers.update_calendar_event = () => { throw "Forbidden"; };
+    render(() => <App />);
+    await screen.findByText("Standup");
+
+    fireEvent.keyDown(document, { key: "l" });
+    fireEvent.keyDown(document, { key: "ArrowDown", altKey: true });
+    await vi.advanceTimersByTimeAsync(6000);
+    expect(await screen.findByText(/Couldn't move the event/)).toBeInTheDocument();
+    await waitFor(() => expect(heading("Today").nextElementSibling).toHaveTextContent("Standup"));
+  });
+
+  it("lists ⌥↓ and ⌥↑ among the keyboard shortcuts", async () => {
+    eventsByQuery["calendar:7d"] = week();
+    render(() => <App />);
+    await screen.findByText("Standup");
+
+    fireEvent.keyDown(document, { key: "?" });
+    const dialog = await screen.findByRole("dialog", { name: "Keyboard Shortcuts" });
+    expect(within(dialog).getByText("Move a focused event a day on or back").previousElementSibling).toHaveTextContent("⌥↓ ⌥↑");
+  });
+
+  it("keeps someone else's event where it is, saying who can move it", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true, now: at(8) });
+    eventsByQuery["calendar:7d"] = [
+      event("Call with Lucía", at(15), at(15, 30), {
+        organizer: "lucia@x.com", can_edit: false,
+        attendees: [me(), person("lucia@x.com", "accepted", { display_name: "Lucía", is_organizer: true })],
+      }),
+      ...week().slice(1),
+    ];
+    render(() => <App />);
+    await screen.findByText("Call with Lucía");
+
+    dragOver(row("Call with Lucía"), heading("Monday, Oct 5"));
+    expect(within(heading("Monday, Oct 5")).getByRole("status")).toHaveTextContent("Only Lucía can move this");
+    fireEvent.pointerUp(window, { clientX: 10, clientY: 120 });
+    expect(heading("Today").nextElementSibling).toHaveTextContent("Call with Lucía");
+
+    fireEvent.keyDown(document, { key: "l" });
+    fireEvent.keyDown(document, { key: "ArrowDown", altKey: true });
+    expect(await screen.findByText("Only Lucía can move this")).toBeInTheDocument();
+    await vi.advanceTimersByTimeAsync(6000);
+    expect(invoke.mock.calls.some(([cmd]) => cmd === "update_calendar_event")).toBe(false);
+  });
+
+  it("starts it where a free stretch of a today card starts", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true, now: at(8) });
+    cards = [calendarCard("today", "Today", "calendar:today")];
+    eventsByQuery["calendar:today"] = [
+      event("Standup", at(9, 30), at(10, 30), { attendees: guests() }),
+      event("Design crit", at(11), at(12)),
+      event("1:1 with Sam", at(15, 30), at(16, 30)),
+    ];
+    render(() => <App />);
+    await screen.findByText("Standup");
+
+    const gutter = (await screen.findByText("Free 12:00 – 3:30 PM")).closest(".calendar-gutter") as HTMLElement;
+    dragOver(row("Standup"), gutter);
+    expect(within(gutter).getByRole("status")).toHaveTextContent("12:00 PM is free");
+    fireEvent.pointerUp(window, { clientX: 10, clientY: 120 });
+    expect(await screen.findByText("Moved Standup to Thu 12:00 PM · 4 guests get an update")).toBeInTheDocument();
+  });
+});

@@ -25,3 +25,29 @@ describe("everyone else declined", () => {
     expect(declaration(".calendar-event-alone-action.danger", "color")).toBe("var(--danger-text)");
   });
 });
+
+describe("moving an event", () => {
+  it("says on the target, in the free or warning ink, whether the time is free", () => {
+    expect(declaration(".move-verdict", "font")).toBe("var(--type-meta)");
+    expect(declaration(".move-verdict", "text-transform")).toBe("none");
+    expect(declaration(".move-verdict", "color")).toBe("var(--success-text)");
+    expect(declaration(".move-verdict.clash", "color")).toBe("var(--warning-text)");
+  });
+
+  it("lifts the target held over, and fades the row being moved", () => {
+    expect(declaration(".move-over", "background")).toMatch(/^color-mix\(in srgb, var\(--card-ink\) \d+%, transparent\)$/);
+    expect(Number(declaration(".calendar-event-item.drag-source", "opacity"))).toBeLessThan(0.5);
+  });
+
+  it("carries a ghost under the pointer that never catches it", () => {
+    expect(declaration(".event-drag-ghost", "position")).toBe("fixed");
+    expect(declaration(".event-drag-ghost", "pointer-events")).toBe("none");
+    expect(declaration(".event-drag-ghost", "z-index")).toBe("var(--z-toast)");
+    expect(declaration(".event-drag-ghost", "box-shadow")).toBe("var(--shadow-md)");
+  });
+
+  it("holds the grabbing cursor and keeps text unselected while dragging", () => {
+    expect(declaration("body.dragging-event", "cursor")).toBe("grabbing");
+    expect(declaration("body.dragging-event", "user-select")).toBe("none");
+  });
+});

@@ -1859,6 +1859,65 @@ a:focus-visible,
     color: var(--danger-text);
 }
 
+/* An event row dragged to another time or day */
+.move-verdict {
+    float: right;
+    margin-left: var(--space-md);
+    font: var(--type-meta);
+    text-transform: none;
+    color: var(--success-text);
+}
+
+.move-verdict.clash {
+    color: var(--warning-text);
+}
+
+.move-over {
+    background: color-mix(in srgb, var(--card-ink) 14%, transparent);
+}
+
+.calendar-event-item.drag-source {
+    opacity: 0.35;
+}
+
+.event-drag-ghost {
+    position: fixed;
+    top: 0;
+    left: 0;
+    z-index: var(--z-toast);
+    display: flex;
+    gap: var(--space-md);
+    align-items: baseline;
+    max-width: 260px;
+    margin: 8px 0 0 12px;
+    padding: var(--space-sm) var(--space-lg);
+    background: var(--surface-raised);
+    border: 1px solid var(--border-default);
+    border-radius: var(--radius-sm);
+    box-shadow: var(--shadow-md);
+    pointer-events: none;
+}
+
+.event-drag-ghost-title {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font: var(--type-subject);
+    color: var(--text-primary);
+}
+
+.event-drag-ghost-time {
+    font: var(--type-meta);
+    color: var(--text-muted);
+    font-variant-numeric: tabular-nums;
+}
+
+body.dragging-event {
+    cursor: grabbing;
+    user-select: none;
+    -webkit-user-select: none;
+}
+
 .calendar-join-btn {
     margin-top: 6px;
     padding: var(--space-sm) var(--space-lg);
