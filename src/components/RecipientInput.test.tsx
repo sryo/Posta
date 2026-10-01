@@ -105,3 +105,42 @@ describe("RecipientInput", () => {
     expect(value()).toBe("an");
   });
 });
+
+describe("RecipientInput suggestion notes", () => {
+  it("shows a suggestion's note under its address", () => {
+    const [value, setValue] = createSignal("");
+    render(() => (
+      <RecipientInput id="to" value={value()} onChange={setValue} placeholder="Recipients" suggest={() => [
+        { email: "ana@lumen.studio", name: "Ana Pérez", note: "Writes from here since August" },
+        { email: "aperez@estudiomr.com.ar", name: "Ana Pérez", note: "Last heard from here in July 2025" },
+      ]} />
+    ));
+    const input = screen.getByPlaceholderText("Recipients");
+    fireEvent.focus(input);
+    fireEvent.input(input, { target: { value: "ana" } });
+    const [first, second] = screen.getAllByRole("option");
+    expect(first).toHaveTextContent("ana@lumen.studioWrites from here since August");
+    expect(second).toHaveTextContent("Last heard from here in July 2025");
+  });
+});
+
+describe("RecipientInput pasting a list", () => {
+  const clipboard = (text: string) => ({ clipboardData: { types: ["text/plain"], files: [], items: [], getData: (type: string) => (type === "text/plain" ? text : "") } });
+
+  it("tidies a pasted list into recipients and says what it did until the next key", () => {
+    const { input, value } = renderInput("Ana Pérez <ana@estudio.test>, ");
+    fireEvent.paste(input, clipboard("ana@estudio.test; \"Bruno Sosa\" bruno@sosa.dev\nlucas@acme.test, Pablo (no email yet)"));
+    expect(value()).toBe('Ana Pérez <ana@estudio.test>, "Bruno Sosa" <bruno@sosa.dev>, "Lucas Romero" <lucas@acme.test>, Pablo');
+    expect(screen.getByRole("status")).toHaveTextContent("Added 2 · Ana was already here · “Pablo” has no address, left for you");
+    fireEvent.keyDown(input, { key: "a" });
+    expect(screen.queryByRole("status")).toBeNull();
+  });
+
+  it("leaves a single pasted address to the ordinary paste", () => {
+    const { input, onChange } = renderInput();
+    const event = clipboard("ana@estudio.test");
+    expect(fireEvent.paste(input, event)).toBe(true);
+    expect(onChange).not.toHaveBeenCalled();
+    expect(screen.queryByRole("status")).toBeNull();
+  });
+});

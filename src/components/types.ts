@@ -14,6 +14,8 @@ export interface InlineComposeProps {
   showCcBcc: boolean;
   setShowCcBcc: (v: boolean) => void;
   suggestContacts?: (query: string) => { email: string; name?: string }[];
+  // A recipient's name from the user's contacts, for the reply's placeholder
+  nameFor?: (email: string) => string | undefined;
   body: string;
   setBody: (v: string) => void;
   attachments: SendAttachment[];

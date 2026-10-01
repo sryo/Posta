@@ -170,10 +170,12 @@ import { createSentReplies } from "./app/sentReplies";
 import { createLaterVersions, laterVersionLine } from "./app/laterVersion";
 import type { LaterNote } from "./components/Attachments";
 import type { SentReply } from "./components/types";
-import { findHeader, lastMessageFromOthers, messageDate } from "./app/messages";
+import { findHeader, lastMessageFromOthers, messageDate, nameInMessages } from "./app/messages";
+import { replyPlaceholder, sendingTo } from "./app/replyWords";
+import { createLiveThreadMatch, liveThreadLine } from "./app/liveThread";
 import { lastLetterLine, latestDate } from "./app/transit";
-import { batchReplyEntry, type BatchReplyThread } from "./app/batchReply";
-import { matchContacts, rankContacts, type RecentContact } from "./app/contacts";
+import { batchReplyEntry, namedRecipients, type BatchReplyThread } from "./app/batchReply";
+import { matchContacts, noteMovedContacts, rankContacts, type RecentContact } from "./app/contacts";
 import { eventReplyRecipients } from "./app/eventReply";
 import { labelDisplayName } from "./app/labels";
 import { nameInThreads, personName } from "./app/people";
@@ -856,6 +858,8 @@ function App() {
     sending: boolean;
   }>({ threadId: null, text: "", sending: false });
   const [quickReplyCardId, setQuickReplyCardId] = createSignal<string | null>(null);
+  // Who a quick reply goes to, once its thread has been read
+  const [quickReplyTo, setQuickReplyTo] = createSignal<{ threadId: string; to: string[] } | null>(null);
 
   // Quick Reaction (for thread list)
   const [quickReactionSending, setQuickReactionSending] = createSignal(false);
@@ -873,6 +877,15 @@ function App() {
     setQuickReplyEventId(null);
     setQuickReply(qr => (qr.threadId === threadId ? qr : { threadId, text: "", sending: false }));
     setQuickReplyCardId(cardId);
+    const account = threadOwner(threadId, cardId);
+    if (account && quickReplyTo()?.threadId !== threadId) {
+      getThreadDetails(account.id, threadId)
+        .then(details => {
+          const entry = batchReplyEntry(threadId, details.messages ?? [], account.email);
+          setQuickReplyTo({ threadId, to: entry ? namedRecipients(entry) : [] });
+        })
+        .catch(() => {});
+    }
   }
 
   function openEventQuickReply(eventId: string) {
@@ -2672,6 +2685,7 @@ function App() {
       get showCcBcc() { return showCcBcc(); },
       setShowCcBcc: setShowCcBcc,
       suggestContacts: (query: string) => suggestContacts(query),
+      nameFor: (email: string) => contactName(email),
       get body() { return composeBody(); },
       setBody: setComposeBody,
       get attachments() { return composeAttachments(); },
@@ -3269,6 +3283,35 @@ function App() {
         findHeader(m.payload?.headers, 'Message-ID') === messageId
       );
       if (messageIndex >= 0) setFocusedMessageIndex(messageIndex);
+    }
+  }
+
+  // Carries a new email's text and files into a reply on the thread already
+  // going with the same people, letting go of the new email's draft
+  async function replyInLiveThread(thread: Thread) {
+    const account = composeAccount();
+    if (!account) return;
+    const body = composeBody();
+    const attachments = composeAttachments();
+    try {
+      const details = await getThreadDetails(account.id, thread.gmail_thread_id);
+      const entry = batchReplyEntry(thread.gmail_thread_id, details.messages ?? [], account.email);
+      if (!entry?.to) return showToast("No one else to reply to");
+      cancelDraftSave();
+      drafts.clear(composeDraftKey, account.id);
+      startCompose({
+        to: entry.to,
+        subject: addReplyPrefix(entry.subject),
+        body,
+        attachments,
+        reply: { threadId: thread.gmail_thread_id, messageId: entry.messageId },
+        signature: false,
+        accountId: account.id,
+        draftKey: sessionDraftKey(draftKey(account.id, { replyThreadId: thread.gmail_thread_id })),
+        focusBody: true,
+      });
+    } catch (e) {
+      showFailure("Couldn't open the thread", e);
     }
   }
 
@@ -5173,12 +5216,16 @@ function App() {
   const contactsWanted = () => composeFabHovered() || (composing() && !closingCompose()) || addingCard() || editingCardId() !== null
     || creatingEvent() || !!eventForm().editing;
   const guestSuggestions = (query: string) => matchContacts(rankedContacts(), query, 8);
-  const rankedContacts = createMemo(() => contactsWanted() ? rankContacts(
-    googleContacts(),
-    Object.values(cardThreads).flatMap(groups => groups.flatMap(g => g.threads)),
-    accounts().map(a => a.email),
-    Date.now(),
-  ) : []);
+  const rankedContacts = createMemo(() => {
+    if (!contactsWanted()) return [];
+    const ranked = rankContacts(
+      googleContacts(),
+      Object.values(cardThreads).flatMap(groups => groups.flatMap(g => g.threads)),
+      accounts().map(a => a.email),
+      Date.now(),
+    );
+    return noticesEnabled() ? noteMovedContacts(ranked, Date.now()) : ranked;
+  });
   // Kept while the suggestions fade out after the pointer leaves
   const fabSuggestions = createMemo<RecentContact[]>(shown => composeFabHovered() ? rankedContacts().slice(0, 3) : shown, []);
   // The default account's threads and events, read only while New Event is hovered
@@ -5194,6 +5241,37 @@ function App() {
   }, []);
 
   const suggestContacts = (query: string) => matchContacts(rankedContacts(), query, 8);
+  // The name an address goes by: the user's contact, else the open thread or loaded mail
+  const contactName = (email: string) => {
+    const key = email.toLowerCase();
+    return googleContacts().find(c => c.email_addresses.some(e => e.toLowerCase() === key))?.display_name
+      || nameInMessages(email, activeThread()?.messages ?? [])
+      || nameInThreads(email, Object.values(cardThreads).flatMap(groups => groups.flatMap(g => g.threads)));
+  };
+  // A thread already going about what a new email's subject and To say
+  const liveThread = createLiveThreadMatch({
+    active: () => composing() && !closingCompose() && !composeIsReply() && !forwardingThread() && !forwardingEvent() && noticesEnabled(),
+    subject: composeSubject,
+    to: () => splitEmailList(composeTo()),
+    threads: () => Object.values(cardThreads).flatMap(groups => groups.flatMap(g => g.threads)).filter(t => t.account_id === composeAccount()?.id),
+    ownEmails: () => accounts().map(a => a.email),
+    search: async (query) => {
+      const account = composeAccount();
+      return account ? (await searchThreadsPreview(account.id, query)).flatMap(g => g.threads) : [];
+    },
+  });
+  // What the send toast says, kept while the last send goes out
+  const sendingMessage = createMemo<string>(shown => {
+    const group = undoableSend.pendingGroup();
+    if (group.length === 0) return shown;
+    const recipients = group.flatMap(p => {
+      const batchThread = batchReplyOrigins.get(p)?.thread;
+      return batchThread ? namedRecipients(batchThread) : splitEmailList([p.to, p.cc, p.bcc].join(", "));
+    });
+    const to = sendingTo(recipients, accounts().map(a => a.email), new Date(), contactName);
+    const from = [...new Set(group.map(p => accountById(p.accountId)?.email ?? ""))].filter(Boolean);
+    return `${inAccount(to ? `Sending ${to}` : "Sending message", from, accounts().length, "from")}…`;
+  }, "Sending message…");
   const sidePanelBesideView = () => panelBesideView({
     placement: composeShownIn(),
     creatingEvent: creatingEvent(),
@@ -5962,7 +6040,7 @@ function App() {
                                             </Show>
                                             <ComposeTextarea
                                               class="quick-reply-input"
-                                              placeholder="Write a reply..."
+                                              placeholder={(quickReplyTo()?.threadId === thread.gmail_thread_id && replyPlaceholder(quickReplyTo()!.to, accounts().map(a => a.email), contactName)) || "Write a reply..."}
                                               value={sentQuickReply(thread.gmail_thread_id)?.item.text ?? quickReply().text}
                                               onChange={(val: string) => setQuickReply(qr => ({ ...qr, text: val }))}
                                               onSend={handleQuickReply}
@@ -6182,6 +6260,12 @@ function App() {
             fromAccountId={composeAccount()?.id}
             setFromAccountId={changeComposeAccount}
             fromEmail={composeIsReply() ? composeFromEmail() : undefined}
+            alreadyGoing={liveThread() ? {
+              key: liveThread()!.gmail_thread_id,
+              line: liveThreadLine(liveThread()!, splitEmailList(composeTo()), accounts().map(a => a.email), contactName, new Date()),
+              onReplyThere: () => replyInLiveThread(liveThread()!),
+            } : null}
+            placeholder={composeIsReply() ? replyPlaceholder(splitEmailList(`${composeTo()}, ${composeCc()}`), accounts().map(a => a.email), contactName) ?? undefined : undefined}
             lastLetter={replyingToThread() ? lastLetterLine(threadLastDate(replyingToThread()!.threadId), new Date()) : null}
           />
         </div>
@@ -6536,7 +6620,7 @@ function App() {
                         showFields={false}
                         body={batchReplyMessages()[thread.threadId] || ''}
                         setBody={(v) => updateBatchReplyMessage(thread.threadId, v)}
-                        placeholder={`Reply to ${thread.to || extractEmail(thread.from)}...`}
+                        placeholder={replyPlaceholder(namedRecipients(thread), accounts().map(a => a.email), contactName) ?? "Write your reply..."}
                         attachments={batchReplyAttachments()[thread.threadId] || []}
                         onRemoveAttachment={(i) => removeBatchReplyAttachment(thread.threadId, i)}
                         onFileSelect={(e) => handleBatchReplyFileSelect(thread.threadId, e)}
@@ -6815,7 +6899,7 @@ function App() {
         {/* Send Toast with Undo */}
         <Show when={undoableSend.toastVisible()}>
           <ToastFrame
-            message={`${inAccount("Sending message", [accountById(undoableSend.pending()?.accountId)?.email ?? ""].filter(Boolean), accounts().length, "from")}...`}
+            message={sendingMessage()}
             closing={undoableSend.toastClosing()}
             percent={undoableSend.progress()}
           >

@@ -3739,6 +3739,29 @@ button:disabled:hover {
     color: var(--text-muted);
 }
 
+/* One line stating something Posta noticed or just did, beside the thing it is about */
+.notice-line {
+    display: flex;
+    align-items: center;
+    gap: var(--space-sm);
+    font: var(--type-meta);
+    color: var(--text-muted);
+}
+
+.notice-line-text {
+    margin: 0;
+    min-width: 0;
+}
+
+.notice-line-action {
+    flex-shrink: 0;
+}
+
+.notice-line-dismiss {
+    margin-left: auto;
+    flex-shrink: 0;
+}
+
 .compose-content {
     flex: 1;
     min-height: 150px;
@@ -4019,6 +4042,11 @@ button:disabled:hover {
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
+}
+
+.compose-autocomplete-note {
+    font: var(--type-meta);
+    color: var(--text-secondary);
 }
 
 /* Preset Selection Modal */
@@ -6663,6 +6691,41 @@ button:disabled:hover {
 .compose-field .guest-chips-input {
     flex: 1;
     min-width: 120px;
+}
+
+/* A guest pasted again blinks once instead of doubling */
+.guest-chip.blink {
+    animation: chip-blink 600ms ease-in-out;
+}
+
+@keyframes chip-blink {
+    50% {
+        box-shadow: 0 0 0 2px var(--border-focus);
+    }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .guest-chip.blink {
+        animation: none;
+    }
+}
+
+/* What a paste into a recipient field did, on its own line under the field */
+.recipient-paste-note {
+    flex-basis: 100%;
+}
+
+.compose-field:has(> .recipient-paste-note),
+.compose-to-row:has(> .recipient-paste-note) {
+    flex-wrap: wrap;
+}
+
+.compose-field > .recipient-paste-note {
+    padding-left: calc(50px + var(--space-md));
+}
+
+.compose-to-row > .recipient-paste-note {
+    order: 1;
 }
 
 /* Smart Replies */

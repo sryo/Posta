@@ -1188,6 +1188,10 @@ describe("App thread list shortcuts", () => {
   });
 });
 
+// A reply's text box: it names who the reply goes to, or asks for a reply
+const REPLY_BODY = /^(Reply to .+…|Write your reply\.\.\.)$/;
+// A quick reply's, which names them once its thread has been read
+const QUICK_REPLY = /^(Reply to .+…|Write a reply\.\.\.)$/;
 const fullMessage = (id: string, from: string, extra: Record<string, unknown> = {}) => ({
   id, threadId: "t-a", labelIds: ["INBOX"], snippet: `body ${id}`, internalDate: "0",
   payload: { mimeType: "text/plain", headers: [{ name: "From", value: from }, { name: "Subject", value: "Hi" }, { name: "Message-ID", value: `<${id}@x>` }], body: { size: 0 } },
@@ -1671,7 +1675,7 @@ describe("App compose autocomplete", () => {
     fireEvent.click(screen.getByText("Mail for A"));
     await screen.findByText("body m1");
     fireEvent.keyDown(document, { key: "r" });
-    const reply = await screen.findByPlaceholderText("Write your reply...");
+    const reply = await screen.findByPlaceholderText(REPLY_BODY);
     const shot = new File(["png"], "", { type: "image/png" });
     fireEvent.paste(reply, { clipboardData: { types: ["Files"], files: [shot], items: [] } });
     expect(await screen.findByTitle("pasted-image.png")).toBeInTheDocument();
@@ -1698,7 +1702,7 @@ describe("App compose autocomplete", () => {
     fireEvent.click(screen.getByText("Mail for A"));
     await screen.findByText("body m1");
     fireEvent.keyDown(document, { key: "r" });
-    await screen.findByPlaceholderText("Write your reply...");
+    await screen.findByPlaceholderText(REPLY_BODY);
     const to = screen.getByPlaceholderText("Recipients");
     fireEvent.focus(to);
     fireEvent.input(to, { target: { value: "ana@x.com, ze" } });
@@ -1758,7 +1762,7 @@ describe("App compose", () => {
     fireEvent.click(screen.getByText("Mail for A"));
     await screen.findByText("body m1");
     fireEvent.keyDown(document, { key: "r" });
-    await screen.findByPlaceholderText("Write your reply...");
+    await screen.findByPlaceholderText(REPLY_BODY);
     fireEvent.click(document.querySelector(".toast-undo-btn")!);
     await vi.advanceTimersByTimeAsync(100);
 
@@ -2865,7 +2869,7 @@ describe("App thread view compose", () => {
     await screen.findByText("body m2");
 
     fireEvent.keyDown(document, { key: "r" });
-    await screen.findByPlaceholderText("Write your reply...");
+    await screen.findByPlaceholderText(REPLY_BODY);
     fireEvent.mouseEnter(document.querySelectorAll(".message-row")[0]);
     fireEvent.click(await screen.findByTitle("Forward"));
     await vi.advanceTimersByTimeAsync(100);
@@ -2888,7 +2892,7 @@ describe("App new email while a thread is open", () => {
     eventListeners["mailto-received"]({ payload: { to: "bo@y.com", cc: "", bcc: "", subject: "Hello", body: "" } });
     await waitFor(() => expect(document.querySelector(".compose-panel")).not.toBeNull());
     expect(screen.getByPlaceholderText("Subject")).toHaveValue("Hello");
-    expect(screen.queryByPlaceholderText("Write your reply...")).not.toBeInTheDocument();
+    expect(screen.queryByPlaceholderText(REPLY_BODY)).not.toBeInTheDocument();
 
     fireEvent.keyDown(document, { key: "Escape" });
     await waitFor(() => expect(screen.queryByText("body m1")).not.toBeInTheDocument());
@@ -3104,7 +3108,7 @@ describe("App batch reply", () => {
     fireEvent.input(first, { target: { value: "Thanks" } });
     fireEvent.keyDown(first, { key: "Enter", metaKey: true });
 
-    expect(await screen.findByText("Sending message...")).toBeInTheDocument();
+    expect(await screen.findByText(/^Sending to Ana( on \w+)?( at .+)?…$/)).toBeInTheDocument();
     await waitFor(() => expect(screen.getAllByPlaceholderText(/^Reply to/)).toHaveLength(1));
     await vi.advanceTimersByTimeAsync(1000);
     expect(invoke).not.toHaveBeenCalledWith("reply_to_thread", expect.anything());
@@ -3258,7 +3262,7 @@ describe("App batch reply", () => {
     fireEvent.keyDown(document, { key: "l" });
     fireEvent.keyDown(document, { key: "x" });
     fireEvent.click(await screen.findByTitle("Batch Reply"));
-    fireEvent.input(await screen.findByPlaceholderText(/^Reply to/), { target: { value: "Thanks" } });
+    fireEvent.input(await screen.findByPlaceholderText(REPLY_BODY), { target: { value: "Thanks" } });
     fireEvent.click(screen.getByRole("button", { name: "Send" }));
 
     expect(await screen.findByText(/No one to reply to/)).toBeInTheDocument();
@@ -3412,7 +3416,7 @@ describe("App drafts", () => {
     fireEvent.click(await screen.findByText("Mail for A"));
     await screen.findByText("body m1");
     fireEvent.keyDown(document, { key: "r" });
-    fireEvent.input(await screen.findByPlaceholderText("Write your reply..."), { target: { value: "unsent reply" } });
+    fireEvent.input(await screen.findByPlaceholderText(REPLY_BODY), { target: { value: "unsent reply" } });
     fireEvent.click(screen.getByRole("button", { name: /^Send/ }));
     await quitAndRestart();
 
@@ -3599,7 +3603,7 @@ describe("App drafts", () => {
       expect(screen.getByPlaceholderText("Subject")).toHaveValue("Plans");
       const body = screen.getByPlaceholderText("Write something...");
       expect(body).toHaveValue("Hello");
-      expect(screen.queryByPlaceholderText("Write your reply...")).not.toBeInTheDocument();
+      expect(screen.queryByPlaceholderText(REPLY_BODY)).not.toBeInTheDocument();
 
       fireEvent.input(body, { target: { value: "Hello again" } });
       fireEvent.keyDown(body, { key: "Escape" });
@@ -3633,7 +3637,7 @@ describe("App drafts", () => {
       render(() => <App />);
       fireEvent.click(await screen.findByText("Mail for A"));
 
-      const reply = await screen.findByPlaceholderText("Write your reply...");
+      const reply = await screen.findByPlaceholderText(REPLY_BODY);
       await waitFor(() => expect(reply).toHaveValue("Draft reply"));
       fireEvent.input(reply, { target: { value: "Draft reply, edited" } });
       fireEvent.keyDown(reply, { key: "Escape" });
@@ -3815,10 +3819,10 @@ describe("App drafts", () => {
     await screen.findByText("body m1");
     fireEvent.keyDown(document, { key: "r" });
 
-    const body = await screen.findByPlaceholderText("Write your reply...");
+    const body = await screen.findByPlaceholderText(REPLY_BODY);
     expect(body).toHaveValue("my saved reply");
     fireEvent.input(body, { target: { value: "my saved reply, edited" } });
-    fireEvent.keyDown(screen.getByPlaceholderText("Write your reply..."), { key: "Escape" });
+    fireEvent.keyDown(screen.getByPlaceholderText(REPLY_BODY), { key: "Escape" });
     await waitFor(() => expect(invoke).toHaveBeenCalledWith("save_draft", expect.objectContaining({ draftId: "d7", body: "my saved reply, edited" })));
     expect(storedDrafts("draft_reply_a_t-a")).toEqual([expect.objectContaining({ body: "my saved reply, edited" })]);
   });
@@ -3831,13 +3835,13 @@ describe("App drafts", () => {
     fireEvent.click(await screen.findByText("Mail for A"));
     await screen.findByText("body m1");
     fireEvent.keyDown(document, { key: "r" });
-    fireEvent.input(await screen.findByPlaceholderText("Write your reply..."), { target: { value: "half a reply" } });
-    fireEvent.keyDown(screen.getByPlaceholderText("Write your reply..."), { key: "Escape" });
+    fireEvent.input(await screen.findByPlaceholderText(REPLY_BODY), { target: { value: "half a reply" } });
+    fireEvent.keyDown(screen.getByPlaceholderText(REPLY_BODY), { key: "Escape" });
     await screen.findByRole("button", { name: "Discard" });
     await new Promise(r => setTimeout(r, 250));
 
     fireEvent.keyDown(document, { key: "r" });
-    expect(await screen.findByPlaceholderText("Write your reply...")).toHaveValue("half a reply");
+    expect(await screen.findByPlaceholderText(REPLY_BODY)).toHaveValue("half a reply");
     const discard = screen.queryByRole("button", { name: "Discard" });
     if (discard) fireEvent.click(discard);
     await new Promise(r => setTimeout(r, 50));
@@ -3855,10 +3859,10 @@ describe("App inline reply", () => {
     await screen.findByText("body m1");
     fireEvent.keyDown(document, { key: "r" });
 
-    const body = await screen.findByPlaceholderText("Write your reply...");
+    const body = await screen.findByPlaceholderText(REPLY_BODY);
     fireEvent.input(body, { target: { value: "typing" } });
     expect(body.isConnected).toBe(true);
-    expect(screen.getByPlaceholderText("Write your reply...")).toBe(body);
+    expect(screen.getByPlaceholderText(REPLY_BODY)).toBe(body);
   });
 
   const box = () => document.querySelector<HTMLElement>(".inline-compose")!;
@@ -5696,14 +5700,14 @@ describe("App batch reply closing", () => {
     await screen.findByText("Mail for A");
     fireEvent.keyDown(document, { key: "l" });
     fireEvent.keyDown(document, { key: "r" });
-    const input = await screen.findByPlaceholderText("Write a reply...");
+    const input = await screen.findByPlaceholderText(QUICK_REPLY);
     fireEvent.input(input, { target: { value: "Quick answer" } });
     fireEvent.click(avatar("a@x.com"));
     fireEvent.click(await chooserEntry("b@x.com"));
     await waitFor(() => avatar("b@x.com"));
 
     expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument();
-    expect(screen.getByPlaceholderText("Write a reply...")).toHaveValue("Quick answer");
+    expect(screen.getByPlaceholderText(QUICK_REPLY)).toHaveValue("Quick answer");
   });
 });
 
@@ -5980,7 +5984,7 @@ describe("App one board for every account", () => {
     await screen.findByText("Mail for B");
     focusCard(2);
     fireEvent.keyDown(document, { key: "r" });
-    const input = await screen.findByPlaceholderText("Write a reply...");
+    const input = await screen.findByPlaceholderText(QUICK_REPLY);
     fireEvent.input(input, { target: { value: "Thanks" } });
     fireEvent.keyDown(input, { key: "Enter", metaKey: true });
     await waitFor(() => expect(invoke).toHaveBeenCalledWith("reply_to_thread", expect.objectContaining({
@@ -6002,7 +6006,7 @@ describe("App one board for every account", () => {
     await screen.findByText("From B");
     focusCard(1);
     fireEvent.keyDown(document, { key: "r" });
-    const input = await screen.findByPlaceholderText("Write a reply...");
+    const input = await screen.findByPlaceholderText(QUICK_REPLY);
     fireEvent.input(input, { target: { value: "Thanks" } });
     fireEvent.keyDown(input, { key: "Enter", metaKey: true });
     await waitFor(() => expect(invoke).toHaveBeenCalledWith("reply_to_thread", expect.objectContaining({
@@ -6115,7 +6119,7 @@ describe("App one board for every account", () => {
     fireEvent.keyDown(document, { key: "c" });
     fireEvent.input(await screen.findByPlaceholderText("Recipients"), { target: { value: "bo@y.com" } });
     fireEvent.click(screen.getByRole("button", { name: /^Send/ }));
-    expect(await screen.findByText("Sending message from a@x.com...")).toBeInTheDocument();
+    expect(await screen.findByText(/^Sending to bo@y\.com( on \w+)?( at .+)? from a@x\.com…$/)).toBeInTheDocument();
   });
 
   it("starts with the default account chosen last time", async () => {
@@ -6520,5 +6524,210 @@ describe("App later version of a file", () => {
     await new Promise(r => setTimeout(r, 200));
     expect(screen.queryByText(/sent v3/)).toBeNull();
     expect(invoke).not.toHaveBeenCalledWith("get_thread_details", expect.objectContaining({ threadId: "t-2" }));
+  });
+});
+
+describe("App reply names who it goes to", () => {
+  it("names the sender in a thread reply and in its sending toast", async () => {
+    handlers.get_thread_details = () => ({ id: "t-a", messages: [fullMessage("m1", "Ana Pérez <ana@x.com>")] });
+    handlers.save_draft = () => ({ id: "d1" });
+    render(() => <App />);
+    fireEvent.click(await screen.findByText("Mail for A"));
+    await screen.findByText("body m1");
+    fireEvent.keyDown(document, { key: "r" });
+    const body = await screen.findByPlaceholderText("Reply to Ana…");
+    fireEvent.input(body, { target: { value: "Thanks" } });
+    fireEvent.keyDown(body, { key: "Enter", metaKey: true });
+    expect(await screen.findByText(/^Sending to Ana( on \w+)?( at .+)?…$/)).toBeInTheDocument();
+  });
+
+  it("names them in a reply reopened in the compose panel", async () => {
+    threadsByCard["card-a"] = [{ ...thread("t-a", "Mail for A"), participants: ["Ana Pérez <ana@x.com>"] }];
+    localStorage.setItem("draft_reply_a_t-a#q", JSON.stringify({
+      to: "ana@x.com", cc: "", bcc: "", subject: "Re: Hi", body: "", threadId: "t-a", savedAt: 5, sending: true, accountId: "a",
+    }));
+    render(() => <App />);
+    fireEvent.click(await screen.findByRole("button", { name: "Open" }));
+    await waitFor(() => expect(document.querySelector(".compose-panel")).not.toBeNull());
+    await screen.findByText("Mail for A");
+    expect(screen.getByPlaceholderText("Reply to Ana…")).toBeInTheDocument();
+  });
+
+  it("names the sender in a quick reply", async () => {
+    handlers.get_thread_details = () => ({ id: "t-a", messages: [fullMessage("m1", "Ana Pérez <ana@x.com>")] });
+    render(() => <App />);
+    await screen.findByText("Mail for A");
+    fireEvent.keyDown(document, { key: "l" });
+    fireEvent.keyDown(document, { key: "r" });
+    expect(await screen.findByPlaceholderText("Reply to Ana…")).toBeInTheDocument();
+  });
+
+  it("names the sender in each batch reply", async () => {
+    handlers.get_thread_details = ({ threadId }) => ({ id: threadId, messages: [fullMessage("m1", threadId === "t-1" ? "Ana Pérez <ana@x.com>" : "Ben <ben@x.com>")] });
+    threadsByCard["card-a"] = [thread("t-1", "One"), thread("t-2", "Two")];
+    render(() => <App />);
+    await screen.findByText("One");
+    fireEvent.keyDown(document, { key: "l" });
+    fireEvent.keyDown(document, { key: "x" });
+    fireEvent.keyDown(document, { key: "j" });
+    fireEvent.keyDown(document, { key: "x" });
+    fireEvent.keyDown(document, { key: "r" });
+    expect(await screen.findByPlaceholderText("Reply to Ana…")).toBeInTheDocument();
+    expect(screen.getByPlaceholderText("Reply to Ben…")).toBeInTheDocument();
+  });
+
+  it("names everyone a Send All goes to", async () => {
+    handlers.get_thread_details = ({ threadId }) => ({ id: threadId, messages: [fullMessage("m1", threadId === "t-1" ? "Ana Pérez <ana@x.com>" : "Ben <ben@x.com>")] });
+    threadsByCard["card-a"] = [thread("t-1", "One"), thread("t-2", "Two")];
+    render(() => <App />);
+    await screen.findByText("One");
+    fireEvent.keyDown(document, { key: "l" });
+    fireEvent.keyDown(document, { key: "x" });
+    fireEvent.keyDown(document, { key: "j" });
+    fireEvent.keyDown(document, { key: "x" });
+    fireEvent.keyDown(document, { key: "r" });
+    fireEvent.input(await screen.findByPlaceholderText("Reply to Ana…"), { target: { value: "Thanks" } });
+    fireEvent.input(screen.getByPlaceholderText("Reply to Ben…"), { target: { value: "Thanks" } });
+    fireEvent.click(screen.getByRole("button", { name: /^Send All/ }));
+    expect(await screen.findByText(/^Sending to (Ana and Ben|Ben and Ana)( on \w+)?( at .+)?…$/)).toBeInTheDocument();
+  });
+
+  it("says who a new email is going to, and from which account", async () => {
+    handlers.get_accounts = () => [account("a", "a@x.com"), account("b", "b@x.com")];
+    handlers.save_draft = () => ({ id: "d1" });
+    render(() => <App />);
+    await screen.findByText("Mail for A");
+    fireEvent.keyDown(document, { key: "c" });
+    fireEvent.input(await screen.findByPlaceholderText("Recipients"), { target: { value: "bo@y.com" } });
+    fireEvent.click(screen.getByRole("button", { name: /^Send/ }));
+    expect(await screen.findByText(/^Sending to bo@y\.com( on \w+)?( at .+)? from a@x\.com…$/)).toBeInTheDocument();
+  });
+});
+
+describe("App reply all after a Bcc", () => {
+  const bcced = () => fullMessage("m1", "Jules Bernard <jules@lumen.studio>", {
+    payload: {
+      mimeType: "text/plain",
+      headers: [
+        { name: "From", value: "Jules Bernard <jules@lumen.studio>" },
+        { name: "To", value: "Marta Ruiz <marta@lumen.studio>" },
+        { name: "Cc", value: "ben@lumen.studio" },
+        { name: "Delivered-To", value: "a@x.com" },
+        { name: "Subject", value: "Offsite budget" },
+        { name: "Message-ID", value: "<m1@x>" },
+      ],
+      body: { size: 0 },
+    },
+  });
+  const LINE = "You were Bcc'd. Reply all shows Marta Ruiz and ben@lumen.studio that you have this.";
+
+  async function openThread() {
+    handlers.get_thread_details = () => ({ id: "t-a", messages: [bcced()] });
+    render(() => <App />);
+    fireEvent.click(await screen.findByText("Mail for A"));
+    await screen.findByText("body m1");
+  }
+
+  it("warns on Reply all and narrows the reply to the sender on request", async () => {
+    await openThread();
+    fireEvent.keyDown(document, { key: "R" });
+    expect(await screen.findByText(LINE)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Reply to Jules only" }));
+    expect(screen.getByPlaceholderText("Recipients")).toHaveValue("jules@lumen.studio");
+    expect(screen.getByPlaceholderText("Cc recipients")).toHaveValue("");
+    expect(screen.queryByText(LINE)).not.toBeInTheDocument();
+  });
+
+  it("says nothing on a plain Reply", async () => {
+    await openThread();
+    fireEvent.keyDown(document, { key: "r" });
+    await screen.findByPlaceholderText(REPLY_BODY);
+    expect(screen.queryByText(/You were Bcc'd/)).not.toBeInTheDocument();
+  });
+});
+
+describe("App new email about a thread already going", () => {
+  const LINE = /^You and Ana already have "Q3 budget" going, last /;
+
+  function threadAlreadyGoing() {
+    threadsByCard["card-a"] = [{
+      ...thread("t-q", "Re: Q3 budget"),
+      participants: ["Ana Pérez <ana@x.com>", "a@x.com"],
+      last_message_date: Date.now() - 2 * 24 * 60 * 60 * 1000,
+    }];
+    handlers.get_thread_details = () => ({ id: "t-q", messages: [fullMessage("m1", "Ana Pérez <ana@x.com>", {
+      threadId: "t-q",
+      payload: { mimeType: "text/plain", headers: [{ name: "From", value: "Ana Pérez <ana@x.com>" }, { name: "Subject", value: "Re: Q3 budget" }, { name: "Message-ID", value: "<m1@x>" }], body: { size: 0 } },
+    })] });
+    handlers.save_draft = () => ({ id: "d1" });
+    handlers.delete_draft = () => null;
+    handlers.search_threads_preview = () => [];
+  }
+
+  async function writeNew(subject: string) {
+    render(() => <App />);
+    await screen.findByText("Re: Q3 budget");
+    fireEvent.keyDown(document, { key: "c" });
+    fireEvent.input(await screen.findByPlaceholderText("Recipients"), { target: { value: "ana@x.com" } });
+    fireEvent.input(screen.getByPlaceholderText("Subject"), { target: { value: subject } });
+    fireEvent.input(screen.getByPlaceholderText("Write something..."), { target: { value: "Numbers attached" } });
+  }
+
+  it("offers to reply there, carrying over what was written", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    threadAlreadyGoing();
+    handlers.reply_to_thread = () => null;
+    await writeNew("Q3 budget");
+    fireEvent.click(await screen.findByRole("button", { name: "Reply there" }));
+
+    const body = await screen.findByPlaceholderText("Reply to Ana…");
+    expect(body).toHaveValue("Numbers attached");
+    expect(screen.queryByText(LINE)).not.toBeInTheDocument();
+    fireEvent.keyDown(body, { key: "Enter", metaKey: true });
+    await vi.advanceTimersByTimeAsync(6000);
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith("reply_to_thread", expect.objectContaining({ threadId: "t-q", to: "ana@x.com", body: "Numbers attached" })));
+    expect(invoke).not.toHaveBeenCalledWith("send_email", expect.anything());
+  });
+
+  it("says nothing for a different subject", async () => {
+    threadAlreadyGoing();
+    await writeNew("Q3 budget draft");
+    await new Promise(r => setTimeout(r, 800));
+    expect(screen.queryByText(LINE)).not.toBeInTheDocument();
+  });
+});
+
+describe("App autocomplete for someone who moved", () => {
+  it("suggests the new address first and says why under both", async () => {
+    const DAY = 24 * 60 * 60 * 1000;
+    const at = (id: string, from: string, daysAgo: number) => ({ ...thread(id, `Mail ${id}`), participants: [from], last_message_date: Date.now() - daysAgo * DAY });
+    threadsByCard["card-a"] = [
+      at("t-1", "Ana Pérez <aperez@estudiomr.com.ar>", 300),
+      at("t-2", "Ana Pérez <aperez@estudiomr.com.ar>", 320),
+      at("t-3", "Ana Pérez <ana@lumen.studio>", 20),
+      at("t-4", "Ana Pérez <ana@lumen.studio>", 3),
+    ];
+    render(() => <App />);
+    await screen.findByText("Mail t-1");
+    fireEvent.keyDown(document, { key: "c" });
+    const to = await screen.findByPlaceholderText("Recipients");
+    fireEvent.focus(to);
+    fireEvent.input(to, { target: { value: "ana" } });
+    const options = await screen.findAllByRole("option");
+    expect(options[0]).toHaveTextContent(/ana@lumen\.studioWrites from here since /);
+    expect(options[1]).toHaveTextContent(/aperez@estudiomr\.com\.arLast heard from here in /);
+  });
+});
+
+describe("App pasting a list into To", () => {
+  it("tidies it into recipients named from the contacts, and says what it did", async () => {
+    handlers.fetch_contacts = () => [{ resource_name: "people/1", display_name: "Carla Méndez", email_addresses: ["carla.m@gmail.com"], photo_url: null }];
+    render(() => <App />);
+    await screen.findByText("Mail for A");
+    fireEvent.keyDown(document, { key: "c" });
+    const to = await screen.findByPlaceholderText("Recipients");
+    fireEvent.paste(to, { clipboardData: { types: ["text/plain"], files: [], items: [], getData: () => "Ana Ruiz <ana.ruiz@estudio.co>; carla.m@gmail.com\nPablo (no email yet)" } });
+    expect(to).toHaveValue('"Ana Ruiz" <ana.ruiz@estudio.co>, "Carla Méndez" <carla.m@gmail.com>, Pablo');
+    expect(screen.getByText("Added 2 · “Pablo” has no address, left for you")).toBeInTheDocument();
   });
 });

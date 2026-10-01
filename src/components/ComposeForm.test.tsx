@@ -1,7 +1,8 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { fireEvent, render, screen } from "@solidjs/testing-library";
 import { createSignal } from "solid-js";
 import { ComposeForm } from "./ComposeForm";
+import { setNoticesEnabled } from "../app/notices";
 
 const CONTACTS = [{ email: "kenji@example.com", name: "Kenji" }, { email: "kim@example.com" }];
 const suggestContacts = (q: string) => CONTACTS.filter(c => c.email.startsWith(q));
@@ -134,7 +135,7 @@ describe("ComposeForm quoted history in a reply", () => {
         onRemoveAttachment={vi.fn()} onFileSelect={vi.fn()} fileInputId="file" onSend={vi.fn()} onClose={vi.fn()}
       />
     ));
-    return { body, textarea: screen.getByPlaceholderText("Write your reply...") as HTMLTextAreaElement };
+    return { body, textarea: screen.getByRole("textbox", { name: "Message" }) as HTMLTextAreaElement };
   }
 
   it("folds the quote away while the reply is written above it, and keeps it in the body", () => {
@@ -183,7 +184,7 @@ describe("ComposeForm attaching dropped and pasted files", () => {
         onClose={vi.fn()}
       />
     ));
-    return { onAddFiles, body: screen.getByPlaceholderText("Write your reply...") };
+    return { onAddFiles, body: screen.getByRole("textbox", { name: "Message" }) };
   }
   const file = new File(["x"], "plan.pdf", { type: "application/pdf" });
   const files = (...list: File[]) => ({ types: ["Files"], files: list, items: [], dropEffect: "none" });
@@ -299,5 +300,157 @@ describe("ComposeForm reply to a long-quiet thread", () => {
       />
     ));
     expect(container.querySelector(".compose-last-letter")).toBeNull();
+  });
+});
+
+describe("ComposeForm reply placeholder", () => {
+  function renderReply(props: { to: string; cc?: string; nameFor?: (email: string) => string | undefined; placeholder?: string }) {
+    const [to, setTo] = createSignal(props.to);
+    const [cc, setCc] = createSignal(props.cc ?? "");
+    render(() => (
+      <ComposeForm
+        mode="reply" to={to()} setTo={setTo} cc={cc()} setCc={setCc} setBcc={vi.fn()} showCcBcc={true}
+        body="" setBody={vi.fn()} attachments={[]} onRemoveAttachment={vi.fn()} onFileSelect={vi.fn()}
+        fileInputId="file" onSend={vi.fn()} onClose={vi.fn()} nameFor={props.nameFor} placeholder={props.placeholder}
+      />
+    ));
+    return { setTo, setCc };
+  }
+
+  it("names who the reply goes to, in To and Cc", () => {
+    renderReply({ to: "Ana Pérez <ana@x.com>", cc: "ben@x.com" });
+    expect(screen.getByRole("textbox", { name: "Message" })).toHaveAttribute("placeholder", "Reply to Ana and ben@x.com…");
+  });
+
+  it("uses the contact's name for a bare address, and follows the recipients as they change", () => {
+    const { setCc } = renderReply({ to: "ana@x.com", cc: "ben@x.com", nameFor: (e) => (e === "ana@x.com" ? "Ana Pérez" : undefined) });
+    expect(screen.getByRole("textbox", { name: "Message" })).toHaveAttribute("placeholder", "Reply to Ana and ben@x.com…");
+    setCc("");
+    expect(screen.getByRole("textbox", { name: "Message" })).toHaveAttribute("placeholder", "Reply to Ana…");
+  });
+
+  it("keeps a placeholder it is given", () => {
+    renderReply({ to: "ana@x.com", placeholder: "Reply to the organizer..." });
+    expect(screen.getByRole("textbox", { name: "Message" })).toHaveAttribute("placeholder", "Reply to the organizer...");
+  });
+});
+
+describe("ComposeForm reply all after a Bcc", () => {
+  const notice = {
+    line: "You were Bcc'd. Reply all shows Marta Ruiz and 1 other that you have this.",
+    sender: "jules@lumen.studio",
+    only: "Reply to Jules only",
+  };
+
+  function renderReplyAll() {
+    const [to, setTo] = createSignal("jules@lumen.studio");
+    const [cc, setCc] = createSignal("marta@lumen.studio, ben@lumen.studio");
+    render(() => (
+      <ComposeForm
+        mode="reply" to={to()} setTo={setTo} cc={cc()} setCc={setCc} setBcc={vi.fn()} showCcBcc={true}
+        body="" setBody={vi.fn()} attachments={[]} onRemoveAttachment={vi.fn()} onFileSelect={vi.fn()}
+        fileInputId="file" onSend={vi.fn()} onClose={vi.fn()} bccNotice={notice}
+      />
+    ));
+    return { to, cc };
+  }
+
+  afterEach(() => setNoticesEnabled(true));
+
+  it("says so under To, and narrows the reply to the sender on request", () => {
+    const { to, cc } = renderReplyAll();
+    const line = screen.getByText(notice.line);
+    expect(line.compareDocumentPosition(screen.getByLabelText("To")) & Node.DOCUMENT_POSITION_PRECEDING).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Reply to Jules only" }));
+    expect(to()).toBe("jules@lumen.studio");
+    expect(cc()).toBe("");
+    expect(screen.queryByText(notice.line)).toBeNull();
+  });
+
+  it("closes for this reply with its ×", () => {
+    renderReplyAll();
+    fireEvent.click(screen.getByRole("button", { name: "Dismiss" }));
+    expect(screen.queryByText(notice.line)).toBeNull();
+  });
+
+  it("says nothing while Posta isn't to point things out", () => {
+    setNoticesEnabled(false);
+    renderReplyAll();
+    expect(screen.queryByText(notice.line)).toBeNull();
+  });
+});
+
+describe("ComposeForm already talking about this", () => {
+  const LINE = 'You and Ana already have "Q3 budget" going, last on Sep 25.';
+
+  function renderNew(onReplyThere = vi.fn()) {
+    const [going, setGoing] = createSignal<{ key: string; line: string; onReplyThere: () => void } | null>({ key: "t-1", line: LINE, onReplyThere });
+    render(() => (
+      <ComposeForm
+        mode="new" showSubject={true} to="ana@x.com" setTo={vi.fn()} subject="Q3 budget" setSubject={vi.fn()}
+        body="" setBody={vi.fn()} attachments={[]} onRemoveAttachment={vi.fn()} onFileSelect={vi.fn()}
+        fileInputId="file" onSend={vi.fn()} onClose={vi.fn()} alreadyGoing={going()}
+      />
+    ));
+    return { setGoing, onReplyThere };
+  }
+
+  afterEach(() => setNoticesEnabled(true));
+
+  it("says so under the subject and offers to reply there", () => {
+    const { onReplyThere } = renderNew();
+    const line = screen.getByText(LINE);
+    expect(line.compareDocumentPosition(screen.getByLabelText("Subject")) & Node.DOCUMENT_POSITION_PRECEDING).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Reply there" }));
+    expect(onReplyThere).toHaveBeenCalled();
+  });
+
+  it("keeps it a new thread with its ×, even when the same match comes back", () => {
+    const { setGoing } = renderNew();
+    fireEvent.click(screen.getByRole("button", { name: "Dismiss" }));
+    expect(screen.queryByText(LINE)).toBeNull();
+    setGoing(null);
+    setGoing({ key: "t-1", line: LINE, onReplyThere: vi.fn() });
+    expect(screen.queryByText(LINE)).toBeNull();
+  });
+
+  it("says nothing while Posta isn't to point things out", () => {
+    setNoticesEnabled(false);
+    renderNew();
+    expect(screen.queryByText(LINE)).toBeNull();
+  });
+});
+
+describe("ComposeForm pasting a link over words", () => {
+  const clipboard = (text: string) => ({ clipboardData: { types: ["text/plain"], files: [], items: [], getData: (type: string) => (type === "text/plain" ? text : "") } });
+  const BODY = "Hi all, the deck is ready for comments.";
+  const URL = "https://docs.google.com/presentation/d/1xQ4review";
+
+  function renderBody() {
+    const [body, setBody] = createSignal(BODY);
+    render(() => (
+      <ComposeForm
+        mode="new" to="ana@x.com" setTo={vi.fn()} body={body()} setBody={setBody} attachments={[]}
+        onRemoveAttachment={vi.fn()} onFileSelect={vi.fn()} onAddFiles={vi.fn()} fileInputId="file" onSend={vi.fn()} onClose={vi.fn()}
+      />
+    ));
+    return { body, textarea: screen.getByRole("textbox", { name: "Message" }) as HTMLTextAreaElement };
+  }
+
+  it("links the selected words, and says so until the next key", () => {
+    const { body, textarea } = renderBody();
+    textarea.setSelectionRange(BODY.indexOf("the deck"), BODY.indexOf("the deck") + "the deck".length);
+    fireEvent.paste(textarea, clipboard(URL));
+    expect(body()).toBe(`Hi all, the deck (${URL}) is ready for comments.`);
+    expect(screen.getByRole("status")).toHaveTextContent("Linked “the deck” to docs.google.com");
+    fireEvent.keyDown(textarea, { key: "a" });
+    expect(screen.queryByRole("status")).toBeNull();
+  });
+
+  it("leaves a link pasted with nothing selected to the ordinary paste", () => {
+    const { body, textarea } = renderBody();
+    textarea.setSelectionRange(3, 3);
+    expect(fireEvent.paste(textarea, clipboard(URL))).toBe(true);
+    expect(body()).toBe(BODY);
   });
 });

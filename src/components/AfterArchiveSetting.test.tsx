@@ -15,6 +15,13 @@ describe("AfterArchiveSetting", () => {
     expect(loadAfterArchive()).toBe("board");
   });
 
+  it("sits in Reading beside the switch for what Posta notices", () => {
+    render(() => <AfterArchiveSetting />);
+    const group = screen.getByRole("group", { name: "Reading" });
+    expect(group).toContainElement(screen.getByRole("combobox", { name: "After archiving" }));
+    expect(group.querySelector('[role="switch"][aria-label="Point out things Posta notices"]')).not.toBeNull();
+  });
+
   it("shows the stored choice", () => {
     localStorage.setItem("afterArchive", "previous");
     render(() => <AfterArchiveSetting />);

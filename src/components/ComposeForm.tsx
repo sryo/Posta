@@ -8,6 +8,11 @@ import { splitQuotedText } from "../app/quotedHistory";
 import { RecipientInput, type RecipientSuggestion } from "./RecipientInput";
 import { carriesFiles, transferredFiles } from "../app/fileDrop";
 import { FieldRow, FormFooter, PanelAccount, PanelHeader, SubmitButton } from "./FormParts";
+import { replyPlaceholder } from "../app/replyWords";
+import { linkPaste } from "../app/tidyPaste";
+import { noticesEnabled } from "../app/notices";
+import { extractEmail, splitEmailList } from "../utils";
+import { NoticeLine } from "./NoticeLine";
 
 // Shared Compose Form component
 interface ComposeFormProps {
@@ -62,6 +67,13 @@ interface ComposeFormProps {
   fromEmail?: string;
   // "Last letter here: Aug 2025.", above a reply to a long-quiet thread
   lastLetter?: string | null;
+  // A recipient's name from the user's contacts, for a reply's placeholder
+  nameFor?: (email: string) => string | undefined;
+  // Set on Reply all to a message the user got as Bcc
+  bccNotice?: { line: string; sender: string; only: string } | null;
+  // A new email whose subject and To match a thread already going; `key` is
+  // that thread, kept a new thread once its × is pressed
+  alreadyGoing?: { key: string; line: string; onReplyThere: () => void } | null;
 }
 
 export const ComposeForm = (props: ComposeFormProps) => {
@@ -104,6 +116,7 @@ export const ComposeForm = (props: ComposeFormProps) => {
   };
 
   const handlePaste = (e: ClipboardEvent) => {
+    if (e.target === bodyEl && pasteLink(e)) return;
     if (!props.onAddFiles) return;
     const files = transferredFiles(e.clipboardData);
     if (files.length === 0) return;
@@ -197,6 +210,44 @@ export const ComposeForm = (props: ComposeFormProps) => {
     </Show>
   );
 
+  // Shown while the reply still reaches anyone besides the sender
+  const [bccDismissed, setBccDismissed] = createSignal(false);
+  const bccShown = () => {
+    const notice = props.bccNotice;
+    if (!notice || bccDismissed() || !noticesEnabled()) return null;
+    const sender = notice.sender.toLowerCase();
+    const reached = splitEmailList(`${props.to ?? ''}, ${props.cc ?? ''}`).map(a => extractEmail(a).trim().toLowerCase());
+    return reached.some(email => email && email !== sender) ? notice : null;
+  };
+  const BccNotice = () => (
+    <Show when={bccShown()}>
+      {(notice) => (
+        <NoticeLine
+          text={notice().line}
+          action={{ label: notice().only, run: () => { props.setTo?.(notice().sender); props.setCc?.(''); props.onInput?.(); } }}
+          onDismiss={() => setBccDismissed(true)}
+        />
+      )}
+    </Show>
+  );
+
+  const [keptNew, setKeptNew] = createSignal<string[]>([]);
+  const alreadyGoing = () => {
+    const going = props.alreadyGoing;
+    return going && noticesEnabled() && !keptNew().includes(going.key) ? going : null;
+  };
+  const AlreadyGoing = () => (
+    <Show when={alreadyGoing()}>
+      {(going) => (
+        <NoticeLine
+          text={going().line}
+          action={{ label: "Reply there", run: () => going().onReplyThere() }}
+          onDismiss={() => setKeptNew(keys => [...keys, going().key])}
+        />
+      )}
+    </Show>
+  );
+
   const SubjectField = () => (
     <Show when={props.showSubject && props.setSubject}>
       <FieldRow label="Subject" for={`${fieldId}-subject`}>
@@ -230,10 +281,34 @@ export const ComposeForm = (props: ComposeFormProps) => {
     return tail && !quoteShown() ? props.body.slice(0, props.body.length - tail.length) : props.body;
   };
 
+  const replyTo = () => props.mode === 'reply'
+    ? replyPlaceholder(splitEmailList(`${props.to ?? ''}, ${props.cc ?? ''}`), [fromAddress() ?? ''], props.nameFor)
+    : null;
+
+  let bodyEl: HTMLTextAreaElement | undefined;
+
+  // What the last paste into the body did, until the next key
+  const [bodyNote, setBodyNote] = createSignal<string | null>(null);
+  const pasteLink = (e: ClipboardEvent) => {
+    const el = bodyEl!;
+    const linked = linkPaste(el.value, el.selectionStart, el.selectionEnd, e.clipboardData?.getData?.('text/plain') ?? '');
+    if (!linked) return false;
+    e.preventDefault();
+    // The text box shows the body without its folded quote
+    if (quoteShown() && quotedTail() !== null) setQuotedTail(splitQuotedText(linked.text)?.quoted ?? '');
+    props.setBody(linked.text + (quoteShown() ? '' : foldedTail() ?? ''));
+    props.onInput?.();
+    el.value = visibleBody();
+    el.setSelectionRange(linked.caret, linked.caret);
+    setBodyNote(linked.note);
+    return true;
+  };
+
   const BodyTextarea = () => (
     <div class="compose-content">
       <textarea
         ref={(el) => {
+          bodyEl = el;
           if (props.focusBody && el) {
             // Use requestAnimationFrame to ensure the value is rendered first
             requestAnimationFrame(() => {
@@ -254,9 +329,13 @@ export const ComposeForm = (props: ComposeFormProps) => {
           }
           props.onInput?.();
         }}
-        onKeyDown={handleKeyDown}
-        placeholder={props.placeholder || (props.mode === 'new' ? "Write something..." : "Write your reply...")}
+        onKeyDown={(e) => { setBodyNote(null); handleKeyDown(e); }}
+        aria-label="Message"
+        placeholder={props.placeholder || (props.mode === 'new' ? "Write something..." : replyTo() ?? "Write your reply...")}
       />
+      <Show when={bodyNote()}>
+        {(note) => <NoticeLine text={note()} />}
+      </Show>
       <Show when={foldedTail()}>
         <button
           class="quoted-toggle"
@@ -346,8 +425,10 @@ export const ComposeForm = (props: ComposeFormProps) => {
         <Show when={props.showFields !== false}>
           <FromField />
           <ToField />
+          <BccNotice />
           <CcBccFields />
           <SubjectField />
+          <AlreadyGoing />
         </Show>
         <Show when={props.lastLetter}>
           <p class="compose-last-letter">{props.lastLetter}</p>

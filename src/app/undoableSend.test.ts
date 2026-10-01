@@ -100,6 +100,17 @@ describe("createUndoableSend", () => {
     expect(sent).toEqual(["A"]);
   });
 
+  it("names the most recent send and those queued with it, which undo would take back", async () => {
+    const { sender } = setup();
+    expect(sender.pendingGroup()).toEqual([]);
+    sender.queue("A");
+    expect(sender.pendingGroup()).toEqual(["A"]);
+    sender.queueAll(["B", "C"]);
+    expect(sender.pendingGroup()).toEqual(["B", "C"]);
+    await vi.advanceTimersByTimeAsync(DELAY);
+    expect(sender.pendingGroup()).toEqual([]);
+  });
+
   it("undo of a single send gives it back as a group of one", async () => {
     const { sender } = setup();
     sender.queue("A");
