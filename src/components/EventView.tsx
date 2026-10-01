@@ -403,6 +403,7 @@ export const EventView = (props: {
                     addMeet={props.inlineEdit!.addMeet}
                     setAddMeet={props.inlineEdit!.setAddMeet}
                     hasMeet={props.inlineEdit!.hasMeet}
+                    focusTime={props.inlineEdit!.focusTime}
                     saving={props.inlineEdit!.saving}
                     onSave={props.inlineEdit!.onSave}
                     error={props.inlineEdit!.error}

@@ -19,4 +19,10 @@ describe("EventRowLines", () => {
     expect(container.querySelector(".calendar-event-response")).toBeNull();
     expect(container).toHaveTextContent("Join meeting");
   });
+
+  it("says what it noticed in place of the place", () => {
+    const { container } = render(() => <EventRowLines event={event} time="9:00" showResponse notice={<span>Everyone else declined</span>} />);
+    expect(container.querySelector(".calendar-event-location-compact")).toBeNull();
+    expect(container).toHaveTextContent("Everyone else declined");
+  });
 });

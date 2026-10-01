@@ -4,7 +4,8 @@ import { extractEmail, extractName, formatCalendarEventDate } from "../utils";
 import { formatDayLabel } from "./dateFormat";
 import { organizerName, personName } from "./people";
 
-export type CalendarEventGroup = { label: string; events: GoogleCalendarEvent[] };
+// `day`, a date group's local midnight
+export type CalendarEventGroup = { label: string; events: GoogleCalendarEvent[]; day?: number };
 
 // Date buckets produced by the backend, newest first
 const DATE_GROUP_ORDER = ["Today", "Yesterday", "This week", "Last 30 days", "Older"];
@@ -109,6 +110,7 @@ export function groupCalendarEvents(events: GoogleCalendarEvent[], groupBy: Grou
       .map(([label, events]) => ({
         label,
         events: events.sort(byStartTime),
+        day: groupDays[label],
       }))
       .sort((a, b) => groupDays[a.label] - groupDays[b.label]);
   }

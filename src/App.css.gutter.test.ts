@@ -41,3 +41,13 @@ describe("calendar gutter styles", () => {
     expect(declaration(".calendar-gutter-now", "transition", "@media (prefers-reduced-motion: reduce)")).toBe("none");
   });
 });
+
+describe("calendar day note styles", () => {
+  it("sets the note as a quiet line in the gutter's type, with no perforations", () => {
+    expect(declaration(".calendar-day-note", "font")).toBe("var(--type-meta)");
+    expect(declaration(".calendar-day-note", "color")).toBe("var(--text-secondary)");
+    expect(declaration(".calendar-day-note", "font-variant-numeric")).toBe("tabular-nums");
+    expect(declaration(".calendar-day-note", "background-image")).toBeUndefined();
+    expect(declaration(".calendar-day-note", "border-bottom")).toBe("1px solid var(--card-divider)");
+  });
+});

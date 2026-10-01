@@ -65,14 +65,24 @@ export function dayGutters(events: GoogleCalendarEvent[], day: Date, now: number
   return gutters;
 }
 
-// "3 h 30 m", "2 h", "45 m"
-function duration(minutes: number): string {
-  const h = Math.floor(minutes / 60);
-  const m = minutes % 60;
-  return [h ? `${h} h` : "", m ? `${m} m` : ""].filter(Boolean).join(" ");
+// "half an hour", "an hour and 20 minutes", "2 and a half hours": rounded to
+// five minutes, except the last few
+export function spokenDuration(minutes: number): string {
+  const rounded = minutes < 5 ? minutes : Math.round(minutes / 5) * 5;
+  const h = Math.floor(rounded / 60);
+  const m = rounded % 60;
+  if (h === 0) {
+    if (m === 30) return "half an hour";
+    return m === 1 ? "a minute" : `${m} minutes`;
+  }
+  const hours = h === 1 ? "an hour" : `${h} hours`;
+  if (m === 0) return hours;
+  if (m === 30) return h === 1 ? "an hour and a half" : `${h} and a half hours`;
+  return `${hours} and ${m} minutes`;
 }
 
-function clock(ms: number, locale?: string): string {
+// "3:30 PM", or "15:30" where the locale keeps a 24-hour clock
+export function clock(ms: number, locale?: string): string {
   const { time, meridiem } = stampClock(new Date(ms), locale);
   return meridiem ? `${time} ${meridiem}` : time;
 }
@@ -82,7 +92,7 @@ export function gutterText(gutter: Gutter, now: number, locale?: string): { line
     return { line: new Date(gutter.start).getHours() >= NOON ? "Afternoon's free." : "Rest of the day's free.", length: null };
   }
   if (now >= gutter.start) {
-    return { line: `Free until ${clock(gutter.end, locale)}`, length: `${duration(Math.ceil((gutter.end - now) / MINUTE_MS))} left` };
+    return { line: `Free until ${clock(gutter.end, locale)}`, length: `${spokenDuration(Math.ceil((gutter.end - now) / MINUTE_MS))} left` };
   }
   const from = stampClock(new Date(gutter.start), locale);
   const to = stampClock(new Date(gutter.end), locale);
@@ -90,7 +100,7 @@ export function gutterText(gutter: Gutter, now: number, locale?: string): { line
   const fromText = from.meridiem && from.meridiem !== to.meridiem ? `${from.time} ${from.meridiem}` : from.time;
   return {
     line: `Free ${fromText} – ${clock(gutter.end, locale)}`,
-    length: duration(Math.round((gutter.end - gutter.start) / MINUTE_MS)),
+    length: spokenDuration(Math.round((gutter.end - gutter.start) / MINUTE_MS)),
   };
 }
 
@@ -100,4 +110,78 @@ export function gutterDay(query: string, now: Date): Date | null {
   if (!match) return null;
   const offset = match[1].toLowerCase() === "tomorrow" ? 1 : 0;
   return new Date(now.getFullYear(), now.getMonth(), now.getDate() + offset);
+}
+
+// What a today card says of the day around now, beside its gutters: the first
+// one of the morning, the last one, and the day being over
+export interface DayNote {
+  // As a gutter's: the row the note sits above
+  beforeIndex: number;
+  kind: "first" | "last" | "nothingElse" | "dayDone";
+  // The first one's start, or tomorrow's first start once the day is done
+  at: number | null;
+}
+
+const FIRST_NOTE_LEAD_MS = HOUR_MS;
+const DAY_DONE_HOUR = 17;
+
+function timedSpansOn(events: GoogleCalendarEvent[], dayStart: number, nextDayStart: number) {
+  return events
+    .filter(busy)
+    .map(e => ({ start: e.start_time, end: e.end_time ?? e.start_time + HOUR_MS }))
+    .filter(s => s.end > dayStart && s.start < nextDayStart);
+}
+
+// When the day's first timed event that is on starts; null when none does
+export function firstStartOn(events: GoogleCalendarEvent[], day: Date): number | null {
+  const dayStart = new Date(day.getFullYear(), day.getMonth(), day.getDate()).getTime();
+  const nextDayStart = new Date(day.getFullYear(), day.getMonth(), day.getDate() + 1).getTime();
+  const starts = events.filter(busy).map(e => e.start_time).filter(t => t >= dayStart && t < nextDayStart);
+  return starts.length ? Math.min(...starts) : null;
+}
+
+function dayNotes(events: GoogleCalendarEvent[], day: Date, now: number, tomorrowStart: number | null, gutters: Gutter[]): DayNote[] {
+  const dayStart = new Date(day.getFullYear(), day.getMonth(), day.getDate()).getTime();
+  const nextDayStart = new Date(day.getFullYear(), day.getMonth(), day.getDate() + 1).getTime();
+  if (now < dayStart || now >= nextDayStart) return [];
+  const spans = timedSpansOn(events, dayStart, nextDayStart);
+  if (!spans.length) return [];
+
+  const firstStart = Math.min(...spans.map(s => s.start));
+  if (firstStart > now) {
+    if (firstStart - now < FIRST_NOTE_LEAD_MS) return [];
+    const beforeIndex = events.findIndex(e => !e.all_day && e.start_time >= firstStart);
+    return [{ beforeIndex: beforeIndex < 0 ? events.length : beforeIndex, kind: "first", at: firstStart }];
+  }
+  if (spans.some(s => s.start > now)) return [];
+
+  const lastEnd = Math.max(...spans.map(s => s.end));
+  const beforeIndex = events.length;
+  if (now >= lastEnd && new Date(now).getHours() >= DAY_DONE_HOUR) return [{ beforeIndex, kind: "dayDone", at: tomorrowStart }];
+  if (gutters.some(g => g.ending)) return [];
+  return [{ beforeIndex, kind: now < lastEnd ? "last" : "nothingElse", at: null }];
+}
+
+// A today or tomorrow card's gutters and, while noticing is on, its notes; a
+// closed day's note takes the place of a free end of the day
+export function calendarDayMarks(
+  events: GoogleCalendarEvent[],
+  day: Date,
+  now: number,
+  options: { tomorrowStart: number | null; notices: boolean },
+): { gutters: Gutter[]; notes: DayNote[] } {
+  const gutters = dayGutters(events, day, now);
+  if (!options.notices) return { gutters, notes: [] };
+  const notes = dayNotes(events, day, now, options.tomorrowStart, gutters);
+  const closed = notes.some(n => n.kind === "dayDone");
+  return { gutters: closed ? gutters.filter(g => !g.ending) : gutters, notes };
+}
+
+export function dayNoteText(note: DayNote, locale?: string): string {
+  switch (note.kind) {
+    case "first": return `First one at ${clock(note.at!, locale)}`;
+    case "last": return "Last one today";
+    case "nothingElse": return "Nothing else today";
+    case "dayDone": return note.at === null ? "That's it for today." : `That's it for today. Tomorrow starts at ${clock(note.at, locale)}.`;
+  }
 }

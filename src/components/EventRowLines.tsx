@@ -10,6 +10,8 @@ export function EventRowLines(props: {
   event: GoogleCalendarEvent;
   time: string;
   showResponse: boolean;
+  // Something the row noticed, said in place of where
+  notice?: JSX.Element;
   children?: JSX.Element;
 }) {
   const e = () => props.event;
@@ -22,11 +24,15 @@ export function EventRowLines(props: {
       <Show when={e().description}>
         <div class="calendar-event-description">{e().description}</div>
       </Show>
-      <Show when={e().location}>
-        <div class="calendar-event-location-compact">
-          <LocationIcon size="meta" />
-          <span>{e().location}</span>
-        </div>
+      <Show when={props.notice} fallback={
+        <Show when={e().location}>
+          <div class="calendar-event-location-compact">
+            <LocationIcon size="meta" />
+            <span>{e().location}</span>
+          </div>
+        </Show>
+      }>
+        {props.notice}
       </Show>
       <Show when={props.showResponse && e().response_status}>
         <div class={`calendar-event-response ${e().response_status}`}>

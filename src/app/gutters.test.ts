@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { GoogleCalendarEvent } from "../api/tauri";
-import { dayGutters, gutterDay, gutterText, type Gutter } from "./gutters";
+import { calendarDayMarks, dayGutters, dayNoteText, firstStartOn, gutterDay, gutterText, spokenDuration, type Gutter } from "./gutters";
 
 const DAY = new Date(2026, 9, 1);
 const at = (h: number, m = 0, day = 1) => new Date(2026, 9, day, h, m).getTime();
@@ -104,23 +104,23 @@ describe("dayGutters", () => {
 describe("gutterText", () => {
   const gap = (start: number, end: number, ending = false): Gutter => ({ beforeIndex: 0, start, end, ending, nowAt: null });
 
-  it("names the free stretch and its length on the 12-hour clock", () => {
-    expect(gutterText(gap(at(12), at(15, 30)), at(9), "en-US")).toEqual({ line: "Free 12:00 – 3:30 PM", length: "3 h 30 m" });
-    expect(gutterText(gap(at(13), at(15)), at(9), "en-US")).toEqual({ line: "Free 1:00 – 3:00 PM", length: "2 h" });
+  it("names the free stretch and says its length on the 12-hour clock", () => {
+    expect(gutterText(gap(at(12), at(15, 30)), at(9), "en-US")).toEqual({ line: "Free 12:00 – 3:30 PM", length: "3 and a half hours" });
+    expect(gutterText(gap(at(13), at(15)), at(9), "en-US")).toEqual({ line: "Free 1:00 – 3:00 PM", length: "2 hours" });
   });
 
   it("gives each end its meridiem when the stretch crosses noon", () => {
-    expect(gutterText(gap(at(10, 30), at(12)), at(9), "en-US")).toEqual({ line: "Free 10:30 AM – 12:00 PM", length: "1 h 30 m" });
+    expect(gutterText(gap(at(10, 30), at(12)), at(9), "en-US")).toEqual({ line: "Free 10:30 AM – 12:00 PM", length: "an hour and a half" });
   });
 
   it("writes the 24-hour clock where the locale uses one", () => {
-    expect(gutterText(gap(at(9), at(12, 15)), at(8), "en-GB")).toEqual({ line: "Free 09:00 – 12:15", length: "3 h 15 m" });
+    expect(gutterText(gap(at(9), at(12, 15)), at(8), "en-GB")).toEqual({ line: "Free 09:00 – 12:15", length: "3 hours and 15 minutes" });
   });
 
   it("counts down to the end while now is inside", () => {
-    expect(gutterText(gap(at(12), at(15, 30)), at(13, 40), "en-US")).toEqual({ line: "Free until 3:30 PM", length: "1 h 50 m left" });
-    expect(gutterText(gap(at(12), at(15, 30)), at(14, 45), "en-US")).toEqual({ line: "Free until 3:30 PM", length: "45 m left" });
-    expect(gutterText(gap(at(12), at(15, 30)), at(15, 29) + 30_000, "en-US").length).toBe("1 m left");
+    expect(gutterText(gap(at(12), at(15, 30)), at(13, 40), "en-US")).toEqual({ line: "Free until 3:30 PM", length: "an hour and 50 minutes left" });
+    expect(gutterText(gap(at(12), at(15, 30)), at(14, 45), "en-US")).toEqual({ line: "Free until 3:30 PM", length: "45 minutes left" });
+    expect(gutterText(gap(at(12), at(15, 30)), at(15, 29) + 30_000, "en-US").length).toBe("a minute left");
     expect(gutterText(gap(at(12), at(15, 30)), at(15, 0), "en-GB").line).toBe("Free until 15:30");
   });
 
@@ -128,6 +128,130 @@ describe("gutterText", () => {
     expect(gutterText(gap(at(12), at(18), true), at(9), "en-US")).toEqual({ line: "Afternoon's free.", length: null });
     expect(gutterText(gap(at(14, 30), at(18), true), at(15), "en-US")).toEqual({ line: "Afternoon's free.", length: null });
     expect(gutterText(gap(at(11, 59), at(18), true), at(9), "en-US")).toEqual({ line: "Rest of the day's free.", length: null });
+  });
+});
+
+describe("spokenDuration", () => {
+  it("says a length the way you'd say it out loud, never 1h 20m", () => {
+    expect(spokenDuration(30)).toBe("half an hour");
+    expect(spokenDuration(60)).toBe("an hour");
+    expect(spokenDuration(80)).toBe("an hour and 20 minutes");
+    expect(spokenDuration(90)).toBe("an hour and a half");
+    expect(spokenDuration(120)).toBe("2 hours");
+    expect(spokenDuration(150)).toBe("2 and a half hours");
+    expect(spokenDuration(195)).toBe("3 hours and 15 minutes");
+    expect(spokenDuration(45)).toBe("45 minutes");
+  });
+
+  it("rounds to five minutes, but counts the last few one by one", () => {
+    expect(spokenDuration(83)).toBe("an hour and 25 minutes");
+    expect(spokenDuration(87)).toBe("an hour and 25 minutes");
+    expect(spokenDuration(88)).toBe("an hour and a half");
+    expect(spokenDuration(118)).toBe("2 hours");
+    expect(spokenDuration(4)).toBe("4 minutes");
+    expect(spokenDuration(1)).toBe("a minute");
+  });
+});
+
+describe("calendarDayMarks", () => {
+  const TOMORROW_8_30 = at(8, 30, 2);
+  const marks = (events: GoogleCalendarEvent[], now: number, tomorrowStart: number | null = TOMORROW_8_30, notices = true) =>
+    calendarDayMarks(events, DAY, now, { tomorrowStart, notices });
+  const notes = (events: GoogleCalendarEvent[], now: number, tomorrowStart?: number | null) =>
+    marks(events, now, tomorrowStart).notes.map(n => [n.beforeIndex, dayNoteText(n, "en-US")]);
+
+  it("keeps the day's gutters", () => {
+    expect(marks(THURSDAY, at(9)).gutters).toEqual(dayGutters(THURSDAY, DAY, at(9)));
+  });
+
+  it("names the first one of the morning above it while it is an hour or more away", () => {
+    expect(notes(THURSDAY, at(7, 45))).toEqual([[0, "First one at 9:30 AM"]]);
+    expect(notes(THURSDAY, at(8, 30))).toEqual([[0, "First one at 9:30 AM"]]);
+    expect(notes(THURSDAY, at(8, 31))).toEqual([]);
+  });
+
+  it("puts the first-one note above the first timed row, after the all-day ones", () => {
+    const holiday = ev("holiday", Date.UTC(2026, 9, 1), Date.UTC(2026, 9, 2), { all_day: true });
+    expect(notes([holiday, ...THURSDAY], at(7))).toEqual([[1, "First one at 9:30 AM"]]);
+  });
+
+  it("says nothing of the morning while an event from the night before still runs", () => {
+    const overnight = ev("flight", at(22, 0, 0), at(7, 30, 1));
+    expect(notes([overnight, ...THURSDAY], at(7))).toEqual([]);
+  });
+
+  it("says the last one is on while now is inside it", () => {
+    const evening = [...THURSDAY.slice(0, 2), ev("late", at(16), at(17, 30))];
+    expect(notes(evening, at(16, 10))).toEqual([[3, "Last one today"]]);
+    expect(notes(evening, at(15, 59))).toEqual([]);
+  });
+
+  it("leaves the last one to the gutter when the rest of the day is free after it", () => {
+    expect(notes(THURSDAY.slice(0, 2), at(11, 15))).toEqual([]);
+    expect(marks(THURSDAY.slice(0, 2), at(11, 15)).gutters.map(g => g.ending)).toEqual([true]);
+  });
+
+  it("says nothing else is on once the last is over, when no free gutter says so", () => {
+    const day = [ev("a", at(9), at(12)), ev("b", at(12), at(16, 45))];
+    expect(notes(day, at(16, 50))).toEqual([[2, "Nothing else today"]]);
+    expect(notes(THURSDAY.slice(0, 2), at(13))).toEqual([]);
+  });
+
+  it("closes the day from 5 PM and says when tomorrow starts, in place of the free afternoon", () => {
+    expect(notes(THURSDAY, at(17, 30))).toEqual([[4, "That's it for today. Tomorrow starts at 8:30 AM."]]);
+    expect(notes(THURSDAY.slice(0, 2), at(17))).toEqual([[2, "That's it for today. Tomorrow starts at 8:30 AM."]]);
+    expect(marks(THURSDAY.slice(0, 2), at(17)).gutters).toEqual([]);
+    expect(marks(THURSDAY.slice(0, 2), at(16, 59)).gutters.map(g => g.ending)).toEqual([true]);
+  });
+
+  it("closes the day without tomorrow when nothing is known of it", () => {
+    expect(notes(THURSDAY, at(19), null)).toEqual([[4, "That's it for today."]]);
+  });
+
+  it("waits for an evening event before closing the day", () => {
+    const evening = [...THURSDAY, ev("dinner", at(19), at(21))];
+    expect(notes(evening, at(18))).toEqual([]);
+    expect(notes(evening, at(21, 5))).toEqual([[5, "That's it for today. Tomorrow starts at 8:30 AM."]]);
+  });
+
+  it("notes nothing on a day with nothing timed, or on a day other than today", () => {
+    expect(notes([], at(18))).toEqual([]);
+    expect(calendarDayMarks(THURSDAY, DAY, at(7, 0, 0), { tomorrowStart: null, notices: true }).notes).toEqual([]);
+    expect(calendarDayMarks(THURSDAY, DAY, at(19, 0, 0), { tomorrowStart: null, notices: true }).notes).toEqual([]);
+  });
+
+  it("counts declined and cancelled events as not on", () => {
+    const day = [...THURSDAY.slice(0, 2), ev("skipped", at(16), at(17), { response_status: "declined" })];
+    expect(notes(day, at(17, 10))).toEqual([[3, "That's it for today. Tomorrow starts at 8:30 AM."]]);
+  });
+
+  it("notes nothing, and keeps the free afternoon, while noticing is off", () => {
+    const off = marks(THURSDAY.slice(0, 2), at(17), TOMORROW_8_30, false);
+    expect(off.notes).toEqual([]);
+    expect(off.gutters.map(g => g.ending)).toEqual([true]);
+    expect(marks(THURSDAY, at(7), null, false).notes).toEqual([]);
+  });
+
+  it("writes the 24-hour clock where the locale uses one", () => {
+    const [note] = marks(THURSDAY, at(7)).notes;
+    expect(dayNoteText(note, "en-GB")).toBe("First one at 09:30");
+  });
+});
+
+describe("firstStartOn", () => {
+  it("is when the day's first timed event that is on starts", () => {
+    const friday = [
+      ev("holiday", Date.UTC(2026, 9, 2), Date.UTC(2026, 9, 3), { all_day: true }),
+      ev("skip", at(7, 0, 2), at(8, 0, 2), { response_status: "declined" }),
+      ev("later", at(10, 0, 2), at(11, 0, 2)),
+      ev("first", at(8, 30, 2), at(9, 0, 2)),
+      ev("today", at(9), at(10)),
+    ];
+    expect(firstStartOn(friday, new Date(2026, 9, 2))).toBe(at(8, 30, 2));
+  });
+
+  it("is null for a day with nothing timed on it", () => {
+    expect(firstStartOn([ev("today", at(9), at(10))], new Date(2026, 9, 2))).toBeNull();
   });
 });
 

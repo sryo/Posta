@@ -97,7 +97,6 @@ import {
   addForwardPrefix,
   buildForwardBody,
   smoothScroll,
-  toDateInputString,
 } from "./utils";
 import "./App.css";
 import {
@@ -136,6 +135,9 @@ import { createInviteDayLookups, rangeDaysFor, type DayEvents } from "./app/invi
 import type { DayBusy } from "./app/dayTimeline";
 import { isHappeningNow, isNowGroup, withNowSection } from "./app/nowSection";
 import { deletePrompt, eventActions, meetingOver } from "./app/eventActions";
+import { createEventDrag } from "./app/eventDrag";
+import { gutterMoveStart, moveInput, moveRefusal, moveToastText, moveVerdict, movedTo, sameTimeOn } from "./app/eventMove";
+import { EventDragGhost, MoveVerdict } from "./components/EventMove";
 import { defaultCalendarId, lastUsedCalendar, rememberCalendar } from "./app/eventCalendars";
 import { deletedByScope, type RecurrenceScope } from "./app/recurrence";
 import { ThreadView } from "./components/ThreadView";
@@ -180,7 +182,9 @@ import { isPreviewable, readFilesAsAttachments, visibleAttachments } from "./app
 import { AttachmentLightbox, type PreviewAttachment } from "./components/AttachmentLightbox";
 import { MessageSender } from "./components/MessageSender";
 import { isForwardSubject } from "./app/quotedHistory";
-import { eventAttendees, eventFromThread, eventTimesFromForm, smartEventDefaults } from "./app/eventForm";
+import { editFormFor, eventAttendees, eventFromThread, eventTimesFromForm, smartEventDefaults } from "./app/eventForm";
+import { aloneAt, cancelPrompt, guestsOf } from "./app/attendance";
+import { AloneNotice } from "./components/AloneNotice";
 import { guestList, rankEventSuggestions, type EventSuggestion } from "./app/eventSuggestions";
 import { composePlacement, panelBesideView } from "./app/composePlacement";
 import { cidImagesToFetch, createLruCache, fetchCidImages } from "./app/cidImages";
@@ -191,8 +195,9 @@ import { batchReplyLoadErrorMessage, cardLoadErrorMessage, isOfflineError, query
 import { cardSyncStatus, cardWaitingMessage, connectionStatus } from "./app/connectionStatus";
 import { CardEmpty, CardSkeleton, ConnectionStatusBar, PostmarkDefs, type NoMatch } from "./components/CardStates";
 import { createPostmarkLedger } from "./app/postmark";
-import { dayGutters, gutterDay, type Gutter } from "./app/gutters";
-import { CalendarGutter } from "./components/CalendarGutter";
+import { calendarDayMarks, firstStartOn, gutterDay, type DayNote, type Gutter } from "./app/gutters";
+import { noticesEnabled } from "./app/notices";
+import { CalendarDayNote, CalendarGutter } from "./components/CalendarGutter";
 import { cardTypeForQuery } from "./app/cardType";
 import { SEARCH_CARD_ID, forgetSearch, isSearchCard, keptCardName, parseRecentSearches, rememberSearch, searchCard as searchCardFor } from "./app/quickSearch";
 import { discardThreadDrafts, draftToOpen, isDraftThread, prepareDraftCompose, withDraftsDiscarded, type DraftToOpen } from "./app/draftThreads";
@@ -962,6 +967,8 @@ function App() {
     error: string | null;
     editing: { id: string; calendarId: string; accountId: string } | null;
     closing: boolean;
+    // Editing opened to reschedule, on the start time
+    focusTime?: boolean;
   }
 
   const defaultEventForm = (): EventFormState => {
@@ -1749,6 +1756,21 @@ function App() {
         saveEditCard();
       }
       return;
+    }
+
+    // ⌥↓ and ⌥↑ move the focused event a day on or back, at the same time
+    if (e.altKey && !e.metaKey && !e.ctrlKey && (e.key === 'ArrowDown' || e.key === 'ArrowUp')) {
+      const event = getFocusedEvent();
+      const cardId = focusedCardId();
+      if (event && cardId) {
+        e.preventDefault();
+        const day = new Date(event.start_time);
+        day.setDate(day.getDate() + (e.key === 'ArrowDown' ? 1 : -1));
+        moveEventTo(event, cardId, sameTimeOn(event, day));
+        const index = getCardEventsFlat(cardId).findIndex(ev => ev.id === event.id);
+        if (index >= 0) focusCardItem(cardId, index);
+        return;
+      }
     }
 
     // Everything below is a bare-key shortcut; Cmd/Ctrl/Alt combos (Cmd+A
@@ -3343,6 +3365,87 @@ function App() {
     });
   }
 
+  // Events moved in the app whose new time waits out their Undo toast
+  const heldEventMoves = new Map<string, { start_time: number; end_time: number }>();
+  const listedEvents = () => Object.values(cardCalendarEvents).flatMap(events => events ?? []);
+
+  // Moves the event in every card at once and tells Google, and so the
+  // guests, once the toast has gone without Undo
+  function moveEventTo(event: GoogleCalendarEvent, cardId: string, start: number) {
+    const account = eventOwner(event, cardId);
+    if (!account) return;
+    const refusal = moveRefusal(event, account.email);
+    if (refusal) { showToast(refusal); return; }
+    const before = { start_time: event.start_time, end_time: event.end_time };
+    const moved = movedTo(event, start);
+    const { clash } = moveVerdict(event, start, listedEvents());
+    // A later move of the same event holds its own time, which an earlier
+    // one's write or failure must leave alone
+    const latest = () => heldEventMoves.get(event.id) === moved;
+    const putBack = () => {
+      heldEventMoves.delete(event.id);
+      updateEventInCards(event.id, ev => ({ ...ev, ...before }));
+    };
+    heldEventMoves.set(event.id, moved);
+    updateEventInCards(event.id, ev => ({ ...ev, ...moved }));
+    toasts.show({
+      message: inAccount(moveToastText(event, start, account.email, clash), [account.email], accounts().length),
+      tag: accountToastTag(account.id),
+      undo: putBack,
+      onExpire: async () => {
+        try {
+          const updated = await updateCalendarEvent(account.id, event.calendar_id, event.id, moveInput(event, start), "this");
+          if (!latest()) return;
+          heldEventMoves.delete(event.id);
+          updateEventInCards(event.id, () => updated);
+          cards().forEach(card => {
+            if (isCalendarCard(card.id) && cardCoversAccount(card, account.id)) fetchAndCacheCalendarEvents(card.id, card.query);
+          });
+        } catch (e) {
+          console.error("Failed to move event:", e);
+          if (latest()) putBack();
+          showFailure("Couldn't move the event", e);
+        }
+      },
+    });
+  }
+
+  const eventDrag = createEventDrag({
+    verdict: (event, start) => moveVerdict(event, start, listedEvents()),
+    refusal: (event, cardId) => moveRefusal(event, eventOwner(event, cardId)?.email ?? ""),
+    onDrop: moveEventTo,
+  });
+
+  // From a row whose guests all declined: open the event's edit on its time
+  function rescheduleEvent(event: GoogleCalendarEvent, cardId: string) {
+    openEvent(event, cardId);
+    setEventForm(f => ({ ...f, ...editFormFor(event, eventOwner(event, cardId)?.id ?? ""), focusTime: true }));
+  }
+
+  // Calls off this occurrence for everyone, which Google tells the guests
+  async function cancelEvent(event: GoogleCalendarEvent, cardId: string) {
+    const account = eventOwner(event, cardId);
+    if (!account || !(await askConfirm(cancelPrompt(guestsOf(event, account.email).length)))) return;
+    deleteEvent(event, "this", undefined, cardId);
+  }
+
+  function aloneNotice(event: GoogleCalendarEvent, cardId: string) {
+    if (!noticesEnabled()) return undefined;
+    const email = eventOwner(event, cardId)?.email ?? "";
+    const alone = aloneAt(event, email, minuteNow());
+    if (!alone) return undefined;
+    const can = eventActions(event, email);
+    const organizer = alone.role === "organizer";
+    return (
+      <AloneNotice
+        alone={alone}
+        title={event.title || "(No title)"}
+        onReschedule={organizer && can.edit ? () => rescheduleEvent(event, cardId) : undefined}
+        onCancel={organizer && can.delete ? () => cancelEvent(event, cardId) : undefined}
+      />
+    );
+  }
+
   async function handleMoveEventToCalendar(destinationCalendarId: string) {
     const event = activeEvent();
     const account = activeEventAccount();
@@ -4168,7 +4271,9 @@ function App() {
     if (!card) return;
     const fetched = fetchedFor(card);
     try {
-      const events = (await fetchCalendarEvents(card.account_id, query)).filter(ev => !heldEventDeletes.has(ev.id));
+      const events = (await fetchCalendarEvents(card.account_id, query))
+        .filter(ev => !heldEventDeletes.has(ev.id))
+        .map(ev => (heldEventMoves.has(ev.id) ? { ...ev, ...heldEventMoves.get(ev.id) } : ev));
       if (cardQueryChanged(cardId, fetched)) return;
       setCardCalendarEvents(cardId, reconcile(events, { key: "id" }));
       if (!isSearchCard(cardId)) await saveCachedCardEvents(cardId, events);
@@ -4367,15 +4472,18 @@ function App() {
     return groups;
   }
 
-  // A today or tomorrow card's free stretches in its own day's group; none
-  // while the board's filter hides rows, which would open false gaps
-  function calendarGutters(cardId: string, group: CalendarEventGroup): Gutter[] {
+  // A today or tomorrow card's free stretches and notes in its own day's
+  // group; none while the board's filter hides rows, which would open false gaps
+  function calendarDayMarksFor(cardId: string, group: CalendarEventGroup): { gutters: Gutter[]; notes: DayNote[] } {
+    const none = { gutters: [], notes: [] };
     const query = isPreviewingQuery(cardId) ? editCardQuery() : cardById(cardId)?.query ?? "";
     const now = minuteNow();
     const day = gutterDay(query, new Date(now));
-    if (!day || group.label !== formatDayLabel(day, new Date(today()))) return [];
-    if (globalFilter().trim() && filterHides() && !isSearchCard(cardId)) return [];
-    return dayGutters(group.events, day, now);
+    if (!day || group.label !== formatDayLabel(day, new Date(today()))) return none;
+    if (globalFilter().trim() && filterHides() && !isSearchCard(cardId)) return none;
+    const tomorrow = new Date(day.getFullYear(), day.getMonth(), day.getDate() + 1);
+    const tomorrowStart = firstStartOn(Object.values(cardCalendarEvents).flatMap(events => events ?? []), tomorrow);
+    return calendarDayMarks(group.events, day, now, { tomorrowStart, notices: noticesEnabled() });
   }
 
   function computeCalendarEventGroups(cardId: string): CalendarEventGroup[] {
@@ -5345,19 +5453,34 @@ function App() {
                             </Show>
                             <Index each={getCalendarEventGroups(card.id)}>
                               {(group) => {
-                                const gutters = createMemo(() => calendarGutters(card.id, group()));
-                                const gutterAbove = (index: number) => gutters().find(g => g.beforeIndex === index);
+                                const marks = createMemo(() => calendarDayMarksFor(card.id, group()));
+                                const gutterAbove = (index: number) => marks().gutters.find(g => g.beforeIndex === index);
+                                const noteAbove = (index: number) => marks().notes.find(n => n.beforeIndex === index);
+                                const headingVerdict = () => (group().day === undefined ? null : eventDrag.verdictAt(`day:${group().day}`));
+                                const gutterTarget = (gutter: Gutter) => `at:${gutterMoveStart(gutter, minuteNow())}`;
                                 return (
                                 <>
-                                  <div class="date-header">{group().label}</div>
+                                  <div
+                                    class="date-header"
+                                    classList={{ "move-over": !!headingVerdict() }}
+                                    data-move-target={group().day === undefined ? undefined : `day:${group().day}`}
+                                  >
+                                    {group().label}
+                                    <Show when={headingVerdict()}>{(verdict) => <MoveVerdict verdict={verdict()} />}</Show>
+                                  </div>
                                   <For each={group().events}>
                                     {(event, index) => (
                                       <>
                                       <Show when={gutterAbove(index())}>
-                                        {(gutter) => <CalendarGutter gutter={gutter()} now={minuteNow()} />}
+                                        {(gutter) => <CalendarGutter gutter={gutter()} now={minuteNow()} moveTarget={gutterTarget(gutter())} verdict={eventDrag.verdictAt(gutterTarget(gutter()))} />}
+                                      </Show>
+                                      <Show when={noteAbove(index())}>
+                                        {(note) => <CalendarDayNote note={note()} />}
                                       </Show>
                                       <div
                                         class={`calendar-event-item ${fadedBySearch(card.id, event.id) ? "faded" : ""} ${event.response_status === "declined" ? "declined" : ""} ${selectedEvents()[card.id]?.has(event.id) ? "selected" : ""} ${isEventFocused(card.id, event.id) ? "focused" : ""} ${isQuickReplyEvent(event.id) ? "replying" : ""}`}
+                                        classList={{ "drag-source": eventDrag.isDragged(event.id, card.id) }}
+                                        onPointerDown={(e) => eventDrag.press(e, event, card.id)}
                                         onClick={() => openEvent(event, card.id)}
                                         onMouseEnter={(e) => showEventHoverActions(card.id, event.id, e)}
                                         onMouseLeave={(e) => hideEventHoverActions(card.id, event.id, e)}
@@ -5368,6 +5491,7 @@ function App() {
                                           event={event}
                                           time={getSmartEventTime(event, currentTime())}
                                           showResponse={eventActions(event, eventOwner(event, card.id)?.email ?? '').rsvp}
+                                          notice={aloneNotice(event, card.id)}
                                         >
                                           <Show when={event.hangout_link && !meetingOver(event, minuteNow())}>
                                             <button
@@ -5448,7 +5572,10 @@ function App() {
                                     )}
                                   </For>
                                   <Show when={gutterAbove(group().events.length)}>
-                                    {(gutter) => <CalendarGutter gutter={gutter()} now={minuteNow()} />}
+                                    {(gutter) => <CalendarGutter gutter={gutter()} now={minuteNow()} moveTarget={gutterTarget(gutter())} verdict={eventDrag.verdictAt(gutterTarget(gutter()))} />}
+                                  </Show>
+                                  <Show when={noteAbove(group().events.length)}>
+                                    {(note) => <CalendarDayNote note={note()} />}
                                   </Show>
                                 </>
                                 );
@@ -6047,35 +6174,7 @@ function App() {
           onEdit={() => {
             const event = activeEvent();
             if (!event) return;
-            // Pre-fill the event form with current event data
-            const startDate = new Date(event.start_time);
-            let endDateVal = event.end_time ? new Date(event.end_time) : startDate;
-            // All-day end_time is Google's exclusive end (day after the last
-            // day); the form's endDate is inclusive, so step back one day
-            if (event.all_day && event.end_time) {
-              endDateVal = new Date(endDateVal.getTime() - 86400000);
-            }
-            // All-day timestamps are UTC-anchored; their local rendering is a
-            // time the user never chose (e.g. 17:00 in UTC-7), which would be
-            // saved verbatim if "All day" gets unchecked. Prefill smart
-            // defaults instead.
-            const timeDefaults = smartEventDefaults();
-            setEventForm(f => ({
-              ...f,
-              summary: event.title || '',
-              description: event.description || '',
-              location: event.location || '',
-              startDate: toDateInputString(startDate, event.all_day),
-              startTime: event.all_day ? timeDefaults.startTime : startDate.toTimeString().slice(0, 5),
-              endDate: toDateInputString(endDateVal, event.all_day),
-              endTime: event.all_day ? timeDefaults.endTime : endDateVal.toTimeString().slice(0, 5),
-              allDay: event.all_day,
-              attendees: event.attendees.map(a => a.email).join(', '),
-              // Cards list single occurrences; a null rule leaves a series' recurrence alone
-              recurrence: null,
-              addMeet: false,
-              editing: { id: event.id, calendarId: event.calendar_id, accountId: activeEventAccountId() ?? "" },
-            }));
+            setEventForm(f => ({ ...f, ...editFormFor(event, activeEventAccountId() ?? ""), focusTime: false }));
           }}
           onDelete={(scope) => { const event = activeEvent(); if (event) deleteEvent(event, scope, undefined, activeEventCardId()); }}
           onOpenCalendars={() => { fetchAvailableCalendars(activeEventAccountId() ?? undefined); setCalendarDrawerOpen(true); }}
@@ -6115,6 +6214,7 @@ function App() {
             addMeet: eventForm().addMeet,
             setAddMeet: (v: boolean) => setEventForm(f => ({ ...f, addMeet: v })),
             hasMeet: !!activeEvent()!.hangout_link,
+            focusTime: eventForm().focusTime,
             saving: eventForm().saving,
             onSave: handleCreateEvent,
             onClose: () => setEventForm(defaultEventForm()),
@@ -6360,6 +6460,7 @@ function App() {
               <div class="shortcut-row"><KeyHint keys="i" look="key" /> <span>Toggle important</span></div>
               <div class="shortcut-row"><KeyHint keys="!" look="key" /> <span>Report spam</span></div>
               <div class="shortcut-row"><KeyHint keys="y ⇧M n" look="key" /> <span>Answer a focused invite: Going, Maybe, Not going</span></div>
+              <div class="shortcut-row"><KeyHint keys="⌥↓ ⌥↑" look="key" /> <span>Move a focused event a day on or back</span></div>
               <div class="shortcut-row"><KeyHint keys="z" look="key" /> <span>Undo last action</span></div>
             </div>
             <div class="shortcuts-section">
@@ -6486,6 +6587,9 @@ function App() {
 
       <ConfirmDialog />
       <ScopePrompt />
+      <Show when={eventDrag.dragged()}>
+        {(dragged) => <EventDragGhost dragged={dragged()} time={getSmartEventTime(dragged().event, currentTime())} />}
+      </Show>
       <Show when={attachmentPreview()}>
         {(preview) => (
           <AttachmentLightbox
