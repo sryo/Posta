@@ -2,6 +2,7 @@ import { createEffect, createSignal, onCleanup, onMount, Show } from "solid-js";
 import { formatFileSize, normalizeBase64Url } from "../utils";
 import { CloseButton } from "./ComposeAtoms";
 import { ChevronLeftIcon, ChevronRightIcon } from "./Icons";
+import type { LaterNote } from "./Attachments";
 
 export type PreviewAttachment = {
   messageId: string;
@@ -31,6 +32,8 @@ export const AttachmentLightbox = (props: {
   loadData: (item: PreviewAttachment) => Promise<string>;
   onDownload: (item: PreviewAttachment) => void;
   onOpenExternally: (item: PreviewAttachment) => void;
+  // A newer file of the same series as the one shown
+  laterVersion?: (item: PreviewAttachment) => LaterNote | null;
 }) => {
   const current = () => props.items[props.index];
   const [shown, setShown] = createSignal<Shown>({ kind: "loading" });
@@ -144,6 +147,14 @@ export const AttachmentLightbox = (props: {
               </button>
             </Show>
           </div>
+          <Show when={props.laterVersion?.(item())}>
+            {(note) => (
+              <div class="lightbox-footer">
+                <span>{note().text}</span>
+                <button class="btn btn-sm" onClick={() => note().open()}>{note().action}</button>
+              </div>
+            )}
+          </Show>
         </div>
       )}
     </Show>

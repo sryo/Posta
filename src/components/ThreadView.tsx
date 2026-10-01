@@ -9,7 +9,7 @@ import { sendReaction, type FullThread, type FullMessage, type Attachment, type 
 import type { RsvpStatus } from "../app/rsvp";
 import type { StripLayout } from "../app/dayStrip";
 import { isCalendarAttachment, isPreviewable, visibleAttachments } from "../app/attachments";
-import { AttachmentList } from "./Attachments";
+import { AttachmentList, type LaterNote } from "./Attachments";
 import { InviteBlock } from "./InviteBlock";
 import { createCloseAfterAnimation } from "../shared/closeAfterAnimation";
 import { createRowMotion, SHRINK_MS } from "../shared/rowMotion";
@@ -149,6 +149,8 @@ export const ThreadView = (props: {
   closeRef?: (close: (then?: () => void) => void) => void,
   // Inline replies sent from this thread that it doesn't hold yet
   sentReplies?: SentReply[],
+  // A newer file of an attachment's series, in another thread
+  laterVersion?: (attachment: Attachment, message: FullMessage) => LaterNote | null,
 }) => {
   let messageRefs: (HTMLDivElement | undefined)[] = [];
   let contentRef: HTMLDivElement | undefined;
@@ -764,6 +766,7 @@ export const ThreadView = (props: {
                         size="detail"
                         attachments={attachments()}
                         loadPreview={props.loadAttachmentPreview}
+                        laterVersion={(att) => props.laterVersion?.(att, msg) ?? null}
                         onOpen={(att) => {
                           const index = previewItems().findIndex(p =>
                             p.messageId === msg.id && p.filename === att.filename && p.attachmentId === att.attachment_id);

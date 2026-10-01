@@ -772,6 +772,14 @@ describe("ThreadView attachments", () => {
     fireEvent.keyDown(thumb, { key: "F10", shiftKey: true });
     expect(props.onShowAttachmentMenu).toHaveBeenCalledWith(expect.objectContaining({ filename: "plan.pdf", attachmentId: "a1" }));
   });
+
+  it("says under an attachment that a later version came, asking with the message that carries it", () => {
+    const laterVersion = vi.fn((a: { filename: string }, msg: { id: string }) => ({ text: `Ana sent v2 of ${a.filename} after ${msg.id}.`, action: "Open v2", open: vi.fn() }));
+    const { container } = renderThread({ thread: withFiles(), laterVersion });
+    const note = container.querySelector(".attachment-later")!;
+    expect(note).toHaveTextContent(/^Ana sent v2 of plan\.pdf after m\d\. Open v2$/);
+    expect(note.closest(".attachment-noted")?.querySelector(".attachment")).toHaveAttribute("aria-label", "plan.pdf, 2.0 KB");
+  });
 });
 
 describe("ThreadView scrolling", () => {

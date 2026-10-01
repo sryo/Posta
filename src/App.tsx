@@ -159,6 +159,9 @@ import { safeGetItem, safeSetItem, safeRemoveItem, safeGetJSON, safeSetJSON } fr
 import { BOARD_COLORS, type ActionSettings, type CardColor, type GroupBy } from "./shared/constants";
 import { createUndoableSend } from "./app/undoableSend";
 import { createSentReplies } from "./app/sentReplies";
+import { createLaterVersions, laterVersionLine } from "./app/laterVersion";
+import { noticesEnabled } from "./app/notices";
+import type { LaterNote } from "./components/Attachments";
 import type { SentReply } from "./components/types";
 import { findHeader, lastMessageFromOthers, messageDate } from "./app/messages";
 import { lastLetterLine, latestDate } from "./app/transit";
@@ -4527,6 +4530,19 @@ function App() {
   // The attachments the lightbox steps through, all of one account's mail
   const [attachmentPreview, setAttachmentPreview] = createSignal<{ accountId: string; items: PreviewAttachment[]; index: number } | null>(null);
 
+  // A newer file of an open thread's attachment, in another loaded thread
+  const laterVersion = createLaterVersions({
+    pool: () => cards().flatMap(c => (isCalendarCard(c.id) ? [] : getCardThreadsFlat(c.id).map(thread => ({ thread, cardId: c.id })))),
+    fetchThread: getThreadDetails,
+  });
+  function laterVersionNote(messageId: string, filename: string): LaterNote | null {
+    const thread = activeThread();
+    const accountId = activeThreadAccountId();
+    const later = noticesEnabled() && thread && accountId ? laterVersion(thread, accountId, messageId, filename) : null;
+    if (!later) return null;
+    return { ...laterVersionLine(later), open: () => { setAttachmentPreview(null); openThread(later.threadId, later.cardId); } };
+  }
+
   // Images and PDFs open in the lightbox, with the row's others to step through
   function openCardAttachment(accountId: string, attachments: Attachment[], attachment: Attachment) {
     const previewable = attachments.filter(a => isPreviewable(a.mime_type));
@@ -6016,6 +6032,7 @@ function App() {
           inlineCompose={composeShownIn() === "thread" ? threadInlineCompose : null}
           threadAttachments={activeListedThread()?.attachments}
           sentReplies={activeSentReplies()}
+          laterVersion={(attachment, message) => laterVersionNote(message.id, attachment.filename)}
           loadAttachmentPreview={(attachment) => thumbnails.preview(activeThreadAccount()?.id ?? "", attachment.message_id, attachment.attachment_id)}
           invite={(() => {
             const listed = activeListedThread();
@@ -6584,6 +6601,7 @@ function App() {
             loadData={loadPreviewData}
             onDownload={(item) => downloadAttachment(preview().accountId, item.messageId, item.attachmentId, item.filename, item.mimeType, item.inlineData)}
             onOpenExternally={(item) => openAttachment(preview().accountId, item.messageId, item.attachmentId, item.filename, item.mimeType, item.inlineData)}
+            laterVersion={(item) => laterVersionNote(item.messageId, item.filename)}
           />
         )}
       </Show>

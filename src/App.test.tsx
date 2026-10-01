@@ -70,6 +70,7 @@ vi.mock("./app/contacts", async (importOriginal) => {
 
 import App from "./App";
 import { setInputMode } from "./app/inputMode";
+import { setNoticesEnabled } from "./app/notices";
 import type { Account, Card, Thread } from "./api/tauri";
 import { ICLOUD_RESTORE_DELAYS_MS } from "./app/icloudRestore";
 
@@ -6223,5 +6224,55 @@ describe("App quick search", () => {
 
     expect(screen.queryByRole("button", { name: "from:ana" })).toBeNull();
     expect(JSON.parse(localStorage.getItem("recentSearches") ?? "[]")).toEqual([]);
+  });
+});
+
+describe("App later version of a file", () => {
+  const SEP_19 = new Date(2026, 8, 19, 11, 40).getTime();
+  const SEP_28 = new Date(2026, 8, 28, 9, 0).getTime();
+  const MARTIN = "Martín Ibarra <martin@ibarra-arq.com>";
+  const listedFile = (messageId: string, filename: string) =>
+    ({ message_id: messageId, attachment_id: `x-${messageId}`, filename, mime_type: "application/pdf", size: 412000, inline_data: null, content_id: null });
+
+  beforeEach(() => {
+    threadsByCard["card-a"] = [
+      { ...thread("t-a", "Presupuesto obra"), participants: [MARTIN], has_attachment: true, last_message_date: SEP_19, attachments: [listedFile("m1", "Presupuesto_obra_v2.pdf")] },
+      { ...thread("t-2", "Obra Belgrano: ajustes"), participants: [MARTIN], has_attachment: true, last_message_date: SEP_28, attachments: [listedFile("m5", "Presupuesto_obra_v3.pdf")] },
+    ];
+    handlers.get_thread_details = ({ threadId }) => threadId === "t-a"
+      ? {
+        id: "t-a",
+        messages: [fullMessage("m1", MARTIN, {
+          internalDate: String(SEP_19),
+          payload: {
+            mimeType: "multipart/mixed",
+            headers: [{ name: "From", value: MARTIN }, { name: "To", value: "a@x.com" }, { name: "Subject", value: "Presupuesto obra" }],
+            parts: [
+              { mimeType: "text/plain", body: { size: 4, data: "SGkh" } },
+              { mimeType: "application/pdf", filename: "Presupuesto_obra_v2.pdf", body: { attachmentId: "x-m1", size: 412000 } },
+            ],
+          },
+        })],
+      }
+      : { id: "t-2", messages: [fullMessage("m5", MARTIN, { threadId: "t-2", internalDate: String(SEP_28), payload: { mimeType: "text/plain", headers: [{ name: "From", value: MARTIN }, { name: "Subject", value: "Obra Belgrano: ajustes" }], body: { size: 0 } } })] };
+  });
+  afterEach(() => setNoticesEnabled(true));
+
+  it("says under an attachment that the same person sent a later version in another thread, and opens it", async () => {
+    render(() => <App />);
+    fireEvent.click(await screen.findByText("Presupuesto obra"));
+    expect(await screen.findByText("Martín sent v3 on Sep 28, in “Obra Belgrano: ajustes”.")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Open v3" }));
+    expect(await screen.findByRole("dialog", { name: "Obra Belgrano: ajustes" })).toBeInTheDocument();
+  });
+
+  it("says nothing of it with noticing turned off", async () => {
+    setNoticesEnabled(false);
+    render(() => <App />);
+    fireEvent.click(await screen.findByText("Presupuesto obra"));
+    await screen.findByRole("button", { name: /Presupuesto_obra_v2\.pdf/ });
+    await new Promise(r => setTimeout(r, 200));
+    expect(screen.queryByText(/sent v3/)).toBeNull();
+    expect(invoke).not.toHaveBeenCalledWith("get_thread_details", expect.objectContaining({ threadId: "t-2" }));
   });
 });

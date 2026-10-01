@@ -144,4 +144,22 @@ describe("AttachmentList duplicates", () => {
     const { container } = render(() => <AttachmentList attachments={again} onOpen={vi.fn()} onMenu={vi.fn()} />);
     expect(container.querySelectorAll(".attachment")).toHaveLength(3);
   });
+
+  it("says under an opened message's attachment that a later version came, with a way to open it", () => {
+    const open = vi.fn();
+    render(() => (
+      <AttachmentList
+        size="detail"
+        attachments={files}
+        onOpen={vi.fn()}
+        onMenu={vi.fn()}
+        laterVersion={(a) => (a.filename === "layout.pdf" ? { text: "Martín sent v3 on Sep 28, in “Obra”.", action: "Open v3", open } : null)}
+      />
+    ));
+    const note = screen.getByText("Martín sent v3 on Sep 28, in “Obra”.");
+    expect(note.closest(".attachment-noted")?.querySelector(".attachment")).toBe(screen.getByRole("button", { name: /layout.pdf/ }));
+    expect(screen.getByRole("button", { name: /hotel.png/ }).closest(".attachment-noted")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Open v3" }));
+    expect(open).toHaveBeenCalledTimes(1);
+  });
 });
