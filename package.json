@@ -1,6 +1,6 @@
 {
   "name": "posta",
-  "version": "2026.9.29",
+  "version": "2026.9.30",
   "description": "A card-based Gmail and Google Calendar client",
   "type": "module",
   "scripts": {
