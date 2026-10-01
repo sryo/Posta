@@ -202,7 +202,17 @@ export function applyThreadAction(
   action: string,
   removeFromCard: boolean,
 ): ThreadGroup[] {
-  const { add, remove } = labelChangeFor(action);
+  return applyLabelChange(groups, threadIds, labelChangeFor(action), removeFromCard);
+}
+
+// The card's groups once a label change has succeeded; UNREAD is the
+// thread's unread count
+export function applyLabelChange(
+  groups: ThreadGroup[],
+  threadIds: string[],
+  { add, remove }: LabelChange,
+  removeFromCard: boolean,
+): ThreadGroup[] {
   const targeted = new Set(threadIds);
   return groups.map(group => ({
     ...group,
@@ -212,8 +222,8 @@ export function applyThreadAction(
         if (!targeted.has(t.gmail_thread_id)) return t;
         const labels = [...t.labels.filter(l => !remove.includes(l)), ...add.filter(l => !t.labels.includes(l))];
         let unread = t.unread_count;
-        if (action === "read") unread = 0;
-        if (action === "unread" && unread === 0) unread = 1;
+        if (remove.includes("UNREAD")) unread = 0;
+        if (add.includes("UNREAD") && unread === 0) unread = 1;
         return { ...t, labels, unread_count: unread };
       }),
   }));
@@ -252,4 +262,12 @@ export function backInPlace(groups: ThreadGroup[], threadId: string, cardName: s
   if (index === -1) return "";
   const n = index + 1;
   return ` · back ${n}${SUFFIX[ORDINAL.select(n)]} in ${cardName}`;
+}
+
+// Whether a label change takes a thread out of a card with this query: one
+// that leaves the Inbox goes from inbox cards, as archiving does, and one
+// put in the trash or spam from every card
+export function changeRemovesFromCard(change: LabelChange, cardQuery: string): boolean {
+  if (change.add.includes("TRASH") || change.add.includes("SPAM")) return true;
+  return change.remove.includes("INBOX") && actionRemovesFromCard("archive", cardQuery);
 }

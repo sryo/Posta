@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { Thread, ThreadGroup } from "../api/tauri";
-import { actionFailureMessage, actionMessage, actionRemovesFromCard, actionUndoneMessage, backInPlace, undoFailureMessage, labelChangeMessage, restoreThreads, applyThreadAction, labelChangeFor, threadMayJoinCard, undoLabelChanges } from "./threadActions";
+import { actionFailureMessage, actionMessage, actionRemovesFromCard, actionUndoneMessage, applyLabelChange, backInPlace, changeRemovesFromCard, undoFailureMessage, labelChangeMessage, restoreThreads, applyThreadAction, labelChangeFor, threadMayJoinCard, undoLabelChanges } from "./threadActions";
 
 const thread = (id: string, labels: string[], unread = 0): Thread => ({
   gmail_thread_id: id, account_id: "a", subject: id, snippet: "", last_message_date: 0,
@@ -249,5 +249,40 @@ describe("backInPlace", () => {
 
   it("says nothing of a thread the card doesn't show", () => {
     expect(backInPlace(groups(thread("a", [])), "z", "Inbox")).toBe("");
+  });
+});
+
+describe("applyLabelChange", () => {
+  const groups: ThreadGroup[] = [{ label: "Today", threads: [
+    { gmail_thread_id: "a", account_id: "x", subject: "", snippet: "", last_message_date: 0, unread_count: 0, labels: ["INBOX"], participants: [], has_attachment: false, attachments: [], calendar_event: null },
+    { gmail_thread_id: "b", account_id: "x", subject: "", snippet: "", last_message_date: 0, unread_count: 2, labels: ["INBOX"], participants: [], has_attachment: false, attachments: [], calendar_event: null },
+  ] }];
+
+  it("adds and removes labels on the threads it names", () => {
+    const [group] = applyLabelChange(groups, ["a"], { add: ["Label_1"], remove: ["INBOX"] }, false);
+    expect(group.threads[0].labels).toEqual(["Label_1"]);
+    expect(group.threads[1].labels).toEqual(["INBOX"]);
+  });
+
+  it("takes them out of the card when asked", () => {
+    const [group] = applyLabelChange(groups, ["a"], { add: ["Label_1"], remove: ["INBOX"] }, true);
+    expect(group.threads.map(t => t.gmail_thread_id)).toEqual(["b"]);
+  });
+
+  it("reads UNREAD as the unread count", () => {
+    expect(applyLabelChange(groups, ["a"], { add: ["UNREAD"], remove: [] }, false)[0].threads[0].unread_count).toBe(1);
+    expect(applyLabelChange(groups, ["b"], { add: [], remove: ["UNREAD"] }, false)[0].threads[1].unread_count).toBe(0);
+  });
+});
+
+describe("changeRemovesFromCard", () => {
+  it("takes a thread out of an inbox card when it leaves the Inbox, as archiving does", () => {
+    expect(changeRemovesFromCard({ add: ["Label_1"], remove: ["INBOX"] }, "in:inbox")).toBe(true);
+    expect(changeRemovesFromCard({ add: ["Label_1"], remove: ["INBOX"] }, "is:starred")).toBe(false);
+    expect(changeRemovesFromCard({ add: ["Label_1"], remove: [] }, "in:inbox")).toBe(false);
+  });
+
+  it("takes it out of every card when it goes to the trash or spam", () => {
+    expect(changeRemovesFromCard({ add: ["TRASH"], remove: [] }, "is:starred")).toBe(true);
   });
 });

@@ -196,7 +196,7 @@ import { SoundSettings } from "./components/SoundSettings";
 import { cue, listenForAudioGesture, watchNewMail } from "./app/sounds";
 import { runUnsubscribe, type UnsubscribeMethod } from "./app/unsubscribe";
 import { eventName, quoted } from "./app/quoted";
-import { actionFailureMessage, actionMessage, actionRemovesFromCard, actionUndoneMessage, applyThreadAction, backInPlace, labelChangeFor, labelChangeMessage, restoreThreads, threadMayJoinCard, undoFailureMessage, undoLabelChanges, type DescribeScope, type LabelReversal, type NamedThread } from "./app/threadActions";
+import { actionFailureMessage, actionMessage, actionRemovesFromCard, actionUndoneMessage, applyLabelChange, backInPlace, changeRemovesFromCard, labelChangeFor, labelChangeMessage, restoreThreads, threadMayJoinCard, undoFailureMessage, undoLabelChanges, type DescribeScope, type LabelChange, type LabelReversal, type NamedThread } from "./app/threadActions";
 import { PRESETS } from "./app/presets";
 import { normalizeActionOrder } from "./app/actionOrder";
 import { parseStoredWidth } from "./app/storedWidth";
@@ -225,7 +225,16 @@ import { cardTypeForQuery } from "./app/cardType";
 import { SEARCH_CARD_ID, forgetSearch, isSearchCard, keptCardName, parseRecentSearches, rememberSearch, searchCard as searchCardFor } from "./app/quickSearch";
 import { discardThreadDrafts, draftToOpen, isDraftThread, prepareDraftCompose, withDraftsDiscarded, type DraftToOpen } from "./app/draftThreads";
 import { createDraftSync, draftKey, findLatestDraft, findUnsentDrafts, hasDraftContent, markDraftClosed, markDraftSending, pruneDrafts, removeAccountDrafts, sessionDraftKey, type DraftFields } from "./app/drafts";
-import { escapeTarget, nextCardFocus, nextItemFocus, type ItemFocus } from "./app/keyboardNav";
+import { escapeTarget, focusEdgeHint, isFocusEdge, nextCardFocus, nextItemFocus, type FocusEdge, type ItemFocus } from "./app/keyboardNav";
+import { createFocusMemory } from "./app/focusMemory";
+import { createNewMailHold } from "./app/rowHold";
+import { measureRows, slideRows } from "./app/rowMotion";
+import { liftRows } from "./app/rowTravel";
+import { placeInCards } from "./app/threadPlacement";
+import { gmailLabelName } from "./app/queryMatch";
+import { createRowDrag, type RowDragState } from "./app/rowDrag";
+import { dropIntent, type DropIntent } from "./app/dropIntent";
+import { FocusRing, type RingBump } from "./components/FocusRing";
 import { getSmartEventTime, groupCalendarEvents, isUserLabel, mergeThreadGroups, regroupThreads, type CalendarEventGroup } from "./app/grouping";
 import { pullLayoutWithRetry } from "./app/icloudRestore";
 import { querySuggestions, type QuerySuggestion } from "./app/querySuggestions";
@@ -245,6 +254,8 @@ import { moveCard, reuseUnchanged } from "./app/cardOrder";
 
 // As many as the backend's preview of an email query returns
 const NEW_CARD_PREVIEW_EVENTS = 5;
+// How long the line saying the focus reached an edge stays
+const FOCUS_EDGE_MS = 2600;
 
 function App() {
   const [loading, setLoading] = createSignal(true);
@@ -314,6 +325,26 @@ function App() {
   const boardCards = () => { const search = searchCard(); return search ? [search, ...cards()] : cards(); };
   const [authLoading, setAuthLoading] = createSignal(false);
   const [cardThreads, setCardThreads] = createStore<Record<string, ThreadGroup[]>>({});
+  // Synced mail waits while the pointer rests on its card or the keyboard
+  // focus is in it, then slides in
+  const newMail = createNewMailHold({
+    read: (cardId) => cardThreads[cardId] && unwrap(cardThreads[cardId]),
+    write: (cardId, groups) => setCardThreads(cardId, reconcile(groups, { key: "gmail_thread_id" })),
+    fetchedFor: (cardId) => fetchedFor(cardById(cardId)),
+    onRelease: (cardId, entering, letIn) => {
+      const list = document.querySelector<HTMLElement>(`.card[data-id="${CSS.escape(cardId)}"] .card-body`);
+      const before = list ? measureRows(list) : null;
+      letIn();
+      if (list && before) slideRows(list, before, { entering });
+    },
+  });
+  // Only focus moved from the keyboard holds; a row a click left focused
+  // doesn't, nor does the focus once the pointer takes over
+  createEffect(() => {
+    if (inputMode() === "pointer") untrack(cards).forEach(card => newMail.focus(card.id, false));
+  });
+  // A card's threads with any mail waiting in it, for counting
+  const countedThreads = (cardId: string) => newMail.waiting(cardId) ?? cardThreads[cardId];
   const [cardCalendarEvents, setCardCalendarEvents] = createStore<Record<string, GoogleCalendarEvent[]>>({});
   const [loadingThreads, setLoadingThreads] = createStore<Record<string, boolean>>({});
   const [cardErrors, setCardErrors] = createStore<Record<string, string | null>>({});
@@ -935,6 +966,8 @@ function App() {
   const openWheelIn = (e?: MouseEvent) => (e?.currentTarget as Element | null)?.querySelector(`.radial-menu[role="menu"]`);
 
   function showThreadHoverActions(cardId: string, threadId: string, e?: MouseEvent) {
+    // A thread being dragged passes over rows without opening their wheels
+    if (rowDrag.dragging()) return;
     const key = rowKey(cardId, threadId);
     if (e && key !== hoveredThread() && threadHold.wait(key, e.clientX, e.clientY, () => showThreadHoverActions(cardId, threadId))) return;
     threadHold.release();
@@ -969,6 +1002,7 @@ function App() {
   }
 
   function showEventHoverActions(cardId: string, eventId: string, e?: MouseEvent) {
+    if (rowDrag.dragging()) return;
     const key = rowKey(cardId, eventId);
     if (e && key !== hoveredEvent() && eventHold.wait(key, e.clientX, e.clientY, () => showEventHoverActions(cardId, eventId))) return;
     eventHold.release();
@@ -1062,7 +1096,7 @@ function App() {
   // A new event starts now; what was typed into a closed new-event form stays,
   // but an event's edit never carries into a new one
   // `about` starts the event from an email thread instead
-  const openNewEventForm = (about?: { summary: string; attendees: string }) => {
+  const openNewEventForm = (about?: { summary: string; attendees: string } & Partial<Pick<EventFormState, "startDate" | "startTime" | "endDate" | "endTime">>) => {
     // One panel at a time: an email in the compose panel closes, keeping its draft
     if (composeShownIn() === "panel" && composing() && !closingCompose()) closeCompose();
     const defaults = smartEventDefaults();
@@ -1395,7 +1429,7 @@ function App() {
     // cards holding a change are touched
     batch(() => {
       for (const [cardId, groups] of Object.entries(updatedCardThreads)) {
-        setCardThreads(cardId, reconcile(groups, { key: "gmail_thread_id" }));
+        newMail.show(cardId, groups);
       }
     });
 
@@ -1546,7 +1580,7 @@ function App() {
     // A thread can match several cards; count it once in each account
     const unreadThreads = new Set<string>();
     for (const card of cards()) {
-      for (const group of cardThreads[card.id] ?? []) {
+      for (const group of countedThreads(card.id) ?? []) {
         for (const thread of group.threads) {
           if (thread.unread_count > 0) unreadThreads.add(threadKey(thread, card));
         }
@@ -1787,6 +1821,9 @@ function App() {
   // Focus a card and the item at `index` in it (-1 focuses the card only).
   // The row takes keyboard focus too, so Tab and j/k agree.
   function focusCardItem(cardId: string, index: number) {
+    setFocusEdge(null);
+    const itemId = cardItemIds(cardId)[index];
+    if (itemId) focusMemory.remember(cardId, itemId, index);
     setFocusedCardId(cardId);
     const calendar = isCalendarCard(cardId);
     setFocusedEventIndex(calendar ? index : -1);
@@ -1796,6 +1833,28 @@ function App() {
     const row = document.querySelector<HTMLElement>(`${card} .thread.focused, ${card} .calendar-event-item.focused`);
     if (row && document.activeElement !== row) row.focus({ preventScroll: true });
   }
+
+  const cardItemIds = (cardId: string) => isCalendarCard(cardId)
+    ? getCardEventsFlat(cardId).map(ev => ev.id)
+    : getCardThreadsFlat(cardId).map(t => t.gmail_thread_id);
+  // The row each card was left on, for h and l to come back to
+  const focusMemory = createFocusMemory();
+  // Where j/k/h last stopped at the end of the way, said in that card for a while
+  const [focusEdge, setFocusEdge] = createSignal<FocusEdge | null>(null);
+  const [ringBump, setRingBump] = createSignal<RingBump | null>(null);
+  let focusEdgeTimer: number | undefined;
+  function showFocusEdge(edge: FocusEdge, toward: RingBump["toward"]) {
+    setFocusEdge(edge);
+    setRingBump({ toward, at: Date.now() });
+    clearTimeout(focusEdgeTimer);
+    focusEdgeTimer = window.setTimeout(() => setFocusEdge(null), FOCUS_EDGE_MS);
+  }
+  const focusEdgeLine = (cardId: string) => {
+    const edge = focusEdge();
+    if (edge?.cardId !== cardId) return null;
+    const shown = boardCards().filter(c => !collapsedCards[c.id]);
+    return focusEdgeHint(edge, shown.map(c => ({ id: c.id, name: c.name, count: cardItemIds(c.id).length })));
+  };
 
   // Roving tab stop: one row per card, the focused one or else the first
   const tabStopKeys = createMemo(() => {
@@ -1828,9 +1887,6 @@ function App() {
 
   // The row a thread or event view was opened from, for focus to go back to
   let openedFromRow: (ItemFocus & { itemId: string }) | null = null;
-  const cardItemIds = (cardId: string) => isCalendarCard(cardId)
-    ? getCardEventsFlat(cardId).map(ev => ev.id)
-    : getCardThreadsFlat(cardId).map(t => t.gmail_thread_id);
   function rememberOpenedRow(cardId: string, itemId: string) {
     const index = cardItemIds(cardId).indexOf(itemId);
     openedFromRow = index === -1 ? null : { cardId, index, itemId };
@@ -2022,6 +2078,10 @@ function App() {
       const cardIds = boardCards().filter(c => !collapsedCards[c.id]).map(c => c.id);
       const move = nextCardFocus(cardIds, focusedCardId(), e.key === 'l' || e.key === 'ArrowRight', addingCard());
       if (!move) return;
+      if (isFocusEdge(move)) {
+        showFocusEdge(move, "side");
+        return;
+      }
       if (move.addingCard && !addingCard()) {
         setNewCardColor(null);
         setNewCardAccountId(null);
@@ -2031,7 +2091,7 @@ function App() {
       }
       setAddingCard(move.addingCard);
       if (move.cardId) {
-        focusCardItem(move.cardId, 0);
+        focusCardItem(move.cardId, focusMemory.recall(move.cardId, cardItemIds(move.cardId)));
       } else {
         setFocusedCardId(null);
         setFocusedThreadIndex(-1);
@@ -2050,7 +2110,8 @@ function App() {
       const cardId = focusedCardId();
       const current = cardId ? { cardId, index: isCalendarCard(cardId) ? focusedEventIndex() : focusedThreadIndex() } : null;
       const next = nextItemFocus(visible, current, e.key === 'j' || e.key === 'ArrowDown');
-      if (next) focusCardItem(next.cardId, next.index);
+      if (next && isFocusEdge(next)) showFocusEdge(next, next.edge === "last" ? "down" : "up");
+      else if (next) focusCardItem(next.cardId, next.index);
       return;
     }
 
@@ -4139,7 +4200,10 @@ function App() {
   // cache by thread actions.
   function forgetCardState(cardIds: string[]) {
     if (cardIds.length === 0) return;
-    for (const id of cardIds) delete knownCardCache[id];
+    for (const id of cardIds) {
+      delete knownCardCache[id];
+      newMail.forget(id);
+    }
     batch(() => {
       setCardThreads(produce(s => { for (const id of cardIds) delete s[id]; }));
       setCardPageTokens(produce(s => { for (const id of cardIds) delete s[id]; }));
@@ -4591,7 +4655,7 @@ function App() {
         await saveCardCache(cardId, result.groups, result.next_page_token);
         return;
       }
-      setCardThreads(cardId, reconcile(result.groups, { key: "gmail_thread_id" }));
+      newMail.show(cardId, result.groups);
       setCardPageTokens(cardId, result.next_page_token);
       setCardHasMore(cardId, result.has_more);
       await saveCardCache(cardId, result.groups, result.next_page_token);
@@ -4768,7 +4832,7 @@ function App() {
   }
 
   function getCardUnreadCount(cardId: string): number {
-    const groups = cardThreads[cardId];
+    const groups = countedThreads(cardId);
     if (!groups) return 0;
     return groups.reduce((total, group) =>
       total + group.threads.filter(t => t.unread_count > 0).length, 0);
@@ -5145,11 +5209,88 @@ function App() {
     }
   }
 
+  // A thread row dragged onto a card: the card under it says what a drop
+  // there does, worked out from its query, and the drop does it
+  const draggedThread = (drag: RowDragState) =>
+    (cardThreads[drag.sourceCardId] ?? []).flatMap(g => g.threads).find(t => t.gmail_thread_id === drag.threadId);
+  function intentOf(drag: RowDragState): DropIntent | null {
+    const thread = draggedThread(drag);
+    const source = cardById(drag.sourceCardId);
+    const target = cardById(drag.overCardId);
+    if (!thread || !source || !target) return null;
+    const accountId = threadAccountId(thread, source);
+    const labels = labelsByAccount[accountId] ?? [];
+    return dropIntent(thread, source, target, drag.alt, {
+      labelId: (name) => labels.find(l => gmailLabelName(l.name) === name)?.id,
+      labelName: (id) => { const label = labels.find(l => l.id === id); return label ? labelDisplayName(label) : id; },
+      accountEmail: accountById(accountId)?.email ?? "",
+      now: new Date(),
+      otherAccount: !cardCoversAccount(target, accountId),
+    });
+  }
+  const rowDrag = createRowDrag({
+    onStart: (drag) => {
+      const thread = draggedThread(drag);
+      if (thread) fetchAccountLabels(threadAccountId(thread, cardById(drag.sourceCardId)));
+    },
+    onDrop: (drag, at) => {
+      const intent = intentOf(drag);
+      if (intent?.kind === "labels") {
+        handleThreadAction("label", [drag.threadId], drag.sourceCardId, { labelChange: intent.change, message: intent.done, from: at });
+      } else if (intent?.kind === "event") {
+        openNewEventForm(intent.event);
+      }
+    },
+  });
+  onCleanup(rowDrag.cancel);
+  const dropIntentFor = (cardId: string) => {
+    const drag = rowDrag.dragging();
+    return drag?.overCardId === cardId ? intentOf(drag) : null;
+  };
+
+  // A changed thread joins the cards on the board that now list it, by what
+  // its labels answer of their queries, where they would list it; they are
+  // snapshotted for rollback and refreshed on undo like the cards it was in.
+  // `changed` is each affected card's groups with the change made.
+  function placeChangedThreads(
+    changed: [string, ThreadGroup[]][],
+    isTarget: (t: Thread, card: Card) => boolean,
+    ownerOf: Map<string, string>,
+    updated: Record<string, ThreadGroup[]>,
+    snapshot: Record<string, ThreadGroup[]>,
+    affected: string[],
+  ) {
+    const threads = new Map<string, Thread>();
+    for (const [cId, groups] of changed) {
+      const card = cardById(cId);
+      if (!card) continue;
+      for (const t of groups.flatMap(g => g.threads)) {
+        if (isTarget(t, card) && !threads.has(t.gmail_thread_id)) threads.set(t.gmail_thread_id, { ...t, account_id: ownerOf.get(t.gmail_thread_id)! });
+      }
+    }
+    const now = new Date();
+    for (const thread of threads.values()) {
+      const labelId = (name: string) => labelsByAccount[thread.account_id]?.find(l => gmailLabelName(l.name) === name)?.id;
+      const candidates = cards()
+        .filter(c => c.card_type !== "calendar" && !collapsedCards[c.id] && cardThreads[c.id] && cardCoversAccount(c, thread.account_id))
+        .map(c => ({ id: c.id, query: c.query, groups: updated[c.id] ?? unwrap(cardThreads[c.id]), complete: !cardHasMore[c.id] }));
+      for (const [cId, groups] of Object.entries(placeInCards(candidates, thread, labelId, now))) {
+        if (!snapshot[cId]) {
+          snapshot[cId] = structuredClone(unwrap(cardThreads[cId]));
+          affected.push(cId);
+        }
+        updated[cId] = groups;
+      }
+    }
+  }
+
   // silent: a change the user didn't ask for directly (marking a thread
   // read on open) gets no undo toast. `accountId` names the threads' account
   // when the card may no longer list them (the open thread), and `named` the
-  // threads its toasts name then.
-  async function handleThreadAction(action: string, threadIds: string[], cardId: string, { silent = false, accountId, named }: { silent?: boolean; accountId?: string; named?: NamedThread[] } = {}) {
+  // threads its toasts name then. `labelChange` makes it a label change of its
+  // own (a thread dropped on a card), named in its toast by `message` and
+  // carried from `from`
+  async function handleThreadAction(action: string, threadIds: string[], cardId: string, { silent = false, accountId, named, labelChange, message, from }: { silent?: boolean; accountId?: string; named?: NamedThread[]; labelChange?: LabelChange; message?: string; from?: { left: number; top: number; width: number; height: number } } = {}) {
     const byAccount = accountId
       ? new Map([[accountId, threadIds]])
       : threadIdsByAccount(cardThreads[cardId] ?? [], threadIds, cardById(cardId) ?? { account_id: "" });
@@ -5160,7 +5301,9 @@ function App() {
     // of these when it has the id and comes from the account acted in
     const isTarget = (t: Thread, card: Card) => ownerOf.get(t.gmail_thread_id) === threadAccountId(t, card);
 
-    const { add: addLabels, remove: removeLabels } = labelChangeFor(action);
+    const applying = labelChange ?? labelChangeFor(action);
+    const { add: addLabels, remove: removeLabels } = applying;
+    const removesFrom = (query: string) => (labelChange ? changeRemovesFromCard(labelChange, query) : actionRemovesFromCard(action, query));
     const acted = named ?? namedThreads(cardId, threadIds);
     const scope = describeScope(cardId);
 
@@ -5185,14 +5328,18 @@ function App() {
         if (!labelsBefore.has(acc)) labelsBefore.set(acc, new Map());
         labelsBefore.get(acc)!.set(t.gmail_thread_id, t);
       }
-      updatedCardThreads[card.id] = applyThreadAction(groups, ids, action, actionRemovesFromCard(action, card.query));
+      updatedCardThreads[card.id] = applyLabelChange(groups, ids, applying, removesFrom(card.query));
     }
+    placeChangedThreads(Object.entries(snapshot).map(([cId, groups]) => [cId, applyLabelChange(groups, threadIds, applying, false)]), isTarget, ownerOf, updatedCardThreads, snapshot, affectedCardIds);
+    // Before the board shows it, so the rows can be carried from where they were
+    const departure = silent || activeThreadId() ? null : liftRows(cardId, threadIds, from);
 
     batch(() => {
       for (const [cId, groups] of Object.entries(updatedCardThreads)) {
         setCardThreads(cId, reconcile(groups, { key: "gmail_thread_id" }));
       }
     });
+    departure?.land();
     if (!silent) setActionsWheelOpen(false);
 
     // Clear selection after bulk action
@@ -5240,7 +5387,7 @@ function App() {
     setLastAction(done);
     const emails = owners.map(a => a!.email);
     toasts.show({
-      message: inAccount(actionMessage(action, acted, scope), emails, accounts().length),
+      message: inAccount(message ?? actionMessage(action, acted, scope), emails, accounts().length),
       tag: owners.length === 1 ? accountToastTag(owners[0]!.id) : undefined,
       undo: () => undoThreadAction(done),
       redo: () => { void handleThreadAction(action, threadIds, cardId, { silent: true, accountId, named: acted }); },
@@ -5514,6 +5661,14 @@ function App() {
         )}
       </Show>
 
+      <Show when={inputMode() === "keyboard" && focusedCardId() && selectedAccount() && !activeThreadId() && !activeEvent()}>
+        <FocusRing
+          target={() => document.querySelector<HTMLElement>(".thread.focused, .calendar-event-item.focused")}
+          hue={cardById(focusedCardId())?.color ?? undefined}
+          bump={ringBump()}
+        />
+      </Show>
+
       {/* Error banner */}
       <Show when={error()}>
         <div class="auth-error" role="alert">
@@ -5675,9 +5830,13 @@ function App() {
                     >
                       <div
                         class={`card ${isSearchCard(card.id) ? 'search' : ''} ${collapsedCards[card.id] ? 'collapsed' : ''} ${editingCardId() === card.id ? 'editing' : ''} ${(offline() || cardExpired(card)) && (cardThreads[card.id] || cardCalendarEvents[card.id]) ? 'stale' : ''}`}
-                        classList={{ 'dragging': sortable.isActiveDraggable }}
+                        classList={{ 'dragging': sortable.isActiveDraggable, 'drop-target': !!dropIntentFor(card.id) }}
                         data-id={card.id}
                         data-color={editingCardId() === card.id ? (editCardColor() || undefined) : (card.color || undefined)}
+                        onPointerEnter={() => newMail.enter(card.id)}
+                        onPointerLeave={() => newMail.leave(card.id)}
+                        onFocusIn={() => newMail.focus(card.id, inputMode() === "keyboard")}
+                        onFocusOut={(e) => { if (!e.currentTarget.contains(e.relatedTarget as Node | null)) newMail.focus(card.id, false); }}
                         role="region"
                         aria-label={`${card.name} ${card.card_type === "calendar" ? "calendar" : "email"} card`}
                       >
@@ -5729,6 +5888,16 @@ function App() {
                               <span class="card-title">{card.name}</span>
                               <CardAccountQualifier accountId={card.account_id} accounts={accounts()} shown={namesAccount()} problem={syncStatus().problem} since={newSince(card)} />
                             </button>
+                            <Show when={dropIntentFor(card.id)}>
+                              {(intent) => (
+                                <span class="drop-intent" classList={{ "none": intent().kind === "none" }} role="status">
+                                  {intent().text}
+                                  <Show when={(() => { const i = intent(); return i.kind === "labels" ? i.alt : undefined; })()}>
+                                    {(alt) => <> <span class="drop-intent-alt">{alt()}</span></>}
+                                  </Show>
+                                </span>
+                              )}
+                            </Show>
                             <Show when={!collapsedCards[card.id] && getCardUnreadCount(card.id) > 0}>
                               <span class="card-unread-badge">{getCardUnreadCount(card.id)}</span>
                             </Show>
@@ -5993,6 +6162,8 @@ function App() {
                                           }}
                                           data-item-id={thread.gmail_thread_id}
                                           role="article"
+                                          data-thread-id={thread.gmail_thread_id}
+                                          onPointerDown={(e) => rowDrag.press(e, card.id, thread.gmail_thread_id)}
                                           aria-label={`${thread.unread_count > 0 ? 'Unread: ' : ''}${thread.subject} from ${thread.participants.slice(0, 2).map(personName).join(', ')}${inviteLabel()}${unanswered() ? `. ${unanswered()}` : ''}`}
                                           tabindex={rowTabIndex(card.id, thread.gmail_thread_id)}
                                           onFocus={() => onRowFocus(card.id, thread.gmail_thread_id)}
@@ -6140,6 +6311,16 @@ function App() {
                             </Show>
                           </Show>
                         </div>
+                        <Show when={focusEdgeLine(card.id)}>
+                          {(line) => (
+                            <p class="focus-edge" role="status">
+                              {line().text}
+                              <Show when={line().key}>
+                                {(key) => <> · <KeyHint keys={key()} look="key" /> {line().next}</>}
+                              </Show>
+                            </p>
+                          )}
+                        </Show>
                       </div>
                       {/* Resize handle - outside card, inside wrapper */}
                       <div
