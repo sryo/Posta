@@ -154,6 +154,7 @@ beforeEach(() => {
     take_pending_mailtos: () => [],
     has_gemini_api_key: () => false,
     set_dock_menu: () => null,
+    haptic: () => null,
   } satisfies Record<string, Handler>);
   for (const k of Object.keys(cardsByAccount)) delete cardsByAccount[k];
   for (const k of Object.keys(threadsByCard)) delete threadsByCard[k];
@@ -4320,6 +4321,38 @@ describe("App card order", () => {
     expect(names).toEqual(["Beta", "Alpha"]);
     expect(screen.getByRole("region", { name: "Alpha email card" })).toBe(alpha);
     expect(screen.getByRole("region", { name: "Beta email card" })).toBe(beta);
+  });
+
+  const haptics = () => invoke.mock.calls.filter(([cmd]) => cmd === "haptic").map(([, args]) => args?.kind);
+
+  it("ticks the trackpad as the card passes another's slot and lands firmly in its new place", async () => {
+    cardsByAccount.a = [card("card-a", "a", "Alpha"), { ...card("card-b", "a", "Beta"), position: 1 }];
+    handlers.reorder_cards = () => null;
+    render(() => <App />);
+    await screen.findByRole("region", { name: "Beta email card" });
+    dragFirstCardOntoSecond();
+
+    await waitFor(() => expect(haptics()).toEqual(["alignment", "levelChange"]));
+  });
+
+  it("gives no landing tick to a card dropped back where it started", async () => {
+    cardsByAccount.a = [card("card-a", "a", "Alpha"), { ...card("card-b", "a", "Beta"), position: 1 }];
+    render(() => <App />);
+    await screen.findByRole("region", { name: "Beta email card" });
+    const wrappers = Array.from(document.querySelectorAll(".card-wrapper")) as HTMLElement[];
+    wrappers.forEach((el, i) => {
+      el.getBoundingClientRect = () => DOMRect.fromRect({ x: i * 320, y: 0, width: 300, height: 600 });
+    });
+    const pointer = (type: string, x: number) => new MouseEvent(type, { bubbles: true, button: 0, clientX: x, clientY: 10 });
+    wrappers[0].querySelector(".card-header")!.dispatchEvent(pointer("pointerdown", 10));
+    document.dispatchEvent(pointer("pointermove", 400));
+    document.dispatchEvent(pointer("pointermove", 30));
+    document.dispatchEvent(pointer("pointerup", 30));
+
+    await waitFor(() => expect(haptics()).toContain("alignment"));
+    await new Promise(r => setTimeout(r, 50));
+    expect(haptics()).not.toContain("levelChange");
+    expect(invoke).not.toHaveBeenCalledWith("reorder_cards", expect.anything());
   });
 
   it("says so when a dragged card's new place can't be saved, and puts it back", async () => {

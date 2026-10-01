@@ -84,10 +84,12 @@ import {
   sendReaction,
   setDockIcon,
   setDockMenu,
+  haptic,
 } from "./api/tauri";
 import { createDockIconSync, dockIconForHue, renderIconPng } from "./app/dockIcon";
 import { boardTitle, createTitleSync } from "./app/windowTitle";
 import { dockMenu } from "./app/dockMenu";
+import { createDetents } from "./app/detents";
 import { Menu, MenuItem, PredefinedMenuItem } from "@tauri-apps/api/menu";
 import {
   formatTime,
@@ -1429,18 +1431,24 @@ function App() {
   // Drag and drop
   const cardIds = () => cards().map(c => c.id);
   let wasDragging = false;
+  const detents = createDetents(kind => { haptic(kind).catch(() => {}); });
 
-  const onDragStart = () => {
+  const onDragStart = (event: { draggable: { id: Id } }) => {
     wasDragging = true;
+    detents.start(String(event.draggable.id));
+  };
+
+  const onDragOver = (event: { droppable?: { id: Id } | null }) => {
+    detents.over(event.droppable ? String(event.droppable.id) : null);
   };
 
   const onDragEnd = async (event: { draggable: { id: Id } | null; droppable: { id: Id } | null }) => {
     const { draggable, droppable } = event;
     // Reset drag flag after a short delay to prevent click from firing
     setTimeout(() => { wasDragging = false; }, 100);
-    if (!draggable || !droppable) return;
     const previousCards = cards();
-    const reorderedCards = moveCard(previousCards, String(draggable.id), String(droppable.id));
+    const reorderedCards = draggable && droppable ? moveCard(previousCards, String(draggable.id), String(droppable.id)) : null;
+    detents.end(!!reorderedCards);
     if (!reorderedCards) return;
     setCards(reorderedCards);
     try {
@@ -5137,7 +5145,7 @@ function App() {
 
       {/* Deck */}
       <Show when={!loading() && selectedAccount()}>
-        <DragDropProvider onDragStart={onDragStart} onDragEnd={onDragEnd as any} collisionDetector={mostIntersecting}>
+        <DragDropProvider onDragStart={onDragStart} onDragOver={onDragOver} onDragEnd={onDragEnd as any} collisionDetector={mostIntersecting}>
           <DragDropSensors />
           <div
             class={`deck ${resizing() ? 'resizing' : ''} ${boardStatus() ? 'has-status' : ''}`}

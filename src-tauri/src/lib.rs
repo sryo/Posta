@@ -5,6 +5,7 @@ pub mod cache;
 pub mod calendar;
 pub mod commands;
 mod dock_menu;
+mod haptics;
 pub mod gmail;
 pub mod icloud;
 pub mod models;
@@ -172,6 +173,23 @@ fn set_dock_menu(menu: dock_menu::DockMenu) {
     dock_menu::set(menu);
 }
 
+/// Trackpad feedback while a card is dragged: "alignment" or "levelChange"
+#[tauri::command]
+fn haptic(app_handle: tauri::AppHandle, kind: String) -> Result<(), String> {
+    let haptic = haptics::Haptic::parse(&kind).ok_or_else(|| format!("Unknown haptic {kind}"))?;
+    #[cfg(target_os = "macos")]
+    {
+        app_handle
+            .run_on_main_thread(move || haptics::perform(haptic))
+            .map_err(|e| e.to_string())
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = (app_handle, haptic);
+        Ok(())
+    }
+}
+
 /// Brings the window forward with `card_id` focused, for a card chosen
 /// outside it (the Dock menu, a notification)
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
@@ -331,6 +349,7 @@ pub fn run() {
             take_pending_mailtos,
             set_dock_icon,
             set_dock_menu,
+            haptic,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application");

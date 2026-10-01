@@ -2,6 +2,7 @@
 
 import { invoke } from "@tauri-apps/api/core";
 import type { DockMenu } from "../app/dockMenu";
+import type { Haptic } from "../app/detents";
 import type { RecurrenceScope } from "../app/recurrence";
 
 export interface Account {
@@ -452,6 +453,11 @@ export async function setDockIcon(png: Uint8Array | null): Promise<void> {
 /** What the right-click Dock menu lists; choosing a card sends "focus-card" */
 export async function setDockMenu(menu: DockMenu): Promise<void> {
   return invoke("set_dock_menu", { menu });
+}
+
+/** Force Touch trackpad feedback; nothing happens on other hardware */
+export async function haptic(kind: Haptic): Promise<void> {
+  return invoke("haptic", { kind });
 }
 
 // iCloud sync
