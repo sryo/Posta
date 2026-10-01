@@ -134,7 +134,7 @@ describe("ComposeForm quoted history in a reply", () => {
         onRemoveAttachment={vi.fn()} onFileSelect={vi.fn()} fileInputId="file" onSend={vi.fn()} onClose={vi.fn()}
       />
     ));
-    return { body, textarea: screen.getByPlaceholderText("Write your reply...") as HTMLTextAreaElement };
+    return { body, textarea: screen.getByRole("textbox", { name: "Message" }) as HTMLTextAreaElement };
   }
 
   it("folds the quote away while the reply is written above it, and keeps it in the body", () => {
@@ -183,7 +183,7 @@ describe("ComposeForm attaching dropped and pasted files", () => {
         onClose={vi.fn()}
       />
     ));
-    return { onAddFiles, body: screen.getByPlaceholderText("Write your reply...") };
+    return { onAddFiles, body: screen.getByRole("textbox", { name: "Message" }) };
   }
   const file = new File(["x"], "plan.pdf", { type: "application/pdf" });
   const files = (...list: File[]) => ({ types: ["Files"], files: list, items: [], dropEffect: "none" });
@@ -299,5 +299,37 @@ describe("ComposeForm reply to a long-quiet thread", () => {
       />
     ));
     expect(container.querySelector(".compose-last-letter")).toBeNull();
+  });
+});
+
+describe("ComposeForm reply placeholder", () => {
+  function renderReply(props: { to: string; cc?: string; nameFor?: (email: string) => string | undefined; placeholder?: string }) {
+    const [to, setTo] = createSignal(props.to);
+    const [cc, setCc] = createSignal(props.cc ?? "");
+    render(() => (
+      <ComposeForm
+        mode="reply" to={to()} setTo={setTo} cc={cc()} setCc={setCc} setBcc={vi.fn()} showCcBcc={true}
+        body="" setBody={vi.fn()} attachments={[]} onRemoveAttachment={vi.fn()} onFileSelect={vi.fn()}
+        fileInputId="file" onSend={vi.fn()} onClose={vi.fn()} nameFor={props.nameFor} placeholder={props.placeholder}
+      />
+    ));
+    return { setTo, setCc };
+  }
+
+  it("names who the reply goes to, in To and Cc", () => {
+    renderReply({ to: "Ana Pérez <ana@x.com>", cc: "ben@x.com" });
+    expect(screen.getByRole("textbox", { name: "Message" })).toHaveAttribute("placeholder", "Reply to Ana and ben@x.com…");
+  });
+
+  it("uses the contact's name for a bare address, and follows the recipients as they change", () => {
+    const { setCc } = renderReply({ to: "ana@x.com", cc: "ben@x.com", nameFor: (e) => (e === "ana@x.com" ? "Ana Pérez" : undefined) });
+    expect(screen.getByRole("textbox", { name: "Message" })).toHaveAttribute("placeholder", "Reply to Ana and ben@x.com…");
+    setCc("");
+    expect(screen.getByRole("textbox", { name: "Message" })).toHaveAttribute("placeholder", "Reply to Ana…");
+  });
+
+  it("keeps a placeholder it is given", () => {
+    renderReply({ to: "ana@x.com", placeholder: "Reply to the organizer..." });
+    expect(screen.getByRole("textbox", { name: "Message" })).toHaveAttribute("placeholder", "Reply to the organizer...");
   });
 });

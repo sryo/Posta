@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { FullMessage } from "../api/tauri";
-import { batchReplyEntry } from "./batchReply";
+import { batchReplyEntry, namedRecipients } from "./batchReply";
 import { formatEmailDate } from "../utils";
 
 const msg = (id: string, headers: Record<string, string>): FullMessage => ({
@@ -46,5 +46,12 @@ describe("batchReplyEntry", () => {
   it("has nothing to answer in an empty thread", () => {
 
     expect(batchReplyEntry("t", [], "me@x.com")).toBeNull();
+  });
+});
+
+describe("namedRecipients", () => {
+  it("gives the sender's address its name, and leaves other addresses as they are", () => {
+    expect(namedRecipients({ to: "ana@x.com", from: "Ana Pérez <ANA@x.com>" })).toEqual(["Ana Pérez <ANA@x.com>"]);
+    expect(namedRecipients({ to: "ben@x.com, cleo@x.com", from: "Me <me@x.com>" })).toEqual(["ben@x.com", "cleo@x.com"]);
   });
 });

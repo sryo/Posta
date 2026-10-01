@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { findHeader, lastMessageFromOthers, messageDate, nearestShownIndex, reactionsShownAsChips, stepShownIndex } from "./messages";
+import { findHeader, lastMessageFromOthers, messageDate, nearestShownIndex, reactionsShownAsChips, stepShownIndex, nameInMessages } from "./messages";
 
 const msg = (id: string, headers: Record<string, string>) => ({
   id,
@@ -90,5 +90,20 @@ describe("messageDate", () => {
     expect(messageDate(msg("1", { Date: "soon" }))).toBeNull();
     expect(messageDate({ internalDate: "x" })).toBeNull();
     expect(messageDate({})).toBeNull();
+  });
+});
+
+describe("nameInMessages", () => {
+  const message = (headers: Record<string, string>) => ({ payload: { headers: Object.entries(headers).map(([name, value]) => ({ name, value })) } });
+
+  it("finds the name an address goes by in From, To or Cc", () => {
+    const messages = [
+      message({ From: "ana@x.com", To: "Ben Ruiz <ben@x.com>, me@x.com" }),
+      message({ From: "\"Ana Pérez\" <ANA@x.com>", Cc: "Cleo <cleo@x.com>" }),
+    ];
+    expect(nameInMessages("ana@x.com", messages)).toBe("Ana Pérez");
+    expect(nameInMessages("ben@x.com", messages)).toBe("Ben Ruiz");
+    expect(nameInMessages("cleo@x.com", messages)).toBe("Cleo");
+    expect(nameInMessages("me@x.com", messages)).toBeUndefined();
   });
 });

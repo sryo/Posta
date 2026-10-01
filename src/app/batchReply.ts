@@ -51,3 +51,9 @@ export function batchReplyEntry(threadId: string, messages: FullMessage[], accou
     lastDate: latestDate(messages.map(messageDate)),
   };
 }
+
+// A batch reply's recipients, the sender's address carrying the sender's name
+export function namedRecipients(entry: Pick<BatchReplyThread, "to" | "from">): string[] {
+  const sender = extractEmail(entry.from).toLowerCase();
+  return splitEmailList(entry.to).map(to => (extractEmail(to).toLowerCase() === sender ? entry.from : to));
+}

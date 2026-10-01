@@ -1,4 +1,4 @@
-import { extractEmail } from "../utils";
+import { extractEmail, extractName, splitEmailList } from "../utils";
 
 type Headers = { name: string; value: string }[] | undefined;
 type MessageLike = { payload?: { headers?: Headers }; reaction?: unknown };
@@ -22,6 +22,20 @@ export function lastMessageFromOthers<M extends MessageLike>(messages: M[], acco
     if (from && extractEmail(from).toLowerCase() !== self) return messages[i];
   }
   return messages[messages.length - 1];
+}
+
+// The display name an address goes by in a thread's From, To or Cc headers
+export function nameInMessages(email: string, messages: readonly MessageLike[]): string | undefined {
+  const wanted = email.toLowerCase();
+  for (const message of messages) {
+    for (const header of ["From", "To", "Cc"]) {
+      for (const address of splitEmailList(findHeader(message.payload?.headers, header) ?? "")) {
+        const name = extractName(address);
+        if (name && extractEmail(address).toLowerCase() === wanted) return name;
+      }
+    }
+  }
+  return undefined;
 }
 
 // When Gmail received the message, else when its Date header says it was sent

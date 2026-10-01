@@ -95,6 +95,11 @@ export function createUndoableSend<T>(opts: {
   }
 
   // The most recent send and those queued with it
+  function pendingGroup(): T[] {
+    const group = latest()?.group;
+    return group ? queued().filter(e => e.group === group).map(e => e.item) : [];
+  }
+
   function undoAll(): T[] {
     const group = latest()?.group;
     if (!group) return [];
@@ -111,6 +116,7 @@ export function createUndoableSend<T>(opts: {
     undo,
     undoAll,
     pending: () => latest()?.item ?? null,
+    pendingGroup,
     progress,
     toastVisible,
     toastClosing,

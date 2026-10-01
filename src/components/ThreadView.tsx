@@ -737,6 +737,7 @@ export const ThreadView = (props: {
                           showCcBcc={props.inlineCompose!.showCcBcc}
                           setShowCcBcc={props.inlineCompose!.setShowCcBcc}
                           suggestContacts={props.inlineCompose!.suggestContacts}
+                          nameFor={props.inlineCompose!.nameFor}
                           fromEmail={props.inlineCompose!.fromEmail}
                           body={props.inlineCompose!.body}
                           setBody={props.inlineCompose!.setBody}

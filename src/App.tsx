@@ -157,9 +157,10 @@ import { formatClock, formatDayLabel, formatShortDate, formatWhen, threadGroupLa
 import { safeGetItem, safeSetItem, safeRemoveItem, safeGetJSON, safeSetJSON } from "./shared/storage";
 import { BOARD_COLORS, type ActionSettings, type CardColor, type GroupBy } from "./shared/constants";
 import { createUndoableSend } from "./app/undoableSend";
-import { findHeader, lastMessageFromOthers, messageDate } from "./app/messages";
+import { findHeader, lastMessageFromOthers, messageDate, nameInMessages } from "./app/messages";
+import { replyPlaceholder, sendingTo } from "./app/replyWords";
 import { lastLetterLine, latestDate } from "./app/transit";
-import { batchReplyEntry, type BatchReplyThread } from "./app/batchReply";
+import { batchReplyEntry, namedRecipients, type BatchReplyThread } from "./app/batchReply";
 import { matchContacts, rankContacts, type RecentContact } from "./app/contacts";
 import { eventReplyRecipients } from "./app/eventReply";
 import { labelDisplayName } from "./app/labels";
@@ -796,6 +797,8 @@ function App() {
     sending: boolean;
   }>({ threadId: null, text: "", sending: false });
   const [quickReplyCardId, setQuickReplyCardId] = createSignal<string | null>(null);
+  // Who a quick reply goes to, once its thread has been read
+  const [quickReplyTo, setQuickReplyTo] = createSignal<{ threadId: string; to: string[] } | null>(null);
 
   // Quick Reaction (for thread list)
   const [quickReactionSending, setQuickReactionSending] = createSignal(false);
@@ -813,6 +816,15 @@ function App() {
     setQuickReplyEventId(null);
     setQuickReply(qr => (qr.threadId === threadId ? qr : { threadId, text: "", sending: false }));
     setQuickReplyCardId(cardId);
+    const account = threadOwner(threadId, cardId);
+    if (account && quickReplyTo()?.threadId !== threadId) {
+      getThreadDetails(account.id, threadId)
+        .then(details => {
+          const entry = batchReplyEntry(threadId, details.messages ?? [], account.email);
+          setQuickReplyTo({ threadId, to: entry ? namedRecipients(entry) : [] });
+        })
+        .catch(() => {});
+    }
   }
 
   function openEventQuickReply(eventId: string) {
@@ -2572,6 +2584,7 @@ function App() {
       get showCcBcc() { return showCcBcc(); },
       setShowCcBcc: setShowCcBcc,
       suggestContacts: (query: string) => suggestContacts(query),
+      nameFor: (email: string) => contactName(email),
       get body() { return composeBody(); },
       setBody: setComposeBody,
       get attachments() { return composeAttachments(); },
@@ -4868,6 +4881,25 @@ function App() {
   }, []);
 
   const suggestContacts = (query: string) => matchContacts(rankedContacts(), query, 8);
+  // The name an address goes by: the user's contact, else the open thread or loaded mail
+  const contactName = (email: string) => {
+    const key = email.toLowerCase();
+    return googleContacts().find(c => c.email_addresses.some(e => e.toLowerCase() === key))?.display_name
+      || nameInMessages(email, activeThread()?.messages ?? [])
+      || nameInThreads(email, Object.values(cardThreads).flatMap(groups => groups.flatMap(g => g.threads)));
+  };
+  // What the send toast says, kept while the last send goes out
+  const sendingMessage = createMemo<string>(shown => {
+    const group = undoableSend.pendingGroup();
+    if (group.length === 0) return shown;
+    const recipients = group.flatMap(p => {
+      const batchThread = batchReplyOrigins.get(p)?.thread;
+      return batchThread ? namedRecipients(batchThread) : splitEmailList([p.to, p.cc, p.bcc].join(", "));
+    });
+    const to = sendingTo(recipients, accounts().map(a => a.email), new Date(), contactName);
+    const from = [...new Set(group.map(p => accountById(p.accountId)?.email ?? ""))].filter(Boolean);
+    return `${inAccount(to ? `Sending ${to}` : "Sending message", from, accounts().length, "from")}…`;
+  }, "Sending message…");
   const sidePanelBesideView = () => panelBesideView({
     placement: composeShownIn(),
     creatingEvent: creatingEvent(),
@@ -5608,7 +5640,7 @@ function App() {
                                             </Show>
                                             <ComposeTextarea
                                               class="quick-reply-input"
-                                              placeholder="Write a reply..."
+                                              placeholder={(quickReplyTo()?.threadId === thread.gmail_thread_id && replyPlaceholder(quickReplyTo()!.to, accounts().map(a => a.email), contactName)) || "Write a reply..."}
                                               value={quickReply().text}
                                               onChange={(val: string) => setQuickReply(qr => ({ ...qr, text: val }))}
                                               onSend={handleQuickReply}
@@ -5821,6 +5853,7 @@ function App() {
             fromAccountId={composeAccount()?.id}
             setFromAccountId={changeComposeAccount}
             fromEmail={composeIsReply() ? composeFromEmail() : undefined}
+            placeholder={composeIsReply() ? replyPlaceholder(splitEmailList(`${composeTo()}, ${composeCc()}`), accounts().map(a => a.email), contactName) ?? undefined : undefined}
             lastLetter={replyingToThread() ? lastLetterLine(threadLastDate(replyingToThread()!.threadId), new Date()) : null}
           />
         </div>
@@ -6197,7 +6230,7 @@ function App() {
                         showFields={false}
                         body={batchReplyMessages()[thread.threadId] || ''}
                         setBody={(v) => updateBatchReplyMessage(thread.threadId, v)}
-                        placeholder={`Reply to ${thread.to || extractEmail(thread.from)}...`}
+                        placeholder={replyPlaceholder(namedRecipients(thread), accounts().map(a => a.email), contactName) ?? "Write your reply..."}
                         attachments={batchReplyAttachments()[thread.threadId] || []}
                         onRemoveAttachment={(i) => removeBatchReplyAttachment(thread.threadId, i)}
                         onFileSelect={(e) => handleBatchReplyFileSelect(thread.threadId, e)}
@@ -6473,7 +6506,7 @@ function App() {
         {/* Send Toast with Undo */}
         <Show when={undoableSend.toastVisible()}>
           <ToastFrame
-            message={`${inAccount("Sending message", [accountById(undoableSend.pending()?.accountId)?.email ?? ""].filter(Boolean), accounts().length, "from")}...`}
+            message={sendingMessage()}
             closing={undoableSend.toastClosing()}
             percent={undoableSend.progress()}
           >

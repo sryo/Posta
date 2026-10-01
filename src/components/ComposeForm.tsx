@@ -8,6 +8,8 @@ import { splitQuotedText } from "../app/quotedHistory";
 import { RecipientInput, type RecipientSuggestion } from "./RecipientInput";
 import { carriesFiles, transferredFiles } from "../app/fileDrop";
 import { FieldRow, FormFooter, PanelAccount, PanelHeader, SubmitButton } from "./FormParts";
+import { replyPlaceholder } from "../app/replyWords";
+import { splitEmailList } from "../utils";
 
 // Shared Compose Form component
 interface ComposeFormProps {
@@ -62,6 +64,8 @@ interface ComposeFormProps {
   fromEmail?: string;
   // "Last letter here: Aug 2025.", above a reply to a long-quiet thread
   lastLetter?: string | null;
+  // A recipient's name from the user's contacts, for a reply's placeholder
+  nameFor?: (email: string) => string | undefined;
 }
 
 export const ComposeForm = (props: ComposeFormProps) => {
@@ -230,6 +234,10 @@ export const ComposeForm = (props: ComposeFormProps) => {
     return tail && !quoteShown() ? props.body.slice(0, props.body.length - tail.length) : props.body;
   };
 
+  const replyTo = () => props.mode === 'reply'
+    ? replyPlaceholder(splitEmailList(`${props.to ?? ''}, ${props.cc ?? ''}`), [fromAddress() ?? ''], props.nameFor)
+    : null;
+
   const BodyTextarea = () => (
     <div class="compose-content">
       <textarea
@@ -255,7 +263,8 @@ export const ComposeForm = (props: ComposeFormProps) => {
           props.onInput?.();
         }}
         onKeyDown={handleKeyDown}
-        placeholder={props.placeholder || (props.mode === 'new' ? "Write something..." : "Write your reply...")}
+        aria-label="Message"
+        placeholder={props.placeholder || (props.mode === 'new' ? "Write something..." : replyTo() ?? "Write your reply...")}
       />
       <Show when={foldedTail()}>
         <button
