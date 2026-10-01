@@ -420,3 +420,37 @@ describe("ComposeForm already talking about this", () => {
     expect(screen.queryByText(LINE)).toBeNull();
   });
 });
+
+describe("ComposeForm pasting a link over words", () => {
+  const clipboard = (text: string) => ({ clipboardData: { types: ["text/plain"], files: [], items: [], getData: (type: string) => (type === "text/plain" ? text : "") } });
+  const BODY = "Hi all, the deck is ready for comments.";
+  const URL = "https://docs.google.com/presentation/d/1xQ4review";
+
+  function renderBody() {
+    const [body, setBody] = createSignal(BODY);
+    render(() => (
+      <ComposeForm
+        mode="new" to="ana@x.com" setTo={vi.fn()} body={body()} setBody={setBody} attachments={[]}
+        onRemoveAttachment={vi.fn()} onFileSelect={vi.fn()} onAddFiles={vi.fn()} fileInputId="file" onSend={vi.fn()} onClose={vi.fn()}
+      />
+    ));
+    return { body, textarea: screen.getByRole("textbox", { name: "Message" }) as HTMLTextAreaElement };
+  }
+
+  it("links the selected words, and says so until the next key", () => {
+    const { body, textarea } = renderBody();
+    textarea.setSelectionRange(BODY.indexOf("the deck"), BODY.indexOf("the deck") + "the deck".length);
+    fireEvent.paste(textarea, clipboard(URL));
+    expect(body()).toBe(`Hi all, the deck (${URL}) is ready for comments.`);
+    expect(screen.getByRole("status")).toHaveTextContent("Linked “the deck” to docs.google.com");
+    fireEvent.keyDown(textarea, { key: "a" });
+    expect(screen.queryByRole("status")).toBeNull();
+  });
+
+  it("leaves a link pasted with nothing selected to the ordinary paste", () => {
+    const { body, textarea } = renderBody();
+    textarea.setSelectionRange(3, 3);
+    expect(fireEvent.paste(textarea, clipboard(URL))).toBe(true);
+    expect(body()).toBe(BODY);
+  });
+});

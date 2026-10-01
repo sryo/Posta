@@ -2,30 +2,12 @@ import { createMemo, createSignal, createUniqueId, For, Show } from "solid-js";
 import { ContactOption, type RecipientSuggestion } from "./RecipientInput";
 import { Chip } from "./Chip";
 import { extractEmail, extractName, splitEmailList } from "../utils";
+import { formatRecipient, splitAtSeparators } from "../app/people";
 import { isImeComposing } from "../shared/keyboard";
+import { pasteNote, tidyRecipients } from "../app/tidyPaste";
+import { NoticeLine } from "./NoticeLine";
 
 type Contact = RecipientSuggestion;
-
-// The text split at commas and semicolons outside a quoted name or
-// <address>; the last piece is what follows the last separator
-function splitAtSeparators(text: string): string[] {
-  const pieces = [""];
-  let quoted = false;
-  let angled = false;
-  for (const ch of text) {
-    if (ch === '"' && !angled) quoted = !quoted;
-    else if (ch === "<" && !quoted) angled = true;
-    else if (ch === ">" && !quoted) angled = false;
-    else if ((ch === "," || ch === ";") && !quoted && !angled) {
-      pieces.push("");
-      continue;
-    }
-    pieces[pieces.length - 1] += ch;
-  }
-  return pieces;
-}
-
-const asRecipient = (c: Contact) => (c.name ? `"${c.name.replace(/"/g, "")}" <${c.email}>` : c.email);
 
 // An event's guests as chips, with the compose field's contact suggestions.
 // The value stays the comma-separated list the rest of the form reads.
@@ -82,6 +64,26 @@ export const GuestChips = (props: {
     setShowList(true);
   };
 
+  // What the last paste did, until the next key, and the guests it found
+  // already here, who blink once instead of doubling
+  const [note, setNote] = createSignal<string | null>(null);
+  const [blinking, setBlinking] = createSignal<string[]>([]);
+  const nameFor = (email: string) => props.suggest?.(email).find(c => c.email.toLowerCase() === email)?.name;
+
+  const handlePaste = (e: ClipboardEvent) => {
+    const tidy = tidyRecipients(props.value, e.clipboardData?.getData?.("text/plain") ?? "", nameFor);
+    if (!tidy) return;
+    e.preventDefault();
+    const pieces = splitAtSeparators(tidy.value).map(p => p.trim()).filter(p => p);
+    props.onChange(pieces.slice(0, pieces.length - tidy.unresolved.length).join(", "));
+    const typed = [text().trim(), ...tidy.unresolved].filter(t => t).join(", ");
+    (e.currentTarget as HTMLInputElement).value = typed;
+    setText(typed);
+    setShowList(false);
+    setBlinking(tidy.merged);
+    setNote(pasteNote(tidy));
+  };
+
   const remove = (index: number) => props.onChange(guests().filter((_, i) => i !== index).join(", "));
 
   // The typed text becomes a guest when it is an address
@@ -91,6 +93,7 @@ export const GuestChips = (props: {
   };
 
   const handleKeyDown = (e: KeyboardEvent) => {
+    setNote(null);
     if (isImeComposing(e)) return;
     if (listOpen() && (e.key === "ArrowDown" || e.key === "ArrowUp")) {
       e.preventDefault();
@@ -100,7 +103,7 @@ export const GuestChips = (props: {
     }
     if (e.key === "Enter" && !(e.metaKey || e.ctrlKey)) {
       e.preventDefault();
-      if (listOpen()) add(asRecipient(suggestions()[active()]));
+      if (listOpen()) add(formatRecipient(suggestions()[active()]));
       else commitTyped();
       return;
     }
@@ -124,13 +127,16 @@ export const GuestChips = (props: {
   };
 
   return (
-    <div class="guest-chips">
+    <div class="guest-chips" onAnimationEnd={(e) => { if ((e.target as Element).classList.contains("blink")) setBlinking([]); }}>
       <For each={guests()}>
         {(guest, i) => {
           const email = extractEmail(guest);
           const label = extractName(guest) ?? email;
           return (
-            <Chip class="guest-chip" title={email} removeLabel={`Remove ${label}`} onRemove={() => remove(i())}>
+            <Chip
+              class="guest-chip"
+              classList={{ blink: blinking().includes(email.toLowerCase()) }}
+              title={email} removeLabel={`Remove ${label}`} onRemove={() => remove(i())}>
               {label}
             </Chip>
           );
@@ -150,8 +156,12 @@ export const GuestChips = (props: {
         value={text()}
         onInput={(e) => handleInput(e.currentTarget)}
         onKeyDown={handleKeyDown}
+        onPaste={handlePaste}
         onBlur={() => { commitTyped(); setShowList(false); }}
       />
+      <Show when={note()}>
+        {(line) => <NoticeLine class="recipient-paste-note" text={line()} />}
+      </Show>
       <Show when={listOpen()}>
         <div id={listId} class="compose-autocomplete" role="listbox" aria-label="Guest suggestions">
           <For each={suggestions()}>
@@ -160,7 +170,7 @@ export const GuestChips = (props: {
                 class={`compose-autocomplete-item ${i() === active() ? "selected" : ""}`}
                 role="option"
                 aria-selected={i() === active()}
-                onMouseDown={(e) => { e.preventDefault(); add(asRecipient(contact)); }}
+                onMouseDown={(e) => { e.preventDefault(); add(formatRecipient(contact)); }}
                 onMouseEnter={() => setActive(i())}
               >
                 <ContactOption contact={contact} />

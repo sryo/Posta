@@ -9,6 +9,7 @@ import { RecipientInput, type RecipientSuggestion } from "./RecipientInput";
 import { carriesFiles, transferredFiles } from "../app/fileDrop";
 import { FieldRow, FormFooter, PanelAccount, PanelHeader, SubmitButton } from "./FormParts";
 import { replyPlaceholder } from "../app/replyWords";
+import { linkPaste } from "../app/tidyPaste";
 import { noticesEnabled } from "../app/notices";
 import { extractEmail, splitEmailList } from "../utils";
 import { NoticeLine } from "./NoticeLine";
@@ -115,6 +116,7 @@ export const ComposeForm = (props: ComposeFormProps) => {
   };
 
   const handlePaste = (e: ClipboardEvent) => {
+    if (e.target === bodyEl && pasteLink(e)) return;
     if (!props.onAddFiles) return;
     const files = transferredFiles(e.clipboardData);
     if (files.length === 0) return;
@@ -283,10 +285,30 @@ export const ComposeForm = (props: ComposeFormProps) => {
     ? replyPlaceholder(splitEmailList(`${props.to ?? ''}, ${props.cc ?? ''}`), [fromAddress() ?? ''], props.nameFor)
     : null;
 
+  let bodyEl: HTMLTextAreaElement | undefined;
+
+  // What the last paste into the body did, until the next key
+  const [bodyNote, setBodyNote] = createSignal<string | null>(null);
+  const pasteLink = (e: ClipboardEvent) => {
+    const el = bodyEl!;
+    const linked = linkPaste(el.value, el.selectionStart, el.selectionEnd, e.clipboardData?.getData?.('text/plain') ?? '');
+    if (!linked) return false;
+    e.preventDefault();
+    // The text box shows the body without its folded quote
+    if (quoteShown() && quotedTail() !== null) setQuotedTail(splitQuotedText(linked.text)?.quoted ?? '');
+    props.setBody(linked.text + (quoteShown() ? '' : foldedTail() ?? ''));
+    props.onInput?.();
+    el.value = visibleBody();
+    el.setSelectionRange(linked.caret, linked.caret);
+    setBodyNote(linked.note);
+    return true;
+  };
+
   const BodyTextarea = () => (
     <div class="compose-content">
       <textarea
         ref={(el) => {
+          bodyEl = el;
           if (props.focusBody && el) {
             // Use requestAnimationFrame to ensure the value is rendered first
             requestAnimationFrame(() => {
@@ -307,10 +329,13 @@ export const ComposeForm = (props: ComposeFormProps) => {
           }
           props.onInput?.();
         }}
-        onKeyDown={handleKeyDown}
+        onKeyDown={(e) => { setBodyNote(null); handleKeyDown(e); }}
         aria-label="Message"
         placeholder={props.placeholder || (props.mode === 'new' ? "Write something..." : replyTo() ?? "Write your reply...")}
       />
+      <Show when={bodyNote()}>
+        {(note) => <NoticeLine text={note()} />}
+      </Show>
       <Show when={foldedTail()}>
         <button
           class="quoted-toggle"

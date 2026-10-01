@@ -114,3 +114,19 @@ describe("GuestChips suggestion notes", () => {
     expect(screen.getByRole("option")).toHaveTextContent("Writes from here since August");
   });
 });
+
+describe("GuestChips pasting a list", () => {
+  const clipboard = (text: string) => ({ clipboardData: { types: ["text/plain"], files: [], items: [], getData: (type: string) => (type === "text/plain" ? text : "") } });
+
+  it("makes chips, blinks a guest already there, leaves what has no address to finish, and says so", () => {
+    const { input, value } = renderChips('"Ana Pérez" <ana@x.test>');
+    fireEvent.paste(input, clipboard("ana@x.test\nlucas@x.test; \"Bo Díaz\" bo@y.test\nPablo (no email yet)"));
+    expect(value()).toBe('"Ana Pérez" <ana@x.test>, "Lucas Romero" <lucas@x.test>, "Bo Díaz" <bo@y.test>');
+    expect(chipTexts()).toEqual(["Ana Pérez", "Lucas Romero", "Bo Díaz"]);
+    expect(document.querySelector(".guest-chip.blink")).toHaveAttribute("title", "ana@x.test");
+    expect(input.value).toBe("Pablo");
+    expect(screen.getByRole("status")).toHaveTextContent("Added 2 · Ana was already here · “Pablo” has no address, left for you");
+    fireEvent.keyDown(input, { key: "o" });
+    expect(screen.queryByRole("status")).toBeNull();
+  });
+});

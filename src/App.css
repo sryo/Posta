@@ -6370,6 +6370,41 @@ button:disabled:hover {
     min-width: 120px;
 }
 
+/* A guest pasted again blinks once instead of doubling */
+.guest-chip.blink {
+    animation: chip-blink 600ms ease-in-out;
+}
+
+@keyframes chip-blink {
+    50% {
+        box-shadow: 0 0 0 2px var(--border-focus);
+    }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .guest-chip.blink {
+        animation: none;
+    }
+}
+
+/* What a paste into a recipient field did, on its own line under the field */
+.recipient-paste-note {
+    flex-basis: 100%;
+}
+
+.compose-field:has(> .recipient-paste-note),
+.compose-to-row:has(> .recipient-paste-note) {
+    flex-wrap: wrap;
+}
+
+.compose-field > .recipient-paste-note {
+    padding-left: calc(50px + var(--space-md));
+}
+
+.compose-to-row > .recipient-paste-note {
+    order: 1;
+}
+
 /* Smart Replies */
 .smart-replies-container {
     padding: var(--space-lg);

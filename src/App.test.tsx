@@ -6284,3 +6284,16 @@ describe("App autocomplete for someone who moved", () => {
     expect(options[1]).toHaveTextContent(/aperez@estudiomr\.com\.arLast heard from here in /);
   });
 });
+
+describe("App pasting a list into To", () => {
+  it("tidies it into recipients named from the contacts, and says what it did", async () => {
+    handlers.fetch_contacts = () => [{ resource_name: "people/1", display_name: "Carla Méndez", email_addresses: ["carla.m@gmail.com"], photo_url: null }];
+    render(() => <App />);
+    await screen.findByText("Mail for A");
+    fireEvent.keyDown(document, { key: "c" });
+    const to = await screen.findByPlaceholderText("Recipients");
+    fireEvent.paste(to, { clipboardData: { types: ["text/plain"], files: [], items: [], getData: () => "Ana Ruiz <ana.ruiz@estudio.co>; carla.m@gmail.com\nPablo (no email yet)" } });
+    expect(to).toHaveValue('"Ana Ruiz" <ana.ruiz@estudio.co>, "Carla Méndez" <carla.m@gmail.com>, Pablo');
+    expect(screen.getByText("Added 2 · “Pablo” has no address, left for you")).toBeInTheDocument();
+  });
+});

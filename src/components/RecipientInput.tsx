@@ -2,6 +2,8 @@ import { createMemo, createSignal, For, Show } from "solid-js";
 import { Avatar } from "./Avatar";
 import { completeRecipient, currentRecipient } from "../app/contacts";
 import { isImeComposing } from "../shared/keyboard";
+import { pasteNote, tidyRecipients } from "../app/tidyPaste";
+import { NoticeLine } from "./NoticeLine";
 
 export interface RecipientSuggestion {
   email: string;
@@ -47,12 +49,32 @@ export const RecipientInput = (props: {
   const candidates = createMemo(() => (props.suggest && query() ? props.suggest(query()) : []));
   const open = () => focused() && !dismissed() && candidates().length > 0;
 
+  // What the last paste did, until the next key
+  const [note, setNote] = createSignal<string | null>(null);
+
+  // The contact's own name for a pasted bare address
+  const nameFor = (email: string) => props.suggest?.(email).find(c => c.email.toLowerCase() === email)?.name;
+
+  function handlePaste(e: ClipboardEvent) {
+    const input = e.currentTarget as HTMLInputElement;
+    const start = input.selectionStart ?? props.value.length;
+    const end = input.selectionEnd ?? start;
+    const before = props.value.slice(0, start) + props.value.slice(end);
+    const tidy = tidyRecipients(before, e.clipboardData?.getData?.("text/plain") ?? "", nameFor);
+    if (!tidy) return;
+    e.preventDefault();
+    props.onChange(tidy.value);
+    setDismissed(true);
+    setNote(pasteNote(tidy));
+  }
+
   function commit(email: string) {
     props.onChange(completeRecipient(props.value, email));
     setDismissed(true);
   }
 
   function handleKeyDown(e: KeyboardEvent) {
+    setNote(null);
     if (isImeComposing(e)) return;
     if (open()) {
       const count = candidates().length;
@@ -96,8 +118,12 @@ export const RecipientInput = (props: {
         onFocus={() => setFocused(true)}
         onBlur={() => setFocused(false)}
         onKeyDown={handleKeyDown}
+        onPaste={handlePaste}
         placeholder={props.placeholder}
       />
+      <Show when={note()}>
+        {(text) => <NoticeLine class="recipient-paste-note" text={text()} />}
+      </Show>
       <Show when={open()}>
         <div class="compose-autocomplete" role="listbox" id={listId}>
           <For each={candidates()}>
