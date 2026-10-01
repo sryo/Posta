@@ -1,3 +1,5 @@
+import { quoted } from "./quoted";
+
 export type RsvpStatus = "accepted" | "tentative" | "declined";
 
 // `key` is the KeyboardEvent.key that answers from the event view or a
@@ -25,8 +27,14 @@ const SENT_MESSAGES: Record<RsvpStatus, string> = {
   declined: "You're not going",
 };
 
-export function rsvpSentMessage(status: RsvpStatus): string {
-  return SENT_MESSAGES[status];
+export function rsvpSentMessage(status: RsvpStatus, title = ""): string {
+  const event = quoted(title);
+  return event ? `${SENT_MESSAGES[status]} to ${event}` : SENT_MESSAGES[status];
+}
+
+export function rsvpFailureMessage(title: string): string {
+  const event = quoted(title);
+  return event ? `Couldn't send your RSVP to ${event}` : "Couldn't send your RSVP";
 }
 
 export function isRsvpAnswer(status: string | null | undefined): status is RsvpStatus {

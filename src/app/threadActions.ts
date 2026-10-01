@@ -1,4 +1,7 @@
 import type { Thread, ThreadGroup } from "../api/tauri";
+import { extractEmail } from "../utils";
+import { shortName } from "./people";
+import { quoted } from "./quoted";
 
 export interface LabelChange {
   add: string[];
@@ -55,39 +58,105 @@ export function undoLabelChanges(
   return [...reversals.values()];
 }
 
-// The undo toast's description of an action
-export function actionLabel(action: string, count: number): string {
-  const threads = `${count} thread${count === 1 ? "" : "s"}`;
-  switch (action) {
-    case "archive": return `Archived ${threads}`;
-    case "inbox": return `Moved ${threads} to inbox`;
-    case "star": return `Starred ${threads}`;
-    case "unstar": return `Removed star from ${threads}`;
-    case "trash": return `Moved ${threads} to Trash`;
-    case "read": return `Marked ${threads} as read`;
-    case "unread": return `Marked ${threads} as unread`;
-    case "important": return `Marked ${threads} as important`;
-    case "notImportant": return `Marked ${threads} as not important`;
-    case "spam": return `Moved ${threads} to spam`;
-    default: return `Modified ${threads}`;
-  }
+// A toast's words around the threads it names: [before, after]
+type Phrase = readonly [string, string];
+
+const DONE: Record<string, Phrase> = {
+  archive: ["Archived", ""],
+  inbox: ["Moved", " to Inbox"],
+  star: ["Starred", ""],
+  unstar: ["Unstarred", ""],
+  trash: ["Moved", " to Trash"],
+  read: ["Marked", " as read"],
+  unread: ["Marked", " as unread"],
+  important: ["Marked", " as important"],
+  notImportant: ["Marked", " as not important"],
+  spam: ["Moved", " to spam"],
+};
+
+const FAILED: Record<string, Phrase> = {
+  archive: ["Couldn't archive", ""],
+  inbox: ["Couldn't move", " to Inbox"],
+  star: ["Couldn't star", ""],
+  unstar: ["Couldn't unstar", ""],
+  trash: ["Couldn't delete", ""],
+  read: ["Couldn't mark", " as read"],
+  unread: ["Couldn't mark", " as unread"],
+  important: ["Couldn't mark", " as important"],
+  notImportant: ["Couldn't mark", " as not important"],
+  spam: ["Couldn't move", " to spam"],
+};
+
+const UNDONE: Record<string, Phrase> = {
+  archive: ["Unarchived", ""],
+  inbox: ["Moved", " out of Inbox"],
+  star: ["Unstarred", ""],
+  unstar: ["Starred", ""],
+  trash: ["Restored", " from Trash"],
+  read: ["Marked", " as unread"],
+  unread: ["Marked", " as read"],
+  important: ["Marked", " as not important"],
+  notImportant: ["Marked", " as important"],
+  spam: ["Moved", " out of spam"],
+};
+
+export interface NamedThread {
+  subject: string;
+  participants: readonly string[];
 }
 
-export function actionFailureLabel(action: string, count: number): string {
-  const threads = `${count} thread${count === 1 ? "" : "s"}`;
-  switch (action) {
-    case "archive": return `Couldn't archive ${threads}`;
-    case "inbox": return `Couldn't move ${threads} to inbox`;
-    case "star": return `Couldn't star ${threads}`;
-    case "unstar": return `Couldn't remove the star from ${threads}`;
-    case "trash": return `Couldn't delete ${threads}`;
-    case "read": return `Couldn't mark ${threads} as read`;
-    case "unread": return `Couldn't mark ${threads} as unread`;
-    case "important": return `Couldn't mark ${threads} as important`;
-    case "notImportant": return `Couldn't mark ${threads} as not important`;
-    case "spam": return `Couldn't move ${threads} to spam`;
-    default: return `Couldn't change ${threads}`;
-  }
+export interface DescribeScope {
+  // The card acted in, and how many threads it held before; null when it
+  // has more than it loaded
+  card?: { name: string; total: number | null };
+  ownEmails?: readonly string[];
+}
+
+// Who a thread is from, leaving out the user
+function senderOf(thread: NamedThread, ownEmails: readonly string[]): string | null {
+  const own = new Set(ownEmails.map(e => e.toLowerCase()));
+  const from = thread.participants.find(p => !own.has(extractEmail(p).toLowerCase()));
+  return from ? shortName(from) : null;
+}
+
+// One thread by its subject, else by whose message it is
+function threadName(thread: NamedThread, ownEmails: readonly string[]): string {
+  const sender = senderOf(thread, ownEmails);
+  return quoted(thread.subject) ?? (sender ? `${sender}'s message` : "a message with no subject");
+}
+
+// What a toast calls the threads it acted on: the subject of one, the
+// sender of several from one, all of a card it cleared, else a count
+function describeThreads([before, after]: Phrase, threads: readonly NamedThread[], { card, ownEmails = [] }: DescribeScope): string {
+  const n = threads.length;
+  if (n === 1) return `${before} ${threadName(threads[0], ownEmails)}${after}`;
+  if (card && card.total === n) return `${before} ${n === 2 ? "both" : `all ${n}`} in ${card.name}${after}`;
+  const senders = threads.map(t => senderOf(t, ownEmails));
+  if (senders.every(s => s && s === senders[0])) return `${before} ${n} from ${senders[0]}${after}`;
+  if (n === 2 && senders[0] && senders[1]) return `${before} 2, from ${senders[0]} and ${senders[1]}${after ? `,${after}` : ""}`;
+  return `${before} ${n} threads${after}`;
+}
+
+// The undo toast after an action
+export function actionMessage(action: string, threads: readonly NamedThread[], scope: DescribeScope = {}): string {
+  return describeThreads(DONE[action] ?? ["Changed", ""], threads, scope);
+}
+
+export function actionFailureMessage(action: string, threads: readonly NamedThread[], scope: DescribeScope = {}): string {
+  return describeThreads(FAILED[action] ?? ["Couldn't change", ""], threads, scope);
+}
+
+// What undoing the action did
+export function actionUndoneMessage(action: string, threads: readonly NamedThread[], scope: DescribeScope = {}): string {
+  return describeThreads(UNDONE[action] ?? ["Undid changes to", ""], threads, scope);
+}
+
+// A label put on or taken off one thread
+export function labelChangeMessage(adding: boolean, labelName: string, thread: NamedThread, outcome: "done" | "failed" = "done"): string {
+  const label = quoted(labelName) ?? "the label";
+  const verb = adding ? "add" : "remove";
+  const done = outcome === "failed" ? `Couldn't ${verb} ${label}` : `${adding ? "Added" : "Removed"} ${label}`;
+  return `${done} ${adding ? "to" : "from"} ${threadName(thread, [])}`;
 }
 
 // Archive only removes INBOX, so the thread should vanish only from cards

@@ -170,7 +170,8 @@ import { watchScrollFade } from "./app/scrollFade";
 import { createThumbnails } from "./app/thumbnails";
 import { AfterArchiveSetting } from "./components/AfterArchiveSetting";
 import { runUnsubscribe, type UnsubscribeMethod } from "./app/unsubscribe";
-import { actionFailureLabel, actionLabel, actionRemovesFromCard, applyThreadAction, labelChangeFor, threadMayJoinCard, undoLabelChanges, type LabelReversal } from "./app/threadActions";
+import { eventName, quoted } from "./app/quoted";
+import { actionFailureMessage, actionMessage, actionRemovesFromCard, applyThreadAction, labelChangeFor, labelChangeMessage, threadMayJoinCard, undoLabelChanges, type DescribeScope, type LabelReversal, type NamedThread } from "./app/threadActions";
 import { PRESETS } from "./app/presets";
 import { normalizeActionOrder } from "./app/actionOrder";
 import { parseStoredWidth } from "./app/storedWidth";
@@ -204,7 +205,7 @@ import { querySuggestions, type QuerySuggestion } from "./app/querySuggestions";
 import { calendarRangeError } from "./app/queryTokens";
 import { useLayer } from "./app/layers";
 import { QueryHelpSheet } from "./components/QueryHelpSheet";
-import { inviteNamesEvent, rsvpForKey, rsvpSentMessage, withOwnResponse, type RsvpStatus } from "./app/rsvp";
+import { inviteNamesEvent, rsvpFailureMessage, rsvpForKey, rsvpSentMessage, withOwnResponse, type RsvpStatus } from "./app/rsvp";
 import { createRsvpLookups } from "./app/rsvpLookups";
 import { nextSelection } from "./app/selection";
 import { bulkActionForKey, extendSelection, keyTargets } from "./app/bulkKeys";
@@ -368,13 +369,16 @@ function App() {
     try {
       await rsvpListedCalendarEvent(account.id, event.calendar_id, event.id, status);
       markEventRsvp(event.id, status, account);
-      showToast(rsvpSentMessage(status));
+      showToast(rsvpSentMessage(status, event.title));
     } catch (e) {
-      showFailure("Couldn't send your RSVP", e);
+      showFailure(rsvpFailureMessage(event.title), e);
     } finally {
       setRsvpLoading(event.id, false);
     }
   };
+
+  const invitedEventTitle = (threadId: string) =>
+    Object.values(cardThreads).flatMap(groups => groups.flatMap(g => g.threads)).find(t => t.gmail_thread_id === threadId)?.calendar_event?.title ?? "";
 
   // Answers an invite from its email; the calendar cards showing the event
   // pick up the answer too
@@ -387,9 +391,9 @@ function App() {
       const eventIds = new Set(Object.values(cardCalendarEvents).flatMap(events =>
         (events ?? []).filter(ev => inviteNamesEvent(eventUid, ev.id) && (!ev.account_id || ev.account_id === account.id)).map(ev => ev.id)));
       for (const eventId of eventIds) markEventRsvp(eventId, status, account);
-      showToast(rsvpSentMessage(status));
+      showToast(rsvpSentMessage(status, invitedEventTitle(threadId)));
     } catch (e) {
-      showFailure("Couldn't send your RSVP", e);
+      showFailure(rsvpFailureMessage(invitedEventTitle(threadId)), e);
     } finally {
       setRsvpLoading(threadId, false);
     }
@@ -2855,7 +2859,7 @@ function App() {
         }
       });
 
-      showToast(editing ? "Event updated" : "Event created");
+      showToast(`${editing ? "Updated" : "Created"} ${eventName({ title: form.summary })}`);
 
     } catch (e) {
       const failure = editing ? "Couldn't update the event" : "Couldn't create the event";
@@ -3004,11 +3008,11 @@ function App() {
         setQuickReply({ threadId: null, text: "", sending: false });
         setQuickReplyCardId(null);
       }
-      showToast("Reply sent");
+      showToast(`Replied to ${quoted(thread.subject) ?? "the thread"}`);
       fetchAndCacheThreads(cardId);
     } catch (e) {
       console.error("Failed to send reply:", e);
-      setFailure("Couldn't send the reply", e);
+      setFailure(`Couldn't send the reply to ${quoted(thread.subject) ?? "the thread"}`, e);
     } finally {
       if (stillOpen()) setQuickReply(qr => ({ ...qr, sending: false }));
     }
@@ -3034,10 +3038,10 @@ function App() {
         setQuickReplyEventId(null);
         setQuickReply(qr => ({ ...qr, text: "", sending: false }));
       }
-      showToast("Reply sent");
+      showToast(`Replied to ${eventName(event)}`);
     } catch (e) {
       console.error("Failed to send reply:", e);
-      setFailure("Couldn't send the reply", e);
+      setFailure(`Couldn't send the reply to ${eventName(event)}`, e);
     } finally {
       if (stillOpen()) setQuickReply(qr => ({ ...qr, sending: false }));
     }
@@ -3144,7 +3148,7 @@ function App() {
       const outcome = await runUnsubscribe(account.id, method, { sendEmail, postOneClick: unsubscribeOneClick, openUrl });
       showToast(outcome === "done" ? `Unsubscribed from ${listName}` : `Finish unsubscribing from ${listName} on its page`);
     } catch (e) {
-      showFailure("Couldn't unsubscribe", e);
+      showFailure(`Couldn't unsubscribe from ${listName}`, e);
       throw e;
     }
   }
@@ -3298,11 +3302,11 @@ function App() {
       try {
         await deleteCalendarEvent(account.id, event.calendar_id, event.id, scope);
         removeDeletedEvents(event, scope);
-        showToast("Event deleted");
+        showToast(`Deleted ${eventName(event)}`);
         if (activeEvent()?.id === event.id) { closeEvent(); restoreOpenedRowFocus(); }
       } catch (e) {
         console.error('Failed to delete event:', e);
-        showFailure("Couldn't delete the event", e);
+        showFailure(`Couldn't delete ${eventName(event)}`, e);
       }
       return;
     }
@@ -3327,7 +3331,7 @@ function App() {
     updateEventInCards(event.id, () => null);
     if (activeEvent()?.id === event.id) { closeEvent(); restoreOpenedRowFocus(); }
     toasts.show({
-      message: inAccount(`Deleted “${event.title || "(No title)"}”`, [account.email], accounts().length),
+      message: inAccount(`Deleted ${eventName(event)}`, [account.email], accounts().length),
       tag: accountToastTag(account.id),
       undo: putBack,
       onExpire: async () => {
@@ -3337,7 +3341,7 @@ function App() {
         } catch (e) {
           console.error('Failed to delete event:', e);
           putBack();
-          showFailure("Couldn't delete the event", e);
+          showFailure(`Couldn't delete ${eventName(event)}`, e);
         }
       },
     });
@@ -3371,12 +3375,18 @@ function App() {
       // Find the destination calendar name
       const destCal = calendarsFor(account.id).find(c => c.id === destinationCalendarId);
       const where = destCal?.name || 'calendar';
-      showToast(event.recurring_event_id ? `Moved all its events to ${where}` : `Moved to ${where}`);
+      showToast(`Moved ${event.recurring_event_id ? "all of " : ""}${eventName(event)} to ${where}`);
       setCalendarDrawerOpen(false);
     } catch (e) {
       console.error("Failed to move event:", e);
-      showFailure("Couldn't move the event", e);
+      showFailure(`Couldn't move ${eventName(event)}`, e);
     }
+  }
+
+  // The open thread as its toasts name it: by the subject it shows
+  function openThreadNamed(thread: FullThread): NamedThread {
+    const headers = (name: string) => thread.messages.map(m => findHeader(m.payload?.headers, name)).filter((h): h is string => !!h);
+    return { subject: headers('Subject')[0] ?? activeListedThread()?.subject ?? "", participants: headers('From') };
   }
 
   function getCurrentThreadLabels(): string[] {
@@ -3419,7 +3429,7 @@ function App() {
     const leavesView = ['archive', 'trash', 'spam'].includes(action);
     const order = cardId ? cardThreadOrder(cardId) : [];
 
-    await handleThreadAction(action, [thread.id], cardId || '', { accountId: account.id });
+    await handleThreadAction(action, [thread.id], cardId || '', { accountId: account.id, named: [openThreadNamed(thread)] });
     if (activeThreadId() !== thread.id) return;
 
     if (leavesView) {
@@ -3475,7 +3485,7 @@ function App() {
       await modifyThreads(account.id, [thread.id], addLabels, removeLabels);
       await refreshActiveThread(account.id, thread.id);
       toasts.show({
-        message: inAccount(`${isAdding ? 'Added' : 'Removed'} the label “${labelName}”`, [account.email], accounts().length),
+        message: inAccount(labelChangeMessage(isAdding, labelName, openThreadNamed(thread)), [account.email], accounts().length),
         tag: accountToastTag(account.id),
         undo: async () => {
           try {
@@ -3489,7 +3499,7 @@ function App() {
       });
     } catch (e) {
       console.error("Failed to modify labels:", e);
-      setFailure(`Couldn't ${isAdding ? 'add' : 'remove'} the label “${labelName}”`, e);
+      setFailure(labelChangeMessage(isAdding, labelName, openThreadNamed(thread), "failed"), e);
     }
   }
 
@@ -4609,7 +4619,8 @@ function App() {
     try {
       await discardThreadDrafts(account.id, threadId, { listThreadDrafts, deleteDraft });
     } catch (e) {
-      showFailure("Couldn't discard the draft", e);
+      const subject = quoted(namedThreads(cardId, [threadId])[0].subject);
+      showFailure(subject ? `Couldn't discard the draft in ${subject}` : "Couldn't discard the draft", e);
       return;
     }
     if (!accountById(account.id)) return;
@@ -4703,6 +4714,23 @@ function App() {
     }
   }
 
+  // The threads a toast names, as the card lists them
+  function namedThreads(cardId: string, threadIds: string[]): NamedThread[] {
+    const listed = new Map((cardThreads[cardId] ?? []).flatMap(g => g.threads).map(t => [t.gmail_thread_id, t]));
+    return threadIds.map(id => listed.get(id) ?? { subject: "", participants: [] });
+  }
+
+  // The card an action was taken in, and all it holds when it has no more
+  // to load
+  function describeScope(cardId: string): DescribeScope {
+    const card = cardById(cardId);
+    const total = (cardThreads[cardId] ?? []).reduce((n, g) => n + g.threads.length, 0);
+    return {
+      card: card && { name: card.name, total: cardHasMore[cardId] ? null : total },
+      ownEmails: accounts().map(a => a.email),
+    };
+  }
+
   function showToast(message: string, action?: ToastAction | ToastAction[]) {
     toasts.show({ message, action });
   }
@@ -4727,8 +4755,9 @@ function App() {
 
   // silent: a change the user didn't ask for directly (marking a thread
   // read on open) gets no undo toast. `accountId` names the threads' account
-  // when the card may no longer list them (the open thread).
-  async function handleThreadAction(action: string, threadIds: string[], cardId: string, { silent = false, accountId }: { silent?: boolean; accountId?: string } = {}) {
+  // when the card may no longer list them (the open thread), and `named` the
+  // threads its toasts name then.
+  async function handleThreadAction(action: string, threadIds: string[], cardId: string, { silent = false, accountId, named }: { silent?: boolean; accountId?: string; named?: NamedThread[] } = {}) {
     const byAccount = accountId
       ? new Map([[accountId, threadIds]])
       : threadIdsByAccount(cardThreads[cardId] ?? [], threadIds, cardById(cardId) ?? { account_id: "" });
@@ -4740,6 +4769,8 @@ function App() {
     const isTarget = (t: Thread, card: Card) => ownerOf.get(t.gmail_thread_id) === threadAccountId(t, card);
 
     const { add: addLabels, remove: removeLabels } = labelChangeFor(action);
+    const acted = named ?? namedThreads(cardId, threadIds);
+    const scope = describeScope(cardId);
 
     // Optimistic Update - update ALL cards that contain these threads.
     // Snapshot the affected cards first so the update can be rolled back
@@ -4791,7 +4822,7 @@ function App() {
       if (results.some(r => r.status === "fulfilled")) {
         for (const cId of affectedCardIds) if (cardById(cId)) fetchAndCacheThreads(cId);
       }
-      setFailure(actionFailureLabel(action, threadIds.length), failure.reason);
+      setFailure(actionFailureMessage(action, acted, scope), failure.reason);
       return;
     }
 
@@ -4813,7 +4844,7 @@ function App() {
     setLastAction(done);
     const emails = owners.map(a => a!.email);
     toasts.show({
-      message: inAccount(actionLabel(action, threadIds.length), emails, accounts().length),
+      message: inAccount(actionMessage(action, acted, scope), emails, accounts().length),
       tag: owners.length === 1 ? accountToastTag(owners[0]!.id) : undefined,
       undo: () => undoThreadAction(done),
     });
