@@ -57,9 +57,11 @@ import { isMailingList, unsubscribeMethod, type UnsubscribeMethod } from "../app
 import { personName } from "../app/people";
 import { CardPill } from "./CardPill";
 import type { InlineComposeProps } from "./types";
-import { findHeader, lastMessageFromOthers, nearestShownIndex, normalizeMessageId, reactionsShownAsChips, stepShownIndex } from "../app/messages";
+import { findHeader, lastMessageFromOthers, messageDate, nearestShownIndex, normalizeMessageId, reactionsShownAsChips, stepShownIndex } from "../app/messages";
 import { useLayer } from "../app/layers";
 import { useDialog } from "../app/dialog";
+import { lastLetterLine, latestDate, transitGaps } from "../app/transit";
+import { TransitGap } from "./TransitGap";
 
 
 export const ThreadView = (props: {
@@ -264,6 +266,8 @@ export const ThreadView = (props: {
 
   const chipReactions = createMemo(() => reactionsShownAsChips(props.thread?.messages ?? []));
   const hiddenMessages = () => (props.thread?.messages ?? []).map(m => chipReactions().has(m.id));
+  const messageDates = createMemo(() => messages().map(messageDate));
+  const transits = createMemo(() => transitGaps(messageDates(), hiddenMessages()));
   createEffect(() => {
     if (!props.thread) return;
     const shown = nearestShownIndex(props.focusedMessageIndex, hiddenMessages());
@@ -625,6 +629,10 @@ export const ThreadView = (props: {
                 const showInlineCompose = () => isReplyingToThis() || isForwardingFromThis();
 
                 return (
+                  <>
+                  <Show when={transits()[index()]}>
+                    {(transit) => <TransitGap transit={transit()} hue={props.card?.color} />}
+                  </Show>
                   <div
                     class={`message-row ${showInlineCompose() ? 'with-compose' : ''} ${props.inlineCompose?.resizing ? 'resizing' : ''}`}
                     onMouseEnter={(e) => showMessageWheel(msg.id, e)}
@@ -745,10 +753,12 @@ export const ThreadView = (props: {
                           onClose={props.inlineCompose!.onClose}
                           onInput={props.inlineCompose!.onInput}
                           focusBody={props.inlineCompose!.focusBody}
+                          lastLetter={props.inlineCompose!.isForward ? null : lastLetterLine(latestDate(messageDates()), new Date())}
                         />
                       </div>
                     </Show>
                   </div>
+                  </>
                 );
               }}
             </For>

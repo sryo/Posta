@@ -157,7 +157,8 @@ import { formatClock, formatDayLabel, formatShortDate, formatWhen, threadGroupLa
 import { safeGetItem, safeSetItem, safeRemoveItem, safeGetJSON, safeSetJSON } from "./shared/storage";
 import { BOARD_COLORS, type ActionSettings, type CardColor, type GroupBy } from "./shared/constants";
 import { createUndoableSend } from "./app/undoableSend";
-import { findHeader, lastMessageFromOthers } from "./app/messages";
+import { findHeader, lastMessageFromOthers, messageDate } from "./app/messages";
+import { lastLetterLine, latestDate } from "./app/transit";
 import { batchReplyEntry, type BatchReplyThread } from "./app/batchReply";
 import { matchContacts, rankContacts, type RecentContact } from "./app/contacts";
 import { eventReplyRecipients } from "./app/eventReply";
@@ -295,6 +296,13 @@ function App() {
     const card = cardById(cardId);
     const listed = (cardThreads[cardId ?? ""] ?? []).flatMap(g => g.threads).find(t => t.gmail_thread_id === threadId);
     return accountById(threadAccountId(listed ?? { account_id: "" }, card));
+  }
+  // When a thread last heard a letter: from the open thread, else its card row
+  function threadLastDate(threadId: string): Date | null {
+    const open = activeThread();
+    if (open?.id === threadId) return latestDate(open.messages.map(messageDate));
+    const listed = Object.values(cardThreads).flatMap(groups => groups.flatMap(g => g.threads)).find(t => t.gmail_thread_id === threadId);
+    return listed?.last_message_date ? new Date(listed.last_message_date) : null;
   }
   // The account whose calendar an event is on
   function eventOwner(event: GoogleCalendarEvent, cardId?: string | null): Account | null {
@@ -5595,6 +5603,9 @@ function App() {
                                         </div>
                                         <Show when={isQuickReplyThread(thread.gmail_thread_id)}>
                                           <div class="quick-reply-box" onClick={(e) => e.stopPropagation()}>
+                                            <Show when={lastLetterLine(thread.last_message_date ? new Date(thread.last_message_date) : null, new Date())}>
+                                              {(line) => <p class="compose-last-letter">{line()}</p>}
+                                            </Show>
                                             <ComposeTextarea
                                               class="quick-reply-input"
                                               placeholder="Write a reply..."
@@ -5810,6 +5821,7 @@ function App() {
             fromAccountId={composeAccount()?.id}
             setFromAccountId={changeComposeAccount}
             fromEmail={composeIsReply() ? composeFromEmail() : undefined}
+            lastLetter={replyingToThread() ? lastLetterLine(threadLastDate(replyingToThread()!.threadId), new Date()) : null}
           />
         </div>
       </Show>
@@ -6196,6 +6208,7 @@ function App() {
                         onSkip={() => discardBatchReplyThread(thread.threadId)}
                         canSend={!!batchReplyMessages()[thread.threadId]?.trim()}
                         focusBody={batchReplyThreads()[0]?.threadId === thread.threadId}
+                        lastLetter={lastLetterLine(thread.lastDate, new Date())}
                       />
                     </div>
                   </div>

@@ -1,4 +1,4 @@
-import { beforeAll, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { createSignal } from "solid-js";
 import { cleanup, fireEvent, render } from "@solidjs/testing-library";
 import { ThreadView } from "./ThreadView";
@@ -941,5 +941,98 @@ describe("ThreadView quoted history", () => {
     expect(forward.querySelector(".quoted-toggle")).toBeNull();
     expect(reply.textContent).not.toContain("The plan itself");
     expect(reply.querySelector(".quoted-toggle")).not.toBeNull();
+  });
+});
+
+describe("ThreadView long in transit", () => {
+  const dated = (thread: FullThread, ...dates: Date[]) => {
+    thread.messages.forEach((m, i) => { m.internalDate = String(dates[i].getTime()); });
+    return thread;
+  };
+  const three = () => makeThread([
+    { from: "Jules <jules@example.com>", body: "Let's pick the bike trip up again when the weather turns." },
+    { from: "Me <me@example.com>", body: "Deal." },
+    { from: "Jules <jules@example.com>", body: "So. The weather turned." },
+  ]);
+  const listed = (container: HTMLElement) =>
+    Array.from(container.querySelector(".messages-list")!.children).map(c => (c.classList.contains("transit") ? "stamp" : "message"));
+
+  it("stamps the gap between two letters 90 days or more apart, joining the cards in the list itself", () => {
+    const thread = dated(three(), new Date(2025, 7, 21), new Date(2025, 7, 22), new Date(2026, 9, 1));
+    const { container, getByRole } = renderThread({ thread, card: { name: "Friends", color: "purple" } });
+    expect(listed(container)).toEqual(["message", "message", "stamp", "message"]);
+    const stamp = getByRole("note", { name: "13 months between letters." });
+    expect(stamp).toHaveTextContent("IN TRANSIT13 MONTHSAUG 2025 – OCT 2026");
+    expect(stamp).toHaveAttribute("data-hue", "purple");
+    expect(stamp.closest(".message-card, .message-body")).toBeNull();
+  });
+
+  it("stamps exactly 90 days but not 89", () => {
+    const at90 = renderThread({ thread: dated(three(), new Date(2026, 0, 1), new Date(2026, 0, 1), new Date(2026, 3, 1)) });
+    expect(listed(at90.container)).toEqual(["message", "message", "stamp", "message"]);
+    at90.unmount();
+    const at89 = renderThread({ thread: dated(three(), new Date(2026, 0, 1), new Date(2026, 0, 1), new Date(2026, 2, 31)) });
+    expect(at89.container.querySelector(".transit")).toBeNull();
+  });
+
+  it("stamps nothing in a thread of one message", () => {
+    const thread = dated(makeThread([{ from: "Jules <jules@example.com>", body: "Hello" }]), new Date(2019, 0, 1));
+    const { container } = renderThread({ thread, focusedMessageIndex: 0 });
+    expect(container.querySelector(".transit")).toBeNull();
+  });
+
+  it("counts a reaction shown as a chip by its date, and stamps before the next message shown", () => {
+    const thread = dated(three(), new Date(2024, 0, 10), new Date(2025, 11, 20), new Date(2026, 9, 1));
+    thread.messages[1].reaction = { emoji: "👍", from_addr: "me@example.com", in_reply_to: "<msg0@example.com>", message_id: "m1" };
+    const { container, getByRole } = renderThread({ thread });
+    expect(listed(container)).toEqual(["message", "stamp", "message"]);
+    expect(getByRole("note")).toHaveTextContent("DEC 2025 – OCT 2026");
+  });
+
+  it("keeps the stamp out of a message's folded quoted history", () => {
+    const outlook = (text: string) =>
+      `<p>${text}</p><hr><div id="divRplyFwdMsg"><b>From:</b> Jules<br><b>Subject:</b> Bikes</div><div>Older words</div>`;
+    const thread = dated(makeThread([
+      { from: "Jules <jules@example.com>", body: outlook("First"), mimeType: "text/html" },
+      { from: "Jules <jules@example.com>", subject: "RE: Bikes", body: outlook("Back again"), mimeType: "text/html" },
+    ]), new Date(2023, 4, 2), new Date(2026, 9, 1));
+    const { container } = renderThread({ thread });
+    expect(listed(container)).toEqual(["message", "stamp", "message"]);
+    for (const body of container.querySelectorAll(".message-body")) expect(body.querySelector(".transit")).toBeNull();
+    expect(container.querySelector(".transit")).toHaveTextContent("3 YEARS");
+  });
+
+  describe("replying", () => {
+    const composeStub = (isForward: boolean) => ({
+      replyToMessageId: isForward ? null : "m1", isForward, to: "", setTo: vi.fn(), cc: "", setCc: vi.fn(), bcc: "", setBcc: vi.fn(),
+      showCcBcc: false, setShowCcBcc: vi.fn(), body: "", setBody: vi.fn(), attachments: [], onRemoveAttachment: vi.fn(),
+      onFileSelect: vi.fn(), error: null, draftSaving: false, draftSaved: false, onSend: vi.fn(), onClose: vi.fn(),
+      onInput: vi.fn(), focusBody: false, resizing: false, onResizeStart: vi.fn(),
+    });
+    const two = (last: Date) => dated(makeThread([
+      { from: "Jules <jules@example.com>", body: "first" },
+      { from: "Jules <jules@example.com>", body: "second" },
+    ]), new Date(2025, 0, 5), last);
+
+    afterEach(() => vi.useRealTimers());
+    const today = () => { vi.useFakeTimers({ toFake: ["Date"] }); vi.setSystemTime(new Date(2026, 9, 1, 9)); };
+
+    it("opens a reply to a thread quiet for a year with when its last letter came", () => {
+      today();
+      const { container } = renderThread({ thread: two(new Date(2025, 7, 21)), inlineCompose: composeStub(false) as any });
+      const line = container.querySelector(".inline-compose .compose-last-letter");
+      expect(line).toHaveTextContent("Last letter here: Aug 2025.");
+    });
+
+    it("says nothing in a reply to a thread heard from within the year, or in a forward", () => {
+      today();
+      const recent = renderThread({ thread: two(new Date(2025, 10, 1)), inlineCompose: composeStub(false) as any });
+      expect(recent.container.querySelector(".inline-compose")).not.toBeNull();
+      expect(recent.container.querySelector(".compose-last-letter")).toBeNull();
+      recent.unmount();
+      const forward = renderThread({ thread: two(new Date(2020, 0, 1)), inlineCompose: composeStub(true) as any });
+      expect(forward.container.querySelector(".inline-compose")).not.toBeNull();
+      expect(forward.container.querySelector(".compose-last-letter")).toBeNull();
+    });
   });
 });

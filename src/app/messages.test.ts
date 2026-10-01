@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { findHeader, lastMessageFromOthers, nearestShownIndex, reactionsShownAsChips, stepShownIndex } from "./messages";
+import { findHeader, lastMessageFromOthers, messageDate, nearestShownIndex, reactionsShownAsChips, stepShownIndex } from "./messages";
 
 const msg = (id: string, headers: Record<string, string>) => ({
   id,
@@ -75,5 +75,20 @@ describe("shown message navigation", () => {
     expect(nearestShownIndex(3, hidden)).toBe(2);
     expect(nearestShownIndex(1, [true, true, false])).toBe(2);
     expect(nearestShownIndex(2, hidden)).toBe(2);
+  });
+});
+
+describe("messageDate", () => {
+  it("dates a message by when Gmail received it", () => {
+    const sent = Date.UTC(2025, 7, 21, 9, 30);
+    expect(messageDate({ internalDate: String(sent), payload: { headers: [{ name: "Date", value: "Mon, 1 Jan 2024 10:00:00 +0000" }] } }))
+      .toEqual(new Date(sent));
+  });
+
+  it("falls back to its Date header, and to nothing when neither reads as a date", () => {
+    expect(messageDate(msg("1", { Date: "Mon, 1 Jan 2024 10:00:00 +0000" }))).toEqual(new Date(Date.UTC(2024, 0, 1, 10)));
+    expect(messageDate(msg("1", { Date: "soon" }))).toBeNull();
+    expect(messageDate({ internalDate: "x" })).toBeNull();
+    expect(messageDate({})).toBeNull();
   });
 });

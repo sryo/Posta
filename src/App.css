@@ -361,7 +361,7 @@
 .card[data-color="purple"], .preset-card.purple, [data-hue="purple"] { --card-hue: var(--hue-purple); }
 .card[data-color="pink"], [data-hue="pink"] { --card-hue: var(--hue-pink); }
 
-.card[data-color], .preset-card, .thread-bar-card[data-hue] {
+.card[data-color], .preset-card, .thread-bar-card[data-hue], .transit[data-hue] {
     --card-tint: color-mix(in srgb, var(--card-hue) var(--card-tint-mix), transparent);
     --card-ring: color-mix(in srgb, var(--card-hue) var(--card-ring-mix), transparent);
     --card-band: color-mix(in srgb, var(--card-hue) var(--card-band-mix), transparent);
@@ -2345,6 +2345,36 @@ a:focus-visible,
     }
 }
 
+/* Two letters of a thread a long time apart: a straight handstamp between
+   them, fainter than an emptied card's, joined to both cards by a dashed
+   line. The negative margin takes back the list's gap on either side. */
+.transit {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    margin: calc(-1 * var(--space-2xl)) 0;
+    padding: var(--space-sm) 0;
+}
+
+.transit-line {
+    width: 0;
+    height: 18px;
+    border-left: 1.5px dashed color-mix(in srgb, var(--card-ink) 45%, transparent);
+}
+
+.postmark.transit-stamp {
+    --tilt: -3deg;
+    width: 150px;
+    height: 64px;
+    opacity: 0.5;
+}
+
+@media (prefers-color-scheme: dark) {
+    .postmark.transit-stamp {
+        opacity: 0.72;
+    }
+}
+
 .card-waiting {
     padding: var(--space-xl);
     text-align: center;
@@ -3525,6 +3555,12 @@ button:disabled:hover {
     color: var(--text-primary);
 }
 
+.compose-last-letter {
+    margin: 0;
+    font: var(--type-meta);
+    color: var(--text-muted);
+}
+
 .compose-content {
     flex: 1;
     min-height: 150px;
@@ -3712,6 +3748,10 @@ button:disabled:hover {
     background: var(--surface-subtle);
     border-bottom: 1px solid var(--card-divider);
     cursor: default;
+}
+
+.quick-reply-box .compose-last-letter {
+    margin-bottom: var(--space-md);
 }
 
 .quick-reply-input {

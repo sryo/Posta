@@ -2916,6 +2916,64 @@ describe("App quick reply threading", () => {
   });
 });
 
+describe("App reply to a long-quiet thread", () => {
+  const longAgo = new Date(2020, 2, 3, 12).getTime();
+
+  it("names when the last letter came in a quick reply, and not for a thread heard from lately", async () => {
+    threadsByCard["card-a"] = [
+      { ...thread("t-old", "Bikes"), last_message_date: longAgo },
+      { ...thread("t-new", "Lunch"), last_message_date: Date.now() - 864e5 },
+    ];
+    render(() => <App />);
+    await screen.findByText("Bikes");
+    fireEvent.keyDown(document, { key: "l" });
+    fireEvent.keyDown(document, { key: "r" });
+    await waitFor(() => expect(document.querySelector(".quick-reply-box")).not.toBeNull());
+    const box = document.querySelector(".quick-reply-box")!;
+    const line = box.querySelector(".compose-last-letter");
+    expect(line).toHaveTextContent("Last letter here: Mar 2020.");
+    expect(line!.compareDocumentPosition(box.querySelector(".quick-reply-input")!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+
+    fireEvent.keyDown(document.querySelector(".quick-reply-input")!, { key: "Escape" });
+    fireEvent.keyDown(document, { key: "j" });
+    fireEvent.keyDown(document, { key: "r" });
+    await waitFor(() => expect(document.querySelector(".quick-reply-box")).not.toBeNull());
+    expect(document.querySelector(".compose-last-letter")).toBeNull();
+  });
+
+  it("names it in each batch reply to a long-quiet thread", async () => {
+    handlers.get_thread_details = ({ threadId }) => ({
+      id: threadId,
+      messages: [fullMessage("m1", "Ana <ana@x.com>", { internalDate: String(threadId === "t-1" ? longAgo : Date.now()) })],
+    });
+    threadsByCard["card-a"] = [thread("t-1", "One"), thread("t-2", "Two")];
+    render(() => <App />);
+    await screen.findByText("One");
+    fireEvent.keyDown(document, { key: "l" });
+    fireEvent.keyDown(document, { key: "x" });
+    fireEvent.keyDown(document, { key: "j" });
+    fireEvent.keyDown(document, { key: "x" });
+    fireEvent.keyDown(document, { key: "r" });
+    await waitFor(() => expect(screen.getAllByPlaceholderText(/^Reply to/)).toHaveLength(2));
+    const lines = document.querySelectorAll(".compose-last-letter");
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).toHaveTextContent("Last letter here: Mar 2020.");
+  });
+
+  it("names it in a reply reopened in the compose panel", async () => {
+    threadsByCard["card-a"] = [{ ...thread("t-a", "Mail for A"), last_message_date: longAgo }];
+    handlers.get_thread_details = () => ({ id: "t-a", messages: [fullMessage("m1", "Ana <ana@x.com>", { internalDate: String(longAgo) })] });
+    localStorage.setItem("draft_reply_a_t-a#q", JSON.stringify({
+      to: "ana@x.com", cc: "", bcc: "", subject: "Re: Hi", body: "unsent reply", threadId: "t-a", savedAt: 5, sending: true, accountId: "a",
+    }));
+    render(() => <App />);
+    fireEvent.click(await screen.findByRole("button", { name: "Open" }));
+    await waitFor(() => expect(document.querySelector(".compose-panel")).not.toBeNull());
+    await screen.findByText("Mail for A");
+    expect(document.querySelector(".compose-panel .compose-last-letter")).toHaveTextContent("Last letter here: Mar 2020.");
+  });
+});
+
 describe("App batch reply", () => {
   async function openBatchReplyForTwo() {
     threadsByCard["card-a"] = [thread("t-1", "One"), thread("t-2", "Two")];

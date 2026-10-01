@@ -34,6 +34,15 @@ describe("batchReplyEntry", () => {
     expect(entry?.date).not.toMatch(/\d+\/\d+\/\d+/);
   });
 
+  it("keeps when the thread last heard a letter, a reaction or the user's own included", () => {
+    const at = (ms: number) => ({ internalDate: String(ms) });
+    const entry = batchReplyEntry("t", [
+      { ...msg("1", { From: "ana@x.com" }), ...at(1000) },
+      { ...msg("2", { From: "me@x.com" }), ...at(3000) },
+    ], "me@x.com");
+    expect(entry?.lastDate).toEqual(new Date(3000));
+  });
+
   it("has nothing to answer in an empty thread", () => {
 
     expect(batchReplyEntry("t", [], "me@x.com")).toBeNull();

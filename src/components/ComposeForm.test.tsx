@@ -277,3 +277,27 @@ describe("ComposeForm sender", () => {
     expect(screen.queryByRole("combobox", { name: "From" })).not.toBeInTheDocument();
   });
 });
+
+describe("ComposeForm reply to a long-quiet thread", () => {
+  it("names when the last letter came, above the text", () => {
+    render(() => (
+      <ComposeForm
+        mode="reply" body="" setBody={vi.fn()} attachments={[]} onRemoveAttachment={vi.fn()} onFileSelect={vi.fn()}
+        fileInputId="file" onSend={vi.fn()} onClose={vi.fn()} lastLetter="Last letter here: Aug 2025."
+      />
+    ));
+    const line = screen.getByText("Last letter here: Aug 2025.");
+    const textarea = screen.getByPlaceholderText("Write your reply...");
+    expect(line.compareDocumentPosition(textarea) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
+  it("says nothing without one", () => {
+    const { container } = render(() => (
+      <ComposeForm
+        mode="reply" body="" setBody={vi.fn()} attachments={[]} onRemoveAttachment={vi.fn()} onFileSelect={vi.fn()}
+        fileInputId="file" onSend={vi.fn()} onClose={vi.fn()}
+      />
+    ));
+    expect(container.querySelector(".compose-last-letter")).toBeNull();
+  });
+});
