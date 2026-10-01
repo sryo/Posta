@@ -3761,6 +3761,18 @@ button:disabled:hover {
     resize: vertical;
 }
 
+/* Sent from the row (SentInPlace.tsx), until the card shows it */
+.quick-reply-box.sent .quick-reply-input {
+    opacity: 0.62;
+    border-color: transparent;
+    background: transparent;
+    resize: none;
+}
+
+.quick-reply-box .sent-head {
+    padding: 0 var(--space-md) var(--space-sm);
+}
+
 
 .compose-drop-zone {
     display: contents;

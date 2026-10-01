@@ -116,6 +116,7 @@ import {
 } from "./components/Icons";
 import { ReactionButton } from "./components/ReactionButton";
 import { ComposeTextarea, CloseButton } from "./components/ComposeAtoms";
+import { SentInPlace } from "./components/SentInPlace";
 import { CancelButton, FormFooter, SettingsGroup, SettingsRow, SubmitButton } from "./components/FormParts";
 import { AuthScreen } from "./components/AuthScreen";
 import { PresetPicker } from "./components/PresetPicker";
@@ -417,6 +418,9 @@ function App() {
   const SEND_UNDO_MS = 5000;
   // Inline replies, kept in their box in the thread until it holds them
   const sentReplies = createSentReplies<PendingSend>();
+  // Quick replies, kept in their box on the row until the card shows them
+  const sentQuickReplies = createSentReplies<{ text: string }>();
+  const sentQuickReply = (threadId: string) => sentQuickReplies.inThread(threadId)[0];
   const undoableSend = createUndoableSend<PendingSend>({
     delayMs: SEND_UNDO_MS,
     send: async pending => {
@@ -3048,7 +3052,12 @@ function App() {
 
     // The user may have moved on to another quick reply meanwhile
     const stillOpen = () => quickReply().threadId === threadId;
-    setQuickReply(qr => ({ ...qr, sending: true }));
+    const sent = { text };
+    let wentOut = false;
+    batch(() => {
+      sentQuickReplies.add(threadId, sent, []);
+      setQuickReply(qr => ({ ...qr, sending: true }));
+    });
     try {
       // The thread list lacks Reply-To and who wrote last; the full thread has both
       const details = await getThreadDetails(account.id, threadId);
@@ -3058,17 +3067,24 @@ function App() {
         return;
       }
       await replyToThread(account.id, threadId, entry.to, "", "", subject, text + signatureBlock(account.signature), entry.messageId, [], false);
-      if (stillOpen()) {
-        setQuickReply({ threadId: null, text: "", sending: false });
-        setQuickReplyCardId(null);
-      }
-      showToast("Reply sent");
-      fetchAndCacheThreads(cardId);
+      wentOut = true;
+      batch(() => {
+        sentQuickReplies.settle(sent);
+        if (stillOpen()) {
+          setQuickReply({ threadId: null, text: "", sending: false });
+          setQuickReplyCardId(null);
+        }
+      });
+      fetchAndCacheThreads(cardId).finally(() => sentQuickReplies.drop(sent));
     } catch (e) {
       console.error("Failed to send reply:", e);
       setFailure("Couldn't send the reply", e);
     } finally {
-      if (stillOpen()) setQuickReply(qr => ({ ...qr, sending: false }));
+      // An unsent reply turns back into the reply once it can be edited again
+      batch(() => {
+        if (stillOpen()) setQuickReply(qr => ({ ...qr, sending: false }));
+        if (!wentOut) sentQuickReplies.drop(sent);
+      });
     }
   }
 
@@ -5665,15 +5681,19 @@ function App() {
                                             </Show>
                                           </div>
                                         </div>
-                                        <Show when={isQuickReplyThread(thread.gmail_thread_id)}>
-                                          <div class="quick-reply-box" onClick={(e) => e.stopPropagation()}>
+                                        <Show when={isQuickReplyThread(thread.gmail_thread_id) || sentQuickReply(thread.gmail_thread_id)}>
+                                          <SentInPlace
+                                            class="quick-reply-box"
+                                            sent={sentQuickReply(thread.gmail_thread_id) && { ...sentQuickReply(thread.gmail_thread_id)!, undoUntil: 0 }}
+                                            onClick={(e) => e.stopPropagation()}
+                                          >
                                             <Show when={lastLetterLine(thread.last_message_date ? new Date(thread.last_message_date) : null, new Date())}>
                                               {(line) => <p class="compose-last-letter">{line()}</p>}
                                             </Show>
                                             <ComposeTextarea
                                               class="quick-reply-input"
                                               placeholder="Write a reply..."
-                                              value={quickReply().text}
+                                              value={sentQuickReply(thread.gmail_thread_id)?.item.text ?? quickReply().text}
                                               onChange={(val: string) => setQuickReply(qr => ({ ...qr, text: val }))}
                                               onSend={handleQuickReply}
                                               onCancel={() => setQuickReply({ threadId: null, text: "", sending: false })}
@@ -5691,7 +5711,7 @@ function App() {
                                               <CancelButton onClick={() => setQuickReply({ threadId: null, text: "", sending: false })} />
                                               <SubmitButton label="Send" busy={quickReply().sending} busyLabel="Sending..." disabled={!quickReply().text.trim()} onClick={handleQuickReply} />
                                             </FormFooter>
-                                          </div>
+                                          </SentInPlace>
                                         </Show>
                                       </>
                                       );

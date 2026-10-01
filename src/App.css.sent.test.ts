@@ -44,4 +44,11 @@ describe("a reply that becomes the message", () => {
     const killSwitch = rules.find(r => r.context === "@media (prefers-reduced-motion: reduce)" && r.declarations.some(([p, v]) => p === "animation-duration" && v.includes("0.01ms")));
     expect(killSwitch?.selectors[0]).toMatch(/^\*:not\(.*\.sent-undo-bar.*\)$/);
   });
+
+  it("holds a sent quick reply's words at 62% in the row's box, without the field's frame, the head over the words' left edge", () => {
+    expect(declaration(".quick-reply-box.sent .quick-reply-input", "opacity")).toBe("0.62");
+    expect(declaration(".quick-reply-box.sent .quick-reply-input", "border-color")).toBe("transparent");
+    expect(declaration(".quick-reply-box.sent .quick-reply-input", "background")).toBe("transparent");
+    expect(declaration(".quick-reply-box .sent-head", "padding")).toBe("0 var(--space-md) var(--space-sm)");
+  });
 });

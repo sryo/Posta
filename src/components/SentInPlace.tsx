@@ -44,7 +44,7 @@ export function SentHead(props: SentInPlaceState) {
 // The parts of a compose box that fold away once it is sent: everything but
 // the words, its files and the drop overlay
 function controls(box: HTMLElement): HTMLElement[] {
-  const keep = (el: Element) => el.matches(".sent-head, .compose-drop-zone, .compose-body, .compose-content, .compose-attachments, .compose-drop-overlay, textarea");
+  const keep = (el: Element) => el.matches("[data-sent-head], .compose-drop-zone, .compose-body, .compose-content, .compose-attachments, .compose-drop-overlay, textarea");
   const zone = box.querySelector(".compose-drop-zone") ?? box;
   const body = zone.querySelector(".compose-body");
   const content = body?.querySelector(".compose-content");
@@ -58,7 +58,7 @@ function controls(box: HTMLElement): HTMLElement[] {
 // be edited; once it is clear again the box is a compose box again, the
 // caret back where it was. Whoever shows it keeps the compose rendered
 // (with what was sent) while `sent` is set.
-export function SentInPlace(props: { class: string; sent?: SentInPlaceState | null; children: JSX.Element }) {
+export function SentInPlace(props: { class: string; sent?: SentInPlaceState | null; onClick?: (e: MouseEvent) => void; children: JSX.Element }) {
   let box!: HTMLDivElement;
   let head!: HTMLDivElement;
   let caret: [number, number] = [0, 0];
@@ -103,8 +103,8 @@ export function SentInPlace(props: { class: string; sent?: SentInPlaceState | nu
   }));
 
   return (
-    <div ref={box} class={props.class} classList={{ sent: isSent() }}>
-      <div ref={head}>
+    <div ref={box} class={props.class} classList={{ sent: isSent() }} onClick={(e) => props.onClick?.(e)}>
+      <div ref={head} data-sent-head>
         <Show when={shownHead()}>{(h) => <SentHead {...h()} />}</Show>
       </div>
       {props.children}

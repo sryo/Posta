@@ -5318,16 +5318,53 @@ describe("App quick reply feedback", () => {
     return document.querySelector(".quick-reply-input") as HTMLTextAreaElement;
   }
 
-  it("confirms a sent quick reply", async () => {
+  it("keeps a sent quick reply on its row, reading Sending and then when it went, until the card shows it", async () => {
     handlers.get_thread_details = () => ({ id: "t-a", messages: [fullMessage("m1", "Ana <ana@x.com>")] });
-    handlers.reply_to_thread = () => null;
+    let finishSend!: () => void;
+    handlers.reply_to_thread = () => new Promise<null>(resolve => { finishSend = () => resolve(null); });
     render(() => <App />);
     await screen.findByText("Mail for A");
+    let finishFetch!: () => void;
+    const fetchPage = handlers.fetch_threads_paginated;
+    handlers.fetch_threads_paginated = (args) => new Promise(resolve => { finishFetch = () => resolve(fetchPage(args)); });
     const input = openQuickReply();
     fireEvent.input(input, { target: { value: "Thanks" } });
     fireEvent.keyDown(input, { key: "Enter", metaKey: true });
 
-    expect(await screen.findByText("Reply sent")).toBeInTheDocument();
+    const box = input.closest<HTMLElement>(".quick-reply-box")!;
+    await waitFor(() => expect(box).toHaveClass("sent"));
+    expect(within(box).getByText("Sending")).toBeInTheDocument();
+    expect(within(box).queryByRole("button", { name: /^Send/ })).toBeNull();
+    expect(input).toHaveValue("Thanks");
+
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith("reply_to_thread", expect.anything()));
+    finishSend();
+    expect(await within(box).findByText(/^Today, /)).toBeInTheDocument();
+    expect(input).toHaveValue("Thanks");
+    expect(screen.queryByText("Reply sent")).toBeNull();
+
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith("fetch_threads_paginated", expect.objectContaining({ cardId: "card-a" })));
+    finishFetch();
+    await waitFor(() => expect(document.querySelector(".quick-reply-box")).toBeNull());
+  });
+
+  it("turns a quick reply that couldn't be sent back into the reply, with the caret where it was", async () => {
+    handlers.get_thread_details = () => ({ id: "t-a", messages: [fullMessage("m1", "Ana <ana@x.com>")] });
+    handlers.reply_to_thread = () => { throw "offline"; };
+    render(() => <App />);
+    await screen.findByText("Mail for A");
+    const input = openQuickReply();
+    fireEvent.input(input, { target: { value: "Thanks" } });
+    input.focus();
+    input.setSelectionRange(3, 3);
+    fireEvent.keyDown(input, { key: "Enter", metaKey: true });
+    const box = input.closest<HTMLElement>(".quick-reply-box")!;
+    await waitFor(() => expect(box).toHaveClass("sent"));
+
+    await waitFor(() => expect(box).not.toHaveClass("sent"));
+    expect(document.activeElement).toBe(input);
+    expect(input.selectionStart).toBe(3);
+    expect(within(box).getByRole("button", { name: /^Send/ })).toBeInTheDocument();
   });
 
   it("signs a quick reply and refreshes its card once sent", async () => {
@@ -5363,7 +5400,7 @@ describe("App quick reply feedback", () => {
     const second = document.querySelector(".quick-reply-input") as HTMLTextAreaElement;
     fireEvent.input(second, { target: { value: "Half typed" } });
     releaseSend();
-    await screen.findByText("Reply sent");
+    await waitFor(() => expect(document.querySelector(".quick-reply-box.sent")).toBeNull());
 
     expect((document.querySelector(".quick-reply-input") as HTMLTextAreaElement).value).toBe("Half typed");
   });
