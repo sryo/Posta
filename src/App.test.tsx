@@ -1789,6 +1789,20 @@ describe("App calendar", () => {
       [calendarEvent(`ev-${accountId}`, `Event of ${accountId}`)];
   }
 
+  it("offers to join a meeting until it ends, not after", async () => {
+    calendarCards();
+    const now = Date.now();
+    handlers.fetch_calendar_events = () => [
+      { ...calendarEvent("ev-over", "Over"), start_time: now - 3 * 3_600_000, end_time: now - 2 * 3_600_000, hangout_link: "https://meet.google.com/over" },
+      { ...calendarEvent("ev-next", "Next"), hangout_link: "https://meet.google.com/next" },
+    ];
+    render(() => <App />);
+    const over = (await screen.findByText("Over")).closest(".calendar-event-item") as HTMLElement;
+    const next = (await screen.findByText("Next")).closest(".calendar-event-item") as HTMLElement;
+    expect(within(next).getByRole("button", { name: "Join meeting" })).toBeInTheDocument();
+    expect(within(over).queryByRole("button", { name: "Join meeting" })).toBeNull();
+  });
+
   it("says a repeating event moves with all its events", async () => {
     calendarCards();
     handlers.fetch_calendar_events = () => [{ ...calendarEvent("ev-1_1", "Standup"), organizer: "a@x.com", recurring_event_id: "ev-1" }];

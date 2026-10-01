@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { GoogleCalendarEvent } from "../api/tauri";
-import { deletePrompt, eventActions, isWritableCalendar } from "./eventActions";
+import { deletePrompt, eventActions, isWritableCalendar, meetingOver } from "./eventActions";
 
 const ME = "me@posta.test";
 
@@ -97,5 +97,19 @@ describe("isWritableCalendar", () => {
     expect(isWritableCalendar({ access_role: "writer" })).toBe(true);
     expect(isWritableCalendar({ access_role: "reader" })).toBe(false);
     expect(isWritableCalendar({ access_role: "freeBusyReader" })).toBe(false);
+  });
+});
+
+describe("meetingOver", () => {
+  const HOUR = 3_600_000;
+  it("is over once the event ends", () => {
+    expect(meetingOver(ev({ start_time: 0, end_time: HOUR }), HOUR - 1)).toBe(false);
+    expect(meetingOver(ev({ start_time: 0, end_time: HOUR }), HOUR)).toBe(true);
+  });
+
+  it("takes an event without an end as an hour long, or a day when all day", () => {
+    expect(meetingOver(ev({ start_time: 0, end_time: null }), HOUR - 1)).toBe(false);
+    expect(meetingOver(ev({ start_time: 0, end_time: null }), HOUR)).toBe(true);
+    expect(meetingOver(ev({ start_time: 0, end_time: null, all_day: true }), 23 * HOUR)).toBe(false);
   });
 });

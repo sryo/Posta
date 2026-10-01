@@ -135,7 +135,7 @@ import { dayOtherEvents, stripLayout } from "./app/dayStrip";
 import { createInviteDayLookups, rangeDaysFor, type DayEvents } from "./app/inviteDays";
 import type { DayBusy } from "./app/dayTimeline";
 import { isHappeningNow, isNowGroup, withNowSection } from "./app/nowSection";
-import { deletePrompt, eventActions } from "./app/eventActions";
+import { deletePrompt, eventActions, meetingOver } from "./app/eventActions";
 import { defaultCalendarId, lastUsedCalendar, rememberCalendar } from "./app/eventCalendars";
 import { deletedByScope, type RecurrenceScope } from "./app/recurrence";
 import { ThreadView } from "./components/ThreadView";
@@ -5358,7 +5358,7 @@ function App() {
                                           time={getSmartEventTime(event, currentTime())}
                                           showResponse={eventActions(event, eventOwner(event, card.id)?.email ?? '').rsvp}
                                         >
-                                          <Show when={event.hangout_link}>
+                                          <Show when={event.hangout_link && !meetingOver(event, minuteNow())}>
                                             <button
                                               class="calendar-join-btn"
                                               onClick={(e) => { e.stopPropagation(); event.hangout_link && openUrl(event.hangout_link); }}

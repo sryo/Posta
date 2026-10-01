@@ -7,7 +7,7 @@ import {
   type GoogleCalendarEvent,
 } from "../api/tauri";
 import { rsvpSentMessage, type RsvpStatus } from "../app/rsvp";
-import { eventActions } from "../app/eventActions";
+import { eventActions, meetingOver } from "../app/eventActions";
 import type { ScopeAnchor } from "../app/scopePrompt";
 import {
   ClearIcon,
@@ -114,7 +114,7 @@ export const ActionsWheel = (props: {
           title: 'Join meeting',
           icon: VideoIcon,
           onClick: (e) => { e.stopPropagation(); evt.hangout_link && openUrl(evt.hangout_link); },
-          available: can.join
+          available: can.join && !meetingOver(evt, Date.now())
         },
         openCalendar: {
           cls: 'event-open',

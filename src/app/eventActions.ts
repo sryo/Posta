@@ -67,3 +67,12 @@ export function deletePrompt(actions: Pick<EventActions, "role" | "guestCount">)
 export function isWritableCalendar(calendar: { access_role: string }): boolean {
   return calendar.access_role === "owner" || calendar.access_role === "writer";
 }
+
+const HOUR_MS = 60 * 60 * 1000;
+
+// Past its end, nothing is left to join: an event without an end runs an hour,
+// or the day when it is all day
+export function meetingOver(event: Pick<GoogleCalendarEvent, "start_time" | "end_time" | "all_day">, now: number): boolean {
+  const end = event.end_time ?? event.start_time + (event.all_day ? 24 : 1) * HOUR_MS;
+  return now >= end;
+}
