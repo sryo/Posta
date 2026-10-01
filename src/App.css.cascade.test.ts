@@ -157,4 +157,18 @@ describe("App.css cascade", () => {
     expect(calming!.selectors).toEqual(expect.arrayContaining(["*::before", "*::after"]));
     expect(indicators.filter(calmed).map((el) => el.id)).toEqual([]);
   });
+  it("names a wheel's keys only on the focused row while working from the keyboard, never on a hovered row's wheel", () => {
+    const wheel = (rowClass: string) => `<div class="thread ${rowClass}"><div class="radial-menu open">
+        <button class="radial-petal"><kbd class="key-hint pill action-key-hint">r</kbd></button></div></div>`;
+    const hintOpacity = (input: string, rowClass: string) => {
+      document.documentElement.dataset.input = input;
+      document.body.innerHTML = wheel(rowClass);
+      return cascadedDeclarations(rules, document.querySelector(".action-key-hint")!).get("opacity");
+    };
+    expect(hintOpacity("pointer", "")).toBe("0");
+    expect(hintOpacity("keyboard", "")).toBe("0");
+    expect(hintOpacity("pointer", "focused")).toBe("0");
+    expect(hintOpacity("keyboard", "focused")).toBe("1");
+    delete document.documentElement.dataset.input;
+  });
 });

@@ -4678,8 +4678,9 @@ button.settings-section-title {
     line-height: var(--leading-tight);
 }
 
-/* A petal's key hint sits just outside it, on the petal's own line */
-.action-key-hint {
+/* A petal's key hint sits just outside it, on the petal's own line, hidden
+   until shown below: as specific as .key-hint.pill, which draws it opaque */
+.key-hint.action-key-hint {
     position: absolute;
     left: 50%;
     top: 50%;
