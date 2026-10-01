@@ -158,6 +158,16 @@ describe("floating controls", () => {
 });
 
 describe("hover wheels", () => {
+  it("name keys only where they act: on a focused row while working from the keyboard, never on a hovered petal", () => {
+    const hintRules = rules.filter(r => r.selectors.some(sel => sel.includes(".action-key-hint")) && r.declarations.some(([prop, value]) => prop === "opacity" && value === "1"));
+    const selectors = hintRules.flatMap(r => r.selectors);
+    expect(selectors.some(sel => sel.includes(":hover"))).toBe(false);
+    for (const row of [".thread.focused", ".calendar-event-item.focused"]) {
+      expect(selectors, row).toContain(`:root[data-input="keyboard"] ${row} .radial-menu.open .action-key-hint`);
+      expect(selectors, row).not.toContain(`${row} .radial-menu.open .action-key-hint`);
+    }
+  });
+
   it("keep a row's wheel visible while it is open, though the pointer rests off the row near it", () => {
     // The wheel lives in the checkbox's holder, which fades out when the row isn't hovered
     expect(declarationsOf(".thread-checkbox-wrap").get("opacity")).toBe("0");

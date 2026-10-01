@@ -1,5 +1,6 @@
 import { RADIAL_HOVER_CLOSE_MS } from "../app/radial";
 import { createHoverHold } from "../app/hoverHold";
+import { inputMode } from "../app/inputMode";
 import { StatusLine } from "./StatusLine";
 import { KeyHint } from "./KeyHint";
 import { createSignal, createEffect, createMemo, on, onMount, onCleanup, Show, For } from "solid-js";
@@ -649,13 +650,13 @@ export const ThreadView = (props: {
                         </div>
                       </div>
                       {/* Message Actions Wheel - show for focused or hovered message */}
-                      <Show when={((hoveredMessageId() === msg.id && wheelOpen()) || props.focusedMessageIndex === index()) && !showInlineCompose()}>
+                      <Show when={((hoveredMessageId() === msg.id && wheelOpen()) || (props.focusedMessageIndex === index() && inputMode() === "keyboard")) && !showInlineCompose()}>
                         <MessageActionsWheel
                           onReply={() => actions.reply()}
                           onReplyAll={actions.replyAll}
                           onForward={actions.forward}
                           open={true}
-                          showHints={props.focusedMessageIndex === index()}
+                          showHints={props.focusedMessageIndex === index() && inputMode() === "keyboard"}
                         />
                       </Show>
                       <Show when={props.invite && inviteMessageId() === msg.id}>

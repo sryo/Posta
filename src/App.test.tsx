@@ -69,6 +69,7 @@ vi.mock("./app/contacts", async (importOriginal) => {
 });
 
 import App from "./App";
+import { setInputMode } from "./app/inputMode";
 import type { Account, Card, Thread } from "./api/tauri";
 import { ICLOUD_RESTORE_DELAYS_MS } from "./app/icloudRestore";
 
@@ -4550,6 +4551,19 @@ describe("App title bar", () => {
 });
 
 describe("App regressions", () => {
+  it("shows the focused row's wheel only while working from the keyboard, since the keys act on that row", async () => {
+    setInputMode("pointer");
+    render(() => <App />);
+    const row = (await screen.findByText("Mail for A")).closest(".thread") as HTMLElement;
+    const wheel = () => row.querySelector('.radial-menu[role="menu"]');
+    fireEvent.keyDown(document, { key: "j" });
+    await waitFor(() => expect(row).toHaveClass("focused"));
+    expect(wheel()).not.toBeNull();
+
+    fireEvent.pointerMove(document, { screenX: 300, screenY: 300 });
+    await waitFor(() => expect(wheel()).toBeNull());
+    expect(row).toHaveClass("focused");
+  });
   it("opens a wheel only on the hovered card's row when the same email shows in two cards", async () => {
     const shared = { ...thread("t-s", "In both cards"), labels: ["INBOX"] };
     cardsByAccount.a = [card("card-a", "a", "Alpha"), { ...card("card-b", "a", "Beta"), position: 1 }];

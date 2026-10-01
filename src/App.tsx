@@ -145,6 +145,7 @@ import { ActionsWheel } from "./components/ActionsWheel";
 import { BoardFlower } from "./components/BoardFlower";
 import { RADIAL_HOVER_CLOSE_MS, RADIAL_HOVER_OPEN_MS } from "./app/radial";
 import { createHoverHold } from "./app/hoverHold";
+import { inputMode } from "./app/inputMode";
 import { CardForm } from "./components/CardForm";
 import { QueryField } from "./components/QueryField";
 import { CardAccountQualifier, cardTitleLabel } from "./components/CardAccountQualifier";
@@ -5395,7 +5396,7 @@ function App() {
                                               toggleEventSelection(card.id, event.id, e);
                                             }}
                                           />
-                                          <Show when={(isHoveredEvent(rowKey(card.id, event.id)) && eventActionsWheelOpen()) || isEventFocused(card.id, event.id)}>
+                                          <Show when={(isHoveredEvent(rowKey(card.id, event.id)) && eventActionsWheelOpen()) || (isEventFocused(card.id, event.id) && inputMode() === "keyboard")}>
                                             <ActionsWheel
                                               cardId={card.id}
                                               event={event}
@@ -5568,7 +5569,7 @@ function App() {
                                                 toggleThreadSelection(card.id, thread.gmail_thread_id, e);
                                               }}
                                             />
-                                            <Show when={(isHoveredThread(rowKey(card.id, thread.gmail_thread_id)) && actionsWheelOpen()) || isThreadFocused(card.id, thread.gmail_thread_id)}>
+                                            <Show when={(isHoveredThread(rowKey(card.id, thread.gmail_thread_id)) && actionsWheelOpen()) || (isThreadFocused(card.id, thread.gmail_thread_id) && inputMode() === "keyboard")}>
                                               <ActionsWheel
                                                 cardId={card.id}
                                                 threadId={thread.gmail_thread_id}

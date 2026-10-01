@@ -4689,11 +4689,12 @@ button.settings-section-title {
     transition: opacity 120ms ease-out, transform 120ms ease-out;
 }
 
-.radial-menu.open .radial-petal:hover .action-key-hint,
+/* Keys are named only where they act: the focused row's, while working from
+   the keyboard; a hovered row's wheel names none, its keys acting elsewhere */
 .radial-menu.open .radial-petal:focus-visible .action-key-hint,
 .radial-menu.open.hints-always .action-key-hint,
-.thread.focused .radial-menu.open .action-key-hint,
-.calendar-event-item.focused .radial-menu.open .action-key-hint {
+:root[data-input="keyboard"] .thread.focused .radial-menu.open .action-key-hint,
+:root[data-input="keyboard"] .calendar-event-item.focused .radial-menu.open .action-key-hint {
     opacity: 1;
     transform: translate(calc(-50% + var(--hx)), calc(-50% + var(--hy))) scale(1);
 }

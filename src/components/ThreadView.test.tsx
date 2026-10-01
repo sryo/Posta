@@ -2,6 +2,7 @@ import { beforeAll, describe, expect, it, vi } from "vitest";
 import { createSignal } from "solid-js";
 import { cleanup, fireEvent, render } from "@solidjs/testing-library";
 import { ThreadView } from "./ThreadView";
+import { setInputMode } from "../app/inputMode";
 import type { FullThread } from "../api/tauri";
 
 const smartRepliesProps = vi.hoisted(() => ({ last: null as any }));
@@ -285,6 +286,15 @@ describe("ThreadView keyboard shortcuts", () => {
 });
 
 describe("ThreadView message wheel", () => {
+  it("shows the focused message's wheel and its keys only while working from the keyboard", () => {
+    setInputMode("pointer");
+    renderThread();
+    const focused = document.querySelectorAll(".message-row")[1];
+    expect(focused.querySelector('.radial-menu[role="menu"]')).toBeNull();
+    setInputMode("keyboard");
+    expect(focused.querySelector('.radial-menu[role="menu"]')).toHaveClass("hints-always");
+  });
+
   const settle = () => new Promise(resolve => setTimeout(resolve, 200));
   const wheelOf = (row: Element) => row.querySelector(`.radial-menu[role="menu"]`);
 
