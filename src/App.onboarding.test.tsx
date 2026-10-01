@@ -18,7 +18,7 @@ const invoke = vi.fn(async (cmd: string, args: Record<string, unknown> = {}) => 
 
 vi.mock("@tauri-apps/api/core", () => ({ invoke: (cmd: string, args?: Record<string, unknown>) => invoke(cmd, args) }));
 vi.mock("@tauri-apps/api/window", () => ({
-  getCurrentWindow: () => ({ setBadgeCount: async () => {}, startDragging: async () => {} }),
+  getCurrentWindow: () => ({ setBadgeCount: async () => {}, startDragging: async () => {}, setTitle: async () => {} }),
 }));
 vi.mock("@tauri-apps/api/event", () => ({ listen: async () => () => {} }));
 const openUrl = vi.fn(async (_url: string) => {});

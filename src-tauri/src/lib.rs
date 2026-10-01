@@ -425,10 +425,11 @@ mod tests {
             .iter()
             .filter_map(|p| p.as_str())
             .collect();
-        // App.tsx calls getCurrentWindow().startDragging() and .setBadgeCount();
-        // core:default grants neither
+        // App.tsx calls getCurrentWindow().startDragging(), .setBadgeCount()
+        // and .setTitle(); core:default grants none of them
         assert!(perms.contains(&"core:window:allow-start-dragging"));
         assert!(perms.contains(&"core:window:allow-set-badge-count"));
+        assert!(perms.contains(&"core:window:allow-set-title"));
     }
 
     /// The `<string>` value that follows `<key>{key}</key>` in a plist

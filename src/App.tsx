@@ -85,6 +85,7 @@ import {
   setDockIcon,
 } from "./api/tauri";
 import { createDockIconSync, dockIconForHue, renderIconPng } from "./app/dockIcon";
+import { boardTitle, createTitleSync } from "./app/windowTitle";
 import { Menu, MenuItem, PredefinedMenuItem } from "@tauri-apps/api/menu";
 import {
   formatTime,
@@ -1470,6 +1471,13 @@ function App() {
       // Badge not supported on this platform
     });
   });
+
+  // The window title names the board's most urgent fact, settled for a
+  // moment so a sync moving the count doesn't retitle it on every step
+  const boardEvents = createMemo(() => cards().filter(c => c.card_type === "calendar").flatMap(c => cardCalendarEvents[c.id] ?? []));
+  const offlineSince = createMemo<number | null>(since => (offline() ? since ?? Date.now() : null), null);
+  const syncTitle = createTitleSync(title => getCurrentWindow().setTitle(title), 400);
+  createEffect(() => syncTitle(boardTitle({ events: boardEvents(), offlineSince: offlineSince(), unread: totalUnread() }, minuteNow())));
 
   let unlistenMailto: (() => void) | undefined;
   // Hoisted out of onMount so onCleanup can remove them

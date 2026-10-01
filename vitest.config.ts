@@ -40,6 +40,8 @@ const NO_DOM = [
   "src/app/storedWidth.test.ts",
   "src/app/threadActions.test.ts",
   "src/app/transit.test.ts",
+  "src/app/upcoming.test.ts",
+  "src/app/windowTitle.test.ts",
   "src/test/buildTarget.test.ts",
   "src/test/css.test.ts",
   "src/test/environment.test.ts",

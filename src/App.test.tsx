@@ -21,8 +21,9 @@ const invoke = vi.fn(async (cmd: string, args: Record<string, unknown> = {}) => 
 vi.mock("@tauri-apps/api/core", () => ({ invoke: (cmd: string, args?: Record<string, unknown>) => invoke(cmd, args) }));
 const setBadgeCount = vi.fn(async (_count?: number) => {});
 const startDragging = vi.fn(async () => {});
+const setTitle = vi.fn(async (_title: string) => {});
 vi.mock("@tauri-apps/api/window", () => ({
-  getCurrentWindow: () => ({ setBadgeCount: (count?: number) => setBadgeCount(count), startDragging: () => startDragging() }),
+  getCurrentWindow: () => ({ setBadgeCount: (count?: number) => setBadgeCount(count), startDragging: () => startDragging(), setTitle: (title: string) => setTitle(title) }),
 }));
 const eventListeners: Record<string, (event: { payload: unknown }) => void> = {};
 const listenedEvents: string[] = [];
@@ -518,6 +519,20 @@ describe("App card deletion", () => {
 
     await waitFor(() => expect(screen.queryByText("Unread in B")).not.toBeInTheDocument());
     await waitFor(() => expect(setBadgeCount).toHaveBeenLastCalledWith(undefined));
+  });
+});
+
+describe("App window title", () => {
+  it("names the unread count, and only the app once it's all read", async () => {
+    threadsByCard["card-a"] = [{ ...thread("t-a", "Mail for A"), unread_count: 1, labels: ["INBOX", "UNREAD"] }];
+    handlers.modify_threads = () => null;
+    render(() => <App />);
+    await screen.findByText("Mail for A");
+    await waitFor(() => expect(setTitle).toHaveBeenLastCalledWith("1 unread — Posta"));
+
+    fireEvent.keyDown(document, { key: "l" });
+    fireEvent.keyDown(document, { key: "u" });
+    await waitFor(() => expect(setTitle).toHaveBeenLastCalledWith("Posta"));
   });
 });
 
