@@ -83,8 +83,15 @@ import {
   type EventInput,
   sendReaction,
   setDockIcon,
+  setDockMenu,
+  haptic,
+  postCardNotes,
 } from "./api/tauri";
 import { createDockIconSync, dockIconForHue, renderIconPng } from "./app/dockIcon";
+import { boardTitle, createTitleSync } from "./app/windowTitle";
+import { dockMenu } from "./app/dockMenu";
+import { createDetents } from "./app/detents";
+import { WAKE_DELAYS_MS, createWakeWatch, wakeNotes } from "./app/wakeNotes";
 import { Menu, MenuItem, PredefinedMenuItem } from "@tauri-apps/api/menu";
 import {
   formatTime,
@@ -1501,18 +1508,24 @@ function App() {
   // Drag and drop
   const cardIds = () => cards().map(c => c.id);
   let wasDragging = false;
+  const detents = createDetents(kind => { haptic(kind).catch(() => {}); });
 
-  const onDragStart = () => {
+  const onDragStart = (event: { draggable: { id: Id } }) => {
     wasDragging = true;
+    detents.start(String(event.draggable.id));
+  };
+
+  const onDragOver = (event: { droppable?: { id: Id } | null }) => {
+    detents.over(event.droppable ? String(event.droppable.id) : null);
   };
 
   const onDragEnd = async (event: { draggable: { id: Id } | null; droppable: { id: Id } | null }) => {
     const { draggable, droppable } = event;
     // Reset drag flag after a short delay to prevent click from firing
     setTimeout(() => { wasDragging = false; }, 100);
-    if (!draggable || !droppable) return;
     const previousCards = cards();
-    const reorderedCards = moveCard(previousCards, String(draggable.id), String(droppable.id));
+    const reorderedCards = draggable && droppable ? moveCard(previousCards, String(draggable.id), String(droppable.id)) : null;
+    detents.end(!!reorderedCards);
     if (!reorderedCards) return;
     setCards(reorderedCards);
     try {
@@ -1548,6 +1561,52 @@ function App() {
       // Badge not supported on this platform
     });
   });
+
+  // The window title names the board's most urgent fact, settled for a
+  // moment so a sync moving the count doesn't retitle it on every step
+  const boardEvents = createMemo(() => cards().filter(c => c.card_type === "calendar").flatMap(c => cardCalendarEvents[c.id] ?? []));
+  const offlineSince = createMemo<number | null>(since => (offline() ? since ?? Date.now() : null), null);
+  const syncTitle = createTitleSync(title => getCurrentWindow().setTitle(title), 400);
+  createEffect(() => syncTitle(boardTitle({ events: boardEvents(), offlineSince: offlineSince(), unread: totalUnread() }, minuteNow())));
+
+  // The right-click Dock menu: each card with its unread threads, then the
+  // next event. Sent only when its text changes.
+  const unreadByCard = createMemo(() => Object.fromEntries(cards().map(card => [
+    card.id,
+    (cardThreads[card.id] ?? []).reduce((n, group) => n + group.threads.filter(t => t.unread_count > 0).length, 0),
+  ])));
+  const dockMenuJson = createMemo(() => JSON.stringify(
+    dockMenu(cards().filter(c => !isSearchCard(c.id)), unreadByCard(), boardEvents(), minuteNow()),
+  ));
+  createEffect(() => setDockMenu(JSON.parse(dockMenuJson())).catch(e => console.warn("Failed to set the Dock menu:", e)));
+
+  // Rust's events for the board: a card chosen in the Dock menu or a
+  // notification, and the Mac waking from sleep
+  const nativeUnlisteners: (() => void)[] = [];
+  function listenNative<T>(name: string, handler: (payload: T) => void) {
+    listen<T>(name, event => handler(event.payload))
+      .then(unlisten => { if (disposed) unlisten(); else nativeUnlisteners.push(unlisten); })
+      .catch(e => console.warn(`Failed to listen for ${name}:`, e));
+  }
+  onCleanup(() => nativeUnlisteners.forEach(unlisten => unlisten()));
+  onMount(() => {
+    listenNative<string>("focus-card", cardId => { if (cardById(cardId)) focusCardItem(cardId, 0); });
+    listenNative<{ slept_at: number; woke_at: number }>("system-woke", ({ slept_at }) => {
+      wakeWatch.wake(slept_at);
+      performIncrementalSync();
+    });
+  });
+
+  // After a sleep, the mail that came meanwhile gets one note per card once
+  // the syncs it set off have settled, instead of a banner per thread
+  const wakeWatch = createWakeWatch(sleptAt => {
+    const mailCards = cards().filter(c => c.card_type !== "calendar" && !isSearchCard(c.id));
+    const threadsOf = (cardId: string) => (cardThreads[cardId] ?? []).flatMap(group => group.threads);
+    const notes = wakeNotes(mailCards, threadsOf, sleptAt, Date.now(), accounts().map(a => a.email));
+    if (notes.length > 0) postCardNotes(notes).catch(e => console.warn("Failed to post the wake notes:", e));
+  }, WAKE_DELAYS_MS);
+  const lastSyncedAt = createMemo(() => Math.max(0, ...Object.values(lastSyncTimes)));
+  createEffect(on(lastSyncedAt, () => wakeWatch.synced(), { defer: true }));
 
   let unlistenMailto: (() => void) | undefined;
   // Hoisted out of onMount so onCleanup can remove them
@@ -5508,7 +5567,7 @@ function App() {
 
       {/* Deck */}
       <Show when={!loading() && selectedAccount()}>
-        <DragDropProvider onDragStart={onDragStart} onDragEnd={onDragEnd as any} collisionDetector={mostIntersecting}>
+        <DragDropProvider onDragStart={onDragStart} onDragOver={onDragOver} onDragEnd={onDragEnd as any} collisionDetector={mostIntersecting}>
           <DragDropSensors />
           <div
             class={`deck ${resizing() ? 'resizing' : ''} ${boardStatus() ? 'has-status' : ''}`}

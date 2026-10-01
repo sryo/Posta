@@ -21,8 +21,9 @@ const invoke = vi.fn(async (cmd: string, args: Record<string, unknown> = {}) => 
 vi.mock("@tauri-apps/api/core", () => ({ invoke: (cmd: string, args?: Record<string, unknown>) => invoke(cmd, args) }));
 const setBadgeCount = vi.fn(async (_count?: number) => {});
 const startDragging = vi.fn(async () => {});
+const setTitle = vi.fn(async (_title: string) => {});
 vi.mock("@tauri-apps/api/window", () => ({
-  getCurrentWindow: () => ({ setBadgeCount: (count?: number) => setBadgeCount(count), startDragging: () => startDragging() }),
+  getCurrentWindow: () => ({ setBadgeCount: (count?: number) => setBadgeCount(count), startDragging: () => startDragging(), setTitle: (title: string) => setTitle(title) }),
 }));
 const eventListeners: Record<string, (event: { payload: unknown }) => void> = {};
 const listenedEvents: string[] = [];
@@ -73,9 +74,11 @@ import { setInputMode } from "./app/inputMode";
 import { setNoticesEnabled } from "./app/notices";
 import type { Account, Card, Thread } from "./api/tauri";
 import { ICLOUD_RESTORE_DELAYS_MS } from "./app/icloudRestore";
+import { WAKE_DELAYS_MS } from "./app/wakeNotes";
 
 ICLOUD_RESTORE_DELAYS_MS.first = 0;
 ICLOUD_RESTORE_DELAYS_MS.retry = 0;
+WAKE_DELAYS_MS.quiet = 50;
 
 const account = (id: string, email: string): Account => ({ id, email, picture: null, signature: null });
 const card = (id: string, accountId: string, name: string): Card => ({
@@ -153,6 +156,8 @@ beforeEach(() => {
     fetch_contacts: () => [],
     take_pending_mailtos: () => [],
     has_gemini_api_key: () => false,
+    set_dock_menu: () => null,
+    haptic: () => null,
   } satisfies Record<string, Handler>);
   for (const k of Object.keys(cardsByAccount)) delete cardsByAccount[k];
   for (const k of Object.keys(threadsByCard)) delete threadsByCard[k];
@@ -519,6 +524,65 @@ describe("App card deletion", () => {
 
     await waitFor(() => expect(screen.queryByText("Unread in B")).not.toBeInTheDocument());
     await waitFor(() => expect(setBadgeCount).toHaveBeenLastCalledWith(undefined));
+  });
+});
+
+describe("App window title", () => {
+  it("names the unread count, and only the app once it's all read", async () => {
+    threadsByCard["card-a"] = [{ ...thread("t-a", "Mail for A"), unread_count: 1, labels: ["INBOX", "UNREAD"] }];
+    handlers.modify_threads = () => null;
+    render(() => <App />);
+    await screen.findByText("Mail for A");
+    await waitFor(() => expect(setTitle).toHaveBeenLastCalledWith("1 unread — Posta"));
+
+    fireEvent.keyDown(document, { key: "l" });
+    fireEvent.keyDown(document, { key: "u" });
+    await waitFor(() => expect(setTitle).toHaveBeenLastCalledWith("Posta"));
+  });
+});
+
+describe("App Dock menu", () => {
+  const lastDockMenu = () => invoke.mock.calls.filter(([cmd]) => cmd === "set_dock_menu").slice(-1)[0]?.[1];
+
+  it("hands the Dock the cards in board order with their unread counts", async () => {
+    cardsByAccount.a = [card("card-a", "a", "Alpha"), { ...card("card-b", "a", "Beta"), position: 1 }];
+    threadsByCard["card-b"] = [{ ...thread("t-b", "Unread in B"), unread_count: 1 }];
+    render(() => <App />);
+    await screen.findByText("Unread in B");
+    await waitFor(() => expect(lastDockMenu()).toEqual({
+      menu: { cards: [{ id: "card-a", title: "Alpha" }, { id: "card-b", title: "Beta (1)" }], next: null },
+    }));
+  });
+
+  it("focuses the card chosen in the Dock menu", async () => {
+    cardsByAccount.a = [card("card-a", "a", "Alpha"), { ...card("card-b", "a", "Beta"), position: 1 }];
+    threadsByCard["card-b"] = [thread("t-b", "Mail for B")];
+    render(() => <App />);
+    await screen.findByText("Mail for B");
+    await waitFor(() => expect(eventListeners["focus-card"]).toBeDefined());
+
+    eventListeners["focus-card"]({ payload: "card-b" });
+    await waitFor(() => expect(screen.getByText("Mail for B").closest(".thread")).toHaveClass("focused"));
+  });
+});
+
+describe("App waking", () => {
+  it("sends one note per card for the mail that came while the Mac slept", async () => {
+    const sleptAt = Date.now() - 3_600_000;
+    threadsByCard["card-a"] = [
+      { ...thread("t-old", "Mail for A"), last_message_date: sleptAt - 60_000, unread_count: 1 },
+      { ...thread("t-new", "Contract v3 signed"), last_message_date: Date.now() - 60_000, unread_count: 1, participants: ["Lena Ortiz <lena@x.com>"] },
+    ];
+    handlers.post_card_notes = () => null;
+    render(() => <App />);
+    await screen.findByText("Contract v3 signed");
+    await waitFor(() => expect(eventListeners["system-woke"]).toBeDefined());
+
+    eventListeners["system-woke"]({ payload: { slept_at: sleptAt, woke_at: Date.now() } });
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith("post_card_notes", {
+      notes: [{ card_id: "card-a", title: expect.stringMatching(/^Since /), body: "Alpha: 1 new from Lena Ortiz: Contract v3 signed" }],
+    }));
+    expect(invoke.mock.calls.filter(([cmd]) => cmd === "post_card_notes")).toHaveLength(1);
   });
 });
 
@@ -4544,6 +4608,38 @@ describe("App card order", () => {
     expect(names).toEqual(["Beta", "Alpha"]);
     expect(screen.getByRole("region", { name: "Alpha email card" })).toBe(alpha);
     expect(screen.getByRole("region", { name: "Beta email card" })).toBe(beta);
+  });
+
+  const haptics = () => invoke.mock.calls.filter(([cmd]) => cmd === "haptic").map(([, args]) => args?.kind);
+
+  it("ticks the trackpad as the card passes another's slot and lands firmly in its new place", async () => {
+    cardsByAccount.a = [card("card-a", "a", "Alpha"), { ...card("card-b", "a", "Beta"), position: 1 }];
+    handlers.reorder_cards = () => null;
+    render(() => <App />);
+    await screen.findByRole("region", { name: "Beta email card" });
+    dragFirstCardOntoSecond();
+
+    await waitFor(() => expect(haptics()).toEqual(["alignment", "levelChange"]));
+  });
+
+  it("gives no landing tick to a card dropped back where it started", async () => {
+    cardsByAccount.a = [card("card-a", "a", "Alpha"), { ...card("card-b", "a", "Beta"), position: 1 }];
+    render(() => <App />);
+    await screen.findByRole("region", { name: "Beta email card" });
+    const wrappers = Array.from(document.querySelectorAll(".card-wrapper")) as HTMLElement[];
+    wrappers.forEach((el, i) => {
+      el.getBoundingClientRect = () => DOMRect.fromRect({ x: i * 320, y: 0, width: 300, height: 600 });
+    });
+    const pointer = (type: string, x: number) => new MouseEvent(type, { bubbles: true, button: 0, clientX: x, clientY: 10 });
+    wrappers[0].querySelector(".card-header")!.dispatchEvent(pointer("pointerdown", 10));
+    document.dispatchEvent(pointer("pointermove", 400));
+    document.dispatchEvent(pointer("pointermove", 30));
+    document.dispatchEvent(pointer("pointerup", 30));
+
+    await waitFor(() => expect(haptics()).toContain("alignment"));
+    await new Promise(r => setTimeout(r, 50));
+    expect(haptics()).not.toContain("levelChange");
+    expect(invoke).not.toHaveBeenCalledWith("reorder_cards", expect.anything());
   });
 
   it("says so when a dragged card's new place can't be saved, and puts it back", async () => {
