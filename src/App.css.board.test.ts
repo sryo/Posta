@@ -54,3 +54,30 @@ describe("the line at the focus's edge", () => {
   });
 });
 
+describe("a colour spreading", () => {
+  it("paints behind the host's content, filling its box or the window", () => {
+    expect(declaration(".color-spread", "position")).toBe("absolute");
+    expect(declaration(".color-spread", "inset")).toBe("0");
+    expect(declaration(".color-spread", "z-index")).toBe("-1");
+    expect(declaration(".color-spread", "pointer-events")).toBe("none");
+    expect(declaration(".color-spread", "border-radius")).toBe("inherit");
+    expect(declaration(".color-spread.board", "position")).toBe("fixed");
+  });
+
+  it("paints a card's colour by its hue's name, opaque over what shows through the card", () => {
+    expect(declaration(".color-spread", "--card-tint")).toBe("var(--surface-card)");
+    expect(declaration(".color-spread", "background")).toBe(
+      "linear-gradient(var(--card-tint), var(--card-tint)), linear-gradient(var(--app-bg, transparent), var(--app-bg, transparent)), var(--surface-app)");
+    expect(declaration(".color-spread[data-hue]", "--card-tint")).toBe("color-mix(in srgb, var(--card-hue) var(--card-tint-mix), transparent)");
+  });
+
+  it("paints the board's colour as the board tints it", () => {
+    expect(declaration(".color-spread.board", "--board-wash")).toBe("transparent");
+    expect(declaration(".color-spread.board[data-hue]", "--board-wash")).toBe("color-mix(in srgb, var(--card-hue) var(--board-tint-mix), transparent)");
+    expect(declaration(".color-spread.board", "background")).toBe("linear-gradient(var(--board-wash), var(--board-wash)), var(--surface-app)");
+  });
+
+  it("keeps its layers inside the host's own stacking while it spreads", () => {
+    expect(declaration(".color-spreading", "isolation")).toBe("isolate");
+  });
+});

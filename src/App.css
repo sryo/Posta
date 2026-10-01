@@ -361,7 +361,7 @@
 .card[data-color="purple"], [data-hue="purple"] { --card-hue: var(--hue-purple); }
 .card[data-color="pink"], [data-hue="pink"] { --card-hue: var(--hue-pink); }
 
-.card[data-color], .sorting-slot[data-hue], .thread-bar-card[data-hue], .transit[data-hue], .focus-ring[data-hue] {
+.card[data-color], .sorting-slot[data-hue], .thread-bar-card[data-hue], .transit[data-hue], .focus-ring[data-hue], .color-spread[data-hue] {
     --card-tint: color-mix(in srgb, var(--card-hue) var(--card-tint-mix), transparent);
     --card-ring: color-mix(in srgb, var(--card-hue) var(--card-ring-mix), transparent);
     --card-band: color-mix(in srgb, var(--card-hue) var(--card-band-mix), transparent);
@@ -378,7 +378,7 @@
     .card[data-color] { --card-band-text: var(--neutral-0); }
     .card[data-color="yellow"], .card[data-color="orange"] { --card-band-text: var(--neutral-950); }
     /* yellow is the one tint light enough to crowd muted text on unread rows */
-    .card[data-color="yellow"] { --card-tint-mix: 27%; }
+    .card[data-color="yellow"], .color-spread[data-hue="yellow"] { --card-tint-mix: 27%; }
 }
 
 /* Accent text on a coloured card sits on its tint. Focus there is drawn in
@@ -6952,6 +6952,33 @@ button:disabled:hover {
         animation-iteration-count: 1 !important;
         transition-duration: 0.01ms !important;
     }
+}
+
+/* A colour chosen in a flower spreads from its petal (colorSpread.ts): the
+   old and new colours on layers behind the content of the card, or of the
+   board across the window */
+.color-spreading {
+    isolation: isolate;
+}
+
+.color-spread {
+    position: absolute;
+    inset: 0;
+    z-index: -1;
+    pointer-events: none;
+    border-radius: inherit;
+    --card-tint: var(--surface-card);
+    background: linear-gradient(var(--card-tint), var(--card-tint)), linear-gradient(var(--app-bg, transparent), var(--app-bg, transparent)), var(--surface-app);
+}
+
+.color-spread.board {
+    position: fixed;
+    --board-wash: transparent;
+    background: linear-gradient(var(--board-wash), var(--board-wash)), var(--surface-app);
+}
+
+.color-spread.board[data-hue] {
+    --board-wash: color-mix(in srgb, var(--card-hue) var(--board-tint-mix), transparent);
 }
 
 /* The board's own flower, where it was double-clicked or right-clicked */
