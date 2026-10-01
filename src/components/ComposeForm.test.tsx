@@ -379,3 +379,44 @@ describe("ComposeForm reply all after a Bcc", () => {
     expect(screen.queryByText(notice.line)).toBeNull();
   });
 });
+
+describe("ComposeForm already talking about this", () => {
+  const LINE = 'You and Ana already have "Q3 budget" going, last on Sep 25.';
+
+  function renderNew(onReplyThere = vi.fn()) {
+    const [going, setGoing] = createSignal<{ key: string; line: string; onReplyThere: () => void } | null>({ key: "t-1", line: LINE, onReplyThere });
+    render(() => (
+      <ComposeForm
+        mode="new" showSubject={true} to="ana@x.com" setTo={vi.fn()} subject="Q3 budget" setSubject={vi.fn()}
+        body="" setBody={vi.fn()} attachments={[]} onRemoveAttachment={vi.fn()} onFileSelect={vi.fn()}
+        fileInputId="file" onSend={vi.fn()} onClose={vi.fn()} alreadyGoing={going()}
+      />
+    ));
+    return { setGoing, onReplyThere };
+  }
+
+  afterEach(() => setNoticesEnabled(true));
+
+  it("says so under the subject and offers to reply there", () => {
+    const { onReplyThere } = renderNew();
+    const line = screen.getByText(LINE);
+    expect(line.compareDocumentPosition(screen.getByLabelText("Subject")) & Node.DOCUMENT_POSITION_PRECEDING).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Reply there" }));
+    expect(onReplyThere).toHaveBeenCalled();
+  });
+
+  it("keeps it a new thread with its ×, even when the same match comes back", () => {
+    const { setGoing } = renderNew();
+    fireEvent.click(screen.getByRole("button", { name: "Dismiss" }));
+    expect(screen.queryByText(LINE)).toBeNull();
+    setGoing(null);
+    setGoing({ key: "t-1", line: LINE, onReplyThere: vi.fn() });
+    expect(screen.queryByText(LINE)).toBeNull();
+  });
+
+  it("says nothing while Posta isn't to point things out", () => {
+    setNoticesEnabled(false);
+    renderNew();
+    expect(screen.queryByText(LINE)).toBeNull();
+  });
+});

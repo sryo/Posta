@@ -159,6 +159,8 @@ import { BOARD_COLORS, type ActionSettings, type CardColor, type GroupBy } from 
 import { createUndoableSend } from "./app/undoableSend";
 import { findHeader, lastMessageFromOthers, messageDate, nameInMessages } from "./app/messages";
 import { replyPlaceholder, sendingTo } from "./app/replyWords";
+import { createLiveThreadMatch, liveThreadLine } from "./app/liveThread";
+import { noticesEnabled } from "./app/notices";
 import { lastLetterLine, latestDate } from "./app/transit";
 import { batchReplyEntry, namedRecipients, type BatchReplyThread } from "./app/batchReply";
 import { matchContacts, rankContacts, type RecentContact } from "./app/contacts";
@@ -3146,6 +3148,35 @@ function App() {
     }
   }
 
+  // Carries a new email's text and files into a reply on the thread already
+  // going with the same people, letting go of the new email's draft
+  async function replyInLiveThread(thread: Thread) {
+    const account = composeAccount();
+    if (!account) return;
+    const body = composeBody();
+    const attachments = composeAttachments();
+    try {
+      const details = await getThreadDetails(account.id, thread.gmail_thread_id);
+      const entry = batchReplyEntry(thread.gmail_thread_id, details.messages ?? [], account.email);
+      if (!entry?.to) return showToast("No one else to reply to");
+      cancelDraftSave();
+      drafts.clear(composeDraftKey, account.id);
+      startCompose({
+        to: entry.to,
+        subject: addReplyPrefix(entry.subject),
+        body,
+        attachments,
+        reply: { threadId: thread.gmail_thread_id, messageId: entry.messageId },
+        signature: false,
+        accountId: account.id,
+        draftKey: sessionDraftKey(draftKey(account.id, { replyThreadId: thread.gmail_thread_id })),
+        focusBody: true,
+      });
+    } catch (e) {
+      showFailure("Couldn't open the thread", e);
+    }
+  }
+
   function handleForwardFromThread(subject: string, body: string) {
     startCompose({ subject, body, forward: { threadId: activeThreadId() || '', subject, body }, accountId: activeThreadAccountId() ?? undefined });
   }
@@ -4888,6 +4919,18 @@ function App() {
       || nameInMessages(email, activeThread()?.messages ?? [])
       || nameInThreads(email, Object.values(cardThreads).flatMap(groups => groups.flatMap(g => g.threads)));
   };
+  // A thread already going about what a new email's subject and To say
+  const liveThread = createLiveThreadMatch({
+    active: () => composing() && !closingCompose() && !composeIsReply() && !forwardingThread() && !forwardingEvent() && noticesEnabled(),
+    subject: composeSubject,
+    to: () => splitEmailList(composeTo()),
+    threads: () => Object.values(cardThreads).flatMap(groups => groups.flatMap(g => g.threads)).filter(t => t.account_id === composeAccount()?.id),
+    ownEmails: () => accounts().map(a => a.email),
+    search: async (query) => {
+      const account = composeAccount();
+      return account ? (await searchThreadsPreview(account.id, query)).flatMap(g => g.threads) : [];
+    },
+  });
   // What the send toast says, kept while the last send goes out
   const sendingMessage = createMemo<string>(shown => {
     const group = undoableSend.pendingGroup();
@@ -5853,6 +5896,11 @@ function App() {
             fromAccountId={composeAccount()?.id}
             setFromAccountId={changeComposeAccount}
             fromEmail={composeIsReply() ? composeFromEmail() : undefined}
+            alreadyGoing={liveThread() ? {
+              key: liveThread()!.gmail_thread_id,
+              line: liveThreadLine(liveThread()!, splitEmailList(composeTo()), accounts().map(a => a.email), contactName, new Date()),
+              onReplyThere: () => replyInLiveThread(liveThread()!),
+            } : null}
             placeholder={composeIsReply() ? replyPlaceholder(splitEmailList(`${composeTo()}, ${composeCc()}`), accounts().map(a => a.email), contactName) ?? undefined : undefined}
             lastLetter={replyingToThread() ? lastLetterLine(threadLastDate(replyingToThread()!.threadId), new Date()) : null}
           />

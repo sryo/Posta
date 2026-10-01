@@ -5,7 +5,7 @@ type NameFor = (email: string) => string | undefined;
 
 // The people an address list reaches, by first name where one is known
 // (the contact's own name first), else by address; the user and repeats left out
-function firstNames(addresses: readonly string[], ownEmails: readonly string[], nameFor?: NameFor): string[] {
+export function firstNames(addresses: readonly string[], ownEmails: readonly string[], nameFor?: NameFor): string[] {
   const seen = new Set(ownEmails.map(e => e.toLowerCase()));
   const names: string[] = [];
   for (const address of addresses) {
@@ -20,7 +20,7 @@ function firstNames(addresses: readonly string[], ownEmails: readonly string[], 
 }
 
 // "Ana", "Ana and Ben", "Ana, Ben and Cleo", "Ana, Ben and 3 others"
-function namesLine(names: string[]): string {
+export function namesLine(names: string[]): string {
   if (names.length <= 1) return names[0] ?? "";
   if (names.length === 2 || names.length === 3) return `${names.slice(0, -1).join(", ")} and ${names[names.length - 1]}`;
   return `${names[0]}, ${names[1]} and ${names.length - 2} others`;

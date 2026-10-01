@@ -6211,3 +6211,54 @@ describe("App reply all after a Bcc", () => {
     expect(screen.queryByText(/You were Bcc'd/)).not.toBeInTheDocument();
   });
 });
+
+describe("App new email about a thread already going", () => {
+  const LINE = /^You and Ana already have "Q3 budget" going, last /;
+
+  function threadAlreadyGoing() {
+    threadsByCard["card-a"] = [{
+      ...thread("t-q", "Re: Q3 budget"),
+      participants: ["Ana Pérez <ana@x.com>", "a@x.com"],
+      last_message_date: Date.now() - 2 * 24 * 60 * 60 * 1000,
+    }];
+    handlers.get_thread_details = () => ({ id: "t-q", messages: [fullMessage("m1", "Ana Pérez <ana@x.com>", {
+      threadId: "t-q",
+      payload: { mimeType: "text/plain", headers: [{ name: "From", value: "Ana Pérez <ana@x.com>" }, { name: "Subject", value: "Re: Q3 budget" }, { name: "Message-ID", value: "<m1@x>" }], body: { size: 0 } },
+    })] });
+    handlers.save_draft = () => ({ id: "d1" });
+    handlers.delete_draft = () => null;
+    handlers.search_threads_preview = () => [];
+  }
+
+  async function writeNew(subject: string) {
+    render(() => <App />);
+    await screen.findByText("Re: Q3 budget");
+    fireEvent.keyDown(document, { key: "c" });
+    fireEvent.input(await screen.findByPlaceholderText("Recipients"), { target: { value: "ana@x.com" } });
+    fireEvent.input(screen.getByPlaceholderText("Subject"), { target: { value: subject } });
+    fireEvent.input(screen.getByPlaceholderText("Write something..."), { target: { value: "Numbers attached" } });
+  }
+
+  it("offers to reply there, carrying over what was written", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    threadAlreadyGoing();
+    handlers.reply_to_thread = () => null;
+    await writeNew("Q3 budget");
+    fireEvent.click(await screen.findByRole("button", { name: "Reply there" }));
+
+    const body = await screen.findByPlaceholderText("Reply to Ana…");
+    expect(body).toHaveValue("Numbers attached");
+    expect(screen.queryByText(LINE)).not.toBeInTheDocument();
+    fireEvent.keyDown(body, { key: "Enter", metaKey: true });
+    await vi.advanceTimersByTimeAsync(6000);
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith("reply_to_thread", expect.objectContaining({ threadId: "t-q", to: "ana@x.com", body: "Numbers attached" })));
+    expect(invoke).not.toHaveBeenCalledWith("send_email", expect.anything());
+  });
+
+  it("says nothing for a different subject", async () => {
+    threadAlreadyGoing();
+    await writeNew("Q3 budget draft");
+    await new Promise(r => setTimeout(r, 800));
+    expect(screen.queryByText(LINE)).not.toBeInTheDocument();
+  });
+});

@@ -70,6 +70,9 @@ interface ComposeFormProps {
   nameFor?: (email: string) => string | undefined;
   // Set on Reply all to a message the user got as Bcc
   bccNotice?: { line: string; sender: string; only: string } | null;
+  // A new email whose subject and To match a thread already going; `key` is
+  // that thread, kept a new thread once its × is pressed
+  alreadyGoing?: { key: string; line: string; onReplyThere: () => void } | null;
 }
 
 export const ComposeForm = (props: ComposeFormProps) => {
@@ -221,6 +224,23 @@ export const ComposeForm = (props: ComposeFormProps) => {
           text={notice().line}
           action={{ label: notice().only, run: () => { props.setTo?.(notice().sender); props.setCc?.(''); props.onInput?.(); } }}
           onDismiss={() => setBccDismissed(true)}
+        />
+      )}
+    </Show>
+  );
+
+  const [keptNew, setKeptNew] = createSignal<string[]>([]);
+  const alreadyGoing = () => {
+    const going = props.alreadyGoing;
+    return going && noticesEnabled() && !keptNew().includes(going.key) ? going : null;
+  };
+  const AlreadyGoing = () => (
+    <Show when={alreadyGoing()}>
+      {(going) => (
+        <NoticeLine
+          text={going().line}
+          action={{ label: "Reply there", run: () => going().onReplyThere() }}
+          onDismiss={() => setKeptNew(keys => [...keys, going().key])}
         />
       )}
     </Show>
@@ -383,6 +403,7 @@ export const ComposeForm = (props: ComposeFormProps) => {
           <BccNotice />
           <CcBccFields />
           <SubjectField />
+          <AlreadyGoing />
         </Show>
         <Show when={props.lastLetter}>
           <p class="compose-last-letter">{props.lastLetter}</p>
