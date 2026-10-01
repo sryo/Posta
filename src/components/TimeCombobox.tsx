@@ -1,4 +1,4 @@
-import { createEffect, createSignal, createUniqueId, For, Show } from "solid-js";
+import { createEffect, createSignal, createUniqueId, For, onCleanup, onMount, Show } from "solid-js";
 import { formatTime, parseTimeInput, shiftTime, timeSteps } from "../app/timeInput";
 import { isImeComposing } from "../shared/keyboard";
 
@@ -10,12 +10,19 @@ export const TimeCombobox = (props: {
   onChange: (time: string) => void;
   class?: string;
   locale?: string;
+  autofocus?: boolean;
 }) => {
   const listId = createUniqueId();
   const [open, setOpen] = createSignal(false);
   const [text, setText] = createSignal("");
   let input: HTMLInputElement | undefined;
   let list: HTMLDivElement | undefined;
+
+  onMount(() => {
+    if (!props.autofocus) return;
+    const timer = setTimeout(() => input?.focus(), 0);
+    onCleanup(() => clearTimeout(timer));
+  });
 
   const shown = () => formatTime(props.value, props.locale);
   createEffect(() => setText(shown()));

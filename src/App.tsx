@@ -97,7 +97,6 @@ import {
   addForwardPrefix,
   buildForwardBody,
   smoothScroll,
-  toDateInputString,
 } from "./utils";
 import "./App.css";
 import {
@@ -180,7 +179,9 @@ import { isPreviewable, readFilesAsAttachments, visibleAttachments } from "./app
 import { AttachmentLightbox, type PreviewAttachment } from "./components/AttachmentLightbox";
 import { MessageSender } from "./components/MessageSender";
 import { isForwardSubject } from "./app/quotedHistory";
-import { eventAttendees, eventFromThread, eventTimesFromForm, smartEventDefaults } from "./app/eventForm";
+import { editFormFor, eventAttendees, eventFromThread, eventTimesFromForm, smartEventDefaults } from "./app/eventForm";
+import { aloneAt, cancelPrompt, guestsOf } from "./app/attendance";
+import { AloneNotice } from "./components/AloneNotice";
 import { guestList, rankEventSuggestions, type EventSuggestion } from "./app/eventSuggestions";
 import { composePlacement, panelBesideView } from "./app/composePlacement";
 import { cidImagesToFetch, createLruCache, fetchCidImages } from "./app/cidImages";
@@ -963,6 +964,8 @@ function App() {
     error: string | null;
     editing: { id: string; calendarId: string; accountId: string } | null;
     closing: boolean;
+    // Editing opened to reschedule, on the start time
+    focusTime?: boolean;
   }
 
   const defaultEventForm = (): EventFormState => {
@@ -3344,6 +3347,36 @@ function App() {
     });
   }
 
+  // From a row whose guests all declined: open the event's edit on its time
+  function rescheduleEvent(event: GoogleCalendarEvent, cardId: string) {
+    openEvent(event, cardId);
+    setEventForm(f => ({ ...f, ...editFormFor(event, eventOwner(event, cardId)?.id ?? ""), focusTime: true }));
+  }
+
+  // Calls off this occurrence for everyone, which Google tells the guests
+  async function cancelEvent(event: GoogleCalendarEvent, cardId: string) {
+    const account = eventOwner(event, cardId);
+    if (!account || !(await askConfirm(cancelPrompt(guestsOf(event, account.email).length)))) return;
+    deleteEvent(event, "this", undefined, cardId);
+  }
+
+  function aloneNotice(event: GoogleCalendarEvent, cardId: string) {
+    if (!noticesEnabled()) return undefined;
+    const email = eventOwner(event, cardId)?.email ?? "";
+    const alone = aloneAt(event, email, minuteNow());
+    if (!alone) return undefined;
+    const can = eventActions(event, email);
+    const organizer = alone.role === "organizer";
+    return (
+      <AloneNotice
+        alone={alone}
+        title={event.title || "(No title)"}
+        onReschedule={organizer && can.edit ? () => rescheduleEvent(event, cardId) : undefined}
+        onCancel={organizer && can.delete ? () => cancelEvent(event, cardId) : undefined}
+      />
+    );
+  }
+
   async function handleMoveEventToCalendar(destinationCalendarId: string) {
     const event = activeEvent();
     const account = activeEventAccount();
@@ -5376,6 +5409,7 @@ function App() {
                                           event={event}
                                           time={getSmartEventTime(event, currentTime())}
                                           showResponse={eventActions(event, eventOwner(event, card.id)?.email ?? '').rsvp}
+                                          notice={aloneNotice(event, card.id)}
                                         >
                                           <Show when={event.hangout_link && !meetingOver(event, minuteNow())}>
                                             <button
@@ -6058,35 +6092,7 @@ function App() {
           onEdit={() => {
             const event = activeEvent();
             if (!event) return;
-            // Pre-fill the event form with current event data
-            const startDate = new Date(event.start_time);
-            let endDateVal = event.end_time ? new Date(event.end_time) : startDate;
-            // All-day end_time is Google's exclusive end (day after the last
-            // day); the form's endDate is inclusive, so step back one day
-            if (event.all_day && event.end_time) {
-              endDateVal = new Date(endDateVal.getTime() - 86400000);
-            }
-            // All-day timestamps are UTC-anchored; their local rendering is a
-            // time the user never chose (e.g. 17:00 in UTC-7), which would be
-            // saved verbatim if "All day" gets unchecked. Prefill smart
-            // defaults instead.
-            const timeDefaults = smartEventDefaults();
-            setEventForm(f => ({
-              ...f,
-              summary: event.title || '',
-              description: event.description || '',
-              location: event.location || '',
-              startDate: toDateInputString(startDate, event.all_day),
-              startTime: event.all_day ? timeDefaults.startTime : startDate.toTimeString().slice(0, 5),
-              endDate: toDateInputString(endDateVal, event.all_day),
-              endTime: event.all_day ? timeDefaults.endTime : endDateVal.toTimeString().slice(0, 5),
-              allDay: event.all_day,
-              attendees: event.attendees.map(a => a.email).join(', '),
-              // Cards list single occurrences; a null rule leaves a series' recurrence alone
-              recurrence: null,
-              addMeet: false,
-              editing: { id: event.id, calendarId: event.calendar_id, accountId: activeEventAccountId() ?? "" },
-            }));
+            setEventForm(f => ({ ...f, ...editFormFor(event, activeEventAccountId() ?? ""), focusTime: false }));
           }}
           onDelete={(scope) => { const event = activeEvent(); if (event) deleteEvent(event, scope, undefined, activeEventCardId()); }}
           onOpenCalendars={() => { fetchAvailableCalendars(activeEventAccountId() ?? undefined); setCalendarDrawerOpen(true); }}
@@ -6126,6 +6132,7 @@ function App() {
             addMeet: eventForm().addMeet,
             setAddMeet: (v: boolean) => setEventForm(f => ({ ...f, addMeet: v })),
             hasMeet: !!activeEvent()!.hangout_link,
+            focusTime: eventForm().focusTime,
             saving: eventForm().saving,
             onSave: handleCreateEvent,
             onClose: () => setEventForm(defaultEventForm()),

@@ -61,6 +61,8 @@ export const CreateEventForm = (props: {
   // The user's other events on the chosen day, for the timeline
   dayBusy?: DayBusy;
   now?: number;
+  // Opened to reschedule: focus starts on the start time, not the title
+  focusTime?: boolean;
 }) => {
   // Recurrence options
   const recurrenceOptions = [
@@ -222,7 +224,7 @@ export const CreateEventForm = (props: {
         </PanelHeader>
       </Show>
       <div class={props.inline ? "inline-event-body" : "compose-body"}>
-        <TitleField value={props.summary} onInput={props.setSummary} placeholder="Event title" autofocus />
+        <TitleField value={props.summary} onInput={props.setSummary} placeholder="Event title" autofocus={!props.focusTime} />
 
         <div class="event-when">
           <div class="event-day-line">
@@ -265,6 +267,7 @@ export const CreateEventForm = (props: {
                 class="time-picker-start"
                 value={props.startTime}
                 onChange={handleStartTimeChange}
+                autofocus={props.focusTime}
               />
               <span class="scheduler-time-separator" aria-hidden="true">–</span>
               <TimeCombobox

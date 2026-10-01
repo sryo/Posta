@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { configure, render, screen, within } from "@solidjs/testing-library";
+import { configure, fireEvent, render, screen, waitFor, within } from "@solidjs/testing-library";
 
 vi.setConfig({ testTimeout: 20000 });
 configure({ asyncUtilTimeout: 4000 });
@@ -39,6 +39,11 @@ const calendarCard = (id: string, name: string, query: string, position = 0): Ca
 
 // A Thursday, 1 October 2026; `day` 2 is the Friday after
 const at = (h: number, m = 0, day = 1) => new Date(2026, 9, day, h, m).getTime();
+
+type Attendee = GoogleCalendarEvent["attendees"][number];
+const person = (email: string, response_status: string | null, extra: Partial<Attendee> = {}): Attendee =>
+  ({ email, display_name: null, response_status, is_self: false, is_organizer: false, ...extra });
+const me = (extra: Partial<Attendee> = {}) => person("a@x.com", "accepted", { is_self: true, ...extra });
 
 const event = (id: string, start: number, end: number, extra: Partial<GoogleCalendarEvent> = {}): GoogleCalendarEvent => ({
   id, calendar_id: "primary", calendar_name: "Main", title: id, description: null, location: null,
@@ -122,5 +127,96 @@ describe("today's notes", () => {
 
     await screen.findByText("Standup");
     expect(document.querySelector(".calendar-day-note")).toBeNull();
+  });
+});
+
+describe("everyone else declined", () => {
+  const ROOM = person("c_18@resource.calendar.google.com", "accepted", { display_name: "Sala Norte" });
+  const review = (attendees: Attendee[], extra: Partial<GoogleCalendarEvent> = {}) =>
+    event("Pricing page review", at(15), at(16), { location: "Sala Norte", attendees, ...extra });
+  const declined = () => [person("jules@x.com", "declined"), person("marta@x.com", "declined"), person("priya@x.com", "declined")];
+  const row = (title: string) => screen.getByText(title).closest(".calendar-event-item") as HTMLElement;
+
+  it("counts the organizer's guests who all declined, in place of the place", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true, now: at(9) });
+    eventsByQuery["calendar:today"] = [review([me({ is_organizer: true }), ROOM, ...declined()])];
+    render(() => <App />);
+
+    expect(await screen.findByText("All 3 guests declined")).toBeInTheDocument();
+    expect(within(row("Pricing page review")).queryByText("Sala Norte")).toBeNull();
+  });
+
+  it("cancels the event for the organizer once asked, telling the guests", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true, now: at(9) });
+    eventsByQuery["calendar:today"] = [review([me({ is_organizer: true }), ...declined()])];
+    handlers.delete_calendar_event = () => null;
+    render(() => <App />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "Cancel Pricing page review" }));
+    const dialog = await screen.findByRole("alertdialog");
+    expect(dialog).toHaveTextContent("Cancel and notify 3 guests?");
+    expect(invoke.mock.calls.some(([cmd]) => cmd === "delete_calendar_event")).toBe(false);
+    fireEvent.click(within(dialog).getByRole("button", { name: "Cancel event" }));
+
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith("delete_calendar_event", { accountId: "a", calendarId: "primary", eventId: "Pricing page review", scope: "this" }));
+    await waitFor(() => expect(screen.queryByText("Pricing page review")).toBeNull());
+  });
+
+  it("keeps the event when the organizer thinks better of cancelling", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true, now: at(9) });
+    eventsByQuery["calendar:today"] = [review([me({ is_organizer: true }), ...declined()])];
+    render(() => <App />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "Cancel Pricing page review" }));
+    fireEvent.click(within(await screen.findByRole("alertdialog")).getByRole("button", { name: "Keep it" }));
+    await waitFor(() => expect(screen.queryByRole("alertdialog")).toBeNull());
+    expect(invoke.mock.calls.some(([cmd]) => cmd === "delete_calendar_event")).toBe(false);
+  });
+
+  it("opens the event's edit on its start time to reschedule", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true, now: at(9) });
+    eventsByQuery["calendar:today"] = [review([me({ is_organizer: true }), ...declined()])];
+    render(() => <App />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "Reschedule Pricing page review" }));
+    const start = await screen.findByRole("combobox", { name: "Start" });
+    await waitFor(() => expect(document.activeElement).toBe(start));
+    expect(start).toHaveValue("3:00 PM");
+    expect(screen.getByRole("heading", { name: "Pricing page review" })).toBeInTheDocument();
+  });
+
+  it("tells a guest everyone else declined, with nothing to act on from the row", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true, now: at(9) });
+    eventsByQuery["calendar:today"] = [review(
+      [me(), person("lucia@x.com", "declined", { is_organizer: true }), person("jules@x.com", "declined")],
+      { organizer: "lucia@x.com", can_edit: false },
+    )];
+    render(() => <App />);
+
+    expect(await screen.findByText("Everyone else declined")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /^(Reschedule|Cancel) / })).toBeNull();
+  });
+
+  it("says nothing while anyone might still come, for just the user and a room, or while noticing is off", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true, now: at(9) });
+    eventsByQuery["calendar:today"] = [
+      review([me({ is_organizer: true }), person("jules@x.com", "declined"), person("priya@x.com", "needsAction")]),
+      event("Focus time", at(11), at(12), { attendees: [me({ is_organizer: true }), ROOM] }),
+    ];
+    render(() => <App />);
+
+    await screen.findByText("Focus time");
+    expect(within(row("Pricing page review")).getByText("Sala Norte")).toBeInTheDocument();
+    expect(document.querySelector(".calendar-event-alone")).toBeNull();
+  });
+
+  it("says nothing while the user has turned noticing off", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true, now: at(9) });
+    setNoticesEnabled(false);
+    eventsByQuery["calendar:today"] = [review([me({ is_organizer: true }), ...declined()])];
+    render(() => <App />);
+
+    await screen.findByText("Pricing page review");
+    expect(document.querySelector(".calendar-event-alone")).toBeNull();
   });
 });

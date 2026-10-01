@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { eventAttendees, eventFromThread, eventTimesFromForm, smartEventDefaults } from "./eventForm";
+import type { GoogleCalendarEvent } from "../api/tauri";
+import { editFormFor, eventAttendees, eventFromThread, eventTimesFromForm, smartEventDefaults } from "./eventForm";
 
 const form = (over: Partial<Parameters<typeof eventTimesFromForm>[0]> = {}) => ({
   startDate: "2026-03-11", startTime: "10:00",
@@ -78,5 +79,34 @@ describe("eventAttendees", () => {
   it("ignores empty entries", () => {
     expect(eventAttendees(" , ana@y.com, ")).toEqual(["ana@y.com"]);
     expect(eventAttendees("")).toEqual([]);
+  });
+});
+
+describe("editFormFor", () => {
+  const event: GoogleCalendarEvent = {
+    id: "e1", calendar_id: "work", calendar_name: "Work", title: "Pricing page review", description: "Slides", location: "Sala Norte",
+    start_time: new Date(2026, 9, 1, 15, 0).getTime(), end_time: new Date(2026, 9, 1, 16, 30).getTime(), all_day: false,
+    status: "confirmed", organizer: "me@posta.test", html_link: null, hangout_link: null, response_status: "accepted", can_edit: true,
+    attendees: [
+      { email: "me@posta.test", display_name: null, response_status: "accepted", is_self: true, is_organizer: true },
+      { email: "jules@posta.test", display_name: "Jules", response_status: "declined", is_self: false, is_organizer: false },
+    ],
+  };
+  const now = new Date(2026, 9, 1, 9, 10);
+
+  it("fills the form with the event as it is, to be edited in place", () => {
+    expect(editFormFor(event, "acc", now)).toEqual({
+      summary: "Pricing page review", description: "Slides", location: "Sala Norte",
+      startDate: "2026-10-01", startTime: "15:00", endDate: "2026-10-01", endTime: "16:30", allDay: false,
+      attendees: "me@posta.test, jules@posta.test", recurrence: null, addMeet: false,
+      editing: { id: "e1", calendarId: "work", accountId: "acc" },
+    });
+  });
+
+  it("gives an all-day event its last day, not Google's day after, and times it could take", () => {
+    const allDay = { ...event, all_day: true, start_time: Date.UTC(2026, 9, 1), end_time: Date.UTC(2026, 9, 3) };
+    expect(editFormFor(allDay, "acc", now)).toMatchObject({
+      startDate: "2026-10-01", endDate: "2026-10-02", allDay: true, startTime: "09:30", endTime: "10:00",
+    });
   });
 });

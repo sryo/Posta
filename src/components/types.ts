@@ -58,6 +58,8 @@ export interface InlineEditEventProps {
   setRecurrence: (v: string | null) => void;
   // Editing one occurrence of a repeating event, which can't take a rule of its own
   occurrenceOnly: boolean;
+  // Opened to reschedule: focus starts on the start time
+  focusTime?: boolean;
   guestSuggestions?: (query: string) => { email: string; name?: string }[];
   addMeet?: boolean;
   setAddMeet?: (v: boolean) => void;
