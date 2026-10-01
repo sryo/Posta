@@ -157,6 +157,9 @@ import { formatClock, formatDayLabel, formatShortDate, formatWhen } from "./app/
 import { threadGroupHeading, type GroupHeading } from "./app/groupHeading";
 import { unansweredLine } from "./app/unanswered";
 import { createLastLook, newSinceLine } from "./app/newSince";
+import { createCadence } from "./app/cadence";
+import { noticesEnabled } from "./app/notices";
+import { CardFootNotes } from "./components/CardFootNotes";
 import { safeGetItem, safeSetItem, safeRemoveItem, safeGetJSON, safeSetJSON } from "./shared/storage";
 import { BOARD_COLORS, type ActionSettings, type CardColor, type GroupBy } from "./shared/constants";
 import { createUndoableSend } from "./app/undoableSend";
@@ -4354,6 +4357,15 @@ function App() {
     return newSinceLine(dates, lastLook.since(card.id), new Date(minuteNow()));
   }
 
+  // Monthly senders running late, for the foot of the card that catches them
+  const cadence = createCadence({
+    cards: () => cards().filter(c => c.card_type !== "calendar"),
+    threadsOf: (cardId) => cardThreads[cardId]?.flatMap(g => g.threads),
+    ownEmails: () => accounts().map(a => a.email),
+    now: () => minuteNow(),
+    check: async (accountId, query) => (await searchThreadsPreview(accountId, query)).some(g => g.threads.length > 0),
+  });
+
   function getDisplayGroups(cardId: string): ThreadGroup[] {
     return cardGroupsById().get(cardId)?.threads() ?? withNowFor(cardId, computeDisplayGroups(cardId));
   }
@@ -5665,6 +5677,13 @@ function App() {
                                 </>
                               )}
                             </Index>
+                            <Show when={noticesEnabled() && !isPreviewingQuery(card.id)}>
+                              <CardFootNotes
+                                notices={cadence.notices(card.id)}
+                                onSearch={(query) => { setShowGlobalFilter(true); runSearch(query); }}
+                                onDismiss={(email) => cadence.dismiss(card.id, email)}
+                              />
+                            </Show>
                             {/* Loading more indicator for infinite scroll */}
                             <Show when={loadingMore[card.id]}>
                               <StatusLine kind="loading">Loading more...</StatusLine>

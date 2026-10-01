@@ -37,3 +37,22 @@ describe("a thread's aside", () => {
 
   readableOnCards(".thread-aside");
 });
+
+describe("a card's foot notes", () => {
+  it("sit under the card's last row, divided from it like a row", () => {
+    expect(declaration(".card-foot-notes", "border-top")).toBe("1px solid var(--card-divider)");
+    expect(declaration(".card-foot-notes", "padding")).toBe("var(--space-md) var(--space-lg) var(--space-md) var(--space-xl)");
+  });
+
+  it("are a line of meta type with a link-coloured action and a quieter close", () => {
+    expect(declaration(".card-foot-note", "font")).toBe("var(--type-meta)");
+    expect(declaration(".card-foot-note", "color")).toBe("var(--text-secondary)");
+    expect(declaration(".card-foot-note", "align-items")).toBe("baseline");
+    expect(declaration(".card-foot-note-action", "color")).toBe("var(--text-link)");
+    expect(declaration(".card-foot-note-action", "font")).toBe("inherit");
+    expect(declaration(".card-foot-note-dismiss", "color")).toBe("var(--text-muted)");
+  });
+
+  readableOnCards(".card-foot-note");
+  readableOnCards(".card-foot-note-dismiss");
+});

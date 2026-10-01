@@ -28,6 +28,7 @@ import App from "./App";
 import type { Account, Card, Thread, ThreadGroup } from "./api/tauri";
 import { ICLOUD_RESTORE_DELAYS_MS } from "./app/icloudRestore";
 import { formatClock } from "./app/dateFormat";
+import { setNoticesEnabled } from "./app/notices";
 
 ICLOUD_RESTORE_DELAYS_MS.first = 0;
 ICLOUD_RESTORE_DELAYS_MS.retry = 0;
@@ -162,5 +163,48 @@ describe("New since last night", () => {
     await waitFor(() => expect(qualifier()).not.toBeNull());
     fireEvent.click(rowOf("Came after"));
     await waitFor(() => expect(qualifier()).toBeNull());
+  });
+});
+
+describe("Usually here by now", () => {
+  const EDESUR = "Edesur <facturas@edesur.com.ar>";
+  const LINE = "Edesur usually writes by the 4th. Nothing yet this month.";
+
+  function billsCard() {
+    vi.useFakeTimers({ toFake: ["Date"], now: new Date(2026, 9, 7, 10) });
+    cards = [card("bills", "Bills", "label:bills")];
+    const months = [2, 3, 4, 2, 3, 4].map((day, i) =>
+      thread(`bill-${i}`, `Factura ${i}`, { last_message_date: new Date(2026, 3 + i, day, 9).getTime(), participants: [EDESUR], last_sender: EDESUR }));
+    groupsByCard.bills = [{ label: "Older", threads: months.reverse() }];
+    handlers.search_threads_preview = () => [];
+    handlers.fetch_query_threads = () => ({ groups: [], next_page_token: null, has_more: false });
+  }
+  afterEach(() => setNoticesEnabled(true));
+
+  it("says at the card's foot that a monthly sender is late, once Gmail confirms nothing came", async () => {
+    billsCard();
+    render(() => <App />);
+    expect(await screen.findByText(LINE)).toBeInTheDocument();
+    expect(invoke).toHaveBeenCalledWith("search_threads_preview", { accountId: "a", query: "from:facturas@edesur.com.ar newer_than:7d" });
+    fireEvent.click(screen.getByRole("button", { name: "Search for Edesur's mail" }));
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith("fetch_query_threads", expect.objectContaining({ query: "from:facturas@edesur.com.ar newer_than:40d" })));
+  });
+
+  it("hides the line until next month", async () => {
+    billsCard();
+    render(() => <App />);
+    await screen.findByText(LINE);
+    fireEvent.click(screen.getByRole("button", { name: "Hide Edesur until next month" }));
+    await waitFor(() => expect(screen.queryByText(LINE)).toBeNull());
+  });
+
+  it("stays quiet when Posta is told not to point things out", async () => {
+    setNoticesEnabled(false);
+    billsCard();
+    render(() => <App />);
+    await screen.findByText("Factura 5");
+    await new Promise(r => setTimeout(r, 50));
+    expect(screen.queryByText(LINE)).toBeNull();
+    expect(invoke).not.toHaveBeenCalledWith("search_threads_preview", expect.anything());
   });
 });

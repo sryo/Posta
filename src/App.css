@@ -1622,6 +1622,51 @@ a:focus-visible,
     text-overflow: ellipsis;
 }
 
+/* What the card is missing, under its last row */
+.card-foot-notes {
+    padding: var(--space-md) var(--space-lg) var(--space-md) var(--space-xl);
+    border-top: 1px solid var(--card-divider);
+}
+
+.card-foot-note {
+    display: flex;
+    align-items: baseline;
+    gap: var(--space-md);
+    margin: 0;
+    font: var(--type-meta);
+    color: var(--text-secondary);
+}
+
+.card-foot-note-text {
+    flex: 1;
+    min-width: 0;
+}
+
+.card-foot-note-action,
+.card-foot-note-dismiss {
+    flex: none;
+    padding: 0;
+    border: none;
+    background: none;
+    cursor: pointer;
+}
+
+.card-foot-note-action {
+    font: inherit;
+    font-weight: var(--weight-strong);
+    color: var(--text-link);
+}
+
+.card-foot-note-dismiss {
+    align-self: center;
+    display: inline-flex;
+    color: var(--text-muted);
+}
+
+.card-foot-note-dismiss:hover {
+    color: var(--text-primary);
+}
+
 /* Calendar Event Preview */
 .calendar-event-preview {
     display: flex;
