@@ -16,6 +16,10 @@ describe("Posta preset", () => {
     expect(cards.find(c => c.name === "Waiting")?.query).toBe("in:sent older_than:3d newer_than:7d -filename:ics -is:muted");
   });
 
+  it("stashes mail with files in Stash, leaving out invites, whose .ics Gmail counts as an attachment", () => {
+    expect(cards.find(c => c.name === "Stash")?.query).toBe("has:attachment -filename:ics");
+  });
+
   it("has a collapsed catch-all card so no inbox mail goes unseen", () => {
     const rest = cards.find(c => c.name === "Everything else");
     expect(rest).toMatchObject({ query: "in:inbox", collapsed: true });
