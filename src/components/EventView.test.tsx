@@ -380,3 +380,28 @@ describe("EventView closing", () => {
     expect(props.onClose).toHaveBeenCalledTimes(1);
   });
 });
+
+describe("EventView opening from its row", () => {
+  it("grows out of the row it was opened from and shrinks back into it", () => {
+    const originalAnimate = Element.prototype.animate;
+    const animated: Element[] = [];
+    Element.prototype.animate = function (this: Element) {
+      animated.push(this);
+      return { cancel() {}, finished: Promise.resolve() } as unknown as Animation;
+    } as typeof Element.prototype.animate;
+    try {
+      const row = document.createElement("div");
+      row.getBoundingClientRect = () => ({ top: 100, left: 20, right: 320, bottom: 160, width: 300, height: 60, x: 20, y: 100, toJSON() {} }) as DOMRect;
+      const props = { ...baseProps(), origin: () => row };
+      render(() => <EventView {...props} />);
+      const overlay = document.querySelector(".thread-overlay")!;
+      expect(overlay).toHaveClass("via-row");
+      expect(animated).toContain(overlay);
+      animated.length = 0;
+      fireEvent.keyDown(document, { key: "Escape" });
+      expect(animated).toContain(overlay);
+    } finally {
+      Element.prototype.animate = originalAnimate;
+    }
+  });
+});

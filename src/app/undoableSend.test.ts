@@ -141,6 +141,18 @@ describe("createUndoableSend", () => {
     await vi.advanceTimersByTimeAsync(DELAY * 2);
     expect(sent).toEqual([]);
   });
+
+  it("withdraws one queued send, not just the latest, and nothing once it went out", async () => {
+    const { sender, sent } = setup();
+    sender.queue("A");
+    sender.queue("B");
+    expect(sender.withdraw("A")).toBe(true);
+    expect(sender.pending()).toBe("B");
+    await vi.advanceTimersByTimeAsync(DELAY);
+    expect(sent).toEqual(["B"]);
+    expect(sender.withdraw("B")).toBe(false);
+    expect(sender.withdraw("A")).toBe(false);
+  });
 });
 
 describe("createUndoableSend's onSent", () => {

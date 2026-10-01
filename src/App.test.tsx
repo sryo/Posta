@@ -70,6 +70,7 @@ vi.mock("./app/contacts", async (importOriginal) => {
 
 import App from "./App";
 import { setInputMode } from "./app/inputMode";
+import { setNoticesEnabled } from "./app/notices";
 import type { Account, Card, Thread } from "./api/tauri";
 import { ICLOUD_RESTORE_DELAYS_MS } from "./app/icloudRestore";
 
@@ -1389,6 +1390,34 @@ describe("App keyboard focus", () => {
     await waitFor(() => expect(screen.queryByRole("dialog", { name: "Hi" })).toBeNull());
     await waitFor(() => expect(document.activeElement).toBe(row("Second")));
     expect(row("Second")).toHaveClass("focused");
+  });
+
+  it("lights the row a thread goes back to for a moment", async () => {
+    handlers.get_thread_details = () => ({ id: "t-a", messages: [fullMessage("m1", "Ana <ana@x.com>")] });
+    render(() => <App />);
+    fireEvent.click(await screen.findByText("Mail for A"));
+    await screen.findByRole("dialog", { name: "Hi" });
+    expect(row("Mail for A")).not.toHaveAttribute("data-returned");
+    fireEvent.keyDown(document, { key: "Escape" });
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "Hi" })).toBeNull());
+    expect(document.activeElement).toBe(row("Mail for A"));
+    expect(row("Mail for A")).toHaveAttribute("data-returned");
+    await waitFor(() => expect(row("Mail for A")).not.toHaveAttribute("data-returned"), { timeout: 2000 });
+  });
+
+  it("closes an archived thread's view with its closing motion when archiving goes back to the board, lighting the row in its place", async () => {
+    localStorage.setItem("afterArchive", "board");
+    threadsByCard["card-a"] = [{ ...thread("t-a", "First"), labels: ["INBOX"] }, { ...thread("t-2", "Second"), labels: ["INBOX"] }];
+    handlers.get_thread_details = () => ({ id: "t-a", messages: [fullMessage("m1", "Ana <ana@x.com>")] });
+    handlers.modify_threads = () => null;
+    render(() => <App />);
+    fireEvent.click(await screen.findByText("First"));
+    await screen.findByRole("dialog", { name: "Hi" });
+    fireEvent.keyDown(document, { key: "a" });
+    await waitFor(() => expect(document.querySelector(".thread-overlay.closing")).not.toBeNull());
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "Hi" })).toBeNull());
+    await waitFor(() => expect(document.activeElement).toBe(row("Second")));
+    expect(row("Second")).toHaveAttribute("data-returned");
   });
 });
 
@@ -3831,6 +3860,78 @@ describe("App inline reply", () => {
     expect(body.isConnected).toBe(true);
     expect(screen.getByPlaceholderText("Write your reply...")).toBe(body);
   });
+
+  const box = () => document.querySelector<HTMLElement>(".inline-compose")!;
+  const replyText = () => box().querySelector("textarea")!;
+  async function sendReply(text: string, caret: number) {
+    fireEvent.click(await screen.findByText("Mail for A"));
+    await screen.findByText("body m1");
+    fireEvent.keyDown(document, { key: "r" });
+    await waitFor(() => expect(document.querySelector(".inline-compose textarea")).not.toBeNull());
+    const written = replyText();
+    fireEvent.input(written, { target: { value: text } });
+    written.focus();
+    written.setSelectionRange(caret, caret);
+    fireEvent.click(within(box()).getByRole("button", { name: /^Send/ }));
+    return written;
+  }
+
+  it("keeps a sent reply where it was written, reading Sending, and turns it back into the reply with the caret where it was on Undo", async () => {
+    handlers.get_thread_details = () => ({ id: "t-a", messages: [fullMessage("m1", "Ana <ana@x.com>")] });
+    handlers.reply_to_thread = () => null;
+    render(() => <App />);
+    const written = await sendReply("On my way", 2);
+    await new Promise(r => setTimeout(r, 300));
+
+    expect(box()).toHaveClass("sent");
+    expect(replyText()).toBe(written);
+    expect(written).toHaveValue("On my way");
+    expect(within(box()).getByText("Sending")).toBeInTheDocument();
+
+    fireEvent.click(within(box()).getByRole("button", { name: "Undo" }));
+    await waitFor(() => expect(box()).not.toHaveClass("sent"));
+    expect(replyText()).toBe(written);
+    expect(document.activeElement).toBe(written);
+    expect(written.selectionStart).toBe(2);
+    expect(within(box()).getByRole("button", { name: /^Send/ })).toBeInTheDocument();
+    await new Promise(r => setTimeout(r, 5200));
+    expect(invoke).not.toHaveBeenCalledWith("reply_to_thread", expect.anything());
+  });
+
+  it("turns a sent reply back into the reply from the toast's Undo too", async () => {
+    handlers.get_thread_details = () => ({ id: "t-a", messages: [fullMessage("m1", "Ana <ana@x.com>")] });
+    render(() => <App />);
+    const written = await sendReply("On my way", 4);
+    await waitFor(() => expect(box()).toHaveClass("sent"));
+    fireEvent.click(document.querySelector(".toast-undo-btn")!);
+    await waitFor(() => expect(box()).not.toHaveClass("sent"));
+    expect(replyText()).toBe(written);
+    expect(written.selectionStart).toBe(4);
+  });
+
+  it("says when a sent reply went, and gives way to the message once the thread has it", async () => {
+    let sent = false;
+    let showReply!: () => void;
+    const shown = () => ({
+      id: "t-a",
+      messages: [fullMessage("m1", "Ana <ana@x.com>"), ...(sent ? [fullMessage("m2", "Me <a@x.com>", { labelIds: ["SENT"] })] : [])],
+    });
+    handlers.get_thread_details = () => (sent ? new Promise(resolve => { showReply = () => resolve(shown()); }) : shown());
+    let finishSend!: () => void;
+    handlers.reply_to_thread = () => new Promise<null>(resolve => { finishSend = () => { sent = true; resolve(null); }; });
+    render(() => <App />);
+    await sendReply("On my way", 0);
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith("reply_to_thread", expect.anything()), { timeout: 8000 });
+    expect(within(box()).getByText("Sending")).toBeInTheDocument();
+    expect(within(box()).queryByRole("button", { name: "Undo" })).toBeNull();
+    finishSend();
+    await waitFor(() => expect(within(box()).queryByText("Sending")).toBeNull());
+    expect(box()).toHaveClass("sent");
+    expect(within(box()).getByText(/^Today, /)).toBeInTheDocument();
+    showReply();
+    await screen.findByText("body m2");
+    expect(document.querySelector(".inline-compose")).toBeNull();
+  });
 });
 
 describe("App layout removal", () => {
@@ -5378,16 +5479,53 @@ describe("App quick reply feedback", () => {
     return document.querySelector(".quick-reply-input") as HTMLTextAreaElement;
   }
 
-  it("confirms a sent quick reply", async () => {
+  it("keeps a sent quick reply on its row, reading Sending and then when it went, until the card shows it", async () => {
     handlers.get_thread_details = () => ({ id: "t-a", messages: [fullMessage("m1", "Ana <ana@x.com>")] });
-    handlers.reply_to_thread = () => null;
+    let finishSend!: () => void;
+    handlers.reply_to_thread = () => new Promise<null>(resolve => { finishSend = () => resolve(null); });
     render(() => <App />);
     await screen.findByText("Mail for A");
+    let finishFetch!: () => void;
+    const fetchPage = handlers.fetch_threads_paginated;
+    handlers.fetch_threads_paginated = (args) => new Promise(resolve => { finishFetch = () => resolve(fetchPage(args)); });
     const input = openQuickReply();
     fireEvent.input(input, { target: { value: "Thanks" } });
     fireEvent.keyDown(input, { key: "Enter", metaKey: true });
 
-    expect(await screen.findByText("Replied to “Mail for A”")).toBeInTheDocument();
+    const box = input.closest<HTMLElement>(".quick-reply-box")!;
+    await waitFor(() => expect(box).toHaveClass("sent"));
+    expect(within(box).getByText("Sending")).toBeInTheDocument();
+    expect(within(box).queryByRole("button", { name: /^Send/ })).toBeNull();
+    expect(input).toHaveValue("Thanks");
+
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith("reply_to_thread", expect.anything()));
+    finishSend();
+    expect(await within(box).findByText(/^Today, /)).toBeInTheDocument();
+    expect(input).toHaveValue("Thanks");
+    expect(screen.queryByText("Reply sent")).toBeNull();
+
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith("fetch_threads_paginated", expect.objectContaining({ cardId: "card-a" })));
+    finishFetch();
+    await waitFor(() => expect(document.querySelector(".quick-reply-box")).toBeNull());
+  });
+
+  it("turns a quick reply that couldn't be sent back into the reply, with the caret where it was", async () => {
+    handlers.get_thread_details = () => ({ id: "t-a", messages: [fullMessage("m1", "Ana <ana@x.com>")] });
+    handlers.reply_to_thread = () => { throw "offline"; };
+    render(() => <App />);
+    await screen.findByText("Mail for A");
+    const input = openQuickReply();
+    fireEvent.input(input, { target: { value: "Thanks" } });
+    input.focus();
+    input.setSelectionRange(3, 3);
+    fireEvent.keyDown(input, { key: "Enter", metaKey: true });
+    const box = input.closest<HTMLElement>(".quick-reply-box")!;
+    await waitFor(() => expect(box).toHaveClass("sent"));
+
+    await waitFor(() => expect(box).not.toHaveClass("sent"));
+    expect(document.activeElement).toBe(input);
+    expect(input.selectionStart).toBe(3);
+    expect(within(box).getByRole("button", { name: /^Send/ })).toBeInTheDocument();
   });
 
   it("signs a quick reply and refreshes its card once sent", async () => {
@@ -5423,7 +5561,7 @@ describe("App quick reply feedback", () => {
     const second = document.querySelector(".quick-reply-input") as HTMLTextAreaElement;
     fireEvent.input(second, { target: { value: "Half typed" } });
     releaseSend();
-    await screen.findByText("Replied to “Mail for A”");
+    await waitFor(() => expect(document.querySelector(".quick-reply-box.sent")).toBeNull());
 
     expect((document.querySelector(".quick-reply-input") as HTMLTextAreaElement).value).toBe("Half typed");
   });
@@ -6332,5 +6470,55 @@ describe("App sounds", () => {
     fireEvent.click(within(document.querySelector(".account-chooser-container") as HTMLElement).getByText("Settings"));
     const group = await screen.findByRole("group", { name: "Sounds" });
     expect(within(group).getByRole("switch", { name: "Sounds" })).toHaveAttribute("aria-checked", "false");
+  });
+});
+
+describe("App later version of a file", () => {
+  const SEP_19 = new Date(2026, 8, 19, 11, 40).getTime();
+  const SEP_28 = new Date(2026, 8, 28, 9, 0).getTime();
+  const MARTIN = "Martín Ibarra <martin@ibarra-arq.com>";
+  const listedFile = (messageId: string, filename: string) =>
+    ({ message_id: messageId, attachment_id: `x-${messageId}`, filename, mime_type: "application/pdf", size: 412000, inline_data: null, content_id: null });
+
+  beforeEach(() => {
+    threadsByCard["card-a"] = [
+      { ...thread("t-a", "Presupuesto obra"), participants: [MARTIN], has_attachment: true, last_message_date: SEP_19, attachments: [listedFile("m1", "Presupuesto_obra_v2.pdf")] },
+      { ...thread("t-2", "Obra Belgrano: ajustes"), participants: [MARTIN], has_attachment: true, last_message_date: SEP_28, attachments: [listedFile("m5", "Presupuesto_obra_v3.pdf")] },
+    ];
+    handlers.get_thread_details = ({ threadId }) => threadId === "t-a"
+      ? {
+        id: "t-a",
+        messages: [fullMessage("m1", MARTIN, {
+          internalDate: String(SEP_19),
+          payload: {
+            mimeType: "multipart/mixed",
+            headers: [{ name: "From", value: MARTIN }, { name: "To", value: "a@x.com" }, { name: "Subject", value: "Presupuesto obra" }],
+            parts: [
+              { mimeType: "text/plain", body: { size: 4, data: "SGkh" } },
+              { mimeType: "application/pdf", filename: "Presupuesto_obra_v2.pdf", body: { attachmentId: "x-m1", size: 412000 } },
+            ],
+          },
+        })],
+      }
+      : { id: "t-2", messages: [fullMessage("m5", MARTIN, { threadId: "t-2", internalDate: String(SEP_28), payload: { mimeType: "text/plain", headers: [{ name: "From", value: MARTIN }, { name: "Subject", value: "Obra Belgrano: ajustes" }], body: { size: 0 } } })] };
+  });
+  afterEach(() => setNoticesEnabled(true));
+
+  it("says under an attachment that the same person sent a later version in another thread, and opens it", async () => {
+    render(() => <App />);
+    fireEvent.click(await screen.findByText("Presupuesto obra"));
+    expect(await screen.findByText("Martín sent v3 on Sep 28, in “Obra Belgrano: ajustes”.")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Open v3" }));
+    expect(await screen.findByRole("dialog", { name: "Obra Belgrano: ajustes" })).toBeInTheDocument();
+  });
+
+  it("says nothing of it with noticing turned off", async () => {
+    setNoticesEnabled(false);
+    render(() => <App />);
+    fireEvent.click(await screen.findByText("Presupuesto obra"));
+    await screen.findByRole("button", { name: /Presupuesto_obra_v2\.pdf/ });
+    await new Promise(r => setTimeout(r, 200));
+    expect(screen.queryByText(/sent v3/)).toBeNull();
+    expect(invoke).not.toHaveBeenCalledWith("get_thread_details", expect.objectContaining({ threadId: "t-2" }));
   });
 });

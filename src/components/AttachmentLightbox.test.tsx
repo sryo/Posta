@@ -105,4 +105,22 @@ describe("AttachmentLightbox", () => {
     renderLightbox(1, vi.fn(async () => { throw new Error("offline"); }));
     expect(await screen.findByText(/Couldn't load a preview/)).toBeInTheDocument();
   });
+
+  it("says in its footer that a later version of the file shown came, and opens it", () => {
+    const open = vi.fn();
+    const [index, setIndex] = createSignal(1);
+    const props = { onClose: vi.fn(), onDownload: vi.fn(), onOpenExternally: vi.fn(), loadData: vi.fn(async () => "cGRm") };
+    render(() => (
+      <AttachmentLightbox
+        items={items} index={index()} onIndexChange={setIndex} {...props}
+        laterVersion={(shown) => (shown.filename === "agenda.pdf" ? { text: "Ana sent v2 on Sep 28, in “Plans”.", action: "Open v2", open } : null)}
+      />
+    ));
+    const footer = document.querySelector(".lightbox-footer")!;
+    expect(footer).toHaveTextContent("Ana sent v2 on Sep 28, in “Plans”.");
+    fireEvent.click(screen.getByRole("button", { name: "Open v2" }));
+    expect(open).toHaveBeenCalledTimes(1);
+    setIndex(0);
+    expect(document.querySelector(".lightbox-footer")).toBeNull();
+  });
 });

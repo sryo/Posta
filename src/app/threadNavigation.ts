@@ -34,3 +34,10 @@ export function stepThread(order: string[], id: string, direction: 1 | -1): stri
   const i = order.indexOf(id);
   return i === -1 ? null : order[i + direction] ?? null;
 }
+
+// The row to go back to once a view opened from `from` closes: the same item
+// wherever it now sits, or the one now in its place when it left the card
+export function returnTo(order: string[], from: { itemId: string; index: number }): string | null {
+  if (order.includes(from.itemId)) return from.itemId;
+  return order[Math.min(from.index, order.length - 1)] ?? null;
+}

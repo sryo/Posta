@@ -115,6 +115,7 @@ import {
 } from "./components/Icons";
 import { ReactionButton } from "./components/ReactionButton";
 import { ComposeTextarea, CloseButton } from "./components/ComposeAtoms";
+import { SentInPlace } from "./components/SentInPlace";
 import { CancelButton, FormFooter, SettingsGroup, SettingsRow, SubmitButton } from "./components/FormParts";
 import { AuthScreen } from "./components/AuthScreen";
 import { PresetPicker } from "./components/PresetPicker";
@@ -165,6 +166,10 @@ import { CardFootNotes } from "./components/CardFootNotes";
 import { safeGetItem, safeSetItem, safeRemoveItem, safeGetJSON, safeSetJSON } from "./shared/storage";
 import { BOARD_COLORS, type ActionSettings, type CardColor, type GroupBy } from "./shared/constants";
 import { createUndoableSend } from "./app/undoableSend";
+import { createSentReplies } from "./app/sentReplies";
+import { createLaterVersions, laterVersionLine } from "./app/laterVersion";
+import type { LaterNote } from "./components/Attachments";
+import type { SentReply } from "./components/types";
 import { findHeader, lastMessageFromOthers, messageDate } from "./app/messages";
 import { lastLetterLine, latestDate } from "./app/transit";
 import { batchReplyEntry, type BatchReplyThread } from "./app/batchReply";
@@ -172,7 +177,8 @@ import { matchContacts, rankContacts, type RecentContact } from "./app/contacts"
 import { eventReplyRecipients } from "./app/eventReply";
 import { labelDisplayName } from "./app/labels";
 import { nameInThreads, personName } from "./app/people";
-import { afterRemoval, loadAfterArchive, stepThread, threadPosition } from "./app/threadNavigation";
+import { afterRemoval, loadAfterArchive, returnTo, stepThread, threadPosition } from "./app/threadNavigation";
+import { lightUp } from "./shared/rowMotion";
 import { AttachmentList } from "./components/Attachments";
 import { watchScrollFade } from "./app/scrollFade";
 import { createThumbnails } from "./app/thumbnails";
@@ -447,10 +453,20 @@ function App() {
   const discardDraftTag = (key: string) => `discard-draft:${key}`;
 
   // Undo send state
+  const SEND_UNDO_MS = 5000;
+  // Inline replies, kept in their box in the thread until it holds them
+  const sentReplies = createSentReplies<PendingSend>();
+  // Quick replies, kept in their box on the row until the card shows them
+  const sentQuickReplies = createSentReplies<{ text: string }>();
+  const sentQuickReply = (threadId: string) => sentQuickReplies.inThread(threadId)[0];
   const undoableSend = createUndoableSend<PendingSend>({
-    delayMs: 5000,
+    delayMs: SEND_UNDO_MS,
     send: async pending => {
       await sendPending(pending);
+      if (pending.reply) {
+        sentReplies.settle(pending);
+        if (activeThreadId() === pending.reply.threadId) refreshActiveThread(pending.accountId, pending.reply.threadId);
+      }
       const fromBatch = batchReplyOrigins.get(pending);
       if (fromBatch?.cardId) fetchAndCacheThreads(fromBatch.cardId);
       const draft = pending.draft;
@@ -481,8 +497,15 @@ function App() {
     else open();
   }
 
-  // A failed send says so even when its email opens again by itself
+  // A failed send says so even when its email opens again by itself. A reply
+  // still in its box turns back into the compose it was.
   function putBackSend(pending: PendingSend, message: string, tone: ToastTone = "info") {
+    batch(() => {
+      sentReplies.drop(pending);
+      restoreUnsent(pending, message, tone);
+    });
+  }
+  function restoreUnsent(pending: PendingSend, message: string, tone: ToastTone) {
     const fromBatch = batchReplyOrigins.get(pending);
     if (fromBatch && accountById(pending.accountId)) {
       restoreBatchReply(fromBatch);
@@ -1732,21 +1755,35 @@ function App() {
   }
 
   // The row a thread or event view was opened from, for focus to go back to
-  let openedFromRow: ItemFocus | null = null;
+  let openedFromRow: (ItemFocus & { itemId: string }) | null = null;
+  const cardItemIds = (cardId: string) => isCalendarCard(cardId)
+    ? getCardEventsFlat(cardId).map(ev => ev.id)
+    : getCardThreadsFlat(cardId).map(t => t.gmail_thread_id);
   function rememberOpenedRow(cardId: string, itemId: string) {
-    const ids = isCalendarCard(cardId)
-      ? getCardEventsFlat(cardId).map(ev => ev.id)
-      : getCardThreadsFlat(cardId).map(t => t.gmail_thread_id);
-    const index = ids.indexOf(itemId);
-    openedFromRow = index === -1 ? null : { cardId, index };
+    const index = cardItemIds(cardId).indexOf(itemId);
+    openedFromRow = index === -1 ? null : { cardId, index, itemId };
   }
-  // Back to that row, or the one now in its place when it left the card
+  // That row, or the one now in its place when it left the card
+  function openedRowElement(): HTMLElement | null {
+    const from = openedFromRow;
+    const itemId = from && returnTo(cardItemIds(from.cardId), from);
+    if (!from || !itemId) return null;
+    return document.querySelector<HTMLElement>(`.card[data-id="${CSS.escape(from.cardId)}"] [data-item-id="${CSS.escape(itemId)}"]`);
+  }
+  // Back to that row, lit for a moment
   function restoreOpenedRowFocus() {
     const from = openedFromRow;
+    if (!from || !cards().some(c => c.id === from.cardId)) {
+      openedFromRow = null;
+      return;
+    }
+    const ids = cardItemIds(from.cardId);
+    const itemId = returnTo(ids, from);
+    const row = openedRowElement();
     openedFromRow = null;
-    if (!from || !cards().some(c => c.id === from.cardId)) return;
-    const count = (isCalendarCard(from.cardId) ? getCardEventsFlat(from.cardId) : getCardThreadsFlat(from.cardId)).length;
-    if (count > 0) focusCardItem(from.cardId, Math.min(from.index, count - 1));
+    if (!itemId) return;
+    focusCardItem(from.cardId, ids.indexOf(itemId));
+    if (row) lightUp(row);
   }
 
   // When * was pressed, for a following a to select all
@@ -2976,9 +3013,36 @@ function App() {
     markDraftSending(composeDraftKey, account.id);
     pending.draft = { key: composeDraftKey, gmailDraftId: drafts.gmailDraftId() ?? undefined };
     sendingDraftKeys.add(composeDraftKey);
-    closeComposeAfterSend();
+    // An inline reply's box stays, becoming the reply; it isn't the compose
+    // any more, so that goes at once
+    if (pending.reply && composeShownIn() === "thread") {
+      batch(() => {
+        sentReplies.add(pending.reply!.threadId, pending, activeThread()?.messages.map(m => m.id) ?? []);
+        drafts.detach();
+        resetCompose();
+      });
+    } else {
+      closeComposeAfterSend();
+    }
     undoableSend.queue(pending);
   }
+
+  createEffect(() => {
+    const thread = activeThread();
+    if (thread) sentReplies.arrived(thread.id, thread.messages);
+  });
+  const activeSentReplies = createMemo((): SentReply[] => {
+    const threadId = activeThreadId();
+    if (!threadId) return [];
+    return sentReplies.inThread(threadId).flatMap(({ item: pending, state, queuedAt, sentAt }) => pending.reply?.messageId ? [{
+      replyToMessageId: pending.reply.messageId,
+      to: pending.to, cc: pending.cc, bcc: pending.bcc, body: pending.body, attachments: pending.attachments,
+      fromEmail: accounts().length > 1 ? accountById(pending.accountId)?.email : undefined,
+      state, sentAt,
+      undoUntil: queuedAt + SEND_UNDO_MS,
+      onUndo: () => { if (undoableSend.withdraw(pending)) putBackSend(pending, `"${pending.subject || "(no subject)"}" wasn't sent`); },
+    }] : []);
+  });
 
   // Compose closed when the send was queued, so an undone or failed send puts
   // the email back, continuing its saved draft
@@ -3053,7 +3117,12 @@ function App() {
 
     // The user may have moved on to another quick reply meanwhile
     const stillOpen = () => quickReply().threadId === threadId;
-    setQuickReply(qr => ({ ...qr, sending: true }));
+    const sent = { text };
+    let wentOut = false;
+    batch(() => {
+      sentQuickReplies.add(threadId, sent, []);
+      setQuickReply(qr => ({ ...qr, sending: true }));
+    });
     try {
       // The thread list lacks Reply-To and who wrote last; the full thread has both
       const details = await getThreadDetails(account.id, threadId);
@@ -3063,17 +3132,24 @@ function App() {
         return;
       }
       await replyToThread(account.id, threadId, entry.to, "", "", subject, text + signatureBlock(account.signature), entry.messageId, [], false);
-      if (stillOpen()) {
-        setQuickReply({ threadId: null, text: "", sending: false });
-        setQuickReplyCardId(null);
-      }
-      showToast(`Replied to ${quoted(thread.subject) ?? "the thread"}`);
-      fetchAndCacheThreads(cardId);
+      wentOut = true;
+      batch(() => {
+        sentQuickReplies.settle(sent);
+        if (stillOpen()) {
+          setQuickReply({ threadId: null, text: "", sending: false });
+          setQuickReplyCardId(null);
+        }
+      });
+      fetchAndCacheThreads(cardId).finally(() => sentQuickReplies.drop(sent));
     } catch (e) {
       console.error("Failed to send reply:", e);
       setFailure(`Couldn't send the reply to ${quoted(thread.subject) ?? "the thread"}`, e);
     } finally {
-      if (stillOpen()) setQuickReply(qr => ({ ...qr, sending: false }));
+      // An unsent reply turns back into the reply once it can be edited again
+      batch(() => {
+        if (stillOpen()) setQuickReply(qr => ({ ...qr, sending: false }));
+        if (!wentOut) sentQuickReplies.drop(sent);
+      });
     }
   }
 
@@ -3576,6 +3652,7 @@ function App() {
     if (leavesView) {
       const next = cardId ? afterRemoval(order, thread.id, loadAfterArchive()) : null;
       if (next && cardId && cardThreadOrder(cardId).includes(next)) openThread(next, cardId);
+      else if (closeThreadAnimated) closeThreadAnimated(() => { closeThreadView(); restoreOpenedRowFocus(); });
       else {
         closeThreadView();
         restoreOpenedRowFocus();
@@ -4063,7 +4140,10 @@ function App() {
     setLabelSearchQuery("");
   }
 
+  // The open thread view's close, which plays its closing motion first
+  let closeThreadAnimated: ((then?: () => void) => void) | undefined;
   function closeThreadView() {
+    closeThreadAnimated = undefined;
     setActiveThreadId(null);
     setActiveThreadCardId(null);
     setFocusedMessageIndex(0);
@@ -4632,6 +4712,19 @@ function App() {
 
   // The attachments the lightbox steps through, all of one account's mail
   const [attachmentPreview, setAttachmentPreview] = createSignal<{ accountId: string; items: PreviewAttachment[]; index: number } | null>(null);
+
+  // A newer file of an open thread's attachment, in another loaded thread
+  const laterVersion = createLaterVersions({
+    pool: () => cards().flatMap(c => (isCalendarCard(c.id) ? [] : getCardThreadsFlat(c.id).map(thread => ({ thread, cardId: c.id })))),
+    fetchThread: getThreadDetails,
+  });
+  function laterVersionNote(messageId: string, filename: string): LaterNote | null {
+    const thread = activeThread();
+    const accountId = activeThreadAccountId();
+    const later = noticesEnabled() && thread && accountId ? laterVersion(thread, accountId, messageId, filename) : null;
+    if (!later) return null;
+    return { ...laterVersionLine(later), open: () => { setAttachmentPreview(null); openThread(later.threadId, later.cardId); } };
+  }
 
   // Images and PDFs open in the lightbox, with the row's others to step through
   function openCardAttachment(accountId: string, attachments: Attachment[], attachment: Attachment) {
@@ -5607,6 +5700,7 @@ function App() {
                                         class={`calendar-event-item ${fadedBySearch(card.id, event.id) ? "faded" : ""} ${event.response_status === "declined" ? "declined" : ""} ${selectedEvents()[card.id]?.has(event.id) ? "selected" : ""} ${isEventFocused(card.id, event.id) ? "focused" : ""} ${isQuickReplyEvent(event.id) ? "replying" : ""}`}
                                         classList={{ "drag-source": eventDrag.isDragged(event.id, card.id) }}
                                         onPointerDown={(e) => eventDrag.press(e, event, card.id)}
+                                        data-item-id={event.id}
                                         onClick={() => openEvent(event, card.id)}
                                         onMouseEnter={(e) => showEventHoverActions(card.id, event.id, e)}
                                         onMouseLeave={(e) => hideEventHoverActions(card.id, event.id, e)}
@@ -5760,6 +5854,7 @@ function App() {
                                             if ((e.target as Element).closest(".invite-answer")) return;
                                             openThread(thread.gmail_thread_id, card.id);
                                           }}
+                                          data-item-id={thread.gmail_thread_id}
                                           role="article"
                                           aria-label={`${thread.unread_count > 0 ? 'Unread: ' : ''}${thread.subject} from ${thread.participants.slice(0, 2).map(personName).join(', ')}${inviteLabel()}${unanswered() ? `. ${unanswered()}` : ''}`}
                                           tabindex={rowTabIndex(card.id, thread.gmail_thread_id)}
@@ -5856,15 +5951,19 @@ function App() {
                                             </Show>
                                           </div>
                                         </div>
-                                        <Show when={isQuickReplyThread(thread.gmail_thread_id)}>
-                                          <div class="quick-reply-box" onClick={(e) => e.stopPropagation()}>
+                                        <Show when={isQuickReplyThread(thread.gmail_thread_id) || sentQuickReply(thread.gmail_thread_id)}>
+                                          <SentInPlace
+                                            class="quick-reply-box"
+                                            sent={sentQuickReply(thread.gmail_thread_id) && { ...sentQuickReply(thread.gmail_thread_id)!, undoUntil: 0 }}
+                                            onClick={(e) => e.stopPropagation()}
+                                          >
                                             <Show when={lastLetterLine(thread.last_message_date ? new Date(thread.last_message_date) : null, new Date())}>
                                               {(line) => <p class="compose-last-letter">{line()}</p>}
                                             </Show>
                                             <ComposeTextarea
                                               class="quick-reply-input"
                                               placeholder="Write a reply..."
-                                              value={quickReply().text}
+                                              value={sentQuickReply(thread.gmail_thread_id)?.item.text ?? quickReply().text}
                                               onChange={(val: string) => setQuickReply(qr => ({ ...qr, text: val }))}
                                               onSend={handleQuickReply}
                                               onCancel={() => setQuickReply({ threadId: null, text: "", sending: false })}
@@ -5882,7 +5981,7 @@ function App() {
                                               <CancelButton onClick={() => setQuickReply({ threadId: null, text: "", sending: false })} />
                                               <SubmitButton label="Send" busy={quickReply().sending} busyLabel="Sending..." disabled={!quickReply().text.trim()} onClick={handleQuickReply} />
                                             </FormFooter>
-                                          </div>
+                                          </SentInPlace>
                                         </Show>
                                       </>
                                       );
@@ -6158,6 +6257,8 @@ function App() {
             return c ? { name: c.name, color: (c.color as CardColor) || null } : null;
           })() : null}
           onClose={() => { if (composeShownIn() === "thread") closeCompose(); closeThreadView(); restoreOpenedRowFocus(); }}
+          origin={openedRowElement}
+          closeRef={(close) => { closeThreadAnimated = close; }}
           focusedMessageIndex={focusedMessageIndex()}
           onFocusChange={setFocusedMessageIndex}
           onOpenAttachment={(messageId, attachmentId, filename, mimeType, inlineData) => openAttachment(activeThreadAccountId() ?? "", messageId, attachmentId, filename, mimeType, inlineData)}
@@ -6191,6 +6292,8 @@ function App() {
           // Inline compose props
           inlineCompose={composeShownIn() === "thread" ? threadInlineCompose : null}
           threadAttachments={activeListedThread()?.attachments}
+          sentReplies={activeSentReplies()}
+          laterVersion={(attachment, message) => laterVersionNote(message.id, attachment.filename)}
           loadAttachmentPreview={(attachment) => thumbnails.preview(activeThreadAccount()?.id ?? "", attachment.message_id, attachment.attachment_id)}
           invite={(() => {
             const listed = activeListedThread();
@@ -6279,6 +6382,7 @@ function App() {
             return c ? { name: c.name, color: (c.color as CardColor) || null } : null;
           })() : null}
           onClose={() => { closeEvent(); restoreOpenedRowFocus(); }}
+          origin={openedRowElement}
           onRsvp={(status) => { const event = activeEvent(); if (event) answerListedEvent(event, status, activeEventCardId()); }}
           onReplyOrganizer={() => {
             const event = activeEvent();
@@ -6737,6 +6841,7 @@ function App() {
             loadData={loadPreviewData}
             onDownload={(item) => downloadAttachment(preview().accountId, item.messageId, item.attachmentId, item.filename, item.mimeType, item.inlineData)}
             onOpenExternally={(item) => openAttachment(preview().accountId, item.messageId, item.attachmentId, item.filename, item.mimeType, item.inlineData)}
+            laterVersion={(item) => laterVersionNote(item.messageId, item.filename)}
           />
         )}
       </Show>

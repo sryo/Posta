@@ -1491,6 +1491,35 @@ a:focus-visible,
     border-top: 1px solid var(--border-subtle);
 }
 
+/* An opened message's attachment, with a line under it when a later version
+   came elsewhere */
+.attachment-entry {
+    display: contents;
+}
+
+.attachment-noted {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-sm);
+    max-width: 320px;
+}
+
+.attachment-later {
+    margin: 0;
+    font: var(--type-meta);
+    color: var(--text-secondary);
+}
+
+.attachment-later-open {
+    padding: 0;
+    border: none;
+    background: none;
+    font: inherit;
+    font-weight: var(--weight-strong);
+    color: var(--text-link);
+    cursor: pointer;
+}
+
 .attachment {
     display: flex;
     align-items: center;
@@ -3910,6 +3939,18 @@ button:disabled:hover {
     resize: vertical;
 }
 
+/* Sent from the row (SentInPlace.tsx), until the card shows it */
+.quick-reply-box.sent .quick-reply-input {
+    opacity: 0.62;
+    border-color: transparent;
+    background: transparent;
+    resize: none;
+}
+
+.quick-reply-box .sent-head {
+    padding: 0 var(--space-md) var(--space-sm);
+}
+
 
 .compose-drop-zone {
     display: contents;
@@ -5032,6 +5073,25 @@ button:disabled:hover {
     animation: threadSlideOut 0.2s ease-in forwards;
 }
 
+/* Grown out of the row it was opened from, and shrunk back into it, from
+   script (rowMotion.ts) */
+.thread-overlay.via-row,
+.thread-overlay.via-row.closing {
+    animation: none;
+}
+
+/* The row a view went back to, lit for a moment so the eye finds it */
+.thread[data-returned],
+.calendar-event-item[data-returned] {
+    animation: row-return 1100ms ease-out;
+}
+
+@keyframes row-return {
+    from {
+        box-shadow: inset 0 0 0 100vmax var(--accent-tint);
+    }
+}
+
 /* Clears the 480px compose or event panel at the left edge while leaving the
    thread at least 640px */
 .app.side-panel-open .thread-overlay {
@@ -5730,6 +5790,11 @@ button:disabled:hover {
     cursor: default;
 }
 
+/* Picked here and still going out */
+.message-reaction.sending {
+    opacity: 0.62;
+}
+
 /* A message's replies, fanning out on its right */
 .message-actions-wheel {
     position: sticky;
@@ -5856,6 +5921,16 @@ button:disabled:hover {
 
 .lightbox-meta {
     font-size: var(--size-12);
+    color: var(--text-on-scrim-muted);
+}
+
+.lightbox-footer {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: var(--space-lg);
+    padding: 0 var(--space-xl) var(--space-xl);
+    font: var(--type-ui);
     color: var(--text-on-scrim-muted);
 }
 
@@ -6294,6 +6369,99 @@ button:disabled:hover {
     border-radius: var(--radius-lg);
     overflow: hidden;
     animation: inlineComposeSlide 0.2s ease-out;
+    transition: border-color 260ms cubic-bezier(0.2, 0.8, 0.2, 1), box-shadow 260ms cubic-bezier(0.2, 0.8, 0.2, 1), border-radius 260ms cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+
+/* Sent from where it was written (SentInPlace.tsx): the controls fold away
+   and the box takes a message's ring around the words, held back until
+   they went */
+.inline-compose.sent {
+    border-color: transparent;
+    box-shadow: 0 0 0 2px var(--border-default);
+    border-radius: var(--radius-xl);
+}
+
+.inline-compose.sent textarea {
+    opacity: 0.62;
+    resize: none;
+}
+
+.inline-compose.sent .compose-content,
+.inline-compose.sent .compose-content textarea {
+    min-height: 0;
+}
+
+.inline-compose.sent .compose-body {
+    gap: 0;
+}
+
+.sent-head {
+    padding: var(--space-lg) var(--space-xl) 0;
+}
+
+.sent-head-line {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: var(--space-lg);
+}
+
+.sent-state {
+    display: inline-flex;
+    align-items: baseline;
+    gap: var(--space-md);
+}
+
+.sent-when {
+    animation: sent-when-in 200ms linear;
+}
+
+@keyframes sent-when-in {
+    from {
+        opacity: 0;
+    }
+}
+
+.sent-undo {
+    padding: 0;
+    border: none;
+    background: none;
+    color: var(--text-link);
+    font: var(--type-meta);
+    font-weight: var(--weight-strong);
+    cursor: pointer;
+}
+
+.sent-undo-bar {
+    height: 2px;
+    margin-top: var(--space-md);
+    border-radius: 1px;
+    background: var(--accent-fill);
+    transform-origin: 0 50%;
+    animation: sent-undo-run linear both;
+}
+
+@keyframes sent-undo-run {
+    from {
+        transform: scaleX(1);
+    }
+
+    to {
+        transform: scaleX(0);
+    }
+}
+
+/* A part of a form folded away (motion.ts fold) */
+[data-folded] {
+    height: 0;
+    min-height: 0;
+    padding-top: 0;
+    padding-bottom: 0;
+    margin-top: 0;
+    margin-bottom: 0;
+    border-block-width: 0;
+    overflow: hidden;
+    opacity: 0;
 }
 
 @keyframes inlineComposeSlide {
@@ -7032,10 +7200,10 @@ button:disabled:hover {
     color: var(--text-on-accent);
 }
 
-/* Loading spinners, skeletons and the undo countdown keep moving: they carry
-   state rather than decoration. */
+/* Loading spinners, skeletons, the undo countdowns and a returned row's light
+   keep moving: they carry state rather than decoration. */
 @media (prefers-reduced-motion: reduce) {
-    *:not(.icon-btn.spinning svg, .auth-spinner, .spinner-sm, .skeleton-avatar, .skeleton-line, .toast-progress),
+    *:not(.icon-btn.spinning svg, .auth-spinner, .spinner-sm, .skeleton-avatar, .skeleton-line, .toast-progress, .sent-undo-bar, [data-returned]),
     *::before,
     *::after {
         animation-duration: 0.01ms !important;

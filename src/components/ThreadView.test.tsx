@@ -1,9 +1,15 @@
-import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { createSignal } from "solid-js";
-import { cleanup, fireEvent, render } from "@solidjs/testing-library";
+import { cleanup, fireEvent, render, waitFor, within } from "@solidjs/testing-library";
 import { ThreadView } from "./ThreadView";
 import { setInputMode } from "../app/inputMode";
 import type { FullThread } from "../api/tauri";
+import type { SentReply } from "./types";
+import { formatWhen } from "../app/dateFormat";
+import { EASE_IN_OUT, EASE_OUT, insetClip } from "../shared/motion";
+
+const invoke = vi.hoisted(() => vi.fn(async (_cmd: string, _args?: unknown): Promise<unknown> => null));
+vi.mock("@tauri-apps/api/core", () => ({ invoke: (cmd: string, args?: unknown) => invoke(cmd, args) }));
 
 const smartRepliesProps = vi.hoisted(() => ({ last: null as any }));
 vi.mock("./SmartReplies", () => ({
@@ -434,6 +440,34 @@ describe("ThreadView reactions", () => {
   });
 });
 
+describe("ThreadView reaction in place", () => {
+  const react = (container: HTMLElement) => {
+    fireEvent.click(container.querySelectorAll<HTMLButtonElement>(".add-reaction-btn")[0]);
+    fireEvent.click(document.querySelectorAll<HTMLButtonElement>(".reaction-wheel .radial-petal")[0]);
+  };
+  const firstMessage = (container: HTMLElement) => container.querySelectorAll<HTMLElement>(".message-card")[0];
+
+  it("shows the reaction picked under its message at once, held back until it is sent", async () => {
+    let finish!: () => void;
+    invoke.mockImplementationOnce(() => new Promise(resolve => { finish = () => resolve(null); }));
+    const { container } = renderThread();
+    react(container);
+    const chip = within(firstMessage(container)).getByTitle("You");
+    expect(chip).toHaveTextContent("🔥");
+    expect(chip).toHaveClass("sending");
+    expect(invoke).toHaveBeenCalledWith("send_reaction", expect.objectContaining({ emoji: "🔥" }));
+    finish();
+    await waitFor(() => expect(within(firstMessage(container)).getByTitle("You")).not.toHaveClass("sending"));
+  });
+
+  it("takes the reaction off again when it couldn't be sent", async () => {
+    invoke.mockImplementationOnce(async () => { throw "offline"; });
+    const { container } = renderThread({ onError: vi.fn() });
+    react(container);
+    await waitFor(() => expect(within(firstMessage(container)).queryByTitle("You")).toBeNull());
+  });
+});
+
 describe("ThreadView smart replies", () => {
   it("replies to the latest message from someone else, skipping reactions", () => {
     const thread = makeThread([
@@ -509,6 +543,98 @@ describe("ThreadView inline forward", () => {
     const { container, setCompose } = renderWithCompose(0);
     setCompose(composeStub(true));
     expect(rowWithCompose(container)).toBe(2);
+  });
+});
+
+describe("ThreadView reply in place", () => {
+  const replyCompose = (body: string) => ({
+    replyToMessageId: "<msg1@example.com>", isForward: false, to: "bob@example.com", setTo: vi.fn(), cc: "", setCc: vi.fn(), bcc: "", setBcc: vi.fn(),
+    showCcBcc: false, setShowCcBcc: vi.fn(), body, setBody: vi.fn(), attachments: [], onRemoveAttachment: vi.fn(),
+    onFileSelect: vi.fn(), error: null, draftSaving: false, draftSaved: false, onSend: vi.fn(), onClose: vi.fn(),
+    onInput: vi.fn(), focusBody: false, resizing: false, onResizeStart: vi.fn(),
+  });
+  const sentReply = (over: Partial<SentReply> = {}): SentReply => ({
+    replyToMessageId: "<msg1@example.com>", to: "bob@example.com", cc: "", bcc: "", body: "On my way",
+    attachments: [], state: "sending", undoUntil: Date.now() + 5000, onUndo: vi.fn(), ...over,
+  });
+
+  const renderReply = () => {
+    const [compose, setCompose] = createSignal<ReturnType<typeof replyCompose> | null>(replyCompose("On my way"));
+    const [sent, setSent] = createSignal<SentReply[]>([]);
+    const result = renderThreadWith(() => ({ inlineCompose: compose(), sentReplies: sent() }));
+    return { ...result, setCompose, setSent };
+  };
+  const renderThreadWith = (dynamic: () => { inlineCompose: any; sentReplies: SentReply[] }) => {
+    const props: any = {
+      thread: makeThread([{ from: "Alice <alice@example.com>", body: "first" }, { from: "Bob <bob@example.com>", body: "second" }]),
+      loading: false, error: null, card: null, onClose: vi.fn(), focusedMessageIndex: 1, onFocusChange: vi.fn(),
+      onOpenAttachment: vi.fn(), onDownloadAttachment: vi.fn(), onShowAttachmentMenu: vi.fn(), onReply: vi.fn(), onForward: vi.fn(),
+      onAction: vi.fn(), onOpenLabels: vi.fn(), accountId: "acc", currentUserEmail: "me@example.com",
+      isStarred: false, isRead: true, isImportant: false, isInInbox: true, labelCount: 0,
+    };
+    return render(() => <ThreadView {...props} inlineCompose={dynamic().inlineCompose} sentReplies={dynamic().sentReplies} />);
+  };
+  const box = () => document.querySelector<HTMLElement>(".inline-compose")!;
+  const textarea = () => box().querySelector("textarea")!;
+
+  it("keeps the reply where it was written once sent, reading Sending around the same words, its controls folded away", () => {
+    const { setCompose, setSent } = renderReply();
+    const written = textarea();
+    expect(within(box()).getByRole("button", { name: /^Send/ })).toBeInTheDocument();
+    setSent([sentReply()]);
+    setCompose(null);
+
+    expect(textarea()).toBe(written);
+    expect(written).toHaveValue("On my way");
+    expect(written).toHaveAttribute("readonly");
+    expect(box()).toHaveClass("sent");
+    expect(within(box()).getByText("You")).toBeInTheDocument();
+    expect(within(box()).getByText("Sending")).toBeInTheDocument();
+    expect(within(box()).queryByRole("button", { name: /^Send/ })).toBeNull();
+    expect(within(box()).queryByRole("textbox", { name: "To" })).toBeNull();
+  });
+
+  it("undoes the send from the box itself", () => {
+    const onUndo = vi.fn();
+    renderThreadWith(() => ({ inlineCompose: null, sentReplies: [sentReply({ onUndo })] }));
+    fireEvent.click(within(box()).getByRole("button", { name: "Undo" }));
+    expect(onUndo).toHaveBeenCalledTimes(1);
+  });
+
+  it("turns back into the compose box on undo, with the caret where it was", () => {
+    const { setCompose, setSent } = renderReply();
+    const written = textarea();
+    written.focus();
+    written.setSelectionRange(3, 3);
+    setSent([sentReply()]);
+    setCompose(null);
+    written.blur();
+
+    setCompose(replyCompose("On my way"));
+    setSent([]);
+    expect(textarea()).toBe(written);
+    expect(written).not.toHaveAttribute("readonly");
+    expect(document.activeElement).toBe(written);
+    expect(written.selectionStart).toBe(3);
+    expect(written.selectionEnd).toBe(3);
+    expect(box()).not.toHaveClass("sent");
+    expect(within(box()).getByText("Sending").closest("[data-folded]")).toHaveAttribute("aria-hidden", "true");
+    expect(within(box()).getByRole("button", { name: /^Send/ })).toBeInTheDocument();
+  });
+
+  it("says when it went once sent, with no Undo", () => {
+    const sentAt = Date.now();
+    renderThreadWith(() => ({ inlineCompose: null, sentReplies: [sentReply({ state: "sent", sentAt })] }));
+    expect(within(box()).queryByText("Sending")).toBeNull();
+    expect(within(box()).getByText(formatWhen(new Date(sentAt), new Date()))).toBeInTheDocument();
+    expect(within(box()).queryByRole("button", { name: "Undo" })).toBeNull();
+  });
+
+  it("puts the box beside the message it answers", () => {
+    renderThreadWith(() => ({ inlineCompose: null, sentReplies: [sentReply()] }));
+    const rows = Array.from(document.querySelectorAll(".message-row"));
+    expect(rows.findIndex(r => r.querySelector(".inline-compose"))).toBe(1);
+    expect(rows[1]).toHaveClass("with-compose");
   });
 });
 
@@ -646,6 +772,14 @@ describe("ThreadView attachments", () => {
     fireEvent.keyDown(thumb, { key: "F10", shiftKey: true });
     expect(props.onShowAttachmentMenu).toHaveBeenCalledWith(expect.objectContaining({ filename: "plan.pdf", attachmentId: "a1" }));
   });
+
+  it("says under an attachment that a later version came, asking with the message that carries it", () => {
+    const laterVersion = vi.fn((a: { filename: string }, msg: { id: string }) => ({ text: `Ana sent v2 of ${a.filename} after ${msg.id}.`, action: "Open v2", open: vi.fn() }));
+    const { container } = renderThread({ thread: withFiles(), laterVersion });
+    const note = container.querySelector(".attachment-later")!;
+    expect(note).toHaveTextContent(/^Ana sent v2 of plan\.pdf after m\d\. Open v2$/);
+    expect(note.closest(".attachment-noted")?.querySelector(".attachment")).toHaveAttribute("aria-label", "plan.pdf, 2.0 KB");
+  });
 });
 
 describe("ThreadView scrolling", () => {
@@ -737,6 +871,86 @@ describe("ThreadView closing", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+});
+
+describe("ThreadView opening from its row", () => {
+  const original = window.matchMedia;
+  const originalAnimate = Element.prototype.animate;
+  let calls: { el: Element; keyframes: Keyframe[]; options: KeyframeAnimationOptions | number | undefined }[] = [];
+  beforeEach(() => {
+    calls = [];
+    Element.prototype.animate = function (this: Element, keyframes: Keyframe[], options?: number | KeyframeAnimationOptions) {
+      calls.push({ el: this, keyframes, options });
+      return { cancel() {}, finished: Promise.resolve() } as unknown as Animation;
+    } as typeof Element.prototype.animate;
+  });
+  afterEach(() => {
+    Element.prototype.animate = originalAnimate;
+    window.matchMedia = original;
+  });
+  const rowAt = (rect: { top: number; left: number; right: number; bottom: number }) => {
+    const row = document.createElement("div");
+    row.getBoundingClientRect = () => ({ ...rect, width: rect.right - rect.left, height: rect.bottom - rect.top, x: rect.left, y: rect.top, toJSON() {} }) as DOMRect;
+    return row;
+  };
+  const overlayCalls = () => calls.filter(c => c.el.classList.contains("thread-overlay"));
+  const viewport = () => ({ top: 0, left: 0, right: window.innerWidth, bottom: window.innerHeight });
+
+  it("grows out of the row it was opened from instead of sliding in", () => {
+    const row = rowAt({ top: 100, left: 20, right: 320, bottom: 160 });
+    renderThread({ origin: () => row });
+    const overlay = document.querySelector(".thread-overlay")!;
+    expect(overlay).toHaveClass("via-row");
+    const [grow] = overlayCalls();
+    expect(grow.keyframes).toEqual([
+      { clipPath: insetClip(row.getBoundingClientRect(), viewport(), 8) },
+      { clipPath: insetClip(viewport(), viewport(), 0) },
+    ]);
+    expect(grow.options).toMatchObject({ duration: 300, easing: EASE_OUT });
+    const rise = calls.find(c => c.el.classList.contains("thread-content"))!;
+    expect(rise.keyframes).toEqual([{ opacity: 0, transform: "translateY(8px)" }, { opacity: 1, transform: "none" }]);
+    expect(rise.options).toMatchObject({ duration: 180, delay: 120 });
+  });
+
+  it("shrinks back into the row, measured again, on closing", () => {
+    vi.useFakeTimers();
+    try {
+      let rect = { top: 100, left: 20, right: 320, bottom: 160 };
+      const row = document.createElement("div");
+      row.getBoundingClientRect = () => ({ ...rect, width: 300, height: 60, x: rect.left, y: rect.top, toJSON() {} }) as DOMRect;
+      const { props } = renderThread({ origin: () => row });
+      rect = { top: 40, left: 20, right: 320, bottom: 100 };
+      fireEvent.keyDown(document, { key: "Escape" });
+      const shrink = overlayCalls()[overlayCalls().length - 1];
+      expect(shrink.keyframes[shrink.keyframes.length - 1]).toEqual({ clipPath: insetClip(rect, viewport(), 8) });
+      expect(shrink.options).toMatchObject({ duration: 220, easing: EASE_IN_OUT });
+      expect(document.querySelector(".thread-overlay")).toHaveClass("via-row");
+      vi.advanceTimersByTime(220);
+      expect(props.onClose).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("slides as before when there is no row on screen to go back to", () => {
+    const offscreen = rowAt({ top: -200, left: 20, right: 320, bottom: -140 });
+    renderThread({ origin: () => offscreen });
+    expect(document.querySelector(".thread-overlay")).not.toHaveClass("via-row");
+    expect(overlayCalls()).toEqual([]);
+    fireEvent.keyDown(document, { key: "Escape" });
+    expect(document.querySelector(".thread-overlay")).toHaveClass("closing");
+  });
+
+  it("only fades in and out when motion is reduced", () => {
+    window.matchMedia = ((query: string) => ({ matches: query === "(prefers-reduced-motion: reduce)" })) as unknown as typeof window.matchMedia;
+    const row = rowAt({ top: 100, left: 20, right: 320, bottom: 160 });
+    renderThread({ origin: () => row });
+    expect(overlayCalls().map(c => c.keyframes)).toEqual([[{ opacity: 0 }, { opacity: 1 }]]);
+    fireEvent.keyDown(document, { key: "Escape" });
+    const fade = overlayCalls()[overlayCalls().length - 1];
+    expect(fade.keyframes).toEqual([{ opacity: 1 }, { opacity: 0 }]);
+    expect(fade.options).toMatchObject({ duration: 120 });
   });
 });
 

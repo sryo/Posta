@@ -110,6 +110,16 @@ export function createUndoableSend<T>(opts: {
     return entry.item;
   }
 
+  // One queued send, whichever it is; false once it went out
+  function withdraw(item: T): boolean {
+    const entry = queued().find(e => e.item === item);
+    if (!entry) return false;
+    clearTimeout(entry.timeoutId);
+    setQueued(q => q.filter(e => e !== entry));
+    settle();
+    return true;
+  }
+
   function queueAll(items: T[]) {
     const group = {};
     for (const item of items) queue(item, group);
@@ -132,6 +142,7 @@ export function createUndoableSend<T>(opts: {
     queueAll,
     undo,
     undoAll,
+    withdraw,
     pending: () => latest()?.item ?? null,
     progress,
     toastVisible,

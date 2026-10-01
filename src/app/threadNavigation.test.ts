@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it } from "vitest";
-import { afterRemoval, loadAfterArchive, saveAfterArchive, stepThread, threadPosition } from "./threadNavigation";
+import { afterRemoval, loadAfterArchive, returnTo, saveAfterArchive, stepThread, threadPosition } from "./threadNavigation";
 
 const order = ["a", "b", "c"];
 
@@ -48,5 +48,17 @@ describe("the after-archive setting", () => {
   it("ignores a stored value it doesn't know", () => {
     localStorage.setItem("afterArchive", "sideways");
     expect(loadAfterArchive()).toBe("next");
+  });
+});
+
+describe("returnTo", () => {
+  it("goes back to the row a view was opened from, wherever it now sits", () => {
+    expect(returnTo(["x", "a", "b", "c"], { itemId: "b", index: 1 })).toBe("b");
+  });
+
+  it("takes the row now in its place once it left the card, or the last row", () => {
+    expect(returnTo(["a", "c"], { itemId: "b", index: 1 })).toBe("c");
+    expect(returnTo(["a"], { itemId: "b", index: 1 })).toBe("a");
+    expect(returnTo([], { itemId: "b", index: 1 })).toBeNull();
   });
 });

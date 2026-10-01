@@ -28,6 +28,7 @@ import { MessageActionsWheel } from "./MessageActionsWheel";
 import { CardPill } from "./CardPill";
 import { organizerName } from "../app/people";
 import { createCloseAfterAnimation } from "../shared/closeAfterAnimation";
+import { createRowMotion, SHRINK_MS } from "../shared/rowMotion";
 import { isTypingTarget, hasCommandModifier } from "../shared/keyboard";
 import type { InlineComposeProps, InlineEditEventProps } from "./types";
 import { useLayer } from "../app/layers";
@@ -59,9 +60,17 @@ export const EventView = (props: {
   rsvpLoading: boolean;
   inlineCompose: InlineComposeProps | null;
   inlineEdit: InlineEditEventProps | null;
+  // The row the event was opened from, which the view grows out of and
+  // shrinks back into
+  origin?: () => Element | null;
 }) => {
 
-  const { closing, close: handleClose } = createCloseAfterAnimation(() => props.onClose());
+  const motion = createRowMotion(() => props.origin?.());
+  const { closing, close } = createCloseAfterAnimation(() => props.onClose(), SHRINK_MS);
+  const handleClose = () => {
+    if (!closing()) motion.close();
+    close();
+  };
   const dialogRef = useDialog({ onClose: handleClose, labelledBy: "event-view-title", initialFocus: (el) => el });
 
   const actions = createMemo(() => props.event ? eventActions(props.event, props.accountEmail) : null);
@@ -121,7 +130,7 @@ export const EventView = (props: {
   useLayer(() => !!props.inlineEdit, () => props.inlineEdit?.onClose());
 
   return (
-    <div ref={dialogRef} class={`thread-overlay ${closing() ? 'closing' : ''}`}>
+    <div ref={(el) => { dialogRef(el); motion.ref(el); }} class={`thread-overlay ${closing() ? 'closing' : ''} ${motion.viaRow() ? 'via-row' : ''}`}>
       <div class="thread-floating-bar">
         {/* Row 1: Close + Title + Card indicator */}
         <div class="thread-floating-bar-row">
