@@ -153,6 +153,7 @@ beforeEach(() => {
     fetch_contacts: () => [],
     take_pending_mailtos: () => [],
     has_gemini_api_key: () => false,
+    set_dock_menu: () => null,
   } satisfies Record<string, Handler>);
   for (const k of Object.keys(cardsByAccount)) delete cardsByAccount[k];
   for (const k of Object.keys(threadsByCard)) delete threadsByCard[k];
@@ -533,6 +534,31 @@ describe("App window title", () => {
     fireEvent.keyDown(document, { key: "l" });
     fireEvent.keyDown(document, { key: "u" });
     await waitFor(() => expect(setTitle).toHaveBeenLastCalledWith("Posta"));
+  });
+});
+
+describe("App Dock menu", () => {
+  const lastDockMenu = () => invoke.mock.calls.filter(([cmd]) => cmd === "set_dock_menu").slice(-1)[0]?.[1];
+
+  it("hands the Dock the cards in board order with their unread counts", async () => {
+    cardsByAccount.a = [card("card-a", "a", "Alpha"), { ...card("card-b", "a", "Beta"), position: 1 }];
+    threadsByCard["card-b"] = [{ ...thread("t-b", "Unread in B"), unread_count: 1 }];
+    render(() => <App />);
+    await screen.findByText("Unread in B");
+    await waitFor(() => expect(lastDockMenu()).toEqual({
+      menu: { cards: [{ id: "card-a", title: "Alpha" }, { id: "card-b", title: "Beta (1)" }], next: null },
+    }));
+  });
+
+  it("focuses the card chosen in the Dock menu", async () => {
+    cardsByAccount.a = [card("card-a", "a", "Alpha"), { ...card("card-b", "a", "Beta"), position: 1 }];
+    threadsByCard["card-b"] = [thread("t-b", "Mail for B")];
+    render(() => <App />);
+    await screen.findByText("Mail for B");
+    await waitFor(() => expect(eventListeners["focus-card"]).toBeDefined());
+
+    eventListeners["focus-card"]({ payload: "card-b" });
+    await waitFor(() => expect(screen.getByText("Mail for B").closest(".thread")).toHaveClass("focused"));
   });
 });
 

@@ -1,6 +1,7 @@
 // Tauri command bindings
 
 import { invoke } from "@tauri-apps/api/core";
+import type { DockMenu } from "../app/dockMenu";
 import type { RecurrenceScope } from "../app/recurrence";
 
 export interface Account {
@@ -446,6 +447,11 @@ export async function takePendingMailtos(): Promise<MailtoData[]> {
 /** Shows a PNG as the Dock icon while the app runs; null restores the bundled icon */
 export async function setDockIcon(png: Uint8Array | null): Promise<void> {
   return invoke("set_dock_icon", { png: png && Array.from(png) });
+}
+
+/** What the right-click Dock menu lists; choosing a card sends "focus-card" */
+export async function setDockMenu(menu: DockMenu): Promise<void> {
+  return invoke("set_dock_menu", { menu });
 }
 
 // iCloud sync

@@ -4,6 +4,7 @@ pub mod auth;
 pub mod cache;
 pub mod calendar;
 pub mod commands;
+mod dock_menu;
 pub mod gmail;
 pub mod icloud;
 pub mod models;
@@ -165,6 +166,23 @@ fn set_dock_icon(app_handle: tauri::AppHandle, png: Option<Vec<u8>>) -> Result<(
     }
 }
 
+/// What the right-click Dock menu lists until the board next changes
+#[tauri::command]
+fn set_dock_menu(menu: dock_menu::DockMenu) {
+    dock_menu::set(menu);
+}
+
+/// Brings the window forward with `card_id` focused, for a card chosen
+/// outside it (the Dock menu, a notification)
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+fn show_card(handle: &tauri::AppHandle, card_id: &str) {
+    if let Some(window) = handle.get_webview_window("main") {
+        let _ = window.show();
+        let _ = window.set_focus();
+    }
+    let _ = handle.emit("focus-card", card_id);
+}
+
 #[cfg(target_os = "macos")]
 mod dock_icon {
     use objc2::rc::{Allocated, Retained};
@@ -222,6 +240,8 @@ pub fn run() {
         .manage(AppState::new())
         .manage(PendingMailto::default())
         .setup(|app| {
+            #[cfg(target_os = "macos")]
+            dock_menu::install(app.handle());
             // Handle deep links (mailto:)
             #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
             {
@@ -310,6 +330,7 @@ pub fn run() {
             commands::has_gemini_api_key,
             take_pending_mailtos,
             set_dock_icon,
+            set_dock_menu,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application");

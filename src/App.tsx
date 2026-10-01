@@ -83,9 +83,11 @@ import {
   type EventInput,
   sendReaction,
   setDockIcon,
+  setDockMenu,
 } from "./api/tauri";
 import { createDockIconSync, dockIconForHue, renderIconPng } from "./app/dockIcon";
 import { boardTitle, createTitleSync } from "./app/windowTitle";
+import { dockMenu } from "./app/dockMenu";
 import { Menu, MenuItem, PredefinedMenuItem } from "@tauri-apps/api/menu";
 import {
   formatTime,
@@ -1478,6 +1480,29 @@ function App() {
   const offlineSince = createMemo<number | null>(since => (offline() ? since ?? Date.now() : null), null);
   const syncTitle = createTitleSync(title => getCurrentWindow().setTitle(title), 400);
   createEffect(() => syncTitle(boardTitle({ events: boardEvents(), offlineSince: offlineSince(), unread: totalUnread() }, minuteNow())));
+
+  // The right-click Dock menu: each card with its unread threads, then the
+  // next event. Sent only when its text changes.
+  const unreadByCard = createMemo(() => Object.fromEntries(cards().map(card => [
+    card.id,
+    (cardThreads[card.id] ?? []).reduce((n, group) => n + group.threads.filter(t => t.unread_count > 0).length, 0),
+  ])));
+  const dockMenuJson = createMemo(() => JSON.stringify(
+    dockMenu(cards().filter(c => !isSearchCard(c.id)), unreadByCard(), boardEvents(), minuteNow()),
+  ));
+  createEffect(() => setDockMenu(JSON.parse(dockMenuJson())).catch(e => console.warn("Failed to set the Dock menu:", e)));
+
+  // Rust's events for the board: a card chosen in the Dock menu
+  const nativeUnlisteners: (() => void)[] = [];
+  function listenNative<T>(name: string, handler: (payload: T) => void) {
+    listen<T>(name, event => handler(event.payload))
+      .then(unlisten => { if (disposed) unlisten(); else nativeUnlisteners.push(unlisten); })
+      .catch(e => console.warn(`Failed to listen for ${name}:`, e));
+  }
+  onCleanup(() => nativeUnlisteners.forEach(unlisten => unlisten()));
+  onMount(() => {
+    listenNative<string>("focus-card", cardId => { if (cardById(cardId)) focusCardItem(cardId, 0); });
+  });
 
   let unlistenMailto: (() => void) | undefined;
   // Hoisted out of onMount so onCleanup can remove them
