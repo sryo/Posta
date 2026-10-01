@@ -16,12 +16,13 @@ jobs:
           - platform: macos-latest
             args: --target aarch64-apple-darwin
             rust_targets: aarch64-apple-darwin
-          - platform: ubuntu-22.04
-            args: ''
-            rust_targets: ''
-          - platform: windows-latest
-            args: ''
-            rust_targets: ''
+          # Windows and Linux are left out until they build again
+          # - platform: ubuntu-22.04
+          #   args: ''
+          #   rust_targets: ''
+          # - platform: windows-latest
+          #   args: ''
+          #   rust_targets: ''
 
     runs-on: ${{ matrix.platform }}
 
@@ -38,11 +39,11 @@ jobs:
         with:
           targets: ${{ matrix.rust_targets }}
 
-      - name: Install dependencies (Ubuntu)
-        if: matrix.platform == 'ubuntu-22.04'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
+      # - name: Install dependencies (Ubuntu)
+      #   if: matrix.platform == 'ubuntu-22.04'
+      #   run: |
+      #     sudo apt-get update
+      #     sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
 
       - name: Check macOS bundle files
         if: matrix.platform == 'macos-latest'
