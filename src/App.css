@@ -3561,6 +3561,29 @@ button:disabled:hover {
     color: var(--text-muted);
 }
 
+/* One line stating something Posta noticed or just did, beside the thing it is about */
+.notice-line {
+    display: flex;
+    align-items: center;
+    gap: var(--space-sm);
+    font: var(--type-meta);
+    color: var(--text-muted);
+}
+
+.notice-line-text {
+    margin: 0;
+    min-width: 0;
+}
+
+.notice-line-action {
+    flex-shrink: 0;
+}
+
+.notice-line-dismiss {
+    margin-left: auto;
+    flex-shrink: 0;
+}
+
 .compose-content {
     flex: 1;
     min-height: 150px;

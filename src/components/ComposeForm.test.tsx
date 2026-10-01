@@ -1,7 +1,8 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { fireEvent, render, screen } from "@solidjs/testing-library";
 import { createSignal } from "solid-js";
 import { ComposeForm } from "./ComposeForm";
+import { setNoticesEnabled } from "../app/notices";
 
 const CONTACTS = [{ email: "kenji@example.com", name: "Kenji" }, { email: "kim@example.com" }];
 const suggestContacts = (q: string) => CONTACTS.filter(c => c.email.startsWith(q));
@@ -331,5 +332,50 @@ describe("ComposeForm reply placeholder", () => {
   it("keeps a placeholder it is given", () => {
     renderReply({ to: "ana@x.com", placeholder: "Reply to the organizer..." });
     expect(screen.getByRole("textbox", { name: "Message" })).toHaveAttribute("placeholder", "Reply to the organizer...");
+  });
+});
+
+describe("ComposeForm reply all after a Bcc", () => {
+  const notice = {
+    line: "You were Bcc'd. Reply all shows Marta Ruiz and 1 other that you have this.",
+    sender: "jules@lumen.studio",
+    only: "Reply to Jules only",
+  };
+
+  function renderReplyAll() {
+    const [to, setTo] = createSignal("jules@lumen.studio");
+    const [cc, setCc] = createSignal("marta@lumen.studio, ben@lumen.studio");
+    render(() => (
+      <ComposeForm
+        mode="reply" to={to()} setTo={setTo} cc={cc()} setCc={setCc} setBcc={vi.fn()} showCcBcc={true}
+        body="" setBody={vi.fn()} attachments={[]} onRemoveAttachment={vi.fn()} onFileSelect={vi.fn()}
+        fileInputId="file" onSend={vi.fn()} onClose={vi.fn()} bccNotice={notice}
+      />
+    ));
+    return { to, cc };
+  }
+
+  afterEach(() => setNoticesEnabled(true));
+
+  it("says so under To, and narrows the reply to the sender on request", () => {
+    const { to, cc } = renderReplyAll();
+    const line = screen.getByText(notice.line);
+    expect(line.compareDocumentPosition(screen.getByLabelText("To")) & Node.DOCUMENT_POSITION_PRECEDING).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Reply to Jules only" }));
+    expect(to()).toBe("jules@lumen.studio");
+    expect(cc()).toBe("");
+    expect(screen.queryByText(notice.line)).toBeNull();
+  });
+
+  it("closes for this reply with its ×", () => {
+    renderReplyAll();
+    fireEvent.click(screen.getByRole("button", { name: "Dismiss" }));
+    expect(screen.queryByText(notice.line)).toBeNull();
+  });
+
+  it("says nothing while Posta isn't to point things out", () => {
+    setNoticesEnabled(false);
+    renderReplyAll();
+    expect(screen.queryByText(notice.line)).toBeNull();
   });
 });

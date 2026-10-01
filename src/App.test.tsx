@@ -6169,3 +6169,45 @@ describe("App reply names who it goes to", () => {
     expect(await screen.findByText(/^Sending to bo@y\.com( on \w+)?( at .+)? from a@x\.com…$/)).toBeInTheDocument();
   });
 });
+
+describe("App reply all after a Bcc", () => {
+  const bcced = () => fullMessage("m1", "Jules Bernard <jules@lumen.studio>", {
+    payload: {
+      mimeType: "text/plain",
+      headers: [
+        { name: "From", value: "Jules Bernard <jules@lumen.studio>" },
+        { name: "To", value: "Marta Ruiz <marta@lumen.studio>" },
+        { name: "Cc", value: "ben@lumen.studio" },
+        { name: "Delivered-To", value: "a@x.com" },
+        { name: "Subject", value: "Offsite budget" },
+        { name: "Message-ID", value: "<m1@x>" },
+      ],
+      body: { size: 0 },
+    },
+  });
+  const LINE = "You were Bcc'd. Reply all shows Marta Ruiz and ben@lumen.studio that you have this.";
+
+  async function openThread() {
+    handlers.get_thread_details = () => ({ id: "t-a", messages: [bcced()] });
+    render(() => <App />);
+    fireEvent.click(await screen.findByText("Mail for A"));
+    await screen.findByText("body m1");
+  }
+
+  it("warns on Reply all and narrows the reply to the sender on request", async () => {
+    await openThread();
+    fireEvent.keyDown(document, { key: "R" });
+    expect(await screen.findByText(LINE)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Reply to Jules only" }));
+    expect(screen.getByPlaceholderText("Recipients")).toHaveValue("jules@lumen.studio");
+    expect(screen.getByPlaceholderText("Cc recipients")).toHaveValue("");
+    expect(screen.queryByText(LINE)).not.toBeInTheDocument();
+  });
+
+  it("says nothing on a plain Reply", async () => {
+    await openThread();
+    fireEvent.keyDown(document, { key: "r" });
+    await screen.findByPlaceholderText(REPLY_BODY);
+    expect(screen.queryByText(/You were Bcc'd/)).not.toBeInTheDocument();
+  });
+});

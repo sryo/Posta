@@ -9,7 +9,9 @@ import { RecipientInput, type RecipientSuggestion } from "./RecipientInput";
 import { carriesFiles, transferredFiles } from "../app/fileDrop";
 import { FieldRow, FormFooter, PanelAccount, PanelHeader, SubmitButton } from "./FormParts";
 import { replyPlaceholder } from "../app/replyWords";
-import { splitEmailList } from "../utils";
+import { noticesEnabled } from "../app/notices";
+import { extractEmail, splitEmailList } from "../utils";
+import { NoticeLine } from "./NoticeLine";
 
 // Shared Compose Form component
 interface ComposeFormProps {
@@ -66,6 +68,8 @@ interface ComposeFormProps {
   lastLetter?: string | null;
   // A recipient's name from the user's contacts, for a reply's placeholder
   nameFor?: (email: string) => string | undefined;
+  // Set on Reply all to a message the user got as Bcc
+  bccNotice?: { line: string; sender: string; only: string } | null;
 }
 
 export const ComposeForm = (props: ComposeFormProps) => {
@@ -198,6 +202,27 @@ export const ComposeForm = (props: ComposeFormProps) => {
           placeholder="Bcc recipients"
         />
       </FieldRow>
+    </Show>
+  );
+
+  // Shown while the reply still reaches anyone besides the sender
+  const [bccDismissed, setBccDismissed] = createSignal(false);
+  const bccShown = () => {
+    const notice = props.bccNotice;
+    if (!notice || bccDismissed() || !noticesEnabled()) return null;
+    const sender = notice.sender.toLowerCase();
+    const reached = splitEmailList(`${props.to ?? ''}, ${props.cc ?? ''}`).map(a => extractEmail(a).trim().toLowerCase());
+    return reached.some(email => email && email !== sender) ? notice : null;
+  };
+  const BccNotice = () => (
+    <Show when={bccShown()}>
+      {(notice) => (
+        <NoticeLine
+          text={notice().line}
+          action={{ label: notice().only, run: () => { props.setTo?.(notice().sender); props.setCc?.(''); props.onInput?.(); } }}
+          onDismiss={() => setBccDismissed(true)}
+        />
+      )}
     </Show>
   );
 
@@ -355,6 +380,7 @@ export const ComposeForm = (props: ComposeFormProps) => {
         <Show when={props.showFields !== false}>
           <FromField />
           <ToField />
+          <BccNotice />
           <CcBccFields />
           <SubjectField />
         </Show>

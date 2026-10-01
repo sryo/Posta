@@ -62,6 +62,7 @@ import { useLayer } from "../app/layers";
 import { useDialog } from "../app/dialog";
 import { lastLetterLine, latestDate, transitGaps } from "../app/transit";
 import { TransitGap } from "./TransitGap";
+import { bccNotice } from "../app/bccReply";
 
 
 export const ThreadView = (props: {
@@ -338,6 +339,14 @@ export const ThreadView = (props: {
   };
   onCleanup(() => wheelHold.release());
 
+  // Addresses the account sends from, as its sent messages in this thread show
+  const sentFrom = () => (props.thread?.messages ?? [])
+    .filter(m => m.labelIds?.includes('SENT'))
+    .map(m => extractEmail(findHeader(m.payload?.headers, 'From') ?? ''))
+    .filter(Boolean);
+  // What to say under a Reply all to a message the user got as Bcc
+  const [bccReply, setBccReply] = createSignal<{ messageId: string; notice: NonNullable<ReturnType<typeof bccNotice>> } | null>(null);
+
   // Reply / reply-all / forward for one message; shared by the per-message
   // actions wheel and the r / R / f shortcuts on the focused message
   const messageActions = (msg: FullMessage) => {
@@ -376,6 +385,8 @@ export const ThreadView = (props: {
 
     const reply = (all: boolean, prefix = '') => {
       const { to, cc } = recipients(all);
+      const notice = all ? bccNotice(msg, { to, cc }, props.currentUserEmail ? [props.currentUserEmail] : [], sentFrom()) : null;
+      setBccReply(notice ? { messageId: msg.id, notice } : null);
       props.onReply(to, cc, addReplyPrefix(subject), prefix + quotedBody(), rfcMessageId, isHtml);
     };
 
@@ -738,6 +749,7 @@ export const ThreadView = (props: {
                           setShowCcBcc={props.inlineCompose!.setShowCcBcc}
                           suggestContacts={props.inlineCompose!.suggestContacts}
                           nameFor={props.inlineCompose!.nameFor}
+                          bccNotice={!props.inlineCompose!.isForward && bccReply()?.messageId === msg.id ? bccReply()!.notice : null}
                           fromEmail={props.inlineCompose!.fromEmail}
                           body={props.inlineCompose!.body}
                           setBody={props.inlineCompose!.setBody}
