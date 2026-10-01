@@ -2,6 +2,7 @@
 
 import { formatClock, formatShortDate, formatWhen, relativeDayName } from "./app/dateFormat";
 import { CARD_COLORS, type CardHue } from "./shared/constants";
+import { reducedMotion } from "./shared/motion";
 
 // --- Base64 helpers ---
 
@@ -430,5 +431,5 @@ export function formatCalendarEventDate(
 // scrollIntoView's smooth behaviour ignores the reduced-motion setting that
 // CSS transitions honour
 export function smoothScroll(): ScrollBehavior {
-  return window.matchMedia?.("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth";
+  return reducedMotion() ? "auto" : "smooth";
 }

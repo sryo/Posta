@@ -1,9 +1,10 @@
-import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { createSignal } from "solid-js";
 import { cleanup, fireEvent, render } from "@solidjs/testing-library";
 import { ThreadView } from "./ThreadView";
 import { setInputMode } from "../app/inputMode";
 import type { FullThread } from "../api/tauri";
+import { EASE_IN_OUT, EASE_OUT, insetClip } from "../shared/motion";
 
 const smartRepliesProps = vi.hoisted(() => ({ last: null as any }));
 vi.mock("./SmartReplies", () => ({
@@ -737,6 +738,86 @@ describe("ThreadView closing", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+});
+
+describe("ThreadView opening from its row", () => {
+  const original = window.matchMedia;
+  const originalAnimate = Element.prototype.animate;
+  let calls: { el: Element; keyframes: Keyframe[]; options: KeyframeAnimationOptions | number | undefined }[] = [];
+  beforeEach(() => {
+    calls = [];
+    Element.prototype.animate = function (this: Element, keyframes: Keyframe[], options?: number | KeyframeAnimationOptions) {
+      calls.push({ el: this, keyframes, options });
+      return { cancel() {}, finished: Promise.resolve() } as unknown as Animation;
+    } as typeof Element.prototype.animate;
+  });
+  afterEach(() => {
+    Element.prototype.animate = originalAnimate;
+    window.matchMedia = original;
+  });
+  const rowAt = (rect: { top: number; left: number; right: number; bottom: number }) => {
+    const row = document.createElement("div");
+    row.getBoundingClientRect = () => ({ ...rect, width: rect.right - rect.left, height: rect.bottom - rect.top, x: rect.left, y: rect.top, toJSON() {} }) as DOMRect;
+    return row;
+  };
+  const overlayCalls = () => calls.filter(c => c.el.classList.contains("thread-overlay"));
+  const viewport = () => ({ top: 0, left: 0, right: window.innerWidth, bottom: window.innerHeight });
+
+  it("grows out of the row it was opened from instead of sliding in", () => {
+    const row = rowAt({ top: 100, left: 20, right: 320, bottom: 160 });
+    renderThread({ origin: () => row });
+    const overlay = document.querySelector(".thread-overlay")!;
+    expect(overlay).toHaveClass("via-row");
+    const [grow] = overlayCalls();
+    expect(grow.keyframes).toEqual([
+      { clipPath: insetClip(row.getBoundingClientRect(), viewport(), 8) },
+      { clipPath: insetClip(viewport(), viewport(), 0) },
+    ]);
+    expect(grow.options).toMatchObject({ duration: 300, easing: EASE_OUT });
+    const rise = calls.find(c => c.el.classList.contains("thread-content"))!;
+    expect(rise.keyframes).toEqual([{ opacity: 0, transform: "translateY(8px)" }, { opacity: 1, transform: "none" }]);
+    expect(rise.options).toMatchObject({ duration: 180, delay: 120 });
+  });
+
+  it("shrinks back into the row, measured again, on closing", () => {
+    vi.useFakeTimers();
+    try {
+      let rect = { top: 100, left: 20, right: 320, bottom: 160 };
+      const row = document.createElement("div");
+      row.getBoundingClientRect = () => ({ ...rect, width: 300, height: 60, x: rect.left, y: rect.top, toJSON() {} }) as DOMRect;
+      const { props } = renderThread({ origin: () => row });
+      rect = { top: 40, left: 20, right: 320, bottom: 100 };
+      fireEvent.keyDown(document, { key: "Escape" });
+      const shrink = overlayCalls()[overlayCalls().length - 1];
+      expect(shrink.keyframes[shrink.keyframes.length - 1]).toEqual({ clipPath: insetClip(rect, viewport(), 8) });
+      expect(shrink.options).toMatchObject({ duration: 220, easing: EASE_IN_OUT });
+      expect(document.querySelector(".thread-overlay")).toHaveClass("via-row");
+      vi.advanceTimersByTime(220);
+      expect(props.onClose).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("slides as before when there is no row on screen to go back to", () => {
+    const offscreen = rowAt({ top: -200, left: 20, right: 320, bottom: -140 });
+    renderThread({ origin: () => offscreen });
+    expect(document.querySelector(".thread-overlay")).not.toHaveClass("via-row");
+    expect(overlayCalls()).toEqual([]);
+    fireEvent.keyDown(document, { key: "Escape" });
+    expect(document.querySelector(".thread-overlay")).toHaveClass("closing");
+  });
+
+  it("only fades in and out when motion is reduced", () => {
+    window.matchMedia = ((query: string) => ({ matches: query === "(prefers-reduced-motion: reduce)" })) as unknown as typeof window.matchMedia;
+    const row = rowAt({ top: 100, left: 20, right: 320, bottom: 160 });
+    renderThread({ origin: () => row });
+    expect(overlayCalls().map(c => c.keyframes)).toEqual([[{ opacity: 0 }, { opacity: 1 }]]);
+    fireEvent.keyDown(document, { key: "Escape" });
+    const fade = overlayCalls()[overlayCalls().length - 1];
+    expect(fade.keyframes).toEqual([{ opacity: 1 }, { opacity: 0 }]);
+    expect(fade.options).toMatchObject({ duration: 120 });
   });
 });
 

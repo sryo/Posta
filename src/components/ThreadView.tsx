@@ -12,6 +12,7 @@ import { isCalendarAttachment, isPreviewable, visibleAttachments } from "../app/
 import { AttachmentList } from "./Attachments";
 import { InviteBlock } from "./InviteBlock";
 import { createCloseAfterAnimation } from "../shared/closeAfterAnimation";
+import { createRowMotion, SHRINK_MS } from "../shared/rowMotion";
 import { isTypingTarget, hasCommandModifier } from "../shared/keyboard";
 import {
   findContent,
@@ -120,6 +121,12 @@ export const ThreadView = (props: {
   onCreateEvent?: () => void,
   // A panel over the thread (the new-event form) owns the keyboard
   keysPaused?: boolean,
+  // The row the thread was opened from, which the view grows out of and
+  // shrinks back into
+  origin?: () => Element | null,
+  // Hands over a way to close with the closing motion, then run `then`
+  // instead of onClose
+  closeRef?: (close: (then?: () => void) => void) => void,
 }) => {
   let messageRefs: (HTMLDivElement | undefined)[] = [];
   let contentRef: HTMLDivElement | undefined;
@@ -158,7 +165,17 @@ export const ThreadView = (props: {
     }
   };
 
-  const { closing, close: handleClose } = createCloseAfterAnimation(() => props.onClose());
+  const motion = createRowMotion(() => props.origin?.());
+  let closedThen: (() => void) | undefined;
+  const { closing, close } = createCloseAfterAnimation(() => (closedThen ?? props.onClose)(), SHRINK_MS);
+  const handleClose = () => {
+    if (!closing()) motion.close();
+    close();
+  };
+  props.closeRef?.((then) => {
+    if (!closing()) closedThen = then;
+    handleClose();
+  });
   const dialogRef = useDialog({ onClose: handleClose, labelledBy: "thread-view-title", initialFocus: (el) => el });
 
   // Gmail messages never change content under the same id (a draft edit gets
@@ -448,7 +465,7 @@ export const ThreadView = (props: {
   useLayer(() => !!props.labelDrawerOpen, () => props.onCloseLabelDrawer?.(), { closesFromInputs: true });
 
   return (
-    <div ref={dialogRef} class={`thread-overlay ${closing() ? 'closing' : ''}`}>
+    <div ref={(el) => { dialogRef(el); motion.ref(el); }} class={`thread-overlay ${closing() ? 'closing' : ''} ${motion.viaRow() ? 'via-row' : ''}`}>
       <div class="thread-floating-bar">
         {/* Row 1: Close + Subject + Card indicator */}
         <div class="thread-floating-bar-row">

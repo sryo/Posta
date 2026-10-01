@@ -164,7 +164,8 @@ import { matchContacts, rankContacts, type RecentContact } from "./app/contacts"
 import { eventReplyRecipients } from "./app/eventReply";
 import { labelDisplayName } from "./app/labels";
 import { nameInThreads, personName } from "./app/people";
-import { afterRemoval, loadAfterArchive, stepThread, threadPosition } from "./app/threadNavigation";
+import { afterRemoval, loadAfterArchive, returnTo, stepThread, threadPosition } from "./app/threadNavigation";
+import { lightUp } from "./shared/rowMotion";
 import { AttachmentList } from "./components/Attachments";
 import { watchScrollFade } from "./app/scrollFade";
 import { createThumbnails } from "./app/thumbnails";
@@ -1690,21 +1691,35 @@ function App() {
   }
 
   // The row a thread or event view was opened from, for focus to go back to
-  let openedFromRow: ItemFocus | null = null;
+  let openedFromRow: (ItemFocus & { itemId: string }) | null = null;
+  const cardItemIds = (cardId: string) => isCalendarCard(cardId)
+    ? getCardEventsFlat(cardId).map(ev => ev.id)
+    : getCardThreadsFlat(cardId).map(t => t.gmail_thread_id);
   function rememberOpenedRow(cardId: string, itemId: string) {
-    const ids = isCalendarCard(cardId)
-      ? getCardEventsFlat(cardId).map(ev => ev.id)
-      : getCardThreadsFlat(cardId).map(t => t.gmail_thread_id);
-    const index = ids.indexOf(itemId);
-    openedFromRow = index === -1 ? null : { cardId, index };
+    const index = cardItemIds(cardId).indexOf(itemId);
+    openedFromRow = index === -1 ? null : { cardId, index, itemId };
   }
-  // Back to that row, or the one now in its place when it left the card
+  // That row, or the one now in its place when it left the card
+  function openedRowElement(): HTMLElement | null {
+    const from = openedFromRow;
+    const itemId = from && returnTo(cardItemIds(from.cardId), from);
+    if (!from || !itemId) return null;
+    return document.querySelector<HTMLElement>(`.card[data-id="${CSS.escape(from.cardId)}"] [data-item-id="${CSS.escape(itemId)}"]`);
+  }
+  // Back to that row, lit for a moment
   function restoreOpenedRowFocus() {
     const from = openedFromRow;
+    if (!from || !cards().some(c => c.id === from.cardId)) {
+      openedFromRow = null;
+      return;
+    }
+    const ids = cardItemIds(from.cardId);
+    const itemId = returnTo(ids, from);
+    const row = openedRowElement();
     openedFromRow = null;
-    if (!from || !cards().some(c => c.id === from.cardId)) return;
-    const count = (isCalendarCard(from.cardId) ? getCardEventsFlat(from.cardId) : getCardThreadsFlat(from.cardId)).length;
-    if (count > 0) focusCardItem(from.cardId, Math.min(from.index, count - 1));
+    if (!itemId) return;
+    focusCardItem(from.cardId, ids.indexOf(itemId));
+    if (row) lightUp(row);
   }
 
   // When * was pressed, for a following a to select all
@@ -3425,6 +3440,7 @@ function App() {
     if (leavesView) {
       const next = cardId ? afterRemoval(order, thread.id, loadAfterArchive()) : null;
       if (next && cardId && cardThreadOrder(cardId).includes(next)) openThread(next, cardId);
+      else if (closeThreadAnimated) closeThreadAnimated(() => { closeThreadView(); restoreOpenedRowFocus(); });
       else {
         closeThreadView();
         restoreOpenedRowFocus();
@@ -3901,7 +3917,10 @@ function App() {
     setLabelSearchQuery("");
   }
 
+  // The open thread view's close, which plays its closing motion first
+  let closeThreadAnimated: ((then?: () => void) => void) | undefined;
   function closeThreadView() {
+    closeThreadAnimated = undefined;
     setActiveThreadId(null);
     setActiveThreadCardId(null);
     setFocusedMessageIndex(0);
@@ -5358,6 +5377,7 @@ function App() {
                                       </Show>
                                       <div
                                         class={`calendar-event-item ${fadedBySearch(card.id, event.id) ? "faded" : ""} ${event.response_status === "declined" ? "declined" : ""} ${selectedEvents()[card.id]?.has(event.id) ? "selected" : ""} ${isEventFocused(card.id, event.id) ? "focused" : ""} ${isQuickReplyEvent(event.id) ? "replying" : ""}`}
+                                        data-item-id={event.id}
                                         onClick={() => openEvent(event, card.id)}
                                         onMouseEnter={(e) => showEventHoverActions(card.id, event.id, e)}
                                         onMouseLeave={(e) => hideEventHoverActions(card.id, event.id, e)}
@@ -5506,6 +5526,7 @@ function App() {
                                             if ((e.target as Element).closest(".invite-answer")) return;
                                             openThread(thread.gmail_thread_id, card.id);
                                           }}
+                                          data-item-id={thread.gmail_thread_id}
                                           role="article"
                                           aria-label={`${thread.unread_count > 0 ? 'Unread: ' : ''}${thread.subject} from ${thread.participants.slice(0, 2).map(personName).join(', ')}${inviteLabel()}`}
                                           tabindex={rowTabIndex(card.id, thread.gmail_thread_id)}
@@ -5896,6 +5917,8 @@ function App() {
             return c ? { name: c.name, color: (c.color as CardColor) || null } : null;
           })() : null}
           onClose={() => { if (composeShownIn() === "thread") closeCompose(); closeThreadView(); restoreOpenedRowFocus(); }}
+          origin={openedRowElement}
+          closeRef={(close) => { closeThreadAnimated = close; }}
           focusedMessageIndex={focusedMessageIndex()}
           onFocusChange={setFocusedMessageIndex}
           onOpenAttachment={(messageId, attachmentId, filename, mimeType, inlineData) => openAttachment(activeThreadAccountId() ?? "", messageId, attachmentId, filename, mimeType, inlineData)}
@@ -6017,6 +6040,7 @@ function App() {
             return c ? { name: c.name, color: (c.color as CardColor) || null } : null;
           })() : null}
           onClose={() => { closeEvent(); restoreOpenedRowFocus(); }}
+          origin={openedRowElement}
           onRsvp={(status) => { const event = activeEvent(); if (event) answerListedEvent(event, status, activeEventCardId()); }}
           onReplyOrganizer={() => {
             const event = activeEvent();

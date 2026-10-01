@@ -1390,6 +1390,34 @@ describe("App keyboard focus", () => {
     await waitFor(() => expect(document.activeElement).toBe(row("Second")));
     expect(row("Second")).toHaveClass("focused");
   });
+
+  it("lights the row a thread goes back to for a moment", async () => {
+    handlers.get_thread_details = () => ({ id: "t-a", messages: [fullMessage("m1", "Ana <ana@x.com>")] });
+    render(() => <App />);
+    fireEvent.click(await screen.findByText("Mail for A"));
+    await screen.findByRole("dialog", { name: "Hi" });
+    expect(row("Mail for A")).not.toHaveAttribute("data-returned");
+    fireEvent.keyDown(document, { key: "Escape" });
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "Hi" })).toBeNull());
+    expect(document.activeElement).toBe(row("Mail for A"));
+    expect(row("Mail for A")).toHaveAttribute("data-returned");
+    await waitFor(() => expect(row("Mail for A")).not.toHaveAttribute("data-returned"), { timeout: 2000 });
+  });
+
+  it("closes an archived thread's view with its closing motion when archiving goes back to the board, lighting the row in its place", async () => {
+    localStorage.setItem("afterArchive", "board");
+    threadsByCard["card-a"] = [{ ...thread("t-a", "First"), labels: ["INBOX"] }, { ...thread("t-2", "Second"), labels: ["INBOX"] }];
+    handlers.get_thread_details = () => ({ id: "t-a", messages: [fullMessage("m1", "Ana <ana@x.com>")] });
+    handlers.modify_threads = () => null;
+    render(() => <App />);
+    fireEvent.click(await screen.findByText("First"));
+    await screen.findByRole("dialog", { name: "Hi" });
+    fireEvent.keyDown(document, { key: "a" });
+    await waitFor(() => expect(document.querySelector(".thread-overlay.closing")).not.toBeNull());
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "Hi" })).toBeNull());
+    await waitFor(() => expect(document.activeElement).toBe(row("Second")));
+    expect(row("Second")).toHaveAttribute("data-returned");
+  });
 });
 
 describe("App thread labels", () => {
