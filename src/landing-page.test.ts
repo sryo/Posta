@@ -13,6 +13,12 @@ const script = between("<script>", "</script>");
 const rules = parseRules(css);
 
 describe("landing page (docs/index.html)", () => {
+  it("downloads the latest Mac app straight from its download link", () => {
+    const link = markup.match(/<a href="([^"]*)" class="download-link">([^<]*)<\/a>/);
+    expect(link?.[1]).toBe("https://github.com/sryo/Posta/releases/latest/download/Posta.dmg");
+    expect(link?.[2]).toBe("Download for Mac");
+  });
+
   it("parses its stylesheet and script", () => {
     expect(rules.length).toBeGreaterThan(200);
     expect(script).toContain("addEventListener");
