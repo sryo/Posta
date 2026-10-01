@@ -13,10 +13,10 @@ const sources = Object.entries(
 const TYPE_STYLE =
   /\b(font-size|fontSize|font-weight|fontWeight|line-height|lineHeight|letter-spacing|letterSpacing|font-family|fontFamily)\b|["']font["']\s*:|\.style\.font\b/;
 
-// The postmark's lettering is drawn in the stamp's 168x76 viewBox units, so
-// its sizes scale with the SVG rather than sitting on the type scale.
+// The postmarks' lettering is drawn in each stamp's viewBox units, so its
+// sizes scale with the SVG rather than sitting on the type scale.
 const isPostmarkText = (file: string, line: string) =>
-  file.endsWith("/components/CardStates.tsx") && /^\s*(\{\(meridiem\) => )?<text\b/.test(line);
+  (file.endsWith("/components/CardStates.tsx") || file.endsWith("/components/TransitGap.tsx")) &&/^\s*(\{\(meridiem\) => )?<text\b/.test(line);
 
 describe("inline type", () => {
   it("reads the sources it checks", () => {

@@ -1,6 +1,7 @@
 import type { FullMessage, MessagePart } from "../api/tauri";
 import { extractEmail, extractMessageHtml, formatEmailDate, splitEmailList } from "../utils";
-import { findHeader, lastMessageFromOthers } from "./messages";
+import { findHeader, lastMessageFromOthers, messageDate } from "./messages";
+import { latestDate } from "./transit";
 
 export interface BatchReplyThread {
   threadId: string;
@@ -13,6 +14,7 @@ export interface BatchReplyThread {
   to: string; // Reply-to address
   parts?: MessagePart[]; // Where the body's inline images are
   accountId?: string; // The account the thread is in, which the reply is sent from
+  lastDate: Date | null; // When the thread last heard a letter, whoever sent it
 }
 
 // What a batch reply to a thread shows and who it goes to: the latest
@@ -46,5 +48,6 @@ export function batchReplyEntry(threadId: string, messages: FullMessage[], accou
     messageId: msg.id,
     to,
     parts: msg.payload?.parts,
+    lastDate: latestDate(messages.map(messageDate)),
   };
 }

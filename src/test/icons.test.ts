@@ -15,6 +15,7 @@ const sources = Object.entries(
 const SVG_ALLOWED: Record<string, string> = {
   "/components/Icons.tsx": "the icon set itself",
   "/components/CardStates.tsx": "the empty-card postmark illustration and its shared defs",
+  "/components/TransitGap.tsx": "the handstamp between two letters of a thread long apart",
 };
 
 // Unicode standing in for a drawn icon. Key labels (⌘ ⇧ ↵) and the · separator are text.

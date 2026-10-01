@@ -8,7 +8,7 @@ export type EmptyKind = "mail" | "calendar";
 const MAIL_LINES = ["Nothing left to sort.", "All delivered.", "Pile's empty."];
 const EVENING_LINE = "All delivered. See you tomorrow.";
 const EVENING_HOUR = 18;
-const MONTHS = ["JAN", "FEB", "MAR", "APR", "MAY", "JUN", "JUL", "AUG", "SEP", "OCT", "NOV", "DEC"];
+export const MONTHS = ["JAN", "FEB", "MAR", "APR", "MAY", "JUN", "JUL", "AUG", "SEP", "OCT", "NOV", "DEC"];
 const MAX_TILT = 8;
 
 // FNV-1a: a small stable hash, so a card's tilt and line survive restarts

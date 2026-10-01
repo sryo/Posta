@@ -60,6 +60,8 @@ interface ComposeFormProps {
   setFromAccountId?: (id: string) => void;
   // The account a reply goes out from, shown when set
   fromEmail?: string;
+  // "Last letter here: Aug 2025.", above a reply to a long-quiet thread
+  lastLetter?: string | null;
 }
 
 export const ComposeForm = (props: ComposeFormProps) => {
@@ -346,6 +348,9 @@ export const ComposeForm = (props: ComposeFormProps) => {
           <ToField />
           <CcBccFields />
           <SubjectField />
+        </Show>
+        <Show when={props.lastLetter}>
+          <p class="compose-last-letter">{props.lastLetter}</p>
         </Show>
         <BodyTextarea />
       </div>
