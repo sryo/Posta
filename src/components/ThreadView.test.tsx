@@ -1,12 +1,15 @@
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { createSignal } from "solid-js";
-import { cleanup, fireEvent, render, within } from "@solidjs/testing-library";
+import { cleanup, fireEvent, render, waitFor, within } from "@solidjs/testing-library";
 import { ThreadView } from "./ThreadView";
 import { setInputMode } from "../app/inputMode";
 import type { FullThread } from "../api/tauri";
 import type { SentReply } from "./types";
 import { formatWhen } from "../app/dateFormat";
 import { EASE_IN_OUT, EASE_OUT, insetClip } from "../shared/motion";
+
+const invoke = vi.hoisted(() => vi.fn(async (_cmd: string, _args?: unknown): Promise<unknown> => null));
+vi.mock("@tauri-apps/api/core", () => ({ invoke: (cmd: string, args?: unknown) => invoke(cmd, args) }));
 
 const smartRepliesProps = vi.hoisted(() => ({ last: null as any }));
 vi.mock("./SmartReplies", () => ({
@@ -434,6 +437,34 @@ describe("ThreadView reactions", () => {
     const cards = container.querySelectorAll(".message-card");
     expect(cards[0].querySelector(".add-reaction-btn")).not.toBeNull();
     expect(cards[1].querySelector(".add-reaction-btn")).toBeNull();
+  });
+});
+
+describe("ThreadView reaction in place", () => {
+  const react = (container: HTMLElement) => {
+    fireEvent.click(container.querySelectorAll<HTMLButtonElement>(".add-reaction-btn")[0]);
+    fireEvent.click(document.querySelectorAll<HTMLButtonElement>(".reaction-wheel .radial-petal")[0]);
+  };
+  const firstMessage = (container: HTMLElement) => container.querySelectorAll<HTMLElement>(".message-card")[0];
+
+  it("shows the reaction picked under its message at once, held back until it is sent", async () => {
+    let finish!: () => void;
+    invoke.mockImplementationOnce(() => new Promise(resolve => { finish = () => resolve(null); }));
+    const { container } = renderThread();
+    react(container);
+    const chip = within(firstMessage(container)).getByTitle("You");
+    expect(chip).toHaveTextContent("🔥");
+    expect(chip).toHaveClass("sending");
+    expect(invoke).toHaveBeenCalledWith("send_reaction", expect.objectContaining({ emoji: "🔥" }));
+    finish();
+    await waitFor(() => expect(within(firstMessage(container)).getByTitle("You")).not.toHaveClass("sending"));
+  });
+
+  it("takes the reaction off again when it couldn't be sent", async () => {
+    invoke.mockImplementationOnce(async () => { throw "offline"; });
+    const { container } = renderThread({ onError: vi.fn() });
+    react(container);
+    await waitFor(() => expect(within(firstMessage(container)).queryByTitle("You")).toBeNull());
   });
 });
 

@@ -162,6 +162,10 @@ export const ThreadView = (props: {
   createEffect(() => { if (!props.inlineCompose?.isForward) setForwardSourceId(null); });
   let hoverTimeout: number | undefined;
 
+  // Reactions picked here, shown on their message from the moment they are
+  // picked: held back while they go out, then as any other
+  const [pickedReactions, setPickedReactions] = createSignal<{ msgId: string; emoji: string; sending: boolean }[]>([]);
+
   // Handle sending a reaction
   const handleSendReaction = async (msgId: string, emoji: string) => {
     if (!props.thread || sendingReaction()) return;
@@ -177,10 +181,14 @@ export const ThreadView = (props: {
     const messageIdHeader = findHeader(msg.payload?.headers, 'Message-ID') || msgId;
 
     setSendingReaction(true);
+    const picked = { msgId, emoji, sending: true };
+    setPickedReactions(list => [...list, picked]);
 
     try {
       await sendReaction(props.accountId, props.thread.id, messageIdHeader, emoji, toEmail);
+      setPickedReactions(list => list.map(r => (r === picked ? { ...r, sending: false } : r)));
     } catch (e) {
+      setPickedReactions(list => list.filter(r => r !== picked));
       props.onError?.("Couldn't send the reaction", e);
     } finally {
       setSendingReaction(false);
@@ -650,7 +658,11 @@ export const ThreadView = (props: {
                     if (!group.senders.has(addr)) group.senders.set(addr, name);
                     groups.set(r.emoji, group);
                   }
-                  return Array.from(groups.values(), g => ({ emoji: g.emoji, names: Array.from(g.senders.values()) }));
+                  const received = Array.from(groups.values(), g => ({ emoji: g.emoji, names: Array.from(g.senders.values()), sending: false }));
+                  const picked = pickedReactions()
+                    .filter(r => r.msgId === msg.id && !received.some(g => g.emoji === r.emoji && g.names.includes('You')))
+                    .map(r => ({ emoji: r.emoji, names: ['You'], sending: r.sending }));
+                  return [...received, ...picked];
                 });
 
                 // Match either the Gmail API id or the RFC Message-ID, since
@@ -744,7 +756,7 @@ export const ThreadView = (props: {
                       <Show when={receivedReactions().length > 0}>
                         <div class="message-reactions">
                           <For each={receivedReactions()}>
-                            {(r) => <span class="message-reaction" title={r.names.join(', ')}>{r.names.length > 1 ? `${r.emoji} ${r.names.length}` : r.emoji}</span>}
+                            {(r) => <span class="message-reaction" classList={{ sending: r.sending }} title={r.names.join(', ')}>{r.names.length > 1 ? `${r.emoji} ${r.names.length}` : r.emoji}</span>}
                           </For>
                         </div>
                       </Show>

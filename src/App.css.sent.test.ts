@@ -51,4 +51,8 @@ describe("a reply that becomes the message", () => {
     expect(declaration(".quick-reply-box.sent .quick-reply-input", "background")).toBe("transparent");
     expect(declaration(".quick-reply-box .sent-head", "padding")).toBe("0 var(--space-md) var(--space-sm)");
   });
+
+  it("holds a picked reaction's chip at 62% while it goes out", () => {
+    expect(declaration(".message-reaction.sending", "opacity")).toBe("0.62");
+  });
 });

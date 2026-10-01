@@ -5612,6 +5612,11 @@ button:disabled:hover {
     cursor: default;
 }
 
+/* Picked here and still going out */
+.message-reaction.sending {
+    opacity: 0.62;
+}
+
 /* A message's replies, fanning out on its right */
 .message-actions-wheel {
     position: sticky;
