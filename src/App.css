@@ -1700,6 +1700,63 @@ a:focus-visible,
     transition: opacity 0.15s;
 }
 
+/* A long free stretch in today's or tomorrow's events: the blank gutter
+   between two panes of a stamp sheet, perforated above and below */
+.calendar-gutter {
+    --perforation: color-mix(in srgb, var(--card-ink) 45%, transparent);
+    position: relative;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--space-md);
+    min-height: 34px;
+    padding: 0 var(--space-lg);
+    font-variant-numeric: tabular-nums;
+    background-image:
+        radial-gradient(circle, var(--perforation) 1.6px, transparent 1.9px),
+        radial-gradient(circle, var(--perforation) 1.6px, transparent 1.9px);
+    background-size: 6px 6px;
+    background-repeat: repeat-x;
+    background-position: 3px -3px, 3px calc(100% + 3px);
+}
+
+.calendar-event-item:has(+ .calendar-gutter) {
+    border-bottom: none;
+}
+
+.calendar-gutter.ending {
+    min-height: 46px;
+    justify-content: center;
+}
+
+.calendar-gutter-line {
+    font: var(--type-meta);
+    color: var(--text-secondary);
+}
+
+.calendar-gutter-length {
+    font: var(--type-meta);
+    color: var(--text-muted);
+}
+
+.calendar-gutter-now {
+    position: absolute;
+    top: 5px;
+    bottom: 5px;
+    width: 2px;
+    border-radius: 1px;
+    background: var(--card-ink);
+    opacity: 0.7;
+    transform: translateX(-1px);
+    transition: left 300ms ease;
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .calendar-gutter-now {
+        transition: none;
+    }
+}
+
 /* A search that isn't kept yet */
 .card.search {
     box-shadow: none;
