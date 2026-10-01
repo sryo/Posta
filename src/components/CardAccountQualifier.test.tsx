@@ -26,6 +26,18 @@ describe("CardAccountQualifier", () => {
     expect(container).toBeEmptyDOMElement();
   });
 
+  it("says what came while you were away at rest, and the account on hover", () => {
+    const { container } = render(() => <CardAccountQualifier accountId="m" accounts={accounts} shown problem={null} since="6 new since last night" />);
+    expect(container.querySelector(".card-account-qualifier-short")).toHaveTextContent("6 new since last night");
+    expect(container.querySelector(".card-account-qualifier-full")).toHaveTextContent("mateo@posta.test");
+  });
+
+  it("keeps what came while you were away on hover when the board doesn't name accounts", () => {
+    const { container } = render(() => <CardAccountQualifier accountId="m" accounts={accounts} shown={false} problem={null} since="3 new since 9:40 AM" />);
+    expect(container.querySelector(".card-account-qualifier")).toHaveTextContent("3 new since 9:40 AM");
+    expect(container.querySelector(".card-account-qualifier-full")).toBeNull();
+  });
+
   it("gives its place to the word for a sync problem, even on a single-account board", () => {
     const { container } = render(() => <CardAccountQualifier accountId="m" accounts={accounts} shown={false} problem="Offline" />);
     expect(container.querySelector(".card-account-qualifier.problem")).toHaveTextContent("Offline");
@@ -49,6 +61,11 @@ describe("cardTitleLabel", () => {
   it("announces the unread count once collapsed, as the strip shows it", () => {
     expect(label({ collapsed: true, unread: 5 })).toBe("Unread, mateo@posta.test, 5 unread. Expand");
     expect(label({ collapsed: true, unread: 0 })).toBe("Unread, mateo@posta.test. Expand");
+  });
+
+  it("says what came while you were away after the account", () => {
+    expect(label({ since: "6 new since last night" })).toBe("Unread, mateo@posta.test, 6 new since last night. Collapse");
+    expect(label({ shown: false, since: "6 new since last night" })).toBe("Unread, 6 new since last night. Collapse");
   });
 
   it("says what keeps the card from syncing", () => {

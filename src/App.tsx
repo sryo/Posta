@@ -156,6 +156,7 @@ import { failureMessage, storedCredentialsFailure } from "./app/errorText";
 import { formatClock, formatDayLabel, formatShortDate, formatWhen } from "./app/dateFormat";
 import { threadGroupHeading, type GroupHeading } from "./app/groupHeading";
 import { unansweredLine } from "./app/unanswered";
+import { createLastLook, newSinceLine } from "./app/newSince";
 import { safeGetItem, safeSetItem, safeRemoveItem, safeGetJSON, safeSetJSON } from "./shared/storage";
 import { BOARD_COLORS, type ActionSettings, type CardColor, type GroupBy } from "./shared/constants";
 import { createUndoableSend } from "./app/undoableSend";
@@ -4345,6 +4346,14 @@ function App() {
   }));
   const cardGroupsById = createMemo(() => new Map(cardGroupMemos().map(m => [m.cardId, m])));
 
+  // What came to each mail card while you were away, for its header
+  const lastLook = createLastLook(() => cards().map(c => c.id));
+  function newSince(card: Card): string | null {
+    if (card.card_type === "calendar" || isSearchCard(card.id) || collapsedCards[card.id]) return null;
+    const dates = (cardThreads[card.id] ?? []).flatMap(g => g.threads.map(t => t.last_message_date));
+    return newSinceLine(dates, lastLook.since(card.id), new Date(minuteNow()));
+  }
+
   function getDisplayGroups(cardId: string): ThreadGroup[] {
     return cardGroupsById().get(cardId)?.threads() ?? withNowFor(cardId, computeDisplayGroups(cardId));
   }
@@ -4554,6 +4563,7 @@ function App() {
     }
 
     rememberOpenedRow(cardId, threadId);
+    lastLook.look(cardId);
     setActiveThreadAccountId(account.id);
     setActiveThreadId(threadId);
     setActiveThreadCardId(cardId);
@@ -5272,7 +5282,7 @@ function App() {
                           >
                             <button
                               class="card-title-btn"
-                              aria-label={cardTitleLabel({ name: card.name, accountId: card.account_id, accounts: accounts(), shown: namesAccount(), problem: syncStatus().problem, collapsed: !!collapsedCards[card.id], unread: getCardUnreadCount(card.id) })}
+                              aria-label={cardTitleLabel({ name: card.name, accountId: card.account_id, accounts: accounts(), shown: namesAccount(), problem: syncStatus().problem, since: newSince(card), collapsed: !!collapsedCards[card.id], unread: getCardUnreadCount(card.id) })}
                               aria-expanded={!collapsedCards[card.id]}
                             >
                               <Show when={collapsedCards[card.id] && getCardUnreadCount(card.id) > 0}>
@@ -5280,7 +5290,7 @@ function App() {
                               </Show>
                               <span class="card-title-chevron" aria-hidden="true"><ChevronIcon size="ui" /></span>
                               <span class="card-title">{card.name}</span>
-                              <CardAccountQualifier accountId={card.account_id} accounts={accounts()} shown={namesAccount()} problem={syncStatus().problem} />
+                              <CardAccountQualifier accountId={card.account_id} accounts={accounts()} shown={namesAccount()} problem={syncStatus().problem} since={newSince(card)} />
                             </button>
                             <Show when={!collapsedCards[card.id] && getCardUnreadCount(card.id) > 0}>
                               <span class="card-unread-badge">{getCardUnreadCount(card.id)}</span>
@@ -5320,6 +5330,7 @@ function App() {
                           class="card-body"
                           ref={(el) => onCleanup(watchScrollFade(el))}
                           onScroll={(e) => {
+                            lastLook.look(card.id);
                             if (editingCardId() === card.id) return; // No scroll loading during edit
                             const target = e.currentTarget;
                             const nearBottom = target.scrollTop + target.clientHeight >= target.scrollHeight - 50;

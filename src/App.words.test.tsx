@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { configure, render, screen } from "@solidjs/testing-library";
+import { configure, fireEvent, render, screen, waitFor } from "@solidjs/testing-library";
 
 vi.setConfig({ testTimeout: 20000 });
 configure({ asyncUtilTimeout: 4000 });
@@ -116,5 +116,51 @@ describe("Unanswered since Friday", () => {
     expect(row.querySelector(".thread-aside")).toHaveTextContent("Unanswered for a week");
     expect(row.getAttribute("aria-label")).toMatch(/\. Unanswered for a week$/);
     expect(rowOf("Answered already").querySelector(".thread-aside")).toBeNull();
+  });
+});
+
+describe("New since last night", () => {
+  const titleOf = (name: string) => screen.getByRole("button", { name: new RegExp(`^${name}\\b`) });
+  const qualifier = () => document.querySelector(".card-title-btn .card-account-qualifier");
+
+  function awayFor3Days() {
+    const left = daysAgoAt(3, 12);
+    localStorage.setItem("lastLook", JSON.stringify({ "card-a": left }));
+    groupsByCard["card-a"] = [{ label: "Today", threads: [
+      thread("t-1", "Came after", { last_message_date: Date.now() - 60_000 }),
+      thread("t-2", "Came after too", { last_message_date: Date.now() - 120_000 }),
+      thread("t-3", "Was there before", { last_message_date: left - 60_000 }),
+    ] }];
+    return new Intl.DateTimeFormat("en-US", { weekday: "long" }).format(new Date(left));
+  }
+
+  it("says in the card's header how many came since you last looked, until you scroll the card", async () => {
+    const weekday = awayFor3Days();
+    render(() => <App />);
+    await screen.findByText("Came after");
+    await waitFor(() => expect(qualifier()).toHaveTextContent(`2 new since ${weekday}`));
+    expect(titleOf("Alpha")).toHaveAccessibleName(`Alpha, 2 new since ${weekday}. Collapse`);
+    fireEvent.scroll(document.querySelector(".card-body")!);
+    await waitFor(() => expect(qualifier()).toBeNull());
+  });
+
+  it("keeps a collapsed card's strip to its name", async () => {
+    awayFor3Days();
+    render(() => <App />);
+    await screen.findByText("Came after");
+    await waitFor(() => expect(qualifier()).not.toBeNull());
+    fireEvent.click(titleOf("Alpha"));
+    await waitFor(() => expect(titleOf("Alpha")).toHaveAccessibleName("Alpha. Expand"));
+    expect(qualifier()).toBeNull();
+  });
+
+  it("clears once a thread in the card is opened", async () => {
+    handlers.get_thread_details = ({ threadId }) => ({ id: threadId, messages: [] });
+    awayFor3Days();
+    render(() => <App />);
+    await screen.findByText("Came after");
+    await waitFor(() => expect(qualifier()).not.toBeNull());
+    fireEvent.click(rowOf("Came after"));
+    await waitFor(() => expect(qualifier()).toBeNull());
   });
 });
