@@ -171,4 +171,14 @@ describe("App.css cascade", () => {
     expect(hintOpacity("keyboard", "focused")).toBe("1");
     delete document.documentElement.dataset.input;
   });
+  it("puts the + wheel's key hints away while a ring is out round one of its petals", () => {
+    const hint = (ringOpen: boolean) => {
+      document.body.innerHTML = `<div class="board-slot"><div class="radial-menu open hints-always">
+          <button class="radial-petal"><kbd class="key-hint pill action-key-hint">C</kbd></button></div>
+        <div class="board-slot-ring"><div class="radial-menu ${ringOpen ? "open" : ""}"></div></div></div>`;
+      return cascadedDeclarations(rules, document.querySelector(".action-key-hint")!).get("opacity");
+    };
+    expect(hint(false)).toBe("1");
+    expect(hint(true)).toBe("0");
+  });
 });

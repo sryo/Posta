@@ -10,6 +10,9 @@ export type RadialItem = {
   id: string;
   label: string;
   hint?: string;
+  // Words that name the petal beside it while it is tried, where its icon
+  // or glyph alone can't say who or what it is
+  caption?: string;
   icon?: (props: IconProps) => JSX.Element;
   glyph?: string;
   hue?: string | null;
@@ -256,6 +259,9 @@ export function RadialMenu(props: {
               </Show>
               <Show when={item.hint}>
                 <KeyHint keys={item.hint} look="pill" class="action-key-hint" />
+              </Show>
+              <Show when={item.caption}>
+                <span class="radial-caption" aria-hidden="true">{item.caption}</span>
               </Show>
             </button>
           );

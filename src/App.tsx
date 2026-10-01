@@ -141,6 +141,7 @@ import { deletedByScope, type RecurrenceScope } from "./app/recurrence";
 import { ThreadView } from "./components/ThreadView";
 import { EventView } from "./components/EventView";
 import { ActionsWheel } from "./components/ActionsWheel";
+import { BoardSlotWheel } from "./components/BoardSlotWheel";
 import { BoardFlower } from "./components/BoardFlower";
 import { RADIAL_HOVER_CLOSE_MS, RADIAL_HOVER_OPEN_MS } from "./app/radial";
 import { createHoverHold } from "./app/hoverHold";
@@ -1038,7 +1039,7 @@ function App() {
   const [composeSubject, setComposeSubject] = createSignal("");
   const [composeBody, setComposeBody] = createSignal("");
   const [composeIsHtml, setComposeIsHtml] = createSignal(false);
-  // The board's trailing slot, grown into its menu of new things and the
+  // The board's +, bloomed into a wheel of new things, ringed with the
   // contacts and events to start them from
   const [slotOpen, setSlotOpen] = createSignal(false);
   const composeFabHovered = slotOpen;
@@ -1060,6 +1061,7 @@ function App() {
   const [composeEmailError, setComposeEmailError] = createSignal<string | null>(null);
   const [composeAttachments, setComposeAttachments] = createSignal<SendAttachment[]>([]);
   let slotCloseTimeout: number | undefined;
+  let slotButton: HTMLButtonElement | undefined;
   const openSlot = () => {
     clearTimeout(slotCloseTimeout);
     setSlotOpen(true);
@@ -5105,83 +5107,61 @@ function App() {
                   if (!e.currentTarget.contains(e.relatedTarget as Node | null)) setSlotOpen(false);
                 }}
               >
-                <button class="board-slot-row" onClick={openSearch} aria-label="New search">
-                  <span class="board-slot-icon"><PlusIcon size="tool" /></span>
-                  <span class="board-slot-label">Search</span>
-                  <kbd class="board-slot-key">/</kbd>
+                <button
+                  ref={slotButton}
+                  class="board-slot-plus"
+                  aria-label="New"
+                  aria-haspopup="menu"
+                  aria-expanded={slotOpen()}
+                  title="New search, email or event"
+                  onClick={openSearch}
+                >
+                  <PlusIcon size="tool" />
                 </button>
-                <div class="board-slot-more">
-                  <button
-                    class="board-slot-row"
-                    tabindex={slotOpen() ? 0 : -1}
-                    onClick={() => { setSlotOpen(false); if (!composing() || closingCompose()) startCompose({}); }}
-                    aria-label="Compose new email"
-                  >
-                    <span class="board-slot-icon"><ComposeIcon size="ui" /></span>
-                    <span class="board-slot-label">Email</span>
-                    <kbd class="board-slot-key">C</kbd>
-                  </button>
-                  <button
-                    class="board-slot-row"
-                    tabindex={slotOpen() ? 0 : -1}
-                    onClick={() => { setSlotOpen(false); openNewEventForm(); }}
-                    aria-label="Create new calendar event"
-                  >
-                    <span class="board-slot-icon"><CalendarIcon size="ui" /></span>
-                    <span class="board-slot-label">Event</span>
-                    <kbd class="board-slot-key">E</kbd>
-                  </button>
-                  <Show when={fabSuggestions().length > 0}>
-                    <div class="board-slot-section" role="group" aria-labelledby="board-slot-recent">
-                      <span class="board-slot-heading" id="board-slot-recent">Recent</span>
-                      <For each={fabSuggestions()}>
-                        {(contact) => {
-                          const [local, domain] = contact.email.split("@");
-                          const name = contact.name || local;
-                          return (
-                            <button
-                              class="board-slot-row"
-                              tabindex={slotOpen() ? 0 : -1}
-                              aria-label={`New email to ${contact.name || contact.email}`}
-                              title={contact.name ? `${contact.name} <${contact.email}>` : contact.email}
-                              onClick={() => { startCompose({ to: contact.email, focusBody: true }); setSlotOpen(false); }}
-                            >
-                              <span class="board-slot-icon"><span class="board-slot-initial">{name.charAt(0).toUpperCase()}</span></span>
-                              <span class="board-slot-label">{name}</span>
-                              <Show when={!contact.name}><span class="board-slot-aside">{domain}</span></Show>
-                            </button>
-                          );
-                        }}
-                      </For>
-                    </div>
-                  </Show>
-                  <Show when={eventFabSuggestions().length > 0}>
-                    <div class="board-slot-section" role="group" aria-labelledby="board-slot-plan">
-                      <span class="board-slot-heading" id="board-slot-plan">Plan again</span>
-                      <For each={eventFabSuggestions()}>
-                        {(suggestion) => {
+                <BoardSlotWheel
+                  open={slotOpen()}
+                  onEscape={() => { setSlotOpen(false); slotButton?.focus(); }}
+                  petals={[
+                    { id: "search", label: "New search", caption: "Search", hint: "/", icon: SearchIcon, onSelect: () => { setSlotOpen(false); openSearch(); } },
+                    {
+                      id: "email", label: "Compose new email", caption: "Email", hint: "C", icon: ComposeIcon,
+                      onSelect: () => { setSlotOpen(false); if (!composing() || closingCompose()) startCompose({}); },
+                      ring: {
+                        label: "Write to",
+                        items: fabSuggestions().map(contact => {
+                          const name = contact.name || contact.email.split("@")[0];
+                          return {
+                            id: contact.email,
+                            label: `New email to ${contact.name || contact.email}`,
+                            caption: contact.name || contact.email,
+                            glyph: name.charAt(0).toUpperCase(),
+                            onSelect: () => { setSlotOpen(false); startCompose({ to: contact.email, focusBody: true }); },
+                          };
+                        }),
+                      },
+                    },
+                    {
+                      id: "event", label: "Create new calendar event", caption: "Event", hint: "E", icon: CalendarIcon,
+                      onSelect: () => { setSlotOpen(false); openNewEventForm(); },
+                      ring: {
+                        label: "Plan again",
+                        items: eventFabSuggestions().map(suggestion => {
                           const guests = guestList(suggestion.names);
                           const detail = suggestion.kind === "thread"
                             ? `with ${guests}`
                             : `again with ${guests} · ${formatShortDate(new Date(suggestion.at), undefined, { weekday: true })}`;
-                          return (
-                            <button
-                              class="board-slot-row"
-                              tabindex={slotOpen() ? 0 : -1}
-                              aria-label={`New event: ${suggestion.summary}, ${detail}`}
-                              title={`${suggestion.summary}, ${detail}`}
-                              onClick={() => { openNewEventForm({ summary: suggestion.summary, attendees: suggestion.attendees }); setSlotOpen(false); }}
-                            >
-                              <span class="board-slot-icon">{suggestion.kind === "thread" ? <MailIcon /> : <RepeatIcon />}</span>
-                              <span class="board-slot-label">{suggestion.summary}</span>
-                              <span class="board-slot-aside">{guests}</span>
-                            </button>
-                          );
-                        }}
-                      </For>
-                    </div>
-                  </Show>
-                </div>
+                          return {
+                            id: suggestion.key,
+                            label: `New event: ${suggestion.summary}, ${detail}`,
+                            caption: `${suggestion.summary} · ${guests}`,
+                            icon: suggestion.kind === "thread" ? MailIcon : RepeatIcon,
+                            onSelect: () => { setSlotOpen(false); openNewEventForm({ summary: suggestion.summary, attendees: suggestion.attendees }); },
+                          };
+                        }),
+                      },
+                    },
+                  ]}
+                />
               </div>
               </div>
             </Show>

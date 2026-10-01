@@ -827,8 +827,8 @@ a:focus-visible,
     background: var(--surface-hover);
 }
 
-/* The trailing slot: a + at the board's end that grows, in place, into a
-   card-shaped menu of what can be started and who or what to start it from */
+/* The board's +, in its first column: hovered or focused, it blooms into a
+   quarter wheel of what can be started (BoardSlotWheel) */
 .board-slot-anchor {
     position: relative;
     z-index: var(--z-sidebar);
@@ -850,160 +850,59 @@ a:focus-visible,
     transition: none;
 }
 
-/* The + grows to the menu's width and, row by row, to its height in one
-   motion; the ring and shadow follow the box as it grows */
 .board-slot {
-    position: absolute;
-    top: 0;
-    left: 0;
+    position: relative;
     width: 40px;
-    display: grid;
-    grid-template-rows: 40px 0fr;
-    overflow: hidden;
+    height: 40px;
+    border-radius: var(--radius-xl);
     background: var(--surface-card);
     box-shadow: 0 0 0 3px var(--border-default);
-    border-radius: var(--radius-xl);
-    transition:
-        width 0.22s cubic-bezier(0.2, 0.8, 0.2, 1),
-        grid-template-rows 0.22s cubic-bezier(0.2, 0.8, 0.2, 1),
-        box-shadow 0.2s ease;
+    transition: box-shadow 0.2s ease;
 }
 
-.board-slot:hover {
+.board-slot:hover,
+.board-slot.open {
     box-shadow: 0 0 0 3px var(--border-strong);
 }
 
-.board-slot.open {
-    width: 232px;
-    grid-template-rows: 40px 1fr;
-    box-shadow: 0 0 0 3px var(--border-strong), var(--shadow-lg);
-}
-
-.board-slot-more {
-    min-height: 0;
-    width: 232px;
-    display: flex;
-    flex-direction: column;
-}
-
-.board-slot-more > :last-child {
-    margin-bottom: var(--space-sm);
-}
-
-@media (prefers-reduced-motion: reduce) {
-    .board-slot {
-        transition: none;
-    }
-}
-
-.board-slot-row {
-    flex-shrink: 0;
+.board-slot-plus {
+    width: 100%;
+    height: 100%;
     display: flex;
     align-items: center;
-    gap: var(--space-md);
-    width: 232px;
-    min-width: 0;
-    height: 40px;
+    justify-content: center;
     padding: 0;
     border: none;
-    border-radius: var(--radius-xl);
+    border-radius: inherit;
     background: none;
     color: var(--text-muted);
-    font: var(--type-ui);
-    text-align: left;
-    white-space: nowrap;
     cursor: pointer;
 }
 
-.board-slot-row:hover,
-.board-slot-row:focus-visible {
-    background: var(--surface-hover);
+.board-slot-plus:hover,
+.board-slot-plus:focus-visible {
     color: var(--text-primary);
 }
 
-.board-slot-icon {
-    flex-shrink: 0;
-    width: 40px;
-    display: flex;
-    align-items: center;
-    justify-content: center;
+/* A ring opened round one of the wheel's petals: a point at that petal's
+   centre for its own wheel to bloom from */
+.board-slot-ring {
+    position: absolute;
+    width: 0;
+    height: 0;
 }
 
-.board-slot-label {
-    flex: 1;
-    color: var(--text-primary);
-}
-
-.board-slot-key {
-    margin-right: var(--space-lg);
-    padding: 0 var(--space-xs);
-    border: 1px solid var(--border-default);
-    border-radius: var(--radius-sm);
-    font: var(--type-meta);
-    color: var(--text-muted);
-}
-
-.board-slot-label,
-.board-slot-key,
-.board-slot-heading,
-.board-slot-aside {
+/* A ring out round a petal takes the room the wheel's key hints and
+   captions sit in */
+.board-slot:has(.board-slot-ring .radial-menu.open) .radial-menu.hints-always .action-key-hint,
+.board-slot:has(.board-slot-ring .radial-menu.open) .radial-menu.hints-always .radial-caption {
     opacity: 0;
-    transition: opacity 0.15s ease;
 }
 
-.board-slot.open .board-slot-label,
-.board-slot.open .board-slot-key,
-.board-slot.open .board-slot-heading,
-.board-slot.open .board-slot-aside {
-    opacity: 1;
-    transition-delay: 0.08s;
-}
-
-/* Who or what to start from, each under its own heading and set as the rows
-   above: a glyph or an initial, a name, and what tells two names apart */
-.board-slot-section {
-    display: flex;
-    flex-direction: column;
-    margin-top: var(--space-sm);
-    padding-top: var(--space-sm);
-    border-top: 1px solid var(--border-default);
-}
-
-.board-slot-heading {
-    padding: var(--space-xs) var(--space-lg);
-    font: var(--type-meta);
-    color: var(--text-muted);
-}
-
-/* A person's initial in the ink of the text beside it: hues name cards here */
-.board-slot-initial {
-    width: 20px;
-    height: 20px;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    border-radius: var(--radius-full);
-    background: var(--surface-hover);
-    color: var(--text-primary);
-    font: var(--type-meta);
+/* A person's initial sits in plain ink: hues name cards here */
+.board-slot-wheel .radial-glyph {
+    font: var(--type-ui);
     font-weight: var(--weight-strong);
-}
-
-.board-slot-section .board-slot-label {
-    min-width: 0;
-    overflow: hidden;
-    text-overflow: ellipsis;
-}
-
-.board-slot-aside {
-    flex-shrink: 1;
-    min-width: 0;
-    max-width: 45%;
-    margin-right: var(--space-lg);
-    overflow: hidden;
-    text-overflow: ellipsis;
-    font: var(--type-meta);
-    color: var(--text-muted);
 }
 
 /* Deck */
@@ -4592,6 +4491,31 @@ button.settings-section-title {
 
 .radial-menu.open.hints-always .action-key-hint {
     transition-delay: 250ms;
+}
+
+/* A petal's name, beside it while it is tried, where its icon or initial
+   can't say who or what it is */
+.radial-caption {
+    position: absolute;
+    left: calc(100% + var(--space-md));
+    top: 50%;
+    transform: translateY(-50%);
+    padding: var(--space-xs) var(--space-md);
+    border-radius: var(--radius-md);
+    background: var(--surface-raised);
+    box-shadow: var(--shadow-md);
+    color: var(--text-primary);
+    font: var(--type-meta);
+    white-space: nowrap;
+    pointer-events: none;
+    opacity: 0;
+    transition: opacity 120ms ease-out;
+}
+
+.radial-menu.open .radial-petal:hover .radial-caption,
+.radial-menu.open .radial-petal:focus-visible .radial-caption,
+.radial-menu.open .radial-petal.scrubbed .radial-caption {
+    opacity: 1;
 }
 
 .bulk-count {

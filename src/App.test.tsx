@@ -101,6 +101,12 @@ function saveCardForm() {
   fireEvent.keyDown(screen.getAllByLabelText("Card name").slice(-1)[0], { key: "Enter", metaKey: true });
 }
 // The account chooser's button, titled with the default account's email
+// A petal of the board's + wheel, opened as hovering the + opens it
+function slotItem(name: string): HTMLElement {
+  fireEvent.mouseEnter(document.querySelector(".board-slot")!);
+  return screen.getByRole("menuitem", { name });
+}
+
 function avatar(email: string): HTMLElement {
   const button = document.querySelector<HTMLElement>(`.toolbar-avatar[title="${email}"]`);
   if (!button) throw new Error(`No account button for ${email}`);
@@ -440,7 +446,7 @@ describe("App attachments", () => {
     fireEvent.contextMenu(await screen.findByTitle("report.pdf (10 B)"));
     await waitFor(() => expect(lastMenu.some(i => i.text === "Forward")).toBe(true));
 
-    fireEvent.click(screen.getByRole("button", { name: "Compose new email" }));
+    fireEvent.click(slotItem("Compose new email"));
     fireEvent.input(await screen.findByPlaceholderText("Subject"), { target: { value: "Old subject" } });
     fireEvent.keyDown(document, { key: "Escape" });
     lastMenu.find(i => i.text === "Forward")!.action!();
@@ -1745,7 +1751,7 @@ describe("App compose", () => {
     render(() => <App />);
     await screen.findByText("Mail for A");
 
-    fireEvent.click(screen.getByRole("button", { name: "Compose new email" }));
+    fireEvent.click(slotItem("Compose new email"));
     fireEvent.input(await screen.findByPlaceholderText("Recipients"), { target: { value: "bo@y.com" } });
     fireEvent.input(screen.getByPlaceholderText("Subject"), { target: { value: "Hello" } });
 
@@ -4617,13 +4623,13 @@ describe("App regressions", () => {
   it("shows one of the compose and new event panels at a time", async () => {
     render(() => <App />);
     await screen.findByText("Mail for A");
-    fireEvent.click(screen.getByRole("button", { name: "Compose new email" }));
+    fireEvent.click(slotItem("Compose new email"));
     await screen.findByPlaceholderText("Recipients");
     (document.activeElement as HTMLElement | null)?.blur();
     fireEvent.keyDown(document.body, { key: "e" });
     await screen.findByPlaceholderText("Event title");
     await waitFor(() => expect(screen.queryByPlaceholderText("Recipients")).toBeNull());
-    fireEvent.click(screen.getByRole("button", { name: "Compose new email" }));
+    fireEvent.click(slotItem("Compose new email"));
     await screen.findByPlaceholderText("Recipients");
     expect(screen.queryByPlaceholderText("Event title")).toBeNull();
   });
@@ -4754,17 +4760,18 @@ describe("App accessibility", () => {
     expect(localStorage.getItem("boardFlowerHintSeen")).toBe("1");
   });
 
-  it("grows the board's + into new email, new event and search, and hides behind the panel it opens", async () => {
+  it("blooms the board's + into a wheel of search, email and event, and hides behind the panel it opens", async () => {
     render(() => <App />);
     await screen.findByText("Mail for A");
     const slot = document.querySelector(".board-slot") as HTMLElement;
-    const email = screen.getByRole("button", { name: "Compose new email" });
-    expect(email).toHaveAttribute("tabindex", "-1");
+    expect(screen.queryByRole("menu", { name: "New" })).toBeNull();
     fireEvent.mouseEnter(slot);
     expect(slot).toHaveClass("open");
-    expect(email).toHaveAttribute("tabindex", "0");
+    const wheel = screen.getByRole("menu", { name: "New" });
+    expect(within(wheel).getAllByRole("menuitem").map(el => el.getAttribute("aria-label")))
+      .toEqual(["New search", "Compose new email", "Create new calendar event"]);
 
-    fireEvent.click(screen.getByRole("button", { name: "Create new calendar event" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "Create new calendar event" }));
     expect(await screen.findByPlaceholderText("Event title")).toBeInTheDocument();
     expect(slot).not.toHaveClass("open");
     // The + became the panel, so it doesn't also show behind it
@@ -4823,49 +4830,48 @@ describe("App accessibility", () => {
     handlers.fetch_contacts = () => [{ resource_name: "people/1", display_name: "Bo", email_addresses: ["bo@y.com"], photo_url: null }];
     render(() => <App />);
     await screen.findByText("Mail for A");
-    fireEvent.focusIn(screen.getByRole("button", { name: "Compose new email" }));
-    const suggestion = await screen.findByRole("button", { name: "New email to Bo" });
-    expect(suggestion).toHaveAttribute("tabindex", "0");
+    fireEvent.focus(slotItem("Compose new email"));
+    const suggestion = await screen.findByRole("menuitem", { name: "New email to Bo" });
     fireEvent.click(suggestion);
 
     await waitFor(() => expect(screen.getByPlaceholderText("Recipients")).toHaveValue("bo@y.com"));
   });
 
-  it("lists at most three recent people under a Recent heading, each by name in a plain row", async () => {
+  it("rings Email with up to three recent people, named on hover, while Email is tried", async () => {
     handlers.fetch_contacts = () => ["Bo", "Cy", "Di", "Ed"].map((name, i) => ({
       resource_name: `people/${i}`, display_name: `${name} Smith`, email_addresses: [`${name.toLowerCase()}@y${i}.com`], photo_url: null,
     }));
     render(() => <App />);
     await screen.findByText("Mail for A");
-    fireEvent.focusIn(screen.getByRole("button", { name: "Compose new email" }));
-    const recent = await screen.findByRole("group", { name: "Recent" });
-    expect(within(recent).getByText("Recent")).toBeVisible();
-    const rows = within(recent).getAllByRole("button");
-    expect(rows).toHaveLength(3);
-    // A name says who on its own; a bare address's domain tells two apart
-    expect(rows[0]).toHaveTextContent(/^BBo Smith$/);
-    expect(rows[0]).not.toHaveAttribute("data-hue");
+    expect(screen.queryByRole("menu", { name: "Write to" })).toBeNull();
+    fireEvent.focus(slotItem("Compose new email"));
+    const ring = await screen.findByRole("menu", { name: "Write to" });
+    const people = within(ring).getAllByRole("menuitem");
+    expect(people.map(el => el.getAttribute("aria-label"))).toEqual(["New email to Bo Smith", "New email to Cy Smith", "New email to Di Smith"]);
+    expect(people[0]).toHaveTextContent("B");
+    expect(within(people[0]).getByText("Bo Smith")).toHaveClass("radial-caption");
+
+    // Trying another petal of the + puts the people away
+    fireEvent.focus(screen.getByRole("menuitem", { name: "New search" }));
+    await waitFor(() => expect(screen.queryByRole("menu", { name: "Write to" })).toBeNull());
   });
 
-  it("names a suggested event's guests by first name under a Plan again heading, in a plain row", async () => {
+  it("rings Event with events to plan again, its guests by first name", async () => {
     threadsByCard["card-a"] = [{ ...thread("t-a", "Re: Sync next week?"), last_message_date: Date.now() - 60_000, participants: ["Ana Ruiz <ana@x.com>", "naminetti@gmail.com", "a@x.com"] }];
     render(() => <App />);
     await screen.findByText("Re: Sync next week?");
-    fireEvent.focusIn(screen.getByRole("button", { name: "Create new calendar event" }));
-    const plan = await screen.findByRole("group", { name: "Plan again" });
-    const row = within(plan).getByRole("button");
-    expect(row).toHaveTextContent("Sync next week?");
-    expect(row).toHaveTextContent("Ana, naminetti");
-    expect(row).not.toHaveTextContent("@");
-    expect(row).not.toHaveAttribute("data-hue");
+    fireEvent.focus(slotItem("Create new calendar event"));
+    const ring = await screen.findByRole("menu", { name: "Plan again" });
+    const petal = within(ring).getByRole("menuitem");
+    expect(within(petal).getByText("Sync next week? · Ana, naminetti")).toHaveClass("radial-caption");
   });
 
   it("starts an event from a thread that asks to meet, suggested under New Event", async () => {
     threadsByCard["card-a"] = [{ ...thread("t-a", "Re: Sync next week?"), last_message_date: Date.now() - 60_000, participants: ["Ana <ana@x.com>", "a@x.com"] }];
     render(() => <App />);
     await screen.findByText("Re: Sync next week?");
-    fireEvent.focusIn(screen.getByRole("button", { name: "Create new calendar event" }));
-    const suggestion = await screen.findByRole("button", { name: "New event: Sync next week?, with Ana" });
+    fireEvent.focus(slotItem("Create new calendar event"));
+    const suggestion = await screen.findByRole("menuitem", { name: "New event: Sync next week?, with Ana" });
     fireEvent.click(suggestion);
 
     expect(await screen.findByPlaceholderText("Event title")).toHaveValue("Sync next week?");
@@ -4883,8 +4889,8 @@ describe("App accessibility", () => {
     await new Promise(r => setTimeout(r, 20));
     expect(rankContacts.calls).toBe(0);
 
-    fireEvent.mouseEnter(document.querySelector(".board-slot")!);
-    expect(await screen.findByRole("button", { name: "New email to Ana" })).toBeInTheDocument();
+    fireEvent.focus(slotItem("Compose new email"));
+    expect(await screen.findByRole("menuitem", { name: "New email to Ana" })).toBeInTheDocument();
   });
 });
 
