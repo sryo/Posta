@@ -155,7 +155,13 @@ import { Sheet } from "./components/Sheet";
 import { ToastFrame, Toasts } from "./components/Toasts";
 import { createToasts, type ToastAction, type ToastTone } from "./app/toasts";
 import { failureMessage, storedCredentialsFailure } from "./app/errorText";
-import { formatClock, formatDayLabel, formatShortDate, formatWhen, threadGroupLabel } from "./app/dateFormat";
+import { formatClock, formatDayLabel, formatShortDate, formatWhen } from "./app/dateFormat";
+import { threadGroupHeading, type GroupHeading } from "./app/groupHeading";
+import { unansweredLine } from "./app/unanswered";
+import { createLastLook, newSinceLine } from "./app/newSince";
+import { createCadence } from "./app/cadence";
+import { noticesEnabled } from "./app/notices";
+import { CardFootNotes } from "./components/CardFootNotes";
 import { safeGetItem, safeSetItem, safeRemoveItem, safeGetJSON, safeSetJSON } from "./shared/storage";
 import { BOARD_COLORS, type ActionSettings, type CardColor, type GroupBy } from "./shared/constants";
 import { createUndoableSend } from "./app/undoableSend";
@@ -329,12 +335,26 @@ function App() {
   // Local midnight of the current day; notifies once a day, so "Today" labels
   // and today's times move on at midnight without re-rendering every tick
   const today = createMemo(() => new Date(currentTime()).setHours(0, 0, 0, 0));
+  // A group's heading, named from its rows' days as of today. It depends only
+  // on the newest and oldest day, so rows of the same group share one.
+  const groupHeadings = new Map<string, GroupHeading>();
+  const groupHeading = (group: ThreadGroup) => {
+    const dates = group.threads.map(t => t.last_message_date);
+    const key = `${group.label}|${today()}|${Math.min(...dates)}|${Math.max(...dates)}`;
+    let heading = groupHeadings.get(key);
+    if (!heading) {
+      if (groupHeadings.size > 200) groupHeadings.clear();
+      heading = threadGroupHeading(group.label, dates, new Date(today()));
+      groupHeadings.set(key, heading);
+    }
+    return heading;
+  };
   // formatTime reads the clock itself; reading today() re-runs it at midnight
-  // A row's time: the clock inside the Today and Yesterday groups, whose
-  // headers already name the day, else the date
-  const threadTime = (timestamp: number, groupLabel?: string) => {
+  // A row's time: the clock under a heading that already names the day,
+  // else the date
+  const threadTime = (timestamp: number, group: ThreadGroup) => {
     today();
-    if (groupLabel === "Today" || groupLabel === "Yesterday") return formatClock(new Date(timestamp));
+    if (groupHeading(group).oneDay) return formatClock(new Date(timestamp));
     return formatTime(timestamp);
   };
 
@@ -4434,6 +4454,23 @@ function App() {
   }));
   const cardGroupsById = createMemo(() => new Map(cardGroupMemos().map(m => [m.cardId, m])));
 
+  // What came to each mail card while you were away, for its header
+  const lastLook = createLastLook(() => cards().map(c => c.id));
+  function newSince(card: Card): string | null {
+    if (card.card_type === "calendar" || isSearchCard(card.id) || collapsedCards[card.id]) return null;
+    const dates = (cardThreads[card.id] ?? []).flatMap(g => g.threads.map(t => t.last_message_date));
+    return newSinceLine(dates, lastLook.since(card.id), new Date(minuteNow()));
+  }
+
+  // Monthly senders running late, for the foot of the card that catches them
+  const cadence = createCadence({
+    cards: () => cards().filter(c => c.card_type !== "calendar"),
+    threadsOf: (cardId) => cardThreads[cardId]?.flatMap(g => g.threads),
+    ownEmails: () => accounts().map(a => a.email),
+    now: () => minuteNow(),
+    check: async (accountId, query) => (await searchThreadsPreview(accountId, query)).some(g => g.threads.length > 0),
+  });
+
   function getDisplayGroups(cardId: string): ThreadGroup[] {
     return cardGroupsById().get(cardId)?.threads() ?? withNowFor(cardId, computeDisplayGroups(cardId));
   }
@@ -4646,6 +4683,7 @@ function App() {
     }
 
     rememberOpenedRow(cardId, threadId);
+    lastLook.look(cardId);
     setActiveThreadAccountId(account.id);
     setActiveThreadId(threadId);
     setActiveThreadCardId(cardId);
@@ -5364,7 +5402,7 @@ function App() {
                           >
                             <button
                               class="card-title-btn"
-                              aria-label={cardTitleLabel({ name: card.name, accountId: card.account_id, accounts: accounts(), shown: namesAccount(), problem: syncStatus().problem, collapsed: !!collapsedCards[card.id], unread: getCardUnreadCount(card.id) })}
+                              aria-label={cardTitleLabel({ name: card.name, accountId: card.account_id, accounts: accounts(), shown: namesAccount(), problem: syncStatus().problem, since: newSince(card), collapsed: !!collapsedCards[card.id], unread: getCardUnreadCount(card.id) })}
                               aria-expanded={!collapsedCards[card.id]}
                             >
                               <Show when={collapsedCards[card.id] && getCardUnreadCount(card.id) > 0}>
@@ -5372,7 +5410,7 @@ function App() {
                               </Show>
                               <span class="card-title-chevron" aria-hidden="true"><ChevronIcon size="ui" /></span>
                               <span class="card-title">{card.name}</span>
-                              <CardAccountQualifier accountId={card.account_id} accounts={accounts()} shown={namesAccount()} problem={syncStatus().problem} />
+                              <CardAccountQualifier accountId={card.account_id} accounts={accounts()} shown={namesAccount()} problem={syncStatus().problem} since={newSince(card)} />
                             </button>
                             <Show when={!collapsedCards[card.id] && getCardUnreadCount(card.id) > 0}>
                               <span class="card-unread-badge">{getCardUnreadCount(card.id)}</span>
@@ -5412,6 +5450,7 @@ function App() {
                           class="card-body"
                           ref={(el) => onCleanup(watchScrollFade(el))}
                           onScroll={(e) => {
+                            lastLook.look(card.id);
                             if (editingCardId() === card.id) return; // No scroll loading during edit
                             const target = e.currentTarget;
                             const nearBottom = target.scrollTop + target.clientHeight >= target.scrollHeight - 50;
@@ -5591,7 +5630,7 @@ function App() {
                             <Index each={getDisplayGroups(card.id)}>
                               {(group) => (
                                 <>
-                                  <Show when={isNowGroup(group())} fallback={<div class="date-header">{threadGroupLabel(group().label)}</div>}>
+                                  <Show when={isNowGroup(group())} fallback={<div class="date-header">{groupHeading(group()).text}</div>}>
                                     <div class="date-header invite-now-header"><span class="invite-live-dot" aria-hidden="true" />Now</div>
                                   </Show>
                                   <For each={group().threads}>
@@ -5622,6 +5661,7 @@ function App() {
                                         const clashes = inviteState(invite, rsvp, minuteNow()) === "unanswered" ? inviteStrip()?.clashes : undefined;
                                         return `. ${inviteSummary(invite, new Date(minuteNow()), { rsvp, clashes })}`;
                                       };
+                                      const unanswered = () => unansweredLine(thread, accounts().map(a => a.email), new Date(today()));
                                       return (
                                       <>
                                         <div
@@ -5634,7 +5674,7 @@ function App() {
                                             openThread(thread.gmail_thread_id, card.id);
                                           }}
                                           role="article"
-                                          aria-label={`${thread.unread_count > 0 ? 'Unread: ' : ''}${thread.subject} from ${thread.participants.slice(0, 2).map(personName).join(', ')}${inviteLabel()}`}
+                                          aria-label={`${thread.unread_count > 0 ? 'Unread: ' : ''}${thread.subject} from ${thread.participants.slice(0, 2).map(personName).join(', ')}${inviteLabel()}${unanswered() ? `. ${unanswered()}` : ''}`}
                                           tabindex={rowTabIndex(card.id, thread.gmail_thread_id)}
                                           onFocus={() => onRowFocus(card.id, thread.gmail_thread_id)}
                                         >
@@ -5644,9 +5684,10 @@ function App() {
                                               <ThreadRowLines
                                                 thread={thread}
                                                 ownEmails={accounts().map(a => a.email)}
-                                                time={threadTime(thread.last_message_date, group().label)}
+                                                time={threadTime(thread.last_message_date, group())}
                                                 subject={thread.calendar_event ? inviteTitle(thread.subject) : undefined}
                                                 attachmentsShown={attachments().length > 0}
+                                                aside={unanswered()}
                                                 beforeTime={
                                                   <Show when={isDraftThread(thread)}>
                                                     <button
@@ -5763,6 +5804,13 @@ function App() {
                                 </>
                               )}
                             </Index>
+                            <Show when={noticesEnabled() && !isPreviewingQuery(card.id)}>
+                              <CardFootNotes
+                                notices={cadence.notices(card.id)}
+                                onSearch={(query) => { setShowGlobalFilter(true); runSearch(query); }}
+                                onDismiss={(email) => cadence.dismiss(card.id, email)}
+                              />
+                            </Show>
                             {/* Loading more indicator for infinite scroll */}
                             <Show when={loadingMore[card.id]}>
                               <StatusLine kind="loading">Loading more...</StatusLine>
@@ -5869,14 +5917,14 @@ function App() {
                       <For each={regroupThreads(queryPreviewThreads(), newCardGroupBy(), cardLabelNames(undefined))}>
                         {(group) => (
                           <>
-                            <div class="date-header">{group.label}</div>
+                            <div class="date-header">{groupHeading(group).text}</div>
                             <For each={group.threads}>
                               {(thread) => (
                                 <div class="thread" classList={{ "unread": thread.unread_count > 0 }}>
                                   <ThreadRowLines
                                     thread={thread}
                                     ownEmails={accounts().map(a => a.email)}
-                                    time={threadTime(thread.last_message_date, group.label)}
+                                    time={threadTime(thread.last_message_date, group)}
                                     attachmentsShown={visibleAttachments(thread.attachments ?? [], { hideCalendar: !!thread.calendar_event }).length > 0}
                                     attachments={
                                       <Show when={(thread.attachments ?? []).length > 0}>

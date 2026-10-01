@@ -1461,6 +1461,10 @@ fn thread_summary(detail: ThreadDetail) -> Thread {
 
     let snippet = latest_content.and_then(|m| m.snippet.clone()).unwrap_or_default();
 
+    let latest_headers = latest_content.and_then(|m| m.payload.as_ref()).and_then(|p| p.headers.as_deref());
+    let last_sender = find_header(latest_headers, "From").map(str::to_string);
+    let last_from_list = latest_headers.is_some_and(is_mailing_list_message);
+
     let last_message_date = latest
         .and_then(|m| m.internal_date.as_ref())
         .and_then(|d| d.parse::<i64>().ok())
@@ -1500,6 +1504,8 @@ fn thread_summary(detail: ThreadDetail) -> Thread {
         has_attachment: !attachments.is_empty(),
         attachments,
         calendar_event: None,
+        last_sender,
+        last_from_list,
     }
 }
 
@@ -4302,6 +4308,45 @@ mod tests {
     }
 
     #[test]
+    fn thread_summary_names_who_wrote_last_and_whether_a_list_sent_it() {
+        let response = r#"{
+            "id": "t1",
+            "messages": [
+                {"id": "m1", "internalDate": "1705330800000",
+                 "payload": {"mimeType": "text/plain",
+                             "headers": [{"name": "From", "value": "me@example.com"}]}},
+                {"id": "m2", "internalDate": "1705334400000",
+                 "payload": {"mimeType": "text/plain",
+                             "headers": [{"name": "From", "value": "\"Ana Pérez\" <ana@example.com>"}]}},
+                {"id": "m3", "internalDate": "1705338000000",
+                 "payload": {"mimeType": "multipart/alternative",
+                             "headers": [{"name": "From", "value": "bob@example.com"}],
+                             "parts": [{"mimeType": "text/vnd.google.email-reaction+json", "body": {"size": 30}}]}}
+            ]
+        }"#;
+        let thread = thread_summary(serde_json::from_str(response).unwrap());
+        // A reaction isn't a letter waiting for an answer
+        assert_eq!(thread.last_sender.as_deref(), Some("\"Ana Pérez\" <ana@example.com>"));
+        assert!(!thread.last_from_list);
+
+        let list = r#"{"id": "t2", "messages": [{"id": "m1", "payload": {"headers": [
+            {"name": "From", "value": "news@example.com"},
+            {"name": "List-Unsubscribe", "value": "<mailto:u@example.com>"}]}}]}"#;
+        assert!(thread_summary(serde_json::from_str(list).unwrap()).last_from_list);
+        assert_eq!(thread_summary(serde_json::from_str(r#"{"id": "t3"}"#).unwrap()).last_sender, None);
+    }
+
+    #[test]
+    fn a_thread_saved_before_it_named_its_last_sender_still_loads() {
+        let saved = r#"{"gmail_thread_id": "t1", "account_id": "a", "subject": "", "snippet": "",
+            "last_message_date": 0, "unread_count": 0, "labels": [], "participants": [],
+            "has_attachment": false, "attachments": [], "calendar_event": null}"#;
+        let thread: Thread = serde_json::from_str(saved).unwrap();
+        assert_eq!(thread.last_sender, None);
+        assert!(!thread.last_from_list);
+    }
+
+    #[test]
     fn thread_summary_finds_a_single_part_message_that_is_the_attachment() {
         // A bare PDF and a bare invite: no parts, the payload body is the file
         let response = r#"{
@@ -4442,6 +4487,8 @@ mod tests {
             has_attachment: false,
             attachments: Vec::new(),
             calendar_event: None,
+            last_sender: None,
+            last_from_list: false,
         }
     }
 

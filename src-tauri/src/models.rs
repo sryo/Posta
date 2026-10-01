@@ -177,6 +177,12 @@ pub struct Thread {
     pub attachments: Vec<Attachment>,
     /// Calendar event if this thread contains a calendar invite
     pub calendar_event: Option<CalendarEvent>,
+    /// The From of the latest message that isn't a reaction
+    #[serde(default)]
+    pub last_sender: Option<String>,
+    /// Whether that message came from a mailing list
+    #[serde(default)]
+    pub last_from_list: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

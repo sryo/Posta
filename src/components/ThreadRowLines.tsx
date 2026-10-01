@@ -6,8 +6,9 @@ import { AttachmentIcon } from "./Icons";
 
 // What a thread row says, the same in a card and in a new card's preview:
 // who wrote (unread dotted), the paperclip when no attachment shows below,
-// when; then the subject, and the snippet or the invite's lines, then the
-// attachments. A card's row adds its own controls in `beforeTime`.
+// when; then the subject, and the snippet or the invite's lines, a quiet
+// aside about the thread, then the attachments. A card's row adds its own
+// controls in `beforeTime`.
 export function ThreadRowLines(props: {
   thread: Thread;
   ownEmails: string[];
@@ -16,6 +17,7 @@ export function ThreadRowLines(props: {
   attachmentsShown: boolean;
   beforeTime?: JSX.Element;
   invite?: JSX.Element;
+  aside?: string | null;
   attachments?: JSX.Element;
 }) {
   const t = () => props.thread;
@@ -37,6 +39,9 @@ export function ThreadRowLines(props: {
       <div class="thread-subject" title={t().subject}>{props.subject ?? t().subject}</div>
       <Show when={props.invite} fallback={<div class="thread-snippet">{decodeHtmlEntities(t().snippet)}</div>}>
         {props.invite}
+      </Show>
+      <Show when={props.aside}>
+        <div class="thread-aside">{props.aside}</div>
       </Show>
       {props.attachments}
     </>
