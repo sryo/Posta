@@ -186,12 +186,14 @@
     --radial-from-scale: 0.4;
     --radial-hover-scale: 1.15;
     --radial-press-scale: 0.92;
-    --app-edge-margin: 12px;
 
     /* Layout dimensions */
-    --drag-region-height: 28px;
+    /* A toolbar-high band over the board, the window controls centred in it
+       20px in from the corner (trafficLightPosition in tauri.conf.json) */
+    --drag-region-height: 52px;
     --status-bar-height: 32px;
-    --sidebar-width: 12px;
+    /* The board's inset from the window's edges, as far as the controls' */
+    --board-inset: 20px;
 
     /* Type primitives: five sizes, two weights, three leadings. Rules pick a
        role below rather than a primitive; glyphs set as text (icons, emoji)
@@ -666,11 +668,11 @@ a:focus-visible,
 /* Mirrors the window controls: their size, their height, as far in from the
    right as they are from the left, and over the strip that drags the window */
 /* Sized and placed as the window controls across from it: 14px circles,
-   9px from the top and from the window's edge */
+   as far in from the top and the window's edge */
 .titlebar-account {
     position: fixed;
-    top: 9px;
-    right: 9px;
+    top: var(--board-inset);
+    right: var(--board-inset);
     z-index: calc(var(--z-drag-region) + 1);
     display: flex;
 }
@@ -678,7 +680,7 @@ a:focus-visible,
 /* Under the first card, in the strip below the cards */
 .board-hint {
     position: fixed;
-    left: calc(var(--sidebar-width) + 32px + 40px + 20px);
+    left: calc(var(--board-inset) + 40px + 20px);
     bottom: 4px;
     margin: 0;
     display: flex;
@@ -942,185 +944,74 @@ a:focus-visible,
 }
 
 .board-slot-label,
-.board-slot-key {
+.board-slot-key,
+.board-slot-heading,
+.board-slot-aside {
     opacity: 0;
     transition: opacity 0.15s ease;
 }
 
 .board-slot.open .board-slot-label,
-.board-slot.open .board-slot-key {
+.board-slot.open .board-slot-key,
+.board-slot.open .board-slot-heading,
+.board-slot.open .board-slot-aside {
     opacity: 1;
     transition-delay: 0.08s;
 }
 
-.compose-suggestions {
+/* Who or what to start from, each under its own heading and set as the rows
+   above: a glyph or an initial, a name, and what tells two names apart */
+.board-slot-section {
     display: flex;
-    flex-wrap: wrap;
-    gap: var(--space-sm);
-    margin: var(--space-sm) var(--space-md) 0;
-    padding-top: var(--space-md);
+    flex-direction: column;
+    margin-top: var(--space-sm);
+    padding-top: var(--space-sm);
     border-top: 1px solid var(--border-default);
-    opacity: 0;
-    pointer-events: none;
-    transition: opacity 0.2s ease;
 }
 
-.compose-suggestions.visible {
-    opacity: 1;
-    pointer-events: auto;
-}
-
-/* Faces name themselves on a caption line under them, inside the menu */
-.compose-suggestions:not(.event-suggestions) {
-    position: relative;
-    padding-bottom: 22px;
-}
-
-.compose-suggestions:not(.event-suggestions)::after {
-    content: "Write to someone recent";
-    position: absolute;
-    left: 0;
-    bottom: 2px;
+.board-slot-heading {
+    padding: var(--space-xs) var(--space-lg);
     font: var(--type-meta);
     color: var(--text-muted);
-    transition: opacity 0.15s ease;
 }
 
-.compose-suggestions:not(.event-suggestions):has(.compose-suggestion-avatar:hover, .compose-suggestion-avatar:focus-visible)::after {
-    opacity: 0;
-}
-
-/* No growing on hover here: a transformed face would pull its name up to
-   itself instead of the caption line */
-.compose-suggestions:not(.event-suggestions) .compose-suggestion-avatar {
-    position: static;
-    transition: box-shadow 0.15s ease;
-}
-
-.compose-suggestions:not(.event-suggestions) .compose-suggestion-avatar:hover,
-.compose-suggestions:not(.event-suggestions) .compose-suggestion-avatar:focus-visible {
-    transform: none;
-    box-shadow: 0 0 0 2px var(--surface-card), 0 0 0 4px var(--border-strong);
-}
-
-.compose-suggestions:not(.event-suggestions) .suggestion-label {
-    left: 0;
-    right: 0;
-    bottom: 2px;
-    transform: none;
-    padding: 0;
-    background: none;
-    box-shadow: none;
-    color: var(--text-primary);
-    overflow: hidden;
-    text-overflow: ellipsis;
-}
-
-/* Events to start read as rows, their title over their guests */
-.compose-suggestions.event-suggestions {
-    flex-direction: column;
-    flex-wrap: nowrap;
-}
-
-/* Compose Suggestion Avatar */
-.compose-suggestion-avatar {
-    width: 28px;
-    height: 28px;
-    border-radius: var(--radius-full);
-    color: var(--text-on-accent);
-    font: var(--type-meta);
-    font-weight: var(--weight-strong);
+/* A person's initial in the ink of the text beside it: hues name cards here */
+.board-slot-initial {
+    width: 20px;
+    height: 20px;
     display: flex;
     align-items: center;
     justify-content: center;
-    cursor: pointer;
-    transition: all 0.2s cubic-bezier(0.34, 1.56, 0.64, 1);
-    box-shadow: var(--shadow-sm);
-    position: relative;
-    overflow: visible;
-    white-space: nowrap;
-}
-
-.compose-suggestion-avatar:hover {
-    transform: scale(1.1);
-}
-
-.compose-suggestion-avatar:hover .suggestion-label,
-.compose-suggestion-avatar:focus-visible .suggestion-label {
-    opacity: 1;
-}
-
-.suggestion-label {
-    position: absolute;
-    left: 50%;
-    bottom: calc(100% + 6px);
-    transform: translateX(-50%);
-    background: var(--surface-raised);
-    color: var(--text-primary);
-    padding: var(--space-sm) var(--space-lg);
-    border-radius: var(--radius-md);
-    font: var(--type-meta);
-    box-shadow: var(--shadow-md);
-    opacity: 0;
-    pointer-events: none;
-    transition: opacity 0.15s ease;
-    white-space: nowrap;
-}
-
-/* An event to start from a thread or a past meeting: a glyph, then the
-   title over its guests */
-.compose-suggestion-avatar.event-suggestion {
-    width: 100%;
-    height: auto;
-    justify-content: flex-start;
-    gap: var(--space-md);
-    padding: var(--space-xs);
-    border-radius: var(--radius-md);
-    background: none;
-    color: var(--text-secondary);
-    box-shadow: none;
-}
-
-.compose-suggestion-avatar.event-suggestion:hover,
-.compose-suggestion-avatar.event-suggestion:focus-visible {
-    transform: none;
+    border-radius: var(--radius-full);
     background: var(--surface-hover);
+    color: var(--text-primary);
+    font: var(--type-meta);
+    font-weight: var(--weight-strong);
 }
 
-.compose-suggestion-avatar.event-suggestion > svg {
-    flex-shrink: 0;
-}
-
-.event-suggestion .suggestion-label {
-    position: static;
-    transform: none;
-    display: flex;
-    flex-direction: column;
+.board-slot-section .board-slot-label {
     min-width: 0;
-    padding: 0;
-    background: none;
-    box-shadow: none;
-    opacity: 1;
-    font-weight: var(--weight-regular);
-}
-
-.event-suggestion-title,
-.event-suggestion-detail {
     overflow: hidden;
     text-overflow: ellipsis;
 }
 
-.event-suggestion-detail {
-    color: var(--text-secondary);
+.board-slot-aside {
+    flex-shrink: 1;
+    min-width: 0;
+    max-width: 45%;
+    margin-right: var(--space-lg);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    font: var(--type-meta);
+    color: var(--text-muted);
 }
 
 /* Deck */
 .deck {
     display: flex;
-    padding: var(--app-edge-margin);
-    padding-left: calc(var(--sidebar-width) + 32px);
-    padding-right: 40px;
     padding-top: var(--drag-region-height);
+    padding-left: var(--board-inset);
+    padding-right: var(--board-inset);
     padding-bottom: 24px;
     overflow-x: auto;
     overflow-y: hidden;
@@ -2454,8 +2345,8 @@ a:focus-visible,
 .connection-status {
     position: absolute;
     top: var(--drag-region-height);
-    left: calc(var(--sidebar-width) + 32px);
-    right: 40px;
+    left: var(--board-inset);
+    right: var(--board-inset);
     height: var(--status-bar-height);
     display: flex;
     align-items: center;
@@ -3421,7 +3312,6 @@ button:disabled:hover {
 
 /* A swatch or an avatar that names its hue with data-hue */
 .color-picker-selected[data-hue],
-.compose-suggestion-avatar[data-hue],
 .avatar[data-hue] {
     background: var(--card-hue);
 }
@@ -3432,7 +3322,7 @@ button:disabled:hover {
     --panel-top: var(--drag-region-height);
     position: fixed;
     top: var(--panel-top);
-    left: calc(var(--sidebar-width) + 32px);
+    left: var(--board-inset);
     width: 480px;
     max-width: calc(100vw - 48px);
     background: var(--surface-overlay);
@@ -3442,7 +3332,7 @@ button:disabled:hover {
     z-index: calc(var(--z-dropdown) + 1);
     display: flex;
     flex-direction: column;
-    max-height: calc(100vh - var(--panel-top) - var(--app-edge-margin));
+    max-height: calc(100vh - var(--panel-top) - var(--board-inset));
     animation: composePanelExpand 0.28s cubic-bezier(0.2, 0.8, 0.2, 1);
     transform-origin: top left;
 }
@@ -5890,15 +5780,6 @@ button.settings-section-title {
 
 /* Mobile: Full width, compact UI */
 @media (max-width: 480px) {
-    :root {
-        --drag-region-height: 24px;
-    }
-
-    .deck {
-        padding-left: calc(var(--sidebar-width) + 8px);
-        padding-right: 24px;
-    }
-
     .card-header {
         padding: var(--space-md) var(--space-lg);
     }

@@ -145,3 +145,16 @@ function otherPeople(participants: readonly string[], own: Set<string>): string[
   }
   return people;
 }
+
+// A guest as a suggestion row names them: a first name, or the part of a
+// bare address before the @
+export function shortName(nameOrEmail: string): string {
+  const name = nameOrEmail.trim();
+  return name.includes("@") ? name.split("@")[0] : name.split(/\s+/)[0];
+}
+
+// The first two guests by short name, and how many more
+export function guestList(names: readonly string[]): string {
+  const shown = names.slice(0, 2).map(shortName).join(", ");
+  return names.length > 2 ? `${shown} +${names.length - 2}` : shown;
+}

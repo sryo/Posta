@@ -4812,10 +4812,38 @@ describe("App accessibility", () => {
     fireEvent.focusIn(screen.getByRole("button", { name: "Compose new email" }));
     const suggestion = await screen.findByRole("button", { name: "New email to Bo" });
     expect(suggestion).toHaveAttribute("tabindex", "0");
-    expect(suggestion.closest(".compose-suggestions")).toHaveClass("visible");
-    fireEvent.keyDown(suggestion, { key: "Enter" });
+    fireEvent.click(suggestion);
 
     await waitFor(() => expect(screen.getByPlaceholderText("Recipients")).toHaveValue("bo@y.com"));
+  });
+
+  it("lists at most three recent people under a Recent heading, each by name in a plain row", async () => {
+    handlers.fetch_contacts = () => ["Bo", "Cy", "Di", "Ed"].map((name, i) => ({
+      resource_name: `people/${i}`, display_name: `${name} Smith`, email_addresses: [`${name.toLowerCase()}@y${i}.com`], photo_url: null,
+    }));
+    render(() => <App />);
+    await screen.findByText("Mail for A");
+    fireEvent.focusIn(screen.getByRole("button", { name: "Compose new email" }));
+    const recent = await screen.findByRole("group", { name: "Recent" });
+    expect(within(recent).getByText("Recent")).toBeVisible();
+    const rows = within(recent).getAllByRole("button");
+    expect(rows).toHaveLength(3);
+    // A name says who on its own; a bare address's domain tells two apart
+    expect(rows[0]).toHaveTextContent(/^BBo Smith$/);
+    expect(rows[0]).not.toHaveAttribute("data-hue");
+  });
+
+  it("names a suggested event's guests by first name under a Plan again heading, in a plain row", async () => {
+    threadsByCard["card-a"] = [{ ...thread("t-a", "Re: Sync next week?"), last_message_date: Date.now() - 60_000, participants: ["Ana Ruiz <ana@x.com>", "naminetti@gmail.com", "a@x.com"] }];
+    render(() => <App />);
+    await screen.findByText("Re: Sync next week?");
+    fireEvent.focusIn(screen.getByRole("button", { name: "Create new calendar event" }));
+    const plan = await screen.findByRole("group", { name: "Plan again" });
+    const row = within(plan).getByRole("button");
+    expect(row).toHaveTextContent("Sync next week?");
+    expect(row).toHaveTextContent("Ana, naminetti");
+    expect(row).not.toHaveTextContent("@");
+    expect(row).not.toHaveAttribute("data-hue");
   });
 
   it("starts an event from a thread that asks to meet, suggested under New Event", async () => {
@@ -4824,8 +4852,7 @@ describe("App accessibility", () => {
     await screen.findByText("Re: Sync next week?");
     fireEvent.focusIn(screen.getByRole("button", { name: "Create new calendar event" }));
     const suggestion = await screen.findByRole("button", { name: "New event: Sync next week?, with Ana" });
-    expect(suggestion.closest(".compose-suggestions")).toHaveClass("visible");
-    fireEvent.keyDown(suggestion, { key: "Enter" });
+    fireEvent.click(suggestion);
 
     expect(await screen.findByPlaceholderText("Event title")).toHaveValue("Sync next week?");
     expect(Array.from(document.querySelectorAll(".guest-chip .chip-label")).map(el => el.textContent)).toEqual(["Ana"]);

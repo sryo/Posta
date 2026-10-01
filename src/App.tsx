@@ -91,7 +91,6 @@ import {
   formatSyncTime,
   extractEmail,
   extractMessageText,
-  getAvatarHue,
   validateEmailList,
   splitEmailList,
   addReplyPrefix,
@@ -180,7 +179,7 @@ import { AttachmentLightbox, type PreviewAttachment } from "./components/Attachm
 import { MessageSender } from "./components/MessageSender";
 import { isForwardSubject } from "./app/quotedHistory";
 import { eventAttendees, eventFromThread, eventTimesFromForm, smartEventDefaults } from "./app/eventForm";
-import { rankEventSuggestions, type EventSuggestion } from "./app/eventSuggestions";
+import { guestList, rankEventSuggestions, type EventSuggestion } from "./app/eventSuggestions";
 import { composePlacement, panelBesideView } from "./app/composePlacement";
 import { cidImagesToFetch, createLruCache, fetchCidImages } from "./app/cidImages";
 import { sendPending, type PendingSend } from "./app/pendingSend";
@@ -206,7 +205,7 @@ import { createRsvpLookups } from "./app/rsvpLookups";
 import { nextSelection } from "./app/selection";
 import { bulkActionForKey, extendSelection, keyTargets } from "./app/bulkKeys";
 import { fingerprint } from "./app/fingerprint";
-import { hasCommandModifier, isTypingTarget, onActivateKey } from "./shared/keyboard";
+import { hasCommandModifier, isTypingTarget } from "./shared/keyboard";
 import { askConfirm, ConfirmDialog, confirmOpen, dismissConfirm } from "./app/confirm";
 import { askScope, ScopePrompt, type ScopeAnchor } from "./app/scopePrompt";
 import { moveCard, reuseUnchanged } from "./app/cardOrder";
@@ -4831,7 +4830,7 @@ function App() {
     Date.now(),
   ) : []);
   // Kept while the suggestions fade out after the pointer leaves
-  const fabSuggestions = createMemo<RecentContact[]>(shown => composeFabHovered() ? rankedContacts().slice(0, 5) : shown, []);
+  const fabSuggestions = createMemo<RecentContact[]>(shown => composeFabHovered() ? rankedContacts().slice(0, 3) : shown, []);
   // The default account's threads and events, read only while New Event is hovered
   const eventFabSuggestions = createMemo<EventSuggestion[]>(shown => {
     if (!eventFabHovered()) return shown;
@@ -4841,7 +4840,7 @@ function App() {
       .filter(t => threadAccountId(t, card) === accountId));
     const events = cards().flatMap(card => (cardCalendarEvents[card.id] ?? [])
       .filter(e => eventAccountId(e, card) === accountId));
-    return rankEventSuggestions(threads, events, accounts().map(a => a.email), Date.now());
+    return rankEventSuggestions(threads, events, accounts().map(a => a.email), Date.now()).slice(0, 2);
   }, []);
 
   const suggestContacts = (query: string) => matchContacts(rankedContacts(), query, 8);
@@ -5133,60 +5132,50 @@ function App() {
                     <kbd class="board-slot-key">E</kbd>
                   </button>
                   <Show when={fabSuggestions().length > 0}>
-                    <div class={`compose-suggestions ${slotOpen() ? 'visible' : ''}`} aria-label="Write to">
+                    <div class="board-slot-section" role="group" aria-labelledby="board-slot-recent">
+                      <span class="board-slot-heading" id="board-slot-recent">Recent</span>
                       <For each={fabSuggestions()}>
                         {(contact) => {
-                          const writeTo = () => {
-                            startCompose({ to: contact.email, focusBody: true });
-                            setSlotOpen(false);
-                          };
+                          const [local, domain] = contact.email.split("@");
+                          const name = contact.name || local;
                           return (
-                          <div
-                            class="compose-suggestion-avatar"
-                            role="button"
-                            tabindex={slotOpen() ? 0 : -1}
-                            aria-label={`New email to ${contact.name || contact.email}`}
-                            data-hue={getAvatarHue(contact.name || contact.email)}
-                            title={contact.name ? `${contact.name} <${contact.email}>` : contact.email}
-                            onClick={writeTo}
-                            on:keydown={onActivateKey(writeTo)}
-                          >
-                            {(contact.name || contact.email).charAt(0).toUpperCase()}
-                            <span class="suggestion-label">{contact.name || contact.email}</span>
-                          </div>
+                            <button
+                              class="board-slot-row"
+                              tabindex={slotOpen() ? 0 : -1}
+                              aria-label={`New email to ${contact.name || contact.email}`}
+                              title={contact.name ? `${contact.name} <${contact.email}>` : contact.email}
+                              onClick={() => { startCompose({ to: contact.email, focusBody: true }); setSlotOpen(false); }}
+                            >
+                              <span class="board-slot-icon"><span class="board-slot-initial">{name.charAt(0).toUpperCase()}</span></span>
+                              <span class="board-slot-label">{name}</span>
+                              <Show when={!contact.name}><span class="board-slot-aside">{domain}</span></Show>
+                            </button>
                           );
                         }}
                       </For>
                     </div>
                   </Show>
                   <Show when={eventFabSuggestions().length > 0}>
-                    <div class={`compose-suggestions event-suggestions ${slotOpen() ? 'visible' : ''}`} aria-label="Plan">
+                    <div class="board-slot-section" role="group" aria-labelledby="board-slot-plan">
+                      <span class="board-slot-heading" id="board-slot-plan">Plan again</span>
                       <For each={eventFabSuggestions()}>
                         {(suggestion) => {
-                          const start = () => {
-                            openNewEventForm({ summary: suggestion.summary, attendees: suggestion.attendees });
-                            setSlotOpen(false);
-                          };
-                          const guests = suggestion.names.join(", ");
+                          const guests = guestList(suggestion.names);
                           const detail = suggestion.kind === "thread"
                             ? `with ${guests}`
                             : `again with ${guests} · ${formatShortDate(new Date(suggestion.at), undefined, { weekday: true })}`;
                           return (
-                          <div
-                            class="compose-suggestion-avatar event-suggestion"
-                            role="button"
-                            tabindex={slotOpen() ? 0 : -1}
-                            aria-label={`New event: ${suggestion.summary}, ${detail}`}
-                            data-hue={getAvatarHue(suggestion.names[0] ?? suggestion.summary)}
-                            onClick={start}
-                            on:keydown={onActivateKey(start)}
-                          >
-                            {suggestion.kind === "thread" ? <MailIcon /> : <RepeatIcon />}
-                            <span class="suggestion-label">
-                              <span class="event-suggestion-title">{suggestion.summary}</span>
-                              <span class="event-suggestion-detail">{detail}</span>
-                            </span>
-                          </div>
+                            <button
+                              class="board-slot-row"
+                              tabindex={slotOpen() ? 0 : -1}
+                              aria-label={`New event: ${suggestion.summary}, ${detail}`}
+                              title={`${suggestion.summary}, ${detail}`}
+                              onClick={() => { openNewEventForm({ summary: suggestion.summary, attendees: suggestion.attendees }); setSlotOpen(false); }}
+                            >
+                              <span class="board-slot-icon">{suggestion.kind === "thread" ? <MailIcon /> : <RepeatIcon />}</span>
+                              <span class="board-slot-label">{suggestion.summary}</span>
+                              <span class="board-slot-aside">{guests}</span>
+                            </button>
                           );
                         }}
                       </For>

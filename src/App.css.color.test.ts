@@ -130,7 +130,7 @@ describe("hues named from script", () => {
   });
 
   it("paints a swatch or an avatar that names its hue in that hue", () => {
-    for (const selector of [".color-picker-selected[data-hue]", ".compose-suggestion-avatar[data-hue]", ".avatar[data-hue]"]) {
+    for (const selector of [".color-picker-selected[data-hue]", ".avatar[data-hue]"]) {
       const rule = rules.find((r) => !r.context && r.selectors.includes(selector));
       expect(new Map(rule?.declarations).get("background"), selector).toBe("var(--card-hue)");
     }

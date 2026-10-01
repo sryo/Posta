@@ -351,7 +351,7 @@ describe("title bar account", () => {
     expect(button.get("background")).toBe("transparent");
     expect(button.get("box-shadow")).toBeUndefined();
     const corner = declarationsOf(".titlebar-account");
-    expect(corner.get("top")).toBe("9px");
-    expect(corner.get("right")).toBe("9px");
+    expect(corner.get("top")).toBe("var(--board-inset)");
+    expect(corner.get("right")).toBe("var(--board-inset)");
   });
 });

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { GoogleCalendarEvent, Thread } from "../api/tauri";
-import { rankEventSuggestions } from "./eventSuggestions";
+import { guestList, rankEventSuggestions, shortName } from "./eventSuggestions";
 
 const NOW = new Date(2026, 8, 29, 12).getTime();
 const HOUR = 1000 * 60 * 60;
@@ -75,5 +75,18 @@ describe("rankEventSuggestions", () => {
     const threads = ["t1", "t2", "t3"].map((id, i) => thread({ gmail_thread_id: id, subject: `Call ${id}`, last_message_date: NOW - (i + 1) * HOUR }));
     expect(rank(threads, [event()]).map(s => s.key)).toEqual(["thread:a:t1", "thread:a:t2", "repeat:design review|luis@y.com"]);
     expect(rank(threads).map(s => s.key)).toEqual(["thread:a:t1", "thread:a:t2", "thread:a:t3"]);
+  });
+});
+
+describe("guest names in a suggestion", () => {
+  it("calls a guest by first name, or by an address's name part when that is all there is", () => {
+    expect(shortName("Nami Netti")).toBe("Nami");
+    expect(shortName("naminetti@gmail.com")).toBe("naminetti");
+  });
+
+  it("names the first two guests and counts the rest", () => {
+    expect(guestList(["Ana Ruiz"])).toBe("Ana");
+    expect(guestList(["Ana Ruiz", "bo@y.com"])).toBe("Ana, bo");
+    expect(guestList(["Ana Ruiz", "bo@y.com", "Cy", "Di"])).toBe("Ana, bo +2");
   });
 });

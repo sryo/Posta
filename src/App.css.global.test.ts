@@ -180,3 +180,26 @@ describe("hover wheels", () => {
     expect(declarationsOf('.thread-checkbox-wrap:has(.radial-menu[role="menu"])').get("transition")).toBe("none");
   });
 });
+
+describe("window corner", () => {
+  it("insets the window controls as far as the board, under a toolbar-high band", () => {
+    const window = JSON.parse(readRepoFile("src-tauri/tauri.conf.json")).app.windows[0];
+    expect(window.trafficLightPosition).toEqual({ x: 20, y: 20 });
+    const root = declarationsOf(":root");
+    expect(root.get("--board-inset")).toBe("20px");
+    expect(root.get("--drag-region-height")).toBe("52px");
+    // The account mirrors the controls across the window
+    expect(declarationsOf(".titlebar-account").get("top")).toBe("var(--board-inset)");
+    expect(declarationsOf(".titlebar-account").get("right")).toBe("var(--board-inset)");
+  });
+
+  it("starts the board, its +, the status bar and a new email at one inset from the window's edge", () => {
+    const deck = declarationsOf(".deck");
+    expect(deck.get("padding-top")).toBe("var(--drag-region-height)");
+    expect(deck.get("padding-left")).toBe("var(--board-inset)");
+    expect(deck.get("padding-right")).toBe("var(--board-inset)");
+    expect(declarationsOf(".connection-status").get("left")).toBe("var(--board-inset)");
+    expect(declarationsOf(".compose-panel").get("left")).toBe("var(--board-inset)");
+    expect(readRepoFile("src/App.css")).not.toMatch(/--sidebar-width|--app-edge-margin/);
+  });
+});
