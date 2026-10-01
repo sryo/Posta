@@ -153,7 +153,7 @@ import { Sheet } from "./components/Sheet";
 import { ToastFrame, Toasts } from "./components/Toasts";
 import { createToasts, type ToastAction, type ToastTone } from "./app/toasts";
 import { failureMessage, storedCredentialsFailure } from "./app/errorText";
-import { formatClock, formatShortDate, formatWhen, threadGroupLabel } from "./app/dateFormat";
+import { formatClock, formatDayLabel, formatShortDate, formatWhen, threadGroupLabel } from "./app/dateFormat";
 import { safeGetItem, safeSetItem, safeRemoveItem, safeGetJSON, safeSetJSON } from "./shared/storage";
 import { BOARD_COLORS, type ActionSettings, type CardColor, type GroupBy } from "./shared/constants";
 import { createUndoableSend } from "./app/undoableSend";
@@ -190,6 +190,8 @@ import { batchReplyLoadErrorMessage, cardLoadErrorMessage, isOfflineError, query
 import { cardSyncStatus, cardWaitingMessage, connectionStatus } from "./app/connectionStatus";
 import { CardEmpty, CardSkeleton, ConnectionStatusBar, PostmarkDefs, type NoMatch } from "./components/CardStates";
 import { createPostmarkLedger } from "./app/postmark";
+import { dayGutters, gutterDay, type Gutter } from "./app/gutters";
+import { CalendarGutter } from "./components/CalendarGutter";
 import { cardTypeForQuery } from "./app/cardType";
 import { SEARCH_CARD_ID, forgetSearch, isSearchCard, keptCardName, parseRecentSearches, rememberSearch, searchCard as searchCardFor } from "./app/quickSearch";
 import { discardThreadDrafts, draftToOpen, isDraftThread, prepareDraftCompose, withDraftsDiscarded, type DraftToOpen } from "./app/draftThreads";
@@ -4357,6 +4359,17 @@ function App() {
     return groups;
   }
 
+  // A today or tomorrow card's free stretches in its own day's group; none
+  // while the board's filter hides rows, which would open false gaps
+  function calendarGutters(cardId: string, group: CalendarEventGroup): Gutter[] {
+    const query = isPreviewingQuery(cardId) ? editCardQuery() : cardById(cardId)?.query ?? "";
+    const now = minuteNow();
+    const day = gutterDay(query, new Date(now));
+    if (!day || group.label !== formatDayLabel(day, new Date(today()))) return [];
+    if (globalFilter().trim() && filterHides() && !isSearchCard(cardId)) return [];
+    return dayGutters(group.events, day, now);
+  }
+
   function computeCalendarEventGroups(cardId: string): CalendarEventGroup[] {
     const events = isPreviewingQuery(cardId) ? queryPreviewCalendarEvents() : cardCalendarEvents[cardId];
     if (!events) return [];
@@ -5323,12 +5336,18 @@ function App() {
                               <CardEmpty cardId={card.id} name={card.name} query={isPreviewingQuery(card.id) ? editCardQuery() : card.query} kind="calendar" noMatch={noMatchFor(card.id)} ledger={postmarks} />
                             </Show>
                             <Index each={getCalendarEventGroups(card.id)}>
-                              {(group) => (
+                              {(group) => {
+                                const gutters = createMemo(() => calendarGutters(card.id, group()));
+                                const gutterAbove = (index: number) => gutters().find(g => g.beforeIndex === index);
+                                return (
                                 <>
                                   <div class="date-header">{group().label}</div>
                                   <For each={group().events}>
-                                    {(event) => (
+                                    {(event, index) => (
                                       <>
+                                      <Show when={gutterAbove(index())}>
+                                        {(gutter) => <CalendarGutter gutter={gutter()} now={minuteNow()} />}
+                                      </Show>
                                       <div
                                         class={`calendar-event-item ${fadedBySearch(card.id, event.id) ? "faded" : ""} ${event.response_status === "declined" ? "declined" : ""} ${selectedEvents()[card.id]?.has(event.id) ? "selected" : ""} ${isEventFocused(card.id, event.id) ? "focused" : ""} ${isQuickReplyEvent(event.id) ? "replying" : ""}`}
                                         onClick={() => openEvent(event, card.id)}
@@ -5420,8 +5439,12 @@ function App() {
                                       </>
                                     )}
                                   </For>
+                                  <Show when={gutterAbove(group().events.length)}>
+                                    {(gutter) => <CalendarGutter gutter={gutter()} now={minuteNow()} />}
+                                  </Show>
                                 </>
-                              )}
+                                );
+                              }}
                             </Index>
                           </Show>
 

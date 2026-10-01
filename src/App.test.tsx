@@ -1849,6 +1849,54 @@ describe("App calendar", () => {
     expect(screen.getByRole("button", { name: "Sign in again" })).toBeInTheDocument();
   });
 
+  describe("gutters", () => {
+    const HALF_HOUR = 30 * 60_000;
+    const meeting = (id: string, start: number, end: number) => ({ ...calendarEvent(id, id), start_time: start, end_time: end });
+
+    function dayCard(query: string, events: ReturnType<typeof meeting>[]) {
+      calendarCards();
+      cardsByAccount.a = [{ ...card("cal-a", "a", "Tomorrow"), query, card_type: "calendar" }];
+      handlers.get_accounts = () => [account("a", "a@x.com")];
+      handlers.fetch_calendar_events = () => events;
+    }
+
+    const thursday = [
+      meeting("Standup", tomorrowAt(9) + HALF_HOUR, tomorrowAt(10) + HALF_HOUR),
+      meeting("Design crit", tomorrowAt(11), tomorrowAt(12)),
+      meeting("1:1 with Sam", tomorrowAt(15) + HALF_HOUR, tomorrowAt(16) + HALF_HOUR),
+      meeting("Roadmap sync", tomorrowAt(16) + HALF_HOUR, tomorrowAt(18)),
+    ];
+
+    it("sets a long free stretch between tomorrow's events as a gutter above the event that ends it", async () => {
+      dayCard("calendar:tomorrow", thursday);
+      render(() => <App />);
+
+      const gutter = (await screen.findByText("Free 12:00 – 3:30 PM")).closest(".calendar-gutter") as HTMLElement;
+      expect(gutter).toHaveAttribute("role", "note");
+      expect(within(gutter).getByText("3 h 30 m")).toBeInTheDocument();
+      expect(gutter.hasAttribute("tabindex")).toBe(false);
+      expect(gutter.nextElementSibling).toHaveTextContent("1:1 with Sam");
+      expect(document.querySelectorAll(".calendar-gutter")).toHaveLength(1);
+    });
+
+    it("says the afternoon is free when nothing follows the morning", async () => {
+      dayCard("calendar:tomorrow", thursday.slice(0, 2));
+      render(() => <App />);
+
+      const gutter = (await screen.findByText("Afternoon's free.")).closest(".calendar-gutter") as HTMLElement;
+      expect(gutter).toHaveClass("ending");
+      expect(gutter.previousElementSibling).toHaveTextContent("Design crit");
+    });
+
+    it("leaves a card spanning more days without gutters", async () => {
+      dayCard("calendar:7d", thursday);
+      render(() => <App />);
+
+      await screen.findByText("1:1 with Sam");
+      expect(document.querySelector(".calendar-gutter")).toBeNull();
+    });
+  });
+
   it("quick-replies to the guests of the user's own event, not the user", async () => {
     calendarCards();
     handlers.fetch_calendar_events = () => [{

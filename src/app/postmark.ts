@@ -7,7 +7,7 @@ export type EmptyKind = "mail" | "calendar";
 
 const MAIL_LINES = ["Nothing left to sort.", "All delivered.", "Pile's empty."];
 const EVENING_LINE = "All delivered. See you tomorrow.";
-const EVENING_HOUR = 18;
+export const EVENING_HOUR = 18;
 const MONTHS = ["JAN", "FEB", "MAR", "APR", "MAY", "JUN", "JUL", "AUG", "SEP", "OCT", "NOV", "DEC"];
 const MAX_TILT = 8;
 
