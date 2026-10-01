@@ -3806,6 +3806,58 @@ button:disabled:hover {
     border-radius: var(--radius-sm);
 }
 
+/* A thread dragged onto a card (rowDrag.ts): the row dims while a raised copy
+   follows the pointer, and the card under it says in its header what a drop
+   there does, in place of its count and controls */
+.thread.lifting {
+    opacity: 0.35;
+}
+
+:root.row-dragging {
+    cursor: grabbing;
+    user-select: none;
+    -webkit-user-select: none;
+}
+
+.row-ghost {
+    position: fixed;
+    left: 0;
+    top: 0;
+    z-index: 60;
+    margin: 0;
+    box-sizing: border-box;
+    pointer-events: none;
+    background: var(--surface-raised);
+    border-radius: var(--radius-lg);
+    box-shadow: var(--shadow-lg);
+}
+
+.card.drop-target {
+    box-shadow: 0 0 0 3px var(--border-focus), var(--shadow-md);
+}
+
+.card.drop-target .card-header .card-unread-badge,
+.card.drop-target .card-header .card-actions {
+    display: none;
+}
+
+.drop-intent {
+    flex: 1 1 auto;
+    min-width: 0;
+    margin-left: auto;
+    text-align: right;
+    font: var(--type-meta);
+    color: var(--text-primary);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.drop-intent.none,
+.drop-intent-alt {
+    color: var(--text-muted);
+}
+
 /* Where the focus stopped at an edge, and the key onward */
 .focus-edge {
     flex-shrink: 0;

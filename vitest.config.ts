@@ -29,6 +29,7 @@ const NO_DOM = [
   "src/app/focusMemory.test.ts",
   "src/app/grouping.test.ts",
   "src/app/dayStrip.test.ts",
+  "src/app/dropIntent.test.ts",
   "src/app/inviteDays.test.ts",
   "src/app/nowSection.test.ts",
   "src/app/inviteRow.test.ts",

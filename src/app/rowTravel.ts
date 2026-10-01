@@ -13,8 +13,10 @@ const MAX_CARRIED = 8;
 // copy to the row's place in the card it went to, which makes room for it,
 // or, when no card on the board took it and it left its card, slides it
 // aside while the gap folds. Counts that changed roll to their new number.
-// Null when none of the rows is on screen.
-export function liftRows(cardId: string, threadIds: string[]): { land: () => void } | null {
+// Null when none of the rows is on screen. `from` is where a dragged row was
+// let go, to carry it from there instead.
+type Box = Pick<DOMRect, "left" | "top" | "width" | "height">;
+export function liftRows(cardId: string, threadIds: string[], from?: Box): { land: () => void } | null {
   if (typeof document.body.animate !== "function") return null;
   const cards = Array.from(document.querySelectorAll<HTMLElement>(".card[data-id]"));
   const source = cards.find(card => card.dataset.id === cardId);
@@ -22,7 +24,7 @@ export function liftRows(cardId: string, threadIds: string[]): { land: () => voi
   if (!sourceList) return null;
   const departing = threadIds.slice(0, MAX_CARRIED).flatMap(id => {
     const row = rowIn(sourceList, id);
-    return row ? [{ id, row: row.cloneNode(true) as HTMLElement, from: row.getBoundingClientRect() }] : [];
+    return row ? [{ id, row: row.cloneNode(true) as HTMLElement, from: from ?? row.getBoundingClientRect() }] : [];
   });
   if (departing.length === 0) return null;
   const before = new Map(cards.flatMap(card => {
@@ -103,7 +105,7 @@ export function liftRows(cardId: string, threadIds: string[]): { land: () => voi
 }
 
 // A row's copy, fixed where the row was, over the board
-function travelling(row: HTMLElement, from: DOMRect): HTMLElement {
+function travelling(row: HTMLElement, from: Box): HTMLElement {
   row.querySelectorAll(".thread-checkbox-wrap, .quick-reply-box").forEach(el => el.remove());
   row.classList.add("row-traveller");
   row.classList.remove("focused", "selected");

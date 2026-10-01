@@ -170,7 +170,7 @@ import { watchScrollFade } from "./app/scrollFade";
 import { createThumbnails } from "./app/thumbnails";
 import { AfterArchiveSetting } from "./components/AfterArchiveSetting";
 import { runUnsubscribe, type UnsubscribeMethod } from "./app/unsubscribe";
-import { actionFailureLabel, actionLabel, actionRemovesFromCard, applyThreadAction, labelChangeFor, threadMayJoinCard, undoLabelChanges, type LabelReversal } from "./app/threadActions";
+import { actionFailureLabel, actionLabel, actionRemovesFromCard, applyLabelChange, changeRemovesFromCard, labelChangeFor, threadMayJoinCard, undoLabelChanges, type LabelChange, type LabelReversal } from "./app/threadActions";
 import { PRESETS } from "./app/presets";
 import { normalizeActionOrder } from "./app/actionOrder";
 import { parseStoredWidth } from "./app/storedWidth";
@@ -204,6 +204,8 @@ import { measureRows, slideRows } from "./app/rowMotion";
 import { liftRows } from "./app/rowTravel";
 import { placeInCards } from "./app/threadPlacement";
 import { gmailLabelName } from "./app/queryMatch";
+import { createRowDrag, type RowDragState } from "./app/rowDrag";
+import { dropIntent, type DropIntent } from "./app/dropIntent";
 import { FocusRing, type RingBump } from "./components/FocusRing";
 import { getSmartEventTime, groupCalendarEvents, isUserLabel, mergeThreadGroups, regroupThreads, type CalendarEventGroup } from "./app/grouping";
 import { pullLayoutWithRetry } from "./app/icloudRestore";
@@ -884,6 +886,8 @@ function App() {
   const openWheelIn = (e?: MouseEvent) => (e?.currentTarget as Element | null)?.querySelector(`.radial-menu[role="menu"]`);
 
   function showThreadHoverActions(cardId: string, threadId: string, e?: MouseEvent) {
+    // A thread being dragged passes over rows without opening their wheels
+    if (rowDrag.dragging()) return;
     const key = rowKey(cardId, threadId);
     if (e && key !== hoveredThread() && threadHold.wait(key, e.clientX, e.clientY, () => showThreadHoverActions(cardId, threadId))) return;
     threadHold.release();
@@ -918,6 +922,7 @@ function App() {
   }
 
   function showEventHoverActions(cardId: string, eventId: string, e?: MouseEvent) {
+    if (rowDrag.dragging()) return;
     const key = rowKey(cardId, eventId);
     if (e && key !== hoveredEvent() && eventHold.wait(key, e.clientX, e.clientY, () => showEventHoverActions(cardId, eventId))) return;
     eventHold.release();
@@ -1009,7 +1014,7 @@ function App() {
   // A new event starts now; what was typed into a closed new-event form stays,
   // but an event's edit never carries into a new one
   // `about` starts the event from an email thread instead
-  const openNewEventForm = (about?: { summary: string; attendees: string }) => {
+  const openNewEventForm = (about?: { summary: string; attendees: string } & Partial<Pick<EventFormState, "startDate" | "startTime" | "endDate" | "endTime">>) => {
     // One panel at a time: an email in the compose panel closes, keeping its draft
     if (composeShownIn() === "panel" && composing() && !closingCompose()) closeCompose();
     const defaults = smartEventDefaults();
@@ -4787,6 +4792,45 @@ function App() {
     }
   }
 
+  // A thread row dragged onto a card: the card under it says what a drop
+  // there does, worked out from its query, and the drop does it
+  const draggedThread = (drag: RowDragState) =>
+    (cardThreads[drag.sourceCardId] ?? []).flatMap(g => g.threads).find(t => t.gmail_thread_id === drag.threadId);
+  function intentOf(drag: RowDragState): DropIntent | null {
+    const thread = draggedThread(drag);
+    const source = cardById(drag.sourceCardId);
+    const target = cardById(drag.overCardId);
+    if (!thread || !source || !target) return null;
+    const accountId = threadAccountId(thread, source);
+    const labels = labelsByAccount[accountId] ?? [];
+    return dropIntent(thread, source, target, drag.alt, {
+      labelId: (name) => labels.find(l => gmailLabelName(l.name) === name)?.id,
+      labelName: (id) => { const label = labels.find(l => l.id === id); return label ? labelDisplayName(label) : id; },
+      accountEmail: accountById(accountId)?.email ?? "",
+      now: new Date(),
+      otherAccount: !cardCoversAccount(target, accountId),
+    });
+  }
+  const rowDrag = createRowDrag({
+    onStart: (drag) => {
+      const thread = draggedThread(drag);
+      if (thread) fetchAccountLabels(threadAccountId(thread, cardById(drag.sourceCardId)));
+    },
+    onDrop: (drag, at) => {
+      const intent = intentOf(drag);
+      if (intent?.kind === "labels") {
+        handleThreadAction("label", [drag.threadId], drag.sourceCardId, { labelChange: intent.change, message: intent.done, from: at });
+      } else if (intent?.kind === "event") {
+        openNewEventForm(intent.event);
+      }
+    },
+  });
+  onCleanup(rowDrag.cancel);
+  const dropIntentFor = (cardId: string) => {
+    const drag = rowDrag.dragging();
+    return drag?.overCardId === cardId ? intentOf(drag) : null;
+  };
+
   // A changed thread joins the cards on the board that now list it, by what
   // its labels answer of their queries, where they would list it; they are
   // snapshotted for rollback and refreshed on undo like the cards it was in.
@@ -4826,7 +4870,9 @@ function App() {
   // silent: a change the user didn't ask for directly (marking a thread
   // read on open) gets no undo toast. `accountId` names the threads' account
   // when the card may no longer list them (the open thread).
-  async function handleThreadAction(action: string, threadIds: string[], cardId: string, { silent = false, accountId }: { silent?: boolean; accountId?: string } = {}) {
+  // `labelChange` makes it a label change of its own (a thread dropped on a
+  // card), named in its toast by `message` and carried from `from`
+  async function handleThreadAction(action: string, threadIds: string[], cardId: string, { silent = false, accountId, labelChange, message, from }: { silent?: boolean; accountId?: string; labelChange?: LabelChange; message?: string; from?: { left: number; top: number; width: number; height: number } } = {}) {
     const byAccount = accountId
       ? new Map([[accountId, threadIds]])
       : threadIdsByAccount(cardThreads[cardId] ?? [], threadIds, cardById(cardId) ?? { account_id: "" });
@@ -4837,7 +4883,9 @@ function App() {
     // of these when it has the id and comes from the account acted in
     const isTarget = (t: Thread, card: Card) => ownerOf.get(t.gmail_thread_id) === threadAccountId(t, card);
 
-    const { add: addLabels, remove: removeLabels } = labelChangeFor(action);
+    const applying = labelChange ?? labelChangeFor(action);
+    const { add: addLabels, remove: removeLabels } = applying;
+    const removesFrom = (query: string) => (labelChange ? changeRemovesFromCard(labelChange, query) : actionRemovesFromCard(action, query));
 
     // Optimistic Update - update ALL cards that contain these threads.
     // Snapshot the affected cards first so the update can be rolled back
@@ -4860,11 +4908,11 @@ function App() {
         if (!labelsBefore.has(acc)) labelsBefore.set(acc, new Map());
         labelsBefore.get(acc)!.set(t.gmail_thread_id, t);
       }
-      updatedCardThreads[card.id] = applyThreadAction(groups, ids, action, actionRemovesFromCard(action, card.query));
+      updatedCardThreads[card.id] = applyLabelChange(groups, ids, applying, removesFrom(card.query));
     }
-    placeChangedThreads(Object.entries(snapshot).map(([cId, groups]) => [cId, applyThreadAction(groups, threadIds, action, false)]), isTarget, ownerOf, updatedCardThreads, snapshot, affectedCardIds);
+    placeChangedThreads(Object.entries(snapshot).map(([cId, groups]) => [cId, applyLabelChange(groups, threadIds, applying, false)]), isTarget, ownerOf, updatedCardThreads, snapshot, affectedCardIds);
     // Before the board shows it, so the rows can be carried from where they were
-    const departure = silent || activeThreadId() ? null : liftRows(cardId, threadIds);
+    const departure = silent || activeThreadId() ? null : liftRows(cardId, threadIds, from);
 
     batch(() => {
       for (const [cId, groups] of Object.entries(updatedCardThreads)) {
@@ -4915,7 +4963,7 @@ function App() {
     setLastAction(done);
     const emails = owners.map(a => a!.email);
     toasts.show({
-      message: inAccount(actionLabel(action, threadIds.length), emails, accounts().length),
+      message: inAccount(message ?? actionLabel(action, threadIds.length), emails, accounts().length),
       tag: owners.length === 1 ? accountToastTag(owners[0]!.id) : undefined,
       undo: () => undoThreadAction(done),
     });
@@ -5322,7 +5370,7 @@ function App() {
                     >
                       <div
                         class={`card ${isSearchCard(card.id) ? 'search' : ''} ${collapsedCards[card.id] ? 'collapsed' : ''} ${editingCardId() === card.id ? 'editing' : ''} ${(offline() || cardExpired(card)) && (cardThreads[card.id] || cardCalendarEvents[card.id]) ? 'stale' : ''}`}
-                        classList={{ 'dragging': sortable.isActiveDraggable }}
+                        classList={{ 'dragging': sortable.isActiveDraggable, 'drop-target': !!dropIntentFor(card.id) }}
                         data-id={card.id}
                         data-color={editingCardId() === card.id ? (editCardColor() || undefined) : (card.color || undefined)}
                         onPointerEnter={() => newMail.enter(card.id)}
@@ -5380,6 +5428,16 @@ function App() {
                               <span class="card-title">{card.name}</span>
                               <CardAccountQualifier accountId={card.account_id} accounts={accounts()} shown={namesAccount()} problem={syncStatus().problem} />
                             </button>
+                            <Show when={dropIntentFor(card.id)}>
+                              {(intent) => (
+                                <span class="drop-intent" classList={{ "none": intent().kind === "none" }} role="status">
+                                  {intent().text}
+                                  <Show when={(() => { const i = intent(); return i.kind === "labels" ? i.alt : undefined; })()}>
+                                    {(alt) => <> <span class="drop-intent-alt">{alt()}</span></>}
+                                  </Show>
+                                </span>
+                              )}
+                            </Show>
                             <Show when={!collapsedCards[card.id] && getCardUnreadCount(card.id) > 0}>
                               <span class="card-unread-badge">{getCardUnreadCount(card.id)}</span>
                             </Show>
@@ -5622,6 +5680,7 @@ function App() {
                                           }}
                                           role="article"
                                           data-thread-id={thread.gmail_thread_id}
+                                          onPointerDown={(e) => rowDrag.press(e, card.id, thread.gmail_thread_id)}
                                           aria-label={`${thread.unread_count > 0 ? 'Unread: ' : ''}${thread.subject} from ${thread.participants.slice(0, 2).map(personName).join(', ')}${inviteLabel()}`}
                                           tabindex={rowTabIndex(card.id, thread.gmail_thread_id)}
                                           onFocus={() => onRowFocus(card.id, thread.gmail_thread_id)}

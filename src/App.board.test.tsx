@@ -329,3 +329,121 @@ describe("Where it went", () => {
     expect(rowsOf("Ana")).toEqual([]);
   });
 });
+
+describe("Drop it on a card", () => {
+  const rowsOf = (name: string) => Array.from(cardRegion(name).querySelectorAll(".thread"), el => el.querySelector(".thread-subject")?.textContent);
+  const header = (name: string) => cardRegion(name).querySelector<HTMLElement>(".card-header")!;
+  const pointer = (type: string, target: EventTarget, init: PointerEventInit = {}) =>
+    target.dispatchEvent(new PointerEvent(type, { bubbles: true, button: 0, pointerId: 1, ...init }));
+  let under: Element | null = null;
+
+  beforeEach(() => {
+    under = null;
+    document.elementFromPoint = () => under;
+    handlers.list_labels = () => [{ id: "Label_1", name: "Receipts", label_type: "user", messageListVisibility: null, labelListVisibility: null }];
+    const today = new Date().setHours(12, 0, 0, 0);
+    threadsByCard.inbox = [thread("t-1", "First", { last_message_date: today }), thread("t-2", "Second", { last_message_date: today - 7200000 })];
+    threadsByCard.receipts = [thread("r-1", "Receipt one", { labels: ["Label_1"], last_message_date: today - 3600000 })];
+  });
+
+  async function dragOnto(subject: string, card: string, init: PointerEventInit = {}) {
+    pointer("pointerdown", row(subject), { clientX: 10, clientY: 10 });
+    under = header(card);
+    pointer("pointermove", document, { clientX: 400, clientY: 40, ...init });
+  }
+
+  it("says in the card's header what dropping there does, which ⌥ changes", async () => {
+    render(() => <App />);
+    await screen.findByText("Receipt one");
+    await dragOnto("Second", "Receipts");
+    await waitFor(() => expect(header("Receipts")).toHaveTextContent("Label Receipts · leaves Inbox ⌥ keeps it"));
+    expect(cardRegion("Receipts")).toHaveClass("drop-target");
+
+    pointer("pointermove", document, { clientX: 401, clientY: 40, altKey: true });
+    expect(header("Receipts")).toHaveTextContent("Label Receipts · stays in Inbox");
+    expect(header("Receipts")).not.toHaveTextContent("⌥");
+  });
+
+  it("files the thread under the card's label, in date order there, with an Undo", async () => {
+    render(() => <App />);
+    await screen.findByText("Receipt one");
+    await dragOnto("Second", "Receipts");
+    await waitFor(() => expect(header("Receipts")).toHaveTextContent("Label Receipts"));
+    pointer("pointerup", document, { clientX: 400, clientY: 40 });
+
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith("modify_threads", { accountId: "a", threadIds: ["t-2"], addLabels: ["Label_1"], removeLabels: ["INBOX"] }));
+    await waitFor(() => expect(rowsOf("Receipts")).toEqual(["Receipt one", "Second"]));
+    expect(rowsOf("Inbox")).toEqual(["First"]);
+    expect(await screen.findByText("Labelled Receipts, out of Inbox")).toBeInTheDocument();
+    expect(cardRegion("Receipts")).not.toHaveClass("drop-target");
+
+    fireEvent.click(screen.getByRole("button", { name: /undo/i }));
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith("modify_threads", { accountId: "a", threadIds: ["t-2"], addLabels: ["INBOX"], removeLabels: ["Label_1"] }));
+  });
+
+  it("says plainly when a card can't take mail, and a drop there does nothing", async () => {
+    boardCards.push({ ...card("ana", "Ana", "from:ana@x.com"), position: 2 });
+    threadsByCard.ana = [];
+    render(() => <App />);
+    await screen.findByText("Receipt one");
+    await dragOnto("Second", "Ana");
+    await waitFor(() => expect(header("Ana")).toHaveTextContent("Can't add mail to Ana"));
+    pointer("pointerup", document, { clientX: 400, clientY: 40 });
+    await new Promise(r => setTimeout(r, 50));
+    expect(invoke).not.toHaveBeenCalledWith("modify_threads", expect.anything());
+    expect(rowsOf("Inbox")).toEqual(["First", "Second"]);
+  });
+
+  it("opens a new event at the time the subject names when dropped on a calendar card", async () => {
+    boardCards.push({ ...card("week", "This week", "calendar:week"), position: 2 });
+    threadsByCard.inbox = [thread("t-1", "Call on Friday at 3pm", { participants: ["Tomás Ruiz <tomas@x.com>"] })];
+    render(() => <App />);
+    await screen.findByText("Call on Friday at 3pm");
+    pointer("pointerdown", row("Call on Friday at 3pm"), { clientX: 10, clientY: 10 });
+    under = screen.getByRole("region", { name: "This week calendar card" });
+    pointer("pointermove", document, { clientX: 400, clientY: 40 });
+    await waitFor(() => expect(under).toHaveTextContent(/New event · .*3:00 PM|15:00.* with Tomás/));
+    pointer("pointerup", document, { clientX: 400, clientY: 40 });
+    expect(await screen.findByDisplayValue("Call on Friday at 3pm")).toBeInTheDocument();
+  });
+
+  it("opens no row's wheel while a thread is dragged over it", async () => {
+    render(() => <App />);
+    await screen.findByText("Receipt one");
+    await dragOnto("Second", "Receipts");
+    fireEvent.mouseEnter(row("Receipt one"));
+    await new Promise(r => setTimeout(r, 400));
+    expect(row("Receipt one").querySelector(".radial-menu")).toBeNull();
+  });
+
+  it("opens no event's wheel while a thread is dragged over it", async () => {
+    localStorage.setItem("eventActionSettings", JSON.stringify({ delete: true }));
+    const start = new Date(); start.setDate(start.getDate() + 1); start.setHours(10, 0, 0, 0);
+    boardCards.push({ ...card("week", "This week", "calendar:week"), position: 2 });
+    handlers.fetch_calendar_events = () => [{
+      id: "e-1", calendar_id: "primary", calendar_name: "Main", title: "Standup", description: null, location: null,
+      start_time: start.getTime(), end_time: start.getTime() + 3600000, all_day: false, status: "confirmed",
+      organizer: "org@x.com", attendees: [], html_link: null, hangout_link: null, response_status: null, can_edit: true,
+    }];
+    render(() => <App />);
+    const standup = (await screen.findByText("Standup")).closest<HTMLElement>(".calendar-event-item")!;
+    pointer("pointerdown", row("Second"), { clientX: 10, clientY: 10 });
+    under = standup;
+    pointer("pointermove", document, { clientX: 400, clientY: 40 });
+    fireEvent.mouseEnter(standup);
+    await new Promise(r => setTimeout(r, 400));
+    expect(within(standup).queryByTitle("Delete")).toBeNull();
+  });
+
+  it("doesn't open the thread when a drag ends on its row", async () => {
+    render(() => <App />);
+    await screen.findByText("Receipt one");
+    pointer("pointerdown", row("Second"), { clientX: 10, clientY: 10 });
+    under = row("Second");
+    pointer("pointermove", document, { clientX: 30, clientY: 10 });
+    pointer("pointerup", document, { clientX: 30, clientY: 10 });
+    fireEvent.click(row("Second"));
+    await new Promise(r => setTimeout(r, 50));
+    expect(invoke).not.toHaveBeenCalledWith("get_thread_details", expect.anything());
+  });
+});

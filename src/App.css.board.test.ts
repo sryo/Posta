@@ -92,3 +92,33 @@ describe("a row on its way to another card", () => {
     expect(Number(declaration(".row-traveller", "z-index"))).toBeLessThan(Number(declaration(".radial-menu", "z-index")));
   });
 });
+
+describe("dragging a thread onto a card", () => {
+  it("dims the row and carries a raised copy over everything on the board", () => {
+    expect(declaration(".thread.lifting", "opacity")).toBe("0.35");
+    expect(declaration(".row-ghost", "position")).toBe("fixed");
+    expect(declaration(".row-ghost", "left")).toBe("0");
+    expect(declaration(".row-ghost", "top")).toBe("0");
+    expect(declaration(".row-ghost", "pointer-events")).toBe("none");
+    expect(declaration(".row-ghost", "background")).toBe("var(--surface-raised)");
+    expect(declaration(".row-ghost", "box-shadow")).toBe("var(--shadow-lg)");
+    expect(Number(declaration(".row-ghost", "z-index"))).toBeGreaterThan(Number(declaration(".radial-menu", "z-index")));
+  });
+
+  it("selects no text and shows a grabbing hand while dragging", () => {
+    expect(declaration(":root.row-dragging", "user-select")).toBe("none");
+    expect(declaration(":root.row-dragging", "-webkit-user-select")).toBe("none");
+    expect(declaration(":root.row-dragging", "cursor")).toBe("grabbing");
+  });
+
+  it("rings the card under it and swaps its count and controls for what a drop does", () => {
+    expect(declaration(".card.drop-target", "box-shadow")).toBe("0 0 0 3px var(--border-focus), var(--shadow-md)");
+    expect(declaration(".card.drop-target .card-header .card-unread-badge", "display")).toBe("none");
+    expect(declaration(".card.drop-target .card-header .card-actions", "display")).toBe("none");
+    expect(declaration(".drop-intent", "font")).toBe("var(--type-meta)");
+    expect(declaration(".drop-intent", "white-space")).toBe("nowrap");
+    expect(declaration(".drop-intent", "text-overflow")).toBe("ellipsis");
+    expect(declaration(".drop-intent-alt", "color")).toBe("var(--text-muted)");
+    expect(declaration(".drop-intent.none", "color")).toBe("var(--text-muted)");
+  });
+});

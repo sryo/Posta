@@ -107,6 +107,17 @@ describe("liftRows", () => {
     expect(calls.find(c => c.el === row("inbox", "s"))).toBeUndefined();
   });
 
+  it("carries a dropped row from where it was let go", () => {
+    const { render } = board({ inbox: { rows: ["a", "s"] }, receipts: { rows: ["p"] } });
+    const departure = liftRows("inbox", ["s"], { left: 500, top: 400, width: 260, height: 50 })!;
+    render({ inbox: { rows: ["a"] }, receipts: { rows: ["s", "p"] } });
+    departure.land();
+    const clone = traveller()!;
+    expect(clone.style.left).toBe("500px");
+    expect(clone.style.top).toBe("400px");
+    expect(calls.find(c => c.el === clone)!.frames[3]).toMatchObject({ transform: "translate(-180px, -300px) scale(1)" });
+  });
+
   it("carries the row without its controls", () => {
     const { render } = board({ inbox: { rows: ["a", "s"] } });
     row("inbox", "s").innerHTML = 's<div class="thread-checkbox-wrap"><div class="radial-menu"></div></div>';
