@@ -66,8 +66,10 @@ beforeEach(() => {
     get_cached_card_events: () => null,
     save_cached_card_events: () => null,
     fetch_calendar_events: () => [],
+    // A fresh copy each time, as from the backend: the store reconciles
+    // into what it was given
     fetch_threads_paginated: ({ cardId }) => ({
-      groups: [{ label: "Today", threads: threadsByCard[cardId as string] ?? [] }],
+      groups: [{ label: "Today", threads: structuredClone(threadsByCard[cardId as string] ?? []) }],
       next_page_token: null,
       has_more: false,
     }),
@@ -265,5 +267,65 @@ describe("New mail waits for the pointer", () => {
     await new Promise(r => setTimeout(r, 20));
     await mailArrives();
     await screen.findByText("Fresh mail");
+  });
+});
+
+describe("Where it went", () => {
+  const rowsOf = (name: string) => Array.from(cardRegion(name).querySelectorAll(".thread"), el => el.querySelector(".thread-subject")?.textContent);
+  beforeEach(() => {
+    boardCards = [card("inbox", "Inbox"), { ...card("starred", "Starred", "is:starred"), position: 1 }];
+    const hour = 3600000;
+    const today = new Date().setHours(12, 0, 0, 0);
+    threadsByCard.inbox = [thread("t-1", "First", { last_message_date: today }), thread("t-2", "Second", { last_message_date: today - hour })];
+    threadsByCard.starred = [thread("s-1", "Old star", { labels: ["STARRED"], last_message_date: today - 3 * hour })];
+  });
+
+  it("puts a starred thread into the Starred card in its date order at once", async () => {
+    render(() => <App />);
+    await screen.findByText("Old star");
+    await new Promise(r => setTimeout(r, 20));
+    press("l");
+    press("j");
+    press("s");
+    await waitFor(() => expect(rowsOf("Starred")).toEqual(["Second", "Old star"]));
+    expect(rowsOf("Inbox")).toEqual(["First", "Second"]);
+  });
+
+  it("takes it back out of the card it went to when the change fails", async () => {
+    handlers.modify_threads = () => { throw new Error("offline"); };
+    render(() => <App />);
+    await screen.findByText("Old star");
+    await new Promise(r => setTimeout(r, 20));
+    press("l");
+    press("j");
+    press("s");
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith("modify_threads", expect.anything()));
+    await waitFor(() => expect(rowsOf("Starred")).toEqual(["Old star"]));
+  });
+
+  it("takes it back out when the star is undone", async () => {
+    render(() => <App />);
+    await screen.findByText("Old star");
+    await new Promise(r => setTimeout(r, 20));
+    press("l");
+    press("j");
+    press("s");
+    await waitFor(() => expect(rowsOf("Starred")).toEqual(["Second", "Old star"]));
+    await screen.findByRole("button", { name: /undo/i });
+    press("z");
+    await waitFor(() => expect(rowsOf("Starred")).toEqual(["Old star"]));
+  });
+
+  it("puts a thread only into a card whose query its labels answer", async () => {
+    boardCards.push({ ...card("from-ana", "Ana", "from:ana@x.com is:starred"), position: 2 });
+    threadsByCard["from-ana"] = [];
+    render(() => <App />);
+    await screen.findByText("Old star");
+    await new Promise(r => setTimeout(r, 20));
+    press("l");
+    press("j");
+    press("s");
+    await waitFor(() => expect(rowsOf("Starred")).toEqual(["Second", "Old star"]));
+    expect(rowsOf("Ana")).toEqual([]);
   });
 });

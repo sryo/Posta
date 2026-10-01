@@ -10,7 +10,11 @@ export function measureRows(list: Element): Map<string, number> {
 // After a list changed: rows already there slide from where `before` had
 // them, and the `entering` ones grow in, a little apart. A list scrolled
 // down instead keeps the rows in view where they are and nothing moves.
-export function slideRows(list: HTMLElement, before: Map<string, number>, { entering }: { entering: Set<string> }) {
+export function slideRows(
+  list: HTMLElement,
+  before: Map<string, number>,
+  { entering, delay = 0, duration = 260 }: { entering: Set<string>; delay?: number; duration?: number },
+) {
   const after = measureRows(list);
   if (list.scrollTop > 0) {
     const anchor = [...before].find(([id, top]) => after.has(id) && top + 1 > list.scrollTop - rowHeight(list, id));
@@ -28,14 +32,14 @@ export function slideRows(list: HTMLElement, before: Map<string, number>, { ente
       const grow = row.animate([
         { height: "0px", paddingTop: "0px", paddingBottom: "0px", opacity: 0 },
         { height: `${height}px`, paddingTop, paddingBottom, opacity: 1 },
-      ], { duration: 240, delay: order++ * 30, easing: EASE_SETTLE, fill: "backwards" });
+      ], { duration: 240, delay: delay + order++ * 30, easing: EASE_SETTLE, fill: "backwards" });
       settled(grow).then(() => { row.style.overflow = ""; });
       continue;
     }
     const was = before.get(id);
     const now = after.get(id);
     if (was === undefined || now === undefined || Math.abs(was - now) < 1) continue;
-    row.animate([{ transform: `translateY(${was - now}px)` }, { transform: "none" }], { duration: 260, easing: EASE_SETTLE });
+    row.animate([{ transform: `translateY(${was - now}px)` }, { transform: "none" }], { duration, delay, easing: EASE_SETTLE, fill: "backwards" });
   }
 }
 

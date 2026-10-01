@@ -201,6 +201,9 @@ import { escapeTarget, focusEdgeHint, isFocusEdge, nextCardFocus, nextItemFocus,
 import { createFocusMemory } from "./app/focusMemory";
 import { createNewMailHold } from "./app/rowHold";
 import { measureRows, slideRows } from "./app/rowMotion";
+import { liftRows } from "./app/rowTravel";
+import { placeInCards } from "./app/threadPlacement";
+import { gmailLabelName } from "./app/queryMatch";
 import { FocusRing, type RingBump } from "./components/FocusRing";
 import { getSmartEventTime, groupCalendarEvents, isUserLabel, mergeThreadGroups, regroupThreads, type CalendarEventGroup } from "./app/grouping";
 import { pullLayoutWithRetry } from "./app/icloudRestore";
@@ -4784,6 +4787,42 @@ function App() {
     }
   }
 
+  // A changed thread joins the cards on the board that now list it, by what
+  // its labels answer of their queries, where they would list it; they are
+  // snapshotted for rollback and refreshed on undo like the cards it was in.
+  // `changed` is each affected card's groups with the change made.
+  function placeChangedThreads(
+    changed: [string, ThreadGroup[]][],
+    isTarget: (t: Thread, card: Card) => boolean,
+    ownerOf: Map<string, string>,
+    updated: Record<string, ThreadGroup[]>,
+    snapshot: Record<string, ThreadGroup[]>,
+    affected: string[],
+  ) {
+    const threads = new Map<string, Thread>();
+    for (const [cId, groups] of changed) {
+      const card = cardById(cId);
+      if (!card) continue;
+      for (const t of groups.flatMap(g => g.threads)) {
+        if (isTarget(t, card) && !threads.has(t.gmail_thread_id)) threads.set(t.gmail_thread_id, { ...t, account_id: ownerOf.get(t.gmail_thread_id)! });
+      }
+    }
+    const now = new Date();
+    for (const thread of threads.values()) {
+      const labelId = (name: string) => labelsByAccount[thread.account_id]?.find(l => gmailLabelName(l.name) === name)?.id;
+      const candidates = cards()
+        .filter(c => c.card_type !== "calendar" && !collapsedCards[c.id] && cardThreads[c.id] && cardCoversAccount(c, thread.account_id))
+        .map(c => ({ id: c.id, query: c.query, groups: updated[c.id] ?? unwrap(cardThreads[c.id]), complete: !cardHasMore[c.id] }));
+      for (const [cId, groups] of Object.entries(placeInCards(candidates, thread, labelId, now))) {
+        if (!snapshot[cId]) {
+          snapshot[cId] = structuredClone(unwrap(cardThreads[cId]));
+          affected.push(cId);
+        }
+        updated[cId] = groups;
+      }
+    }
+  }
+
   // silent: a change the user didn't ask for directly (marking a thread
   // read on open) gets no undo toast. `accountId` names the threads' account
   // when the card may no longer list them (the open thread).
@@ -4823,12 +4862,16 @@ function App() {
       }
       updatedCardThreads[card.id] = applyThreadAction(groups, ids, action, actionRemovesFromCard(action, card.query));
     }
+    placeChangedThreads(Object.entries(snapshot).map(([cId, groups]) => [cId, applyThreadAction(groups, threadIds, action, false)]), isTarget, ownerOf, updatedCardThreads, snapshot, affectedCardIds);
+    // Before the board shows it, so the rows can be carried from where they were
+    const departure = silent || activeThreadId() ? null : liftRows(cardId, threadIds);
 
     batch(() => {
       for (const [cId, groups] of Object.entries(updatedCardThreads)) {
         setCardThreads(cId, reconcile(groups, { key: "gmail_thread_id" }));
       }
     });
+    departure?.land();
     if (!silent) setActionsWheelOpen(false);
 
     // Clear selection after bulk action

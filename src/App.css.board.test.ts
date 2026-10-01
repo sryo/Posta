@@ -81,3 +81,14 @@ describe("a colour spreading", () => {
     expect(declaration(".color-spreading", "isolation")).toBe("isolate");
   });
 });
+
+describe("a row on its way to another card", () => {
+  it("is a raised copy over the board that takes no pointer, under the wheels' petals", () => {
+    expect(declaration(".row-traveller", "position")).toBe("fixed");
+    expect(declaration(".row-traveller", "pointer-events")).toBe("none");
+    expect(declaration(".row-traveller", "background")).toBe("var(--surface-raised)");
+    expect(declaration(".row-traveller", "box-sizing")).toBe("border-box");
+    expect(declaration(".row-traveller", "margin")).toBe("0");
+    expect(Number(declaration(".row-traveller", "z-index"))).toBeLessThan(Number(declaration(".radial-menu", "z-index")));
+  });
+});

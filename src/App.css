@@ -3793,6 +3793,19 @@ button:disabled:hover {
     40% { translate: 3px 0; }
 }
 
+/* A row's copy carried to its place in the card it went to, or slid aside
+   (rowTravel.ts) */
+.row-traveller {
+    position: fixed;
+    z-index: 6;
+    margin: 0;
+    box-sizing: border-box;
+    pointer-events: none;
+    overflow: hidden;
+    background: var(--surface-raised);
+    border-radius: var(--radius-sm);
+}
+
 /* Where the focus stopped at an edge, and the key onward */
 .focus-edge {
     flex-shrink: 0;

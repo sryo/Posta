@@ -77,6 +77,14 @@ describe("slideRows", () => {
     expect((rowOf(body, "n1") as HTMLElement).style.overflow).toBe("");
   });
 
+  it("can wait and take a set time, to close a gap after something left it", () => {
+    const { body, place } = list({ a: 0, b: 50 });
+    const before = measureRows(body);
+    place({ b: 0 });
+    slideRows(body, before, { entering: new Set(), delay: 140, duration: 200 });
+    expect(calls[0].options).toMatchObject({ delay: 140, duration: 200 });
+  });
+
   it("leaves a row that didn't move alone", () => {
     const { body, place } = list({ a: 0, b: 50 });
     const before = measureRows(body);
