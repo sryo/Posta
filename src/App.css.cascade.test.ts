@@ -113,21 +113,6 @@ describe("App.css cascade", () => {
     expect(decl.get("gap")).toBeDefined();
   });
 
-  it("spaces a settings section's intro hint from its fields, and widens its submit button", () => {
-    document.body.innerHTML = `<div class="settings-section">
-        <div class="settings-section-title">Google API</div>
-        <p class="settings-hint" id="intro">Intro</p>
-        <div class="settings-form-group"></div>
-        <p class="settings-hint" id="note">Note</p>
-        <button class="btn btn-primary" id="submit">Connect</button>
-      </div>`;
-    const decl = (id: string) => cascadedDeclarations(rules, document.getElementById(id)!);
-    expect(decl("intro").get("margin-bottom")).toBe("var(--space-lg)");
-    expect(decl("note").get("margin-bottom")).toBeUndefined();
-    expect(decl("submit").get("width")).toBe("100%");
-    expect(decl("submit").get("margin-top")).toBe("var(--space-lg)");
-  });
-
   it("stills entrances and transitions under reduced motion but keeps loading and countdown indicators moving", () => {
     document.body.innerHTML = `<button class="icon-btn spinning"><svg id="refresh"></svg></button>
       <div class="auth-spinner" id="auth"></div><div class="spinner-sm" id="small"></div>

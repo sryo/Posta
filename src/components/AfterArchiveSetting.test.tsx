@@ -9,7 +9,7 @@ describe("AfterArchiveSetting", () => {
   it("offers next, previous or the board, and remembers the choice", () => {
     render(() => <AfterArchiveSetting />);
     const select = screen.getByRole("combobox", { name: "After archiving" }) as HTMLSelectElement;
-    expect(Array.from(select.options).map(o => o.textContent)).toEqual(["Open the next thread", "Open the previous thread", "Go back to the board"]);
+    expect(Array.from(select.options).map(o => o.textContent)).toEqual(["Next thread", "Previous thread", "Board"]);
     expect(select.value).toBe("next");
     fireEvent.change(select, { target: { value: "board" } });
     expect(loadAfterArchive()).toBe("board");

@@ -21,38 +21,39 @@ function renderSection(keySaved: boolean | undefined = false) {
 }
 
 describe("SmartRepliesSettings", () => {
-  it("opens from a real button that says whether it is expanded", () => {
+  it("turns on from a switch that asks for a key", () => {
     renderSection();
-    const title = screen.getByRole("button", { name: /Smart replies/ });
-    expect(title).toHaveAttribute("aria-expanded", "false");
+    const toggle = screen.getByRole("switch", { name: "Suggest replies" });
+    expect(toggle).toHaveAttribute("aria-checked", "false");
     expect(screen.queryByLabelText("Gemini API key")).not.toBeInTheDocument();
-    fireEvent.click(title);
-    expect(title).toHaveAttribute("aria-expanded", "true");
+    fireEvent.click(toggle);
+    expect(toggle).toHaveAttribute("aria-checked", "true");
     expect(screen.getByLabelText("Gemini API key")).toBeInTheDocument();
   });
 
   it("says what is sent to Google and where to get a key", () => {
     renderSection();
-    fireEvent.click(screen.getByRole("button", { name: /Smart replies/ }));
-    expect(screen.getByText(/Suggests replies with Google Gemini\. When on, the text of each email you open is sent to Google\./)).toBeInTheDocument();
+    expect(screen.getByText("Uses Google Gemini. Each email you open is sent to Google.")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("switch", { name: "Suggest replies" }));
     expect(screen.getByRole("link", { name: "Google AI Studio" })).toHaveAttribute("href", "https://aistudio.google.com/apikey");
   });
 
   it("saves a typed key", () => {
     const { onSave } = renderSection();
-    fireEvent.click(screen.getByRole("button", { name: /Smart replies/ }));
+    fireEvent.click(screen.getByRole("switch", { name: "Suggest replies" }));
     const field = screen.getByLabelText("Gemini API key");
     fireEvent.input(field, { target: { value: "AIza-new" } });
     fireEvent.change(field, { target: { value: "AIza-new" } });
     expect(onSave).toHaveBeenCalledWith("AIza-new");
   });
 
-  it("shows a saved key as kept in Keychain, with a way to remove it", () => {
+  it("is on with a saved key, kept in Keychain, and turning it off removes the key", () => {
     const { onSave } = renderSection(true);
-    fireEvent.click(screen.getByRole("button", { name: /Smart replies/ }));
-    expect(screen.getByText(/Saved in Keychain/)).toBeInTheDocument();
+    const toggle = screen.getByRole("switch", { name: "Suggest replies" });
+    expect(toggle).toHaveAttribute("aria-checked", "true");
+    expect(screen.getByText("Saved in Keychain")).toBeInTheDocument();
     expect(screen.queryByLabelText("Gemini API key")).not.toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "Remove" }));
+    fireEvent.click(toggle);
     expect(onSave).toHaveBeenCalledWith("");
   });
 });

@@ -1057,8 +1057,7 @@ describe("App Gemini API key", () => {
 
     await waitFor(() => expect(invoke).toHaveBeenCalledWith("set_gemini_api_key", { apiKey: "AIza-old" }));
     await waitFor(() => expect(localStorage.getItem("gemini_api_key")).toBeNull());
-    fireEvent.click(screen.getByText("Smart replies"));
-    expect(await screen.findByText(/Saved in Keychain/)).toBeInTheDocument();
+    expect(await screen.findByText("Saved in Keychain")).toBeInTheDocument();
   });
 
   it("keeps the old copy when the keychain refuses the key", async () => {
@@ -1076,18 +1075,18 @@ describe("App Gemini API key", () => {
     await screen.findByText("Mail for A");
     fireEvent.click(avatar("a@x.com"));
     fireEvent.click(within(document.querySelector(".account-chooser-container") as HTMLElement).getByText("Settings"));
-    fireEvent.click(screen.getByText("Smart replies"));
+    fireEvent.click(screen.getByRole("switch", { name: "Suggest replies" }));
 
     const field = screen.getByLabelText("Gemini API key");
     fireEvent.input(field, { target: { value: "AIza-new" } });
     fireEvent.change(field, { target: { value: "AIza-new" } });
     await waitFor(() => expect(invoke).toHaveBeenCalledWith("set_gemini_api_key", { apiKey: "AIza-new" }));
     expect(localStorage.getItem("gemini_api_key")).toBeNull();
-    expect(await screen.findByText(/Saved in Keychain/)).toBeInTheDocument();
+    expect(await screen.findByText("Saved in Keychain")).toBeInTheDocument();
 
-    fireEvent.click(screen.getByRole("button", { name: "Remove" }));
+    fireEvent.click(screen.getByRole("switch", { name: "Suggest replies" }));
     await waitFor(() => expect(invoke).toHaveBeenCalledWith("set_gemini_api_key", { apiKey: "" }));
-    expect(await screen.findByPlaceholderText("AIza...")).toBeInTheDocument();
+    await waitFor(() => expect(screen.getByRole("switch", { name: "Suggest replies" })).toHaveAttribute("aria-checked", "false"));
   });
 });
 
@@ -4325,19 +4324,38 @@ describe("App iCloud sync status", () => {
     handlers.get_icloud_sync_status = () => ({ available: true, last_synced_at: null, last_error: "iCloud refused the card backup" });
     render(() => <App />);
     const settings = await openSettings();
-    await waitFor(() => expect(settings).toHaveTextContent("iCloud sync: not working, iCloud refused the card backup"));
+    await waitFor(() => expect(settings).toHaveTextContent("iCloud syncNot working: iCloud refused the card backup"));
   });
 
   it("says when card sync last reached iCloud, asking again each time Settings opens", async () => {
     handlers.get_icloud_sync_status = () => ({ available: true, last_synced_at: Date.now() - 5.5 * 60_000, last_error: null });
     render(() => <App />);
     const settings = await openSettings();
-    await waitFor(() => expect(settings).toHaveTextContent("iCloud sync: on, last synced 5m ago"));
+    await waitFor(() => expect(settings).toHaveTextContent("iCloud syncSynced 5m ago"));
 
     fireEvent.click(document.querySelector(".settings-overlay")!);
     handlers.get_icloud_sync_status = () => ({ available: false, last_synced_at: null, last_error: null });
     await openSettings();
-    await waitFor(() => expect(settings).toHaveTextContent("iCloud sync: not available in this build"));
+    // A build without iCloud says nothing about it
+    await waitFor(() => expect(settings).not.toHaveTextContent("iCloud"));
+  });
+});
+
+describe("App settings layout", () => {
+  it("groups the account's own settings under its address, and shows no raw client id", async () => {
+    handlers.get_stored_credentials = () => ({ client_id: "1234-abc.apps.googleusercontent.com", client_secret: "GOCSPX-x" });
+    render(() => <App />);
+    await screen.findByText("Mail for A");
+    fireEvent.click(avatar("a@x.com"));
+    fireEvent.click(within(document.querySelector(".account-chooser-container") as HTMLElement).getByText("Settings"));
+    const settings = document.querySelector(".settings-sidebar") as HTMLElement;
+    const account = within(settings).getByRole("group", { name: "a@x.com" });
+    expect(within(account).getByRole("textbox", { name: "Signature" })).toBeInTheDocument();
+    expect(within(account).getByRole("button", { name: "Sign out" })).toBeInTheDocument();
+    expect(within(account).getByRole("button", { name: "Choose a different layout" })).toBeInTheDocument();
+    await waitFor(() => expect(settings).toHaveTextContent("Connected"));
+    expect(settings).not.toHaveTextContent("googleusercontent");
+    expect(within(settings).queryByText("ESC")).toBeNull();
   });
 });
 

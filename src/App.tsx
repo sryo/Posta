@@ -116,7 +116,7 @@ import {
 } from "./components/Icons";
 import { ReactionButton } from "./components/ReactionButton";
 import { ComposeTextarea, CloseButton } from "./components/ComposeAtoms";
-import { CancelButton, FormFooter, PanelHeader, SubmitButton } from "./components/FormParts";
+import { CancelButton, FormFooter, SettingsGroup, SettingsRow, SubmitButton } from "./components/FormParts";
 import { AuthScreen } from "./components/AuthScreen";
 import { PresetPicker } from "./components/PresetPicker";
 import { EmptyBoard } from "./components/EmptyBoard";
@@ -124,7 +124,7 @@ import { SmartRepliesSettings } from "./components/SmartRepliesSettings";
 import { cardSpecs, copyableCards, loadLayoutSnapshot, saveLayoutSnapshot, specAccountId, type CardSpec } from "./app/layoutSnapshot";
 import { ALL_ACCOUNTS, accountFromError, accountsToPoll, boardMixesScopes, cardAccountIds, cardCoversAccount, eventAccountId, inAccount, threadAccountId, threadIdsByAccount, threadKey } from "./app/accountScope";
 import { GoogleCredentialsForm } from "./components/GoogleCredentialsForm";
-import { credentialsValid, shortClientId } from "./app/googleCredentials";
+import { credentialsValid } from "./app/googleCredentials";
 import { ComposeForm } from "./components/ComposeForm";
 import { CreateEventForm } from "./components/CreateEventForm";
 import { ThreadRowLines } from "./components/ThreadRowLines";
@@ -4660,11 +4660,12 @@ function App() {
       setICloudStatus(null);
     });
   }));
+  // Nothing in a build without iCloud: there is nothing to turn on
   const icloudStatusText = (status: ICloudSyncStatus) => {
-    if (!status.available) return "iCloud sync: not available in this build";
-    if (status.last_error) return `iCloud sync: not working, ${status.last_error}`;
-    if (!status.last_synced_at) return "iCloud sync: on, not synced yet";
-    return `iCloud sync: on, last synced ${formatSyncTime(status.last_synced_at, currentTime())}`;
+    if (!status.available) return null;
+    if (status.last_error) return `Not working: ${status.last_error}`;
+    if (!status.last_synced_at) return "Not synced yet";
+    return `Synced ${formatSyncTime(status.last_synced_at, currentTime())}`;
   };
 
   // Earlier builds kept the key in localStorage; move it to the keychain
@@ -6196,58 +6197,44 @@ function App() {
         aria-modal="true"
         aria-hidden={settingsOpen() ? undefined : "true"}
       >
-        <PanelHeader size="sheet" onClose={() => setSettingsOpen(false)}>
+        <div class="panel-header settings-header" data-size="sheet">
           <h2 class="sheet-title">Settings</h2>
-        </PanelHeader>
+          <button class="close-btn" onClick={() => setSettingsOpen(false)} title="Close (Esc)" aria-label="Close">
+            <CloseIcon />
+          </button>
+        </div>
         <div class="settings-body">
-          <div class="settings-section">
-            <div class="settings-section-title">Google connection</div>
-            <Show when={storedClientId()}>
-              {(id) => (
-                <p class="settings-hint">
-                  Using client {shortClientId(id())} <CheckIcon size="meta" /> ·{" "}
-                  <button class="link-btn" aria-expanded={googleFormOpen()} onClick={() => setGoogleFormOpen(!googleFormOpen())}>
-                    Change credentials
-                  </button>
-                </p>
-              )}
-            </Show>
-            <Show when={storedClientId() ? googleFormOpen() : accounts().length > 0}>
-              <GoogleCredentialsForm
-                idPrefix="settings"
-                clientId={clientId()}
-                clientSecret={clientSecret()}
-                onClientId={setClientId}
-                onClientSecret={setClientSecret}
-                onSubmit={handleSaveSettings}
-                onEscape={() => setSettingsOpen(false)}
-                showPortHint={signInFailed()}
-              />
-              <button
-                class="btn btn-primary"
-                onClick={handleSaveSettings}
-                disabled={!credentialsValid(clientId(), clientSecret())}
-              >
-                Save and sign in <KeyHint keys="↵" />
-              </button>
-            </Show>
-          </div>
           <Show when={selectedAccount()}>
             {(account) => (
-              <div class="settings-section">
-                <div class="settings-section-title">Signature</div>
-                <p class="settings-hint">
-                  Added to new emails, replies and forwards from {account().email}.
-                </p>
-                <div class="settings-form-group">
+              <SettingsGroup name={account().email} hint="The signature is added to everything you send from this account.">
+                <SettingsRow label={<span class="settings-account"><Avatar email={account().email} size="xs" /><span class="settings-account-email">{account().email}</span></span>}>
+                  <button class="settings-btn" onClick={handleSignOut}>Sign out</button>
+                </SettingsRow>
+                <SettingsRow label="Signature" for="settings-signature" stacked>
                   <textarea
+                    id="settings-signature"
                     aria-label="Signature"
-                    rows={4}
+                    rows={3}
+                    placeholder="None"
                     value={account().signature ?? ""}
                     onChange={(e) => saveSignature(account(), e.currentTarget.value)}
                   />
-                </div>
-              </div>
+                </SettingsRow>
+                <SettingsRow label="Layout">
+                  <button class="settings-btn" aria-label="Choose a different layout" onClick={() => { setSettingsOpen(false); openPresetPicker(); }}>
+                    Choose…
+                  </button>
+                </SettingsRow>
+                <Show when={previousLayout()}>
+                  {(snapshot) => (
+                    <SettingsRow
+                      label={<>Previous layout <span class="settings-row-meta">{snapshot().cards.length} card{snapshot().cards.length === 1 ? "" : "s"} · replaced {formatSyncTime(snapshot().savedAt, currentTime())}</span></>}
+                    >
+                      <button class="settings-btn" aria-label="Restore previous layout" onClick={restorePreviousLayout}>Restore</button>
+                    </SettingsRow>
+                  )}
+                </Show>
+              </SettingsGroup>
             )}
           </Show>
           <AfterArchiveSetting />
@@ -6259,33 +6246,47 @@ function App() {
             onDraft={setGeminiKeyDraft}
             onSave={saveGeminiApiKey}
           />
-          <Show when={selectedAccount() || icloudStatus()}>
-            <div class="settings-section">
-              <div class="settings-section-title">Card layout</div>
-              <Show when={icloudStatus()}>
-                {(status) => <p class="settings-hint">{icloudStatusText(status())}</p>}
-              </Show>
-              <Show when={selectedAccount()}>
-                <div class="settings-layout-actions">
-                  <button class="link-btn" onClick={() => { setSettingsOpen(false); openPresetPicker(); }}>
-                    Choose a different layout
-                  </button>
-                  <Show when={previousLayout()}>
-                    {(snapshot) => (
-                      <button class="link-btn" onClick={restorePreviousLayout}>
-                        Restore previous layout ({snapshot().cards.length} card{snapshot().cards.length === 1 ? "" : "s"}, replaced {formatSyncTime(snapshot().savedAt, currentTime())})
-                      </button>
-                    )}
-                  </Show>
-                </div>
-              </Show>
-            </div>
-          </Show>
-        </div>
-        <div class="settings-footer">
-          <Show when={selectedAccount()}>
-            <button class="signout-btn" onClick={handleSignOut}>Sign out</button>
-          </Show>
+          <SettingsGroup heading="Advanced">
+            <Show
+              when={storedClientId()}
+              fallback={<SettingsRow label="Google client"><span class="settings-row-meta">Not set up</span></SettingsRow>}
+            >
+              <SettingsRow label="Google client">
+                <span class="settings-row-meta">Connected <CheckIcon size="meta" /></span>
+                <button class="settings-btn" aria-label="Change credentials" aria-expanded={googleFormOpen()} onClick={() => setGoogleFormOpen(!googleFormOpen())}>
+                  Change…
+                </button>
+              </SettingsRow>
+            </Show>
+            <Show when={storedClientId() ? googleFormOpen() : accounts().length > 0}>
+              <div class="settings-row stacked">
+                <GoogleCredentialsForm
+                  idPrefix="settings"
+                  clientId={clientId()}
+                  clientSecret={clientSecret()}
+                  onClientId={setClientId}
+                  onClientSecret={setClientSecret}
+                  onSubmit={handleSaveSettings}
+                  onEscape={() => setSettingsOpen(false)}
+                  showPortHint={signInFailed()}
+                />
+                <button
+                  class="btn btn-primary"
+                  onClick={handleSaveSettings}
+                  disabled={!credentialsValid(clientId(), clientSecret())}
+                >
+                  Save and sign in <KeyHint keys="↵" />
+                </button>
+              </div>
+            </Show>
+            <Show when={icloudStatus() && icloudStatusText(icloudStatus()!)}>
+              {(text) => (
+                <SettingsRow label="iCloud sync">
+                  <span class="settings-row-meta" classList={{ danger: !!icloudStatus()?.last_error }}>{text()}</span>
+                </SettingsRow>
+              )}
+            </Show>
+          </SettingsGroup>
         </div>
       </div>
 

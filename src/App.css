@@ -3961,13 +3961,6 @@ button:disabled:hover {
     gap: var(--space-lg);
 }
 
-.settings-layout-actions {
-    display: flex;
-    flex-direction: column;
-    align-items: flex-start;
-    gap: var(--space-sm);
-}
-
 .preset-cards {
     margin-top: var(--space-md);
     font: var(--type-meta);
@@ -4106,36 +4099,167 @@ button:disabled:hover {
     transform: translateX(0);
 }
 
+/* Settings set out as on a Mac: panels of one-line rows on a quieter ground */
 .settings-body {
     flex: 1;
     overflow-y: auto;
-    padding: var(--space-xl);
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-xl);
+    padding: var(--space-lg);
+    background: var(--surface-subtle);
 }
 
-.settings-section {
-    margin-bottom: 20px;
-    border-bottom: 1px solid var(--border-subtle);
-    padding-bottom: 20px;
+.settings-header {
+    justify-content: space-between;
 }
 
-.settings-section:last-child {
-    border-bottom: none;
-}
-
-.signout-btn {
+.settings-group-heading {
+    margin: 0 var(--space-sm) var(--space-sm);
     font: var(--type-meta);
+    font-weight: var(--weight-strong);
+    color: var(--text-secondary);
+}
+
+.settings-group {
+    display: flex;
+    flex-direction: column;
+    background: var(--surface-card);
+    border-radius: var(--radius-lg);
+    box-shadow: inset 0 0 0 1px var(--border-subtle);
+}
+
+.settings-group-hint {
+    margin: var(--space-sm) var(--space-sm) 0;
+    font: var(--type-meta);
+    color: var(--text-muted);
+}
+
+.settings-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--space-md);
+    min-height: var(--field-height);
     padding: var(--space-md) var(--space-lg);
-    background: none;
+    font: var(--type-ui);
+    color: var(--text-primary);
+}
+
+.settings-row + .settings-row {
+    border-top: 1px solid var(--border-subtle);
+}
+
+/* A wide control, such as a text area, under its name */
+.settings-row.stacked {
+    flex-direction: column;
+    align-items: stretch;
+    gap: var(--space-sm);
+}
+
+.settings-row.stacked textarea,
+.settings-row.stacked input {
+    width: 100%;
+}
+
+.settings-row-label {
+    min-width: 0;
+}
+
+.settings-row-control {
+    display: flex;
+    align-items: center;
+    gap: var(--space-md);
+    flex-shrink: 0;
+}
+
+.settings-row.stacked .settings-row-control {
+    flex-direction: column;
+    align-items: stretch;
+    gap: var(--space-xs);
+}
+
+.settings-row-meta {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--space-xs);
+    font: var(--type-meta);
+    color: var(--text-muted);
+}
+
+.settings-row-meta.danger {
+    color: var(--danger-text);
+}
+
+.settings-account {
+    display: flex;
+    align-items: center;
+    gap: var(--space-md);
+    min-width: 0;
+}
+
+.settings-account-email {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+/* A setting's action: a small bordered button, never an underlined link */
+.settings-btn {
+    flex-shrink: 0;
+    padding: var(--space-xs) var(--space-md);
     border: 1px solid var(--border-default);
     border-radius: var(--radius-md);
-    color: var(--text-secondary);
+    background: var(--surface-card);
+    color: var(--text-primary);
+    font: var(--type-meta);
     cursor: pointer;
-    transition: all 0.15s;
 }
 
-.signout-btn:hover {
+.settings-btn:hover {
     background: var(--surface-hover);
-    color: var(--text-primary);
+}
+
+/* On while a key is saved: a track the thumb slides along */
+.settings-switch {
+    position: relative;
+    flex-shrink: 0;
+    width: 30px;
+    height: 18px;
+    padding: 0;
+    border: none;
+    border-radius: var(--radius-full);
+    background: var(--border-strong);
+    cursor: pointer;
+    transition: background 0.15s ease;
+}
+
+.settings-switch::after {
+    content: "";
+    position: absolute;
+    top: 2px;
+    left: 2px;
+    width: 14px;
+    height: 14px;
+    border-radius: var(--radius-full);
+    background: var(--surface-card);
+    box-shadow: var(--shadow-sm);
+    transition: transform 0.15s ease;
+}
+
+.settings-switch[aria-checked="true"] {
+    background: var(--accent-fill);
+}
+
+.settings-switch[aria-checked="true"]::after {
+    transform: translateX(12px);
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .settings-switch,
+    .settings-switch::after {
+        transition: none;
+    }
 }
 
 /* Keyboard shortcut hints */
@@ -4212,47 +4336,6 @@ button:disabled:hover {
 .close-btn:hover {
     background: var(--surface-subtle);
     color: var(--text-primary);
-}
-
-.settings-section-title {
-    font: var(--type-label);
-    letter-spacing: var(--tracking-label);
-    color: var(--text-muted);
-    text-transform: uppercase;
-    margin-bottom: 10px;
-}
-
-button.settings-section-title {
-    background: none;
-    border: none;
-    width: 100%;
-    font-family: inherit;
-    text-align: left;
-}
-
-.settings-section.collapsible .settings-section-title {
-    cursor: pointer;
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    padding: 8px 0;
-    margin-bottom: 0;
-    border-radius: var(--radius-md);
-    transition: color 0.15s;
-}
-
-.settings-section.collapsible .settings-section-title:hover {
-    color: var(--text-secondary);
-}
-
-.settings-section.collapsible.open .settings-section-title {
-    margin-bottom: 10px;
-}
-
-.collapse-icon {
-    font-size: var(--size-14);
-    font-weight: var(--weight-regular);
-    opacity: 0.6;
 }
 
 /* Settings form group */
@@ -4391,15 +4474,6 @@ button.settings-section-title {
     margin: 8px 0;
 }
 
-.settings-section-title + .settings-hint {
-    margin-bottom: var(--space-lg);
-}
-
-.settings-section > .btn-primary {
-    margin-top: var(--space-lg);
-    width: 100%;
-}
-
 .settings-hint code {
     background: var(--surface-subtle);
     padding: var(--space-xs) var(--space-sm);
@@ -4415,19 +4489,6 @@ button.settings-section-title {
 
 .settings-link:hover {
     text-decoration: underline;
-}
-
-/* Settings footer */
-.settings-footer {
-    padding: var(--space-xl);
-    border-top: 1px solid var(--border-subtle);
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    background: var(--surface-subtle);
-    text-align: center;
-    font: var(--type-meta);
-    color: var(--text-muted);
 }
 
 /* ---- Radial menus -------------------------------------------------------

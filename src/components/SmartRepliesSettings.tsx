@@ -1,6 +1,8 @@
 import { Show } from "solid-js";
+import { SettingsGroup, SettingsRow } from "./FormParts";
 
-// Settings' Smart replies section: what it sends to Google, and the Gemini key
+// Settings' Smart replies: a switch that is on while a Gemini key is saved.
+// Turning it on asks for a key; turning it off removes the key
 export function SmartRepliesSettings(props: {
   open: boolean;
   onToggle: () => void;
@@ -10,40 +12,41 @@ export function SmartRepliesSettings(props: {
   onDraft: (value: string) => void;
   onSave: (key: string) => void;
 }) {
+  const on = () => !!props.keySaved || props.open;
   return (
-    <div class={`settings-section collapsible ${props.open ? "open" : ""}`}>
-      <button class="settings-section-title" aria-expanded={props.open} onClick={() => props.onToggle()}>
-        <span>Smart replies</span>
-        <span class="collapse-icon" aria-hidden="true">{props.open ? "−" : "+"}</span>
-      </button>
-      <Show when={props.open}>
-        <p class="settings-hint">
-          Suggests replies with Google Gemini. When on, the text of each email you open is sent to Google.
-        </p>
-        <Show
-          when={props.keySaved}
-          fallback={
-            <div class="settings-form-group">
-              <label for="settings-gemini-key">Gemini API key</label>
-              <input
-                id="settings-gemini-key"
-                type="password"
-                value={props.draft}
-                onInput={(e) => props.onDraft(e.currentTarget.value)}
-                onChange={(e) => { if (e.currentTarget.value.trim()) props.onSave(e.currentTarget.value); }}
-                placeholder="AIza..."
-              />
-              <p class="settings-hint">
-                Get one from <a href="https://aistudio.google.com/apikey" class="settings-link">Google AI Studio</a>.
-              </p>
-            </div>
-          }
-        >
-          <p class="settings-hint">
-            Saved in Keychain · <button class="link-btn" onClick={() => props.onSave("")}>Remove</button>
-          </p>
+    <SettingsGroup heading="Smart replies" hint="Uses Google Gemini. Each email you open is sent to Google.">
+      <SettingsRow label="Suggest replies">
+        <Show when={props.keySaved}>
+          <span class="settings-row-meta">Saved in Keychain</span>
         </Show>
+        <button
+          type="button"
+          class="settings-switch"
+          role="switch"
+          aria-checked={on()}
+          aria-label="Suggest replies"
+          onClick={() => {
+            if (!props.keySaved) return props.onToggle();
+            props.onSave("");
+            if (props.open) props.onToggle();
+          }}
+        />
+      </SettingsRow>
+      <Show when={on() && !props.keySaved}>
+        <SettingsRow label="Gemini API key" for="settings-gemini-key" stacked>
+          <input
+            id="settings-gemini-key"
+            type="password"
+            value={props.draft}
+            onInput={(e) => props.onDraft(e.currentTarget.value)}
+            onChange={(e) => { if (e.currentTarget.value.trim()) props.onSave(e.currentTarget.value); }}
+            placeholder="AIza..."
+          />
+          <span class="settings-row-meta">
+            Get one from <a href="https://aistudio.google.com/apikey" class="settings-link">Google AI Studio</a>.
+          </span>
+        </SettingsRow>
       </Show>
-    </div>
+    </SettingsGroup>
   );
 }

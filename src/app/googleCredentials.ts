@@ -43,9 +43,3 @@ export function parseClientSecretFile(text: string): ClientCredentials {
   if (typeof block?.client_id !== "string" || typeof block?.client_secret !== "string") throw notAClientFile;
   return { clientId: block.client_id, clientSecret: block.client_secret };
 }
-
-export function shortClientId(clientId: string): string {
-  const id = clientId.trim();
-  if (!id.endsWith(GOOGLE_DOMAIN)) return id;
-  return `${id.slice(0, 4)}…${GOOGLE_DOMAIN}`;
-}

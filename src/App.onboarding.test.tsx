@@ -243,7 +243,7 @@ describe("Layout after sign-in", () => {
 
     const sidebar = await openSettingsFromChooser();
     const restore = within(sidebar).getByRole("button", { name: /Restore previous layout/ });
-    expect(restore).toHaveTextContent("1 card");
+    expect(restore.closest(".settings-row")).toHaveTextContent("1 card");
     fireEvent.click(restore);
 
     expect(await screen.findByRole("region", { name: "Alpha email card" })).toBeInTheDocument();
@@ -335,7 +335,7 @@ describe("Smart replies key", () => {
     fireEvent.click(await screen.findByRole("button", { name: "Open Settings" }));
 
     await waitFor(() => expect(settingsSidebar()).toHaveClass("open"));
-    expect(within(settingsSidebar()).getByRole("button", { name: /Smart replies/ })).toHaveAttribute("aria-expanded", "true");
+    expect(within(settingsSidebar()).getByRole("switch", { name: "Suggest replies" })).toHaveAttribute("aria-checked", "true");
   });
 });
 
@@ -346,9 +346,9 @@ describe("Settings Google connection", () => {
     handlers.pull_from_icloud = () => true;
     const sidebar = await (async () => { render(() => <App />); return openSettingsFromChooser(); })();
 
-    expect(within(sidebar).getByText("Google connection")).toBeInTheDocument();
-    await waitFor(() => expect(sidebar).toHaveTextContent("Using client 1234…apps.googleusercontent.com"));
-    expect(sidebar.querySelector(".settings-hint svg[data-icon=check]")).not.toBeNull();
+    expect(within(sidebar).getByText("Advanced")).toBeInTheDocument();
+    await waitFor(() => expect(sidebar).toHaveTextContent("Google clientConnected"));
+    expect(sidebar.querySelector(".settings-row svg[data-icon=check]")).not.toBeNull();
     expect(within(sidebar).queryByLabelText("OAuth client ID")).not.toBeInTheDocument();
     const change = within(sidebar).getByRole("button", { name: "Change credentials" });
     expect(change).toHaveAttribute("aria-expanded", "false");

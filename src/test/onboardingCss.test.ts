@@ -30,18 +30,6 @@ describe("preset picker styles", () => {
   });
 });
 
-describe("settings section toggles", () => {
-  it("look like the section titles they replace rather than default buttons", () => {
-    const toggle = declarations("button.settings-section-title");
-    expect(toggle.get("background")).toBe("none");
-    expect(toggle.get("border")).toBe("none");
-    expect(toggle.get("width")).toBe("100%");
-    expect(toggle.get("font-family")).toBe("inherit");
-    // The shorthand would undo the title's small uppercase size
-    expect(toggle.has("font")).toBe(false);
-  });
-});
-
 describe("client file chooser", () => {
   it("shows keyboard focus on its label, since the file input itself is hidden", () => {
     const focused = declarations(".credentials-drop-zone label:has(:focus-visible)");

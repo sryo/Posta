@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { clientIdProblem, clientSecretProblem, credentialsValid, parseClientSecretFile, shortClientId } from "./googleCredentials";
+import { clientIdProblem, clientSecretProblem, credentialsValid, parseClientSecretFile } from "./googleCredentials";
 
 const ID = `${"1234567890"}-abcdefghijklmnop0123456789ab.apps.googleusercontent.com`;
 const SECRET = "GOCSPX-AbCdEfGhIjKlMnOpQrStUvWxYz12";
@@ -62,15 +62,5 @@ describe("parseClientSecretFile", () => {
   it("says the file isn't a client secret file when it is anything else", () => {
     expect(() => parseClientSecretFile("not json")).toThrow(/client_secret/);
     expect(() => parseClientSecretFile(JSON.stringify({ installed: { client_id: ID } }))).toThrow(/client_secret/);
-  });
-});
-
-describe("shortClientId", () => {
-  it("keeps the start of the project number and the Google domain", () => {
-    expect(shortClientId(ID)).toBe("1234…apps.googleusercontent.com");
-  });
-
-  it("leaves an unexpected value short but recognisable", () => {
-    expect(shortClientId("abc")).toBe("abc");
   });
 });

@@ -203,3 +203,17 @@ describe("window corner", () => {
     expect(readRepoFile("src/App.css")).not.toMatch(/--sidebar-width|--app-edge-margin/);
   });
 });
+
+describe("settings", () => {
+  it("sets settings out as grouped panels of one-line rows under sentence-case headings", () => {
+    const group = declarationsOf(".settings-group");
+    expect(group.get("background")).toBe("var(--surface-card)");
+    expect(group.get("border-radius")).toBe("var(--radius-lg)");
+    const row = declarationsOf(".settings-row");
+    expect(row.get("display")).toBe("flex");
+    expect(row.get("justify-content")).toBe("space-between");
+    expect(row.get("min-height")).toBe("var(--field-height)");
+    expect(declarationsOf(".settings-row + .settings-row").get("border-top")).toBe("1px solid var(--border-subtle)");
+    expect(declarationsOf(".settings-group-heading").get("text-transform")).toBeUndefined();
+  });
+});

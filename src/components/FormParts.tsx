@@ -124,3 +124,36 @@ export function FormFooter(props: {
     </div>
   );
 }
+
+// Settings set out as on a Mac: a heading, a panel of one-line rows, and a
+// note under it. `name` labels the panel when it has no heading
+export function SettingsGroup(props: { heading?: string; name?: string; hint?: JSX.Element; children: JSX.Element }) {
+  return (
+    <section>
+      <Show when={props.heading}>
+        <h3 class="settings-group-heading">{props.heading}</h3>
+      </Show>
+      <div class="settings-group" role="group" aria-label={props.name ?? props.heading}>
+        {props.children}
+      </div>
+      <Show when={props.hint}>
+        <p class="settings-group-hint">{props.hint}</p>
+      </Show>
+    </section>
+  );
+}
+
+// A setting's name on the left and its control on the right; `stacked` puts
+// a wide control, such as a text area, under its name
+export function SettingsRow(props: { label: JSX.Element; for?: string; stacked?: boolean; children?: JSX.Element }) {
+  return (
+    <div class="settings-row" classList={{ stacked: !!props.stacked }}>
+      <Show when={props.for} fallback={<span class="settings-row-label">{props.label}</span>}>
+        <label class="settings-row-label" for={props.for}>{props.label}</label>
+      </Show>
+      <Show when={props.children}>
+        <div class="settings-row-control">{props.children}</div>
+      </Show>
+    </div>
+  );
+}
