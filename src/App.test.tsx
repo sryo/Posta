@@ -4837,7 +4837,7 @@ describe("App accessibility", () => {
     await waitFor(() => expect(screen.getByPlaceholderText("Recipients")).toHaveValue("bo@y.com"));
   });
 
-  it("rings Email with up to three recent people, named on hover, while Email is tried", async () => {
+  it("lists up to three recent people beside Email while it is tried, each by name over domain", async () => {
     handlers.fetch_contacts = () => ["Bo", "Cy", "Di", "Ed"].map((name, i) => ({
       resource_name: `people/${i}`, display_name: `${name} Smith`, email_addresses: [`${name.toLowerCase()}@y${i}.com`], photo_url: null,
     }));
@@ -4845,25 +4845,31 @@ describe("App accessibility", () => {
     await screen.findByText("Mail for A");
     expect(screen.queryByRole("menu", { name: "Write to" })).toBeNull();
     fireEvent.focus(slotItem("Compose new email"));
-    const ring = await screen.findByRole("menu", { name: "Write to" });
-    const people = within(ring).getAllByRole("menuitem");
+    const list = await screen.findByRole("menu", { name: "Write to" });
+    const people = within(list).getAllByRole("menuitem");
     expect(people.map(el => el.getAttribute("aria-label"))).toEqual(["New email to Bo Smith", "New email to Cy Smith", "New email to Di Smith"]);
-    expect(people[0]).toHaveTextContent("B");
-    expect(within(people[0]).getByText("Bo Smith")).toHaveClass("radial-caption");
+    expect(within(people[0]).getByText("Bo Smith")).toBeInTheDocument();
+    expect(within(people[0]).getByText("y0.com")).toBeInTheDocument();
 
-    // Trying another petal of the + puts the people away
+    // Arrows step through them
+    people[0].focus();
+    fireEvent.keyDown(people[0], { key: "ArrowDown" });
+    expect(document.activeElement).toBe(people[1]);
+
+    // Trying another petal of the + puts them away
     fireEvent.focus(screen.getByRole("menuitem", { name: "New search" }));
     await waitFor(() => expect(screen.queryByRole("menu", { name: "Write to" })).toBeNull());
   });
 
-  it("rings Event with events to plan again, its guests by first name", async () => {
+  it("lists events to plan again beside Event, by title over guests' first names", async () => {
     threadsByCard["card-a"] = [{ ...thread("t-a", "Re: Sync next week?"), last_message_date: Date.now() - 60_000, participants: ["Ana Ruiz <ana@x.com>", "naminetti@gmail.com", "a@x.com"] }];
     render(() => <App />);
     await screen.findByText("Re: Sync next week?");
     fireEvent.focus(slotItem("Create new calendar event"));
-    const ring = await screen.findByRole("menu", { name: "Plan again" });
-    const petal = within(ring).getByRole("menuitem");
-    expect(within(petal).getByText("Sync next week? · Ana, naminetti")).toHaveClass("radial-caption");
+    const list = await screen.findByRole("menu", { name: "Plan again" });
+    const row = within(list).getByRole("menuitem");
+    expect(within(row).getByText("Sync next week?")).toBeInTheDocument();
+    expect(within(row).getByText("Ana, naminetti")).toBeInTheDocument();
   });
 
   it("starts an event from a thread that asks to meet, suggested under New Event", async () => {

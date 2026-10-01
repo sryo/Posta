@@ -5126,15 +5126,17 @@ function App() {
                     {
                       id: "email", label: "Compose new email", caption: "Email", hint: "C", icon: ComposeIcon,
                       onSelect: () => { setSlotOpen(false); if (!composing() || closingCompose()) startCompose({}); },
-                      ring: {
+                      list: {
                         label: "Write to",
-                        items: fabSuggestions().map(contact => {
-                          const name = contact.name || contact.email.split("@")[0];
+                        entries: fabSuggestions().map(contact => {
+                          const [local, domain] = contact.email.split("@");
+                          const title = contact.name || local;
                           return {
                             id: contact.email,
                             label: `New email to ${contact.name || contact.email}`,
-                            caption: contact.name || contact.email,
-                            glyph: name.charAt(0).toUpperCase(),
+                            title,
+                            detail: domain,
+                            initial: title.charAt(0).toUpperCase(),
                             onSelect: () => { setSlotOpen(false); startCompose({ to: contact.email, focusBody: true }); },
                           };
                         }),
@@ -5143,9 +5145,9 @@ function App() {
                     {
                       id: "event", label: "Create new calendar event", caption: "Event", hint: "E", icon: CalendarIcon,
                       onSelect: () => { setSlotOpen(false); openNewEventForm(); },
-                      ring: {
+                      list: {
                         label: "Plan again",
-                        items: eventFabSuggestions().map(suggestion => {
+                        entries: eventFabSuggestions().map(suggestion => {
                           const guests = guestList(suggestion.names);
                           const detail = suggestion.kind === "thread"
                             ? `with ${guests}`
@@ -5153,7 +5155,8 @@ function App() {
                           return {
                             id: suggestion.key,
                             label: `New event: ${suggestion.summary}, ${detail}`,
-                            caption: `${suggestion.summary} · ${guests}`,
+                            title: suggestion.summary,
+                            detail: suggestion.kind === "thread" ? guests : `${guests} · ${formatShortDate(new Date(suggestion.at), undefined, { weekday: true })}`,
                             icon: suggestion.kind === "thread" ? MailIcon : RepeatIcon,
                             onSelect: () => { setSlotOpen(false); openNewEventForm({ summary: suggestion.summary, attendees: suggestion.attendees }); },
                           };

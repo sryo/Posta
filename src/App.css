@@ -884,25 +884,102 @@ a:focus-visible,
     color: var(--text-primary);
 }
 
-/* A ring opened round one of the wheel's petals: a point at that petal's
-   centre for its own wheel to bloom from */
-.board-slot-ring {
+/* A petal's list, beside the wheel and level with the petal: who or what to
+   start from, each by name over what tells it apart */
+.board-slot-leaf {
     position: absolute;
-    width: 0;
-    height: 0;
+    z-index: 51;
+    display: flex;
+    flex-direction: column;
+    width: max-content;
+    max-width: 240px;
+    padding: var(--space-xs);
+    border-radius: var(--radius-xl);
+    background: var(--surface-card);
+    box-shadow: 0 0 0 1px var(--border-default), var(--shadow-lg);
+    transform: translate(-6px, -50%);
+    opacity: 0;
+    visibility: hidden;
+    pointer-events: none;
+    transition: opacity 0.15s ease, transform 0.15s ease, visibility 0s linear 0.15s;
 }
 
-/* A ring out round a petal takes the room the wheel's key hints and
+.board-slot-leaf.open {
+    transform: translate(0, -50%);
+    opacity: 1;
+    visibility: visible;
+    pointer-events: auto;
+    transition: opacity 0.15s ease, transform 0.15s ease;
+}
+
+.board-slot-entry {
+    display: flex;
+    align-items: center;
+    gap: var(--space-md);
+    min-width: 0;
+    padding: var(--space-sm) var(--space-md) var(--space-sm) var(--space-sm);
+    border: none;
+    border-radius: var(--radius-lg);
+    background: none;
+    color: var(--text-primary);
+    text-align: left;
+    cursor: pointer;
+}
+
+.board-slot-entry:hover,
+.board-slot-entry:focus-visible {
+    background: var(--surface-hover);
+}
+
+/* A petal's list out beside the wheel takes the room its key hints and
    captions sit in */
-.board-slot:has(.board-slot-ring .radial-menu.open) .radial-menu.hints-always .action-key-hint,
-.board-slot:has(.board-slot-ring .radial-menu.open) .radial-menu.hints-always .radial-caption {
+.board-slot:has(.board-slot-leaf.open) .radial-menu.hints-always .action-key-hint,
+.board-slot:has(.board-slot-leaf.open) .radial-menu.hints-always .radial-caption {
     opacity: 0;
 }
 
-/* A person's initial sits in plain ink: hues name cards here */
-.board-slot-wheel .radial-glyph {
+/* A person's initial in plain ink: hues name cards here */
+.board-slot-entry-mark {
+    flex-shrink: 0;
+    width: 28px;
+    height: 28px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: var(--radius-full);
+    background: var(--surface-hover);
+    color: var(--text-secondary);
     font: var(--type-ui);
     font-weight: var(--weight-strong);
+}
+
+.board-slot-entry-text {
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+}
+
+.board-slot-entry-title,
+.board-slot-entry-detail {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.board-slot-entry-title {
+    font: var(--type-ui);
+}
+
+.board-slot-entry-detail {
+    font: var(--type-meta);
+    color: var(--text-muted);
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .board-slot-leaf,
+    .board-slot-leaf.open {
+        transition: none;
+    }
 }
 
 /* Deck */
