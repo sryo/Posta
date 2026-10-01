@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { Thread, ThreadGroup } from "../api/tauri";
-import { actionFailureMessage, actionMessage, actionRemovesFromCard, actionUndoneMessage, labelChangeMessage, applyThreadAction, labelChangeFor, threadMayJoinCard, undoLabelChanges } from "./threadActions";
+import { actionFailureMessage, actionMessage, actionRemovesFromCard, actionUndoneMessage, backInPlace, undoFailureMessage, labelChangeMessage, restoreThreads, applyThreadAction, labelChangeFor, threadMayJoinCard, undoLabelChanges } from "./threadActions";
 
 const thread = (id: string, labels: string[], unread = 0): Thread => ({
   gmail_thread_id: id, account_id: "a", subject: id, snippet: "", last_message_date: 0,
@@ -79,6 +79,15 @@ describe("actionUndoneMessage", () => {
     expect(actionUndoneMessage("trash", [mail("Venue")])).toBe("Restored “Venue” from Trash");
     expect(actionUndoneMessage("read", [mail("Venue")])).toBe("Marked “Venue” as unread");
     expect(actionUndoneMessage("spam", [mail("Venue")])).toBe("Moved “Venue” out of spam");
+  });
+});
+
+describe("undoFailureMessage", () => {
+  it("names what couldn't be undone, as what undoing would have done", () => {
+    expect(undoFailureMessage("archive", [mail("Venue")])).toBe("Couldn't unarchive “Venue”");
+    expect(undoFailureMessage("trash", [mail("Venue")])).toBe("Couldn't restore “Venue” from Trash");
+    expect(undoFailureMessage("read", [mail("Venue")])).toBe("Couldn't mark “Venue” as unread");
+    expect(undoFailureMessage("bogus", [mail("Venue")])).toBe("Couldn't undo changes to “Venue”");
   });
 });
 
@@ -193,5 +202,52 @@ describe("threadMayJoinCard", () => {
 
   it("lets any other thread in", () => {
     expect(threadMayJoinCard(thread("t", ["SENT"]), "is:inbox")).toBe(true);
+  });
+});
+
+describe("restoreThreads", () => {
+  const byId = (...ids: string[]) => (t: Thread) => ids.includes(t.gmail_thread_id);
+
+  it("puts a removed thread back in the slot it left", () => {
+    const before = groups(thread("a", ["INBOX"]), thread("b", ["INBOX"]), thread("c", ["INBOX"]));
+    const after = groups(thread("a", ["INBOX"]), thread("c", ["INBOX"]));
+    expect(restoreThreads(after, before, byId("b"))[0].threads.map(t => t.gmail_thread_id)).toEqual(["a", "b", "c"]);
+  });
+
+  it("gives a thread still shown its labels back", () => {
+    const before = groups(thread("a", ["INBOX", "UNREAD"], 1));
+    const after = groups(thread("a", ["INBOX"], 0));
+    expect(restoreThreads(after, before, byId("a"))[0].threads[0]).toMatchObject({ labels: ["INBOX", "UNREAD"], unread_count: 1 });
+  });
+
+  it("brings back a group that emptied, where it was", () => {
+    const before: ThreadGroup[] = [
+      { label: "Today", threads: [thread("a", ["INBOX"])] },
+      { label: "Yesterday", threads: [thread("b", ["INBOX"])] },
+      { label: "Older", threads: [thread("c", ["INBOX"])] },
+    ];
+    const after: ThreadGroup[] = [before[0], before[2]];
+    expect(restoreThreads(after, before, byId("b")).map(g => g.label)).toEqual(["Today", "Yesterday", "Older"]);
+  });
+
+  it("leaves other threads as they are now", () => {
+    const before = groups(thread("a", ["INBOX"]), thread("b", ["INBOX"]));
+    const after = groups(thread("a", ["INBOX", "STARRED"]));
+    const restored = restoreThreads(after, before, byId("b"))[0].threads;
+    expect(restored.map(t => [t.gmail_thread_id, t.labels])).toEqual([["a", ["INBOX", "STARRED"]], ["b", ["INBOX"]]]);
+  });
+});
+
+describe("backInPlace", () => {
+  it("says where in the card the thread is back", () => {
+    const shown = groups(thread("a", []), thread("b", []), thread("c", []));
+    expect(backInPlace(shown, "a", "Inbox")).toBe(" · back 1st in Inbox");
+    expect(backInPlace(shown, "b", "Inbox")).toBe(" · back 2nd in Inbox");
+    expect(backInPlace(groups(...Array.from({ length: 23 }, (_, i) => thread(`t${i}`, []))), "t22", "Inbox")).toBe(" · back 23rd in Inbox");
+    expect(backInPlace(groups(...Array.from({ length: 12 }, (_, i) => thread(`t${i}`, []))), "t10", "Inbox")).toBe(" · back 11th in Inbox");
+  });
+
+  it("says nothing of a thread the card doesn't show", () => {
+    expect(backInPlace(groups(thread("a", [])), "z", "Inbox")).toBe("");
   });
 });

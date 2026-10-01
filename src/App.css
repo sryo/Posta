@@ -5907,6 +5907,12 @@ button:disabled:hover {
     font: var(--type-ui);
 }
 
+.toast-note {
+    display: block;
+    font: var(--type-meta);
+    color: var(--text-inverse-muted);
+}
+
 .toast-undo-btn {
     background: transparent;
     border: none;

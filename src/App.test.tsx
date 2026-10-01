@@ -3913,7 +3913,8 @@ describe("App layout removal", () => {
     expect(screen.getByRole("button", { name: /Undo/ })).toBeInTheDocument();
   });
 
-  it("keeps an action's Undo when a message comes in meanwhile, and shows the message after it", async () => {
+  it("keeps an action's Undo when a message comes in meanwhile, and shows the message after what undoing did", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
     threadsByCard["card-a"] = [{ ...thread("t-a", "Mail for A"), labels: ["INBOX"] }];
     handlers.modify_threads = () => null;
     handlers.save_draft = () => ({ id: "d1" });
@@ -3933,6 +3934,8 @@ describe("App layout removal", () => {
     invoke.mockClear();
     fireEvent.keyDown(document, { key: "z" });
     await waitFor(() => expect(invoke).toHaveBeenCalledWith("modify_threads", expect.objectContaining({ threadIds: ["t-a"], addLabels: ["INBOX"] })));
+    expect(await screen.findByText(/Unarchived “Mail for A”/)).toBeInTheDocument();
+    await vi.advanceTimersByTimeAsync(5300);
     expect(await screen.findByText("Draft saved")).toBeInTheDocument();
   });
 
@@ -4098,6 +4101,95 @@ describe("App toasts name what they acted on", () => {
 });
 
 describe("App undo", () => {
+  const inbox = (id: string, subject: string): Thread => ({ ...thread(id, subject), labels: ["INBOX"] });
+  const subjects = () => Array.from(document.querySelectorAll('[aria-label="Alpha email card"] .thread-subject')).map(e => e.textContent);
+
+  it("undoes an archive with z after its toast has gone, putting the thread back in its slot", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    threadsByCard["card-a"] = [inbox("t-1", "One"), inbox("t-2", "Two"), inbox("t-3", "Three")];
+    handlers.modify_threads = () => null;
+    render(() => <App />);
+    await screen.findByText("Three");
+    fireEvent.keyDown(document, { key: "l" });
+    fireEvent.keyDown(document, { key: "j" });
+    fireEvent.keyDown(document, { key: "a" });
+    await screen.findByText("Archived “Two”");
+    await vi.advanceTimersByTimeAsync(6000);
+    await waitFor(() => expect(screen.queryByText("Archived “Two”")).toBeNull());
+    threadsByCard["card-a"] = [inbox("t-1", "One"), inbox("t-2", "Two"), inbox("t-3", "Three")];
+    invoke.mockClear();
+
+    fireEvent.keyDown(document, { key: "z" });
+    expect(subjects()).toEqual(["One", "Two", "Three"]);
+    expect(await screen.findByText(/Unarchived “Two” · back 2nd in Alpha/)).toBeInTheDocument();
+    expect(screen.getByText("Nothing earlier to undo this session")).toBeInTheDocument();
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith("modify_threads", { accountId: "a", threadIds: ["t-2"], addLabels: ["INBOX"], removeLabels: [] }));
+  });
+
+  it("walks back through several actions with z, says what the next z undoes, and redoes with ⇧Z", async () => {
+    threadsByCard["card-a"] = [inbox("t-1", "One"), inbox("t-2", "Two")];
+    handlers.modify_threads = () => null;
+    render(() => <App />);
+    await screen.findByText("Two");
+    fireEvent.keyDown(document, { key: "l" });
+    fireEvent.keyDown(document, { key: "s" });
+    await screen.findByText("Starred “One”");
+    fireEvent.keyDown(document, { key: "j" });
+    fireEvent.keyDown(document, { key: "a" });
+    await screen.findByText("Archived “Two”");
+
+    fireEvent.keyDown(document, { key: "z" });
+    expect(await screen.findByText("z next: Starred “One”")).toBeInTheDocument();
+    invoke.mockClear();
+    fireEvent.keyDown(document, { key: "z" });
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith("modify_threads", { accountId: "a", threadIds: ["t-1"], addLabels: [], removeLabels: ["STARRED"] }));
+    expect(await screen.findByText("Unstarred “One”")).toBeInTheDocument();
+
+    invoke.mockClear();
+    fireEvent.keyDown(document, { key: "Z", shiftKey: true });
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith("modify_threads", { accountId: "a", threadIds: ["t-1"], addLabels: ["STARRED"], removeLabels: [] }));
+    expect(await screen.findByText("Starred “One”")).toBeInTheDocument();
+  });
+
+  it("puts every thread of a bulk archive back in its slot with one z", async () => {
+    threadsByCard["card-a"] = [inbox("t-1", "One"), inbox("t-2", "Two"), inbox("t-3", "Three")];
+    handlers.modify_threads = () => null;
+    render(() => <App />);
+    await screen.findByText("Three");
+    fireEvent.keyDown(document, { key: "l" });
+    fireEvent.keyDown(document, { key: "x" });
+    fireEvent.keyDown(document, { key: "j" });
+    fireEvent.keyDown(document, { key: "j" });
+    fireEvent.keyDown(document, { key: "x" });
+    fireEvent.keyDown(document, { key: "a" });
+    await screen.findByText("Archived 2 threads");
+    expect(subjects()).toEqual(["Two"]);
+
+    invoke.mockClear();
+    fireEvent.keyDown(document, { key: "z" });
+    expect(subjects()).toEqual(["One", "Two", "Three"]);
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith("modify_threads", { accountId: "a", threadIds: ["t-1", "t-3"], addLabels: ["INBOX"], removeLabels: [] }));
+  });
+
+  it("can't undo a deleted event once its toast has gone and it was deleted", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    cardsByAccount.a = [{ ...card("cal-1", "a", "Week"), query: "calendar:7d", card_type: "calendar" }];
+    handlers.get_cached_card_events = () => null;
+    handlers.save_cached_card_events = () => null;
+    handlers.fetch_calendar_events = () => [calendarEvent("ev-1", "Planning")];
+    handlers.delete_calendar_event = () => null;
+    render(() => <App />);
+    fireEvent.click(await screen.findByText("Planning"));
+    fireEvent.keyDown(document, { key: "d" });
+    await screen.findByText("Deleted “Planning”");
+    await vi.advanceTimersByTimeAsync(6000);
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith("delete_calendar_event", expect.anything()));
+
+    fireEvent.keyDown(document, { key: "z" });
+    await new Promise(r => setTimeout(r, 50));
+    expect(screen.queryByText("Planning")).toBeNull();
+  });
+
   it("unstars only the threads a bulk star starred", async () => {
     handlers.modify_threads = () => null;
     threadsByCard["card-a"] = [
@@ -4846,7 +4938,7 @@ describe("App accessibility", () => {
     fireEvent.keyDown(document, { key: "?" });
     const help = (await screen.findByText("Keyboard Shortcuts")).closest(".shortcuts-modal") as HTMLElement;
 
-    for (const text of ["Previous card", "Next card", "Undo last action", "New event"]) {
+    for (const text of ["Previous card", "Next card", "Undo, again for each earlier action", "Redo", "New event"]) {
       expect(within(help).getByText(text)).toBeInTheDocument();
     }
     expect(within(help).getByText("#")).toBeInTheDocument();

@@ -100,6 +100,19 @@ const UNDONE: Record<string, Phrase> = {
   spam: ["Moved", " out of spam"],
 };
 
+const UNDO_FAILED: Record<string, Phrase> = {
+  archive: ["Couldn't unarchive", ""],
+  inbox: ["Couldn't move", " out of Inbox"],
+  star: ["Couldn't unstar", ""],
+  unstar: ["Couldn't star", ""],
+  trash: ["Couldn't restore", " from Trash"],
+  read: ["Couldn't mark", " as unread"],
+  unread: ["Couldn't mark", " as read"],
+  important: ["Couldn't mark", " as not important"],
+  notImportant: ["Couldn't mark", " as important"],
+  spam: ["Couldn't move", " out of spam"],
+};
+
 export interface NamedThread {
   subject: string;
   participants: readonly string[];
@@ -151,6 +164,10 @@ export function actionUndoneMessage(action: string, threads: readonly NamedThrea
   return describeThreads(UNDONE[action] ?? ["Undid changes to", ""], threads, scope);
 }
 
+export function undoFailureMessage(action: string, threads: readonly NamedThread[], scope: DescribeScope = {}): string {
+  return describeThreads(UNDO_FAILED[action] ?? ["Couldn't undo changes to", ""], threads, scope);
+}
+
 // A label put on or taken off one thread
 export function labelChangeMessage(adding: boolean, labelName: string, thread: NamedThread, outcome: "done" | "failed" = "done"): string {
   const label = quoted(labelName) ?? "the label";
@@ -200,4 +217,39 @@ export function applyThreadAction(
         return { ...t, labels, unread_count: unread };
       }),
   }));
+}
+
+// The card's groups with the targeted threads as they were before an
+// action: back in the slot they left, with the labels they had
+export function restoreThreads(
+  groups: ThreadGroup[],
+  before: ThreadGroup[],
+  isTarget: (t: Thread) => boolean,
+): ThreadGroup[] {
+  const result = groups.map(g => ({ ...g, threads: g.threads.filter(t => !isTarget(t)) }));
+  before.forEach((was, groupIndex) => {
+    was.threads.forEach((t, index) => {
+      if (!isTarget(t)) return;
+      let group = result.find(g => g.label === was.label);
+      if (!group) {
+        group = { label: was.label, threads: [] };
+        const after = before.slice(groupIndex + 1).map(g => g.label);
+        const at = result.findIndex(g => after.includes(g.label));
+        result.splice(at === -1 ? result.length : at, 0, group);
+      }
+      group.threads.splice(Math.min(index, group.threads.length), 0, t);
+    });
+  });
+  return result;
+}
+
+const ORDINAL = new Intl.PluralRules("en", { type: "ordinal" });
+const SUFFIX: Record<string, string> = { one: "st", two: "nd", few: "rd", other: "th" };
+
+// Where an undone thread is back in its card: " · back 2nd in Inbox"
+export function backInPlace(groups: ThreadGroup[], threadId: string, cardName: string): string {
+  const index = groups.flatMap(g => g.threads).findIndex(t => t.gmail_thread_id === threadId);
+  if (index === -1) return "";
+  const n = index + 1;
+  return ` · back ${n}${SUFFIX[ORDINAL.select(n)]} in ${cardName}`;
 }
