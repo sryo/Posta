@@ -6,6 +6,7 @@ pub mod calendar;
 pub mod commands;
 mod dock_menu;
 mod haptics;
+mod wake;
 pub mod gmail;
 pub mod icloud;
 pub mod models;
@@ -190,6 +191,16 @@ fn haptic(app_handle: tauri::AppHandle, kind: String) -> Result<(), String> {
     }
 }
 
+/// One notification per card for the mail that came while the Mac slept,
+/// grouped under the card in Notification Centre
+#[tauri::command]
+fn post_card_notes(notes: Vec<wake::CardNote>) {
+    #[cfg(target_os = "macos")]
+    wake::post(notes);
+    #[cfg(not(target_os = "macos"))]
+    let _ = notes;
+}
+
 /// Brings the window forward with `card_id` focused, for a card chosen
 /// outside it (the Dock menu, a notification)
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
@@ -259,7 +270,10 @@ pub fn run() {
         .manage(PendingMailto::default())
         .setup(|app| {
             #[cfg(target_os = "macos")]
-            dock_menu::install(app.handle());
+            {
+                dock_menu::install(app.handle());
+                wake::install(app.handle());
+            }
             // Handle deep links (mailto:)
             #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
             {
@@ -350,6 +364,7 @@ pub fn run() {
             set_dock_icon,
             set_dock_menu,
             haptic,
+            post_card_notes,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application");

@@ -73,9 +73,11 @@ import App from "./App";
 import { setInputMode } from "./app/inputMode";
 import type { Account, Card, Thread } from "./api/tauri";
 import { ICLOUD_RESTORE_DELAYS_MS } from "./app/icloudRestore";
+import { WAKE_DELAYS_MS } from "./app/wakeNotes";
 
 ICLOUD_RESTORE_DELAYS_MS.first = 0;
 ICLOUD_RESTORE_DELAYS_MS.retry = 0;
+WAKE_DELAYS_MS.quiet = 50;
 
 const account = (id: string, email: string): Account => ({ id, email, picture: null, signature: null });
 const card = (id: string, accountId: string, name: string): Card => ({
@@ -560,6 +562,26 @@ describe("App Dock menu", () => {
 
     eventListeners["focus-card"]({ payload: "card-b" });
     await waitFor(() => expect(screen.getByText("Mail for B").closest(".thread")).toHaveClass("focused"));
+  });
+});
+
+describe("App waking", () => {
+  it("sends one note per card for the mail that came while the Mac slept", async () => {
+    const sleptAt = Date.now() - 3_600_000;
+    threadsByCard["card-a"] = [
+      { ...thread("t-old", "Mail for A"), last_message_date: sleptAt - 60_000, unread_count: 1 },
+      { ...thread("t-new", "Contract v3 signed"), last_message_date: Date.now() - 60_000, unread_count: 1, participants: ["Lena Ortiz <lena@x.com>"] },
+    ];
+    handlers.post_card_notes = () => null;
+    render(() => <App />);
+    await screen.findByText("Contract v3 signed");
+    await waitFor(() => expect(eventListeners["system-woke"]).toBeDefined());
+
+    eventListeners["system-woke"]({ payload: { slept_at: sleptAt, woke_at: Date.now() } });
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith("post_card_notes", {
+      notes: [{ card_id: "card-a", title: expect.stringMatching(/^Since /), body: "Alpha: 1 new from Lena Ortiz: Contract v3 signed" }],
+    }));
+    expect(invoke.mock.calls.filter(([cmd]) => cmd === "post_card_notes")).toHaveLength(1);
   });
 });
 

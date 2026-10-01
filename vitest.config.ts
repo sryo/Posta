@@ -43,6 +43,7 @@ const NO_DOM = [
   "src/app/threadActions.test.ts",
   "src/app/transit.test.ts",
   "src/app/upcoming.test.ts",
+  "src/app/wakeNotes.test.ts",
   "src/app/windowTitle.test.ts",
   "src/test/buildTarget.test.ts",
   "src/test/css.test.ts",

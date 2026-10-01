@@ -85,11 +85,13 @@ import {
   setDockIcon,
   setDockMenu,
   haptic,
+  postCardNotes,
 } from "./api/tauri";
 import { createDockIconSync, dockIconForHue, renderIconPng } from "./app/dockIcon";
 import { boardTitle, createTitleSync } from "./app/windowTitle";
 import { dockMenu } from "./app/dockMenu";
 import { createDetents } from "./app/detents";
+import { WAKE_DELAYS_MS, createWakeWatch, wakeNotes } from "./app/wakeNotes";
 import { Menu, MenuItem, PredefinedMenuItem } from "@tauri-apps/api/menu";
 import {
   formatTime,
@@ -1500,7 +1502,8 @@ function App() {
   ));
   createEffect(() => setDockMenu(JSON.parse(dockMenuJson())).catch(e => console.warn("Failed to set the Dock menu:", e)));
 
-  // Rust's events for the board: a card chosen in the Dock menu
+  // Rust's events for the board: a card chosen in the Dock menu or a
+  // notification, and the Mac waking from sleep
   const nativeUnlisteners: (() => void)[] = [];
   function listenNative<T>(name: string, handler: (payload: T) => void) {
     listen<T>(name, event => handler(event.payload))
@@ -1510,7 +1513,22 @@ function App() {
   onCleanup(() => nativeUnlisteners.forEach(unlisten => unlisten()));
   onMount(() => {
     listenNative<string>("focus-card", cardId => { if (cardById(cardId)) focusCardItem(cardId, 0); });
+    listenNative<{ slept_at: number; woke_at: number }>("system-woke", ({ slept_at }) => {
+      wakeWatch.wake(slept_at);
+      performIncrementalSync();
+    });
   });
+
+  // After a sleep, the mail that came meanwhile gets one note per card once
+  // the syncs it set off have settled, instead of a banner per thread
+  const wakeWatch = createWakeWatch(sleptAt => {
+    const mailCards = cards().filter(c => c.card_type !== "calendar" && !isSearchCard(c.id));
+    const threadsOf = (cardId: string) => (cardThreads[cardId] ?? []).flatMap(group => group.threads);
+    const notes = wakeNotes(mailCards, threadsOf, sleptAt, Date.now(), accounts().map(a => a.email));
+    if (notes.length > 0) postCardNotes(notes).catch(e => console.warn("Failed to post the wake notes:", e));
+  }, WAKE_DELAYS_MS);
+  const lastSyncedAt = createMemo(() => Math.max(0, ...Object.values(lastSyncTimes)));
+  createEffect(on(lastSyncedAt, () => wakeWatch.synced(), { defer: true }));
 
   let unlistenMailto: (() => void) | undefined;
   // Hoisted out of onMount so onCleanup can remove them

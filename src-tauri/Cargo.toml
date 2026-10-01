@@ -43,7 +43,10 @@ objc2 = "0.6"
 objc2-foundation = { version = "0.3", features = ["NSString"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
-objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSApplication", "NSHapticFeedback", "NSResponder", "NSMenu", "NSMenuItem"] }
+objc2-foundation = { version = "0.3", features = ["NSString", "NSBundle", "NSError", "NSNotification", "NSObject", "NSOperation", "block2"] }
+objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSApplication", "NSHapticFeedback", "NSResponder", "NSMenu", "NSMenuItem", "NSWorkspace"] }
+objc2-user-notifications = { version = "0.3", default-features = false, features = ["std", "block2", "bitflags", "UNUserNotificationCenter", "UNNotification", "UNNotificationContent", "UNNotificationRequest", "UNNotificationResponse", "UNNotificationSound", "UNNotificationTrigger"] }
+block2 = "0.6"
 
 [profile.dev]
 incremental = true
