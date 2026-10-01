@@ -105,3 +105,21 @@ describe("RecipientInput", () => {
     expect(value()).toBe("an");
   });
 });
+
+describe("RecipientInput suggestion notes", () => {
+  it("shows a suggestion's note under its address", () => {
+    const [value, setValue] = createSignal("");
+    render(() => (
+      <RecipientInput id="to" value={value()} onChange={setValue} placeholder="Recipients" suggest={() => [
+        { email: "ana@lumen.studio", name: "Ana Pérez", note: "Writes from here since August" },
+        { email: "aperez@estudiomr.com.ar", name: "Ana Pérez", note: "Last heard from here in July 2025" },
+      ]} />
+    ));
+    const input = screen.getByPlaceholderText("Recipients");
+    fireEvent.focus(input);
+    fireEvent.input(input, { target: { value: "ana" } });
+    const [first, second] = screen.getAllByRole("option");
+    expect(first).toHaveTextContent("ana@lumen.studioWrites from here since August");
+    expect(second).toHaveTextContent("Last heard from here in July 2025");
+  });
+});

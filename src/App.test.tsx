@@ -6262,3 +6262,25 @@ describe("App new email about a thread already going", () => {
     expect(screen.queryByText(LINE)).not.toBeInTheDocument();
   });
 });
+
+describe("App autocomplete for someone who moved", () => {
+  it("suggests the new address first and says why under both", async () => {
+    const DAY = 24 * 60 * 60 * 1000;
+    const at = (id: string, from: string, daysAgo: number) => ({ ...thread(id, `Mail ${id}`), participants: [from], last_message_date: Date.now() - daysAgo * DAY });
+    threadsByCard["card-a"] = [
+      at("t-1", "Ana Pérez <aperez@estudiomr.com.ar>", 300),
+      at("t-2", "Ana Pérez <aperez@estudiomr.com.ar>", 320),
+      at("t-3", "Ana Pérez <ana@lumen.studio>", 20),
+      at("t-4", "Ana Pérez <ana@lumen.studio>", 3),
+    ];
+    render(() => <App />);
+    await screen.findByText("Mail t-1");
+    fireEvent.keyDown(document, { key: "c" });
+    const to = await screen.findByPlaceholderText("Recipients");
+    fireEvent.focus(to);
+    fireEvent.input(to, { target: { value: "ana" } });
+    const options = await screen.findAllByRole("option");
+    expect(options[0]).toHaveTextContent(/ana@lumen\.studioWrites from here since /);
+    expect(options[1]).toHaveTextContent(/aperez@estudiomr\.com\.arLast heard from here in /);
+  });
+});

@@ -163,7 +163,7 @@ import { createLiveThreadMatch, liveThreadLine } from "./app/liveThread";
 import { noticesEnabled } from "./app/notices";
 import { lastLetterLine, latestDate } from "./app/transit";
 import { batchReplyEntry, namedRecipients, type BatchReplyThread } from "./app/batchReply";
-import { matchContacts, rankContacts, type RecentContact } from "./app/contacts";
+import { matchContacts, noteMovedContacts, rankContacts, type RecentContact } from "./app/contacts";
 import { eventReplyRecipients } from "./app/eventReply";
 import { labelDisplayName } from "./app/labels";
 import { nameInThreads, personName } from "./app/people";
@@ -4891,12 +4891,16 @@ function App() {
   const contactsWanted = () => composeFabHovered() || (composing() && !closingCompose()) || addingCard() || editingCardId() !== null
     || creatingEvent() || !!eventForm().editing;
   const guestSuggestions = (query: string) => matchContacts(rankedContacts(), query, 8);
-  const rankedContacts = createMemo(() => contactsWanted() ? rankContacts(
-    googleContacts(),
-    Object.values(cardThreads).flatMap(groups => groups.flatMap(g => g.threads)),
-    accounts().map(a => a.email),
-    Date.now(),
-  ) : []);
+  const rankedContacts = createMemo(() => {
+    if (!contactsWanted()) return [];
+    const ranked = rankContacts(
+      googleContacts(),
+      Object.values(cardThreads).flatMap(groups => groups.flatMap(g => g.threads)),
+      accounts().map(a => a.email),
+      Date.now(),
+    );
+    return noticesEnabled() ? noteMovedContacts(ranked, Date.now()) : ranked;
+  });
   // Kept while the suggestions fade out after the pointer leaves
   const fabSuggestions = createMemo<RecentContact[]>(shown => composeFabHovered() ? rankedContacts().slice(0, 3) : shown, []);
   // The default account's threads and events, read only while New Event is hovered

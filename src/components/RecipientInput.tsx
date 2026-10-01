@@ -6,7 +6,25 @@ import { isImeComposing } from "../shared/keyboard";
 export interface RecipientSuggestion {
   email: string;
   name?: string;
+  // Shown under the address, such as why it ranks where it does
+  note?: string;
 }
+
+// A suggested contact as a listbox option shows it
+export const ContactOption = (props: { contact: RecipientSuggestion }) => (
+  <>
+    <Avatar email={props.contact.email} name={props.contact.name} size="sm" />
+    <div class="compose-autocomplete-info">
+      <Show when={props.contact.name}>
+        <div class="compose-autocomplete-name">{props.contact.name}</div>
+      </Show>
+      <div class="compose-autocomplete-email">{props.contact.email}</div>
+      <Show when={props.contact.note}>
+        <div class="compose-autocomplete-note">{props.contact.note}</div>
+      </Show>
+    </div>
+  </>
+);
 
 // A To/Cc/Bcc field that suggests contacts for the recipient being typed, as
 // an ARIA combobox. Keys it doesn't use for the suggestions go to onKeyDown.
@@ -95,13 +113,7 @@ export const RecipientInput = (props: {
                 }}
                 onMouseEnter={() => setActive(i())}
               >
-                <Avatar email={contact.email} name={contact.name} size="sm" />
-                <div class="compose-autocomplete-info">
-                  <Show when={contact.name}>
-                    <div class="compose-autocomplete-name">{contact.name}</div>
-                  </Show>
-                  <div class="compose-autocomplete-email">{contact.email}</div>
-                </div>
+                <ContactOption contact={contact} />
               </div>
             )}
           </For>

@@ -8,6 +8,13 @@ export function personName(address: string): string {
 // Senders that aren't a person: their mailbox name says nothing, the domain does
 const ROBOT = /^(no[-_.]?reply|do[-_.]?not[-_.]?reply)|^(notifications?|info|mailer(-daemon)?|news(letter)?|hello|support|alerts?|updates?|bounces?)$/i;
 
+// Whether an address is a mailbox no person reads (no-reply@, notifications@...)
+export function isRobot(address: string): boolean {
+  const email = extractEmail(address);
+  const at = email.lastIndexOf("@");
+  return at > 0 && ROBOT.test(email.slice(0, at));
+}
+
 // How an address reads in a row: the name, else the part before @ for a
 // person ("ana.perez") or the domain for a robot ("fullgestion.com.ar")
 export function shortName(address: string): string {

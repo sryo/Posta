@@ -105,3 +105,12 @@ describe("GuestChips", () => {
     expect(value()).toBe("ana@x.test");
   });
 });
+
+describe("GuestChips suggestion notes", () => {
+  it("shows a suggestion's note under its address", () => {
+    const [value, setValue] = createSignal("");
+    render(() => <GuestChips value={value()} onChange={setValue} suggest={() => [{ email: "ana@lumen.studio", name: "Ana Pérez", note: "Writes from here since August" }]} />);
+    fireEvent.input(screen.getByRole("combobox", { name: "Guests" }), { target: { value: "ana" } });
+    expect(screen.getByRole("option")).toHaveTextContent("Writes from here since August");
+  });
+});

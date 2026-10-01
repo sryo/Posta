@@ -1,10 +1,10 @@
 import { createMemo, createSignal, createUniqueId, For, Show } from "solid-js";
-import { Avatar } from "./Avatar";
+import { ContactOption, type RecipientSuggestion } from "./RecipientInput";
 import { Chip } from "./Chip";
 import { extractEmail, extractName, splitEmailList } from "../utils";
 import { isImeComposing } from "../shared/keyboard";
 
-type Contact = { email: string; name?: string };
+type Contact = RecipientSuggestion;
 
 // The text split at commas and semicolons outside a quoted name or
 // <address>; the last piece is what follows the last separator
@@ -163,13 +163,7 @@ export const GuestChips = (props: {
                 onMouseDown={(e) => { e.preventDefault(); add(asRecipient(contact)); }}
                 onMouseEnter={() => setActive(i())}
               >
-                <Avatar email={contact.email} name={contact.name} size="sm" />
-                <div class="compose-autocomplete-info">
-                  <Show when={contact.name}>
-                    <div class="compose-autocomplete-name">{contact.name}</div>
-                  </Show>
-                  <div class="compose-autocomplete-email">{contact.email}</div>
-                </div>
+                <ContactOption contact={contact} />
               </div>
             )}
           </For>

@@ -3854,6 +3854,11 @@ button:disabled:hover {
     text-overflow: ellipsis;
 }
 
+.compose-autocomplete-note {
+    font: var(--type-meta);
+    color: var(--text-secondary);
+}
+
 /* Preset Selection Modal */
 .preset-overlay {
     position: fixed;
