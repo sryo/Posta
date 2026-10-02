@@ -59,6 +59,7 @@ const NO_DOM = [
   "src/test/inlineType.test.ts",
   "src/test/release.test.ts",
   "src/test/site.test.ts",
+  "src/test/solidBuiltins.test.ts",
   "src/test/verifyMacosBundle.test.ts",
 ];
 

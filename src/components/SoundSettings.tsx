@@ -2,7 +2,7 @@ import { For, Show } from "solid-js";
 import { arrivalCards, playCue, setArrivalCard, setSoundsEnabled, soundsEnabled } from "../app/sounds";
 import { SettingsGroup, SettingsRow } from "./FormParts";
 
-function Switch(props: { label: string; on: boolean; onToggle: () => void }) {
+function SoundSwitch(props: { label: string; on: boolean; onToggle: () => void }) {
   return (
     <button
       type="button"
@@ -21,7 +21,7 @@ export function SoundSettings(props: { cards: { id: string; name: string }[] }) 
   return (
     <SettingsGroup heading="Sounds" hint="A soft note when a message has actually left, after Undo is no longer possible.">
       <SettingsRow label="Sounds">
-        <Switch
+        <SoundSwitch
           label="Sounds"
           on={soundsEnabled()}
           onToggle={() => {
@@ -34,7 +34,7 @@ export function SoundSettings(props: { cards: { id: string; name: string }[] }) 
         <For each={props.cards}>
           {(card) => (
             <SettingsRow label={`New mail in ${card.name}`}>
-              <Switch
+              <SoundSwitch
                 label={`New mail in ${card.name}`}
                 on={arrivalCards().has(card.id)}
                 onToggle={() => {
