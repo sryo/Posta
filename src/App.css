@@ -108,6 +108,9 @@
     --border-subtle: color-mix(in srgb, var(--neutral-1000) 8%, transparent);
     --border-default: color-mix(in srgb, var(--neutral-1000) 15%, transparent);
     --border-strong: color-mix(in srgb, var(--neutral-1000) 32%, transparent);
+    /* A switch: a white thumb on its track, as on a Mac */
+    --switch-thumb: var(--neutral-0);
+    --switch-track: var(--border-strong);
     --border-focus: var(--accent);
 
     /* accent: the fill keeps the input hue at full strength. White on the
@@ -298,6 +301,7 @@
         --border-subtle: color-mix(in srgb, var(--neutral-0) 8%, transparent);
         --border-default: color-mix(in srgb, var(--neutral-0) 15%, transparent);
         --border-strong: color-mix(in srgb, var(--neutral-0) 30%, transparent);
+        --switch-track: color-mix(in srgb, var(--neutral-0) 22%, var(--neutral-900));
 
         --accent-tint: color-mix(in srgb, var(--accent) 20%, transparent);
 
@@ -4617,6 +4621,8 @@ button:disabled:hover {
     background: var(--surface-overlay);
     border-left: 1px solid var(--border-default);
     z-index: 102;
+    /* Its header clears the band that drags the window */
+    padding-top: var(--drag-region-height);
     transform: translateX(100%);
     transition: transform 150ms ease;
     display: flex;
@@ -4757,7 +4763,7 @@ button:disabled:hover {
     padding: 0;
     border: none;
     border-radius: var(--radius-full);
-    background: var(--border-strong);
+    background: var(--switch-track);
     cursor: pointer;
     transition: background 0.15s ease;
 }
@@ -4770,7 +4776,7 @@ button:disabled:hover {
     width: 14px;
     height: 14px;
     border-radius: var(--radius-full);
-    background: var(--surface-card);
+    background: var(--switch-thumb);
     box-shadow: var(--shadow-sm);
     transition: transform 0.15s ease;
 }
@@ -5619,6 +5625,7 @@ button:disabled:hover {
 
 .sheet[data-placement="side"] {
     top: 0;
+    padding-top: var(--drag-region-height);
     right: 0;
     bottom: 0;
     border-left: 1px solid var(--border-default);

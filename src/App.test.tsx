@@ -1724,6 +1724,23 @@ describe("App compose autocomplete", () => {
     expect(screen.queryByText("Me at work")).not.toBeInTheDocument();
   });
 
+  // jsdom lays nothing out: the + wheel and its petals all sit at (0, 0)
+  it("keeps the + wheel open while the pointer rests near it after leaving the +, and closes it once the pointer moves away", async () => {
+    render(() => <App />);
+    await screen.findByText("Mail for A");
+    const slot = document.querySelector(".board-slot") as HTMLElement;
+    const plus = screen.getByRole("button", { name: "New" });
+    fireEvent.mouseEnter(slot, { clientX: 5, clientY: 5 });
+    expect(plus).toHaveAttribute("aria-expanded", "true");
+
+    fireEvent.mouseLeave(slot, { clientX: 5, clientY: 5 });
+    await new Promise(r => setTimeout(r, 400));
+    expect(plus).toHaveAttribute("aria-expanded", "true");
+
+    fireEvent.pointerMove(document, { clientX: 600, clientY: 600 });
+    await waitFor(() => expect(plus).toHaveAttribute("aria-expanded", "false"));
+  });
+
   it("attaches files dropped on a new email or pasted into a reply", async () => {
     handlers.get_thread_details = () => ({ id: "t-a", messages: [fullMessage("m1", "Ana <ana@x.com>")] });
     render(() => <App />);
