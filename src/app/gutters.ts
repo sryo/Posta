@@ -1,5 +1,5 @@
 // The gutters a today or tomorrow calendar card shows: free stretches of the
-// working day, like the blank strip between two panes of a stamp sheet.
+// working day.
 //
 // The working day starts at its first busy event (nothing marks the morning
 // before it) and ends at 6 PM. All-day, declined and cancelled events take no
@@ -184,4 +184,38 @@ export function dayNoteText(note: DayNote, locale?: string): string {
     case "nothingElse": return "Nothing else today";
     case "dayDone": return note.at === null ? "That's it for today." : `That's it for today. Tomorrow starts at ${clock(note.at, locale)}.`;
   }
+}
+
+const STRIP_FIRST_HOUR = 8;
+
+export type GutterStrip = {
+  ticks: number[];
+  noonAt: number;
+  past: number | null;
+  nowAt: number | null;
+  busy: { left: number; width: number; title: string; overlap: boolean }[];
+  slotBox: { left: number; width: number };
+};
+
+// The gap on a strip of its day from 8 AM to the end of the working day, in
+// percent: an hour tick each hour, the day's other events, how much of it is
+// gone and where now is while now is on it
+export function gutterStrip(gutter: Gutter, events: GoogleCalendarEvent[], now: number): GutterStrip {
+  const day = new Date(gutter.start);
+  const from = new Date(day.getFullYear(), day.getMonth(), day.getDate(), STRIP_FIRST_HOUR).getTime();
+  const to = new Date(day.getFullYear(), day.getMonth(), day.getDate(), EVENING_HOUR).getTime();
+  const pct = (time: number) => (Math.min(Math.max(time, from), to) - from) / (to - from) * 100;
+  const box = (start: number, end: number) => ({ left: pct(start), width: pct(end) - pct(start) });
+  const hours = EVENING_HOUR - STRIP_FIRST_HOUR;
+  return {
+    ticks: Array.from({ length: hours - 1 }, (_, i) => ((i + 1) / hours) * 100),
+    noonAt: pct(from + (NOON - STRIP_FIRST_HOUR) * HOUR_MS),
+    past: now > from ? pct(now) : null,
+    nowAt: now >= from && now <= to ? pct(now) : null,
+    busy: events
+      .filter(busy)
+      .map(e => ({ ...box(e.start_time, e.end_time ?? e.start_time + HOUR_MS), title: e.title, overlap: false }))
+      .filter(b => b.width > 0),
+    slotBox: box(gutter.start, gutter.end),
+  };
 }

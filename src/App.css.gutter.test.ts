@@ -11,34 +11,27 @@ function declaration(selector: string, prop: string, context = ""): string | und
 }
 
 describe("calendar gutter styles", () => {
-  it("perforates the gutter above and below in a faint wash of the card's ink", () => {
-    expect(declaration(".calendar-gutter", "--perforation")).toMatch(/^color-mix\(in srgb, var\(--card-ink\) \d+%, transparent\)$/);
-    const image = declaration(".calendar-gutter", "background-image") ?? "";
-    expect(image.match(/radial-gradient\(circle, var\(--perforation\)/g)).toHaveLength(2);
-    expect(declaration(".calendar-gutter", "background-repeat")).toBe("repeat-x");
-    expect(declaration(".calendar-gutter", "background-position")).toBe("3px -3px, 3px calc(100% + 3px)");
+  it("draws no perforations: the day strip under its words says where the stretch falls", () => {
+    expect(declaration(".calendar-gutter", "background-image")).toBeUndefined();
+    expect(declaration(".calendar-gutter", "--perforation")).toBeUndefined();
+    expect(declaration(".calendar-gutter", "border-bottom")).toBe("1px solid var(--card-divider)");
   });
 
-  it("lets the perforations stand in for the divider of the row above", () => {
-    expect(declaration(".calendar-event-item:has(+ .calendar-gutter)", "border-bottom")).toBe("none");
-  });
-
-  it("sets its words smaller and quieter than an event's", () => {
+  it("sets its words smaller and quieter than an event's, the length across from them", () => {
     expect(declaration(".calendar-gutter-line", "font")).toBe("var(--type-meta)");
     expect(declaration(".calendar-gutter-line", "color")).toBe("var(--text-secondary)");
     expect(declaration(".calendar-gutter-length", "color")).toBe("var(--text-muted)");
     expect(declaration(".calendar-gutter", "font-variant-numeric")).toBe("tabular-nums");
+    expect(declaration(".calendar-gutter-words", "justify-content")).toBe("space-between");
   });
 
-  it("grows a little and centres its line at the end of the day", () => {
-    expect(declaration(".calendar-gutter.ending", "justify-content")).toBe("center");
-    expect(parseInt(declaration(".calendar-gutter.ending", "min-height") ?? "0")).toBeGreaterThan(parseInt(declaration(".calendar-gutter", "min-height") ?? "0"));
+  it("thins the strip to a hairline track, outlining the stretch in the card's ink", () => {
+    expect(declaration('.day-strip[data-size="xs"] .day-strip-track', "height")).toBe("8px");
+    expect(declaration('.day-strip[data-size="xs"] .day-strip-slot', "box-shadow")).toBe("inset 0 0 0 1.5px var(--card-ink)");
   });
 
-  it("slides the now-mark in the card's ink, and holds it still when motion is reduced", () => {
-    expect(declaration(".calendar-gutter-now", "background")).toBe("var(--card-ink)");
-    expect(declaration(".calendar-gutter-now", "transition")).toMatch(/^left /);
-    expect(declaration(".calendar-gutter-now", "transition", "@media (prefers-reduced-motion: reduce)")).toBe("none");
+  it("squares the stretch's right end when it runs to the end of the day", () => {
+    expect(declaration('.calendar-gutter.ending .day-strip-slot', "border-top-right-radius")).toBe("0");
   });
 });
 

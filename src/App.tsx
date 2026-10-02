@@ -6024,7 +6024,7 @@ function App() {
                                     {(event, index) => (
                                       <>
                                       <Show when={gutterAbove(index())}>
-                                        {(gutter) => <CalendarGutter gutter={gutter()} now={minuteNow()} moveTarget={gutterTarget(gutter())} verdict={eventDrag.verdictAt(gutterTarget(gutter()))} />}
+                                        {(gutter) => <CalendarGutter gutter={gutter()} events={group().events} now={minuteNow()} moveTarget={gutterTarget(gutter())} verdict={eventDrag.verdictAt(gutterTarget(gutter()))} />}
                                       </Show>
                                       <Show when={noteAbove(index())}>
                                         {(note) => <CalendarDayNote note={note()} />}
@@ -6125,7 +6125,7 @@ function App() {
                                     )}
                                   </For>
                                   <Show when={gutterAbove(group().events.length)}>
-                                    {(gutter) => <CalendarGutter gutter={gutter()} now={minuteNow()} moveTarget={gutterTarget(gutter())} verdict={eventDrag.verdictAt(gutterTarget(gutter()))} />}
+                                    {(gutter) => <CalendarGutter gutter={gutter()} events={group().events} now={minuteNow()} moveTarget={gutterTarget(gutter())} verdict={eventDrag.verdictAt(gutterTarget(gutter()))} />}
                                   </Show>
                                   <Show when={noteAbove(group().events.length)}>
                                     {(note) => <CalendarDayNote note={note()} />}

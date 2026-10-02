@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { GoogleCalendarEvent } from "../api/tauri";
-import { calendarDayMarks, dayGutters, dayNoteText, firstStartOn, gutterDay, gutterText, spokenDuration, type Gutter } from "./gutters";
+import { calendarDayMarks, dayGutters, dayNoteText, firstStartOn, gutterDay, gutterStrip, gutterText, spokenDuration, type Gutter } from "./gutters";
 
 const DAY = new Date(2026, 9, 1);
 const at = (h: number, m = 0, day = 1) => new Date(2026, 9, day, h, m).getTime();
@@ -268,5 +268,34 @@ describe("gutterDay", () => {
     expect(gutterDay("calendar:week", now)).toBeNull();
     expect(gutterDay("calendar:1d", now)).toBeNull();
     expect(gutterDay("from:sam", now)).toBeNull();
+  });
+});
+
+describe("gutterStrip", () => {
+  const lunch: Gutter = { beforeIndex: 2, start: at(12), end: at(15, 30), ending: false, nowAt: null };
+  const pct = (h: number, m = 0) => ((h - 8) * 60 + m) / 600 * 100;
+
+  it("lays the free stretch on 8 AM to 6 PM of its day, with the day's other events as busy blocks", () => {
+    const strip = gutterStrip(lunch, THURSDAY, at(9, 15));
+    expect(strip.slotBox.left).toBeCloseTo(pct(12));
+    expect(strip.slotBox.width).toBeCloseTo(pct(15, 30) - pct(12));
+    expect(strip.busy.map(b => [Math.round(b.left * 10) / 10, b.title])).toEqual([[Math.round(pct(9, 30) * 10) / 10, "standup"], [Math.round(pct(11) * 10) / 10, "crit"], [Math.round(pct(15, 30) * 10) / 10, "sam"], [Math.round(pct(16, 30) * 10) / 10, "roadmap"]]);
+    expect(strip.noonAt).toBeCloseTo(pct(12));
+    expect(strip.ticks).toHaveLength(9);
+  });
+
+  it("shades the day gone and draws now, while now is in it", () => {
+    const strip = gutterStrip(lunch, THURSDAY, at(13));
+    expect(strip.past).toBeCloseTo(pct(13));
+    expect(strip.nowAt).toBeCloseTo(pct(13));
+    const early = gutterStrip(lunch, THURSDAY, at(7));
+    expect(early.past).toBeNull();
+    expect(early.nowAt).toBeNull();
+    expect(gutterStrip(lunch, THURSDAY, at(19)).nowAt).toBeNull();
+  });
+
+  it("leaves out what takes no time: all-day, declined and cancelled events", () => {
+    const strip = gutterStrip(lunch, [ev("off", at(0), at(24), { all_day: true }), ev("no", at(9), at(10), { response_status: "declined" }), ev("gone", at(10), at(11), { status: "cancelled" })], at(9));
+    expect(strip.busy).toEqual([]);
   });
 });

@@ -6,12 +6,13 @@ export type StripBusy = StripBox & { title: string; overlap: boolean };
 // Hours of one day drawn left to right, in percent of the track: hour ticks
 // (noon heavier), the part already past, the user's other events (clashes
 // hatched amber), the event's own slot and a now-line.
+//   xs  a hairline strip under a calendar card's free stretch, only to look at
 //   sm  a thin strip under an invite row, only to look at
 //   lg  the event form's timeline, titled busy blocks and hour labels
 // The event form passes its own draggable `slot` and track handlers; an
 // invite row's slot is a plain outline.
 export function DayStrip(props: {
-  size: "sm" | "lg";
+  size: "xs" | "sm" | "lg";
   ticks: number[];
   noonAt?: number | null;
   past?: number | null;
