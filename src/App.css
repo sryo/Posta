@@ -2117,8 +2117,9 @@ body.dragging-event {
 
 .invite-meta {
     display: flex;
+    flex-wrap: wrap;
     align-items: center;
-    gap: var(--space-sm);
+    gap: var(--space-xs) var(--space-sm);
     min-width: 0;
     font: var(--type-meta);
     color: var(--text-secondary);
@@ -2136,6 +2137,7 @@ body.dragging-event {
     align-items: center;
     gap: var(--icon-gap-meta);
     min-width: calc(var(--icon-meta) + var(--icon-gap-meta) + 4ch);
+    max-width: 100%;
     color: var(--text-muted);
 }
 

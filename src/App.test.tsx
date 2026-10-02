@@ -2839,7 +2839,7 @@ describe("App calendar", () => {
       expect(row.querySelector(".thread-row .thread-participants")).toHaveTextContent("Jules Martin");
       expect(row.querySelector(".thread-row .thread-time")).not.toBeNull();
       expect(row.querySelector(".invite-meta .invite-when")).toHaveTextContent(/^Tomorrow/);
-      expect(row.querySelector(".invite-meta")).toHaveTextContent(/·1 hr·Studio 2$/);
+      expect(row.querySelector(".invite-meta")).toHaveTextContent(/·1 hrStudio 2$/);
       expect(row.querySelector(".calendar-event-preview")).toBeNull();
       expect(row.getAttribute("aria-label")).toMatch(/^Design review from Jules Martin\. .*, tomorrow\. You have not answered\.$/);
 

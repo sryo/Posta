@@ -45,6 +45,11 @@ describe("invite row styles", () => {
     expect(declarations(".invite-place").get("min-width")).toBe("calc(var(--icon-meta) + var(--icon-gap-meta) + 4ch)");
   });
 
+  it("moves the place to a line of its own when the row has no room for it, instead of pushing it out of the card", () => {
+    expect(declarations(".invite-meta").get("flex-wrap")).toBe("wrap");
+    expect(declarations(".invite-place").get("max-width")).toBe("100%");
+  });
+
   it("hatches an overlapping event amber on the day strip", () => {
     expect(declarations(".day-strip-busy.overlap").get("box-shadow")).toContain("var(--warning)");
   });

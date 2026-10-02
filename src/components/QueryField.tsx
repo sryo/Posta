@@ -275,7 +275,6 @@ export const QueryField = (props: {
     >
       <Chip
         class="query-chip"
-        classList={{ "negated": word.operator!.negated }}
         removeLabel={`Remove ${word.text}`}
         onRemove={() => changeWord(section, i(), null)}
         removeProps={{ onMouseDown: (e) => { if (editing()) e.preventDefault(); } }}

@@ -233,9 +233,6 @@ export const InviteRowLines = (props: {
             <span class="invite-duration">{duration()}</span>
           </Show>
           <Show when={place()}>
-            <span class="invite-sep" aria-hidden="true">·</span>
-          </Show>
-          <Show when={place()}>
             {(where) => (
               <span class="invite-place" classList={{ "invite-place-call": where().isCall }}>
                 {where().isCall ? <VideoIcon size="meta" /> : <LocationIcon size="meta" />}

@@ -192,7 +192,8 @@ describe("InviteRowLines", () => {
 
   it("puts when, how long and where under the title, and the answer under them", () => {
     render(() => lines());
-    expect(document.querySelector(".invite-meta")).toHaveTextContent(/·1 hr·Studio 2$/);
+    // The place's own icon sets it apart, so no · is left at a line's end when it wraps
+    expect(document.querySelector(".invite-meta")).toHaveTextContent(/·1 hrStudio 2$/);
     expect(document.querySelector(".invite-meta .invite-when")).not.toBeNull();
     expect(document.querySelector(".invite-place-call")).toBeNull();
     expect(within(document.querySelector(".invite-foot") as HTMLElement).getByRole("button", { name: "Your response: not answered" })).toBeInTheDocument();
