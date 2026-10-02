@@ -24,7 +24,7 @@ describe("DayStrip", () => {
         busy={busy}
         slotBox={{ left: 60, width: 5 }}
         hours={[{ at: 0, label: "8 AM" }, { at: 100, label: "8 PM" }]}
-        slot={(style) => <div class="day-strip-slot" role="slider" style={style} />}
+        slot={(style) => <div class="day-strip-slot" role="slider" style={style()} />}
       />
     ));
     const strip = container.querySelector(".day-strip")!;

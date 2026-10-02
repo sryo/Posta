@@ -40,3 +40,18 @@ describe("event form layout", () => {
     expect(footer.get("bottom")).toBe("0");
   });
 });
+
+describe("event form timeline slot", () => {
+  const css = readRepoFile("src/App.css").replace(/\/\*[\s\S]*?\*\//g, "");
+  const rules = parseRules(css);
+  const decls = (selector: string, context = "") => new Map(rules.filter(r => r.context === context && r.selectors.includes(selector)).flatMap(r => r.declarations));
+
+  it("slides onto its 15-minute step when let go, and jumps there under reduced motion", () => {
+    expect(decls('.day-strip[data-size="lg"] .day-strip-slot.settling').get("transition")).toMatch(/left .*width/);
+    expect(decls('.day-strip[data-size="lg"] .day-strip-slot.settling', "@media (prefers-reduced-motion: reduce)").get("transition")).toBe("none");
+  });
+
+  it("shows the grabbing hand for the whole drag", () => {
+    expect(decls('.day-strip[data-size="lg"] .day-strip-slot.dragging').get("cursor")).toBe("grabbing");
+  });
+});

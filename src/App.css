@@ -7297,6 +7297,18 @@ button:disabled:hover {
 .day-strip[data-size="lg"] .day-strip-slot:active {
     cursor: grabbing;
 }
+.day-strip[data-size="lg"] .day-strip-slot.dragging {
+    cursor: grabbing;
+}
+/* Let go between steps, the slot slides the rest of the way onto one */
+.day-strip[data-size="lg"] .day-strip-slot.settling {
+    transition: left 140ms cubic-bezier(0.2, 0.8, 0.2, 1), width 140ms cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+@media (prefers-reduced-motion: reduce) {
+    .day-strip[data-size="lg"] .day-strip-slot.settling {
+        transition: none;
+    }
+}
 
 .day-strip[data-size="lg"] .day-strip-slot:focus-visible {
     box-shadow: 0 0 0 2px var(--border-focus);

@@ -13,8 +13,9 @@ const LAST_FIRST_HOUR = 24 - VISIBLE_HOURS;
 
 const clamp = (n: number, lo: number, hi: number) => Math.min(Math.max(n, lo), hi);
 
-export function snap(minutes: number): number {
-  return Math.round(minutes / SNAP_MINUTES) * SNAP_MINUTES;
+// To the nearest `step` minutes; a step of 0 leaves minutes as they are
+export function snap(minutes: number, step = SNAP_MINUTES): number {
+  return step > 0 ? Math.round(minutes / step) * step : minutes;
 }
 
 // The first hour shown: `current` while the slot fits in view, else the
@@ -33,9 +34,10 @@ export function panFirstHour(current: number, hours: number): number {
   return clamp(current + hours, 0, LAST_FIRST_HOUR);
 }
 
-// The minute under a point `fraction` of the way across the view
-export function minuteAt(fraction: number, firstHour: number): number {
-  return clamp(snap(firstHour * 60 + clamp(fraction, 0, 1) * VISIBLE_HOURS * 60), 0, DAY_MINUTES);
+// The minute under a point `fraction` of the way across the view, snapped
+// to `step`
+export function minuteAt(fraction: number, firstHour: number, step = SNAP_MINUTES): number {
+  return clamp(snap(firstHour * 60 + clamp(fraction, 0, 1) * VISIBLE_HOURS * 60, step), 0, DAY_MINUTES);
 }
 
 // Where a view position falls, as a percentage, clamped to the view
@@ -44,21 +46,22 @@ export function percentOf(minutes: number, firstHour: number): number {
 }
 
 // The slot while dragging from `anchor` to `at`: moved whole, by one edge, or
-// drawn anew; never shorter than a step, never off the day
-export function dragTo(kind: Drag, origin: MinuteSpan, anchor: number, at: number): MinuteSpan {
+// drawn anew, snapped to `step` (0 to follow the pointer exactly); never
+// shorter than a step, never off the day
+export function dragTo(kind: Drag, origin: MinuteSpan, anchor: number, at: number, step = SNAP_MINUTES): MinuteSpan {
   switch (kind) {
     case "move": {
       const length = origin.end - origin.start;
-      const start = clamp(origin.start + snap(at - anchor), 0, DAY_MINUTES - length);
+      const start = clamp(origin.start + snap(at - anchor, step), 0, DAY_MINUTES - length);
       return { start, end: start + length };
     }
     case "start":
-      return { start: clamp(snap(at), 0, origin.end - SNAP_MINUTES), end: origin.end };
+      return { start: clamp(snap(at, step), 0, origin.end - SNAP_MINUTES), end: origin.end };
     case "end":
-      return { start: origin.start, end: clamp(snap(at), origin.start + SNAP_MINUTES, DAY_MINUTES) };
+      return { start: origin.start, end: clamp(snap(at, step), origin.start + SNAP_MINUTES, DAY_MINUTES) };
     case "draw": {
-      const a = snap(anchor);
-      const b = snap(at);
+      const a = snap(anchor, step);
+      const b = snap(at, step);
       const start = clamp(Math.min(a, b), 0, DAY_MINUTES - SNAP_MINUTES);
       return { start, end: clamp(Math.max(a, b, start + SNAP_MINUTES), start + SNAP_MINUTES, DAY_MINUTES) };
     }

@@ -1,4 +1,4 @@
-import { For, Show, type JSX } from "solid-js";
+import { For, Show, untrack, type JSX } from "solid-js";
 
 export type StripBox = { left: number; width: number };
 export type StripBusy = StripBox & { title: string; overlap: boolean };
@@ -18,7 +18,9 @@ export function DayStrip(props: {
   nowAt?: number | null;
   busy: StripBusy[];
   slotBox: StripBox;
-  slot?: (style: JSX.CSSProperties) => JSX.Element;
+  // Built once and given its place as it changes, so a block being dragged
+  // stays the same element under the pointer
+  slot?: (style: () => JSX.CSSProperties) => JSX.Element;
   hours?: { at: number; label: string }[];
   trackRef?: (el: HTMLDivElement) => void;
   onTrackPointerDown?: (e: PointerEvent) => void;
@@ -47,7 +49,7 @@ export function DayStrip(props: {
             </span>
           )}
         </For>
-        {props.slot ? props.slot(box(props.slotBox)) : <span class="day-strip-slot" style={box(props.slotBox)} />}
+        {props.slot ? untrack(() => props.slot!(() => box(props.slotBox))) : <span class="day-strip-slot" style={box(props.slotBox)} />}
         <Show when={props.nowAt != null}>
           <span class="day-strip-now" style={{ left: `${props.nowAt}%` }} />
         </Show>

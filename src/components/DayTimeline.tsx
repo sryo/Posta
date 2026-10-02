@@ -1,4 +1,4 @@
-import { createComputed, createSignal } from "solid-js";
+import { createComputed, createSignal, untrack } from "solid-js";
 import { DayStrip } from "./DayStrip";
 import type { StripEvent } from "../app/dayStrip";
 import { dragTo, firstHourFor, minuteAt, nudge, panFirstHour, percentOf, VISIBLE_HOURS, type Drag, type MinuteSpan } from "../app/dayTimeline";
@@ -21,9 +21,16 @@ export function DayTimeline(props: {
   onToday?: () => void;
 }) {
   const [view, setView] = createSignal(firstHourFor(props.slot));
-  // Keeps the slot in view as it moves, without jumping while it fits
+  // The slot as the pointer has it mid-drag, to the minute; the form only
+  // hears of it in 15-minute steps
+  const [live, setLive] = createSignal<MinuteSpan | null>(null);
+  // Just let go: the slot slides from where the pointer left it to its step
+  const [settling, setSettling] = createSignal(false);
+  // Keeps the slot in view as it moves, without jumping while it fits or
+  // while it's being dragged
   createComputed(() => {
     const slot = props.slot;
+    if (untrack(live)) return;
     setView(hour => firstHourFor(slot, hour));
   });
 
@@ -44,10 +51,10 @@ export function DayTimeline(props: {
   const isClash = (event: StripEvent) => props.clashing?.includes(event) ?? false;
 
   let track: HTMLDivElement | undefined;
-  const minuteUnder = (clientX: number): number | null => {
+  const minuteUnder = (clientX: number, step?: number): number | null => {
     const rect = track?.getBoundingClientRect();
     if (!rect || rect.width === 0) return null;
-    return minuteAt((clientX - rect.left) / rect.width, view());
+    return minuteAt((clientX - rect.left) / rect.width, view(), step);
   };
 
   // A press on the slot moves it, on an edge resizes it, and on the track
@@ -55,26 +62,41 @@ export function DayTimeline(props: {
   const startDrag = (kind: Drag, e: PointerEvent) => {
     if (e.button !== 0) return;
     const anchor = minuteUnder(e.clientX);
-    if (anchor === null) return;
+    const exactAnchor = minuteUnder(e.clientX, 0);
+    if (anchor === null || exactAnchor === null) return;
     e.preventDefault();
     e.stopPropagation();
     const origin = { ...props.slot };
+    const startX = e.clientX;
     let moved = false;
+    let last = origin;
     const target = e.currentTarget as HTMLElement;
     // Keeps the drag when the pointer leaves the block; a pointer that is
     // already gone can't be captured, and the drag goes on without it
     try { target.setPointerCapture?.(e.pointerId); } catch { /* released already */ }
+    setSettling(false);
     const onMove = (ev: PointerEvent) => {
+      if (!moved && Math.abs(ev.clientX - startX) < 2) return;
       const at = minuteUnder(ev.clientX);
-      if (at === null || (!moved && at === anchor)) return;
+      const exactAt = minuteUnder(ev.clientX, 0);
+      if (at === null || exactAt === null) return;
       moved = true;
-      props.onChange(dragTo(kind, origin, anchor, at));
+      setLive(dragTo(kind, origin, exactAnchor, exactAt, 0));
+      const snapped = dragTo(kind, origin, anchor, at);
+      if (snapped.start !== last.start || snapped.end !== last.end) {
+        last = snapped;
+        props.onChange(snapped);
+      }
     };
     const onUp = () => {
       target.removeEventListener("pointermove", onMove);
       target.removeEventListener("pointerup", onUp);
       target.removeEventListener("pointercancel", onUp);
-      if (!moved && kind === "draw") props.onChange(dragTo("move", origin, origin.start, anchor));
+      if (moved) {
+        setSettling(true);
+        setLive(null);
+        setView(hour => firstHourFor(props.slot, hour));
+      } else if (kind === "draw") props.onChange(dragTo("move", origin, origin.start, anchor));
     };
     target.addEventListener("pointermove", onMove);
     target.addEventListener("pointerup", onUp);
@@ -114,7 +136,7 @@ export function DayTimeline(props: {
       past={pastMinute() === null ? null : pct(pastMinute()!)}
       nowAt={nowMinute() === null ? null : pct(nowMinute()!)}
       busy={(props.busy ?? []).map(event => ({ ...boxOf({ start: minuteOf(event.start), end: minuteOf(event.end) }), title: event.title, overlap: isClash(event) }))}
-      slotBox={boxOf(props.slot)}
+      slotBox={boxOf(live() ?? props.slot)}
       hours={hours().map(hour => ({ at: pct(hour * 60), label: formatTime(minutesToTime(hour % 24 * 60)).replace(/:00/, "") }))}
       trackRef={(el) => { track = el; }}
       onTrackPointerDown={(e) => startDrag("draw", e)}
@@ -122,7 +144,9 @@ export function DayTimeline(props: {
       slot={(style) => (
         <div
           class="day-strip-slot"
-          style={style}
+          classList={{ "dragging": live() !== null, "settling": settling() }}
+          style={style()}
+          onTransitionEnd={() => setSettling(false)}
           tabindex="0"
           role="slider"
           aria-label="Event time. Arrow keys move it, Shift with arrows changes its length, Option with arrows changes the day"
