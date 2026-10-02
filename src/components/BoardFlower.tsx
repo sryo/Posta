@@ -2,6 +2,7 @@ import { Show, createSignal, onCleanup } from "solid-js";
 import { RadialMenu, type RadialItem } from "./RadialMenu";
 import { CalendarIcon, ComposeIcon, PaletteIcon, SearchIcon } from "./Icons";
 import type { FlowerColor } from "./ColorFlower";
+import { spreadColor } from "../app/colorSpread";
 
 // Action petals are the size of a row's action wheel; colour petals the size
 // of a colour flower's
@@ -11,6 +12,8 @@ const COLOR_RADIUS = 40;
 const COLOR_PETAL = 22;
 // How far from the window's edges the centre stays, so no petal is cut off
 const EDGE = COLOR_RADIUS + COLOR_PETAL;
+// The board is a larger area than a card, so its colour spreads more slowly
+const BOARD_SPREAD_MS = 460;
 
 // A whole ring, first petal at the top
 const ring = (count: number) => ({ start: -90, span: 360 - 360 / Math.max(count, 1) });
@@ -35,8 +38,23 @@ export function BoardFlower(props: {
   const x = () => Math.min(Math.max(props.at.x, EDGE), window.innerWidth - EDGE);
   const y = () => Math.min(Math.max(props.at.y, EDGE), window.innerHeight - EDGE);
 
+  // A colour tried spreads across the board from its petal; the colour put
+  // back when the try ends just changes
+  let shown = props.value;
+  const preview = (hue: string | null | undefined) => {
+    const deck = root?.closest<HTMLElement>(".deck") ?? document.querySelector<HTMLElement>(".deck");
+    const now = hue === undefined ? props.value : hue;
+    const petal = hue === undefined ? null : root?.querySelector(hue === null ? ".radial-petal.no-color" : `.radial-petal[data-hue="${hue}"]`);
+    const box = petal?.getBoundingClientRect();
+    const from = box ? { x: box.left + box.width / 2, y: box.top + box.height / 2 } : null;
+    const apply = () => props.onPreview(hue);
+    if (deck) spreadColor(deck, from, apply, { duration: BOARD_SPREAD_MS, was: shown, now, board: true });
+    else apply();
+    shown = now;
+  };
+
   const close = () => {
-    props.onPreview(undefined);
+    preview(undefined);
     props.onClose();
   };
   const run = (action: () => void) => () => {
@@ -101,7 +119,7 @@ export function BoardFlower(props: {
           radius={COLOR_RADIUS}
           itemSize={COLOR_PETAL}
           onEscape={close}
-          onScrub={(item) => props.onPreview(item ? item.hue ?? null : undefined)}
+          onScrub={(item) => preview(item ? item.hue ?? null : undefined)}
         />
       </Show>
     </div>

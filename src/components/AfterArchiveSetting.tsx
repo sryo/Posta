@@ -1,6 +1,7 @@
 import { For } from "solid-js";
 import { loadAfterArchive, saveAfterArchive, type AfterArchive } from "../app/threadNavigation";
 import { SettingsGroup, SettingsRow } from "./FormParts";
+import { NoticesSetting } from "./NoticesSetting";
 
 const CHOICES: { value: AfterArchive; label: string }[] = [
   { value: "next", label: "Next thread" },
@@ -8,7 +9,8 @@ const CHOICES: { value: AfterArchive; label: string }[] = [
   { value: "board", label: "Board" },
 ];
 
-// Where an open thread goes once it is archived, deleted or marked as spam
+// Where an open thread goes once it is archived, deleted or marked as spam,
+// and whether Posta points out what it noticed while reading and writing
 export const AfterArchiveSetting = () => (
   <SettingsGroup heading="Reading">
     <SettingsRow label="After archiving" for="settings-after-archive">
@@ -16,5 +18,6 @@ export const AfterArchiveSetting = () => (
         <For each={CHOICES}>{(choice) => <option value={choice.value}>{choice.label}</option>}</For>
       </select>
     </SettingsRow>
+    <NoticesSetting />
   </SettingsGroup>
 );

@@ -44,3 +44,33 @@ describe("postmark styles", () => {
     expect(shown?.declarations).toContainEqual(["opacity", "1"]);
   });
 });
+
+describe("long in transit", () => {
+  it("joins the two cards through the stamp, taking back the list's gap on either side", () => {
+    expect(declaration(".messages-list", "gap")).toBe("var(--space-2xl)");
+    expect(declaration(".transit", "margin")).toBe("calc(-1 * var(--space-2xl)) 0");
+    expect(declaration(".transit-line", "border-left")).toMatch(/^1\.5px dashed color-mix\(in srgb, var\(--card-ink\) \d+%, transparent\)$/);
+  });
+
+  it("inks the stamp in the thread's card colour, or the default ink", () => {
+    const derived = rules.find(r => r.selectors.includes(".transit[data-hue]") && r.declarations.some(([p]) => p === "--card-ink"));
+    expect(derived?.selectors).toContain(".thread-bar-card[data-hue]");
+  });
+
+  it("keeps the stamp straighter and fainter than an emptied card's postmark", () => {
+    expect(declaration(".postmark.transit-stamp", "--tilt")).toBe("-3deg");
+    expect(declaration(".postmark.transit-stamp", "width")).toBe("150px");
+    expect(declaration(".postmark.transit-stamp", "height")).toBe("64px");
+    const faint = (ctx = "") => Number(declaration(".postmark.transit-stamp", "opacity", ctx));
+    const postmark = (ctx = "") => Number(declaration(".postmark", "opacity", ctx));
+    expect(faint()).toBeLessThan(postmark());
+    const dark = "@media (prefers-color-scheme: dark)";
+    expect(faint(dark)).toBeLessThan(postmark(dark));
+    expect(faint(dark)).toBeGreaterThan(faint());
+  });
+
+  it("sets the last-letter line in a reply as quiet meta text", () => {
+    expect(declaration(".compose-last-letter", "font")).toBe("var(--type-meta)");
+    expect(declaration(".compose-last-letter", "color")).toBe("var(--text-muted)");
+  });
+});

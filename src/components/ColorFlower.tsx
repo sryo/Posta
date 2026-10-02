@@ -2,6 +2,7 @@ import { Show, createEffect, createMemo, createSignal, onCleanup } from "solid-j
 import { PaletteIcon } from "./Icons";
 import { RadialMenu } from "./RadialMenu";
 import { onActivateKey } from "../shared/keyboard";
+import { spreadColor } from "../app/colorSpread";
 
 export type FlowerColor = { hue: string; label: string };
 
@@ -23,6 +24,7 @@ const MAX_SPAN = 240;
 // each other rather than crowding
 const MIN_SPAN = 150;
 const MAX_RADIUS = 60;
+const CARD_SPREAD_MS = 340;
 
 // A colour choice: the current colour as a swatch that blooms into a petal per
 // colour, "no colour" first. The flower fans toward `toward` as far round as
@@ -67,18 +69,35 @@ export function ColorFlower(props: {
     }
   };
 
+  // A colour tried or chosen spreads across the card from its petal; one put
+  // back, or that came from elsewhere, just changes
+  let root: HTMLDivElement | undefined;
+  const fromPetal = (hue: string | null) => {
+    const petal = root?.querySelector(hue === null ? ".radial-petal.no-color" : `.radial-petal[data-hue="${hue}"]`);
+    if (!petal) return null;
+    const box = petal.getBoundingClientRect();
+    return { x: box.left + box.width / 2, y: box.top + box.height / 2 };
+  };
+  const spread = (hue: string | null, from: { x: number; y: number } | null, apply: () => void) => {
+    const card = root?.closest<HTMLElement>(".card");
+    if (!card) return apply();
+    spreadColor(card, from, apply, { duration: CARD_SPREAD_MS, was: props.value, now: hue });
+  };
+
   let before: string | null = null;
   let previewing = false;
   const preview = (hue: string | null | undefined) => {
-    if (!props.onPreview) return;
+    const onPreview = props.onPreview;
+    if (!onPreview) return;
     if (hue === undefined) {
-      if (previewing) props.onPreview(before);
+      const back = before;
+      if (previewing) spread(back, null, () => onPreview(back));
       previewing = false;
       return;
     }
     if (!previewing) before = props.value;
     previewing = true;
-    props.onPreview(hue);
+    spread(hue, fromPetal(hue), () => onPreview(hue));
   };
   createEffect(() => {
     if (!props.open) preview(undefined);
@@ -100,10 +119,10 @@ export function ColorFlower(props: {
   }));
   const choose = (hue: string | null) => {
     previewing = false;
-    props.onChange(hue);
+    spread(hue, fromPetal(hue), () => props.onChange(hue));
   };
   return (
-    <div class="color-picker" classList={{ "compact": !!props.compact }}>
+    <div ref={root} class="color-picker" classList={{ "compact": !!props.compact }}>
       <div
         class="color-picker-selected"
         classList={{ "no-color": props.value === null }}

@@ -83,8 +83,15 @@ import {
   type EventInput,
   sendReaction,
   setDockIcon,
+  setDockMenu,
+  haptic,
+  postCardNotes,
 } from "./api/tauri";
 import { createDockIconSync, dockIconForHue, renderIconPng } from "./app/dockIcon";
+import { boardTitle, createTitleSync } from "./app/windowTitle";
+import { dockMenu } from "./app/dockMenu";
+import { createDetents } from "./app/detents";
+import { WAKE_DELAYS_MS, createWakeWatch, wakeNotes } from "./app/wakeNotes";
 import { Menu, MenuItem, PredefinedMenuItem } from "@tauri-apps/api/menu";
 import {
   formatTime,
@@ -97,7 +104,6 @@ import {
   addForwardPrefix,
   buildForwardBody,
   smoothScroll,
-  toDateInputString,
 } from "./utils";
 import "./App.css";
 import {
@@ -116,6 +122,7 @@ import {
 } from "./components/Icons";
 import { ReactionButton } from "./components/ReactionButton";
 import { ComposeTextarea, CloseButton } from "./components/ComposeAtoms";
+import { SentInPlace } from "./components/SentInPlace";
 import { CancelButton, FormFooter, SettingsGroup, SettingsRow, SubmitButton } from "./components/FormParts";
 import { AuthScreen } from "./components/AuthScreen";
 import { PresetPicker } from "./components/PresetPicker";
@@ -136,6 +143,9 @@ import { createInviteDayLookups, rangeDaysFor, type DayEvents } from "./app/invi
 import type { DayBusy } from "./app/dayTimeline";
 import { isHappeningNow, isNowGroup, withNowSection } from "./app/nowSection";
 import { deletePrompt, eventActions, meetingOver } from "./app/eventActions";
+import { createEventDrag } from "./app/eventDrag";
+import { gutterMoveStart, moveInput, moveRefusal, moveToastText, moveVerdict, movedTo, sameTimeOn } from "./app/eventMove";
+import { EventDragGhost, MoveVerdict } from "./components/EventMove";
 import { defaultCalendarId, lastUsedCalendar, rememberCalendar } from "./app/eventCalendars";
 import { deletedByScope, type RecurrenceScope } from "./app/recurrence";
 import { ThreadView } from "./components/ThreadView";
@@ -153,23 +163,40 @@ import { Sheet } from "./components/Sheet";
 import { ToastFrame, Toasts } from "./components/Toasts";
 import { createToasts, type ToastAction, type ToastTone } from "./app/toasts";
 import { failureMessage, storedCredentialsFailure } from "./app/errorText";
-import { formatClock, formatShortDate, formatWhen, threadGroupLabel } from "./app/dateFormat";
+import { formatClock, formatDayLabel, formatShortDate, formatWhen } from "./app/dateFormat";
+import { threadGroupHeading, type GroupHeading } from "./app/groupHeading";
+import { unansweredLine } from "./app/unanswered";
+import { createLastLook, newSinceLine } from "./app/newSince";
+import { createCadence } from "./app/cadence";
+import { noticesEnabled } from "./app/notices";
+import { CardFootNotes } from "./components/CardFootNotes";
 import { safeGetItem, safeSetItem, safeRemoveItem, safeGetJSON, safeSetJSON } from "./shared/storage";
 import { BOARD_COLORS, type ActionSettings, type CardColor, type GroupBy } from "./shared/constants";
 import { createUndoableSend } from "./app/undoableSend";
-import { findHeader, lastMessageFromOthers } from "./app/messages";
-import { batchReplyEntry, type BatchReplyThread } from "./app/batchReply";
-import { matchContacts, rankContacts, type RecentContact } from "./app/contacts";
+import { createSentReplies } from "./app/sentReplies";
+import { createLaterVersions, laterVersionLine } from "./app/laterVersion";
+import type { LaterNote } from "./components/Attachments";
+import type { SentReply } from "./components/types";
+import { findHeader, lastMessageFromOthers, messageDate, nameInMessages } from "./app/messages";
+import { replyPlaceholder, sendingTo } from "./app/replyWords";
+import { createLiveThreadMatch, liveThreadLine } from "./app/liveThread";
+import { lastLetterLine, latestDate } from "./app/transit";
+import { batchReplyEntry, namedRecipients, type BatchReplyThread } from "./app/batchReply";
+import { matchContacts, noteMovedContacts, rankContacts, type RecentContact } from "./app/contacts";
 import { eventReplyRecipients } from "./app/eventReply";
 import { labelDisplayName } from "./app/labels";
 import { nameInThreads, personName } from "./app/people";
-import { afterRemoval, loadAfterArchive, stepThread, threadPosition } from "./app/threadNavigation";
+import { afterRemoval, loadAfterArchive, returnTo, stepThread, threadPosition } from "./app/threadNavigation";
+import { lightUp } from "./shared/rowMotion";
 import { AttachmentList } from "./components/Attachments";
 import { watchScrollFade } from "./app/scrollFade";
 import { createThumbnails } from "./app/thumbnails";
 import { AfterArchiveSetting } from "./components/AfterArchiveSetting";
+import { SoundSettings } from "./components/SoundSettings";
+import { cue, listenForAudioGesture, watchNewMail } from "./app/sounds";
 import { runUnsubscribe, type UnsubscribeMethod } from "./app/unsubscribe";
-import { actionFailureLabel, actionLabel, actionRemovesFromCard, applyThreadAction, labelChangeFor, threadMayJoinCard, undoLabelChanges, type LabelReversal } from "./app/threadActions";
+import { eventName, quoted } from "./app/quoted";
+import { actionFailureMessage, actionMessage, actionRemovesFromCard, actionUndoneMessage, applyLabelChange, backInPlace, changeRemovesFromCard, labelChangeFor, labelChangeMessage, restoreThreads, threadMayJoinCard, undoFailureMessage, undoLabelChanges, type DescribeScope, type LabelChange, type LabelReversal, type NamedThread } from "./app/threadActions";
 import { PRESETS } from "./app/presets";
 import { normalizeActionOrder } from "./app/actionOrder";
 import { parseStoredWidth } from "./app/storedWidth";
@@ -179,7 +206,9 @@ import { isPreviewable, readFilesAsAttachments, visibleAttachments } from "./app
 import { AttachmentLightbox, type PreviewAttachment } from "./components/AttachmentLightbox";
 import { MessageSender } from "./components/MessageSender";
 import { isForwardSubject } from "./app/quotedHistory";
-import { eventAttendees, eventFromThread, eventTimesFromForm, smartEventDefaults } from "./app/eventForm";
+import { editFormFor, eventAttendees, eventFromThread, eventTimesFromForm, smartEventDefaults } from "./app/eventForm";
+import { aloneAt, cancelPrompt, guestsOf } from "./app/attendance";
+import { AloneNotice } from "./components/AloneNotice";
 import { guestList, rankEventSuggestions, type EventSuggestion } from "./app/eventSuggestions";
 import { composePlacement, panelBesideView } from "./app/composePlacement";
 import { cidImagesToFetch, createLruCache, fetchCidImages } from "./app/cidImages";
@@ -190,18 +219,29 @@ import { batchReplyLoadErrorMessage, cardLoadErrorMessage, isOfflineError, query
 import { cardSyncStatus, cardWaitingMessage, connectionStatus } from "./app/connectionStatus";
 import { CardEmpty, CardSkeleton, ConnectionStatusBar, PostmarkDefs, type NoMatch } from "./components/CardStates";
 import { createPostmarkLedger } from "./app/postmark";
+import { calendarDayMarks, firstStartOn, gutterDay, type DayNote, type Gutter } from "./app/gutters";
+import { CalendarDayNote, CalendarGutter } from "./components/CalendarGutter";
 import { cardTypeForQuery } from "./app/cardType";
 import { SEARCH_CARD_ID, forgetSearch, isSearchCard, keptCardName, parseRecentSearches, rememberSearch, searchCard as searchCardFor } from "./app/quickSearch";
 import { discardThreadDrafts, draftToOpen, isDraftThread, prepareDraftCompose, withDraftsDiscarded, type DraftToOpen } from "./app/draftThreads";
 import { createDraftSync, draftKey, findLatestDraft, findUnsentDrafts, hasDraftContent, markDraftClosed, markDraftSending, pruneDrafts, removeAccountDrafts, sessionDraftKey, type DraftFields } from "./app/drafts";
-import { escapeTarget, nextCardFocus, nextItemFocus, type ItemFocus } from "./app/keyboardNav";
+import { escapeTarget, focusEdgeHint, isFocusEdge, nextCardFocus, nextItemFocus, type FocusEdge, type ItemFocus } from "./app/keyboardNav";
+import { createFocusMemory } from "./app/focusMemory";
+import { createNewMailHold } from "./app/rowHold";
+import { measureRows, slideRows } from "./app/rowMotion";
+import { liftRows } from "./app/rowTravel";
+import { placeInCards } from "./app/threadPlacement";
+import { gmailLabelName } from "./app/queryMatch";
+import { createRowDrag, type RowDragState } from "./app/rowDrag";
+import { dropIntent, type DropIntent } from "./app/dropIntent";
+import { FocusRing, type RingBump } from "./components/FocusRing";
 import { getSmartEventTime, groupCalendarEvents, isUserLabel, mergeThreadGroups, regroupThreads, type CalendarEventGroup } from "./app/grouping";
 import { pullLayoutWithRetry } from "./app/icloudRestore";
 import { querySuggestions, type QuerySuggestion } from "./app/querySuggestions";
 import { calendarRangeError } from "./app/queryTokens";
 import { useLayer } from "./app/layers";
 import { QueryHelpSheet } from "./components/QueryHelpSheet";
-import { inviteNamesEvent, rsvpForKey, rsvpSentMessage, withOwnResponse, type RsvpStatus } from "./app/rsvp";
+import { inviteNamesEvent, rsvpFailureMessage, rsvpForKey, rsvpSentMessage, withOwnResponse, type RsvpStatus } from "./app/rsvp";
 import { createRsvpLookups } from "./app/rsvpLookups";
 import { nextSelection } from "./app/selection";
 import { bulkActionForKey, extendSelection, keyTargets } from "./app/bulkKeys";
@@ -214,6 +254,8 @@ import { moveCard, reuseUnchanged } from "./app/cardOrder";
 
 // As many as the backend's preview of an email query returns
 const NEW_CARD_PREVIEW_EVENTS = 5;
+// How long the line saying the focus reached an edge stays
+const FOCUS_EDGE_MS = 2600;
 
 function App() {
   const [loading, setLoading] = createSignal(true);
@@ -283,6 +325,26 @@ function App() {
   const boardCards = () => { const search = searchCard(); return search ? [search, ...cards()] : cards(); };
   const [authLoading, setAuthLoading] = createSignal(false);
   const [cardThreads, setCardThreads] = createStore<Record<string, ThreadGroup[]>>({});
+  // Synced mail waits while the pointer rests on its card or the keyboard
+  // focus is in it, then slides in
+  const newMail = createNewMailHold({
+    read: (cardId) => cardThreads[cardId] && unwrap(cardThreads[cardId]),
+    write: (cardId, groups) => setCardThreads(cardId, reconcile(groups, { key: "gmail_thread_id" })),
+    fetchedFor: (cardId) => fetchedFor(cardById(cardId)),
+    onRelease: (cardId, entering, letIn) => {
+      const list = document.querySelector<HTMLElement>(`.card[data-id="${CSS.escape(cardId)}"] .card-body`);
+      const before = list ? measureRows(list) : null;
+      letIn();
+      if (list && before) slideRows(list, before, { entering });
+    },
+  });
+  // Only focus moved from the keyboard holds; a row a click left focused
+  // doesn't, nor does the focus once the pointer takes over
+  createEffect(() => {
+    if (inputMode() === "pointer") untrack(cards).forEach(card => newMail.focus(card.id, false));
+  });
+  // A card's threads with any mail waiting in it, for counting
+  const countedThreads = (cardId: string) => newMail.waiting(cardId) ?? cardThreads[cardId];
   const [cardCalendarEvents, setCardCalendarEvents] = createStore<Record<string, GoogleCalendarEvent[]>>({});
   const [loadingThreads, setLoadingThreads] = createStore<Record<string, boolean>>({});
   const [cardErrors, setCardErrors] = createStore<Record<string, string | null>>({});
@@ -293,6 +355,13 @@ function App() {
     const card = cardById(cardId);
     const listed = (cardThreads[cardId ?? ""] ?? []).flatMap(g => g.threads).find(t => t.gmail_thread_id === threadId);
     return accountById(threadAccountId(listed ?? { account_id: "" }, card));
+  }
+  // When a thread last heard a letter: from the open thread, else its card row
+  function threadLastDate(threadId: string): Date | null {
+    const open = activeThread();
+    if (open?.id === threadId) return latestDate(open.messages.map(messageDate));
+    const listed = Object.values(cardThreads).flatMap(groups => groups.flatMap(g => g.threads)).find(t => t.gmail_thread_id === threadId);
+    return listed?.last_message_date ? new Date(listed.last_message_date) : null;
   }
   // The account whose calendar an event is on
   function eventOwner(event: GoogleCalendarEvent, cardId?: string | null): Account | null {
@@ -314,12 +383,26 @@ function App() {
   // Local midnight of the current day; notifies once a day, so "Today" labels
   // and today's times move on at midnight without re-rendering every tick
   const today = createMemo(() => new Date(currentTime()).setHours(0, 0, 0, 0));
+  // A group's heading, named from its rows' days as of today. It depends only
+  // on the newest and oldest day, so rows of the same group share one.
+  const groupHeadings = new Map<string, GroupHeading>();
+  const groupHeading = (group: ThreadGroup) => {
+    const dates = group.threads.map(t => t.last_message_date);
+    const key = `${group.label}|${today()}|${Math.min(...dates)}|${Math.max(...dates)}`;
+    let heading = groupHeadings.get(key);
+    if (!heading) {
+      if (groupHeadings.size > 200) groupHeadings.clear();
+      heading = threadGroupHeading(group.label, dates, new Date(today()));
+      groupHeadings.set(key, heading);
+    }
+    return heading;
+  };
   // formatTime reads the clock itself; reading today() re-runs it at midnight
-  // A row's time: the clock inside the Today and Yesterday groups, whose
-  // headers already name the day, else the date
-  const threadTime = (timestamp: number, groupLabel?: string) => {
+  // A row's time: the clock under a heading that already names the day,
+  // else the date
+  const threadTime = (timestamp: number, group: ThreadGroup) => {
     today();
-    if (groupLabel === "Today" || groupLabel === "Yesterday") return formatClock(new Date(timestamp));
+    if (groupHeading(group).oneDay) return formatClock(new Date(timestamp));
     return formatTime(timestamp);
   };
 
@@ -358,13 +441,16 @@ function App() {
     try {
       await rsvpListedCalendarEvent(account.id, event.calendar_id, event.id, status);
       markEventRsvp(event.id, status, account);
-      showToast(rsvpSentMessage(status));
+      showToast(rsvpSentMessage(status, event.title));
     } catch (e) {
-      showFailure("Couldn't send your RSVP", e);
+      showFailure(rsvpFailureMessage(event.title), e);
     } finally {
       setRsvpLoading(event.id, false);
     }
   };
+
+  const invitedEventTitle = (threadId: string) =>
+    Object.values(cardThreads).flatMap(groups => groups.flatMap(g => g.threads)).find(t => t.gmail_thread_id === threadId)?.calendar_event?.title ?? "";
 
   // Answers an invite from its email; the calendar cards showing the event
   // pick up the answer too
@@ -377,9 +463,9 @@ function App() {
       const eventIds = new Set(Object.values(cardCalendarEvents).flatMap(events =>
         (events ?? []).filter(ev => inviteNamesEvent(eventUid, ev.id) && (!ev.account_id || ev.account_id === account.id)).map(ev => ev.id)));
       for (const eventId of eventIds) markEventRsvp(eventId, status, account);
-      showToast(rsvpSentMessage(status));
+      showToast(rsvpSentMessage(status, invitedEventTitle(threadId)));
     } catch (e) {
-      showFailure("Couldn't send your RSVP", e);
+      showFailure(rsvpFailureMessage(invitedEventTitle(threadId)), e);
     } finally {
       setRsvpLoading(threadId, false);
     }
@@ -393,6 +479,12 @@ function App() {
     cardIds: string[]; // every card the optimistic update touched
     reversals: LabelReversal[];
     timestamp: number;
+    // The touched cards as they were, to put the threads back in their slots
+    before: Record<string, ThreadGroup[]>;
+    // Each thread's account
+    owners: Map<string, string>;
+    named: NamedThread[];
+    scope: DescribeScope;
   }
   // The latest thread action, which a refresh landing just after it must not undo
   const [lastAction, setLastAction] = createSignal<UndoableAction | null>(null);
@@ -401,10 +493,20 @@ function App() {
   const discardDraftTag = (key: string) => `discard-draft:${key}`;
 
   // Undo send state
+  const SEND_UNDO_MS = 5000;
+  // Inline replies, kept in their box in the thread until it holds them
+  const sentReplies = createSentReplies<PendingSend>();
+  // Quick replies, kept in their box on the row until the card shows them
+  const sentQuickReplies = createSentReplies<{ text: string }>();
+  const sentQuickReply = (threadId: string) => sentQuickReplies.inThread(threadId)[0];
   const undoableSend = createUndoableSend<PendingSend>({
-    delayMs: 5000,
+    delayMs: SEND_UNDO_MS,
     send: async pending => {
       await sendPending(pending);
+      if (pending.reply) {
+        sentReplies.settle(pending);
+        if (activeThreadId() === pending.reply.threadId) refreshActiveThread(pending.accountId, pending.reply.threadId);
+      }
       const fromBatch = batchReplyOrigins.get(pending);
       if (fromBatch?.cardId) fetchAndCacheThreads(fromBatch.cardId);
       const draft = pending.draft;
@@ -418,6 +520,7 @@ function App() {
       console.error("Failed to send email:", e);
       putBackSend(pending, failureMessage(`Couldn't send “${pending.subject || "(no subject)"}”`, e).message, "error");
     },
+    onSent: () => cue("sent"),
   });
 
   // Whether an open compose holds something replacing it would lose;
@@ -434,8 +537,15 @@ function App() {
     else open();
   }
 
-  // A failed send says so even when its email opens again by itself
+  // A failed send says so even when its email opens again by itself. A reply
+  // still in its box turns back into the compose it was.
   function putBackSend(pending: PendingSend, message: string, tone: ToastTone = "info") {
+    batch(() => {
+      sentReplies.drop(pending);
+      restoreUnsent(pending, message, tone);
+    });
+  }
+  function restoreUnsent(pending: PendingSend, message: string, tone: ToastTone) {
     const fromBatch = batchReplyOrigins.get(pending);
     if (fromBatch && accountById(pending.accountId)) {
       restoreBatchReply(fromBatch);
@@ -786,6 +896,8 @@ function App() {
     sending: boolean;
   }>({ threadId: null, text: "", sending: false });
   const [quickReplyCardId, setQuickReplyCardId] = createSignal<string | null>(null);
+  // Who a quick reply goes to, once its thread has been read
+  const [quickReplyTo, setQuickReplyTo] = createSignal<{ threadId: string; to: string[] } | null>(null);
 
   // Quick Reaction (for thread list)
   const [quickReactionSending, setQuickReactionSending] = createSignal(false);
@@ -803,6 +915,15 @@ function App() {
     setQuickReplyEventId(null);
     setQuickReply(qr => (qr.threadId === threadId ? qr : { threadId, text: "", sending: false }));
     setQuickReplyCardId(cardId);
+    const account = threadOwner(threadId, cardId);
+    if (account && quickReplyTo()?.threadId !== threadId) {
+      getThreadDetails(account.id, threadId)
+        .then(details => {
+          const entry = batchReplyEntry(threadId, details.messages ?? [], account.email);
+          setQuickReplyTo({ threadId, to: entry ? namedRecipients(entry) : [] });
+        })
+        .catch(() => {});
+    }
   }
 
   function openEventQuickReply(eventId: string) {
@@ -845,6 +966,8 @@ function App() {
   const openWheelIn = (e?: MouseEvent) => (e?.currentTarget as Element | null)?.querySelector(`.radial-menu[role="menu"]`);
 
   function showThreadHoverActions(cardId: string, threadId: string, e?: MouseEvent) {
+    // A thread being dragged passes over rows without opening their wheels
+    if (rowDrag.dragging()) return;
     const key = rowKey(cardId, threadId);
     if (e && key !== hoveredThread() && threadHold.wait(key, e.clientX, e.clientY, () => showThreadHoverActions(cardId, threadId))) return;
     threadHold.release();
@@ -879,6 +1002,7 @@ function App() {
   }
 
   function showEventHoverActions(cardId: string, eventId: string, e?: MouseEvent) {
+    if (rowDrag.dragging()) return;
     const key = rowKey(cardId, eventId);
     if (e && key !== hoveredEvent() && eventHold.wait(key, e.clientX, e.clientY, () => showEventHoverActions(cardId, eventId))) return;
     eventHold.release();
@@ -952,6 +1076,8 @@ function App() {
     error: string | null;
     editing: { id: string; calendarId: string; accountId: string } | null;
     closing: boolean;
+    // Editing opened to reschedule, on the start time
+    focusTime?: boolean;
   }
 
   const defaultEventForm = (): EventFormState => {
@@ -970,7 +1096,7 @@ function App() {
   // A new event starts now; what was typed into a closed new-event form stays,
   // but an event's edit never carries into a new one
   // `about` starts the event from an email thread instead
-  const openNewEventForm = (about?: { summary: string; attendees: string }) => {
+  const openNewEventForm = (about?: { summary: string; attendees: string } & Partial<Pick<EventFormState, "startDate" | "startTime" | "endDate" | "endTime">>) => {
     // One panel at a time: an email in the compose panel closes, keeping its draft
     if (composeShownIn() === "panel" && composing() && !closingCompose()) closeCompose();
     const defaults = smartEventDefaults();
@@ -1303,7 +1429,7 @@ function App() {
     // cards holding a change are touched
     batch(() => {
       for (const [cardId, groups] of Object.entries(updatedCardThreads)) {
-        setCardThreads(cardId, reconcile(groups, { key: "gmail_thread_id" }));
+        newMail.show(cardId, groups);
       }
     });
 
@@ -1416,18 +1542,24 @@ function App() {
   // Drag and drop
   const cardIds = () => cards().map(c => c.id);
   let wasDragging = false;
+  const detents = createDetents(kind => { haptic(kind).catch(() => {}); });
 
-  const onDragStart = () => {
+  const onDragStart = (event: { draggable: { id: Id } }) => {
     wasDragging = true;
+    detents.start(String(event.draggable.id));
+  };
+
+  const onDragOver = (event: { droppable?: { id: Id } | null }) => {
+    detents.over(event.droppable ? String(event.droppable.id) : null);
   };
 
   const onDragEnd = async (event: { draggable: { id: Id } | null; droppable: { id: Id } | null }) => {
     const { draggable, droppable } = event;
     // Reset drag flag after a short delay to prevent click from firing
     setTimeout(() => { wasDragging = false; }, 100);
-    if (!draggable || !droppable) return;
     const previousCards = cards();
-    const reorderedCards = moveCard(previousCards, String(draggable.id), String(droppable.id));
+    const reorderedCards = draggable && droppable ? moveCard(previousCards, String(draggable.id), String(droppable.id)) : null;
+    detents.end(!!reorderedCards);
     if (!reorderedCards) return;
     setCards(reorderedCards);
     try {
@@ -1439,13 +1571,16 @@ function App() {
     }
   };
 
+  watchNewMail(cardId => cardThreads[cardId]);
+  onCleanup(listenForAudioGesture(document));
+
   // Dock badge: unread threads across cards. The memo only notifies when the
   // total changes, so refreshes that change nothing don't touch the badge.
   const totalUnread = createMemo(() => {
     // A thread can match several cards; count it once in each account
     const unreadThreads = new Set<string>();
     for (const card of cards()) {
-      for (const group of cardThreads[card.id] ?? []) {
+      for (const group of countedThreads(card.id) ?? []) {
         for (const thread of group.threads) {
           if (thread.unread_count > 0) unreadThreads.add(threadKey(thread, card));
         }
@@ -1460,6 +1595,52 @@ function App() {
       // Badge not supported on this platform
     });
   });
+
+  // The window title names the board's most urgent fact, settled for a
+  // moment so a sync moving the count doesn't retitle it on every step
+  const boardEvents = createMemo(() => cards().filter(c => c.card_type === "calendar").flatMap(c => cardCalendarEvents[c.id] ?? []));
+  const offlineSince = createMemo<number | null>(since => (offline() ? since ?? Date.now() : null), null);
+  const syncTitle = createTitleSync(title => getCurrentWindow().setTitle(title), 400);
+  createEffect(() => syncTitle(boardTitle({ events: boardEvents(), offlineSince: offlineSince(), unread: totalUnread() }, minuteNow())));
+
+  // The right-click Dock menu: each card with its unread threads, then the
+  // next event. Sent only when its text changes.
+  const unreadByCard = createMemo(() => Object.fromEntries(cards().map(card => [
+    card.id,
+    (cardThreads[card.id] ?? []).reduce((n, group) => n + group.threads.filter(t => t.unread_count > 0).length, 0),
+  ])));
+  const dockMenuJson = createMemo(() => JSON.stringify(
+    dockMenu(cards().filter(c => !isSearchCard(c.id)), unreadByCard(), boardEvents(), minuteNow()),
+  ));
+  createEffect(() => setDockMenu(JSON.parse(dockMenuJson())).catch(e => console.warn("Failed to set the Dock menu:", e)));
+
+  // Rust's events for the board: a card chosen in the Dock menu or a
+  // notification, and the Mac waking from sleep
+  const nativeUnlisteners: (() => void)[] = [];
+  function listenNative<T>(name: string, handler: (payload: T) => void) {
+    listen<T>(name, event => handler(event.payload))
+      .then(unlisten => { if (disposed) unlisten(); else nativeUnlisteners.push(unlisten); })
+      .catch(e => console.warn(`Failed to listen for ${name}:`, e));
+  }
+  onCleanup(() => nativeUnlisteners.forEach(unlisten => unlisten()));
+  onMount(() => {
+    listenNative<string>("focus-card", cardId => { if (cardById(cardId)) focusCardItem(cardId, 0); });
+    listenNative<{ slept_at: number; woke_at: number }>("system-woke", ({ slept_at }) => {
+      wakeWatch.wake(slept_at);
+      performIncrementalSync();
+    });
+  });
+
+  // After a sleep, the mail that came meanwhile gets one note per card once
+  // the syncs it set off have settled, instead of a banner per thread
+  const wakeWatch = createWakeWatch(sleptAt => {
+    const mailCards = cards().filter(c => c.card_type !== "calendar" && !isSearchCard(c.id));
+    const threadsOf = (cardId: string) => (cardThreads[cardId] ?? []).flatMap(group => group.threads);
+    const notes = wakeNotes(mailCards, threadsOf, sleptAt, Date.now(), accounts().map(a => a.email));
+    if (notes.length > 0) postCardNotes(notes).catch(e => console.warn("Failed to post the wake notes:", e));
+  }, WAKE_DELAYS_MS);
+  const lastSyncedAt = createMemo(() => Math.max(0, ...Object.values(lastSyncTimes)));
+  createEffect(on(lastSyncedAt, () => wakeWatch.synced(), { defer: true }));
 
   let unlistenMailto: (() => void) | undefined;
   // Hoisted out of onMount so onCleanup can remove them
@@ -1640,6 +1821,9 @@ function App() {
   // Focus a card and the item at `index` in it (-1 focuses the card only).
   // The row takes keyboard focus too, so Tab and j/k agree.
   function focusCardItem(cardId: string, index: number) {
+    setFocusEdge(null);
+    const itemId = cardItemIds(cardId)[index];
+    if (itemId) focusMemory.remember(cardId, itemId, index);
     setFocusedCardId(cardId);
     const calendar = isCalendarCard(cardId);
     setFocusedEventIndex(calendar ? index : -1);
@@ -1649,6 +1833,28 @@ function App() {
     const row = document.querySelector<HTMLElement>(`${card} .thread.focused, ${card} .calendar-event-item.focused`);
     if (row && document.activeElement !== row) row.focus({ preventScroll: true });
   }
+
+  const cardItemIds = (cardId: string) => isCalendarCard(cardId)
+    ? getCardEventsFlat(cardId).map(ev => ev.id)
+    : getCardThreadsFlat(cardId).map(t => t.gmail_thread_id);
+  // The row each card was left on, for h and l to come back to
+  const focusMemory = createFocusMemory();
+  // Where j/k/h last stopped at the end of the way, said in that card for a while
+  const [focusEdge, setFocusEdge] = createSignal<FocusEdge | null>(null);
+  const [ringBump, setRingBump] = createSignal<RingBump | null>(null);
+  let focusEdgeTimer: number | undefined;
+  function showFocusEdge(edge: FocusEdge, toward: RingBump["toward"]) {
+    setFocusEdge(edge);
+    setRingBump({ toward, at: Date.now() });
+    clearTimeout(focusEdgeTimer);
+    focusEdgeTimer = window.setTimeout(() => setFocusEdge(null), FOCUS_EDGE_MS);
+  }
+  const focusEdgeLine = (cardId: string) => {
+    const edge = focusEdge();
+    if (edge?.cardId !== cardId) return null;
+    const shown = boardCards().filter(c => !collapsedCards[c.id]);
+    return focusEdgeHint(edge, shown.map(c => ({ id: c.id, name: c.name, count: cardItemIds(c.id).length })));
+  };
 
   // Roving tab stop: one row per card, the focused one or else the first
   const tabStopKeys = createMemo(() => {
@@ -1680,21 +1886,32 @@ function App() {
   }
 
   // The row a thread or event view was opened from, for focus to go back to
-  let openedFromRow: ItemFocus | null = null;
+  let openedFromRow: (ItemFocus & { itemId: string }) | null = null;
   function rememberOpenedRow(cardId: string, itemId: string) {
-    const ids = isCalendarCard(cardId)
-      ? getCardEventsFlat(cardId).map(ev => ev.id)
-      : getCardThreadsFlat(cardId).map(t => t.gmail_thread_id);
-    const index = ids.indexOf(itemId);
-    openedFromRow = index === -1 ? null : { cardId, index };
+    const index = cardItemIds(cardId).indexOf(itemId);
+    openedFromRow = index === -1 ? null : { cardId, index, itemId };
   }
-  // Back to that row, or the one now in its place when it left the card
+  // That row, or the one now in its place when it left the card
+  function openedRowElement(): HTMLElement | null {
+    const from = openedFromRow;
+    const itemId = from && returnTo(cardItemIds(from.cardId), from);
+    if (!from || !itemId) return null;
+    return document.querySelector<HTMLElement>(`.card[data-id="${CSS.escape(from.cardId)}"] [data-item-id="${CSS.escape(itemId)}"]`);
+  }
+  // Back to that row, lit for a moment
   function restoreOpenedRowFocus() {
     const from = openedFromRow;
+    if (!from || !cards().some(c => c.id === from.cardId)) {
+      openedFromRow = null;
+      return;
+    }
+    const ids = cardItemIds(from.cardId);
+    const itemId = returnTo(ids, from);
+    const row = openedRowElement();
     openedFromRow = null;
-    if (!from || !cards().some(c => c.id === from.cardId)) return;
-    const count = (isCalendarCard(from.cardId) ? getCardEventsFlat(from.cardId) : getCardThreadsFlat(from.cardId)).length;
-    if (count > 0) focusCardItem(from.cardId, Math.min(from.index, count - 1));
+    if (!itemId) return;
+    focusCardItem(from.cardId, ids.indexOf(itemId));
+    if (row) lightUp(row);
   }
 
   // When * was pressed, for a following a to select all
@@ -1741,16 +1958,37 @@ function App() {
       return;
     }
 
+    // ⌥↓ and ⌥↑ move the focused event a day on or back, at the same time
+    if (e.altKey && !e.metaKey && !e.ctrlKey && (e.key === 'ArrowDown' || e.key === 'ArrowUp')) {
+      const event = getFocusedEvent();
+      const cardId = focusedCardId();
+      if (event && cardId) {
+        e.preventDefault();
+        const day = new Date(event.start_time);
+        day.setDate(day.getDate() + (e.key === 'ArrowDown' ? 1 : -1));
+        moveEventTo(event, cardId, sameTimeOn(event, day));
+        const index = getCardEventsFlat(cardId).findIndex(ev => ev.id === event.id);
+        if (index >= 0) focusCardItem(cardId, index);
+        return;
+      }
+    }
+
     // Everything below is a bare-key shortcut; Cmd/Ctrl/Alt combos (Cmd+A
     // select-all, system shortcuts) must never trigger thread/card actions
     if (hasCommandModifier(e)) {
       return;
     }
 
-    // z undoes what the toast offers to undo, even with overlays open
-    if (e.key === 'z' && toasts.hasUndo()) {
+    // z undoes the session's latest change still undoable, then each one
+    // before it, and ⇧Z redoes; even with overlays open
+    if (e.key === 'z' && toasts.canUndo()) {
       e.preventDefault();
       toasts.undo();
+      return;
+    }
+    if (e.key === 'Z' && toasts.canRedo()) {
+      e.preventDefault();
+      toasts.redo();
       return;
     }
 
@@ -1840,6 +2078,10 @@ function App() {
       const cardIds = boardCards().filter(c => !collapsedCards[c.id]).map(c => c.id);
       const move = nextCardFocus(cardIds, focusedCardId(), e.key === 'l' || e.key === 'ArrowRight', addingCard());
       if (!move) return;
+      if (isFocusEdge(move)) {
+        showFocusEdge(move, "side");
+        return;
+      }
       if (move.addingCard && !addingCard()) {
         setNewCardColor(null);
         setNewCardAccountId(null);
@@ -1849,7 +2091,7 @@ function App() {
       }
       setAddingCard(move.addingCard);
       if (move.cardId) {
-        focusCardItem(move.cardId, 0);
+        focusCardItem(move.cardId, focusMemory.recall(move.cardId, cardItemIds(move.cardId)));
       } else {
         setFocusedCardId(null);
         setFocusedThreadIndex(-1);
@@ -1868,7 +2110,8 @@ function App() {
       const cardId = focusedCardId();
       const current = cardId ? { cardId, index: isCalendarCard(cardId) ? focusedEventIndex() : focusedThreadIndex() } : null;
       const next = nextItemFocus(visible, current, e.key === 'j' || e.key === 'ArrowDown');
-      if (next) focusCardItem(next.cardId, next.index);
+      if (next && isFocusEdge(next)) showFocusEdge(next, next.edge === "last" ? "down" : "up");
+      else if (next) focusCardItem(next.cardId, next.index);
       return;
     }
 
@@ -2457,6 +2700,19 @@ function App() {
     setSearchCard(null);
   }
 
+  // An empty search bar has nothing to lose, so a click anywhere else puts it
+  // away; its own suggestion menus are portalled out of the bar
+  createEffect(() => {
+    if (!showGlobalFilter()) return;
+    const onPointerDown = (e: PointerEvent) => {
+      if (globalFilter().trim() || searchCard()) return;
+      if ((e.target as Element | null)?.closest?.(".global-filter-bar, .query-autocomplete, .query-picker")) return;
+      closeSearch();
+    };
+    document.addEventListener("pointerdown", onPointerDown, true);
+    onCleanup(() => document.removeEventListener("pointerdown", onPointerDown, true));
+  });
+
   // Keeps the search as a card named after its query, carrying over what it
   // already found
   async function keepSearch() {
@@ -2562,6 +2818,7 @@ function App() {
       get showCcBcc() { return showCcBcc(); },
       setShowCcBcc: setShowCcBcc,
       suggestContacts: (query: string) => suggestContacts(query),
+      nameFor: (email: string) => contactName(email),
       get body() { return composeBody(); },
       setBody: setComposeBody,
       get attachments() { return composeAttachments(); },
@@ -2845,7 +3102,7 @@ function App() {
         }
       });
 
-      showToast(editing ? "Event updated" : "Event created");
+      showToast(`${editing ? "Updated" : "Created"} ${eventName({ title: form.summary })}`);
 
     } catch (e) {
       const failure = editing ? "Couldn't update the event" : "Couldn't create the event";
@@ -2903,9 +3160,36 @@ function App() {
     markDraftSending(composeDraftKey, account.id);
     pending.draft = { key: composeDraftKey, gmailDraftId: drafts.gmailDraftId() ?? undefined };
     sendingDraftKeys.add(composeDraftKey);
-    closeComposeAfterSend();
+    // An inline reply's box stays, becoming the reply; it isn't the compose
+    // any more, so that goes at once
+    if (pending.reply && composeShownIn() === "thread") {
+      batch(() => {
+        sentReplies.add(pending.reply!.threadId, pending, activeThread()?.messages.map(m => m.id) ?? []);
+        drafts.detach();
+        resetCompose();
+      });
+    } else {
+      closeComposeAfterSend();
+    }
     undoableSend.queue(pending);
   }
+
+  createEffect(() => {
+    const thread = activeThread();
+    if (thread) sentReplies.arrived(thread.id, thread.messages);
+  });
+  const activeSentReplies = createMemo((): SentReply[] => {
+    const threadId = activeThreadId();
+    if (!threadId) return [];
+    return sentReplies.inThread(threadId).flatMap(({ item: pending, state, queuedAt, sentAt }) => pending.reply?.messageId ? [{
+      replyToMessageId: pending.reply.messageId,
+      to: pending.to, cc: pending.cc, bcc: pending.bcc, body: pending.body, attachments: pending.attachments,
+      fromEmail: accounts().length > 1 ? accountById(pending.accountId)?.email : undefined,
+      state, sentAt,
+      undoUntil: queuedAt + SEND_UNDO_MS,
+      onUndo: () => { if (undoableSend.withdraw(pending)) putBackSend(pending, `"${pending.subject || "(no subject)"}" wasn't sent`); },
+    }] : []);
+  });
 
   // Compose closed when the send was queued, so an undone or failed send puts
   // the email back, continuing its saved draft
@@ -2980,7 +3264,12 @@ function App() {
 
     // The user may have moved on to another quick reply meanwhile
     const stillOpen = () => quickReply().threadId === threadId;
-    setQuickReply(qr => ({ ...qr, sending: true }));
+    const sent = { text };
+    let wentOut = false;
+    batch(() => {
+      sentQuickReplies.add(threadId, sent, []);
+      setQuickReply(qr => ({ ...qr, sending: true }));
+    });
     try {
       // The thread list lacks Reply-To and who wrote last; the full thread has both
       const details = await getThreadDetails(account.id, threadId);
@@ -2990,17 +3279,24 @@ function App() {
         return;
       }
       await replyToThread(account.id, threadId, entry.to, "", "", subject, text + signatureBlock(account.signature), entry.messageId, [], false);
-      if (stillOpen()) {
-        setQuickReply({ threadId: null, text: "", sending: false });
-        setQuickReplyCardId(null);
-      }
-      showToast("Reply sent");
-      fetchAndCacheThreads(cardId);
+      wentOut = true;
+      batch(() => {
+        sentQuickReplies.settle(sent);
+        if (stillOpen()) {
+          setQuickReply({ threadId: null, text: "", sending: false });
+          setQuickReplyCardId(null);
+        }
+      });
+      fetchAndCacheThreads(cardId).finally(() => sentQuickReplies.drop(sent));
     } catch (e) {
       console.error("Failed to send reply:", e);
-      setFailure("Couldn't send the reply", e);
+      setFailure(`Couldn't send the reply to ${quoted(thread.subject) ?? "the thread"}`, e);
     } finally {
-      if (stillOpen()) setQuickReply(qr => ({ ...qr, sending: false }));
+      // An unsent reply turns back into the reply once it can be edited again
+      batch(() => {
+        if (stillOpen()) setQuickReply(qr => ({ ...qr, sending: false }));
+        if (!wentOut) sentQuickReplies.drop(sent);
+      });
     }
   }
 
@@ -3024,10 +3320,10 @@ function App() {
         setQuickReplyEventId(null);
         setQuickReply(qr => ({ ...qr, text: "", sending: false }));
       }
-      showToast("Reply sent");
+      showToast(`Replied to ${eventName(event)}`);
     } catch (e) {
       console.error("Failed to send reply:", e);
-      setFailure("Couldn't send the reply", e);
+      setFailure(`Couldn't send the reply to ${eventName(event)}`, e);
     } finally {
       if (stillOpen()) setQuickReply(qr => ({ ...qr, sending: false }));
     }
@@ -3123,6 +3419,35 @@ function App() {
     }
   }
 
+  // Carries a new email's text and files into a reply on the thread already
+  // going with the same people, letting go of the new email's draft
+  async function replyInLiveThread(thread: Thread) {
+    const account = composeAccount();
+    if (!account) return;
+    const body = composeBody();
+    const attachments = composeAttachments();
+    try {
+      const details = await getThreadDetails(account.id, thread.gmail_thread_id);
+      const entry = batchReplyEntry(thread.gmail_thread_id, details.messages ?? [], account.email);
+      if (!entry?.to) return showToast("No one else to reply to");
+      cancelDraftSave();
+      drafts.clear(composeDraftKey, account.id);
+      startCompose({
+        to: entry.to,
+        subject: addReplyPrefix(entry.subject),
+        body,
+        attachments,
+        reply: { threadId: thread.gmail_thread_id, messageId: entry.messageId },
+        signature: false,
+        accountId: account.id,
+        draftKey: sessionDraftKey(draftKey(account.id, { replyThreadId: thread.gmail_thread_id })),
+        focusBody: true,
+      });
+    } catch (e) {
+      showFailure("Couldn't open the thread", e);
+    }
+  }
+
   function handleForwardFromThread(subject: string, body: string) {
     startCompose({ subject, body, forward: { threadId: activeThreadId() || '', subject, body }, accountId: activeThreadAccountId() ?? undefined });
   }
@@ -3134,7 +3459,7 @@ function App() {
       const outcome = await runUnsubscribe(account.id, method, { sendEmail, postOneClick: unsubscribeOneClick, openUrl });
       showToast(outcome === "done" ? `Unsubscribed from ${listName}` : `Finish unsubscribing from ${listName} on its page`);
     } catch (e) {
-      showFailure("Couldn't unsubscribe", e);
+      showFailure(`Couldn't unsubscribe from ${listName}`, e);
       throw e;
     }
   }
@@ -3288,11 +3613,11 @@ function App() {
       try {
         await deleteCalendarEvent(account.id, event.calendar_id, event.id, scope);
         removeDeletedEvents(event, scope);
-        showToast("Event deleted");
+        showToast(`Deleted ${eventName(event)}`);
         if (activeEvent()?.id === event.id) { closeEvent(); restoreOpenedRowFocus(); }
       } catch (e) {
         console.error('Failed to delete event:', e);
-        showFailure("Couldn't delete the event", e);
+        showFailure(`Couldn't delete ${eventName(event)}`, e);
       }
       return;
     }
@@ -3317,9 +3642,10 @@ function App() {
     updateEventInCards(event.id, () => null);
     if (activeEvent()?.id === event.id) { closeEvent(); restoreOpenedRowFocus(); }
     toasts.show({
-      message: inAccount(`Deleted “${event.title || "(No title)"}”`, [account.email], accounts().length),
+      message: inAccount(`Deleted ${eventName(event)}`, [account.email], accounts().length),
       tag: accountToastTag(account.id),
       undo: putBack,
+      undone: `Restored ${eventName(event)}`,
       onExpire: async () => {
         try {
           await deleteCalendarEvent(account.id, event.calendar_id, event.id);
@@ -3327,10 +3653,91 @@ function App() {
         } catch (e) {
           console.error('Failed to delete event:', e);
           putBack();
-          showFailure("Couldn't delete the event", e);
+          showFailure(`Couldn't delete ${eventName(event)}`, e);
         }
       },
     });
+  }
+
+  // Events moved in the app whose new time waits out their Undo toast
+  const heldEventMoves = new Map<string, { start_time: number; end_time: number }>();
+  const listedEvents = () => Object.values(cardCalendarEvents).flatMap(events => events ?? []);
+
+  // Moves the event in every card at once and tells Google, and so the
+  // guests, once the toast has gone without Undo
+  function moveEventTo(event: GoogleCalendarEvent, cardId: string, start: number) {
+    const account = eventOwner(event, cardId);
+    if (!account) return;
+    const refusal = moveRefusal(event, account.email);
+    if (refusal) { showToast(refusal); return; }
+    const before = { start_time: event.start_time, end_time: event.end_time };
+    const moved = movedTo(event, start);
+    const { clash } = moveVerdict(event, start, listedEvents());
+    // A later move of the same event holds its own time, which an earlier
+    // one's write or failure must leave alone
+    const latest = () => heldEventMoves.get(event.id) === moved;
+    const putBack = () => {
+      heldEventMoves.delete(event.id);
+      updateEventInCards(event.id, ev => ({ ...ev, ...before }));
+    };
+    heldEventMoves.set(event.id, moved);
+    updateEventInCards(event.id, ev => ({ ...ev, ...moved }));
+    toasts.show({
+      message: inAccount(moveToastText(event, start, account.email, clash), [account.email], accounts().length),
+      tag: accountToastTag(account.id),
+      undo: putBack,
+      onExpire: async () => {
+        try {
+          const updated = await updateCalendarEvent(account.id, event.calendar_id, event.id, moveInput(event, start), "this");
+          if (!latest()) return;
+          heldEventMoves.delete(event.id);
+          updateEventInCards(event.id, () => updated);
+          cards().forEach(card => {
+            if (isCalendarCard(card.id) && cardCoversAccount(card, account.id)) fetchAndCacheCalendarEvents(card.id, card.query);
+          });
+        } catch (e) {
+          console.error("Failed to move event:", e);
+          if (latest()) putBack();
+          showFailure("Couldn't move the event", e);
+        }
+      },
+    });
+  }
+
+  const eventDrag = createEventDrag({
+    verdict: (event, start) => moveVerdict(event, start, listedEvents()),
+    refusal: (event, cardId) => moveRefusal(event, eventOwner(event, cardId)?.email ?? ""),
+    onDrop: moveEventTo,
+  });
+
+  // From a row whose guests all declined: open the event's edit on its time
+  function rescheduleEvent(event: GoogleCalendarEvent, cardId: string) {
+    openEvent(event, cardId);
+    setEventForm(f => ({ ...f, ...editFormFor(event, eventOwner(event, cardId)?.id ?? ""), focusTime: true }));
+  }
+
+  // Calls off this occurrence for everyone, which Google tells the guests
+  async function cancelEvent(event: GoogleCalendarEvent, cardId: string) {
+    const account = eventOwner(event, cardId);
+    if (!account || !(await askConfirm(cancelPrompt(guestsOf(event, account.email).length)))) return;
+    deleteEvent(event, "this", undefined, cardId);
+  }
+
+  function aloneNotice(event: GoogleCalendarEvent, cardId: string) {
+    if (!noticesEnabled()) return undefined;
+    const email = eventOwner(event, cardId)?.email ?? "";
+    const alone = aloneAt(event, email, minuteNow());
+    if (!alone) return undefined;
+    const can = eventActions(event, email);
+    const organizer = alone.role === "organizer";
+    return (
+      <AloneNotice
+        alone={alone}
+        title={event.title || "(No title)"}
+        onReschedule={organizer && can.edit ? () => rescheduleEvent(event, cardId) : undefined}
+        onCancel={organizer && can.delete ? () => cancelEvent(event, cardId) : undefined}
+      />
+    );
   }
 
   async function handleMoveEventToCalendar(destinationCalendarId: string) {
@@ -3361,12 +3768,18 @@ function App() {
       // Find the destination calendar name
       const destCal = calendarsFor(account.id).find(c => c.id === destinationCalendarId);
       const where = destCal?.name || 'calendar';
-      showToast(event.recurring_event_id ? `Moved all its events to ${where}` : `Moved to ${where}`);
+      showToast(`Moved ${event.recurring_event_id ? "all of " : ""}${eventName(event)} to ${where}`);
       setCalendarDrawerOpen(false);
     } catch (e) {
       console.error("Failed to move event:", e);
-      showFailure("Couldn't move the event", e);
+      showFailure(`Couldn't move ${eventName(event)}`, e);
     }
+  }
+
+  // The open thread as its toasts name it: by the subject it shows
+  function openThreadNamed(thread: FullThread): NamedThread {
+    const headers = (name: string) => thread.messages.map(m => findHeader(m.payload?.headers, name)).filter((h): h is string => !!h);
+    return { subject: headers('Subject')[0] ?? activeListedThread()?.subject ?? "", participants: headers('From') };
   }
 
   function getCurrentThreadLabels(): string[] {
@@ -3409,12 +3822,13 @@ function App() {
     const leavesView = ['archive', 'trash', 'spam'].includes(action);
     const order = cardId ? cardThreadOrder(cardId) : [];
 
-    await handleThreadAction(action, [thread.id], cardId || '', { accountId: account.id });
+    await handleThreadAction(action, [thread.id], cardId || '', { accountId: account.id, named: [openThreadNamed(thread)] });
     if (activeThreadId() !== thread.id) return;
 
     if (leavesView) {
       const next = cardId ? afterRemoval(order, thread.id, loadAfterArchive()) : null;
       if (next && cardId && cardThreadOrder(cardId).includes(next)) openThread(next, cardId);
+      else if (closeThreadAnimated) closeThreadAnimated(() => { closeThreadView(); restoreOpenedRowFocus(); });
       else {
         closeThreadView();
         restoreOpenedRowFocus();
@@ -3460,26 +3874,36 @@ function App() {
 
     const addLabels = isAdding ? [labelId] : [];
     const removeLabels = isAdding ? [] : [labelId];
+    const named = openThreadNamed(thread);
 
     try {
       await modifyThreads(account.id, [thread.id], addLabels, removeLabels);
       await refreshActiveThread(account.id, thread.id);
       toasts.show({
-        message: inAccount(`${isAdding ? 'Added' : 'Removed'} the label “${labelName}”`, [account.email], accounts().length),
+        message: inAccount(labelChangeMessage(isAdding, labelName, named), [account.email], accounts().length),
         tag: accountToastTag(account.id),
+        undone: labelChangeMessage(!isAdding, labelName, named),
         undo: async () => {
           try {
             await modifyThreads(account.id, [thread.id], removeLabels, addLabels);
             if (activeThreadId() === thread.id) await refreshActiveThread(account.id, thread.id);
           } catch (e) {
             console.error("Failed to undo label change:", e);
-            setFailure("Couldn't undo", e);
+            setFailure(labelChangeMessage(!isAdding, labelName, named, "failed"), e);
+          }
+        },
+        redo: async () => {
+          try {
+            await modifyThreads(account.id, [thread.id], addLabels, removeLabels);
+            if (activeThreadId() === thread.id) await refreshActiveThread(account.id, thread.id);
+          } catch (e) {
+            setFailure(labelChangeMessage(isAdding, labelName, named, "failed"), e);
           }
         },
       });
     } catch (e) {
       console.error("Failed to modify labels:", e);
-      setFailure(`Couldn't ${isAdding ? 'add' : 'remove'} the label “${labelName}”`, e);
+      setFailure(labelChangeMessage(isAdding, labelName, named, "failed"), e);
     }
   }
 
@@ -3789,7 +4213,10 @@ function App() {
   // cache by thread actions.
   function forgetCardState(cardIds: string[]) {
     if (cardIds.length === 0) return;
-    for (const id of cardIds) delete knownCardCache[id];
+    for (const id of cardIds) {
+      delete knownCardCache[id];
+      newMail.forget(id);
+    }
     batch(() => {
       setCardThreads(produce(s => { for (const id of cardIds) delete s[id]; }));
       setCardPageTokens(produce(s => { for (const id of cardIds) delete s[id]; }));
@@ -3836,6 +4263,7 @@ function App() {
     toasts.show({
       message: `Deleted the card “${name}”`,
       undo: putBack,
+      undone: `Restored the card “${name}”`,
       onExpire: async () => {
         try {
           await deleteCard(cardId);
@@ -3891,7 +4319,10 @@ function App() {
     setLabelSearchQuery("");
   }
 
+  // The open thread view's close, which plays its closing motion first
+  let closeThreadAnimated: ((then?: () => void) => void) | undefined;
   function closeThreadView() {
+    closeThreadAnimated = undefined;
     setActiveThreadId(null);
     setActiveThreadCardId(null);
     setFocusedMessageIndex(0);
@@ -4158,7 +4589,9 @@ function App() {
     if (!card) return;
     const fetched = fetchedFor(card);
     try {
-      const events = (await fetchCalendarEvents(card.account_id, query)).filter(ev => !heldEventDeletes.has(ev.id));
+      const events = (await fetchCalendarEvents(card.account_id, query))
+        .filter(ev => !heldEventDeletes.has(ev.id))
+        .map(ev => (heldEventMoves.has(ev.id) ? { ...ev, ...heldEventMoves.get(ev.id) } : ev));
       if (cardQueryChanged(cardId, fetched)) return;
       setCardCalendarEvents(cardId, reconcile(events, { key: "id" }));
       if (!isSearchCard(cardId)) await saveCachedCardEvents(cardId, events);
@@ -4235,7 +4668,7 @@ function App() {
         await saveCardCache(cardId, result.groups, result.next_page_token);
         return;
       }
-      setCardThreads(cardId, reconcile(result.groups, { key: "gmail_thread_id" }));
+      newMail.show(cardId, result.groups);
       setCardPageTokens(cardId, result.next_page_token);
       setCardHasMore(cardId, result.has_more);
       await saveCardCache(cardId, result.groups, result.next_page_token);
@@ -4319,6 +4752,23 @@ function App() {
   }));
   const cardGroupsById = createMemo(() => new Map(cardGroupMemos().map(m => [m.cardId, m])));
 
+  // What came to each mail card while you were away, for its header
+  const lastLook = createLastLook(() => cards().map(c => c.id));
+  function newSince(card: Card): string | null {
+    if (card.card_type === "calendar" || isSearchCard(card.id) || collapsedCards[card.id]) return null;
+    const dates = (cardThreads[card.id] ?? []).flatMap(g => g.threads.map(t => t.last_message_date));
+    return newSinceLine(dates, lastLook.since(card.id), new Date(minuteNow()));
+  }
+
+  // Monthly senders running late, for the foot of the card that catches them
+  const cadence = createCadence({
+    cards: () => cards().filter(c => c.card_type !== "calendar"),
+    threadsOf: (cardId) => cardThreads[cardId]?.flatMap(g => g.threads),
+    ownEmails: () => accounts().map(a => a.email),
+    now: () => minuteNow(),
+    check: async (accountId, query) => (await searchThreadsPreview(accountId, query)).some(g => g.threads.length > 0),
+  });
+
   function getDisplayGroups(cardId: string): ThreadGroup[] {
     return cardGroupsById().get(cardId)?.threads() ?? withNowFor(cardId, computeDisplayGroups(cardId));
   }
@@ -4357,6 +4807,20 @@ function App() {
     return groups;
   }
 
+  // A today or tomorrow card's free stretches and notes in its own day's
+  // group; none while the board's filter hides rows, which would open false gaps
+  function calendarDayMarksFor(cardId: string, group: CalendarEventGroup): { gutters: Gutter[]; notes: DayNote[] } {
+    const none = { gutters: [], notes: [] };
+    const query = isPreviewingQuery(cardId) ? editCardQuery() : cardById(cardId)?.query ?? "";
+    const now = minuteNow();
+    const day = gutterDay(query, new Date(now));
+    if (!day || group.label !== formatDayLabel(day, new Date(today()))) return none;
+    if (globalFilter().trim() && filterHides() && !isSearchCard(cardId)) return none;
+    const tomorrow = new Date(day.getFullYear(), day.getMonth(), day.getDate() + 1);
+    const tomorrowStart = firstStartOn(Object.values(cardCalendarEvents).flatMap(events => events ?? []), tomorrow);
+    return calendarDayMarks(group.events, day, now, { tomorrowStart, notices: noticesEnabled() });
+  }
+
   function computeCalendarEventGroups(cardId: string): CalendarEventGroup[] {
     const events = isPreviewingQuery(cardId) ? queryPreviewCalendarEvents() : cardCalendarEvents[cardId];
     if (!events) return [];
@@ -4381,7 +4845,7 @@ function App() {
   }
 
   function getCardUnreadCount(cardId: string): number {
-    const groups = cardThreads[cardId];
+    const groups = countedThreads(cardId);
     if (!groups) return 0;
     return groups.reduce((total, group) =>
       total + group.threads.filter(t => t.unread_count > 0).length, 0);
@@ -4427,6 +4891,19 @@ function App() {
 
   // The attachments the lightbox steps through, all of one account's mail
   const [attachmentPreview, setAttachmentPreview] = createSignal<{ accountId: string; items: PreviewAttachment[]; index: number } | null>(null);
+
+  // A newer file of an open thread's attachment, in another loaded thread
+  const laterVersion = createLaterVersions({
+    pool: () => cards().flatMap(c => (isCalendarCard(c.id) ? [] : getCardThreadsFlat(c.id).map(thread => ({ thread, cardId: c.id })))),
+    fetchThread: getThreadDetails,
+  });
+  function laterVersionNote(messageId: string, filename: string): LaterNote | null {
+    const thread = activeThread();
+    const accountId = activeThreadAccountId();
+    const later = noticesEnabled() && thread && accountId ? laterVersion(thread, accountId, messageId, filename) : null;
+    if (!later) return null;
+    return { ...laterVersionLine(later), open: () => { setAttachmentPreview(null); openThread(later.threadId, later.cardId); } };
+  }
 
   // Images and PDFs open in the lightbox, with the row's others to step through
   function openCardAttachment(accountId: string, attachments: Attachment[], attachment: Attachment) {
@@ -4517,6 +4994,7 @@ function App() {
     }
 
     rememberOpenedRow(cardId, threadId);
+    lastLook.look(cardId);
     setActiveThreadAccountId(account.id);
     setActiveThreadId(threadId);
     setActiveThreadCardId(cardId);
@@ -4588,7 +5066,8 @@ function App() {
     try {
       await discardThreadDrafts(account.id, threadId, { listThreadDrafts, deleteDraft });
     } catch (e) {
-      showFailure("Couldn't discard the draft", e);
+      const subject = quoted(namedThreads(cardId, [threadId])[0].subject);
+      showFailure(subject ? `Couldn't discard the draft in ${subject}` : "Couldn't discard the draft", e);
       return;
     }
     if (!accountById(account.id)) return;
@@ -4682,11 +5161,49 @@ function App() {
     }
   }
 
+  // The threads a toast names, as the card lists them
+  function namedThreads(cardId: string, threadIds: string[]): NamedThread[] {
+    const listed = new Map((cardThreads[cardId] ?? []).flatMap(g => g.threads).map(t => [t.gmail_thread_id, t]));
+    return threadIds.map(id => listed.get(id) ?? { subject: "", participants: [] });
+  }
+
+  // The card an action was taken in, and all it holds when it has no more
+  // to load
+  function describeScope(cardId: string): DescribeScope {
+    const card = cardById(cardId);
+    const total = (cardThreads[cardId] ?? []).reduce((n, g) => n + g.threads.length, 0);
+    return {
+      card: card && { name: card.name, total: cardHasMore[cardId] ? null : total },
+      ownEmails: accounts().map(a => a.email),
+    };
+  }
+
   function showToast(message: string, action?: ToastAction | ToastAction[]) {
     toasts.show({ message, action });
   }
 
-  async function undoThreadAction(action: UndoableAction) {
+  // Puts the threads back where they were at once, then asks Gmail to;
+  // says what it did and, for one thread its card dropped, where it is back
+  function undoThreadAction(action: UndoableAction): string {
+    batch(() => {
+      for (const cId of action.cardIds) {
+        const card = cardById(cId);
+        const groups = cardThreads[cId];
+        if (!card || !groups || !action.before[cId]) continue;
+        const isTarget = (t: Thread) => action.owners.get(t.gmail_thread_id) === threadAccountId(t, card);
+        setCardThreads(cId, reconcile(restoreThreads(unwrap(groups), action.before[cId], isTarget), { key: "gmail_thread_id" }));
+      }
+    });
+    void reverseThreadAction(action);
+    const undone = actionUndoneMessage(action.action, action.named, action.scope);
+    const card = cardById(action.cardId);
+    const backIn = action.threadIds.length === 1 && card && actionRemovesFromCard(action.action, card.query)
+      ? backInPlace(cardThreads[card.id] ?? [], action.threadIds[0], card.name)
+      : "";
+    return undone + backIn;
+  }
+
+  async function reverseThreadAction(action: UndoableAction) {
     if (lastAction() === action) setLastAction(null);
     try {
       // An account signed out of since has nothing left to undo
@@ -4700,14 +5217,93 @@ function App() {
       }
     } catch (e) {
       console.error("Failed to undo action", e);
-      setFailure("Couldn't undo", e);
+      for (const cId of action.cardIds) if (cardById(cId)) fetchAndCacheThreads(cId);
+      setFailure(undoFailureMessage(action.action, action.named, action.scope), e);
+    }
+  }
+
+  // A thread row dragged onto a card: the card under it says what a drop
+  // there does, worked out from its query, and the drop does it
+  const draggedThread = (drag: RowDragState) =>
+    (cardThreads[drag.sourceCardId] ?? []).flatMap(g => g.threads).find(t => t.gmail_thread_id === drag.threadId);
+  function intentOf(drag: RowDragState): DropIntent | null {
+    const thread = draggedThread(drag);
+    const source = cardById(drag.sourceCardId);
+    const target = cardById(drag.overCardId);
+    if (!thread || !source || !target) return null;
+    const accountId = threadAccountId(thread, source);
+    const labels = labelsByAccount[accountId] ?? [];
+    return dropIntent(thread, source, target, drag.alt, {
+      labelId: (name) => labels.find(l => gmailLabelName(l.name) === name)?.id,
+      labelName: (id) => { const label = labels.find(l => l.id === id); return label ? labelDisplayName(label) : id; },
+      accountEmail: accountById(accountId)?.email ?? "",
+      now: new Date(),
+      otherAccount: !cardCoversAccount(target, accountId),
+    });
+  }
+  const rowDrag = createRowDrag({
+    onStart: (drag) => {
+      const thread = draggedThread(drag);
+      if (thread) fetchAccountLabels(threadAccountId(thread, cardById(drag.sourceCardId)));
+    },
+    onDrop: (drag, at) => {
+      const intent = intentOf(drag);
+      if (intent?.kind === "labels") {
+        handleThreadAction("label", [drag.threadId], drag.sourceCardId, { labelChange: intent.change, message: intent.done, from: at });
+      } else if (intent?.kind === "event") {
+        openNewEventForm(intent.event);
+      }
+    },
+  });
+  onCleanup(rowDrag.cancel);
+  const dropIntentFor = (cardId: string) => {
+    const drag = rowDrag.dragging();
+    return drag?.overCardId === cardId ? intentOf(drag) : null;
+  };
+
+  // A changed thread joins the cards on the board that now list it, by what
+  // its labels answer of their queries, where they would list it; they are
+  // snapshotted for rollback and refreshed on undo like the cards it was in.
+  // `changed` is each affected card's groups with the change made.
+  function placeChangedThreads(
+    changed: [string, ThreadGroup[]][],
+    isTarget: (t: Thread, card: Card) => boolean,
+    ownerOf: Map<string, string>,
+    updated: Record<string, ThreadGroup[]>,
+    snapshot: Record<string, ThreadGroup[]>,
+    affected: string[],
+  ) {
+    const threads = new Map<string, Thread>();
+    for (const [cId, groups] of changed) {
+      const card = cardById(cId);
+      if (!card) continue;
+      for (const t of groups.flatMap(g => g.threads)) {
+        if (isTarget(t, card) && !threads.has(t.gmail_thread_id)) threads.set(t.gmail_thread_id, { ...t, account_id: ownerOf.get(t.gmail_thread_id)! });
+      }
+    }
+    const now = new Date();
+    for (const thread of threads.values()) {
+      const labelId = (name: string) => labelsByAccount[thread.account_id]?.find(l => gmailLabelName(l.name) === name)?.id;
+      const candidates = cards()
+        .filter(c => c.card_type !== "calendar" && !collapsedCards[c.id] && cardThreads[c.id] && cardCoversAccount(c, thread.account_id))
+        .map(c => ({ id: c.id, query: c.query, groups: updated[c.id] ?? unwrap(cardThreads[c.id]), complete: !cardHasMore[c.id] }));
+      for (const [cId, groups] of Object.entries(placeInCards(candidates, thread, labelId, now))) {
+        if (!snapshot[cId]) {
+          snapshot[cId] = structuredClone(unwrap(cardThreads[cId]));
+          affected.push(cId);
+        }
+        updated[cId] = groups;
+      }
     }
   }
 
   // silent: a change the user didn't ask for directly (marking a thread
   // read on open) gets no undo toast. `accountId` names the threads' account
-  // when the card may no longer list them (the open thread).
-  async function handleThreadAction(action: string, threadIds: string[], cardId: string, { silent = false, accountId }: { silent?: boolean; accountId?: string } = {}) {
+  // when the card may no longer list them (the open thread), and `named` the
+  // threads its toasts name then. `labelChange` makes it a label change of its
+  // own (a thread dropped on a card), named in its toast by `message` and
+  // carried from `from`
+  async function handleThreadAction(action: string, threadIds: string[], cardId: string, { silent = false, accountId, named, labelChange, message, from }: { silent?: boolean; accountId?: string; named?: NamedThread[]; labelChange?: LabelChange; message?: string; from?: { left: number; top: number; width: number; height: number } } = {}) {
     const byAccount = accountId
       ? new Map([[accountId, threadIds]])
       : threadIdsByAccount(cardThreads[cardId] ?? [], threadIds, cardById(cardId) ?? { account_id: "" });
@@ -4718,7 +5314,11 @@ function App() {
     // of these when it has the id and comes from the account acted in
     const isTarget = (t: Thread, card: Card) => ownerOf.get(t.gmail_thread_id) === threadAccountId(t, card);
 
-    const { add: addLabels, remove: removeLabels } = labelChangeFor(action);
+    const applying = labelChange ?? labelChangeFor(action);
+    const { add: addLabels, remove: removeLabels } = applying;
+    const removesFrom = (query: string) => (labelChange ? changeRemovesFromCard(labelChange, query) : actionRemovesFromCard(action, query));
+    const acted = named ?? namedThreads(cardId, threadIds);
+    const scope = describeScope(cardId);
 
     // Optimistic Update - update ALL cards that contain these threads.
     // Snapshot the affected cards first so the update can be rolled back
@@ -4741,14 +5341,18 @@ function App() {
         if (!labelsBefore.has(acc)) labelsBefore.set(acc, new Map());
         labelsBefore.get(acc)!.set(t.gmail_thread_id, t);
       }
-      updatedCardThreads[card.id] = applyThreadAction(groups, ids, action, actionRemovesFromCard(action, card.query));
+      updatedCardThreads[card.id] = applyLabelChange(groups, ids, applying, removesFrom(card.query));
     }
+    placeChangedThreads(Object.entries(snapshot).map(([cId, groups]) => [cId, applyLabelChange(groups, threadIds, applying, false)]), isTarget, ownerOf, updatedCardThreads, snapshot, affectedCardIds);
+    // Before the board shows it, so the rows can be carried from where they were
+    const departure = silent || activeThreadId() ? null : liftRows(cardId, threadIds, from);
 
     batch(() => {
       for (const [cId, groups] of Object.entries(updatedCardThreads)) {
         setCardThreads(cId, reconcile(groups, { key: "gmail_thread_id" }));
       }
     });
+    departure?.land();
     if (!silent) setActionsWheelOpen(false);
 
     // Clear selection after bulk action
@@ -4770,7 +5374,7 @@ function App() {
       if (results.some(r => r.status === "fulfilled")) {
         for (const cId of affectedCardIds) if (cardById(cId)) fetchAndCacheThreads(cId);
       }
-      setFailure(actionFailureLabel(action, threadIds.length), failure.reason);
+      setFailure(actionFailureMessage(action, acted, scope), failure.reason);
       return;
     }
 
@@ -4787,14 +5391,19 @@ function App() {
       cardId,
       cardIds: affectedCardIds,
       reversals: [...byAccount].flatMap(([acc, ids]) => undoLabelChanges(acc, ids, change, labelsBefore.get(acc) ?? new Map())),
-      timestamp: Date.now()
+      timestamp: Date.now(),
+      before: snapshot,
+      owners: ownerOf,
+      named: acted,
+      scope,
     };
     setLastAction(done);
     const emails = owners.map(a => a!.email);
     toasts.show({
-      message: inAccount(actionLabel(action, threadIds.length), emails, accounts().length),
+      message: inAccount(message ?? actionMessage(action, acted, scope), emails, accounts().length),
       tag: owners.length === 1 ? accountToastTag(owners[0]!.id) : undefined,
       undo: () => undoThreadAction(done),
+      redo: () => { void handleThreadAction(action, threadIds, cardId, { silent: true, accountId, named: acted }); },
     });
   }
 
@@ -4826,12 +5435,16 @@ function App() {
   const contactsWanted = () => composeFabHovered() || (composing() && !closingCompose()) || addingCard() || editingCardId() !== null
     || creatingEvent() || !!eventForm().editing;
   const guestSuggestions = (query: string) => matchContacts(rankedContacts(), query, 8);
-  const rankedContacts = createMemo(() => contactsWanted() ? rankContacts(
-    googleContacts(),
-    Object.values(cardThreads).flatMap(groups => groups.flatMap(g => g.threads)),
-    accounts().map(a => a.email),
-    Date.now(),
-  ) : []);
+  const rankedContacts = createMemo(() => {
+    if (!contactsWanted()) return [];
+    const ranked = rankContacts(
+      googleContacts(),
+      Object.values(cardThreads).flatMap(groups => groups.flatMap(g => g.threads)),
+      accounts().map(a => a.email),
+      Date.now(),
+    );
+    return noticesEnabled() ? noteMovedContacts(ranked, Date.now()) : ranked;
+  });
   // Kept while the suggestions fade out after the pointer leaves
   const fabSuggestions = createMemo<RecentContact[]>(shown => composeFabHovered() ? rankedContacts().slice(0, 3) : shown, []);
   // The default account's threads and events, read only while New Event is hovered
@@ -4847,6 +5460,37 @@ function App() {
   }, []);
 
   const suggestContacts = (query: string) => matchContacts(rankedContacts(), query, 8);
+  // The name an address goes by: the user's contact, else the open thread or loaded mail
+  const contactName = (email: string) => {
+    const key = email.toLowerCase();
+    return googleContacts().find(c => c.email_addresses.some(e => e.toLowerCase() === key))?.display_name
+      || nameInMessages(email, activeThread()?.messages ?? [])
+      || nameInThreads(email, Object.values(cardThreads).flatMap(groups => groups.flatMap(g => g.threads)));
+  };
+  // A thread already going about what a new email's subject and To say
+  const liveThread = createLiveThreadMatch({
+    active: () => composing() && !closingCompose() && !composeIsReply() && !forwardingThread() && !forwardingEvent() && noticesEnabled(),
+    subject: composeSubject,
+    to: () => splitEmailList(composeTo()),
+    threads: () => Object.values(cardThreads).flatMap(groups => groups.flatMap(g => g.threads)).filter(t => t.account_id === composeAccount()?.id),
+    ownEmails: () => accounts().map(a => a.email),
+    search: async (query) => {
+      const account = composeAccount();
+      return account ? (await searchThreadsPreview(account.id, query)).flatMap(g => g.threads) : [];
+    },
+  });
+  // What the send toast says, kept while the last send goes out
+  const sendingMessage = createMemo<string>(shown => {
+    const group = undoableSend.pendingGroup();
+    if (group.length === 0) return shown;
+    const recipients = group.flatMap(p => {
+      const batchThread = batchReplyOrigins.get(p)?.thread;
+      return batchThread ? namedRecipients(batchThread) : splitEmailList([p.to, p.cc, p.bcc].join(", "));
+    });
+    const to = sendingTo(recipients, accounts().map(a => a.email), new Date(), contactName);
+    const from = [...new Set(group.map(p => accountById(p.accountId)?.email ?? ""))].filter(Boolean);
+    return `${inAccount(to ? `Sending ${to}` : "Sending message", from, accounts().length, "from")}…`;
+  }, "Sending message…");
   const sidePanelBesideView = () => panelBesideView({
     placement: composeShownIn(),
     creatingEvent: creatingEvent(),
@@ -5030,6 +5674,14 @@ function App() {
         )}
       </Show>
 
+      <Show when={inputMode() === "keyboard" && focusedCardId() && selectedAccount() && !activeThreadId() && !activeEvent()}>
+        <FocusRing
+          target={() => document.querySelector<HTMLElement>(".thread.focused, .calendar-event-item.focused")}
+          hue={cardById(focusedCardId())?.color ?? undefined}
+          bump={ringBump()}
+        />
+      </Show>
+
       {/* Error banner */}
       <Show when={error()}>
         <div class="auth-error" role="alert">
@@ -5083,7 +5735,7 @@ function App() {
 
       {/* Deck */}
       <Show when={!loading() && selectedAccount()}>
-        <DragDropProvider onDragStart={onDragStart} onDragEnd={onDragEnd as any} collisionDetector={mostIntersecting}>
+        <DragDropProvider onDragStart={onDragStart} onDragOver={onDragOver} onDragEnd={onDragEnd as any} collisionDetector={mostIntersecting}>
           <DragDropSensors />
           <div
             class={`deck ${resizing() ? 'resizing' : ''} ${boardStatus() ? 'has-status' : ''}`}
@@ -5191,9 +5843,13 @@ function App() {
                     >
                       <div
                         class={`card ${isSearchCard(card.id) ? 'search' : ''} ${collapsedCards[card.id] ? 'collapsed' : ''} ${editingCardId() === card.id ? 'editing' : ''} ${(offline() || cardExpired(card)) && (cardThreads[card.id] || cardCalendarEvents[card.id]) ? 'stale' : ''}`}
-                        classList={{ 'dragging': sortable.isActiveDraggable }}
+                        classList={{ 'dragging': sortable.isActiveDraggable, 'drop-target': !!dropIntentFor(card.id) }}
                         data-id={card.id}
                         data-color={editingCardId() === card.id ? (editCardColor() || undefined) : (card.color || undefined)}
+                        onPointerEnter={() => newMail.enter(card.id)}
+                        onPointerLeave={() => newMail.leave(card.id)}
+                        onFocusIn={() => newMail.focus(card.id, inputMode() === "keyboard")}
+                        onFocusOut={(e) => { if (!e.currentTarget.contains(e.relatedTarget as Node | null)) newMail.focus(card.id, false); }}
                         role="region"
                         aria-label={`${card.name} ${card.card_type === "calendar" ? "calendar" : "email"} card`}
                       >
@@ -5235,7 +5891,7 @@ function App() {
                           >
                             <button
                               class="card-title-btn"
-                              aria-label={cardTitleLabel({ name: card.name, accountId: card.account_id, accounts: accounts(), shown: namesAccount(), problem: syncStatus().problem, collapsed: !!collapsedCards[card.id], unread: getCardUnreadCount(card.id) })}
+                              aria-label={cardTitleLabel({ name: card.name, accountId: card.account_id, accounts: accounts(), shown: namesAccount(), problem: syncStatus().problem, since: newSince(card), collapsed: !!collapsedCards[card.id], unread: getCardUnreadCount(card.id) })}
                               aria-expanded={!collapsedCards[card.id]}
                             >
                               <Show when={collapsedCards[card.id] && getCardUnreadCount(card.id) > 0}>
@@ -5243,8 +5899,18 @@ function App() {
                               </Show>
                               <span class="card-title-chevron" aria-hidden="true"><ChevronIcon size="ui" /></span>
                               <span class="card-title">{card.name}</span>
-                              <CardAccountQualifier accountId={card.account_id} accounts={accounts()} shown={namesAccount()} problem={syncStatus().problem} />
+                              <CardAccountQualifier accountId={card.account_id} accounts={accounts()} shown={namesAccount()} problem={syncStatus().problem} since={newSince(card)} />
                             </button>
+                            <Show when={dropIntentFor(card.id)}>
+                              {(intent) => (
+                                <span class="drop-intent" classList={{ "none": intent().kind === "none" }} role="status">
+                                  {intent().text}
+                                  <Show when={(() => { const i = intent(); return i.kind === "labels" ? i.alt : undefined; })()}>
+                                    {(alt) => <> <span class="drop-intent-alt">{alt()}</span></>}
+                                  </Show>
+                                </span>
+                              )}
+                            </Show>
                             <Show when={!collapsedCards[card.id] && getCardUnreadCount(card.id) > 0}>
                               <span class="card-unread-badge">{getCardUnreadCount(card.id)}</span>
                             </Show>
@@ -5283,6 +5949,7 @@ function App() {
                           class="card-body"
                           ref={(el) => onCleanup(watchScrollFade(el))}
                           onScroll={(e) => {
+                            lastLook.look(card.id);
                             if (editingCardId() === card.id) return; // No scroll loading during edit
                             const target = e.currentTarget;
                             const nearBottom = target.scrollTop + target.clientHeight >= target.scrollHeight - 50;
@@ -5323,14 +5990,36 @@ function App() {
                               <CardEmpty cardId={card.id} name={card.name} query={isPreviewingQuery(card.id) ? editCardQuery() : card.query} kind="calendar" noMatch={noMatchFor(card.id)} ledger={postmarks} />
                             </Show>
                             <Index each={getCalendarEventGroups(card.id)}>
-                              {(group) => (
+                              {(group) => {
+                                const marks = createMemo(() => calendarDayMarksFor(card.id, group()));
+                                const gutterAbove = (index: number) => marks().gutters.find(g => g.beforeIndex === index);
+                                const noteAbove = (index: number) => marks().notes.find(n => n.beforeIndex === index);
+                                const headingVerdict = () => (group().day === undefined ? null : eventDrag.verdictAt(`day:${group().day}`));
+                                const gutterTarget = (gutter: Gutter) => `at:${gutterMoveStart(gutter, minuteNow())}`;
+                                return (
                                 <>
-                                  <div class="date-header">{group().label}</div>
+                                  <div
+                                    class="date-header"
+                                    classList={{ "move-over": !!headingVerdict() }}
+                                    data-move-target={group().day === undefined ? undefined : `day:${group().day}`}
+                                  >
+                                    {group().label}
+                                    <Show when={headingVerdict()}>{(verdict) => <MoveVerdict verdict={verdict()} />}</Show>
+                                  </div>
                                   <For each={group().events}>
-                                    {(event) => (
+                                    {(event, index) => (
                                       <>
+                                      <Show when={gutterAbove(index())}>
+                                        {(gutter) => <CalendarGutter gutter={gutter()} now={minuteNow()} moveTarget={gutterTarget(gutter())} verdict={eventDrag.verdictAt(gutterTarget(gutter()))} />}
+                                      </Show>
+                                      <Show when={noteAbove(index())}>
+                                        {(note) => <CalendarDayNote note={note()} />}
+                                      </Show>
                                       <div
                                         class={`calendar-event-item ${fadedBySearch(card.id, event.id) ? "faded" : ""} ${event.response_status === "declined" ? "declined" : ""} ${selectedEvents()[card.id]?.has(event.id) ? "selected" : ""} ${isEventFocused(card.id, event.id) ? "focused" : ""} ${isQuickReplyEvent(event.id) ? "replying" : ""}`}
+                                        classList={{ "drag-source": eventDrag.isDragged(event.id, card.id) }}
+                                        onPointerDown={(e) => eventDrag.press(e, event, card.id)}
+                                        data-item-id={event.id}
                                         onClick={() => openEvent(event, card.id)}
                                         onMouseEnter={(e) => showEventHoverActions(card.id, event.id, e)}
                                         onMouseLeave={(e) => hideEventHoverActions(card.id, event.id, e)}
@@ -5341,6 +6030,7 @@ function App() {
                                           event={event}
                                           time={getSmartEventTime(event, currentTime())}
                                           showResponse={eventActions(event, eventOwner(event, card.id)?.email ?? '').rsvp}
+                                          notice={aloneNotice(event, card.id)}
                                         >
                                           <Show when={event.hangout_link && !meetingOver(event, minuteNow())}>
                                             <button
@@ -5420,8 +6110,15 @@ function App() {
                                       </>
                                     )}
                                   </For>
+                                  <Show when={gutterAbove(group().events.length)}>
+                                    {(gutter) => <CalendarGutter gutter={gutter()} now={minuteNow()} moveTarget={gutterTarget(gutter())} verdict={eventDrag.verdictAt(gutterTarget(gutter()))} />}
+                                  </Show>
+                                  <Show when={noteAbove(group().events.length)}>
+                                    {(note) => <CalendarDayNote note={note()} />}
+                                  </Show>
                                 </>
-                              )}
+                                );
+                              }}
                             </Index>
                           </Show>
 
@@ -5433,7 +6130,7 @@ function App() {
                             <Index each={getDisplayGroups(card.id)}>
                               {(group) => (
                                 <>
-                                  <Show when={isNowGroup(group())} fallback={<div class="date-header">{threadGroupLabel(group().label)}</div>}>
+                                  <Show when={isNowGroup(group())} fallback={<div class="date-header">{groupHeading(group()).text}</div>}>
                                     <div class="date-header invite-now-header"><span class="invite-live-dot" aria-hidden="true" />Now</div>
                                   </Show>
                                   <For each={group().threads}>
@@ -5464,6 +6161,7 @@ function App() {
                                         const clashes = inviteState(invite, rsvp, minuteNow()) === "unanswered" ? inviteStrip()?.clashes : undefined;
                                         return `. ${inviteSummary(invite, new Date(minuteNow()), { rsvp, clashes })}`;
                                       };
+                                      const unanswered = () => unansweredLine(thread, accounts().map(a => a.email), new Date(today()));
                                       return (
                                       <>
                                         <div
@@ -5475,8 +6173,11 @@ function App() {
                                             if ((e.target as Element).closest(".invite-answer")) return;
                                             openThread(thread.gmail_thread_id, card.id);
                                           }}
+                                          data-item-id={thread.gmail_thread_id}
                                           role="article"
-                                          aria-label={`${thread.unread_count > 0 ? 'Unread: ' : ''}${thread.subject} from ${thread.participants.slice(0, 2).map(personName).join(', ')}${inviteLabel()}`}
+                                          data-thread-id={thread.gmail_thread_id}
+                                          onPointerDown={(e) => rowDrag.press(e, card.id, thread.gmail_thread_id)}
+                                          aria-label={`${thread.unread_count > 0 ? 'Unread: ' : ''}${thread.subject} from ${thread.participants.slice(0, 2).map(personName).join(', ')}${inviteLabel()}${unanswered() ? `. ${unanswered()}` : ''}`}
                                           tabindex={rowTabIndex(card.id, thread.gmail_thread_id)}
                                           onFocus={() => onRowFocus(card.id, thread.gmail_thread_id)}
                                         >
@@ -5486,9 +6187,10 @@ function App() {
                                               <ThreadRowLines
                                                 thread={thread}
                                                 ownEmails={accounts().map(a => a.email)}
-                                                time={threadTime(thread.last_message_date, group().label)}
+                                                time={threadTime(thread.last_message_date, group())}
                                                 subject={thread.calendar_event ? inviteTitle(thread.subject) : undefined}
                                                 attachmentsShown={attachments().length > 0}
+                                                aside={unanswered()}
                                                 beforeTime={
                                                   <Show when={isDraftThread(thread)}>
                                                     <button
@@ -5570,12 +6272,19 @@ function App() {
                                             </Show>
                                           </div>
                                         </div>
-                                        <Show when={isQuickReplyThread(thread.gmail_thread_id)}>
-                                          <div class="quick-reply-box" onClick={(e) => e.stopPropagation()}>
+                                        <Show when={isQuickReplyThread(thread.gmail_thread_id) || sentQuickReply(thread.gmail_thread_id)}>
+                                          <SentInPlace
+                                            class="quick-reply-box"
+                                            sent={sentQuickReply(thread.gmail_thread_id) && { ...sentQuickReply(thread.gmail_thread_id)!, undoUntil: 0 }}
+                                            onClick={(e) => e.stopPropagation()}
+                                          >
+                                            <Show when={lastLetterLine(thread.last_message_date ? new Date(thread.last_message_date) : null, new Date())}>
+                                              {(line) => <p class="compose-last-letter">{line()}</p>}
+                                            </Show>
                                             <ComposeTextarea
                                               class="quick-reply-input"
-                                              placeholder="Write a reply..."
-                                              value={quickReply().text}
+                                              placeholder={(quickReplyTo()?.threadId === thread.gmail_thread_id && replyPlaceholder(quickReplyTo()!.to, accounts().map(a => a.email), contactName)) || "Write a reply..."}
+                                              value={sentQuickReply(thread.gmail_thread_id)?.item.text ?? quickReply().text}
                                               onChange={(val: string) => setQuickReply(qr => ({ ...qr, text: val }))}
                                               onSend={handleQuickReply}
                                               onCancel={() => setQuickReply({ threadId: null, text: "", sending: false })}
@@ -5593,7 +6302,7 @@ function App() {
                                               <CancelButton onClick={() => setQuickReply({ threadId: null, text: "", sending: false })} />
                                               <SubmitButton label="Send" busy={quickReply().sending} busyLabel="Sending..." disabled={!quickReply().text.trim()} onClick={handleQuickReply} />
                                             </FormFooter>
-                                          </div>
+                                          </SentInPlace>
                                         </Show>
                                       </>
                                       );
@@ -5602,12 +6311,29 @@ function App() {
                                 </>
                               )}
                             </Index>
+                            <Show when={noticesEnabled() && !isPreviewingQuery(card.id)}>
+                              <CardFootNotes
+                                notices={cadence.notices(card.id)}
+                                onSearch={(query) => { setShowGlobalFilter(true); runSearch(query); }}
+                                onDismiss={(email) => cadence.dismiss(card.id, email)}
+                              />
+                            </Show>
                             {/* Loading more indicator for infinite scroll */}
                             <Show when={loadingMore[card.id]}>
                               <StatusLine kind="loading">Loading more...</StatusLine>
                             </Show>
                           </Show>
                         </div>
+                        <Show when={focusEdgeLine(card.id)}>
+                          {(line) => (
+                            <p class="focus-edge" role="status">
+                              {line().text}
+                              <Show when={line().key}>
+                                {(key) => <> · <KeyHint keys={key()} look="key" /> {line().next}</>}
+                              </Show>
+                            </p>
+                          )}
+                        </Show>
                       </div>
                       {/* Resize handle - outside card, inside wrapper */}
                       <div
@@ -5708,14 +6434,14 @@ function App() {
                       <For each={regroupThreads(queryPreviewThreads(), newCardGroupBy(), cardLabelNames(undefined))}>
                         {(group) => (
                           <>
-                            <div class="date-header">{group.label}</div>
+                            <div class="date-header">{groupHeading(group).text}</div>
                             <For each={group.threads}>
                               {(thread) => (
                                 <div class="thread" classList={{ "unread": thread.unread_count > 0 }}>
                                   <ThreadRowLines
                                     thread={thread}
                                     ownEmails={accounts().map(a => a.email)}
-                                    time={threadTime(thread.last_message_date, group.label)}
+                                    time={threadTime(thread.last_message_date, group)}
                                     attachmentsShown={visibleAttachments(thread.attachments ?? [], { hideCalendar: !!thread.calendar_event }).length > 0}
                                     attachments={
                                       <Show when={(thread.attachments ?? []).length > 0}>
@@ -5787,6 +6513,13 @@ function App() {
             fromAccountId={composeAccount()?.id}
             setFromAccountId={changeComposeAccount}
             fromEmail={composeIsReply() ? composeFromEmail() : undefined}
+            alreadyGoing={liveThread() ? {
+              key: liveThread()!.gmail_thread_id,
+              line: liveThreadLine(liveThread()!, splitEmailList(composeTo()), accounts().map(a => a.email), contactName, new Date()),
+              onReplyThere: () => replyInLiveThread(liveThread()!),
+            } : null}
+            placeholder={composeIsReply() ? replyPlaceholder(splitEmailList(`${composeTo()}, ${composeCc()}`), accounts().map(a => a.email), contactName) ?? undefined : undefined}
+            lastLetter={replyingToThread() ? lastLetterLine(threadLastDate(replyingToThread()!.threadId), new Date()) : null}
           />
         </div>
       </Show>
@@ -5861,6 +6594,8 @@ function App() {
             return c ? { name: c.name, color: (c.color as CardColor) || null } : null;
           })() : null}
           onClose={() => { if (composeShownIn() === "thread") closeCompose(); closeThreadView(); restoreOpenedRowFocus(); }}
+          origin={openedRowElement}
+          closeRef={(close) => { closeThreadAnimated = close; }}
           focusedMessageIndex={focusedMessageIndex()}
           onFocusChange={setFocusedMessageIndex}
           onOpenAttachment={(messageId, attachmentId, filename, mimeType, inlineData) => openAttachment(activeThreadAccountId() ?? "", messageId, attachmentId, filename, mimeType, inlineData)}
@@ -5894,6 +6629,8 @@ function App() {
           // Inline compose props
           inlineCompose={composeShownIn() === "thread" ? threadInlineCompose : null}
           threadAttachments={activeListedThread()?.attachments}
+          sentReplies={activeSentReplies()}
+          laterVersion={(attachment, message) => laterVersionNote(message.id, attachment.filename)}
           loadAttachmentPreview={(attachment) => thumbnails.preview(activeThreadAccount()?.id ?? "", attachment.message_id, attachment.attachment_id)}
           invite={(() => {
             const listed = activeListedThread();
@@ -5982,6 +6719,7 @@ function App() {
             return c ? { name: c.name, color: (c.color as CardColor) || null } : null;
           })() : null}
           onClose={() => { closeEvent(); restoreOpenedRowFocus(); }}
+          origin={openedRowElement}
           onRsvp={(status) => { const event = activeEvent(); if (event) answerListedEvent(event, status, activeEventCardId()); }}
           onReplyOrganizer={() => {
             const event = activeEvent();
@@ -6012,35 +6750,7 @@ function App() {
           onEdit={() => {
             const event = activeEvent();
             if (!event) return;
-            // Pre-fill the event form with current event data
-            const startDate = new Date(event.start_time);
-            let endDateVal = event.end_time ? new Date(event.end_time) : startDate;
-            // All-day end_time is Google's exclusive end (day after the last
-            // day); the form's endDate is inclusive, so step back one day
-            if (event.all_day && event.end_time) {
-              endDateVal = new Date(endDateVal.getTime() - 86400000);
-            }
-            // All-day timestamps are UTC-anchored; their local rendering is a
-            // time the user never chose (e.g. 17:00 in UTC-7), which would be
-            // saved verbatim if "All day" gets unchecked. Prefill smart
-            // defaults instead.
-            const timeDefaults = smartEventDefaults();
-            setEventForm(f => ({
-              ...f,
-              summary: event.title || '',
-              description: event.description || '',
-              location: event.location || '',
-              startDate: toDateInputString(startDate, event.all_day),
-              startTime: event.all_day ? timeDefaults.startTime : startDate.toTimeString().slice(0, 5),
-              endDate: toDateInputString(endDateVal, event.all_day),
-              endTime: event.all_day ? timeDefaults.endTime : endDateVal.toTimeString().slice(0, 5),
-              allDay: event.all_day,
-              attendees: event.attendees.map(a => a.email).join(', '),
-              // Cards list single occurrences; a null rule leaves a series' recurrence alone
-              recurrence: null,
-              addMeet: false,
-              editing: { id: event.id, calendarId: event.calendar_id, accountId: activeEventAccountId() ?? "" },
-            }));
+            setEventForm(f => ({ ...f, ...editFormFor(event, activeEventAccountId() ?? ""), focusTime: false }));
           }}
           onDelete={(scope) => { const event = activeEvent(); if (event) deleteEvent(event, scope, undefined, activeEventCardId()); }}
           onOpenCalendars={() => { fetchAvailableCalendars(activeEventAccountId() ?? undefined); setCalendarDrawerOpen(true); }}
@@ -6080,6 +6790,7 @@ function App() {
             addMeet: eventForm().addMeet,
             setAddMeet: (v: boolean) => setEventForm(f => ({ ...f, addMeet: v })),
             hasMeet: !!activeEvent()!.hangout_link,
+            focusTime: eventForm().focusTime,
             saving: eventForm().saving,
             onSave: handleCreateEvent,
             onClose: () => setEventForm(defaultEventForm()),
@@ -6162,7 +6873,7 @@ function App() {
                         showFields={false}
                         body={batchReplyMessages()[thread.threadId] || ''}
                         setBody={(v) => updateBatchReplyMessage(thread.threadId, v)}
-                        placeholder={`Reply to ${thread.to || extractEmail(thread.from)}...`}
+                        placeholder={replyPlaceholder(namedRecipients(thread), accounts().map(a => a.email), contactName) ?? "Write your reply..."}
                         attachments={batchReplyAttachments()[thread.threadId] || []}
                         onRemoveAttachment={(i) => removeBatchReplyAttachment(thread.threadId, i)}
                         onFileSelect={(e) => handleBatchReplyFileSelect(thread.threadId, e)}
@@ -6173,6 +6884,7 @@ function App() {
                         onSkip={() => discardBatchReplyThread(thread.threadId)}
                         canSend={!!batchReplyMessages()[thread.threadId]?.trim()}
                         focusBody={batchReplyThreads()[0]?.threadId === thread.threadId}
+                        lastLetter={lastLetterLine(thread.lastDate, new Date())}
                       />
                     </div>
                   </div>
@@ -6238,6 +6950,7 @@ function App() {
             )}
           </Show>
           <AfterArchiveSetting />
+          <SoundSettings cards={cards().filter(c => c.card_type !== "calendar")} />
           <SmartRepliesSettings
             open={smartRepliesOpen()}
             onToggle={() => setSmartRepliesOpen(!smartRepliesOpen())}
@@ -6324,7 +7037,9 @@ function App() {
               <div class="shortcut-row"><KeyHint keys="i" look="key" /> <span>Toggle important</span></div>
               <div class="shortcut-row"><KeyHint keys="!" look="key" /> <span>Report spam</span></div>
               <div class="shortcut-row"><KeyHint keys="y ⇧M n" look="key" /> <span>Answer a focused invite: Going, Maybe, Not going</span></div>
-              <div class="shortcut-row"><KeyHint keys="z" look="key" /> <span>Undo last action</span></div>
+              <div class="shortcut-row"><KeyHint keys="⌥↓ ⌥↑" look="key" /> <span>Move a focused event a day on or back</span></div>
+              <div class="shortcut-row"><KeyHint keys="z" look="key" /> <span>Undo, again for each earlier action</span></div>
+              <div class="shortcut-row"><KeyHint keys="⇧Z" look="key" /> <span>Redo</span></div>
             </div>
             <div class="shortcuts-section">
               <h3>Open thread</h3>
@@ -6437,7 +7152,7 @@ function App() {
         {/* Send Toast with Undo */}
         <Show when={undoableSend.toastVisible()}>
           <ToastFrame
-            message={`${inAccount("Sending message", [accountById(undoableSend.pending()?.accountId)?.email ?? ""].filter(Boolean), accounts().length, "from")}...`}
+            message={sendingMessage()}
             closing={undoableSend.toastClosing()}
             percent={undoableSend.progress()}
           >
@@ -6450,6 +7165,9 @@ function App() {
 
       <ConfirmDialog />
       <ScopePrompt />
+      <Show when={eventDrag.dragged()}>
+        {(dragged) => <EventDragGhost dragged={dragged()} time={getSmartEventTime(dragged().event, currentTime())} />}
+      </Show>
       <Show when={attachmentPreview()}>
         {(preview) => (
           <AttachmentLightbox
@@ -6460,6 +7178,7 @@ function App() {
             loadData={loadPreviewData}
             onDownload={(item) => downloadAttachment(preview().accountId, item.messageId, item.attachmentId, item.filename, item.mimeType, item.inlineData)}
             onOpenExternally={(item) => openAttachment(preview().accountId, item.messageId, item.attachmentId, item.filename, item.mimeType, item.inlineData)}
+            laterVersion={(item) => laterVersionNote(item.messageId, item.filename)}
           />
         )}
       </Show>

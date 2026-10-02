@@ -2,11 +2,31 @@ import { createMemo, createSignal, For, Show } from "solid-js";
 import { Avatar } from "./Avatar";
 import { completeRecipient, currentRecipient } from "../app/contacts";
 import { isImeComposing } from "../shared/keyboard";
+import { pasteNote, tidyRecipients } from "../app/tidyPaste";
+import { NoticeLine } from "./NoticeLine";
 
 export interface RecipientSuggestion {
   email: string;
   name?: string;
+  // Shown under the address, such as why it ranks where it does
+  note?: string;
 }
+
+// A suggested contact as a listbox option shows it
+export const ContactOption = (props: { contact: RecipientSuggestion }) => (
+  <>
+    <Avatar email={props.contact.email} name={props.contact.name} size="sm" />
+    <div class="compose-autocomplete-info">
+      <Show when={props.contact.name}>
+        <div class="compose-autocomplete-name">{props.contact.name}</div>
+      </Show>
+      <div class="compose-autocomplete-email">{props.contact.email}</div>
+      <Show when={props.contact.note}>
+        <div class="compose-autocomplete-note">{props.contact.note}</div>
+      </Show>
+    </div>
+  </>
+);
 
 // A To/Cc/Bcc field that suggests contacts for the recipient being typed, as
 // an ARIA combobox. Keys it doesn't use for the suggestions go to onKeyDown.
@@ -29,12 +49,32 @@ export const RecipientInput = (props: {
   const candidates = createMemo(() => (props.suggest && query() ? props.suggest(query()) : []));
   const open = () => focused() && !dismissed() && candidates().length > 0;
 
+  // What the last paste did, until the next key
+  const [note, setNote] = createSignal<string | null>(null);
+
+  // The contact's own name for a pasted bare address
+  const nameFor = (email: string) => props.suggest?.(email).find(c => c.email.toLowerCase() === email)?.name;
+
+  function handlePaste(e: ClipboardEvent) {
+    const input = e.currentTarget as HTMLInputElement;
+    const start = input.selectionStart ?? props.value.length;
+    const end = input.selectionEnd ?? start;
+    const before = props.value.slice(0, start) + props.value.slice(end);
+    const tidy = tidyRecipients(before, e.clipboardData?.getData?.("text/plain") ?? "", nameFor);
+    if (!tidy) return;
+    e.preventDefault();
+    props.onChange(tidy.value);
+    setDismissed(true);
+    setNote(pasteNote(tidy));
+  }
+
   function commit(email: string) {
     props.onChange(completeRecipient(props.value, email));
     setDismissed(true);
   }
 
   function handleKeyDown(e: KeyboardEvent) {
+    setNote(null);
     if (isImeComposing(e)) return;
     if (open()) {
       const count = candidates().length;
@@ -78,8 +118,12 @@ export const RecipientInput = (props: {
         onFocus={() => setFocused(true)}
         onBlur={() => setFocused(false)}
         onKeyDown={handleKeyDown}
+        onPaste={handlePaste}
         placeholder={props.placeholder}
       />
+      <Show when={note()}>
+        {(text) => <NoticeLine class="recipient-paste-note" text={text()} />}
+      </Show>
       <Show when={open()}>
         <div class="compose-autocomplete" role="listbox" id={listId}>
           <For each={candidates()}>
@@ -95,13 +139,7 @@ export const RecipientInput = (props: {
                 }}
                 onMouseEnter={() => setActive(i())}
               >
-                <Avatar email={contact.email} name={contact.name} size="sm" />
-                <div class="compose-autocomplete-info">
-                  <Show when={contact.name}>
-                    <div class="compose-autocomplete-name">{contact.name}</div>
-                  </Show>
-                  <div class="compose-autocomplete-email">{contact.email}</div>
-                </div>
+                <ContactOption contact={contact} />
               </div>
             )}
           </For>

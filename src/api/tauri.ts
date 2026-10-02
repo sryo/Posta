@@ -1,6 +1,9 @@
 // Tauri command bindings
 
 import { invoke } from "@tauri-apps/api/core";
+import type { DockMenu } from "../app/dockMenu";
+import type { Haptic } from "../app/detents";
+import type { CardNote } from "../app/wakeNotes";
 import type { RecurrenceScope } from "../app/recurrence";
 
 export interface Account {
@@ -78,6 +81,10 @@ export interface Thread {
   has_attachment: boolean;
   attachments: Attachment[];
   calendar_event: CalendarEvent | null;
+  // The From of the latest message that isn't a reaction, and whether a
+  // mailing list sent it
+  last_sender?: string | null;
+  last_from_list?: boolean;
 }
 
 export interface ThreadGroup {
@@ -446,6 +453,21 @@ export async function takePendingMailtos(): Promise<MailtoData[]> {
 /** Shows a PNG as the Dock icon while the app runs; null restores the bundled icon */
 export async function setDockIcon(png: Uint8Array | null): Promise<void> {
   return invoke("set_dock_icon", { png: png && Array.from(png) });
+}
+
+/** What the right-click Dock menu lists; choosing a card sends "focus-card" */
+export async function setDockMenu(menu: DockMenu): Promise<void> {
+  return invoke("set_dock_menu", { menu });
+}
+
+/** One notification per card, grouped under it in Notification Centre */
+export async function postCardNotes(notes: CardNote[]): Promise<void> {
+  return invoke("post_card_notes", { notes });
+}
+
+/** Force Touch trackpad feedback; nothing happens on other hardware */
+export async function haptic(kind: Haptic): Promise<void> {
+  return invoke("haptic", { kind });
 }
 
 // iCloud sync

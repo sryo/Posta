@@ -1,3 +1,4 @@
+import type { GoogleCalendarEvent } from "../api/tauri";
 import { extractEmail, splitEmailList, toDateInputString } from "../utils";
 
 export interface EventFormTimes {
@@ -56,4 +57,32 @@ export function eventFromThread(subject: string, participants: string[], account
 // Guest addresses typed as a comma-separated list, with or without names
 export function eventAttendees(text: string): string[] {
   return splitEmailList(text).map(extractEmail).filter(e => e.trim());
+}
+
+// The event form filled with an event to change it in place
+export function editFormFor(event: GoogleCalendarEvent, accountId: string, now: Date = new Date()) {
+  const startDate = new Date(event.start_time);
+  let endDate = event.end_time ? new Date(event.end_time) : startDate;
+  // All-day end_time is Google's exclusive end (day after the last day); the
+  // form's endDate is inclusive, so step back one day
+  if (event.all_day && event.end_time) endDate = new Date(endDate.getTime() - 86400000);
+  // All-day timestamps are UTC-anchored; their local rendering is a time the
+  // user never chose (e.g. 17:00 in UTC-7), which would be saved verbatim if
+  // "All day" gets unchecked. Prefill smart defaults instead.
+  const timeDefaults = smartEventDefaults(now);
+  return {
+    summary: event.title || '',
+    description: event.description || '',
+    location: event.location || '',
+    startDate: toDateInputString(startDate, event.all_day),
+    startTime: event.all_day ? timeDefaults.startTime : hhmm(startDate),
+    endDate: toDateInputString(endDate, event.all_day),
+    endTime: event.all_day ? timeDefaults.endTime : hhmm(endDate),
+    allDay: event.all_day,
+    attendees: event.attendees.map(a => a.email).join(', '),
+    // Cards list single occurrences; a null rule leaves a series' recurrence alone
+    recurrence: null,
+    addMeet: false,
+    editing: { id: event.id, calendarId: event.calendar_id, accountId },
+  };
 }

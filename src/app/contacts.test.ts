@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { Contact } from "../api/tauri";
-import { completeRecipient, currentRecipient, matchContacts, rankContacts } from "./contacts";
+import { completeRecipient, currentRecipient, matchContacts, noteMovedContacts, rankContacts } from "./contacts";
 
 const NOW = Date.UTC(2026, 8, 28);
 const DAY = 86_400_000;
@@ -98,5 +98,57 @@ describe("recipient completion", () => {
     expect(completeRecipient("ana@x.com,bo", "bo@y.com")).toBe("ana@x.com, bo@y.com");
     expect(completeRecipient("bo", "bo@y.com")).toBe("bo@y.com");
     expect(completeRecipient("", "bo@y.com")).toBe("bo@y.com");
+  });
+});
+
+describe("rankContacts first seen", () => {
+  it("records when an address was first seen in loaded mail", () => {
+    const ranked = rankContacts([], [
+      { participants: ["Ana <ana@x.com>"], last_message_date: NOW - DAY },
+      { participants: ["ana@x.com"], last_message_date: NOW - 9 * DAY },
+    ], [], NOW);
+    expect(ranked[0].firstSeen).toBe(NOW - 9 * DAY);
+  });
+});
+
+describe("noteMovedContacts", () => {
+  const AUG_2026 = Date.UTC(2026, 7, 10);
+  const JUL_2025 = Date.UTC(2025, 6, 20);
+  const seen = (email: string, name: string, firstSeen: number, lastContacted: number, frequency: number) =>
+    ({ email, name, firstSeen, lastContacted, frequency, fromGoogle: false });
+  const oldAna = seen("aperez@estudiomr.com.ar", "Ana Pérez", Date.UTC(2023, 0, 1), JUL_2025, 40);
+  const newAna = seen("ana@lumen.studio", "Ana Perez", AUG_2026, NOW - DAY, 3);
+
+  it("puts the new address above the old one and says why under each", () => {
+    const noted = noteMovedContacts([oldAna, seen("bo@x.com", "Bo Diaz", 0, NOW, 5), newAna], NOW, "en-US");
+    expect(noted.map(c => [c.email, c.note])).toEqual([
+      ["ana@lumen.studio", "Writes from here since August"],
+      ["aperez@estudiomr.com.ar", "Last heard from here in July 2025"],
+      ["bo@x.com", undefined],
+    ]);
+  });
+
+  it("leaves the new address where it is when it already ranks higher", () => {
+    expect(noteMovedContacts([newAna, oldAna], NOW, "en-US").map(c => c.email)).toEqual(["ana@lumen.studio", "aperez@estudiomr.com.ar"]);
+  });
+
+  it("says nothing while both addresses are in use", () => {
+    const stillActive = { ...oldAna, lastContacted: NOW - 30 * DAY };
+    expect(noteMovedContacts([stillActive, newAna], NOW).map(c => c.note)).toEqual([undefined, undefined]);
+  });
+
+  it("needs the new address to have written at least twice, after the old one went quiet", () => {
+    expect(noteMovedContacts([oldAna, { ...newAna, frequency: 1 }], NOW).every(c => !c.note)).toBe(true);
+    expect(noteMovedContacts([oldAna, { ...newAna, firstSeen: JUL_2025 - DAY }], NOW).every(c => !c.note)).toBe(true);
+  });
+
+  it("links only the same full name, never a first name alone or a robot", () => {
+    expect(noteMovedContacts([{ ...oldAna, name: "Ana" }, { ...newAna, name: "Ana" }], NOW).every(c => !c.note)).toBe(true);
+    expect(noteMovedContacts([oldAna, { ...newAna, name: "Ana Paredes" }], NOW).every(c => !c.note)).toBe(true);
+    expect(noteMovedContacts([{ ...oldAna, email: "noreply@estudio.com" }, newAna], NOW).every(c => !c.note)).toBe(true);
+  });
+
+  it("needs mail from both addresses, not just a contact card", () => {
+    expect(noteMovedContacts([{ ...oldAna, frequency: 0, fromGoogle: true }, newAna], NOW).every(c => !c.note)).toBe(true);
   });
 });

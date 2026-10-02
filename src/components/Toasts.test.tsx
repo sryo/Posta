@@ -116,6 +116,21 @@ describe("Toasts", () => {
     expect(undo).toHaveBeenCalledTimes(1);
   });
 
+  it("says, after an undo, what it undid and what the next z will undo, and offers Redo", () => {
+    const { toasts, polite } = setup();
+    const redo = vi.fn();
+    toasts.show({ message: "Starred “Photos”", undo: () => {}, redo });
+    toasts.show({ message: "Archived “Contract”", undone: "Unarchived “Contract”", undo: () => {}, redo });
+    fireEvent.click(within(polite).getByRole("button", { name: /Undo/ }));
+
+    expect(polite).toHaveTextContent("Unarchived “Contract”");
+    expect(polite.querySelector(".toast-note")).toHaveTextContent("z next: Starred “Photos”");
+    expect(within(polite).getByRole("button", { name: /Undo/ })).toBeInTheDocument();
+    fireEvent.click(within(polite).getByRole("button", { name: /Redo/ }));
+    expect(redo).toHaveBeenCalledTimes(1);
+    expect(polite).toHaveTextContent("Archived “Contract”");
+  });
+
   it("offers Retry on an error that can be tried again", () => {
     const { toasts, assertive } = setup();
     const retry = vi.fn();

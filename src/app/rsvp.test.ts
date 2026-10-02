@@ -1,11 +1,24 @@
 import { describe, expect, it } from "vitest";
-import { guestResponseLabel, inviteNamesEvent, isRsvpAnswer, ownResponseLabel, rsvpForKey, rsvpSentMessage, RSVP_ANSWERS, withOwnResponse } from "./rsvp";
+import { guestResponseLabel, inviteNamesEvent, isRsvpAnswer, ownResponseLabel, rsvpForKey, rsvpFailureMessage, rsvpSentMessage, RSVP_ANSWERS, withOwnResponse } from "./rsvp";
 
 describe("rsvpSentMessage", () => {
   it("confirms the answer in the user's own words", () => {
     expect(rsvpSentMessage("accepted")).toBe("You're going");
     expect(rsvpSentMessage("tentative")).toBe("You said maybe");
     expect(rsvpSentMessage("declined")).toBe("You're not going");
+  });
+
+  it("names the event answered", () => {
+    expect(rsvpSentMessage("accepted", "Planning")).toBe("You're going to “Planning”");
+    expect(rsvpSentMessage("tentative", "Planning")).toBe("You said maybe to “Planning”");
+    expect(rsvpSentMessage("declined", "Planning")).toBe("You're not going to “Planning”");
+  });
+});
+
+describe("rsvpFailureMessage", () => {
+  it("names the event it couldn't answer", () => {
+    expect(rsvpFailureMessage("Planning")).toBe("Couldn't send your RSVP to “Planning”");
+    expect(rsvpFailureMessage("")).toBe("Couldn't send your RSVP");
   });
 });
 

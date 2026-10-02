@@ -4,6 +4,9 @@ pub mod auth;
 pub mod cache;
 pub mod calendar;
 pub mod commands;
+mod dock_menu;
+mod haptics;
+mod wake;
 pub mod gmail;
 pub mod icloud;
 pub mod models;
@@ -165,6 +168,50 @@ fn set_dock_icon(app_handle: tauri::AppHandle, png: Option<Vec<u8>>) -> Result<(
     }
 }
 
+/// What the right-click Dock menu lists until the board next changes
+#[tauri::command]
+fn set_dock_menu(menu: dock_menu::DockMenu) {
+    dock_menu::set(menu);
+}
+
+/// Trackpad feedback while a card is dragged: "alignment" or "levelChange"
+#[tauri::command]
+fn haptic(app_handle: tauri::AppHandle, kind: String) -> Result<(), String> {
+    let haptic = haptics::Haptic::parse(&kind).ok_or_else(|| format!("Unknown haptic {kind}"))?;
+    #[cfg(target_os = "macos")]
+    {
+        app_handle
+            .run_on_main_thread(move || haptics::perform(haptic))
+            .map_err(|e| e.to_string())
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = (app_handle, haptic);
+        Ok(())
+    }
+}
+
+/// One notification per card for the mail that came while the Mac slept,
+/// grouped under the card in Notification Centre
+#[tauri::command]
+fn post_card_notes(notes: Vec<wake::CardNote>) {
+    #[cfg(target_os = "macos")]
+    wake::post(notes);
+    #[cfg(not(target_os = "macos"))]
+    let _ = notes;
+}
+
+/// Brings the window forward with `card_id` focused, for a card chosen
+/// outside it (the Dock menu, a notification)
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+fn show_card(handle: &tauri::AppHandle, card_id: &str) {
+    if let Some(window) = handle.get_webview_window("main") {
+        let _ = window.show();
+        let _ = window.set_focus();
+    }
+    let _ = handle.emit("focus-card", card_id);
+}
+
 #[cfg(target_os = "macos")]
 mod dock_icon {
     use objc2::rc::{Allocated, Retained};
@@ -222,6 +269,11 @@ pub fn run() {
         .manage(AppState::new())
         .manage(PendingMailto::default())
         .setup(|app| {
+            #[cfg(target_os = "macos")]
+            {
+                dock_menu::install(app.handle());
+                wake::install(app.handle());
+            }
             // Handle deep links (mailto:)
             #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
             {
@@ -310,6 +362,9 @@ pub fn run() {
             commands::has_gemini_api_key,
             take_pending_mailtos,
             set_dock_icon,
+            set_dock_menu,
+            haptic,
+            post_card_notes,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application");
@@ -425,10 +480,11 @@ mod tests {
             .iter()
             .filter_map(|p| p.as_str())
             .collect();
-        // App.tsx calls getCurrentWindow().startDragging() and .setBadgeCount();
-        // core:default grants neither
+        // App.tsx calls getCurrentWindow().startDragging(), .setBadgeCount()
+        // and .setTitle(); core:default grants none of them
         assert!(perms.contains(&"core:window:allow-start-dragging"));
         assert!(perms.contains(&"core:window:allow-set-badge-count"));
+        assert!(perms.contains(&"core:window:allow-set-title"));
     }
 
     /// The `<string>` value that follows `<key>{key}</key>` in a plist

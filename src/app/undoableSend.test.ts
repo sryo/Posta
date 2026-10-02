@@ -100,6 +100,17 @@ describe("createUndoableSend", () => {
     expect(sent).toEqual(["A"]);
   });
 
+  it("names the most recent send and those queued with it, which undo would take back", async () => {
+    const { sender } = setup();
+    expect(sender.pendingGroup()).toEqual([]);
+    sender.queue("A");
+    expect(sender.pendingGroup()).toEqual(["A"]);
+    sender.queueAll(["B", "C"]);
+    expect(sender.pendingGroup()).toEqual(["B", "C"]);
+    await vi.advanceTimersByTimeAsync(DELAY);
+    expect(sender.pendingGroup()).toEqual([]);
+  });
+
   it("undo of a single send gives it back as a group of one", async () => {
     const { sender } = setup();
     sender.queue("A");
@@ -140,5 +151,66 @@ describe("createUndoableSend", () => {
     dispose();
     await vi.advanceTimersByTimeAsync(DELAY * 2);
     expect(sent).toEqual([]);
+  });
+
+  it("withdraws one queued send, not just the latest, and nothing once it went out", async () => {
+    const { sender, sent } = setup();
+    sender.queue("A");
+    sender.queue("B");
+    expect(sender.withdraw("A")).toBe(true);
+    expect(sender.pending()).toBe("B");
+    await vi.advanceTimersByTimeAsync(DELAY);
+    expect(sent).toEqual(["B"]);
+    expect(sender.withdraw("B")).toBe(false);
+    expect(sender.withdraw("A")).toBe(false);
+  });
+});
+
+describe("createUndoableSend's onSent", () => {
+  beforeEach(() => vi.useFakeTimers());
+  afterEach(() => vi.useRealTimers());
+
+  function sender(fail: (item: string) => boolean = () => false) {
+    const onSent = vi.fn();
+    const s = createUndoableSend<string>({
+      delayMs: DELAY,
+      send: async (item) => { if (fail(item)) throw new Error("boom"); },
+      onFailed: () => {},
+      onSent,
+    });
+    return { s, onSent };
+  }
+
+  it("says a message went once Gmail took it, not when it was queued", async () => {
+    const { s, onSent } = sender();
+    s.queue("A");
+    expect(onSent).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(DELAY - 1);
+    expect(onSent).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(1);
+    expect(onSent).toHaveBeenCalledTimes(1);
+  });
+
+  it("says so once for messages queued together", async () => {
+    const { s, onSent } = sender();
+    s.queueAll(["A", "B", "C"]);
+    await vi.advanceTimersByTimeAsync(DELAY);
+    expect(onSent).toHaveBeenCalledTimes(1);
+  });
+
+  it("says nothing of a message undone or one that failed", async () => {
+    const { s, onSent } = sender(item => item === "B");
+    s.queue("A");
+    s.undo();
+    s.queue("B");
+    await vi.advanceTimersByTimeAsync(DELAY);
+    expect(onSent).not.toHaveBeenCalled();
+  });
+
+  it("still says so when some of a group went and others failed", async () => {
+    const { s, onSent } = sender(item => item === "B");
+    s.queueAll(["A", "B"]);
+    await vi.advanceTimersByTimeAsync(DELAY);
+    expect(onSent).toHaveBeenCalledTimes(1);
   });
 });

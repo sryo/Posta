@@ -129,6 +129,13 @@ describe("CreateEventForm focus", () => {
     await new Promise(r => setTimeout(r, 100));
     expect(document.activeElement).toBe(container.querySelector('input[placeholder="Event title"]'));
   });
+
+  it("starts on the start time, its times listed, when opened to reschedule", async () => {
+    const { container, getByRole } = renderForm({ startDate: "2031-03-03", isEditing: true, extra: { inline: true, focusTime: true } });
+    await new Promise(r => setTimeout(r, 100));
+    expect(document.activeElement).toBe(timeField(container, "Start"));
+    expect(getByRole("listbox", { name: "Start" })).toBeInTheDocument();
+  });
 });
 
 describe("CreateEventForm day", () => {

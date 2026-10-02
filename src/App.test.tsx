@@ -21,8 +21,9 @@ const invoke = vi.fn(async (cmd: string, args: Record<string, unknown> = {}) => 
 vi.mock("@tauri-apps/api/core", () => ({ invoke: (cmd: string, args?: Record<string, unknown>) => invoke(cmd, args) }));
 const setBadgeCount = vi.fn(async (_count?: number) => {});
 const startDragging = vi.fn(async () => {});
+const setTitle = vi.fn(async (_title: string) => {});
 vi.mock("@tauri-apps/api/window", () => ({
-  getCurrentWindow: () => ({ setBadgeCount: (count?: number) => setBadgeCount(count), startDragging: () => startDragging() }),
+  getCurrentWindow: () => ({ setBadgeCount: (count?: number) => setBadgeCount(count), startDragging: () => startDragging(), setTitle: (title: string) => setTitle(title) }),
 }));
 const eventListeners: Record<string, (event: { payload: unknown }) => void> = {};
 const listenedEvents: string[] = [];
@@ -70,11 +71,14 @@ vi.mock("./app/contacts", async (importOriginal) => {
 
 import App from "./App";
 import { setInputMode } from "./app/inputMode";
+import { setNoticesEnabled } from "./app/notices";
 import type { Account, Card, Thread } from "./api/tauri";
 import { ICLOUD_RESTORE_DELAYS_MS } from "./app/icloudRestore";
+import { WAKE_DELAYS_MS } from "./app/wakeNotes";
 
 ICLOUD_RESTORE_DELAYS_MS.first = 0;
 ICLOUD_RESTORE_DELAYS_MS.retry = 0;
+WAKE_DELAYS_MS.quiet = 50;
 
 const account = (id: string, email: string): Account => ({ id, email, picture: null, signature: null });
 const card = (id: string, accountId: string, name: string): Card => ({
@@ -152,6 +156,8 @@ beforeEach(() => {
     fetch_contacts: () => [],
     take_pending_mailtos: () => [],
     has_gemini_api_key: () => false,
+    set_dock_menu: () => null,
+    haptic: () => null,
   } satisfies Record<string, Handler>);
   for (const k of Object.keys(cardsByAccount)) delete cardsByAccount[k];
   for (const k of Object.keys(threadsByCard)) delete threadsByCard[k];
@@ -521,6 +527,65 @@ describe("App card deletion", () => {
   });
 });
 
+describe("App window title", () => {
+  it("names the unread count, and only the app once it's all read", async () => {
+    threadsByCard["card-a"] = [{ ...thread("t-a", "Mail for A"), unread_count: 1, labels: ["INBOX", "UNREAD"] }];
+    handlers.modify_threads = () => null;
+    render(() => <App />);
+    await screen.findByText("Mail for A");
+    await waitFor(() => expect(setTitle).toHaveBeenLastCalledWith("1 unread — Posta"));
+
+    fireEvent.keyDown(document, { key: "l" });
+    fireEvent.keyDown(document, { key: "u" });
+    await waitFor(() => expect(setTitle).toHaveBeenLastCalledWith("Posta"));
+  });
+});
+
+describe("App Dock menu", () => {
+  const lastDockMenu = () => invoke.mock.calls.filter(([cmd]) => cmd === "set_dock_menu").slice(-1)[0]?.[1];
+
+  it("hands the Dock the cards in board order with their unread counts", async () => {
+    cardsByAccount.a = [card("card-a", "a", "Alpha"), { ...card("card-b", "a", "Beta"), position: 1 }];
+    threadsByCard["card-b"] = [{ ...thread("t-b", "Unread in B"), unread_count: 1 }];
+    render(() => <App />);
+    await screen.findByText("Unread in B");
+    await waitFor(() => expect(lastDockMenu()).toEqual({
+      menu: { cards: [{ id: "card-a", title: "Alpha" }, { id: "card-b", title: "Beta (1)" }], next: null },
+    }));
+  });
+
+  it("focuses the card chosen in the Dock menu", async () => {
+    cardsByAccount.a = [card("card-a", "a", "Alpha"), { ...card("card-b", "a", "Beta"), position: 1 }];
+    threadsByCard["card-b"] = [thread("t-b", "Mail for B")];
+    render(() => <App />);
+    await screen.findByText("Mail for B");
+    await waitFor(() => expect(eventListeners["focus-card"]).toBeDefined());
+
+    eventListeners["focus-card"]({ payload: "card-b" });
+    await waitFor(() => expect(screen.getByText("Mail for B").closest(".thread")).toHaveClass("focused"));
+  });
+});
+
+describe("App waking", () => {
+  it("sends one note per card for the mail that came while the Mac slept", async () => {
+    const sleptAt = Date.now() - 3_600_000;
+    threadsByCard["card-a"] = [
+      { ...thread("t-old", "Mail for A"), last_message_date: sleptAt - 60_000, unread_count: 1 },
+      { ...thread("t-new", "Contract v3 signed"), last_message_date: Date.now() - 60_000, unread_count: 1, participants: ["Lena Ortiz <lena@x.com>"] },
+    ];
+    handlers.post_card_notes = () => null;
+    render(() => <App />);
+    await screen.findByText("Contract v3 signed");
+    await waitFor(() => expect(eventListeners["system-woke"]).toBeDefined());
+
+    eventListeners["system-woke"]({ payload: { slept_at: sleptAt, woke_at: Date.now() } });
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith("post_card_notes", {
+      notes: [{ card_id: "card-a", title: expect.stringMatching(/^Since /), body: "Alpha: 1 new from Lena Ortiz: Contract v3 signed" }],
+    }));
+    expect(invoke.mock.calls.filter(([cmd]) => cmd === "post_card_notes")).toHaveLength(1);
+  });
+});
+
 describe("App failed thread action after signing out", () => {
   it("does not roll the signed-out account's threads back into view", async () => {
     handlers.get_accounts = () => [account("a", "a@x.com"), account("b", "b@x.com")];
@@ -795,8 +860,8 @@ describe("App error banner", () => {
     fireEvent.keyDown(document, { key: "s" });
 
     const banner = await screen.findByRole("alert");
-    expect(banner).toHaveTextContent(/^Couldn't star 1 thread\./);
-    expect(banner).not.toHaveTextContent("Couldn't star 1 thread: ");
+    expect(banner).toHaveTextContent(/^Couldn't star “Mail for A”\./);
+    expect(banner).not.toHaveTextContent("Couldn't star “Mail for A”: ");
     // The backend's text stays out of the sentence, one click away
     expect(within(banner).getByText("Details")).toBeInTheDocument();
     expect(banner.querySelector("details")).toHaveTextContent("Error: offline");
@@ -1162,7 +1227,7 @@ describe("App thread list shortcuts", () => {
     await screen.findByText("Mail for A");
     fireEvent.keyDown(document, { key: "l" });
     fireEvent.keyDown(document, { key: "a" });
-    await screen.findByText("Archived 1 thread in a@x.com");
+    await screen.findByText("Archived “Mail for A” in a@x.com");
 
     fireEvent.click(avatar("a@x.com"));
     fireEvent.click(await chooserEntry("b@x.com"));
@@ -1187,6 +1252,10 @@ describe("App thread list shortcuts", () => {
   });
 });
 
+// A reply's text box: it names who the reply goes to, or asks for a reply
+const REPLY_BODY = /^(Reply to .+…|Write your reply\.\.\.)$/;
+// A quick reply's, which names them once its thread has been read
+const QUICK_REPLY = /^(Reply to .+…|Write a reply\.\.\.)$/;
 const fullMessage = (id: string, from: string, extra: Record<string, unknown> = {}) => ({
   id, threadId: "t-a", labelIds: ["INBOX"], snippet: `body ${id}`, internalDate: "0",
   payload: { mimeType: "text/plain", headers: [{ name: "From", value: from }, { name: "Subject", value: "Hi" }, { name: "Message-ID", value: `<${id}@x>` }], body: { size: 0 } },
@@ -1390,6 +1459,34 @@ describe("App keyboard focus", () => {
     await waitFor(() => expect(document.activeElement).toBe(row("Second")));
     expect(row("Second")).toHaveClass("focused");
   });
+
+  it("lights the row a thread goes back to for a moment", async () => {
+    handlers.get_thread_details = () => ({ id: "t-a", messages: [fullMessage("m1", "Ana <ana@x.com>")] });
+    render(() => <App />);
+    fireEvent.click(await screen.findByText("Mail for A"));
+    await screen.findByRole("dialog", { name: "Hi" });
+    expect(row("Mail for A")).not.toHaveAttribute("data-returned");
+    fireEvent.keyDown(document, { key: "Escape" });
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "Hi" })).toBeNull());
+    expect(document.activeElement).toBe(row("Mail for A"));
+    expect(row("Mail for A")).toHaveAttribute("data-returned");
+    await waitFor(() => expect(row("Mail for A")).not.toHaveAttribute("data-returned"), { timeout: 2000 });
+  });
+
+  it("closes an archived thread's view with its closing motion when archiving goes back to the board, lighting the row in its place", async () => {
+    localStorage.setItem("afterArchive", "board");
+    threadsByCard["card-a"] = [{ ...thread("t-a", "First"), labels: ["INBOX"] }, { ...thread("t-2", "Second"), labels: ["INBOX"] }];
+    handlers.get_thread_details = () => ({ id: "t-a", messages: [fullMessage("m1", "Ana <ana@x.com>")] });
+    handlers.modify_threads = () => null;
+    render(() => <App />);
+    fireEvent.click(await screen.findByText("First"));
+    await screen.findByRole("dialog", { name: "Hi" });
+    fireEvent.keyDown(document, { key: "a" });
+    await waitFor(() => expect(document.querySelector(".thread-overlay.closing")).not.toBeNull());
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "Hi" })).toBeNull());
+    await waitFor(() => expect(document.activeElement).toBe(row("Second")));
+    expect(row("Second")).toHaveAttribute("data-returned");
+  });
 });
 
 describe("App thread labels", () => {
@@ -1403,7 +1500,7 @@ describe("App thread labels", () => {
     fireEvent.keyDown(document, { key: "l" });
     fireEvent.click(await screen.findByLabelText("Receipts"));
     await waitFor(() => expect(invoke).toHaveBeenCalledWith("modify_threads", expect.objectContaining({ threadIds: ["t-a"], addLabels: ["Label_7"], removeLabels: [] })));
-    await screen.findByText(/Added the label “Receipts”/);
+    await screen.findByText("Added “Receipts” to “Hi”");
 
     invoke.mockClear();
     fireEvent.click(screen.getByRole("button", { name: /Undo/ }));
@@ -1469,7 +1566,7 @@ describe("App thread view", () => {
     );
     await new Promise(r => setTimeout(r, 20));
     expect(document.querySelector(".toast-undo-btn")).toBeNull();
-    expect(screen.queryByText(/Marked 1 thread as read/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/Marked .* as read/)).not.toBeInTheDocument();
   });
 });
 
@@ -1642,7 +1739,7 @@ describe("App compose autocomplete", () => {
     fireEvent.click(screen.getByText("Mail for A"));
     await screen.findByText("body m1");
     fireEvent.keyDown(document, { key: "r" });
-    const reply = await screen.findByPlaceholderText("Write your reply...");
+    const reply = await screen.findByPlaceholderText(REPLY_BODY);
     const shot = new File(["png"], "", { type: "image/png" });
     fireEvent.paste(reply, { clipboardData: { types: ["Files"], files: [shot], items: [] } });
     expect(await screen.findByTitle("pasted-image.png")).toBeInTheDocument();
@@ -1669,7 +1766,7 @@ describe("App compose autocomplete", () => {
     fireEvent.click(screen.getByText("Mail for A"));
     await screen.findByText("body m1");
     fireEvent.keyDown(document, { key: "r" });
-    await screen.findByPlaceholderText("Write your reply...");
+    await screen.findByPlaceholderText(REPLY_BODY);
     const to = screen.getByPlaceholderText("Recipients");
     fireEvent.focus(to);
     fireEvent.input(to, { target: { value: "ana@x.com, ze" } });
@@ -1729,7 +1826,7 @@ describe("App compose", () => {
     fireEvent.click(screen.getByText("Mail for A"));
     await screen.findByText("body m1");
     fireEvent.keyDown(document, { key: "r" });
-    await screen.findByPlaceholderText("Write your reply...");
+    await screen.findByPlaceholderText(REPLY_BODY);
     fireEvent.click(document.querySelector(".toast-undo-btn")!);
     await vi.advanceTimersByTimeAsync(100);
 
@@ -1820,7 +1917,7 @@ describe("App calendar", () => {
     fireEvent.click(await screen.findByText("Standup"));
     fireEvent.click(await screen.findByTitle("Move to calendar"));
     fireEvent.click(await screen.findByRole("radio", { name: "Work" }));
-    expect(await screen.findByText("Moved all its events to Work")).toBeInTheDocument();
+    expect(await screen.findByText("Moved all of “Standup” to Work")).toBeInTheDocument();
   });
 
   it("loads the calendar list once when the calendar picker is opened twice quickly", async () => {
@@ -1847,6 +1944,54 @@ describe("App calendar", () => {
 
     expect(await screen.findByText(/Calendar permission denied/)).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Sign in again" })).toBeInTheDocument();
+  });
+
+  describe("gutters", () => {
+    const HALF_HOUR = 30 * 60_000;
+    const meeting = (id: string, start: number, end: number) => ({ ...calendarEvent(id, id), start_time: start, end_time: end });
+
+    function dayCard(query: string, events: ReturnType<typeof meeting>[]) {
+      calendarCards();
+      cardsByAccount.a = [{ ...card("cal-a", "a", "Tomorrow"), query, card_type: "calendar" }];
+      handlers.get_accounts = () => [account("a", "a@x.com")];
+      handlers.fetch_calendar_events = () => events;
+    }
+
+    const thursday = [
+      meeting("Standup", tomorrowAt(9) + HALF_HOUR, tomorrowAt(10) + HALF_HOUR),
+      meeting("Design crit", tomorrowAt(11), tomorrowAt(12)),
+      meeting("1:1 with Sam", tomorrowAt(15) + HALF_HOUR, tomorrowAt(16) + HALF_HOUR),
+      meeting("Roadmap sync", tomorrowAt(16) + HALF_HOUR, tomorrowAt(18)),
+    ];
+
+    it("sets a long free stretch between tomorrow's events as a gutter above the event that ends it", async () => {
+      dayCard("calendar:tomorrow", thursday);
+      render(() => <App />);
+
+      const gutter = (await screen.findByText("Free 12:00 – 3:30 PM")).closest(".calendar-gutter") as HTMLElement;
+      expect(gutter).toHaveAttribute("role", "note");
+      expect(within(gutter).getByText("3 and a half hours")).toBeInTheDocument();
+      expect(gutter.hasAttribute("tabindex")).toBe(false);
+      expect(gutter.nextElementSibling).toHaveTextContent("1:1 with Sam");
+      expect(document.querySelectorAll(".calendar-gutter")).toHaveLength(1);
+    });
+
+    it("says the afternoon is free when nothing follows the morning", async () => {
+      dayCard("calendar:tomorrow", thursday.slice(0, 2));
+      render(() => <App />);
+
+      const gutter = (await screen.findByText("Afternoon's free.")).closest(".calendar-gutter") as HTMLElement;
+      expect(gutter).toHaveClass("ending");
+      expect(gutter.previousElementSibling).toHaveTextContent("Design crit");
+    });
+
+    it("leaves a card spanning more days without gutters", async () => {
+      dayCard("calendar:7d", thursday);
+      render(() => <App />);
+
+      await screen.findByText("1:1 with Sam");
+      expect(document.querySelector(".calendar-gutter")).toBeNull();
+    });
   });
 
   it("quick-replies to the guests of the user's own event, not the user", async () => {
@@ -1890,7 +2035,7 @@ describe("App calendar", () => {
     await waitFor(() => expect(invoke).toHaveBeenCalledWith("rsvp_listed_calendar_event", {
       accountId: "a", calendarId: "primary", eventId: "ev-a", status: "declined",
     }));
-    expect(await screen.findByText("You're not going")).toBeInTheDocument();
+    expect(await screen.findByText("You're not going to “Planning”")).toBeInTheDocument();
   });
 
   it("does not send an answer again for a focused event the user already gave", async () => {
@@ -2014,6 +2159,7 @@ describe("App calendar", () => {
     expect(invoke).not.toHaveBeenCalledWith("delete_calendar_event", expect.anything());
     fireEvent.click(within(dialog).getByRole("button", { name: "Delete event" }));
     await waitFor(() => expect(invoke).toHaveBeenCalledWith("delete_calendar_event", expect.objectContaining({ eventId: "ev-1" })));
+    expect(await screen.findByText("Deleted “Planning”")).toBeInTheDocument();
   });
 
   it("doesn't ask again after an organizer picks which repeating events to delete", async () => {
@@ -2211,7 +2357,7 @@ describe("App calendar", () => {
     const title = screen.getByPlaceholderText("Event title");
     fireEvent.input(title, { target: { value: "Lunch" } });
     fireEvent.keyDown(title, { key: "Enter", metaKey: true });
-    await waitFor(() => expect(invoke).toHaveBeenCalledWith("create_calendar_event", expect.objectContaining({ attendees: ["ana@y.com"] })));
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith("create_calendar_event", expect.objectContaining({ attendees: ["ana@y.com"] })));    expect(await screen.findByText("Created “Lunch”")).toBeInTheDocument();
   });
 
   it("asks Google for a Meet link when the toggle is on", async () => {
@@ -2322,7 +2468,7 @@ describe("App calendar", () => {
 
     await waitFor(() => expect(invoke).toHaveBeenCalledWith("update_calendar_event", expect.objectContaining({
       eventId: "ev-1_20260101", summary: "Daily", scope: "all",
-    })));
+    })));    expect(await screen.findByText("Updated “Daily”")).toBeInTheDocument();
   });
 
   it("deletes an occurrence and the ones after it", async () => {
@@ -2617,7 +2763,7 @@ describe("App calendar", () => {
     fireEvent.click(within(invite).getByRole("button", { name: "Your response: not answered" }));
     fireEvent.click(screen.getByRole("menuitemradio", { name: /Going/ }));
 
-    expect(await screen.findByText("You're going")).toBeInTheDocument();
+    expect(await screen.findByText("You're going to “Planning”")).toBeInTheDocument();
     await waitFor(() => expect(invoke).toHaveBeenCalledWith("save_cached_card_events", {
       cardId: "cal-1", events: [expect.objectContaining({ id: "ev-1", response_status: "accepted" })],
     }));
@@ -2787,7 +2933,7 @@ describe("App thread view compose", () => {
     await screen.findByText("body m2");
 
     fireEvent.keyDown(document, { key: "r" });
-    await screen.findByPlaceholderText("Write your reply...");
+    await screen.findByPlaceholderText(REPLY_BODY);
     fireEvent.mouseEnter(document.querySelectorAll(".message-row")[0]);
     fireEvent.click(await screen.findByTitle("Forward"));
     await vi.advanceTimersByTimeAsync(100);
@@ -2810,7 +2956,7 @@ describe("App new email while a thread is open", () => {
     eventListeners["mailto-received"]({ payload: { to: "bo@y.com", cc: "", bcc: "", subject: "Hello", body: "" } });
     await waitFor(() => expect(document.querySelector(".compose-panel")).not.toBeNull());
     expect(screen.getByPlaceholderText("Subject")).toHaveValue("Hello");
-    expect(screen.queryByPlaceholderText("Write your reply...")).not.toBeInTheDocument();
+    expect(screen.queryByPlaceholderText(REPLY_BODY)).not.toBeInTheDocument();
 
     fireEvent.keyDown(document, { key: "Escape" });
     await waitFor(() => expect(screen.queryByText("body m1")).not.toBeInTheDocument());
@@ -2865,6 +3011,64 @@ describe("App quick reply threading", () => {
     fireEvent.keyDown(input, { key: "Enter", metaKey: true });
 
     await waitFor(() => expect(invoke).toHaveBeenCalledWith("reply_to_thread", expect.objectContaining({ to: "ana@x.com", messageId: "m1" })));
+  });
+});
+
+describe("App reply to a long-quiet thread", () => {
+  const longAgo = new Date(2020, 2, 3, 12).getTime();
+
+  it("names when the last letter came in a quick reply, and not for a thread heard from lately", async () => {
+    threadsByCard["card-a"] = [
+      { ...thread("t-old", "Bikes"), last_message_date: longAgo },
+      { ...thread("t-new", "Lunch"), last_message_date: Date.now() - 864e5 },
+    ];
+    render(() => <App />);
+    await screen.findByText("Bikes");
+    fireEvent.keyDown(document, { key: "l" });
+    fireEvent.keyDown(document, { key: "r" });
+    await waitFor(() => expect(document.querySelector(".quick-reply-box")).not.toBeNull());
+    const box = document.querySelector(".quick-reply-box")!;
+    const line = box.querySelector(".compose-last-letter");
+    expect(line).toHaveTextContent("Last letter here: Mar 2020.");
+    expect(line!.compareDocumentPosition(box.querySelector(".quick-reply-input")!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+
+    fireEvent.keyDown(document.querySelector(".quick-reply-input")!, { key: "Escape" });
+    fireEvent.keyDown(document, { key: "j" });
+    fireEvent.keyDown(document, { key: "r" });
+    await waitFor(() => expect(document.querySelector(".quick-reply-box")).not.toBeNull());
+    expect(document.querySelector(".compose-last-letter")).toBeNull();
+  });
+
+  it("names it in each batch reply to a long-quiet thread", async () => {
+    handlers.get_thread_details = ({ threadId }) => ({
+      id: threadId,
+      messages: [fullMessage("m1", "Ana <ana@x.com>", { internalDate: String(threadId === "t-1" ? longAgo : Date.now()) })],
+    });
+    threadsByCard["card-a"] = [thread("t-1", "One"), thread("t-2", "Two")];
+    render(() => <App />);
+    await screen.findByText("One");
+    fireEvent.keyDown(document, { key: "l" });
+    fireEvent.keyDown(document, { key: "x" });
+    fireEvent.keyDown(document, { key: "j" });
+    fireEvent.keyDown(document, { key: "x" });
+    fireEvent.keyDown(document, { key: "r" });
+    await waitFor(() => expect(screen.getAllByPlaceholderText(/^Reply to/)).toHaveLength(2));
+    const lines = document.querySelectorAll(".compose-last-letter");
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).toHaveTextContent("Last letter here: Mar 2020.");
+  });
+
+  it("names it in a reply reopened in the compose panel", async () => {
+    threadsByCard["card-a"] = [{ ...thread("t-a", "Mail for A"), last_message_date: longAgo }];
+    handlers.get_thread_details = () => ({ id: "t-a", messages: [fullMessage("m1", "Ana <ana@x.com>", { internalDate: String(longAgo) })] });
+    localStorage.setItem("draft_reply_a_t-a#q", JSON.stringify({
+      to: "ana@x.com", cc: "", bcc: "", subject: "Re: Hi", body: "unsent reply", threadId: "t-a", savedAt: 5, sending: true, accountId: "a",
+    }));
+    render(() => <App />);
+    fireEvent.click(await screen.findByRole("button", { name: "Open" }));
+    await waitFor(() => expect(document.querySelector(".compose-panel")).not.toBeNull());
+    await screen.findByText("Mail for A");
+    expect(document.querySelector(".compose-panel .compose-last-letter")).toHaveTextContent("Last letter here: Mar 2020.");
   });
 });
 
@@ -2968,7 +3172,7 @@ describe("App batch reply", () => {
     fireEvent.input(first, { target: { value: "Thanks" } });
     fireEvent.keyDown(first, { key: "Enter", metaKey: true });
 
-    expect(await screen.findByText("Sending message...")).toBeInTheDocument();
+    expect(await screen.findByText(/^Sending to Ana( on \w+)?( at .+)?…$/)).toBeInTheDocument();
     await waitFor(() => expect(screen.getAllByPlaceholderText(/^Reply to/)).toHaveLength(1));
     await vi.advanceTimersByTimeAsync(1000);
     expect(invoke).not.toHaveBeenCalledWith("reply_to_thread", expect.anything());
@@ -3122,7 +3326,7 @@ describe("App batch reply", () => {
     fireEvent.keyDown(document, { key: "l" });
     fireEvent.keyDown(document, { key: "x" });
     fireEvent.click(await screen.findByTitle("Batch Reply"));
-    fireEvent.input(await screen.findByPlaceholderText(/^Reply to/), { target: { value: "Thanks" } });
+    fireEvent.input(await screen.findByPlaceholderText(REPLY_BODY), { target: { value: "Thanks" } });
     fireEvent.click(screen.getByRole("button", { name: "Send" }));
 
     expect(await screen.findByText(/No one to reply to/)).toBeInTheDocument();
@@ -3276,7 +3480,7 @@ describe("App drafts", () => {
     fireEvent.click(await screen.findByText("Mail for A"));
     await screen.findByText("body m1");
     fireEvent.keyDown(document, { key: "r" });
-    fireEvent.input(await screen.findByPlaceholderText("Write your reply..."), { target: { value: "unsent reply" } });
+    fireEvent.input(await screen.findByPlaceholderText(REPLY_BODY), { target: { value: "unsent reply" } });
     fireEvent.click(screen.getByRole("button", { name: /^Send/ }));
     await quitAndRestart();
 
@@ -3463,7 +3667,7 @@ describe("App drafts", () => {
       expect(screen.getByPlaceholderText("Subject")).toHaveValue("Plans");
       const body = screen.getByPlaceholderText("Write something...");
       expect(body).toHaveValue("Hello");
-      expect(screen.queryByPlaceholderText("Write your reply...")).not.toBeInTheDocument();
+      expect(screen.queryByPlaceholderText(REPLY_BODY)).not.toBeInTheDocument();
 
       fireEvent.input(body, { target: { value: "Hello again" } });
       fireEvent.keyDown(body, { key: "Escape" });
@@ -3497,7 +3701,7 @@ describe("App drafts", () => {
       render(() => <App />);
       fireEvent.click(await screen.findByText("Mail for A"));
 
-      const reply = await screen.findByPlaceholderText("Write your reply...");
+      const reply = await screen.findByPlaceholderText(REPLY_BODY);
       await waitFor(() => expect(reply).toHaveValue("Draft reply"));
       fireEvent.input(reply, { target: { value: "Draft reply, edited" } });
       fireEvent.keyDown(reply, { key: "Escape" });
@@ -3517,6 +3721,16 @@ describe("App drafts", () => {
       await waitFor(() => expect(invoke).toHaveBeenCalledWith("delete_draft", { accountId: "a", draftId: "g1" }));
       await waitFor(() => expect(screen.queryByText("Plans")).not.toBeInTheDocument());
       expect(invoke).not.toHaveBeenCalledWith("get_thread_details", expect.anything());
+    });
+
+    it("names the draft it couldn't discard", async () => {
+      threadsByCard["card-a"] = [{ ...thread("t-d", "Plans"), labels: ["DRAFT"] }];
+      handlers.list_thread_drafts = () => [{ id: "g1", message: { id: "dm", threadId: "t-d" } }];
+      handlers.delete_draft = () => { throw new Error("offline"); };
+      render(() => <App />);
+      const row = (await screen.findByText("Plans")).closest(".thread") as HTMLElement;
+      fireEvent.click(within(row).getByRole("button", { name: "Discard draft" }));
+      expect(await screen.findByText("Couldn't discard the draft in “Plans”.")).toBeInTheDocument();
     });
 
     it("leaves Enter on a draft row's Discard to the button, not to the keyboard-focused thread", async () => {
@@ -3669,10 +3883,10 @@ describe("App drafts", () => {
     await screen.findByText("body m1");
     fireEvent.keyDown(document, { key: "r" });
 
-    const body = await screen.findByPlaceholderText("Write your reply...");
+    const body = await screen.findByPlaceholderText(REPLY_BODY);
     expect(body).toHaveValue("my saved reply");
     fireEvent.input(body, { target: { value: "my saved reply, edited" } });
-    fireEvent.keyDown(screen.getByPlaceholderText("Write your reply..."), { key: "Escape" });
+    fireEvent.keyDown(screen.getByPlaceholderText(REPLY_BODY), { key: "Escape" });
     await waitFor(() => expect(invoke).toHaveBeenCalledWith("save_draft", expect.objectContaining({ draftId: "d7", body: "my saved reply, edited" })));
     expect(storedDrafts("draft_reply_a_t-a")).toEqual([expect.objectContaining({ body: "my saved reply, edited" })]);
   });
@@ -3685,13 +3899,13 @@ describe("App drafts", () => {
     fireEvent.click(await screen.findByText("Mail for A"));
     await screen.findByText("body m1");
     fireEvent.keyDown(document, { key: "r" });
-    fireEvent.input(await screen.findByPlaceholderText("Write your reply..."), { target: { value: "half a reply" } });
-    fireEvent.keyDown(screen.getByPlaceholderText("Write your reply..."), { key: "Escape" });
+    fireEvent.input(await screen.findByPlaceholderText(REPLY_BODY), { target: { value: "half a reply" } });
+    fireEvent.keyDown(screen.getByPlaceholderText(REPLY_BODY), { key: "Escape" });
     await screen.findByRole("button", { name: "Discard" });
     await new Promise(r => setTimeout(r, 250));
 
     fireEvent.keyDown(document, { key: "r" });
-    expect(await screen.findByPlaceholderText("Write your reply...")).toHaveValue("half a reply");
+    expect(await screen.findByPlaceholderText(REPLY_BODY)).toHaveValue("half a reply");
     const discard = screen.queryByRole("button", { name: "Discard" });
     if (discard) fireEvent.click(discard);
     await new Promise(r => setTimeout(r, 50));
@@ -3709,10 +3923,82 @@ describe("App inline reply", () => {
     await screen.findByText("body m1");
     fireEvent.keyDown(document, { key: "r" });
 
-    const body = await screen.findByPlaceholderText("Write your reply...");
+    const body = await screen.findByPlaceholderText(REPLY_BODY);
     fireEvent.input(body, { target: { value: "typing" } });
     expect(body.isConnected).toBe(true);
-    expect(screen.getByPlaceholderText("Write your reply...")).toBe(body);
+    expect(screen.getByPlaceholderText(REPLY_BODY)).toBe(body);
+  });
+
+  const box = () => document.querySelector<HTMLElement>(".inline-compose")!;
+  const replyText = () => box().querySelector("textarea")!;
+  async function sendReply(text: string, caret: number) {
+    fireEvent.click(await screen.findByText("Mail for A"));
+    await screen.findByText("body m1");
+    fireEvent.keyDown(document, { key: "r" });
+    await waitFor(() => expect(document.querySelector(".inline-compose textarea")).not.toBeNull());
+    const written = replyText();
+    fireEvent.input(written, { target: { value: text } });
+    written.focus();
+    written.setSelectionRange(caret, caret);
+    fireEvent.click(within(box()).getByRole("button", { name: /^Send/ }));
+    return written;
+  }
+
+  it("keeps a sent reply where it was written, reading Sending, and turns it back into the reply with the caret where it was on Undo", async () => {
+    handlers.get_thread_details = () => ({ id: "t-a", messages: [fullMessage("m1", "Ana <ana@x.com>")] });
+    handlers.reply_to_thread = () => null;
+    render(() => <App />);
+    const written = await sendReply("On my way", 2);
+    await new Promise(r => setTimeout(r, 300));
+
+    expect(box()).toHaveClass("sent");
+    expect(replyText()).toBe(written);
+    expect(written).toHaveValue("On my way");
+    expect(within(box()).getByText("Sending")).toBeInTheDocument();
+
+    fireEvent.click(within(box()).getByRole("button", { name: "Undo" }));
+    await waitFor(() => expect(box()).not.toHaveClass("sent"));
+    expect(replyText()).toBe(written);
+    expect(document.activeElement).toBe(written);
+    expect(written.selectionStart).toBe(2);
+    expect(within(box()).getByRole("button", { name: /^Send/ })).toBeInTheDocument();
+    await new Promise(r => setTimeout(r, 5200));
+    expect(invoke).not.toHaveBeenCalledWith("reply_to_thread", expect.anything());
+  });
+
+  it("turns a sent reply back into the reply from the toast's Undo too", async () => {
+    handlers.get_thread_details = () => ({ id: "t-a", messages: [fullMessage("m1", "Ana <ana@x.com>")] });
+    render(() => <App />);
+    const written = await sendReply("On my way", 4);
+    await waitFor(() => expect(box()).toHaveClass("sent"));
+    fireEvent.click(document.querySelector(".toast-undo-btn")!);
+    await waitFor(() => expect(box()).not.toHaveClass("sent"));
+    expect(replyText()).toBe(written);
+    expect(written.selectionStart).toBe(4);
+  });
+
+  it("says when a sent reply went, and gives way to the message once the thread has it", async () => {
+    let sent = false;
+    let showReply!: () => void;
+    const shown = () => ({
+      id: "t-a",
+      messages: [fullMessage("m1", "Ana <ana@x.com>"), ...(sent ? [fullMessage("m2", "Me <a@x.com>", { labelIds: ["SENT"] })] : [])],
+    });
+    handlers.get_thread_details = () => (sent ? new Promise(resolve => { showReply = () => resolve(shown()); }) : shown());
+    let finishSend!: () => void;
+    handlers.reply_to_thread = () => new Promise<null>(resolve => { finishSend = () => { sent = true; resolve(null); }; });
+    render(() => <App />);
+    await sendReply("On my way", 0);
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith("reply_to_thread", expect.anything()), { timeout: 8000 });
+    expect(within(box()).getByText("Sending")).toBeInTheDocument();
+    expect(within(box()).queryByRole("button", { name: "Undo" })).toBeNull();
+    finishSend();
+    await waitFor(() => expect(within(box()).queryByText("Sending")).toBeNull());
+    expect(box()).toHaveClass("sent");
+    expect(within(box()).getByText(/^Today, /)).toBeInTheDocument();
+    showReply();
+    await screen.findByText("body m2");
+    expect(document.querySelector(".inline-compose")).toBeNull();
   });
 });
 
@@ -3792,11 +4078,12 @@ describe("App layout removal", () => {
     fireEvent.click(await screen.findByTitle("Archive"));
     await waitFor(() => expect(invoke).toHaveBeenCalledWith("modify_threads", expect.objectContaining({ threadIds: ["t-1", "t-2"] })));
     expect(screen.queryByRole("alertdialog")).toBeNull();
-    expect(await screen.findByText("Archived 2 threads")).toBeInTheDocument();
+    expect(await screen.findByText("Archived both in Alpha")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /Undo/ })).toBeInTheDocument();
   });
 
-  it("keeps an action's Undo when a message comes in meanwhile, and shows the message after it", async () => {
+  it("keeps an action's Undo when a message comes in meanwhile, and shows the message after what undoing did", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
     threadsByCard["card-a"] = [{ ...thread("t-a", "Mail for A"), labels: ["INBOX"] }];
     handlers.modify_threads = () => null;
     handlers.save_draft = () => ({ id: "d1" });
@@ -3804,18 +4091,20 @@ describe("App layout removal", () => {
     await screen.findByText("Mail for A");
     fireEvent.keyDown(document, { key: "l" });
     fireEvent.keyDown(document, { key: "a" });
-    await screen.findByText("Archived 1 thread");
+    await screen.findByText("Archived “Mail for A”");
 
     fireEvent.keyDown(document, { key: "c" });
     fireEvent.input(await screen.findByPlaceholderText("Subject"), { target: { value: "Draft" } });
     fireEvent.keyDown(document, { key: "Escape" });
     await new Promise(r => setTimeout(r, 50));
-    expect(screen.getByText("Archived 1 thread")).toBeInTheDocument();
+    expect(screen.getByText("Archived “Mail for A”")).toBeInTheDocument();
     expect(screen.queryByText("Draft saved")).not.toBeInTheDocument();
 
     invoke.mockClear();
     fireEvent.keyDown(document, { key: "z" });
     await waitFor(() => expect(invoke).toHaveBeenCalledWith("modify_threads", expect.objectContaining({ threadIds: ["t-a"], addLabels: ["INBOX"] })));
+    expect(await screen.findByText(/Unarchived “Mail for A”/)).toBeInTheDocument();
+    await vi.advanceTimersByTimeAsync(5300);
     expect(await screen.findByText("Draft saved")).toBeInTheDocument();
   });
 
@@ -3923,7 +4212,153 @@ describe("App shortcuts behind overlays", () => {
   });
 });
 
+describe("App toasts name what they acted on", () => {
+  const from = (id: string, subject: string, sender: string): Thread => ({ ...thread(id, subject), labels: ["INBOX"], participants: [sender] });
+
+  it("names the one thread it archived", async () => {
+    threadsByCard["card-a"] = [from("t-1", "Venue for the offsite", "Ana <ana@x.com>")];
+    handlers.modify_threads = () => null;
+    render(() => <App />);
+    await screen.findByText("Venue for the offsite");
+    fireEvent.keyDown(document, { key: "l" });
+    fireEvent.keyDown(document, { key: "a" });
+    expect(await screen.findByText("Archived “Venue for the offsite”")).toBeInTheDocument();
+  });
+
+  it("names the thread it couldn't archive", async () => {
+    threadsByCard["card-a"] = [from("t-1", "Venue for the offsite", "Ana <ana@x.com>")];
+    handlers.modify_threads = () => { throw new Error("offline"); };
+    render(() => <App />);
+    await screen.findByText("Venue for the offsite");
+    fireEvent.keyDown(document, { key: "l" });
+    fireEvent.keyDown(document, { key: "a" });
+    expect(await screen.findByRole("alert")).toHaveTextContent("Couldn't archive “Venue for the offsite”.");
+  });
+
+  it("names the one sender of the threads it archived", async () => {
+    threadsByCard["card-a"] = [
+      from("t-1", "Issue 1", "GitHub <notifications@github.com>"),
+      from("t-2", "Issue 2", "GitHub <notifications@github.com>"),
+      from("t-3", "Lunch", "Ana <ana@x.com>"),
+    ];
+    handlers.modify_threads = () => null;
+    render(() => <App />);
+    await screen.findByText("Lunch");
+    fireEvent.keyDown(document, { key: "l" });
+    fireEvent.keyDown(document, { key: "x" });
+    fireEvent.keyDown(document, { key: "j" });
+    fireEvent.keyDown(document, { key: "x" });
+    fireEvent.keyDown(document, { key: "a" });
+    expect(await screen.findByText("Archived 2 from GitHub")).toBeInTheDocument();
+  });
+
+  it("says all when it archived everything in the card", async () => {
+    threadsByCard["card-a"] = [
+      from("t-1", "One", "Ana <ana@x.com>"),
+      from("t-2", "Two", "Ben <ben@x.com>"),
+      from("t-3", "Three", "Cy <cy@x.com>"),
+    ];
+    handlers.modify_threads = () => null;
+    render(() => <App />);
+    await screen.findByText("Three");
+    fireEvent.keyDown(document, { key: "l" });
+    fireEvent.keyDown(document, { key: "*" });
+    fireEvent.keyDown(document, { key: "a" });
+    fireEvent.keyDown(document, { key: "a" });
+    expect(await screen.findByText("Archived all 3 in Alpha")).toBeInTheDocument();
+  });
+});
+
 describe("App undo", () => {
+  const inbox = (id: string, subject: string): Thread => ({ ...thread(id, subject), labels: ["INBOX"] });
+  const subjects = () => Array.from(document.querySelectorAll('[aria-label="Alpha email card"] .thread-subject')).map(e => e.textContent);
+
+  it("undoes an archive with z after its toast has gone, putting the thread back in its slot", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    threadsByCard["card-a"] = [inbox("t-1", "One"), inbox("t-2", "Two"), inbox("t-3", "Three")];
+    handlers.modify_threads = () => null;
+    render(() => <App />);
+    await screen.findByText("Three");
+    fireEvent.keyDown(document, { key: "l" });
+    fireEvent.keyDown(document, { key: "j" });
+    fireEvent.keyDown(document, { key: "a" });
+    await screen.findByText("Archived “Two”");
+    await vi.advanceTimersByTimeAsync(6000);
+    await waitFor(() => expect(screen.queryByText("Archived “Two”")).toBeNull());
+    threadsByCard["card-a"] = [inbox("t-1", "One"), inbox("t-2", "Two"), inbox("t-3", "Three")];
+    invoke.mockClear();
+
+    fireEvent.keyDown(document, { key: "z" });
+    expect(subjects()).toEqual(["One", "Two", "Three"]);
+    expect(await screen.findByText(/Unarchived “Two” · back 2nd in Alpha/)).toBeInTheDocument();
+    expect(screen.getByText("Nothing earlier to undo this session")).toBeInTheDocument();
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith("modify_threads", { accountId: "a", threadIds: ["t-2"], addLabels: ["INBOX"], removeLabels: [] }));
+  });
+
+  it("walks back through several actions with z, says what the next z undoes, and redoes with ⇧Z", async () => {
+    threadsByCard["card-a"] = [inbox("t-1", "One"), inbox("t-2", "Two")];
+    handlers.modify_threads = () => null;
+    render(() => <App />);
+    await screen.findByText("Two");
+    fireEvent.keyDown(document, { key: "l" });
+    fireEvent.keyDown(document, { key: "s" });
+    await screen.findByText("Starred “One”");
+    fireEvent.keyDown(document, { key: "j" });
+    fireEvent.keyDown(document, { key: "a" });
+    await screen.findByText("Archived “Two”");
+
+    fireEvent.keyDown(document, { key: "z" });
+    expect(await screen.findByText("z next: Starred “One”")).toBeInTheDocument();
+    invoke.mockClear();
+    fireEvent.keyDown(document, { key: "z" });
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith("modify_threads", { accountId: "a", threadIds: ["t-1"], addLabels: [], removeLabels: ["STARRED"] }));
+    expect(await screen.findByText("Unstarred “One”")).toBeInTheDocument();
+
+    invoke.mockClear();
+    fireEvent.keyDown(document, { key: "Z", shiftKey: true });
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith("modify_threads", { accountId: "a", threadIds: ["t-1"], addLabels: ["STARRED"], removeLabels: [] }));
+    expect(await screen.findByText("Starred “One”")).toBeInTheDocument();
+  });
+
+  it("puts every thread of a bulk archive back in its slot with one z", async () => {
+    threadsByCard["card-a"] = [inbox("t-1", "One"), inbox("t-2", "Two"), inbox("t-3", "Three")];
+    handlers.modify_threads = () => null;
+    render(() => <App />);
+    await screen.findByText("Three");
+    fireEvent.keyDown(document, { key: "l" });
+    fireEvent.keyDown(document, { key: "x" });
+    fireEvent.keyDown(document, { key: "j" });
+    fireEvent.keyDown(document, { key: "j" });
+    fireEvent.keyDown(document, { key: "x" });
+    fireEvent.keyDown(document, { key: "a" });
+    await screen.findByText("Archived 2 threads");
+    expect(subjects()).toEqual(["Two"]);
+
+    invoke.mockClear();
+    fireEvent.keyDown(document, { key: "z" });
+    expect(subjects()).toEqual(["One", "Two", "Three"]);
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith("modify_threads", { accountId: "a", threadIds: ["t-1", "t-3"], addLabels: ["INBOX"], removeLabels: [] }));
+  });
+
+  it("can't undo a deleted event once its toast has gone and it was deleted", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    cardsByAccount.a = [{ ...card("cal-1", "a", "Week"), query: "calendar:7d", card_type: "calendar" }];
+    handlers.get_cached_card_events = () => null;
+    handlers.save_cached_card_events = () => null;
+    handlers.fetch_calendar_events = () => [calendarEvent("ev-1", "Planning")];
+    handlers.delete_calendar_event = () => null;
+    render(() => <App />);
+    fireEvent.click(await screen.findByText("Planning"));
+    fireEvent.keyDown(document, { key: "d" });
+    await screen.findByText("Deleted “Planning”");
+    await vi.advanceTimersByTimeAsync(6000);
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith("delete_calendar_event", expect.anything()));
+
+    fireEvent.keyDown(document, { key: "z" });
+    await new Promise(r => setTimeout(r, 50));
+    expect(screen.queryByText("Planning")).toBeNull();
+  });
+
   it("unstars only the threads a bulk star starred", async () => {
     handlers.modify_threads = () => null;
     threadsByCard["card-a"] = [
@@ -3937,7 +4372,7 @@ describe("App undo", () => {
     fireEvent.keyDown(document, { key: "j" });
     fireEvent.keyDown(document, { key: "x" });
     fireEvent.click(await screen.findByTitle("Star"));
-    await screen.findByText("Starred 2 threads");
+    await screen.findByText("Starred both in Alpha");
     invoke.mockClear();
     fireEvent.click(screen.getByText("Undo"));
 
@@ -4173,6 +4608,38 @@ describe("App card order", () => {
     expect(names).toEqual(["Beta", "Alpha"]);
     expect(screen.getByRole("region", { name: "Alpha email card" })).toBe(alpha);
     expect(screen.getByRole("region", { name: "Beta email card" })).toBe(beta);
+  });
+
+  const haptics = () => invoke.mock.calls.filter(([cmd]) => cmd === "haptic").map(([, args]) => args?.kind);
+
+  it("ticks the trackpad as the card passes another's slot and lands firmly in its new place", async () => {
+    cardsByAccount.a = [card("card-a", "a", "Alpha"), { ...card("card-b", "a", "Beta"), position: 1 }];
+    handlers.reorder_cards = () => null;
+    render(() => <App />);
+    await screen.findByRole("region", { name: "Beta email card" });
+    dragFirstCardOntoSecond();
+
+    await waitFor(() => expect(haptics()).toEqual(["alignment", "levelChange"]));
+  });
+
+  it("gives no landing tick to a card dropped back where it started", async () => {
+    cardsByAccount.a = [card("card-a", "a", "Alpha"), { ...card("card-b", "a", "Beta"), position: 1 }];
+    render(() => <App />);
+    await screen.findByRole("region", { name: "Beta email card" });
+    const wrappers = Array.from(document.querySelectorAll(".card-wrapper")) as HTMLElement[];
+    wrappers.forEach((el, i) => {
+      el.getBoundingClientRect = () => DOMRect.fromRect({ x: i * 320, y: 0, width: 300, height: 600 });
+    });
+    const pointer = (type: string, x: number) => new MouseEvent(type, { bubbles: true, button: 0, clientX: x, clientY: 10 });
+    wrappers[0].querySelector(".card-header")!.dispatchEvent(pointer("pointerdown", 10));
+    document.dispatchEvent(pointer("pointermove", 400));
+    document.dispatchEvent(pointer("pointermove", 30));
+    document.dispatchEvent(pointer("pointerup", 30));
+
+    await waitFor(() => expect(haptics()).toContain("alignment"));
+    await new Promise(r => setTimeout(r, 50));
+    expect(haptics()).not.toContain("levelChange");
+    expect(invoke).not.toHaveBeenCalledWith("reorder_cards", expect.anything());
   });
 
   it("says so when a dragged card's new place can't be saved, and puts it back", async () => {
@@ -4672,7 +5139,7 @@ describe("App accessibility", () => {
     fireEvent.keyDown(document, { key: "?" });
     const help = (await screen.findByText("Keyboard Shortcuts")).closest(".shortcuts-modal") as HTMLElement;
 
-    for (const text of ["Previous card", "Next card", "Undo last action", "New event"]) {
+    for (const text of ["Previous card", "Next card", "Undo, again for each earlier action", "Redo", "New event"]) {
       expect(within(help).getByText(text)).toBeInTheDocument();
     }
     expect(within(help).getByText("#")).toBeInTheDocument();
@@ -5112,16 +5579,53 @@ describe("App quick reply feedback", () => {
     return document.querySelector(".quick-reply-input") as HTMLTextAreaElement;
   }
 
-  it("confirms a sent quick reply", async () => {
+  it("keeps a sent quick reply on its row, reading Sending and then when it went, until the card shows it", async () => {
     handlers.get_thread_details = () => ({ id: "t-a", messages: [fullMessage("m1", "Ana <ana@x.com>")] });
-    handlers.reply_to_thread = () => null;
+    let finishSend!: () => void;
+    handlers.reply_to_thread = () => new Promise<null>(resolve => { finishSend = () => resolve(null); });
     render(() => <App />);
     await screen.findByText("Mail for A");
+    let finishFetch!: () => void;
+    const fetchPage = handlers.fetch_threads_paginated;
+    handlers.fetch_threads_paginated = (args) => new Promise(resolve => { finishFetch = () => resolve(fetchPage(args)); });
     const input = openQuickReply();
     fireEvent.input(input, { target: { value: "Thanks" } });
     fireEvent.keyDown(input, { key: "Enter", metaKey: true });
 
-    expect(await screen.findByText("Reply sent")).toBeInTheDocument();
+    const box = input.closest<HTMLElement>(".quick-reply-box")!;
+    await waitFor(() => expect(box).toHaveClass("sent"));
+    expect(within(box).getByText("Sending")).toBeInTheDocument();
+    expect(within(box).queryByRole("button", { name: /^Send/ })).toBeNull();
+    expect(input).toHaveValue("Thanks");
+
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith("reply_to_thread", expect.anything()));
+    finishSend();
+    expect(await within(box).findByText(/^Today, /)).toBeInTheDocument();
+    expect(input).toHaveValue("Thanks");
+    expect(screen.queryByText("Reply sent")).toBeNull();
+
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith("fetch_threads_paginated", expect.objectContaining({ cardId: "card-a" })));
+    finishFetch();
+    await waitFor(() => expect(document.querySelector(".quick-reply-box")).toBeNull());
+  });
+
+  it("turns a quick reply that couldn't be sent back into the reply, with the caret where it was", async () => {
+    handlers.get_thread_details = () => ({ id: "t-a", messages: [fullMessage("m1", "Ana <ana@x.com>")] });
+    handlers.reply_to_thread = () => { throw "offline"; };
+    render(() => <App />);
+    await screen.findByText("Mail for A");
+    const input = openQuickReply();
+    fireEvent.input(input, { target: { value: "Thanks" } });
+    input.focus();
+    input.setSelectionRange(3, 3);
+    fireEvent.keyDown(input, { key: "Enter", metaKey: true });
+    const box = input.closest<HTMLElement>(".quick-reply-box")!;
+    await waitFor(() => expect(box).toHaveClass("sent"));
+
+    await waitFor(() => expect(box).not.toHaveClass("sent"));
+    expect(document.activeElement).toBe(input);
+    expect(input.selectionStart).toBe(3);
+    expect(within(box).getByRole("button", { name: /^Send/ })).toBeInTheDocument();
   });
 
   it("signs a quick reply and refreshes its card once sent", async () => {
@@ -5157,7 +5661,7 @@ describe("App quick reply feedback", () => {
     const second = document.querySelector(".quick-reply-input") as HTMLTextAreaElement;
     fireEvent.input(second, { target: { value: "Half typed" } });
     releaseSend();
-    await screen.findByText("Reply sent");
+    await waitFor(() => expect(document.querySelector(".quick-reply-box.sent")).toBeNull());
 
     expect((document.querySelector(".quick-reply-input") as HTMLTextAreaElement).value).toBe("Half typed");
   });
@@ -5292,14 +5796,14 @@ describe("App batch reply closing", () => {
     await screen.findByText("Mail for A");
     fireEvent.keyDown(document, { key: "l" });
     fireEvent.keyDown(document, { key: "r" });
-    const input = await screen.findByPlaceholderText("Write a reply...");
+    const input = await screen.findByPlaceholderText(QUICK_REPLY);
     fireEvent.input(input, { target: { value: "Quick answer" } });
     fireEvent.click(avatar("a@x.com"));
     fireEvent.click(await chooserEntry("b@x.com"));
     await waitFor(() => avatar("b@x.com"));
 
     expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument();
-    expect(screen.getByPlaceholderText("Write a reply...")).toHaveValue("Quick answer");
+    expect(screen.getByPlaceholderText(QUICK_REPLY)).toHaveValue("Quick answer");
   });
 });
 
@@ -5352,7 +5856,7 @@ describe("App reading view", () => {
     fireEvent.keyDown(document, { key: "x" });
 
     fireEvent.click(await screen.findByTitle("Delete"));
-    expect(await screen.findByText("Moved 2 threads to Trash")).toBeInTheDocument();
+    expect(await screen.findByText("Moved both in Alpha to Trash")).toBeInTheDocument();
     expect(screen.queryByRole("alertdialog")).toBeNull();
   });
 
@@ -5396,7 +5900,7 @@ describe("App reading view", () => {
     render(() => <App />);
     fireEvent.click(await screen.findByText("Mail for A"));
     fireEvent.click(await screen.findByRole("button", { name: "Unsubscribe" }));
-    expect(await screen.findByText("Couldn't unsubscribe.")).toBeInTheDocument();
+    expect(await screen.findByText("Couldn't unsubscribe from The Weekly Byte.")).toBeInTheDocument();
   });
 
   it("previews a card row's images in a lightbox, loading those the listing didn't carry", async () => {
@@ -5522,7 +6026,7 @@ describe("App one board for every account", () => {
     await waitFor(() => expect(invoke).toHaveBeenCalledWith("modify_threads", {
       accountId: "b", threadIds: ["t-b"], addLabels: [], removeLabels: ["INBOX"],
     }));
-    expect(await screen.findByText("Archived 1 thread in b@x.com")).toBeInTheDocument();
+    expect(await screen.findByText("Archived “Mail for B” in b@x.com")).toBeInTheDocument();
   });
 
   it("acts on an all-inboxes selection once per account, and undoes it per account", async () => {
@@ -5540,7 +6044,7 @@ describe("App one board for every account", () => {
 
     await waitFor(() => expect(invoke).toHaveBeenCalledWith("modify_threads", { accountId: "a", threadIds: ["x1"], addLabels: [], removeLabels: ["INBOX"] }));
     expect(invoke).toHaveBeenCalledWith("modify_threads", { accountId: "b", threadIds: ["x2"], addLabels: [], removeLabels: ["INBOX"] });
-    expect(await screen.findByText("Archived 2 threads in 2 accounts")).toBeInTheDocument();
+    expect(await screen.findByText("Archived both in Everything in 2 accounts")).toBeInTheDocument();
 
     invoke.mockClear();
     fireEvent.click(screen.getByText("Undo"));
@@ -5576,7 +6080,7 @@ describe("App one board for every account", () => {
     await screen.findByText("Mail for B");
     focusCard(2);
     fireEvent.keyDown(document, { key: "r" });
-    const input = await screen.findByPlaceholderText("Write a reply...");
+    const input = await screen.findByPlaceholderText(QUICK_REPLY);
     fireEvent.input(input, { target: { value: "Thanks" } });
     fireEvent.keyDown(input, { key: "Enter", metaKey: true });
     await waitFor(() => expect(invoke).toHaveBeenCalledWith("reply_to_thread", expect.objectContaining({
@@ -5598,7 +6102,7 @@ describe("App one board for every account", () => {
     await screen.findByText("From B");
     focusCard(1);
     fireEvent.keyDown(document, { key: "r" });
-    const input = await screen.findByPlaceholderText("Write a reply...");
+    const input = await screen.findByPlaceholderText(QUICK_REPLY);
     fireEvent.input(input, { target: { value: "Thanks" } });
     fireEvent.keyDown(input, { key: "Enter", metaKey: true });
     await waitFor(() => expect(invoke).toHaveBeenCalledWith("reply_to_thread", expect.objectContaining({
@@ -5711,7 +6215,7 @@ describe("App one board for every account", () => {
     fireEvent.keyDown(document, { key: "c" });
     fireEvent.input(await screen.findByPlaceholderText("Recipients"), { target: { value: "bo@y.com" } });
     fireEvent.click(screen.getByRole("button", { name: /^Send/ }));
-    expect(await screen.findByText("Sending message from a@x.com...")).toBeInTheDocument();
+    expect(await screen.findByText(/^Sending to bo@y\.com( on \w+)?( at .+)? from a@x\.com…$/)).toBeInTheDocument();
   });
 
   it("starts with the default account chosen last time", async () => {
@@ -5923,6 +6427,25 @@ describe("App quick search", () => {
     expect(screen.getByText("Mail for A").closest(".thread")).not.toHaveClass("faded");
   });
 
+  it("closes an empty search on a click outside it, and keeps one with something typed", async () => {
+    render(() => <App />);
+    await screen.findByText("Mail for A");
+
+    fireEvent.keyDown(document, { key: "/" });
+    const field = await screen.findByPlaceholderText(/Search mail/);
+    fireEvent.pointerDown(field);
+    expect(screen.getByPlaceholderText(/Search mail/)).toBeInTheDocument();
+
+    const outside = document.querySelector('.card[data-id="card-a"]') as HTMLElement;
+    fireEvent.input(field, { target: { value: "inv" } });
+    fireEvent.pointerDown(outside);
+    expect(screen.getByPlaceholderText(/Search mail/)).toBeInTheDocument();
+
+    fireEvent.input(field, { target: { value: "" } });
+    fireEvent.pointerDown(outside);
+    await waitFor(() => expect(screen.queryByPlaceholderText(/Search mail/)).toBeNull());
+  });
+
   it("keeps a search as a card named after its query, with what it found", async () => {
     searchResults({ ...thread("t-f", "Report.pdf"), account_id: "a" });
     handlers.create_card = ({ accountId, name, query }) => ({ ...card("card-new", accountId as string, name as string), query: query as string });
@@ -5980,5 +6503,346 @@ describe("App quick search", () => {
 
     expect(screen.queryByRole("button", { name: "from:ana" })).toBeNull();
     expect(JSON.parse(localStorage.getItem("recentSearches") ?? "[]")).toEqual([]);
+  });
+});
+
+describe("App sounds", () => {
+  // The frequencies of the notes played, oldest first
+  const played: number[] = [];
+  class RecordingAudioContext {
+    state = "running";
+    currentTime = 0;
+    destination = {};
+    resume = async () => {};
+    createGain() { return { gain: { value: 0, setValueAtTime() {}, linearRampToValueAtTime() {}, exponentialRampToValueAtTime() {} }, connect() {} }; }
+    createBiquadFilter() { return { type: "", frequency: { value: 0 }, Q: { value: 0 }, connect() {} }; }
+    createOscillator() {
+      const osc = { type: "", frequency: { value: 0 }, connect() {}, start() { played.push(osc.frequency.value); }, stop() {} };
+      return osc;
+    }
+  }
+  const notes = () => played.filter(f => [784, 1175, 523.25].includes(f));
+
+  beforeEach(() => {
+    played.length = 0;
+    vi.stubGlobal("AudioContext", RecordingAudioContext);
+  });
+  afterEach(async () => {
+    const sounds = await import("./app/sounds");
+    sounds.setSoundsEnabled(false);
+    sounds.setArrivalCard("card-a", false);
+    vi.unstubAllGlobals();
+  });
+
+  it("plays two notes once a sent email has actually gone, not on Send", async () => {
+    (await import("./app/sounds")).setSoundsEnabled(true);
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    handlers.send_email = () => null;
+    render(() => <App />);
+    await screen.findByText("Mail for A");
+    fireEvent.keyDown(document, { key: "c" });
+    fireEvent.input(await screen.findByPlaceholderText("Recipients"), { target: { value: "bo@y.com" } });
+    fireEvent.click(screen.getByRole("button", { name: /^Send/ }));
+    await vi.advanceTimersByTimeAsync(4000);
+    expect(notes()).toEqual([]);
+
+    await vi.advanceTimersByTimeAsync(1500);
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith("send_email", expect.anything()));
+    await waitFor(() => expect(notes()).toEqual([784, 1175]));
+  });
+
+  it("plays nothing for a sent email while sounds are off", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    handlers.send_email = () => null;
+    render(() => <App />);
+    await screen.findByText("Mail for A");
+    fireEvent.keyDown(document, { key: "c" });
+    fireEvent.input(await screen.findByPlaceholderText("Recipients"), { target: { value: "bo@y.com" } });
+    fireEvent.click(screen.getByRole("button", { name: /^Send/ }));
+    await vi.advanceTimersByTimeAsync(5500);
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith("send_email", expect.anything()));
+    await new Promise(r => setTimeout(r, 20));
+    expect(notes()).toEqual([]);
+  });
+
+  it("plays a lower note when new mail comes into a card chosen for it", async () => {
+    const sounds = await import("./app/sounds");
+    sounds.setSoundsEnabled(true);
+    sounds.setArrivalCard("card-a", true);
+    render(() => <App />);
+    await screen.findByText("Mail for A");
+    expect(notes()).toEqual([]);
+
+    const fresh = { ...thread("t-new", "Contract signed"), labels: ["INBOX", "UNREAD"], unread_count: 1, last_message_date: Date.now() + 1000 };
+    threadsByCard["card-a"] = [fresh, thread("t-a", "Mail for A")];
+    handlers.sync_threads_incremental = () => ({ modified_threads: [{ ...fresh, account_id: "a" }], deleted_thread_ids: [], is_full_sync: false });
+    window.dispatchEvent(new Event("focus"));
+
+    await screen.findByText("Contract signed");
+    await waitFor(() => expect(notes()).toEqual([523.25]));
+  });
+
+  it("offers Sounds in Settings, off at first", async () => {
+    render(() => <App />);
+    await screen.findByText("Mail for A");
+    fireEvent.click(avatar("a@x.com"));
+    fireEvent.click(within(document.querySelector(".account-chooser-container") as HTMLElement).getByText("Settings"));
+    const group = await screen.findByRole("group", { name: "Sounds" });
+    expect(within(group).getByRole("switch", { name: "Sounds" })).toHaveAttribute("aria-checked", "false");
+  });
+});
+
+describe("App later version of a file", () => {
+  const SEP_19 = new Date(2026, 8, 19, 11, 40).getTime();
+  const SEP_28 = new Date(2026, 8, 28, 9, 0).getTime();
+  const MARTIN = "Martín Ibarra <martin@ibarra-arq.com>";
+  const listedFile = (messageId: string, filename: string) =>
+    ({ message_id: messageId, attachment_id: `x-${messageId}`, filename, mime_type: "application/pdf", size: 412000, inline_data: null, content_id: null });
+
+  beforeEach(() => {
+    threadsByCard["card-a"] = [
+      { ...thread("t-a", "Presupuesto obra"), participants: [MARTIN], has_attachment: true, last_message_date: SEP_19, attachments: [listedFile("m1", "Presupuesto_obra_v2.pdf")] },
+      { ...thread("t-2", "Obra Belgrano: ajustes"), participants: [MARTIN], has_attachment: true, last_message_date: SEP_28, attachments: [listedFile("m5", "Presupuesto_obra_v3.pdf")] },
+    ];
+    handlers.get_thread_details = ({ threadId }) => threadId === "t-a"
+      ? {
+        id: "t-a",
+        messages: [fullMessage("m1", MARTIN, {
+          internalDate: String(SEP_19),
+          payload: {
+            mimeType: "multipart/mixed",
+            headers: [{ name: "From", value: MARTIN }, { name: "To", value: "a@x.com" }, { name: "Subject", value: "Presupuesto obra" }],
+            parts: [
+              { mimeType: "text/plain", body: { size: 4, data: "SGkh" } },
+              { mimeType: "application/pdf", filename: "Presupuesto_obra_v2.pdf", body: { attachmentId: "x-m1", size: 412000 } },
+            ],
+          },
+        })],
+      }
+      : { id: "t-2", messages: [fullMessage("m5", MARTIN, { threadId: "t-2", internalDate: String(SEP_28), payload: { mimeType: "text/plain", headers: [{ name: "From", value: MARTIN }, { name: "Subject", value: "Obra Belgrano: ajustes" }], body: { size: 0 } } })] };
+  });
+  afterEach(() => setNoticesEnabled(true));
+
+  it("says under an attachment that the same person sent a later version in another thread, and opens it", async () => {
+    render(() => <App />);
+    fireEvent.click(await screen.findByText("Presupuesto obra"));
+    expect(await screen.findByText("Martín sent v3 on Sep 28, in “Obra Belgrano: ajustes”.")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Open v3" }));
+    expect(await screen.findByRole("dialog", { name: "Obra Belgrano: ajustes" })).toBeInTheDocument();
+  });
+
+  it("says nothing of it with noticing turned off", async () => {
+    setNoticesEnabled(false);
+    render(() => <App />);
+    fireEvent.click(await screen.findByText("Presupuesto obra"));
+    await screen.findByRole("button", { name: /Presupuesto_obra_v2\.pdf/ });
+    await new Promise(r => setTimeout(r, 200));
+    expect(screen.queryByText(/sent v3/)).toBeNull();
+    expect(invoke).not.toHaveBeenCalledWith("get_thread_details", expect.objectContaining({ threadId: "t-2" }));
+  });
+});
+
+describe("App reply names who it goes to", () => {
+  it("names the sender in a thread reply and in its sending toast", async () => {
+    handlers.get_thread_details = () => ({ id: "t-a", messages: [fullMessage("m1", "Ana Pérez <ana@x.com>")] });
+    handlers.save_draft = () => ({ id: "d1" });
+    render(() => <App />);
+    fireEvent.click(await screen.findByText("Mail for A"));
+    await screen.findByText("body m1");
+    fireEvent.keyDown(document, { key: "r" });
+    const body = await screen.findByPlaceholderText("Reply to Ana…");
+    fireEvent.input(body, { target: { value: "Thanks" } });
+    fireEvent.keyDown(body, { key: "Enter", metaKey: true });
+    expect(await screen.findByText(/^Sending to Ana( on \w+)?( at .+)?…$/)).toBeInTheDocument();
+  });
+
+  it("names them in a reply reopened in the compose panel", async () => {
+    threadsByCard["card-a"] = [{ ...thread("t-a", "Mail for A"), participants: ["Ana Pérez <ana@x.com>"] }];
+    localStorage.setItem("draft_reply_a_t-a#q", JSON.stringify({
+      to: "ana@x.com", cc: "", bcc: "", subject: "Re: Hi", body: "", threadId: "t-a", savedAt: 5, sending: true, accountId: "a",
+    }));
+    render(() => <App />);
+    fireEvent.click(await screen.findByRole("button", { name: "Open" }));
+    await waitFor(() => expect(document.querySelector(".compose-panel")).not.toBeNull());
+    await screen.findByText("Mail for A");
+    expect(screen.getByPlaceholderText("Reply to Ana…")).toBeInTheDocument();
+  });
+
+  it("names the sender in a quick reply", async () => {
+    handlers.get_thread_details = () => ({ id: "t-a", messages: [fullMessage("m1", "Ana Pérez <ana@x.com>")] });
+    render(() => <App />);
+    await screen.findByText("Mail for A");
+    fireEvent.keyDown(document, { key: "l" });
+    fireEvent.keyDown(document, { key: "r" });
+    expect(await screen.findByPlaceholderText("Reply to Ana…")).toBeInTheDocument();
+  });
+
+  it("names the sender in each batch reply", async () => {
+    handlers.get_thread_details = ({ threadId }) => ({ id: threadId, messages: [fullMessage("m1", threadId === "t-1" ? "Ana Pérez <ana@x.com>" : "Ben <ben@x.com>")] });
+    threadsByCard["card-a"] = [thread("t-1", "One"), thread("t-2", "Two")];
+    render(() => <App />);
+    await screen.findByText("One");
+    fireEvent.keyDown(document, { key: "l" });
+    fireEvent.keyDown(document, { key: "x" });
+    fireEvent.keyDown(document, { key: "j" });
+    fireEvent.keyDown(document, { key: "x" });
+    fireEvent.keyDown(document, { key: "r" });
+    expect(await screen.findByPlaceholderText("Reply to Ana…")).toBeInTheDocument();
+    expect(screen.getByPlaceholderText("Reply to Ben…")).toBeInTheDocument();
+  });
+
+  it("names everyone a Send All goes to", async () => {
+    handlers.get_thread_details = ({ threadId }) => ({ id: threadId, messages: [fullMessage("m1", threadId === "t-1" ? "Ana Pérez <ana@x.com>" : "Ben <ben@x.com>")] });
+    threadsByCard["card-a"] = [thread("t-1", "One"), thread("t-2", "Two")];
+    render(() => <App />);
+    await screen.findByText("One");
+    fireEvent.keyDown(document, { key: "l" });
+    fireEvent.keyDown(document, { key: "x" });
+    fireEvent.keyDown(document, { key: "j" });
+    fireEvent.keyDown(document, { key: "x" });
+    fireEvent.keyDown(document, { key: "r" });
+    fireEvent.input(await screen.findByPlaceholderText("Reply to Ana…"), { target: { value: "Thanks" } });
+    fireEvent.input(screen.getByPlaceholderText("Reply to Ben…"), { target: { value: "Thanks" } });
+    fireEvent.click(screen.getByRole("button", { name: /^Send All/ }));
+    expect(await screen.findByText(/^Sending to (Ana and Ben|Ben and Ana)( on \w+)?( at .+)?…$/)).toBeInTheDocument();
+  });
+
+  it("says who a new email is going to, and from which account", async () => {
+    handlers.get_accounts = () => [account("a", "a@x.com"), account("b", "b@x.com")];
+    handlers.save_draft = () => ({ id: "d1" });
+    render(() => <App />);
+    await screen.findByText("Mail for A");
+    fireEvent.keyDown(document, { key: "c" });
+    fireEvent.input(await screen.findByPlaceholderText("Recipients"), { target: { value: "bo@y.com" } });
+    fireEvent.click(screen.getByRole("button", { name: /^Send/ }));
+    expect(await screen.findByText(/^Sending to bo@y\.com( on \w+)?( at .+)? from a@x\.com…$/)).toBeInTheDocument();
+  });
+});
+
+describe("App reply all after a Bcc", () => {
+  const bcced = () => fullMessage("m1", "Jules Bernard <jules@lumen.studio>", {
+    payload: {
+      mimeType: "text/plain",
+      headers: [
+        { name: "From", value: "Jules Bernard <jules@lumen.studio>" },
+        { name: "To", value: "Marta Ruiz <marta@lumen.studio>" },
+        { name: "Cc", value: "ben@lumen.studio" },
+        { name: "Delivered-To", value: "a@x.com" },
+        { name: "Subject", value: "Offsite budget" },
+        { name: "Message-ID", value: "<m1@x>" },
+      ],
+      body: { size: 0 },
+    },
+  });
+  const LINE = "You were Bcc'd. Reply all shows Marta Ruiz and ben@lumen.studio that you have this.";
+
+  async function openThread() {
+    handlers.get_thread_details = () => ({ id: "t-a", messages: [bcced()] });
+    render(() => <App />);
+    fireEvent.click(await screen.findByText("Mail for A"));
+    await screen.findByText("body m1");
+  }
+
+  it("warns on Reply all and narrows the reply to the sender on request", async () => {
+    await openThread();
+    fireEvent.keyDown(document, { key: "R" });
+    expect(await screen.findByText(LINE)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Reply to Jules only" }));
+    expect(screen.getByPlaceholderText("Recipients")).toHaveValue("jules@lumen.studio");
+    expect(screen.getByPlaceholderText("Cc recipients")).toHaveValue("");
+    expect(screen.queryByText(LINE)).not.toBeInTheDocument();
+  });
+
+  it("says nothing on a plain Reply", async () => {
+    await openThread();
+    fireEvent.keyDown(document, { key: "r" });
+    await screen.findByPlaceholderText(REPLY_BODY);
+    expect(screen.queryByText(/You were Bcc'd/)).not.toBeInTheDocument();
+  });
+});
+
+describe("App new email about a thread already going", () => {
+  const LINE = /^You and Ana already have "Q3 budget" going, last /;
+
+  function threadAlreadyGoing() {
+    threadsByCard["card-a"] = [{
+      ...thread("t-q", "Re: Q3 budget"),
+      participants: ["Ana Pérez <ana@x.com>", "a@x.com"],
+      last_message_date: Date.now() - 2 * 24 * 60 * 60 * 1000,
+    }];
+    handlers.get_thread_details = () => ({ id: "t-q", messages: [fullMessage("m1", "Ana Pérez <ana@x.com>", {
+      threadId: "t-q",
+      payload: { mimeType: "text/plain", headers: [{ name: "From", value: "Ana Pérez <ana@x.com>" }, { name: "Subject", value: "Re: Q3 budget" }, { name: "Message-ID", value: "<m1@x>" }], body: { size: 0 } },
+    })] });
+    handlers.save_draft = () => ({ id: "d1" });
+    handlers.delete_draft = () => null;
+    handlers.search_threads_preview = () => [];
+  }
+
+  async function writeNew(subject: string) {
+    render(() => <App />);
+    await screen.findByText("Re: Q3 budget");
+    fireEvent.keyDown(document, { key: "c" });
+    fireEvent.input(await screen.findByPlaceholderText("Recipients"), { target: { value: "ana@x.com" } });
+    fireEvent.input(screen.getByPlaceholderText("Subject"), { target: { value: subject } });
+    fireEvent.input(screen.getByPlaceholderText("Write something..."), { target: { value: "Numbers attached" } });
+  }
+
+  it("offers to reply there, carrying over what was written", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    threadAlreadyGoing();
+    handlers.reply_to_thread = () => null;
+    await writeNew("Q3 budget");
+    fireEvent.click(await screen.findByRole("button", { name: "Reply there" }));
+
+    const body = await screen.findByPlaceholderText("Reply to Ana…");
+    expect(body).toHaveValue("Numbers attached");
+    expect(screen.queryByText(LINE)).not.toBeInTheDocument();
+    fireEvent.keyDown(body, { key: "Enter", metaKey: true });
+    await vi.advanceTimersByTimeAsync(6000);
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith("reply_to_thread", expect.objectContaining({ threadId: "t-q", to: "ana@x.com", body: "Numbers attached" })));
+    expect(invoke).not.toHaveBeenCalledWith("send_email", expect.anything());
+  });
+
+  it("says nothing for a different subject", async () => {
+    threadAlreadyGoing();
+    await writeNew("Q3 budget draft");
+    await new Promise(r => setTimeout(r, 800));
+    expect(screen.queryByText(LINE)).not.toBeInTheDocument();
+  });
+});
+
+describe("App autocomplete for someone who moved", () => {
+  it("suggests the new address first and says why under both", async () => {
+    const DAY = 24 * 60 * 60 * 1000;
+    const at = (id: string, from: string, daysAgo: number) => ({ ...thread(id, `Mail ${id}`), participants: [from], last_message_date: Date.now() - daysAgo * DAY });
+    threadsByCard["card-a"] = [
+      at("t-1", "Ana Pérez <aperez@estudiomr.com.ar>", 300),
+      at("t-2", "Ana Pérez <aperez@estudiomr.com.ar>", 320),
+      at("t-3", "Ana Pérez <ana@lumen.studio>", 20),
+      at("t-4", "Ana Pérez <ana@lumen.studio>", 3),
+    ];
+    render(() => <App />);
+    await screen.findByText("Mail t-1");
+    fireEvent.keyDown(document, { key: "c" });
+    const to = await screen.findByPlaceholderText("Recipients");
+    fireEvent.focus(to);
+    fireEvent.input(to, { target: { value: "ana" } });
+    const options = await screen.findAllByRole("option");
+    expect(options[0]).toHaveTextContent(/ana@lumen\.studioWrites from here since /);
+    expect(options[1]).toHaveTextContent(/aperez@estudiomr\.com\.arLast heard from here in /);
+  });
+});
+
+describe("App pasting a list into To", () => {
+  it("tidies it into recipients named from the contacts, and says what it did", async () => {
+    handlers.fetch_contacts = () => [{ resource_name: "people/1", display_name: "Carla Méndez", email_addresses: ["carla.m@gmail.com"], photo_url: null }];
+    render(() => <App />);
+    await screen.findByText("Mail for A");
+    fireEvent.keyDown(document, { key: "c" });
+    const to = await screen.findByPlaceholderText("Recipients");
+    fireEvent.paste(to, { clipboardData: { types: ["text/plain"], files: [], items: [], getData: () => "Ana Ruiz <ana.ruiz@estudio.co>; carla.m@gmail.com\nPablo (no email yet)" } });
+    expect(to).toHaveValue('"Ana Ruiz" <ana.ruiz@estudio.co>, "Carla Méndez" <carla.m@gmail.com>, Pablo');
+    expect(screen.getByText("Added 2 · “Pablo” has no address, left for you")).toBeInTheDocument();
   });
 });

@@ -11,6 +11,7 @@ type ToastStore = ReturnType<typeof createToasts>;
 // or follows `percent` when the caller counts the time (the send toast).
 export function ToastFrame(props: {
   message: JSX.Element;
+  note?: JSX.Element;
   closing?: boolean;
   paused?: boolean;
   raised?: boolean;
@@ -42,7 +43,10 @@ export function ToastFrame(props: {
         </Show>
       </Show>
       <div class="toast-content">
-        <span class="toast-message">{props.message}</span>
+        <span class="toast-message">
+          {props.message}
+          <Show when={props.note}><span class="toast-note">{props.note}</span></Show>
+        </span>
         {props.children}
         <Show when={props.onDismiss}>
           {(dismiss) => (
@@ -62,6 +66,7 @@ function Toast(props: { toast: ShownToast; toasts: ToastStore; raised?: boolean 
   return (
     <ToastFrame
       message={t().message}
+      note={t().note}
       closing={t().closing}
       paused={t().paused}
       raised={props.raised}
@@ -74,7 +79,11 @@ function Toast(props: { toast: ShownToast; toasts: ToastStore; raised?: boolean 
         <button class="toast-undo-btn" onClick={() => props.toasts.undo()}>Undo <KeyHint keys="z" /></button>
       </Show>
       <For each={toastActions(t())}>
-        {(action, i) => <button class="toast-undo-btn" onClick={() => props.toasts.runAction(i(), id())}>{action.label}</button>}
+        {(action, i) => (
+          <button class="toast-undo-btn" onClick={() => props.toasts.runAction(i(), id())}>
+            {action.label}<Show when={action.keys}>{(keys) => <> <KeyHint keys={keys()} /></>}</Show>
+          </button>
+        )}
       </For>
     </ToastFrame>
   );

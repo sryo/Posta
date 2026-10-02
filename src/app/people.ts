@@ -8,6 +8,13 @@ export function personName(address: string): string {
 // Senders that aren't a person: their mailbox name says nothing, the domain does
 const ROBOT = /^(no[-_.]?reply|do[-_.]?not[-_.]?reply)|^(notifications?|info|mailer(-daemon)?|news(letter)?|hello|support|alerts?|updates?|bounces?)$/i;
 
+// Whether an address is a mailbox no person reads (no-reply@, notifications@...)
+export function isRobot(address: string): boolean {
+  const email = extractEmail(address);
+  const at = email.lastIndexOf("@");
+  return at > 0 && ROBOT.test(email.slice(0, at));
+}
+
 // How an address reads in a row: the name, else the part before @ for a
 // person ("ana.perez") or the domain for a robot ("fullgestion.com.ar")
 export function shortName(address: string): string {
@@ -66,3 +73,25 @@ export function organizerName(
   const guest = event.attendees.find(a => a.email.toLowerCase() === email);
   return guest?.display_name || extractName(event.organizer) || nameForEmail?.(email) || email;
 }
+
+// The text split at commas and semicolons outside a quoted name or
+// <address>; the last piece is what follows the last separator
+export function splitAtSeparators(text: string): string[] {
+  const pieces = [""];
+  let quoted = false;
+  let angled = false;
+  for (const ch of text) {
+    if (ch === '"' && !angled) quoted = !quoted;
+    else if (ch === "<" && !quoted) angled = true;
+    else if (ch === ">" && !quoted) angled = false;
+    else if ((ch === "," || ch === ";") && !quoted && !angled) {
+      pieces.push("");
+      continue;
+    }
+    pieces[pieces.length - 1] += ch;
+  }
+  return pieces;
+}
+
+// A recipient as an address list writes it: '"Ana Ruiz" <ana@x.co>', or the bare address
+export const formatRecipient = (c: { email: string; name?: string }) => (c.name ? `"${c.name.replace(/"/g, "")}" <${c.email}>` : c.email);

@@ -105,3 +105,28 @@ describe("GuestChips", () => {
     expect(value()).toBe("ana@x.test");
   });
 });
+
+describe("GuestChips suggestion notes", () => {
+  it("shows a suggestion's note under its address", () => {
+    const [value, setValue] = createSignal("");
+    render(() => <GuestChips value={value()} onChange={setValue} suggest={() => [{ email: "ana@lumen.studio", name: "Ana Pérez", note: "Writes from here since August" }]} />);
+    fireEvent.input(screen.getByRole("combobox", { name: "Guests" }), { target: { value: "ana" } });
+    expect(screen.getByRole("option")).toHaveTextContent("Writes from here since August");
+  });
+});
+
+describe("GuestChips pasting a list", () => {
+  const clipboard = (text: string) => ({ clipboardData: { types: ["text/plain"], files: [], items: [], getData: (type: string) => (type === "text/plain" ? text : "") } });
+
+  it("makes chips, blinks a guest already there, leaves what has no address to finish, and says so", () => {
+    const { input, value } = renderChips('"Ana Pérez" <ana@x.test>');
+    fireEvent.paste(input, clipboard("ana@x.test\nlucas@x.test; \"Bo Díaz\" bo@y.test\nPablo (no email yet)"));
+    expect(value()).toBe('"Ana Pérez" <ana@x.test>, "Lucas Romero" <lucas@x.test>, "Bo Díaz" <bo@y.test>');
+    expect(chipTexts()).toEqual(["Ana Pérez", "Lucas Romero", "Bo Díaz"]);
+    expect(document.querySelector(".guest-chip.blink")).toHaveAttribute("title", "ana@x.test");
+    expect(input.value).toBe("Pablo");
+    expect(screen.getByRole("status")).toHaveTextContent("Added 2 · Ana was already here · “Pablo” has no address, left for you");
+    fireEvent.keyDown(input, { key: "o" });
+    expect(screen.queryByRole("status")).toBeNull();
+  });
+});

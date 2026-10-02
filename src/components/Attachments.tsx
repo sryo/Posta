@@ -30,6 +30,9 @@ export const FileName = (props: { filename: string }) => (
 
 type Size = "row" | "detail";
 
+// A line under an attachment, such as that a later version of it came
+export type LaterNote = { text: string; action: string; open: () => void };
+
 // One attachment, as a button: an image's preview, or its name. At detail size
 // a square holds the preview or a plain glyph of the file's kind, beside the
 // name and its size. A preview downloads once the attachment is on screen; one
@@ -123,21 +126,40 @@ export function AttachmentList(props: {
   onMenu: (attachment: Attachment) => void;
   // Downloads an image's preview when it didn't come with the thread
   loadPreview?: (attachment: Attachment) => Promise<string>;
+  // A newer file of the same series, said under the attachment at detail size
+  laterVersion?: (attachment: Attachment) => LaterNote | null;
 }) {
   const size = (): Size => props.size ?? "row";
   const shown = () => visibleAttachments(props.attachments, { hideCalendar: props.hideCalendar });
   const images = () => shown().filter(hasPreview);
   const files = () => shown().filter(a => !hasPreview(a));
   const listed = () => size() === "detail" ? shown() : [...images().slice(0, ROW_IMAGES), ...files().slice(0, ROW_FILES)];
-  const item = (attachment: Attachment) => (
-    <AttachmentItem
-      attachment={attachment}
-      size={size()}
-      loadPreview={props.loadPreview}
-      onOpen={() => props.onOpen(attachment, props.attachments.indexOf(attachment))}
-      onMenu={() => props.onMenu(attachment)}
-    />
-  );
+  const item = (attachment: Attachment) => {
+    const button = (
+      <AttachmentItem
+        attachment={attachment}
+        size={size()}
+        loadPreview={props.loadPreview}
+        onOpen={() => props.onOpen(attachment, props.attachments.indexOf(attachment))}
+        onMenu={() => props.onMenu(attachment)}
+      />
+    );
+    const later = () => (size() === "detail" ? props.laterVersion?.(attachment) ?? null : null);
+    if (size() !== "detail") return button;
+    return (
+      <div class="attachment-entry" classList={{ "attachment-noted": !!later() }}>
+        {button}
+        <Show when={later()}>
+          {(note) => (
+            <p class="attachment-later">
+              <span>{note().text}</span>{" "}
+              <button type="button" class="attachment-later-open" onClick={() => note().open()}>{note().action}</button>
+            </p>
+          )}
+        </Show>
+      </div>
+    );
+  };
   return (
     <Show when={shown().length > 0}>
       <div class="attachments" data-size={size()}>

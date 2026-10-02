@@ -1,7 +1,8 @@
-import { extractEmail } from "../utils";
+import { extractEmail, extractName, splitEmailList } from "../utils";
 
 type Headers = { name: string; value: string }[] | undefined;
 type MessageLike = { payload?: { headers?: Headers }; reaction?: unknown };
+type DatedLike = { internalDate?: string; payload?: { headers?: Headers } };
 type ReactionLike = { id: string; payload?: { headers?: Headers }; reaction?: { in_reply_to: string } | null };
 
 // Gmail preserves the sender's header casing ("Message-Id", "from", ...)
@@ -21,6 +22,28 @@ export function lastMessageFromOthers<M extends MessageLike>(messages: M[], acco
     if (from && extractEmail(from).toLowerCase() !== self) return messages[i];
   }
   return messages[messages.length - 1];
+}
+
+// The display name an address goes by in a thread's From, To or Cc headers
+export function nameInMessages(email: string, messages: readonly MessageLike[]): string | undefined {
+  const wanted = email.toLowerCase();
+  for (const message of messages) {
+    for (const header of ["From", "To", "Cc"]) {
+      for (const address of splitEmailList(findHeader(message.payload?.headers, header) ?? "")) {
+        const name = extractName(address);
+        if (name && extractEmail(address).toLowerCase() === wanted) return name;
+      }
+    }
+  }
+  return undefined;
+}
+
+// When Gmail received the message, else when its Date header says it was sent
+export function messageDate(message: DatedLike): Date | null {
+  const received = Number(message.internalDate);
+  if (message.internalDate && Number.isFinite(received)) return new Date(received);
+  const sent = new Date(findHeader(message.payload?.headers, "Date") ?? "");
+  return isNaN(sent.getTime()) ? null : sent;
 }
 
 export const normalizeMessageId = (id: string) => id.trim().replace(/^<|>$/g, "").toLowerCase();

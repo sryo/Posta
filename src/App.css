@@ -352,16 +352,16 @@
 /* ---- Tier 2: card-derived -----------------------------------------------
    Anything that wears a card hue sets --card-hue; everything else derives.
    Uncoloured cards keep the defaults on :root, the plain surfaces. */
-.card[data-color="red"], .preset-card.red, [data-hue="red"] { --card-hue: var(--hue-red); }
-.card[data-color="orange"], .preset-card.orange, [data-hue="orange"] { --card-hue: var(--hue-orange); }
-.card[data-color="yellow"], .preset-card.yellow, [data-hue="yellow"] { --card-hue: var(--hue-yellow); }
-.card[data-color="green"], .preset-card.green, [data-hue="green"] { --card-hue: var(--hue-green); }
+.card[data-color="red"], [data-hue="red"] { --card-hue: var(--hue-red); }
+.card[data-color="orange"], [data-hue="orange"] { --card-hue: var(--hue-orange); }
+.card[data-color="yellow"], [data-hue="yellow"] { --card-hue: var(--hue-yellow); }
+.card[data-color="green"], [data-hue="green"] { --card-hue: var(--hue-green); }
 .card[data-color="cyan"], [data-hue="cyan"] { --card-hue: var(--hue-cyan); }
-.card[data-color="blue"], .preset-card.blue, [data-hue="blue"] { --card-hue: var(--hue-blue); }
-.card[data-color="purple"], .preset-card.purple, [data-hue="purple"] { --card-hue: var(--hue-purple); }
+.card[data-color="blue"], [data-hue="blue"] { --card-hue: var(--hue-blue); }
+.card[data-color="purple"], [data-hue="purple"] { --card-hue: var(--hue-purple); }
 .card[data-color="pink"], [data-hue="pink"] { --card-hue: var(--hue-pink); }
 
-.card[data-color], .preset-card, .thread-bar-card[data-hue] {
+.card[data-color], .sorting-slot[data-hue], .thread-bar-card[data-hue], .transit[data-hue], .focus-ring[data-hue], .color-spread[data-hue] {
     --card-tint: color-mix(in srgb, var(--card-hue) var(--card-tint-mix), transparent);
     --card-ring: color-mix(in srgb, var(--card-hue) var(--card-ring-mix), transparent);
     --card-band: color-mix(in srgb, var(--card-hue) var(--card-band-mix), transparent);
@@ -378,7 +378,7 @@
     .card[data-color] { --card-band-text: var(--neutral-0); }
     .card[data-color="yellow"], .card[data-color="orange"] { --card-band-text: var(--neutral-950); }
     /* yellow is the one tint light enough to crowd muted text on unread rows */
-    .card[data-color="yellow"] { --card-tint-mix: 27%; }
+    .card[data-color="yellow"], .color-spread[data-hue="yellow"] { --card-tint-mix: 27%; }
 }
 
 /* Accent text on a coloured card sits on its tint. Focus there is drawn in
@@ -1491,6 +1491,35 @@ a:focus-visible,
     border-top: 1px solid var(--border-subtle);
 }
 
+/* An opened message's attachment, with a line under it when a later version
+   came elsewhere */
+.attachment-entry {
+    display: contents;
+}
+
+.attachment-noted {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-sm);
+    max-width: 320px;
+}
+
+.attachment-later {
+    margin: 0;
+    font: var(--type-meta);
+    color: var(--text-secondary);
+}
+
+.attachment-later-open {
+    padding: 0;
+    border: none;
+    background: none;
+    font: inherit;
+    font-weight: var(--weight-strong);
+    color: var(--text-link);
+    cursor: pointer;
+}
+
 .attachment {
     display: flex;
     align-items: center;
@@ -1613,6 +1642,60 @@ a:focus-visible,
     -webkit-line-clamp: var(--snippet-lines);
 }
 
+/* A quiet fact about the thread, under its snippet */
+.thread-aside {
+    font: var(--type-meta);
+    color: var(--text-muted);
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+}
+
+/* What the card is missing, under its last row */
+.card-foot-notes {
+    padding: var(--space-md) var(--space-lg) var(--space-md) var(--space-xl);
+    border-top: 1px solid var(--card-divider);
+}
+
+.card-foot-note {
+    display: flex;
+    align-items: baseline;
+    gap: var(--space-md);
+    margin: 0;
+    font: var(--type-meta);
+    color: var(--text-secondary);
+}
+
+.card-foot-note-text {
+    flex: 1;
+    min-width: 0;
+}
+
+.card-foot-note-action,
+.card-foot-note-dismiss {
+    flex: none;
+    padding: 0;
+    border: none;
+    background: none;
+    cursor: pointer;
+}
+
+.card-foot-note-action {
+    font: inherit;
+    font-weight: var(--weight-strong);
+    color: var(--text-link);
+}
+
+.card-foot-note-dismiss {
+    align-self: center;
+    display: inline-flex;
+    color: var(--text-muted);
+}
+
+.card-foot-note-dismiss:hover {
+    color: var(--text-primary);
+}
+
 /* Calendar Event Preview */
 .calendar-event-preview {
     display: flex;
@@ -1700,6 +1783,71 @@ a:focus-visible,
     transition: opacity 0.15s;
 }
 
+/* A long free stretch in today's or tomorrow's events: the blank gutter
+   between two panes of a stamp sheet, perforated above and below */
+.calendar-gutter {
+    --perforation: color-mix(in srgb, var(--card-ink) 45%, transparent);
+    position: relative;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--space-md);
+    min-height: 34px;
+    padding: 0 var(--space-lg);
+    font-variant-numeric: tabular-nums;
+    background-image:
+        radial-gradient(circle, var(--perforation) 1.6px, transparent 1.9px),
+        radial-gradient(circle, var(--perforation) 1.6px, transparent 1.9px);
+    background-size: 6px 6px;
+    background-repeat: repeat-x;
+    background-position: 3px -3px, 3px calc(100% + 3px);
+}
+
+.calendar-event-item:has(+ .calendar-gutter) {
+    border-bottom: none;
+}
+
+.calendar-gutter.ending {
+    min-height: 46px;
+    justify-content: center;
+}
+
+.calendar-gutter-line {
+    font: var(--type-meta);
+    color: var(--text-secondary);
+}
+
+.calendar-gutter-length {
+    font: var(--type-meta);
+    color: var(--text-muted);
+}
+
+.calendar-gutter-now {
+    position: absolute;
+    top: 5px;
+    bottom: 5px;
+    width: 2px;
+    border-radius: 1px;
+    background: var(--card-ink);
+    opacity: 0.7;
+    transform: translateX(-1px);
+    transition: left 300ms ease;
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .calendar-gutter-now {
+        transition: none;
+    }
+}
+
+.calendar-day-note {
+    padding: var(--space-sm) var(--space-lg);
+    font: var(--type-meta);
+    font-variant-numeric: tabular-nums;
+    color: var(--text-secondary);
+    border-bottom: 1px solid var(--card-divider);
+}
+
 /* A search that isn't kept yet */
 .card.search {
     box-shadow: none;
@@ -1764,6 +1912,93 @@ a:focus-visible,
 .calendar-event-response.needsAction {
     background: var(--surface-hover);
     color: var(--text-muted);
+}
+
+.calendar-event-alone {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: var(--space-xs) var(--space-md);
+    margin-top: 4px;
+    font: var(--type-meta);
+    color: var(--text-muted);
+}
+
+.calendar-event-alone-action {
+    padding: 0;
+    background: none;
+    border: none;
+    border-radius: var(--radius-xs);
+    font: var(--type-meta);
+    color: var(--text-link);
+    cursor: pointer;
+}
+
+.calendar-event-alone-action:hover {
+    text-decoration: underline;
+}
+
+.calendar-event-alone-action.danger {
+    color: var(--danger-text);
+}
+
+/* An event row dragged to another time or day */
+.move-verdict {
+    float: right;
+    margin-left: var(--space-md);
+    font: var(--type-meta);
+    text-transform: none;
+    color: var(--success-text);
+}
+
+.move-verdict.clash {
+    color: var(--warning-text);
+}
+
+.move-over {
+    background: color-mix(in srgb, var(--card-ink) 14%, transparent);
+}
+
+.calendar-event-item.drag-source {
+    opacity: 0.35;
+}
+
+.event-drag-ghost {
+    position: fixed;
+    top: 0;
+    left: 0;
+    z-index: var(--z-toast);
+    display: flex;
+    gap: var(--space-md);
+    align-items: baseline;
+    max-width: 260px;
+    margin: 8px 0 0 12px;
+    padding: var(--space-sm) var(--space-lg);
+    background: var(--surface-raised);
+    border: 1px solid var(--border-default);
+    border-radius: var(--radius-sm);
+    box-shadow: var(--shadow-md);
+    pointer-events: none;
+}
+
+.event-drag-ghost-title {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font: var(--type-subject);
+    color: var(--text-primary);
+}
+
+.event-drag-ghost-time {
+    font: var(--type-meta);
+    color: var(--text-muted);
+    font-variant-numeric: tabular-nums;
+}
+
+body.dragging-event {
+    cursor: grabbing;
+    user-select: none;
+    -webkit-user-select: none;
 }
 
 .calendar-join-btn {
@@ -2285,6 +2520,36 @@ a:focus-visible,
 
     .empty-query {
         transition: none;
+    }
+}
+
+/* Two letters of a thread a long time apart: a straight handstamp between
+   them, fainter than an emptied card's, joined to both cards by a dashed
+   line. The negative margin takes back the list's gap on either side. */
+.transit {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    margin: calc(-1 * var(--space-2xl)) 0;
+    padding: var(--space-sm) 0;
+}
+
+.transit-line {
+    width: 0;
+    height: 18px;
+    border-left: 1.5px dashed color-mix(in srgb, var(--card-ink) 45%, transparent);
+}
+
+.postmark.transit-stamp {
+    --tilt: -3deg;
+    width: 150px;
+    height: 64px;
+    opacity: 0.5;
+}
+
+@media (prefers-color-scheme: dark) {
+    .postmark.transit-stamp {
+        opacity: 0.72;
     }
 }
 
@@ -3468,6 +3733,35 @@ button:disabled:hover {
     color: var(--text-primary);
 }
 
+.compose-last-letter {
+    margin: 0;
+    font: var(--type-meta);
+    color: var(--text-muted);
+}
+
+/* One line stating something Posta noticed or just did, beside the thing it is about */
+.notice-line {
+    display: flex;
+    align-items: center;
+    gap: var(--space-sm);
+    font: var(--type-meta);
+    color: var(--text-muted);
+}
+
+.notice-line-text {
+    margin: 0;
+    min-width: 0;
+}
+
+.notice-line-action {
+    flex-shrink: 0;
+}
+
+.notice-line-dismiss {
+    margin-left: auto;
+    flex-shrink: 0;
+}
+
 .compose-content {
     flex: 1;
     min-height: 150px;
@@ -3645,6 +3939,136 @@ button:disabled:hover {
     opacity: 1;
 }
 
+/* From the keyboard, the board's one focus ring (FocusRing) marks the focused
+   row instead of the row's own outline. It glides from row to row in the
+   card's hue, under the wheels' petals, and nudges against an edge. */
+:root[data-input="keyboard"] .thread.focused,
+:root[data-input="keyboard"] .calendar-event-item.focused {
+    outline: none;
+}
+
+.focus-ring {
+    position: fixed;
+    left: 0;
+    top: 0;
+    z-index: 5;
+    pointer-events: none;
+    border-radius: var(--radius-xs);
+    box-shadow: inset 0 0 0 2px color-mix(in srgb, var(--border-focus) 75%, transparent);
+    transition: transform 180ms cubic-bezier(0.2, 0.8, 0.2, 1),
+        width 180ms cubic-bezier(0.2, 0.8, 0.2, 1),
+        height 180ms cubic-bezier(0.2, 0.8, 0.2, 1),
+        clip-path 180ms cubic-bezier(0.2, 0.8, 0.2, 1),
+        box-shadow 180ms ease-out;
+}
+
+.focus-ring[data-hue] {
+    --border-focus: var(--card-ring);
+}
+
+.focus-ring.instant {
+    transition: none;
+}
+
+.focus-ring[data-bump="down"] {
+    animation: focus-bump-down 220ms ease-out;
+}
+
+.focus-ring[data-bump="up"] {
+    animation: focus-bump-up 220ms ease-out;
+}
+
+.focus-ring[data-bump="side"] {
+    animation: focus-bump-side 220ms ease-out;
+}
+
+@keyframes focus-bump-down {
+    40% { translate: 0 3px; }
+}
+
+@keyframes focus-bump-up {
+    40% { translate: 0 -3px; }
+}
+
+@keyframes focus-bump-side {
+    40% { translate: 3px 0; }
+}
+
+/* A row's copy carried to its place in the card it went to, or slid aside
+   (rowTravel.ts) */
+.row-traveller {
+    position: fixed;
+    z-index: 6;
+    margin: 0;
+    box-sizing: border-box;
+    pointer-events: none;
+    overflow: hidden;
+    background: var(--surface-raised);
+    border-radius: var(--radius-sm);
+}
+
+/* A thread dragged onto a card (rowDrag.ts): the row dims while a raised copy
+   follows the pointer, and the card under it says in its header what a drop
+   there does, in place of its count and controls */
+.thread.lifting {
+    opacity: 0.35;
+}
+
+:root.row-dragging {
+    cursor: grabbing;
+    user-select: none;
+    -webkit-user-select: none;
+}
+
+.row-ghost {
+    position: fixed;
+    left: 0;
+    top: 0;
+    z-index: 60;
+    margin: 0;
+    box-sizing: border-box;
+    pointer-events: none;
+    background: var(--surface-raised);
+    border-radius: var(--radius-lg);
+    box-shadow: var(--shadow-lg);
+}
+
+.card.drop-target {
+    box-shadow: 0 0 0 3px var(--border-focus), var(--shadow-md);
+}
+
+.card.drop-target .card-header .card-unread-badge,
+.card.drop-target .card-header .card-actions {
+    display: none;
+}
+
+.drop-intent {
+    flex: 1 1 auto;
+    min-width: 0;
+    margin-left: auto;
+    text-align: right;
+    font: var(--type-meta);
+    color: var(--text-primary);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.drop-intent.none,
+.drop-intent-alt {
+    color: var(--text-muted);
+}
+
+/* Where the focus stopped at an edge, and the key onward */
+.focus-edge {
+    flex-shrink: 0;
+    margin: 0;
+    padding: var(--space-md) var(--space-lg);
+    border-top: 1px solid var(--card-divider);
+    font: var(--type-meta);
+    color: var(--text-muted);
+}
+
 .calendar-event-item.replying {
     border-bottom: none;
     background: var(--surface-subtle);
@@ -3657,11 +4081,27 @@ button:disabled:hover {
     cursor: default;
 }
 
+.quick-reply-box .compose-last-letter {
+    margin-bottom: var(--space-md);
+}
+
 .quick-reply-input {
     width: 100%;
     padding: var(--space-md);
     margin-bottom: 8px;
     resize: vertical;
+}
+
+/* Sent from the row (SentInPlace.tsx), until the card shows it */
+.quick-reply-box.sent .quick-reply-input {
+    opacity: 0.62;
+    border-color: transparent;
+    background: transparent;
+    resize: none;
+}
+
+.quick-reply-box .sent-head {
+    padding: 0 var(--space-md) var(--space-sm);
 }
 
 
@@ -3734,6 +4174,11 @@ button:disabled:hover {
     text-overflow: ellipsis;
 }
 
+.compose-autocomplete-note {
+    font: var(--type-meta);
+    color: var(--text-secondary);
+}
+
 /* Preset Selection Modal */
 .preset-overlay {
     position: fixed;
@@ -3760,8 +4205,10 @@ button:disabled:hover {
     background: var(--surface-overlay);
     border-radius: var(--radius-xl);
     padding: 24px 32px;
-    max-width: 720px;
+    max-width: 640px;
     width: 90%;
+    max-height: calc(100vh - 48px);
+    overflow-y: auto;
     box-shadow: var(--shadow-xl);
     animation: slideUp 0.25s cubic-bezier(0.34, 1.56, 0.64, 1);
 }
@@ -3795,87 +4242,34 @@ button:disabled:hover {
     gap: var(--space-md);
 }
 
+/* One row per preset: its name, badge and description over its sorting
+   frame, every frame drawn at one scale so their lengths compare */
 .preset-options {
     display: flex;
-    flex-wrap: wrap;
-    gap: var(--space-lg);
+    flex-direction: column;
+    gap: var(--space-md);
 }
 
 .preset-option {
-    flex: 1 1 140px;
-    min-width: 140px;
+    position: relative;
     display: flex;
     flex-direction: column;
-    padding: var(--space-xl);
+    align-items: flex-start;
+    gap: var(--space-md);
+    padding: var(--space-lg) var(--space-xl);
     border: 2px solid var(--border-default);
     border-radius: var(--radius-lg);
     background: none;
     color: inherit;
     font: inherit;
     cursor: pointer;
-    transition: border-color 0.15s, transform 0.15s, box-shadow 0.15s;
-    text-align: center;
+    transition: border-color 0.15s, background-color 0.15s;
+    text-align: start;
 }
 
 .preset-option:hover {
     border-color: var(--border-focus);
-    transform: translateY(-2px);
-    box-shadow: 0 4px 12px var(--shadow-color);
-}
-
-.preset-preview {
-    height: 80px;
-    min-width: 0;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    gap: var(--space-sm);
-    margin-bottom: 12px;
-    background: var(--surface-subtle);
-    border-radius: var(--radius-md);
-    padding: var(--space-lg);
-}
-
-.preset-preview.empty {
-    color: var(--text-muted);
-}
-
-.preset-card {
-    width: 24px;
-    height: 50px;
-    border-radius: var(--radius-xs);
-    flex-shrink: 1;
-    min-width: 0;
-}
-
-.preset-card.blue {
-    background: var(--card-band);
-}
-
-.preset-card.yellow {
-    background: var(--card-band);
-}
-
-.preset-card.orange {
-    background: var(--card-band);
-}
-
-.preset-card.green {
-    background: var(--card-band);
-}
-
-.preset-card.red {
-    background: var(--card-band);
-}
-
-.preset-card.purple {
-    background: var(--card-band);
-}
-
-.preset-card.none {
     background: var(--surface-hover);
-    border: 1px solid var(--border-default);
-    box-sizing: border-box;
 }
 
 .preset-option.recommended {
@@ -3886,13 +4280,18 @@ button:disabled:hover {
     background: var(--accent-tint);
 }
 
+.preset-heading {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: var(--space-xs) var(--space-md);
+}
+
 .preset-label {
     font: var(--type-title);
-    margin-bottom: 4px;
     display: flex;
     flex-wrap: wrap;
     align-items: center;
-    justify-content: center;
     gap: var(--space-sm) var(--space-md);
 }
 
@@ -3909,6 +4308,12 @@ button:disabled:hover {
 .preset-desc {
     font: var(--type-meta);
     color: var(--text-muted);
+}
+
+@media (max-width: 520px) {
+    .preset-modal {
+        padding: var(--space-xl);
+    }
 }
 
 /* A board without cards: the add button stays at the start of the row */
@@ -3961,10 +4366,133 @@ button:disabled:hover {
     gap: var(--space-lg);
 }
 
-.preset-cards {
-    margin-top: var(--space-md);
-    font: var(--type-meta);
+/* A sorting frame: a post office's pigeonhole rack, one slot per card, each
+   with a label holder carrying the card's name. The wood stays faint; a lit
+   slot inks its label in the card's colour, and a filled one has three
+   letters dropped in. Slots never shrink, so a rack with more cards is
+   longer, and one too long for its row stacks a second tier. */
+.sorting-frame {
+    --slot-width: 72px;
+    display: flex;
+    flex-wrap: wrap;
+    max-width: 100%;
+    padding: 0 1px 1px 0;
+}
+
+.sorting-slot {
+    --card-ink-text: var(--text-primary);
+    flex: 0 0 var(--slot-width);
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-xs);
+    margin: 0 -1px -1px 0;
+    padding: var(--space-xs) var(--space-xs) var(--space-sm);
+    border: 1px solid var(--border-default);
+}
+
+.empty-board .sorting-slot {
+    --card-ink: var(--text-link);
+    --card-ink-text: var(--text-link);
+}
+
+.sorting-cubby {
+    position: relative;
+    height: 28px;
+}
+
+.sorting-slot.bare {
+    border-style: dashed;
+    color: var(--text-muted);
+}
+
+.sorting-slot.bare .sorting-cubby {
+    display: grid;
+    place-items: center;
+}
+
+/* The brass holder: one line, or two for a long name */
+.sorting-label {
+    flex: 1;
+    display: grid;
+    place-items: center;
+    min-height: 20px;
+    padding: 1px var(--space-xs);
+    border: 1px solid var(--border-default);
+    border-radius: var(--radius-xs);
+    background: var(--card-tint);
     color: var(--text-secondary);
+    font: var(--type-meta);
+    text-align: center;
+    overflow-wrap: break-word;
+    min-width: 0;
+    transition: color 0.15s ease, border-color 0.15s ease;
+}
+
+.sorting-slot.bare .sorting-label {
+    border-style: dashed;
+    background: none;
+}
+
+.sorting-slot.lit .sorting-label,
+.preset-option:hover .sorting-label,
+.preset-option:focus-visible .sorting-label {
+    color: var(--card-ink-text);
+    border-color: var(--card-ink);
+}
+
+/* Three envelopes standing on end, leaning a little */
+.sorting-letter {
+    position: absolute;
+    bottom: 0;
+    width: 14px;
+    height: 22px;
+    border: 1px solid var(--card-ink);
+    border-radius: 1px;
+    background: var(--surface-card);
+    opacity: 0;
+    transform-origin: bottom center;
+    transform: translateY(-10px) rotate(var(--lean));
+}
+
+.sorting-letter:nth-child(1) {
+    --lean: -4deg;
+    left: calc(50% - 18px);
+    height: 20px;
+}
+
+.sorting-letter:nth-child(2) {
+    --lean: 0deg;
+    left: calc(50% - 7px);
+    height: 24px;
+}
+
+.sorting-letter:nth-child(3) {
+    --lean: 5deg;
+    left: calc(50% + 4px);
+}
+
+.sorting-slot.filled .sorting-letter {
+    opacity: 0.75;
+    transform: rotate(var(--lean));
+    transition: opacity 160ms ease, transform 240ms cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+
+.sorting-slot.filled .sorting-letter:nth-child(2) {
+    transition-delay: 40ms;
+}
+
+.sorting-slot.filled .sorting-letter:nth-child(3) {
+    transition-delay: 80ms;
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .sorting-label {
+        transition: none;
+    }
+
+    .sorting-slot.filled .sorting-letter {
+        transition: none;
+    }
 }
 
 .preset-modal .restore-actions {
@@ -4703,6 +5231,25 @@ button:disabled:hover {
     animation: threadSlideOut 0.2s ease-in forwards;
 }
 
+/* Grown out of the row it was opened from, and shrunk back into it, from
+   script (rowMotion.ts) */
+.thread-overlay.via-row,
+.thread-overlay.via-row.closing {
+    animation: none;
+}
+
+/* The row a view went back to, lit for a moment so the eye finds it */
+.thread[data-returned],
+.calendar-event-item[data-returned] {
+    animation: row-return 1100ms ease-out;
+}
+
+@keyframes row-return {
+    from {
+        box-shadow: inset 0 0 0 100vmax var(--accent-tint);
+    }
+}
+
 /* Clears the 480px compose or event panel at the left edge while leaving the
    thread at least 640px */
 .app.side-panel-open .thread-overlay {
@@ -5401,6 +5948,11 @@ button:disabled:hover {
     cursor: default;
 }
 
+/* Picked here and still going out */
+.message-reaction.sending {
+    opacity: 0.62;
+}
+
 /* A message's replies, fanning out on its right */
 .message-actions-wheel {
     position: sticky;
@@ -5527,6 +6079,16 @@ button:disabled:hover {
 
 .lightbox-meta {
     font-size: var(--size-12);
+    color: var(--text-on-scrim-muted);
+}
+
+.lightbox-footer {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: var(--space-lg);
+    padding: 0 var(--space-xl) var(--space-xl);
+    font: var(--type-ui);
     color: var(--text-on-scrim-muted);
 }
 
@@ -5725,6 +6287,12 @@ button:disabled:hover {
 
 .toast-message {
     font: var(--type-ui);
+}
+
+.toast-note {
+    display: block;
+    font: var(--type-meta);
+    color: var(--text-inverse-muted);
 }
 
 .toast-undo-btn {
@@ -5959,6 +6527,99 @@ button:disabled:hover {
     border-radius: var(--radius-lg);
     overflow: hidden;
     animation: inlineComposeSlide 0.2s ease-out;
+    transition: border-color 260ms cubic-bezier(0.2, 0.8, 0.2, 1), box-shadow 260ms cubic-bezier(0.2, 0.8, 0.2, 1), border-radius 260ms cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+
+/* Sent from where it was written (SentInPlace.tsx): the controls fold away
+   and the box takes a message's ring around the words, held back until
+   they went */
+.inline-compose.sent {
+    border-color: transparent;
+    box-shadow: 0 0 0 2px var(--border-default);
+    border-radius: var(--radius-xl);
+}
+
+.inline-compose.sent textarea {
+    opacity: 0.62;
+    resize: none;
+}
+
+.inline-compose.sent .compose-content,
+.inline-compose.sent .compose-content textarea {
+    min-height: 0;
+}
+
+.inline-compose.sent .compose-body {
+    gap: 0;
+}
+
+.sent-head {
+    padding: var(--space-lg) var(--space-xl) 0;
+}
+
+.sent-head-line {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: var(--space-lg);
+}
+
+.sent-state {
+    display: inline-flex;
+    align-items: baseline;
+    gap: var(--space-md);
+}
+
+.sent-when {
+    animation: sent-when-in 200ms linear;
+}
+
+@keyframes sent-when-in {
+    from {
+        opacity: 0;
+    }
+}
+
+.sent-undo {
+    padding: 0;
+    border: none;
+    background: none;
+    color: var(--text-link);
+    font: var(--type-meta);
+    font-weight: var(--weight-strong);
+    cursor: pointer;
+}
+
+.sent-undo-bar {
+    height: 2px;
+    margin-top: var(--space-md);
+    border-radius: 1px;
+    background: var(--accent-fill);
+    transform-origin: 0 50%;
+    animation: sent-undo-run linear both;
+}
+
+@keyframes sent-undo-run {
+    from {
+        transform: scaleX(1);
+    }
+
+    to {
+        transform: scaleX(0);
+    }
+}
+
+/* A part of a form folded away (motion.ts fold) */
+[data-folded] {
+    height: 0;
+    min-height: 0;
+    padding-top: 0;
+    padding-bottom: 0;
+    margin-top: 0;
+    margin-bottom: 0;
+    border-block-width: 0;
+    overflow: hidden;
+    opacity: 0;
 }
 
 @keyframes inlineComposeSlide {
@@ -6160,6 +6821,41 @@ button:disabled:hover {
 .compose-field .guest-chips-input {
     flex: 1;
     min-width: 120px;
+}
+
+/* A guest pasted again blinks once instead of doubling */
+.guest-chip.blink {
+    animation: chip-blink 600ms ease-in-out;
+}
+
+@keyframes chip-blink {
+    50% {
+        box-shadow: 0 0 0 2px var(--border-focus);
+    }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .guest-chip.blink {
+        animation: none;
+    }
+}
+
+/* What a paste into a recipient field did, on its own line under the field */
+.recipient-paste-note {
+    flex-basis: 100%;
+}
+
+.compose-field:has(> .recipient-paste-note),
+.compose-to-row:has(> .recipient-paste-note) {
+    flex-wrap: wrap;
+}
+
+.compose-field > .recipient-paste-note {
+    padding-left: calc(50px + var(--space-md));
+}
+
+.compose-to-row > .recipient-paste-note {
+    order: 1;
 }
 
 /* Smart Replies */
@@ -6697,16 +7393,43 @@ button:disabled:hover {
     color: var(--text-on-accent);
 }
 
-/* Loading spinners, skeletons and the undo countdown keep moving: they carry
-   state rather than decoration. */
+/* Loading spinners, skeletons, the undo countdowns and a returned row's light
+   keep moving: they carry state rather than decoration. */
 @media (prefers-reduced-motion: reduce) {
-    *:not(.icon-btn.spinning svg, .auth-spinner, .spinner-sm, .skeleton-avatar, .skeleton-line, .toast-progress),
+    *:not(.icon-btn.spinning svg, .auth-spinner, .spinner-sm, .skeleton-avatar, .skeleton-line, .toast-progress, .sent-undo-bar, [data-returned]),
     *::before,
     *::after {
         animation-duration: 0.01ms !important;
         animation-iteration-count: 1 !important;
         transition-duration: 0.01ms !important;
     }
+}
+
+/* A colour chosen in a flower spreads from its petal (colorSpread.ts): the
+   old and new colours on layers behind the content of the card, or of the
+   board across the window */
+.color-spreading {
+    isolation: isolate;
+}
+
+.color-spread {
+    position: absolute;
+    inset: 0;
+    z-index: -1;
+    pointer-events: none;
+    border-radius: inherit;
+    --card-tint: var(--surface-card);
+    background: linear-gradient(var(--card-tint), var(--card-tint)), linear-gradient(var(--app-bg, transparent), var(--app-bg, transparent)), var(--surface-app);
+}
+
+.color-spread.board {
+    position: fixed;
+    --board-wash: transparent;
+    background: linear-gradient(var(--board-wash), var(--board-wash)), var(--surface-app);
+}
+
+.color-spread.board[data-hue] {
+    --board-wash: color-mix(in srgb, var(--card-hue) var(--board-tint-mix), transparent);
 }
 
 /* The board's own flower, where it was double-clicked or right-clicked */

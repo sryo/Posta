@@ -100,3 +100,51 @@ export function splitName(filename: string): { stem: string; ext: string } {
   const dot = filename.lastIndexOf(".");
   return dot > 0 && filename.length - dot <= 6 ? { stem: filename.slice(0, dot), ext: filename.slice(dot) } : { stem: filename, ext: "" };
 }
+
+// Names that every sender uses for unrelated files, so they never form a series
+const GENERIC_NAMES = new Set([
+  "invoice", "factura", "receipt", "recibo", "scan", "document", "documento", "doc", "file", "archivo",
+  "image", "imagen", "img", "photo", "foto", "attachment", "adjunto", "untitled", "sin", "titulo",
+]);
+// One version marker at the end of a name: v3, rev2, final, (2), a date, a number
+const TRAILING_MARKER = /[\s._-]*(v\d+|rev(?:ision)?\d*|final|\(\d+\)|\d{4}-?\d{2}-?\d{2}|\d+)$/i;
+const MIN_SERIES_KEY = 8;
+
+function trailingMarkers(stem: string): { base: string; markers: string[] } {
+  const markers: string[] = [];
+  let base = stem;
+  for (let m = base.match(TRAILING_MARKER); m && m.index! > 0; m = base.match(TRAILING_MARKER)) {
+    markers.push(m[1].toLowerCase());
+    base = base.slice(0, m.index);
+  }
+  return { base, markers };
+}
+
+// What the versions of one file share: its name without version markers,
+// and its extension. Null for a short or generic name, which could be anyone's.
+export function seriesKey(filename: string): string | null {
+  const { stem, ext } = splitName(filename);
+  const base = trailingMarkers(stem.toLowerCase()).base.replace(/[\s._-]+/g, " ").trim();
+  if (base.length < MIN_SERIES_KEY) return null;
+  if (base.split(" ").every(word => GENERIC_NAMES.has(word) || /^\d+$/.test(word))) return null;
+  return `${base}${ext.toLowerCase()}`;
+}
+
+export type VersionMarker = { kind: "number" | "date"; value: number; label: string | null };
+
+// The version a name says it is, from its last orderable marker
+export function versionMarker(filename: string): VersionMarker | null {
+  for (const marker of trailingMarkers(splitName(filename).stem).markers) {
+    const dated = marker.match(/^(\d{4})-?(\d{2})-?(\d{2})$/);
+    if (dated) return { kind: "date", value: Number(dated.slice(1).join("")), label: null };
+    const n = marker.match(/^(?:v|rev(?:ision)?|\()?(\d+)\)?$/);
+    if (n) return { kind: "number", value: Number(n[1]), label: `v${Number(n[1])}` };
+  }
+  return null;
+}
+
+// Above zero when `a` is the later version; null when they can't be ordered
+export function compareVersions(a: VersionMarker | null, b: VersionMarker | null): number | null {
+  if (!a || !b || a.kind !== b.kind) return null;
+  return a.value - b.value;
+}

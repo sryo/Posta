@@ -14,6 +14,8 @@ export interface InlineComposeProps {
   showCcBcc: boolean;
   setShowCcBcc: (v: boolean) => void;
   suggestContacts?: (query: string) => { email: string; name?: string }[];
+  // A recipient's name from the user's contacts, for the reply's placeholder
+  nameFor?: (email: string) => string | undefined;
   body: string;
   setBody: (v: string) => void;
   attachments: SendAttachment[];
@@ -58,6 +60,8 @@ export interface InlineEditEventProps {
   setRecurrence: (v: string | null) => void;
   // Editing one occurrence of a repeating event, which can't take a rule of its own
   occurrenceOnly: boolean;
+  // Opened to reschedule: focus starts on the start time
+  focusTime?: boolean;
   guestSuggestions?: (query: string) => { email: string; name?: string }[];
   addMeet?: boolean;
   setAddMeet?: (v: boolean) => void;
@@ -71,4 +75,21 @@ export interface InlineEditEventProps {
   // Resize props
   resizing: boolean;
   onResizeStart: (e: MouseEvent) => void;
+}
+
+// An inline reply sent from the thread view, kept where it was written until
+// the thread holds it
+export interface SentReply {
+  replyToMessageId: string;
+  to: string;
+  cc: string;
+  bcc: string;
+  body: string;
+  attachments: SendAttachment[];
+  fromEmail?: string;
+  state: "sending" | "sent";
+  sentAt?: number;
+  // When the undo window closes
+  undoUntil: number;
+  onUndo: () => void;
 }
