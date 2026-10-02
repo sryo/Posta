@@ -2700,6 +2700,19 @@ function App() {
     setSearchCard(null);
   }
 
+  // An empty search bar has nothing to lose, so a click anywhere else puts it
+  // away; its own suggestion menus are portalled out of the bar
+  createEffect(() => {
+    if (!showGlobalFilter()) return;
+    const onPointerDown = (e: PointerEvent) => {
+      if (globalFilter().trim() || searchCard()) return;
+      if ((e.target as Element | null)?.closest?.(".global-filter-bar, .query-autocomplete, .query-picker")) return;
+      closeSearch();
+    };
+    document.addEventListener("pointerdown", onPointerDown, true);
+    onCleanup(() => document.removeEventListener("pointerdown", onPointerDown, true));
+  });
+
   // Keeps the search as a card named after its query, carrying over what it
   // already found
   async function keepSearch() {

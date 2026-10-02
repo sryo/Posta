@@ -6427,6 +6427,25 @@ describe("App quick search", () => {
     expect(screen.getByText("Mail for A").closest(".thread")).not.toHaveClass("faded");
   });
 
+  it("closes an empty search on a click outside it, and keeps one with something typed", async () => {
+    render(() => <App />);
+    await screen.findByText("Mail for A");
+
+    fireEvent.keyDown(document, { key: "/" });
+    const field = await screen.findByPlaceholderText(/Search mail/);
+    fireEvent.pointerDown(field);
+    expect(screen.getByPlaceholderText(/Search mail/)).toBeInTheDocument();
+
+    const outside = document.querySelector('.card[data-id="card-a"]') as HTMLElement;
+    fireEvent.input(field, { target: { value: "inv" } });
+    fireEvent.pointerDown(outside);
+    expect(screen.getByPlaceholderText(/Search mail/)).toBeInTheDocument();
+
+    fireEvent.input(field, { target: { value: "" } });
+    fireEvent.pointerDown(outside);
+    await waitFor(() => expect(screen.queryByPlaceholderText(/Search mail/)).toBeNull());
+  });
+
   it("keeps a search as a card named after its query, with what it found", async () => {
     searchResults({ ...thread("t-f", "Report.pdf"), account_id: "a" });
     handlers.create_card = ({ accountId, name, query }) => ({ ...card("card-new", accountId as string, name as string), query: query as string });
