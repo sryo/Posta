@@ -1188,9 +1188,22 @@ function App() {
   const [composeAttachments, setComposeAttachments] = createSignal<SendAttachment[]>([]);
   let slotCloseTimeout: number | undefined;
   let slotButton: HTMLButtonElement | undefined;
+  let slotElement: HTMLDivElement | undefined;
+  // Leaving the + for somewhere near its wheel, or the list a petal shows
+  // beside it, keeps the wheel, as the rows' wheels do
+  const slotHold = createHoverHold();
+  onCleanup(() => slotHold.release());
   const openSlot = () => {
     clearTimeout(slotCloseTimeout);
+    slotHold.release();
     setSlotOpen(true);
+  };
+  const leaveSlot = (e: MouseEvent) => {
+    const close = () => { slotCloseTimeout = window.setTimeout(() => setSlotOpen(false), 250); };
+    const wheel = slotElement?.querySelector('.radial-menu[role="menu"]');
+    const beside = () => Array.from(slotElement?.querySelectorAll(".board-slot-leaf.open") ?? []);
+    if (slotOpen() && slotHold.hold(wheel, e.clientX, e.clientY, close, beside)) return;
+    close();
   };
   let draftSaveTimeout: number | undefined;
   const drafts = createDraftSync();
@@ -5751,10 +5764,11 @@ function App() {
                 classList={{ "covered": (composeShownIn() === "panel" && !closingCompose()) || (creatingEvent() && !eventForm().closing) }}
               >
               <div
+                ref={slotElement}
                 class="board-slot"
                 classList={{ "open": slotOpen() }}
                 onMouseEnter={openSlot}
-                onMouseLeave={() => { slotCloseTimeout = window.setTimeout(() => setSlotOpen(false), 250); }}
+                onMouseLeave={leaveSlot}
                 onFocusIn={openSlot}
                 onFocusOut={(e) => {
                   if (!e.currentTarget.contains(e.relatedTarget as Node | null)) setSlotOpen(false);

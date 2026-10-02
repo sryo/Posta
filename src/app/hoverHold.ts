@@ -12,14 +12,25 @@ export function pointNearWheel(menu: Element, x: number, y: number, pad = RADIAL
   return nearWheel({ x: box.left, y: box.top }, petals, { x, y }, pad);
 }
 
+// Whether the pointer is within `pad` of what a wheel shows beside it
+function pointNearBox(el: Element, x: number, y: number, pad = RADIAL_HOVER_PAD): boolean {
+  if (!el.isConnected) return false;
+  const r = el.getBoundingClientRect();
+  if (r.width === 0 && r.height === 0) return false;
+  return x >= r.left - pad && x <= r.right + pad && y >= r.top - pad && y <= r.bottom + pad;
+}
+
 // Keeps a hover wheel open while the pointer, having left what the wheel
 // opened from, stays near the wheel: a safety zone round its petals, as a
 // menu keeps its submenu open on the way to it. Another row entered inside
 // the zone waits until the pointer leaves it, and then takes the wheel.
 export function createHoverHold() {
-  let held: { menu: Element; exit: () => void } | null = null;
+  let held: { menu: Element; beside: () => Element[]; exit: () => void } | null = null;
   let waiting: { key: string; run: () => void } | null = null;
   let pointer = { x: 0, y: 0 };
+
+  const near = (x: number, y: number) =>
+    !!held && (pointNearWheel(held.menu, x, y) || held.beside().some(el => pointNearBox(el, x, y)));
 
   const letGo = () => {
     if (!held) return;
@@ -31,11 +42,11 @@ export function createHoverHold() {
   };
   const move = (e: PointerEvent) => {
     pointer = { x: e.clientX, y: e.clientY };
-    if (held && !pointNearWheel(held.menu, pointer.x, pointer.y)) letGo();
+    if (held && !near(pointer.x, pointer.y)) letGo();
   };
   // A scroll moves the wheel under a pointer that stays still, and sends no move
   const scroll = () => {
-    if (held && !pointNearWheel(held.menu, pointer.x, pointer.y)) letGo();
+    if (held && !near(pointer.x, pointer.y)) letGo();
   };
   // Nor does a pointer that leaves the window, or a window put behind another;
   // no row is under it then to take the wheel
@@ -60,11 +71,16 @@ export function createHoverHold() {
 
   return {
     // On leaving what an open wheel belongs to: true when the pointer is still
-    // near `menu`, which then stays until it moves away and `exit` runs
-    hold(menu: Element | null | undefined, x: number, y: number, exit: () => void): boolean {
+    // near `menu`, or what it shows `beside` it, which then stays until the
+    // pointer moves away and `exit` runs
+    hold(menu: Element | null | undefined, x: number, y: number, exit: () => void, beside: () => Element[] = () => []): boolean {
       release();
-      if (!menu || !pointNearWheel(menu, x, y)) return false;
-      held = { menu, exit };
+      if (!menu) return false;
+      held = { menu, beside, exit };
+      if (!near(x, y)) {
+        held = null;
+        return false;
+      }
       pointer = { x, y };
       watch(true);
       return true;
@@ -72,7 +88,7 @@ export function createHoverHold() {
     // On entering another row: true when the pointer is still near the held
     // wheel, and the row's `run` waits for it to move away
     wait(key: string, x: number, y: number, run: () => void): boolean {
-      if (!held || !pointNearWheel(held.menu, x, y)) return false;
+      if (!near(x, y)) return false;
       waiting = { key, run };
       return true;
     },

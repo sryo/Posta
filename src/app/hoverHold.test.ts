@@ -33,6 +33,19 @@ describe("createHoverHold", () => {
     expect(exit).toHaveBeenCalledOnce();
   });
 
+  it("counts what the wheel shows beside it, such as a petal's list, as near the wheel too", () => {
+    const hold = createHoverHold();
+    const exit = vi.fn();
+    const list = document.createElement("div");
+    list.getBoundingClientRect = () => ({ left: 300, top: 80, right: 460, bottom: 200, width: 160, height: 120, x: 300, y: 80, toJSON: () => ({}) }) as DOMRect;
+    document.body.append(list);
+    expect(hold.hold(wheel(), 380, 140, exit, () => [list])).toBe(true);
+    move(470, 140);
+    expect(exit).not.toHaveBeenCalled();
+    move(520, 140);
+    expect(exit).toHaveBeenCalledOnce();
+  });
+
   it("holds nothing when the pointer left far from the wheel", () => {
     const hold = createHoverHold();
     expect(hold.hold(wheel(), 300, 300, vi.fn())).toBe(false);
