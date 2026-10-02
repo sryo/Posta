@@ -3030,9 +3030,11 @@ button.chip-label {
     font: var(--type-meta);
 }
 
-.query-chip.negated {
-    text-decoration: line-through;
-    text-decoration-color: var(--text-muted);
+/* An excluding chip says so in words before its operator */
+.query-chip-not {
+    font: var(--type-meta);
+    color: var(--text-muted);
+    white-space: pre;
 }
 
 .query-chip-op {
@@ -3044,6 +3046,12 @@ button.chip-label {
     font: var(--type-ui);
     color: var(--text-primary);
     cursor: text;
+}
+
+/* OR and AND join the chips round them, at the chips' size */
+.query-joiner {
+    font: var(--type-meta);
+    color: var(--text-muted);
 }
 
 .query-explain {

@@ -37,6 +37,18 @@ describe("QueryField chips", () => {
     expect(screen.getByText("invoice")).toHaveClass("query-word");
   });
 
+  it("says not on an excluding chip, in words, instead of a minus struck through", () => {
+    renderField("category:social -is:starred");
+    const chip = screen.getByRole("button", { name: "Change -is:starred" });
+    expect(chip.textContent).toBe("not is:starred");
+    expect(chip.querySelector(".query-chip-not")).toHaveTextContent("not");
+  });
+
+  it("sets OR and AND between chips as quiet joiners, not as words of the search", () => {
+    renderField("category:promotions OR category:updates");
+    expect(screen.getByText("OR")).toHaveClass("query-joiner");
+  });
+
   it("shows a contact's name on an address chip", () => {
     renderField("from:ana@x.com", { contacts: [contact("ana@x.com", "Ana Pérez")] });
     expect(screen.getByRole("button", { name: "Change from:ana@x.com" })).toHaveTextContent("from:Ana Pérez");

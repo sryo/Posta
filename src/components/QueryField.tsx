@@ -263,7 +263,7 @@ export const QueryField = (props: {
       when={word.operator}
       fallback={
         <span
-          class="query-word"
+          class={/^(OR|AND)$/.test(word.text) ? "query-word query-joiner" : "query-word"}
           onMouseDown={(e) => {
             e.preventDefault();
             editWordAsText(section, i());
@@ -287,7 +287,8 @@ export const QueryField = (props: {
           onClick: (e) => setPicker({ section, index: i(), pos: below(e.currentTarget) }),
         } as JSX.ButtonHTMLAttributes<HTMLButtonElement>}
       >
-        <span class="query-chip-op">{word.operator!.negated ? "-" : ""}{word.operator!.op}:</span>
+        <Show when={word.operator!.negated}><span class="query-chip-not">not </span></Show>
+        <span class="query-chip-op">{word.operator!.op}:</span>
         {chipValue(word)}
       </Chip>
     </Show>
