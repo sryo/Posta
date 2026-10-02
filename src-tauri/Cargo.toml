@@ -1,6 +1,6 @@
 [package]
 name = "posta"
-version = "2026.9.30"
+version = "2026.10.2"
 description = "Gmail client with horizontal cards UI"
 authors = ["sryo"]
 edition = "2021"
