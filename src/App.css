@@ -2306,20 +2306,31 @@ body.dragging-event {
 
 .thread.live {
     background: color-mix(in srgb, var(--surface-card) 35%, transparent);
+    isolation: isolate;
 }
 
+/* How far the meeting has run, filling the row from the left behind its
+   text, as an undo toast fills with its time */
 .invite-progress {
-    height: 3px;
-    margin-top: var(--space-xs);
+    position: absolute;
+    inset: 0;
+    z-index: -1;
     overflow: hidden;
-    border-radius: 2px;
-    background: var(--surface-hover);
+    border-radius: inherit;
+    pointer-events: none;
 }
 
 .invite-progress span {
     display: block;
     height: 100%;
-    background: var(--accent-fill);
+    background: color-mix(in srgb, var(--accent-fill) 14%, transparent);
+    transition: width 0.4s linear;
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .invite-progress span {
+        transition: none;
+    }
 }
 
 .invite-join {

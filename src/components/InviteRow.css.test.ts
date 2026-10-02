@@ -49,3 +49,22 @@ describe("invite row styles", () => {
     expect(declarations(".day-strip-busy.overlap").get("box-shadow")).toContain("var(--warning)");
   });
 });
+
+describe("a running meeting's progress", () => {
+  it("fills the whole row from the left behind its content, as the undo toast does", () => {
+    const bar = declarations(".invite-progress");
+    expect(bar.get("position")).toBe("absolute");
+    expect(bar.get("inset")).toBe("0");
+    expect(bar.get("z-index")).toBe("-1");
+    expect(bar.get("pointer-events")).toBe("none");
+    expect(declarations(".invite-progress span").get("height")).toBe("100%");
+  });
+
+  // The row itself can't clip: its hover wheel reaches past its edge
+  it("keeps the fill inside the row, under its text, without clipping the row", () => {
+    const row = declarations(".thread.live");
+    expect(row.get("isolation")).toBe("isolate");
+    expect(row.get("overflow")).toBeUndefined();
+    expect(declarations(".invite-progress").get("overflow")).toBe("hidden");
+  });
+});
